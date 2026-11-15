@@ -2353,6 +2353,8 @@ window._i18n.hu = {
   'onboarding.step3.desc':       'Utolsó lépés: párosítsd magad, hogy a bot válaszoljon neked.',
   'onboarding.step3.li1':        'Írj egy üzenetet a botodnak Telegramon vagy Slacken.',
   'onboarding.step3.li2':        'Frissítsd a listát, majd hagyd jóvá magad lentebb.',
+  'onboarding.step3.li1_teams':  'Írj egy üzenetet a botodnak Microsoft Teamsben.',
+  'onboarding.step3.li2_teams':  'Ha a bot már válaszol neked Teamsben, töltsd újra az oldalt: ez a lépés magától lezárul.',
   'onboarding.step3.refresh_btn':'Lista frissítése',
   'onboarding.step3.no_pending': 'Még nincs függő párosítás. Írj a botnak, majd frissíts.',
   'onboarding.step3.approve_btn':'Jóváhagyás',

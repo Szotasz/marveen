@@ -16368,7 +16368,9 @@ function onbStep3Html(s) {
     : `<p class="onb-hint">${escapeHtml(t('onboarding.step3.svc_starting'))}</p>`
   return `<p>${escapeHtml(t('onboarding.step3.desc'))}</p>`
     + svcLine
-    + `<ol class="onb-list"><li>${escapeHtml(t('onboarding.step3.li1'))}</li><li>${escapeHtml(t('onboarding.step3.li2'))}</li></ol>`
+    + (onboardingChannelProvider === 'teams'
+      ? `<ol class="onb-list"><li>${escapeHtml(t('onboarding.step3.li1_teams'))}</li><li>${escapeHtml(t('onboarding.step3.li2_teams'))}</li></ol>`
+      : `<ol class="onb-list"><li>${escapeHtml(t('onboarding.step3.li1'))}</li><li>${escapeHtml(t('onboarding.step3.li2'))}</li></ol>`)
     + `<div id="onbPending" class="onb-pending"></div>`
     + `<button class="btn-secondary btn-compact" id="onbRefreshBtn">${escapeHtml(t('onboarding.step3.refresh_btn'))}</button>`
     + `<div id="onbMsg" class="onb-msg"></div>`
