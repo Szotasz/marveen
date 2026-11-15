@@ -364,9 +364,12 @@ describe('/api/support-access', () => {
     })
     while (!order.includes('enable started')) await new Promise((r) => setTimeout(r, 5))
     const teardown = takeSupportAccessDown('password_change').then(() => order.push('teardown'))
-    await new Promise((r) => setTimeout(r, 50))
-    expect(order).toEqual(['enable started'])
-    release()
+    try {
+      await new Promise((r) => setTimeout(r, 50))
+      expect(order).toEqual(['enable started'])
+    } finally {
+      release()
+    }
     await enabling
     await teardown
     expect(order).toEqual(['enable started', 'enable done', 'teardown'])
@@ -386,9 +389,12 @@ describe('/api/support-access', () => {
     })
     while (!order.includes('enable started')) await new Promise((r) => setTimeout(r, 5))
     const reconciling = runSupportReconcile({ standby: standbyDeps(), transport: async () => ({ status: 200, body: '' }) }).then((o) => order.push('reconcile ' + o))
-    await new Promise((r) => setTimeout(r, 50))
-    expect(order).toEqual(['enable started'])
-    release()
+    try {
+      await new Promise((r) => setTimeout(r, 50))
+      expect(order).toEqual(['enable started'])
+    } finally {
+      release()
+    }
     await enabling
     await reconciling
     expect(order).toEqual(['enable started', 'enable done', 'reconcile off'])
@@ -418,10 +424,17 @@ describe('/api/support-access', () => {
       changed = true
       return r
     })
-    for (let i = 0; i < 40 && resolveSession(otherToken) !== null; i++) await new Promise((r) => setTimeout(r, 5))
-    expect(resolveSession(otherToken)).toBeNull()
-    expect(changed).toBe(false)
-    release()
+    try {
+      // The password change runs the KDF first: on a slow runner that alone takes far more than a moment. Wait for the
+      // revoke itself (bounded), then check that the answer is still held by the support lock.
+      const until = Date.now() + 20_000
+      while (resolveSession(otherToken) !== null && Date.now() < until) await new Promise((r) => setTimeout(r, 10))
+      expect(resolveSession(otherToken)).toBeNull()
+      expect(changed).toBe(false)
+    } finally {
+      // Always let the enable finish: a lock left held would stall every later test of this file.
+      release()
+    }
     await enabling
     expect((await change).res.statusCode).toBe(200)
   })
