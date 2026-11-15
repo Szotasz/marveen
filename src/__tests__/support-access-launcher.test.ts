@@ -157,7 +157,7 @@ describe("the routine's enable refusals, as sentences", () => {
     for (const code of ['support_keys_unset', 'support_from_unset', 'support_pins_invalid']) {
       const out = say(code)
       expect(out, code).toContain('(' + code + ')')
-      expect(out, code).toContain('Frissítsd a Marveent')
+      expect(out, code).toContain('Ez a Marveen-kiadás még nem tartalmazza a távoli segítség beállításait (' + code + '). Frissítsd a Marveent.')
       expect(out, code).not.toContain('A bekapcsolás nem sikerült')
     }
   })
