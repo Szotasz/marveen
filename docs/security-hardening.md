@@ -475,7 +475,7 @@ names any injection patterns it matched (forged `<untrusted>` /
 overrides, credential targets, exfil shapes) and appends a record to
 `store/browser-content.log` for reading outside the model's context. The record
 holds the tool, source, byte count, pattern counts and nonce, plus the payload
-itself, except for the catalog mail, calendar, Drive and playwright servers below,
+itself, except for the catalog mail, calendar, Drive, playwright and Stripe servers below,
 whose record keeps no payload, a source without query string or fragment, and,
 when a forged frame matched, only 200 characters either side of each of the first
 five matches with their character offsets, never past the content block or
@@ -515,7 +515,8 @@ servers below itself.
 
 Since MCPUNTRUSTED1114 the same default group also covers the catalog's
 `gmail`, `gmail-v2`, `google-calendar`, `google-drive` and `playwright` MCP
-servers (matcher `WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright)__.*`):
+servers, and a `stripe` server (payment descriptions and metadata are written by
+customers and third parties) (matcher `WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright|stripe)__.*`):
 an email, a calendar invite, a shared document or a page is text anyone can
 author, and before this it reached the agent with no envelope and no label. A
 server installed under another name (another browser MCP, `mcp__chrome*`) is

@@ -2368,7 +2368,7 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // operator-wired (the doc shows how).
 export const WEBSEARCH_ENVELOPE_SCRIPT = 'browser-content-notice.py'
 export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
-export const ENVELOPE_MCP_SERVERS = ['gmail', 'gmail-v2', 'google-calendar', 'google-drive', 'playwright'] as const
+export const ENVELOPE_MCP_SERVERS = ['gmail', 'gmail-v2', 'google-calendar', 'google-drive', 'playwright', 'stripe'] as const
 export const WEBSEARCH_ENVELOPE_MATCHER = `${ENVELOPE_TOOLS.join('|')}|mcp__(${ENVELOPE_MCP_SERVERS.join('|')})__.*`
 // The managed matcher before MCPUNTRUSTED1114: still ours, so it is migrated, not kept as an operator group.
 const LEGACY_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
