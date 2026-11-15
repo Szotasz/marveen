@@ -26,6 +26,7 @@ import {
 } from '../web/routes/support-access.js'
 import type { RouteContext } from '../web/routes/types.js'
 import { supportPasswordGate } from '../web/support-password.js'
+import { runSupportReconcile, takeSupportAccessDown } from '../web/support-standby-runtime.js'
 import type { KitRunResult } from '../support-kit-loader.js'
 import { writeGroupRecord } from '../support-group-record.js'
 import type { StandbyDeps } from '../support-standby-enable.js'
@@ -345,6 +346,51 @@ describe('/api/support-access', () => {
     expect(r.res.statusCode).toBe(status)
     expect(r.json()).toEqual({ error })
     expect(listSupportConsents()).toEqual([])
+  })
+
+  // Dani's review of #2786, R1: one standby change at a time in this process.
+  it('a security teardown waits for an enable that is running, and runs after it', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const order: string[] = []
+    const enabling = call('POST', '/api/support-access/enable', { body: { consentVersion: 1, password: GOOD_PW, code: CODE } }, {
+      runKit: async () => {
+        order.push('enable started')
+        await gate
+        order.push('enable done')
+        return { ok: true, code: 1, stdout: '', stderr: 'enable: refused: code_rejected\n' }
+      },
+    })
+    while (!order.includes('enable started')) await new Promise((r) => setTimeout(r, 5))
+    const teardown = takeSupportAccessDown('password_change').then(() => order.push('teardown'))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(order).toEqual(['enable started'])
+    release()
+    await enabling
+    await teardown
+    expect(order).toEqual(['enable started', 'enable done', 'teardown'])
+  })
+
+  it('the reconcile waits for an enable that is running, too', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    const order: string[] = []
+    const enabling = call('POST', '/api/support-access/enable', { body: { consentVersion: 1, password: GOOD_PW, code: CODE } }, {
+      runKit: async () => {
+        order.push('enable started')
+        await gate
+        order.push('enable done')
+        return { ok: true, code: 1, stdout: '', stderr: 'enable: refused: code_rejected\n' }
+      },
+    })
+    while (!order.includes('enable started')) await new Promise((r) => setTimeout(r, 5))
+    const reconciling = runSupportReconcile({ standby: standbyDeps(), transport: async () => ({ status: 200, body: '' }) }).then((o) => order.push('reconcile ' + o))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(order).toEqual(['enable started'])
+    release()
+    await enabling
+    await reconciling
+    expect(order).toEqual(['enable started', 'enable done', 'reconcile off'])
   })
 
   it('disables without a password and closes the open rows', async () => {

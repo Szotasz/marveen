@@ -25,6 +25,7 @@ import { formatSupportStatus, supportStatus, type SupportStatusDeps } from '../.
 import { json, readBodyOrRefuse } from '../http-helpers.js'
 import { verifyPassword } from '../password-hash.js'
 import { supportPasswordGate } from '../support-password.js'
+import { withSupportStandbyLock } from '../support-standby-lock.js'
 import { bridgeOwner, mayActAsOwner, ownerCookieSession, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
@@ -273,8 +274,9 @@ export async function handleSupportAccess(ctx: RouteContext, deps: SupportAccess
       refuseOwner(res, 'Support access is switched on and off by the owner (the dashboard login).')
       return true
     }
-    if (path === '/api/support-access/enable') await handleEnable(ctx, deps)
-    else await handleDisable(ctx, deps)
+    // One standby change at a time in this process: an enable, a disable, the teardown and the reconcile (R1).
+    if (path === '/api/support-access/enable') await withSupportStandbyLock(() => handleEnable(ctx, deps))
+    else await withSupportStandbyLock(() => handleDisable(ctx, deps))
     return true
   }
   json(res, { error: 'Not found' }, 404)

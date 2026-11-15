@@ -8,7 +8,7 @@ import type { RedeemTransport } from '../support-access-redeem.js'
 import { TOKEN_REVOKED_BODY } from '../support-access-check.js'
 import type { SshdAssessment } from '../support-access-sshd.js'
 import { readSupportToken, SUPPORT_TOKEN_FILE, writeSupportToken } from '../support-access-token.js'
-import { readGroupRecord, SUPPORT_GROUP_RECORD_FILE, type SupportGroupRecord } from '../support-group-record.js'
+import { readGroupRecord, SUPPORT_GROUP_RECORD_FILE, writeGroupRecord, type SupportGroupRecord } from '../support-group-record.js'
 import { writeKit } from '../support-kit.js'
 import { KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js'
 import { reconcileSupportStandby, type ReconcileDeps, type ReconcileRevokedVia } from '../support-reconcile.js'
@@ -154,6 +154,16 @@ describe('the support reconcile (terv-v7 3.8; Dani 32056 G1-G6)', () => {
   it('a kit that no longer verifies, or binds another dispatcher, takes the standby down', async () => {
     await enable()
     rmSync(join(supportDir, 'kit'), { recursive: true })
+    expect(await reconcileSupportStandby(deps())).toBe('removed_kit')
+    allGone()
+  })
+
+  // Dani's review of #2786, T1: the lines must never bind a path where no verified kit stands.
+  it('a record that binds another dispatcher than the verified kit\'s takes the standby down', async () => {
+    await enable()
+    const record = readGroupRecord(supportDir)
+    if (record.kind !== 'ok') throw new Error('no record')
+    writeGroupRecord(supportDir, { ...record.record, dispatchPath: join(root, 'elsewhere', 'support-dispatch.sh') })
     expect(await reconcileSupportStandby(deps())).toBe('removed_kit')
     allGone()
   })

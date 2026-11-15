@@ -6,10 +6,11 @@
 import { getDb, insertSupportConsent, revokeOpenSupportConsents, type SupportRevokedVia } from '../db.js'
 import { logger } from '../logger.js'
 import { notifyOwner } from '../notify.js'
-import { createHttpsRedeemTransport } from '../support-access-redeem.js'
+import { createHttpsRedeemTransport, type RedeemTransport } from '../support-access-redeem.js'
 import { reconcileSupportStandby, type ReconcileOutcome } from '../support-reconcile.js'
 import { createStandbyDeps } from '../support-standby-cli.js'
 import { disableSupportStandby, type DisableResult, type StandbyDeps } from '../support-standby-enable.js'
+import { withSupportStandbyLock } from './support-standby-lock.js'
 import { countSupportLines } from '../support-access-line.js'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -22,17 +23,18 @@ const tell = (text: string): void => {
   void notifyOwner(text).catch((err) => logger.warn({ err }, 'support access: a notice to the owner was not sent'))
 }
 
-export async function runSupportReconcile(): Promise<ReconcileOutcome> {
+/** `over` is for tests: another machine's folders and a fake service; the real run passes nothing. */
+export async function runSupportReconcile(over: { standby?: StandbyDeps; transport?: RedeemTransport } = {}): Promise<ReconcileOutcome> {
   let standby
   try {
-    standby = createStandbyDeps()
+    standby = over.standby ?? createStandbyDeps()
   } catch {
     logger.warn('support access: reconcile skipped, the login user is not known')
     return 'failed'
   }
-  const outcome = await reconcileSupportStandby({
+  const outcome = await withSupportStandbyLock(() => reconcileSupportStandby({
     standby,
-    transport: createHttpsRedeemTransport(),
+    transport: over.transport ?? createHttpsRedeemTransport(),
     consents: {
       has: (grantId) => getDb().prepare('SELECT 1 FROM support_consents WHERE grant_id = ?').get(grantId) !== undefined,
       insertFromRecord: (r) => {
@@ -52,7 +54,7 @@ export async function runSupportReconcile(): Promise<ReconcileOutcome> {
     },
     notifyOwner: tell,
     log: (event, fields) => logger.info({ ...(fields ?? {}), event }, 'support access: reconcile'),
-  })
+  }))
   logger.info({ outcome }, 'support access: reconcile done')
   return outcome
 }
@@ -115,7 +117,7 @@ export async function takeSupportAccessDown(via: TeardownVia): Promise<DisableRe
     logger.warn({ via }, 'support access: teardown skipped, the login user is not known')
     return null
   }
-  return takeSupportAccessDownWith(deps, via)
+  return withSupportStandbyLock(() => takeSupportAccessDownWith(deps, via))
 }
 
 /** takeSupportAccessDown with the machine's dependencies handed in (tests). */
