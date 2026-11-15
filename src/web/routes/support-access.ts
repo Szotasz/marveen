@@ -85,7 +85,11 @@ function statusObject(text: string): Record<string, string> {
   return out
 }
 
-/** The password checks of this process, one after the other (a promise chain; a failure does not break it). */
+/**
+ * The password checks of this process, one after the other (a promise chain; a failure does not break it). Per
+ * PROCESS, not per machine (Dani's review of #2781): today one dashboard process serves the machine; a second one
+ * (a second instance) would have its own chain, though the bucket's state itself is shared through the database.
+ */
 let passwordQueue: Promise<unknown> = Promise.resolve()
 function onePasswordCheckAtATime<T>(step: () => Promise<T>): Promise<T> {
   const run = passwordQueue.then(step, step)
