@@ -120,6 +120,8 @@ export function darwinListenersCheck(text: string | null): DarwinCheck {
   for (const raw of text.split('\n')) {
     const cols = raw.trim().split(/\s+/)
     if (cols.length < 6 || cols[5] !== 'LISTEN' || !/^tcp[46]*$/.test(cols[0])) continue
+    // macOS netstat writes the port after a dot, for IPv6 too (`*.22`, `::1.22`; Dani's review of #2784). A port
+    // after a colon is counted as well: a listener in a form this did not expect must count, not slip past.
     if (/[.:]22$/.test(cols[3])) on22.push(cols[0] + ' ' + cols[3])
   }
   return on22.sort().join(',') === 'tcp4 *.22,tcp6 *.22' ? OK : UNKNOWN

@@ -94,6 +94,8 @@ describe('macOS: the daemon check of the non-root probe (D1-D4, Dani 78522)', ()
     ['none', NETSTAT.replace(/tcp[46] .*\*\.22 .*\n/g, '')],
     ['the same pair twice', NETSTAT + 'tcp4       0      0  *.22                   *.*                    LISTEN\n'],
     ['an IPv6 listener on one address', NETSTAT + 'tcp6       0      0  ::1.22                 *.*                    LISTEN\n'],
+    ['a dual-stack listener on 22 (tcp46)', NETSTAT + 'tcp46      0      0  *.22                   *.*                    LISTEN\n'],
+    ['a listener written with the port after a colon (a form macOS does not print: it must count, not slip past)', NETSTAT + 'tcp6       0      0  [::1]:22               *.*                    LISTEN\n'],
   ])('D4: refuses %s', (_label, text) => {
     expect(darwinListenersCheck(text)).toEqual({ ok: false, problem: 'sshd_daemon_unknown' })
   })
