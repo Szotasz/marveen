@@ -75,6 +75,41 @@ describe('verifyDelivery: the shared text vector inside a signed delivery, at ea
   })
 })
 
+describe('verifyDelivery: the shared vector\'s manifest text cases, inside a signed delivery', () => {
+  // Each case is one manifest free text, given as a JSON string literal (a lone surrogate travels only as an
+  // escape). The text goes into its field of a signed payload; the refusal must name the field and the rule.
+  const manifestCases = (loadTextVector().manifest_cases ?? []).filter(isInstallCase)
+
+  it('the vector has manifest text cases', () => {
+    expect(manifestCases.length).toBeGreaterThan(0)
+  })
+
+  it.each(manifestCases.map((c) => [c.name, c] as const))('%s', (_name, c) => {
+    const text = JSON.parse(Buffer.from(c.text_json_b64, 'base64').toString('utf8')) as unknown
+    expect(typeof text).toBe('string')
+    const t = text as string
+    const over =
+      c.field === 'title' ? { title: t }
+        : c.field === 'description' ? { description: t }
+          : c.field === 'agent.display_name' ? { displayName: t }
+            : { connectors: [{ name: 'bb', level: 'required', reason: t }] }
+    const got = verifyDelivery(
+      makeSignedDelivery({ kid: signer.kid, privateKey: signer.privateKey, slug: 'invoice-helper', ...over }),
+      'invoice-helper',
+      keys,
+    )
+    if ('ok' in c.expect) {
+      expect(got.ok, JSON.stringify(got)).toBe(true)
+      return
+    }
+    expect(got.ok).toBe(false)
+    if (got.ok) return
+    expect({ step: got.step, reason: got.reason }).toEqual({ step: 5, reason: c.expect.reason })
+    const field = c.field === 'connectors[].reason' ? 'connectors[0].reason' : c.field
+    expect(got.detail).toMatchObject({ field, rule: c.expect.rule })
+  })
+})
+
 describe('verifyDelivery: a refusal never carries file content', () => {
   const MARKER = 'ZEBRAQUOKKA'
   const leaky: Array<[string, Record<string, string>]> = [
