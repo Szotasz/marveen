@@ -262,14 +262,17 @@ describe('logs go through the redactor', () => {
         'hex ' + 'a1'.repeat(20),
         'esc \u001b]0;title\u0007 and \u001b[31mred',
         'link \u001b]8;;http://x\u001b\\here\u001b]8;;\u001b\\ bold \u001b[1;33;40mx\u001b[0m\u001b[K end',
+        // Lone control bytes outside any sequence: a backspace, a bare ESC, a BEL, a carriage return.
+        'lone a\u0008b c\u001b d\u0007e f\rg',
         'plain 2026-11-15 07:12:33 ok',
       ].join('\n') + '\n',
     )
     const r = run('logs dashboard 20')
     expect(r.status).toBe(0)
-    for (const leak of ['mst_BBB', 'mrv_CCC', 'sk-ant-', SLACK_SHAPE.slice(0, 9), 'abc.def.ghi', 'owner@example.com', '123 4567', 'a1a1a1a1a1a1', '\u001b', '\u0007', '[31m', '[0m', '[K', ']0;', ']8;;', 'title']) {
+    for (const leak of ['mst_BBB', 'mrv_CCC', 'sk-ant-', SLACK_SHAPE.slice(0, 9), 'abc.def.ghi', 'owner@example.com', '123 4567', 'a1a1a1a1a1a1', '\u001b', '\u0007', '\u0008', '\r', '[31m', '[0m', '[K', ']0;', ']8;;', 'title']) {
       expect(r.stdout).not.toContain(leak)
     }
+    expect(r.stdout).toContain('lone ab c d')
     // Whole sequences go, the text around them stays.
     expect(r.stdout).toContain('esc  and red')
     expect(r.stdout).toContain('link here bold x end')
