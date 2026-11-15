@@ -63,8 +63,14 @@ describe('the committed launcher', () => {
   })
 
   it('never puts the one-time code in an argument: it reaches the routine on standard input', () => {
-    expect(LAUNCHER).toContain(`OUT=$(printf '%s\\n' "$CODE" | run_kit enable --consent `)
+    expect(LAUNCHER).toContain(`OUT=$(printf '%s\\n' "$CODE" | run_kit enable --consent "$CV" `)
     expect(LAUNCHER).not.toMatch(/run_kit[^\n]*"\$CODE"/)
+  })
+
+  it('takes the consent version from the routine status, never from a number of its own (Samu 78474)', () => {
+    expect(LAUNCHER).toContain('consent_version=*) CV=${line#consent_version=} ;;')
+    expect(LAUNCHER).toContain('run_kit consent-text --consent "$CV"')
+    expect(LAUNCHER).not.toMatch(/--consent [0-9]/)
   })
 })
 

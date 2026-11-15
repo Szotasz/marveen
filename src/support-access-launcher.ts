@@ -20,13 +20,6 @@ export const SUPPORT_LAUNCHER_FILE = 'scripts/support-access'
 /** The routine in the install tree: what `disable` runs (closing does not depend on the kit; N14/a). */
 export const SUPPORT_TREE_ROUTINE = 'scripts/support-standby.mjs'
 
-/**
- * The consent version `enable --consent <n>` passes (Bence 78442). OPEN (asked in 78468): where the
- * number comes from. Until part 2b answers it, this constant is the one place; the build writes it into
- * the launcher, so a change is one edit here and a rebuild.
- */
-export const SUPPORT_LAUNCHER_CONSENT_VERSION = 1
-
 /** The code shape as a sh case pattern: `msc_` and 32 characters of the code alphabet. */
 export function supportCodeGlob(): string {
   // The shape is pinned here; a test fails when the redeem module's pattern changes without this.
@@ -60,7 +53,6 @@ export function renderSupportLauncher(template: string): string {
     LOADER_UNREADABLE: String(KIT_LOADER_EXIT.unreadable),
     LOADER_FAILED: String(KIT_LOADER_EXIT.failed),
     CODE_GLOB: supportCodeGlob(),
-    CONSENT_VERSION: String(SUPPORT_LAUNCHER_CONSENT_VERSION),
     KIT_LOADER_SOURCE,
   }
   const used = new Set<string>()

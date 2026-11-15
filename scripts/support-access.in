@@ -266,7 +266,28 @@ if [ "$MODE" = status ]; then
   exit 0
 fi
 
-# --- enable: the one-time code, typed by the owner, to the routine on standard input ---
+# --- enable: the consent version from the routine's status (Samu 78474: ONE constant in the routine,
+# printed as consent_version=<n>; no number in the launcher), then the consent text of exactly that
+# version, then the one-time code to the routine on standard input ---
+CV=
+while IFS= read -r line; do
+  case "$line" in
+    consent_version=*) CV=${line#consent_version=} ;;
+  esac
+done <<EOF_STATUS
+$ST
+EOF_STATUS
+case "$CV" in
+  ''|*[!0-9]*) stop "Ez a Marveen-kiadás még nem tudja bekapcsolni a távoli segítséget (a hozzájárulás verzióját nem adja meg). Frissítsd a Marveent." ;;
+esac
+CT=$(run_kit consent-text --consent "$CV" </dev/null); rc=$?
+judge "$rc" "$CT" "A hozzájárulás szövegének lekérdezése"
+case "$rc" in
+  0) ;;
+  2) stop "Ez a Marveen-kiadás még nem tudja megmutatni a hozzájárulás szövegét. Frissítsd a Marveent." ;;
+  *) stop "A hozzájárulás szövege nem olvasható ki ($rc)." ;;
+esac
+printf '%s\n' "$CT"
 printf '%s' "Írd be a marveen.io Profil oldalán a „Kód kérése” gombbal kapott egyszeri kódot, és nyomj Entert: "
 IFS= read -r CODE || stop "Nem kaptam kódot."
 case "$CODE" in
@@ -274,7 +295,7 @@ case "$CODE" in
   *) stop "Ez nem a várt alakú kód. Másold be pontosan, ahogy a Profil oldal mutatja." ;;
 esac
 ERRF=$(mktemp 2>/dev/null) || halt "Ideiglenes fájl nem hozható létre; a bekapcsolás nem indult."
-OUT=$(printf '%s\n' "$CODE" | run_kit enable --consent @@CONSENT_VERSION@@ 2>"$ERRF"); rc=$?
+OUT=$(printf '%s\n' "$CODE" | run_kit enable --consent "$CV" 2>"$ERRF"); rc=$?
 CODE=
 ERR=$(head -c 512 "$ERRF" 2>/dev/null); rm -f "$ERRF"
 case "$rc" in
