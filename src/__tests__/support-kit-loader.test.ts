@@ -5,9 +5,10 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { KIT_LOADER_EXIT, KIT_LOADER_SOURCE, KIT_RUN_ENV, KIT_RUN_MAX_OUTPUT, kitRunArgs, kitRunOutcome, runKitRoutine } from '../support-kit-loader.js'
+import { KIT_LOADER_EXIT, KIT_LOADER_SOURCE, KIT_RUN_ENV, KIT_RUN_MAX_OUTPUT, KIT_RUN_MAX_STDERR, kitRunArgs, kitRunOutcome, runKitRoutine } from '../support-kit-loader.js'
 import { installKit, KIT_SOURCE_MAX_BYTES } from '../support-kit-install.js'
 import { writeKit } from '../support-kit.js'
+import { SUPPORT_CLI_USAGE } from '../support-standby-cli.js'
 import { KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js'
 
 const REPO = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
@@ -49,7 +50,7 @@ describe('the loader text', () => {
 
 describe('what a finished run means', () => {
   const run = (code: number | null, over: { signal?: NodeJS.Signals | null; tooLong?: boolean; stdout?: string } = {}) =>
-    kitRunOutcome({ code, signal: over.signal ?? null, tooLong: over.tooLong ?? false, stdout: over.stdout ?? 'x\n' })
+    kitRunOutcome({ code, signal: over.signal ?? null, tooLong: over.tooLong ?? false, stdout: over.stdout ?? 'x\n', stderr: '' })
 
   it('a hash mismatch of the loader is a kit mismatch; its other codes and anything over 63 a failed run', () => {
     expect(run(KIT_LOADER_EXIT.mismatch)).toEqual({ ok: false, problem: 'kit_mismatch' })
@@ -59,9 +60,9 @@ describe('what a finished run means', () => {
   })
 
   it('a routine code from 0 to 63 is an answer; exit 0 with no output, a signal, no code or too much output is not', () => {
-    expect(run(0)).toEqual({ ok: true, code: 0, stdout: 'x\n' })
-    expect(run(2, { stdout: '' })).toEqual({ ok: true, code: 2, stdout: '' })
-    expect(run(63)).toEqual({ ok: true, code: 63, stdout: 'x\n' })
+    expect(run(0)).toEqual({ ok: true, code: 0, stdout: 'x\n', stderr: '' })
+    expect(run(2, { stdout: '' })).toEqual({ ok: true, code: 2, stdout: '', stderr: '' })
+    expect(run(63)).toEqual({ ok: true, code: 63, stdout: 'x\n', stderr: '' })
     expect(run(0, { stdout: '' })).toEqual({ ok: false, problem: 'kit_no_output' })
     expect(run(null)).toEqual({ ok: false, problem: 'kit_run_failed' })
     expect(run(0, { signal: 'SIGKILL' })).toEqual({ ok: false, problem: 'kit_run_failed' })
@@ -110,10 +111,11 @@ describe('running the kit copy of the routine', () => {
       timeout: 30_000,
     })
     expect(direct.status).toBe(0)
-    expect(viaKit).toEqual({ ok: true, code: 0, stdout: direct.stdout })
+    expect(viaKit).toEqual({ ok: true, code: 0, stdout: direct.stdout, stderr: direct.stderr })
     expect(direct.stdout.trimEnd().split('\n')).toHaveLength(11)
     // A call the routine does not know: its own exit code comes back.
-    expect(await runKitRoutine({ supportDir, args: ['bogus'], timeoutMs: 30_000 })).toEqual({ ok: true, code: 2, stdout: '' })
+    // Its stderr comes back too: a refusal names its reason there (2b-2's enable route reads it).
+    expect(await runKitRoutine({ supportDir, args: ['bogus'], timeoutMs: 30_000 })).toEqual({ ok: true, code: 2, stdout: '', stderr: SUPPORT_CLI_USAGE })
   })
 
   // Samu 78224: the node path may hold an at sign (a versioned Homebrew node). A run through such a path, also on
@@ -142,6 +144,7 @@ describe('running the kit copy of the routine', () => {
       ok: true,
       code: 7,
       stdout: 'data: ["enable","--x","-e"] CODE-123\n',
+      stderr: '',
     })
   })
 
@@ -161,7 +164,7 @@ describe('running the kit copy of the routine', () => {
     process.env['NODE_PATH'] = root
     try {
       const out = await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })
-      expect(out).toEqual({ ok: true, code: 0, stdout: '["LC_ALL","PATH"] []\n' })
+      expect(out).toEqual({ ok: true, code: 0, stdout: '["LC_ALL","PATH"] []\n', stderr: '' })
     } finally {
       if (saved.options === undefined) delete process.env['NODE_OPTIONS']
       else process.env['NODE_OPTIONS'] = saved.options
@@ -193,7 +196,17 @@ describe('running the kit copy of the routine', () => {
     }
     rmSync(supportDir, { recursive: true })
     await kitWithRoutine('export async function main() { process.stdout.write("x\\n"); return 63 }\n')
-    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: 63, stdout: 'x\n' })
+    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: 63, stdout: 'x\n', stderr: '' })
+  })
+
+  it('keeps the routine\'s stderr up to its cap; a flood on stderr is a failure, like one on stdout', async () => {
+    await kitWithRoutine('export async function main() { process.stderr.write("enable: refused: code_rejected\\n"); return 1 }\n')
+    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: true, code: 1, stdout: '', stderr: 'enable: refused: code_rejected\n' })
+    rmSync(supportDir, { recursive: true })
+    await kitWithRoutine(
+      'export async function main() { process.stderr.write("e".repeat(' + (KIT_RUN_MAX_STDERR + 1) + ')); process.stdout.write("x\\n"); return 0 }\n',
+    )
+    expect(await runKitRoutine({ supportDir, args: [], timeoutMs: 10_000 })).toEqual({ ok: false, problem: 'kit_run_failed' })
   })
 
   it('stops a routine that prints too much, or that does not finish in time', async () => {
