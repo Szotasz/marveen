@@ -2,7 +2,7 @@
 // the dashboard leaves a row in its vault log (who claimed which secret) and can be held to the
 // allowlist (VAULT_ACL_MODE=enforce). This is a trail and an access rule, not isolation: every agent runs
 // as the same OS user and can read the master-key file. The token is read here and never printed.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 // The .env grammar of src/env-parse.ts parseEnvContent, ported line for line (a test holds the two
@@ -73,8 +73,17 @@ export function vaultAclMode(root) {
   return setting.trim() === 'enforce' ? 'enforce' : 'audit'
 }
 
+// The claimed agent's OWN token (AGENT_TOKENS: agents/<name>/.dashboard-token) when it has one, so the server binds the
+// read to store/vault-acl.json by an authenticated principal (vaultReadRefused, tokenAgent) instead of a self-asserted
+// X-Agent-Id under the shared token. A symlink (e.g. to the shared token) is not an own token. No own token: the shared one.
 function dashboardTokenFile(root) {
-  return process.env.VAULT_RESOLVE_TOKEN_FILE || join(root, 'store', '.dashboard-token')
+  if (process.env.VAULT_RESOLVE_TOKEN_FILE) return process.env.VAULT_RESOLVE_TOKEN_FILE
+  const agent = claimedAgentName()
+  if (/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent)) {
+    const own = join(root, 'agents', agent, '.dashboard-token')
+    try { if (lstatSync(own).isFile()) return own } catch { /* no own token */ }
+  }
+  return join(root, 'store', '.dashboard-token')
 }
 
 // Whether a dashboard token file exists (its contents are checked only when a request is made).

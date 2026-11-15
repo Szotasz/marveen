@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, existsSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, existsSync, chmodSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { parseEnvContent } from '../env-parse.js'
@@ -98,6 +98,29 @@ describe('vault-resolve via the dashboard', () => {
     expect(requests[0].headers['x-agent-id']).toBe('zz-agent')
     expect(requests[0].body).toEqual({ ids: ['A'] })
     expect(existsSync(IMPORT_LOG)).toBe(false)
+  })
+
+  it("S1b the claimed agent's own token is sent when it has one; a symlink is not one", async () => {
+    answer = { values: { A: 'dash-A' }, missing: [], refused: [] }
+    const dir = join(ROOT, 'agents', 'zz-agent')
+    mkdirSync(dir, { recursive: true })
+    const own = join(dir, '.dashboard-token')
+    try {
+      writeFileSync(own, 'tok-agent')
+      expect((await resolveRun('X=A\n')).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-agent')
+      rmSync(own)
+      writeFileSync(join(ROOT, 'elsewhere-token'), 'tok-sym')
+      symlinkSync(join(ROOT, 'elsewhere-token'), own)
+      expect((await resolveRun('X=A\n')).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-x')
+      // another agent's claim does not pick zz-agent's file; an explicit VAULT_RESOLVE_TOKEN_FILE still wins
+      rmSync(own); writeFileSync(own, 'tok-agent')
+      expect((await resolveRun('X=A\n', { MARVEEN_AGENT_ID: 'other-agent' })).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-x')
+      expect((await resolveRun('X=A\n', { VAULT_RESOLVE_TOKEN_FILE: TOKEN_FILE })).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-x')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('S2 an acl refusal exits 4', async () => {
