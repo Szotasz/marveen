@@ -76,10 +76,13 @@ export function vaultAclMode(root) {
 // The claimed agent's OWN token (AGENT_TOKENS: agents/<name>/.dashboard-token) when it has one, so the server binds the
 // read to store/vault-acl.json by an authenticated principal (vaultReadRefused, tokenAgent) instead of a self-asserted
 // X-Agent-Id under the shared token. A symlink (e.g. to the shared token) is not an own token. No own token: the shared one.
+// Only when the process runs in THAT agent's session (CLAUDE_CONFIG_DIR = agents/<name>/.claude-config): a cwd inside
+// another agent's folder (reviewing its files) must not make this process present that agent's token.
 function dashboardTokenFile(root) {
   if (process.env.VAULT_RESOLVE_TOKEN_FILE) return process.env.VAULT_RESOLVE_TOKEN_FILE
   const agent = claimedAgentName()
-  if (/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent)) {
+  const session = (process.env.CLAUDE_CONFIG_DIR || '').replace(/\/+$/, '')
+  if (/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent) && session === join(root, 'agents', agent, '.claude-config')) {
     const own = join(root, 'agents', agent, '.dashboard-token')
     try { if (lstatSync(own).isFile()) return own } catch { /* no own token */ }
   }
