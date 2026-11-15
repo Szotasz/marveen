@@ -3,19 +3,20 @@
 // marveen-ext.json, written next to server.ts by scripts/patch-discord-plugin.py at every channel start.
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import { createHash } from 'crypto'
 
-export type ExtConfig = { ownerUserId: string; backfill: boolean; channelPolicy: ChannelPolicy }
+export type ExtConfig = { ownerUserId: string; backfill: boolean; channelPolicy: ChannelPolicy; slashCommands: SlashCommand[] | null }
 
 const SNOWFLAKE = /^[1-9][0-9]{16,19}$/
 
-// A missing or unreadable file means the safe side: nobody named, no backfill.
+// A missing or unreadable file means the safe side: nobody named, no backfill, no slash commands.
 export function loadExtConfig(dir: string): ExtConfig {
   try {
     const raw = JSON.parse(readFileSync(join(dir, 'marveen-ext.json'), 'utf8')) as Record<string, unknown>
     const owner = typeof raw?.ownerUserId === 'string' && SNOWFLAKE.test(raw.ownerUserId) ? raw.ownerUserId : ''
-    return { ownerUserId: owner, backfill: raw?.backfill === true, channelPolicy: parseChannelPolicy(raw?.channelPolicy) }
+    return { ownerUserId: owner, backfill: raw?.backfill === true, channelPolicy: parseChannelPolicy(raw?.channelPolicy), slashCommands: parseSlashCommands(raw?.slashCommands) }
   } catch {
-    return { ownerUserId: '', backfill: false, channelPolicy: {} }
+    return { ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null }
   }
 }
 
@@ -258,6 +259,11 @@ export class BotThreads {
     return t !== undefined && t >= this.now() - BOT_THREADS.ttlMs
   }
 
+  // PR4 A6: the threads the recovery may look into.
+  ids(): string[] {
+    return [...this.seen.keys()].filter(k => this.has(k))
+  }
+
   add(threadId: string): void {
     if (!SNOWFLAKE_ID.test(threadId)) return
     this.seen.delete(threadId)
@@ -297,7 +303,7 @@ export function forwardedParts(snapshots: ReadonlyArray<{ content: string; attac
 
 // B1: per-channel extras from DISCORD_CHANNEL_POLICY (an owner-only setting; access.json's group object is
 // overwritten by `/discord:access group add`, so it cannot hold them). Junk is dropped, never widened.
-export type ChannelPolicy = Record<string, { allowRoles: string[]; history?: true }>
+export type ChannelPolicy = Record<string, { allowRoles: string[]; history?: true; autoThread?: true }>
 
 export function parseChannelPolicy(raw: unknown): ChannelPolicy {
   const out: ChannelPolicy = {}
@@ -306,8 +312,12 @@ export function parseChannelPolicy(raw: unknown): ChannelPolicy {
     if (!SNOWFLAKE_ID.test(ch) || !v || typeof v !== 'object') continue
     const roles = (v as { allowRoles?: unknown }).allowRoles
     const allowRoles = Array.isArray(roles) ? roles.filter((r): r is string => typeof r === 'string' && SNOWFLAKE_ID.test(r)) : []
-    const history = (v as { history?: unknown }).history === true // PR3 A4: only a literal true turns it on
-    if (allowRoles.length > 0 || history) out[ch] = history ? { allowRoles, history } : { allowRoles }
+    // Only a literal true turns either on (A4 history PR3, C1 autoThread PR4).
+    const history = (v as { history?: unknown }).history === true
+    const autoThread = (v as { autoThread?: unknown }).autoThread === true
+    if (allowRoles.length > 0 || history || autoThread) {
+      out[ch] = { allowRoles, ...(history ? { history } : {}), ...(autoThread ? { autoThread } : {}) }
+    }
   }
   return out
 }
@@ -581,4 +591,107 @@ export class BoundedIds {
 // No old text (the message was not in the cache) means it is not known what changed: not passed on.
 export function editWorthDelivering(oldContent: string | null | undefined, newContent: string | null | undefined): boolean {
   return typeof oldContent === 'string' && (newContent ?? '') !== oldContent
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR4 (Hermes parity): C1 auto-thread, C2 rename_thread, C4 forum posts, F1s-F3s slash commands, A6 thread recovery
+// ---------------------------------------------------------------------------------------------------------------
+
+// C1: in a channel that opted in ("autoThread": true), an addressed message opens a thread on itself and the
+// session answers there. Only where the bot is addressed (not a listen-to-all channel), only a live top-level message.
+export function autoThreadWanted(o: { autoThread?: true; requireMention: boolean; isDM: boolean; isThread: boolean; recovered: boolean; edited: boolean }): boolean {
+  return o.autoThread === true && o.requireMention && !o.isDM && !o.isThread && !o.recovered && !o.edited
+}
+
+// The thread's name: the message's first line without mentions, else the sender's name.
+export function autoThreadName(content: string, username: string): string {
+  const first = content.replace(/<@[!&]?[0-9]+>|<#[0-9]+>/g, ' ').split(/\r?\n/).map(l => l.trim()).find(Boolean)
+  return threadName(first ?? username)
+}
+
+export const AUTO_THREAD_FAILED_REPLY = 'Nem sikerült szálat nyitni ehhez az üzenethez, ezért nem ment tovább. Próbáld újra, vagy írj egy meglévő szálba.'
+
+// C2: the bot renames only a thread it opened itself.
+export function mayRenameThread(ch: { isThread: boolean; ownerId: string | null | undefined }, selfId: string | undefined): boolean {
+  return ch.isThread && !!selfId && ch.ownerId === selfId
+}
+
+// C4: a forum takes posts, not messages. The post's title is the reply's first line (Discord: 1-100 characters).
+export function forumPostTitle(text: string): string {
+  const first = text.split(/\r?\n/).map(l => l.replace(/^#+\s*/, '').trim()).find(Boolean)
+  return threadName(first ?? 'Poszt')
+}
+
+// F1s-F3s: the owner's dashboard commands as Discord slash commands. The list is the dashboard registry's menu,
+// written into marveen-ext.json by the applier; null = no list (dashboard down at channel start): nothing is synced.
+export type SlashCommand = { name: string; description: string }
+
+const SLASH_NAME = /^[a-z0-9_-]{1,32}$/
+export const SLASH_LIMITS = { commands: 100, description: 100 } as const
+
+export function parseSlashCommands(raw: unknown): SlashCommand[] | null {
+  if (!Array.isArray(raw)) return null
+  const out: SlashCommand[] = []
+  const seen = new Set<string>()
+  for (const c of raw) {
+    const name = typeof c?.name === 'string' ? c.name : ''
+    if (!SLASH_NAME.test(name) || seen.has(name)) continue
+    seen.add(name)
+    const description = oneLine(typeof c?.description === 'string' ? c.description.trim() : '', SLASH_LIMITS.description - 1) || name
+    out.push({ name, description })
+    if (out.length === SLASH_LIMITS.commands) break
+  }
+  return out
+}
+
+// Discord's command objects: a chat command with one optional free-text option, offered ONLY in the bot's DMs
+// (contexts [1] = BOT_DM, integration_types [0] = server install). The owner check runs on every use anyway.
+export const SLASH_ARGS_OPTION = 'args'
+
+export function slashPayload(cmds: readonly SlashCommand[]): Array<Record<string, unknown>> {
+  return cmds.map(c => ({
+    name: c.name,
+    description: c.description,
+    type: 1,
+    contexts: [1],
+    integration_types: [0],
+    options: [{ type: 3, name: SLASH_ARGS_OPTION, description: 'argumentumok, pl. ? a súgóhoz', required: false }],
+  }))
+}
+
+// F3s: registered again only when the list or the application changed (every registration is REST load).
+export function slashFingerprint(payload: unknown, appId: string): string {
+  return createHash('sha256').update(JSON.stringify({ appId, payload })).digest('hex')
+}
+
+export function slashSyncDue(stateText: string | null, fingerprint: string): boolean {
+  if (stateText === null) return true
+  try {
+    return (JSON.parse(stateText) as { fingerprint?: unknown })?.fingerprint !== fingerprint
+  } catch {
+    return true
+  }
+}
+
+// What the session (and the command hook) gets: the same one-line text the owner would type on Telegram.
+export function slashText(name: string, args: string | null | undefined): string {
+  const rest = (args ?? '').replace(/\s+/g, ' ').trim()
+  return rest ? `/${name} ${[...rest].slice(0, 200).join('')}` : `/${name}`
+}
+
+// F2s: only the owner named in DISCORD_OWNER_USER_ID (and paired), only in a DM. Not the sole-DM fallback: the
+// dashboard runs the command and knows only the setting.
+export function slashAllowed(owner: Owner, userId: string, isDM: boolean): boolean {
+  return isDM && owner.id !== null && owner.source === 'setting' && owner.id === userId
+}
+
+// A6: the bot's threads get a cursor too; at start the recovery looks into at most this many of them, the most
+// recently delivered first, with the same time-lock and per-channel cap as the channels.
+export const THREAD_RECOVERY_MAX = 20
+
+export function threadRecoveryTargets(threadIds: readonly string[], cursor: Readonly<Record<string, string>>, max: number = THREAD_RECOVERY_MAX): string[] {
+  return threadIds
+    .filter(t => SNOWFLAKE_ID.test(t) && cursor[t] !== undefined)
+    .sort((a, b) => (BigInt(cursor[a]!) > BigInt(cursor[b]!) ? -1 : 1))
+    .slice(0, max)
 }

@@ -350,6 +350,16 @@ Nem az `access.json`-ban él, mert a `/discord:access group add` a csatorna beje
 Ugyanitt kapcsolható be csatornánként a **csatorna-előzmény**: `{"<csatorna-ID>": {"history": true}}` (a
 szerepekkel együtt is). Ilyenkor a botnak szóló üzenet elé bekerül, amit a csatornában a bot utolsó üzenete óta
 írtak (legfeljebb 20 üzenet, csak azoktól, akik a botnak is írhatnának). Alapból ki van kapcsolva.
+Szintén itt kapcsolható be az **automatikus szál**: `{"<csatorna-ID>": {"autoThread": true}}`. Ilyenkor a botnak
+szóló üzenet szálat nyit magán, és a válasz abba megy (csak olyan csatornán, ahol a botot meg kell szólítani).
+Ha a szál nem nyitható meg, egy sor megy a csatornába, és az üzenet nem jut el a sessionig. Alapból ki van kapcsolva.
+
+**Slash-parancsok.** Ha a `DISCORD_OWNER_USER_ID` be van állítva, a dashboard parancslistája (ugyanaz, amiből a
+Telegram-menü készül) Discord slash-parancsként is megjelenik, de csak a bottal folytatott DM-ben, és csak a
+gazdának fut. A válasz ugyanaz, mint Telegramon (a parancs-hook adja, modell-kör nélkül). Discordról csak az
+olvasó parancsok futnak (`/status`, `/usage`, `/board`...); egy állító parancs (`/model`, `/context clear`, a saját
+parancsok) egy sorban jelzi, hogy Telegramon adható ki. A lista a csatorna indításakor frissül, és a Discordnál
+csak akkor regisztrálódik újra, ha változott.
 
 **Kapcsolat-figyelés.** A plugin 15 mp-enként nézi, él-e a Discord-kapcsolat; elakadásnál újra bejelentkezik,
 de legfeljebb 5 percenként, egyre ritkábban (5-60 perc), és 24 óra alatt legfeljebb 20-szor

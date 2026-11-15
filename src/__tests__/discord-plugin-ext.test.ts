@@ -11,7 +11,7 @@ const VENDOR = join(__dirname, '..', '..', 'vendor', 'discord-plugin', '0.0.4')
 const SERVER = readFileSync(join(VENDOR, 'overlay', 'server.ts'), 'utf-8')
 const UPSTREAM = readFileSync(join(VENDOR, 'upstream', 'server.ts'), 'utf-8')
 
-type ExtConfig = { ownerUserId: string; backfill: boolean }
+type ExtConfig = { ownerUserId: string; backfill: boolean; slashCommands?: unknown }
 type Owner = { id: string; source: string } | { id: null; reason: string }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let ext: any
@@ -32,11 +32,11 @@ describe('loadExtConfig', () => {
       if (body !== null) writeFileSync(join(dir, 'marveen-ext.json'), body)
       return ext.loadExtConfig(dir)
     }
-    expect(at(JSON.stringify({ ownerUserId: OWNER, backfill: true }))).toEqual({ ownerUserId: OWNER, backfill: true, channelPolicy: {} })
-    expect(at(null)).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {} })
-    expect(at('{ bad')).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {} })
-    expect(at(JSON.stringify({ ownerUserId: 'zoli', backfill: 'yes' }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {} })
-    expect(at(JSON.stringify({ ownerUserId: 290903699524550656, backfill: 1 }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {} })
+    expect(at(JSON.stringify({ ownerUserId: OWNER, backfill: true }))).toEqual({ ownerUserId: OWNER, backfill: true, channelPolicy: {}, slashCommands: null })
+    expect(at(null)).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null })
+    expect(at('{ bad')).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null })
+    expect(at(JSON.stringify({ ownerUserId: 'zoli', backfill: 'yes' }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null })
+    expect(at(JSON.stringify({ ownerUserId: 290903699524550656, backfill: 1 }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null })
   })
 })
 
@@ -261,7 +261,8 @@ function slice(from: string, to: string): string {
 }
 const PERMISSION_REPLY_RE = new RegExp(SERVER.match(/const PERMISSION_REPLY_RE = \/(.*)\/i\n/)![1]!, 'i')
 
-function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | null = OWNER, o: { history?: { text: string; count: number } } = {}) {
+type AutoThreadFn = (msg: unknown, access: unknown, recovered: boolean, edited: boolean) => Promise<{ id: string; sendTyping(): Promise<void> } | null | false>
+function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | null = OWNER, o: { history?: { text: string; count: number }; openAutoThread?: AutoThreadFn; inBotThread?: (m: unknown) => boolean } = {}) {
   const historyCalls: string[] = []
   const typingStarts: string[] = []
   const deliveredIds = new ext.BoundedIds()
@@ -274,7 +275,7 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
     'gate', 'ChannelType', 'dmChannelUsers', 'liveDelivered', 'recoveryOpen', 'backfillCursor', 'PERMISSION_REPLY_RE',
     'mayDecidePermission', 'currentOwner', 'decidedPermissions', 'mcp', 'pendingPermissions', 'permissionMessages',
     'safeAttName', 'voiceMeta', 'inboundAttachments', 'forwardedParts', 'replyContextMeta',
-    'typingKeeper', 'deliveredIds', 'channelHistory',
+    'typingKeeper', 'deliveredIds', 'channelHistory', 'openAutoThread', 'inBotThread',
     `${slice('async function handleInbound(', '// DCEXT1111 F4: deliver, once')}\nreturn handleInbound`,
   )(
     async () => gateResult, { DM: 1, GuildText: 0 }, new Map(), new Set(), true,
@@ -287,6 +288,7 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
     ext.forwardedParts, ext.replyContextMeta,
     { start: (c: string, send: () => Promise<unknown>) => { typingStarts.push(c); void send() } }, deliveredIds,
     async (m: { id: string }) => { historyCalls.push(m.id); return o.history ?? { text: '', count: 0 } },
+    o.openAutoThread ?? (async () => null), o.inBotThread ?? (() => false),
   ) as (msg: unknown, recovered?: boolean, edited?: boolean) => Promise<boolean>
   type Snap = { content: string; attachments: Map<string, { name: string; size: number; contentType: string }> }
   const msg = (content: string, o: { dm?: boolean; author?: string; snapshots?: Snap[]; reference?: { id: string; username: string; content: string; attachments?: string[] } | 'gone' } = {}) => ({
@@ -347,7 +349,7 @@ describe('F4: a recovered message (the overlay\'s handleInbound, run)', () => {
 })
 
 describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through handleInbound', () => {
-  function recoverHarness(read: { state: { lastBackfillAt: number; channels: Record<string, string> } | null; bad: boolean }, gatePasses = true) {
+  function recoverHarness(read: { state: { lastBackfillAt: number; channels: Record<string, string> } | null; bad: boolean }, gatePasses = true, threadIds: string[] = []) {
     const fetches: Array<{ channel: string; opts: unknown }> = []
     const delivered: Array<{ id: string; recovered: boolean }> = []
     const marks: number[] = []
@@ -357,7 +359,7 @@ describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through h
     const messages = new Map([[id(21), { id: id(21), createdTimestamp: Date.now() - 60_000, author: { id: OWNER, bot: false } }]])
     const recoverMissed = new Function(
       'backfillCursor', 'cursorRead', 'backfillDue', 'loadAccess', 'dmChannelUsers', 'BACKFILL', 'fetchTextChannel',
-      'selectRecovered', 'client', 'liveDelivered', 'handleInbound',
+      'selectRecovered', 'client', 'liveDelivered', 'handleInbound', 'botThreads', 'threadRecoveryTargets',
       `${slice('async function recoverMissed(', '// DCEXT1111 E1:')}\nreturn recoverMissed`,
     )(
       { state, markRun: (n: number) => marks.push(n) }, read, ext.backfillDue,
@@ -365,6 +367,7 @@ describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through h
       async (channel: string) => ({ messages: { fetch: async (opts: unknown) => { fetches.push({ channel, opts }); return messages } } }),
       ext.selectRecovered, { user: { id: 'bot' } }, new Set(),
       async (m: { id: string }, recovered: boolean) => { delivered.push({ id: m.id, recovered }); return gatePasses },
+      { ids: () => threadIds }, ext.threadRecoveryTargets,
     ) as (readyAt: number) => Promise<void>
     return { recoverMissed, fetches, delivered, marks, DM, GROUP }
   }
@@ -400,6 +403,15 @@ describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through h
     expect(h.delivered).toEqual([{ id: id(21), recovered: true }])
     expect(h.marks).toHaveLength(1)
   })
+
+  it('A6: the bot\'s threads with a cursor are looked into too, after the channels; one without a cursor is not', async () => {
+    const T1 = '1438000000000000901'
+    const T2 = '1438000000000000902'
+    const h = recoverHarness({ state: { lastBackfillAt: 0, channels: { ['1438000000000000500']: id(20), [T1]: id(20) } }, bad: false }, true, [T1, T2])
+    await h.recoverMissed(Date.now())
+    expect(h.fetches.map(f => f.channel)).toEqual([h.DM, T1])
+    expect(h.fetches[1]!.opts).toEqual({ after: id(20), limit: 100 })
+  })
 })
 
 describe('F4: what the recovery reports is what reached the session (live probe 2026-11-11: "recovered 5", 0 arrived)', () => {
@@ -428,7 +440,12 @@ describe('F4: what the recovery reports is what reached the session (live probe 
 const OUTBOUND_SITES = [
   'await ch.send("Paired! Say hi to Claude.")',
   'await user.send({ content: text, components: [row] })',
-  'const sent = await ch.send({',
+  'const sent = await (post ?? (ch as unknown as { send(p: unknown): Promise<{ id: string }> })).send(payload)',
+  'post = await forum.threads.create({ name: forumPostTitle(text), message: payload })',
+  'const thread = await msg.startThread({ name: autoThreadName(msg.content, msg.author.username) })',
+  'await msg.reply(AUTO_THREAD_FAILED_REPLY)',
+  "await interaction.reply({ content: 'Not authorized.', ephemeral: true }).catch(() => {}) // MARVEEN-EXT",
+  'await interaction.reply({ content: `↪ ${text}`, ephemeral: true })',
   '.startThread({ name })',
   'await ch.threads.create({ name })',
   'const edited = await msg.edit(args.text as string)',
@@ -492,7 +509,7 @@ describe('D2: a reply too long for 8 messages is refused before anything is sent
     expect(ext.MAX_REPLY_CHUNKS).toBe(8)
     const reply = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
     expect(reply.indexOf('if (chunks.length > MAX_REPLY_CHUNKS) {')).toBeGreaterThan(0)
-    expect(reply.indexOf('if (chunks.length > MAX_REPLY_CHUNKS) {')).toBeLessThan(reply.indexOf('const sent = await ch.send({'))
+    expect(reply.indexOf('if (chunks.length > MAX_REPLY_CHUNKS) {')).toBeLessThan(reply.indexOf('for (let i = 0; i < chunks.length; i++) {'))
     expect(reply).toContain('nothing sent -- shorten it, or attach it as a file')
   })
 })
@@ -567,7 +584,7 @@ describe('A1: a follow-up in the bot\'s thread needs no @mention -- only under a
 
   it('reply records a thread only when its parent channel is opted in', () => {
     const reply = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
-    expect(reply).toContain('if (ch.isThread() && ch.parentId !== null && ch.parentId in loadAccess().groups) botThreads.add(ch.id)')
+    expect(reply).toContain('else if (ch?.isThread() && ch.parentId !== null && ch.parentId in loadAccess().groups) botThreads.add(ch.id)')
     expect(SERVER).toContain('if (requireMention && !inBotThread(msg) && !(await isMentioned(msg, access.mentionPatterns))) {')
   })
 })
@@ -847,7 +864,7 @@ describe('D3: "typing" is renewed until the reply, at most 10 minutes', () => {
     expect(rec.typingStarts).toEqual([])
     const reply = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
     expect(reply.indexOf('typingKeeper.stop(chat_id)')).toBeGreaterThan(0)
-    expect(reply.indexOf('typingKeeper.stop(chat_id)')).toBeLessThan(reply.indexOf('const sent = await ch.send({'))
+    expect(reply.indexOf('typingKeeper.stop(chat_id)')).toBeLessThan(reply.indexOf('for (let i = 0; i < chunks.length; i++) {'))
     expect(SERVER).not.toContain('void msg.channel.sendTyping()')
   })
 })
@@ -984,7 +1001,7 @@ describe('D8: embed and select menu in reply', () => {
 
   it('wiring: both checked before the channel is even fetched; on the last chunk; buttons + select within 5 rows', () => {
     const reply = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
-    const fetchAt = reply.indexOf('const ch = await fetchAllowedChannel(chat_id)')
+    const fetchAt = reply.indexOf('const forum = await allowedForum(chat_id)')
     for (const s of ['const embed = embedSpec(args.embed)', 'const select = selectSpec(args.select)', 'if (rows.length + (select ? 1 : 0) > MAX_COMPONENT_ROWS)']) {
       expect(reply.indexOf(s), s).toBeGreaterThan(0)
       expect(reply.indexOf(s), s).toBeLessThan(fetchAt)
@@ -1158,5 +1175,382 @@ describe('A5: edits and deletes', () => {
     expect(l.notes).toHaveLength(1)
     expect(l.notes[0]!.params.content).toBe('(message deleted)')
     expect(l.notes[0]!.params.meta).toMatchObject({ chat_id: 'c', message_id: id(7), user_id: OWNER, deleted: '1' })
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR4 (DCEXT1111 Hermes parity, terv.md 4. PR): C1, C2, C4, F1s-F3s, A6
+// ---------------------------------------------------------------------------------------------------------------
+
+describe('C1: auto-thread when the bot is addressed (off by default, per channel)', () => {
+  const CH = '1438000000000000700'
+
+  it('parseChannelPolicy: "autoThread": true alone is kept; anything but a literal true is not', () => {
+    expect(ext.parseChannelPolicy({ [CH]: { autoThread: true } })).toEqual({ [CH]: { allowRoles: [], autoThread: true } })
+    for (const v of ['true', 1, 'yes', null, {}]) expect(ext.parseChannelPolicy({ [CH]: { autoThread: v } }), String(v)).toEqual({})
+    expect(ext.parseChannelPolicy({ [CH]: { history: true, autoThread: true } })).toEqual({ [CH]: { allowRoles: [], history: true, autoThread: true } })
+  })
+
+  it('autoThreadWanted: only opted in, only where the bot is addressed, only a live top-level message', () => {
+    const base = { autoThread: true as const, requireMention: true, isDM: false, isThread: false, recovered: false, edited: false }
+    expect(ext.autoThreadWanted(base)).toBe(true)
+    for (const o of [{ autoThread: undefined }, { requireMention: false }, { isDM: true }, { isThread: true }, { recovered: true }, { edited: true }]) {
+      expect(ext.autoThreadWanted({ ...base, ...o }), JSON.stringify(o)).toBe(false)
+    }
+  })
+
+  it('autoThreadName: the first line without mentions, else the sender; one line, at most 100', () => {
+    expect(ext.autoThreadName('<@123456789012345678> mi a helyzet a kanbannal?\nmásodik sor', 'zoli')).toBe('mi a helyzet a kanbannal?')
+    expect(ext.autoThreadName('<@123456789012345678>', 'zoli')).toBe('zoli')
+    expect(ext.autoThreadName('\n\n  <@&1438000000000000001>  \n  harmadik  ', 'zoli')).toBe('harmadik')
+    expect([...ext.autoThreadName('á'.repeat(300), 'zoli')]).toHaveLength(100)
+  })
+
+  function autoHarness(o: { autoThread?: boolean; requireMention?: boolean; dm?: boolean; inThread?: boolean; fail?: boolean; existing?: { ownerId: string } }) {
+    const started: string[] = []
+    const replies: string[] = []
+    const added: string[] = []
+    const openAutoThread = new Function(
+      'ChannelType', 'EXT', 'client', 'botThreads', 'autoThreadWanted', 'autoThreadName', 'AUTO_THREAD_FAILED_REPLY',
+      `${slice('async function openAutoThread(', '// DCEXT1111 C4: an allowed forum')}\nreturn openAutoThread`,
+    )(
+      { DM: 1 }, { channelPolicy: o.autoThread === false ? {} : { [CH]: { allowRoles: [], autoThread: true } } }, { user: { id: 'bot' } },
+      { add: (t: string) => added.push(t) }, ext.autoThreadWanted, ext.autoThreadName, ext.AUTO_THREAD_FAILED_REPLY,
+    ) as AutoThreadFn
+    const msg = {
+      id: id(9), channelId: CH, content: '<@1438000000000000999> nézd meg a mérlegjegyet', author: { username: 'zoli' },
+      channel: { type: o.dm ? 1 : 0, isThread: () => !!o.inThread },
+      thread: o.existing ? { id: id(9), ownerId: o.existing.ownerId, sendTyping: async () => {} } : null,
+      startThread: async ({ name }: { name: string }) => { started.push(name); if (o.fail) throw new Error('Missing Permissions'); return { id: id(9), sendTyping: async () => {} } },
+      reply: async (t: string) => { replies.push(t) },
+    }
+    const access = { groups: { [CH]: { requireMention: o.requireMention ?? true, allowFrom: [] } } }
+    return { run: (recovered = false, edited = false) => openAutoThread(msg, access, recovered, edited), started, replies, added }
+  }
+
+  it('openAutoThread, run: on -> a thread on the message, named from it, recorded as the bot\'s thread', async () => {
+    const h = autoHarness({})
+    const t = await h.run()
+    expect(t && t.id).toBe(id(9))
+    expect(h.started).toEqual(['nézd meg a mérlegjegyet'])
+    expect(h.added).toEqual([id(9)])
+    expect(h.replies).toEqual([])
+  })
+
+  it('openAutoThread, run: off, a listen-to-all channel, a DM, a thread, a recovered or an edited message -> no thread', async () => {
+    for (const [o, r, e] of [[{ autoThread: false }, false, false], [{ requireMention: false }, false, false], [{ dm: true }, false, false], [{ inThread: true }, false, false], [{}, true, false], [{}, false, true]] as Array<[Parameters<typeof autoHarness>[0], boolean, boolean]>) {
+      const h = autoHarness(o)
+      expect(await h.run(r, e), JSON.stringify([o, r, e])).toBeNull()
+      expect(h.started).toEqual([])
+    }
+  })
+
+  it('openAutoThread, run: an edit of a message the bot already threaded goes to that thread, nothing new opened', async () => {
+    const h = autoHarness({ existing: { ownerId: 'bot' } })
+    expect((await h.run(false, true)) as { id: string }).toMatchObject({ id: id(9) })
+    expect(h.started).toEqual([])
+    const other = autoHarness({ existing: { ownerId: 'someone' } })
+    expect(await other.run(false, true)).toBeNull() // a thread someone else opened is not ours
+  })
+
+  it('openAutoThread, run: a failed open -> one line to the channel, false (no turn)', async () => {
+    const h = autoHarness({ fail: true })
+    expect(await h.run()).toBe(false)
+    expect(h.replies).toEqual([ext.AUTO_THREAD_FAILED_REPLY])
+    expect(h.added).toEqual([])
+  })
+
+  it('handleInbound, run: the session gets the thread as chat_id, auto_thread="1", typing in the thread; a failed open delivers nothing', async () => {
+    const typed: string[] = []
+    const thread = { id: id(9), sendTyping: async () => { typed.push('thread') } }
+    const h = inboundHarness({ action: 'deliver', access: {} }, OWNER, { openAutoThread: async () => thread })
+    expect(await h.handleInbound(h.msg('szia', { dm: false }))).toBe(true)
+    expect(h.notes[0]!.params.meta).toMatchObject({ chat_id: id(9), auto_thread: '1', message_id: id(77) })
+    expect(h.typingStarts).toEqual([id(9)])
+    expect(typed).toEqual(['thread'])
+    const off = inboundHarness({ action: 'deliver', access: {} })
+    await off.handleInbound(off.msg('szia', { dm: false }))
+    expect(off.notes[0]!.params.meta!.chat_id).toBe('1438000000000000500')
+    expect(off.notes[0]!.params.meta!.auto_thread).toBeUndefined()
+    const failed = inboundHarness({ action: 'deliver', access: {} }, OWNER, { openAutoThread: async () => false })
+    expect(await failed.handleInbound(failed.msg('szia', { dm: false }))).toBe(false)
+    expect(failed.notes).toEqual([])
+    expect(failed.typingStarts).toEqual([])
+  })
+})
+
+describe('C2: rename_thread, only the bot\'s own thread', () => {
+  it('mayRenameThread', () => {
+    expect(ext.mayRenameThread({ isThread: true, ownerId: 'bot' }, 'bot')).toBe(true)
+    expect(ext.mayRenameThread({ isThread: true, ownerId: 'zoli' }, 'bot')).toBe(false)
+    expect(ext.mayRenameThread({ isThread: false, ownerId: 'bot' }, 'bot')).toBe(false)
+    expect(ext.mayRenameThread({ isThread: true, ownerId: null }, undefined)).toBe(false)
+  })
+
+  it('wiring: listed, through the outbound allowlist, the owner checked before setName', () => {
+    expect(SERVER).toContain("name: 'rename_thread', // MARVEEN-EXT")
+    const c = SERVER.slice(SERVER.indexOf("case 'rename_thread': {"), SERVER.indexOf("case 'discord_info': {"))
+    const at = (s: string) => { const i = c.indexOf(s); expect(i, s).toBeGreaterThan(0); return i }
+    expect(at('const name = threadName(args.name)')).toBeLessThan(at('await fetchAllowedChannel(args.chat_id as string)'))
+    expect(at('await fetchAllowedChannel(args.chat_id as string)')).toBeLessThan(at('mayRenameThread('))
+    expect(at('mayRenameThread(')).toBeLessThan(at('await ch.setName(name)'))
+  })
+})
+
+describe('C4: a reply to a forum channel opens a post', () => {
+  it('forumPostTitle: the first non-empty line, markdown heading marks dropped, at most 100', () => {
+    expect(ext.forumPostTitle('\n# Heti jelentés\n\nrészletek')).toBe('Heti jelentés')
+    expect(ext.forumPostTitle('egy sor')).toBe('egy sor')
+    expect([...ext.forumPostTitle('x'.repeat(250))]).toHaveLength(100)
+    expect(ext.forumPostTitle('\n\n')).toBe('Poszt')
+  })
+
+  const FORUM = '1438000000000000800'
+  function allowedForumFn(groups: Record<string, unknown>, ch: unknown) {
+    return new Function('client', 'ChannelType', 'loadAccess', `${slice('async function allowedForum(', '// DCEXT1111 G1: discord_info')}\nreturn allowedForum`)(
+      { channels: { fetch: async () => ch } }, { GuildForum: 15 }, () => ({ groups }),
+    ) as (id: string) => Promise<unknown>
+  }
+
+  it('allowedForum, run: not a forum -> null (the normal path); a forum not allowed -> refused; an allowed forum -> it', async () => {
+    expect(await allowedForumFn({ [FORUM]: {} }, { type: 0 })(FORUM)).toBeNull()
+    expect(await allowedForumFn({ [FORUM]: {} }, null)(FORUM)).toBeNull()
+    await expect(allowedForumFn({}, { type: 15 })(FORUM)).rejects.toThrow(/not allowlisted/)
+    const f = { type: 15 }
+    expect(await allowedForumFn({ [FORUM]: {} }, f)(FORUM)).toBe(f)
+  })
+
+  // The reply case itself, run with fakes: what goes to Discord, in which order.
+  function replyHarness(o: { forum: boolean; text: string; files?: string[]; reply_to?: string }) {
+    const calls: Array<{ op: string; arg: Record<string, unknown> }> = []
+    const added: string[] = []
+    const post = { id: id(50), send: async (p: Record<string, unknown>) => { calls.push({ op: 'post.send', arg: p }); return { id: id(51 + calls.length) } } }
+    const forum = o.forum ? { threads: { create: async (a: Record<string, unknown>) => { calls.push({ op: 'threads.create', arg: a }); return post } } } : null
+    const ch = { isThread: () => false, parentId: null, send: async (p: Record<string, unknown>) => { calls.push({ op: 'ch.send', arg: p }); return { id: id(60 + calls.length) } } }
+    const chunk = new Function(`${slice('function chunk(', 'async function fetchTextChannel(')}\nreturn chunk`)()
+    const raw = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const tsc = require('typescript')
+    const wrapped = tsc.transpileModule(`async function replyCase(args: any) { switch ('reply') { ${raw} } }`, { compilerOptions: { target: tsc.ScriptTarget.ES2022 } }).outputText
+    const run = new Function(
+      'buildButtonRows', 'embedSpec', 'selectSpec', 'MAX_COMPONENT_ROWS', 'StringSelectMenuBuilder', 'ActionRowBuilder', 'allowedForum',
+      'fetchAllowedChannel', 'assertSendable', 'statSync', 'MAX_ATTACHMENT_BYTES', 'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'MAX_REPLY_CHUNKS',
+      'typingKeeper', 'forumPostTitle', 'noteSent', 'botThreads',
+      `${wrapped}\nreturn replyCase`,
+    )(
+      () => [], ext.embedSpec, ext.selectSpec, 5, class {}, class {}, async () => forum,
+      async () => ch, () => {}, () => ({ size: 1 }), 25 * 1024 * 1024, () => ({ groups: {} }), 2000, chunk, 8,
+      { stop: () => {} }, ext.forumPostTitle, () => {}, { add: (t: string) => added.push(t) },
+    ) as (a: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>
+    return { go: () => run({ chat_id: '1438000000000000800', text: o.text, files: o.files, reply_to: o.reply_to }), calls, added }
+  }
+
+  it('reply, run: on a forum the first part opens the post (title, files, no quote), the rest goes into it; recorded as the bot\'s thread', async () => {
+    const h = replyHarness({ forum: true, text: 'Heti jelentés\n' + 'x'.repeat(2500), files: ['/tmp/a.png'], reply_to: id(3) })
+    const r = await h.go()
+    expect(h.calls.map(c => c.op)).toEqual(['threads.create', 'post.send'])
+    const first = h.calls[0]!.arg as { name: string; message: Record<string, unknown> }
+    expect(first.name).toBe('Heti jelentés')
+    expect(first.message.files).toEqual(['/tmp/a.png'])
+    expect(first.message.reply).toBeUndefined()
+    expect(h.calls[1]!.arg.files).toBeUndefined()
+    expect(h.added).toEqual([id(50)])
+    expect(r.content[0]!.text).toContain(`the post is thread ${id(50)}`)
+  })
+
+  it('reply, run: not a forum -> the channel path exactly as before (quote on the first part, no post)', async () => {
+    const h = replyHarness({ forum: false, text: 'szia', reply_to: id(3) })
+    const r = await h.go()
+    expect(h.calls.map(c => c.op)).toEqual(['ch.send'])
+    expect(h.calls[0]!.arg.reply).toEqual({ messageReference: id(3), failIfNotExists: false })
+    expect(h.added).toEqual([])
+    expect(r.content[0]!.text).toMatch(/^sent \(id: /)
+  })
+})
+
+describe('F1s-F3s: slash commands -> the dashboard command hook', () => {
+  it('parseSlashCommands: the menu as Discord takes it; junk, duplicates and bad names out; null without a list', () => {
+    expect(ext.parseSlashCommands(undefined)).toBeNull()
+    expect(ext.parseSlashCommands('x')).toBeNull()
+    expect(ext.parseSlashCommands([])).toEqual([])
+    const r = ext.parseSlashCommands([
+      { name: 'status', description: 'rendszer-állapot' }, { name: 'status', description: 'dupla' }, { name: 'Bad Name', description: 'x' },
+      { name: 'usage', description: 'u'.repeat(300) }, { name: 'help', description: '' }, null, { name: 7 },
+    ])
+    expect(r.map((c: { name: string }) => c.name)).toEqual(['status', 'usage', 'help'])
+    expect([...r[1].description]).toHaveLength(100)
+    expect(r[2].description).toBe('help')
+    expect(ext.parseSlashCommands(Array.from({ length: 150 }, (_, i) => ({ name: `c${i}`, description: 'd' })))).toHaveLength(100)
+  })
+
+  it('slashPayload: bot DMs only (contexts [1]), one optional free-text option', () => {
+    expect(ext.slashPayload([{ name: 'status', description: 'állapot' }])).toEqual([{
+      name: 'status', description: 'állapot', type: 1, contexts: [1], integration_types: [0],
+      options: [{ type: 3, name: 'args', description: 'argumentumok, pl. ? a súgóhoz', required: false }],
+    }])
+  })
+
+  it('F3s: registered again only when the list or the application changed', () => {
+    const p1 = ext.slashPayload([{ name: 'status', description: 'a' }])
+    const p2 = ext.slashPayload([{ name: 'status', description: 'b' }])
+    const fp = ext.slashFingerprint(p1, 'app1')
+    expect(ext.slashFingerprint(p1, 'app1')).toBe(fp)
+    expect(ext.slashFingerprint(p2, 'app1')).not.toBe(fp)
+    expect(ext.slashFingerprint(p1, 'app2')).not.toBe(fp)
+    expect(ext.slashSyncDue(null, fp)).toBe(true)
+    expect(ext.slashSyncDue('{bad', fp)).toBe(true)
+    expect(ext.slashSyncDue(JSON.stringify({ fingerprint: fp }), fp)).toBe(false)
+    expect(ext.slashSyncDue(JSON.stringify({ fingerprint: 'old' }), fp)).toBe(true)
+  })
+
+  it('slashText: the same one-line text as typed on Telegram', () => {
+    expect(ext.slashText('status', null)).toBe('/status')
+    expect(ext.slashText('usage', '  3 \n nap ')).toBe('/usage 3 nap')
+    expect(ext.slashText('board', '')).toBe('/board')
+  })
+
+  it('slashAllowed: the owner from the SETTING, paired, in a DM; never the sole-DM fallback, another user or a server', () => {
+    expect(ext.slashAllowed({ id: OWNER, source: 'setting' }, OWNER, true)).toBe(true)
+    expect(ext.slashAllowed({ id: OWNER, source: 'sole-dm' }, OWNER, true)).toBe(false)
+    expect(ext.slashAllowed({ id: OWNER, source: 'setting' }, OTHER, true)).toBe(false)
+    expect(ext.slashAllowed({ id: OWNER, source: 'setting' }, OWNER, false)).toBe(false)
+    expect(ext.slashAllowed({ id: null, reason: 'x' }, OWNER, true)).toBe(false)
+  })
+
+  function slashHandler(o: { owner?: { id: string; source: string } | { id: null; reason: string }; dmPolicy?: string; commands?: Array<{ name: string; description: string }> | null } = {}) {
+    let handler: ((i: unknown) => Promise<void>) | null = null
+    const notes: Array<{ params: { content: string; meta: Record<string, string> } }> = []
+    const dmChannelUsers = new Map<string, string>()
+    new Function(
+      'client', 'EXT', 'loadAccess', 'slashAllowed', 'currentOwner', 'slashText', 'SLASH_ARGS_OPTION', 'dmChannelUsers', 'mcp',
+      slice('// DCEXT1111 F1s/F2s: a slash command', '// DCEXT1111 F3s:'),
+    )(
+      { on: (ev: string, fn: (i: unknown) => Promise<void>) => { if (ev === 'interactionCreate') handler = fn } },
+      { slashCommands: o.commands === undefined ? [{ name: 'status', description: 'x' }, { name: 'usage', description: 'y' }] : o.commands },
+      () => ({ dmPolicy: o.dmPolicy ?? 'allowlist' }), ext.slashAllowed, () => o.owner ?? { id: OWNER, source: 'setting' }, ext.slashText, 'args',
+      dmChannelUsers, { notification: async (n: (typeof notes)[0]) => { notes.push(n) } },
+    )
+    const replies: Array<Record<string, unknown>> = []
+    const interaction = (name: string, user = OWNER, guildId: string | null = null, args: string | null = null) => ({
+      isChatInputCommand: () => true, commandName: name, guildId, channelId: '1438000000000000500', id: id(88),
+      user: { id: user, username: 'zoli' }, options: { getString: () => args },
+      reply: async (r: Record<string, unknown>) => { replies.push(r) },
+    })
+    const lines: string[] = []
+    const fire = async (i: unknown) => {
+      const spy = vi.spyOn(process.stderr, 'write').mockImplementation((s: string | Uint8Array) => { lines.push(String(s)); return true })
+      try { await handler!(i) } finally { spy.mockRestore() }
+    }
+    return { fire, interaction, notes, replies, dmChannelUsers, lines }
+  }
+
+  it('the handler, run: the owner in a DM -> a private ack at once, the same /word text to the session, slash="1"', async () => {
+    const h = slashHandler()
+    await h.fire(h.interaction('usage', OWNER, null, '?'))
+    expect(h.replies).toEqual([{ content: '↪ /usage ?', ephemeral: true }])
+    expect(h.notes).toHaveLength(1)
+    expect(h.notes[0]!.params.content).toBe('/usage ?')
+    expect(h.notes[0]!.params.meta).toEqual({ chat_id: '1438000000000000500', message_id: id(88), user: 'zoli', user_id: OWNER, ts: expect.any(String), slash: '1' })
+    expect(h.dmChannelUsers.get('1438000000000000500')).toBe(OWNER)
+  })
+
+  it('the handler, run: another user, a server, the sole-DM owner, an unlisted command, inbound off -> "Not authorized.", nothing delivered, logged', async () => {
+    for (const [o, args] of [
+      [{}, ['status', OTHER, null]],
+      [{}, ['status', OWNER, '1438000000000000001']],
+      [{ owner: { id: OWNER, source: 'sole-dm' } }, ['status', OWNER, null]],
+      [{}, ['model', OWNER, null]],
+      [{ commands: null }, ['status', OWNER, null]],
+      [{ dmPolicy: 'disabled' }, ['status', OWNER, null]],
+    ] as Array<[Parameters<typeof slashHandler>[0], [string, string, string | null]]>) {
+      const h = slashHandler(o)
+      await h.fire(h.interaction(...args))
+      expect(h.replies, JSON.stringify([o, args])).toEqual([{ content: 'Not authorized.', ephemeral: true }])
+      expect(h.notes, JSON.stringify([o, args])).toEqual([])
+      expect(h.lines.join(''), JSON.stringify([o, args])).toContain(`slash /${args[0]} from ${args[1]} refused`)
+    }
+  })
+
+  it('the handler ignores everything that is not a slash command (buttons and selects have their own handlers)', async () => {
+    const h = slashHandler()
+    await h.fire({ isChatInputCommand: () => false })
+    expect(h.replies).toEqual([])
+    expect(h.notes).toEqual([])
+  })
+
+  function syncHarness(o: { owner?: string; commands?: Array<{ name: string; description: string }> | null }, stateDir: string) {
+    const sets: unknown[] = []
+    const sync = new Function(
+      'join', 'STATE_DIR', 'EXT', 'client', 'slashPayload', 'slashFingerprint', 'readFileSync', 'slashSyncDue', 'writeFileSync', 'renameSync',
+      `${slice('// DCEXT1111 F3s:', "client.once('ready'")}\nreturn syncSlashCommands`,
+    )(
+      join, stateDir, { ownerUserId: o.owner ?? OWNER, slashCommands: o.commands === undefined ? [{ name: 'status', description: 'x' }] : o.commands },
+      { application: { id: 'app1', commands: { set: async (p: unknown) => { sets.push(p) } } } },
+      ext.slashPayload, ext.slashFingerprint, readFileSync, ext.slashSyncDue, writeFileSync, require('node:fs').renameSync,
+    ) as () => Promise<void>
+    return { sync, sets }
+  }
+
+  it('syncSlashCommands, run: once, then not again until the list changes; nothing without an owner or a list', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dc-slash-'))
+    const quiet = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const a = syncHarness({}, dir)
+      await a.sync()
+      expect(a.sets).toHaveLength(1)
+      expect(JSON.parse(readFileSync(join(dir, 'slash-sync.json'), 'utf-8'))).toMatchObject({ count: 1, fingerprint: expect.any(String) })
+      const b = syncHarness({}, dir)
+      await b.sync()
+      expect(b.sets).toEqual([]) // a restart with the same list: no REST call
+      const c = syncHarness({ commands: [{ name: 'status', description: 'x' }, { name: 'help', description: 'h' }] }, dir)
+      await c.sync()
+      expect(c.sets).toHaveLength(1)
+      for (const o of [{ owner: '' }, { commands: null }, { commands: [] }]) {
+        const d = syncHarness(o, mkdtempSync(join(tmpdir(), 'dc-slash-none-')))
+        await d.sync()
+        expect(d.sets, JSON.stringify(o)).toEqual([])
+      }
+    } finally {
+      quiet.mockRestore()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('wiring: synced at ready; the handler sits outside the button handler\'s region', () => {
+    expect(SERVER).toContain('void syncSlashCommands().catch(')
+    const buttons = SERVER.slice(SERVER.indexOf('const BUTTON_STYLES'), SERVER.indexOf("client.on('messageCreate'"))
+    expect(buttons).not.toContain('isChatInputCommand')
+  })
+})
+
+describe('A6: the bot\'s threads are recovered too, with the same time-lock and caps', () => {
+  it('threadRecoveryTargets: only threads with a cursor, the most recently delivered first, at most 20', () => {
+    const cursor: Record<string, string> = {}
+    const ids = Array.from({ length: 45 }, (_, i) => id(100 + i)) // 30 of them with a cursor: more than the cap
+    ids.forEach((t, i) => { if (i % 3 !== 0) cursor[t] = id(1000 + i) })
+    const r = ext.threadRecoveryTargets(ids, cursor)
+    expect(r).toHaveLength(ext.THREAD_RECOVERY_MAX)
+    expect(ext.THREAD_RECOVERY_MAX).toBe(20)
+    expect(r[0]).toBe(id(144)) // newest cursor
+    expect(r.every((t: string) => cursor[t] !== undefined)).toBe(true)
+    expect(ext.threadRecoveryTargets([id(5)], {})).toEqual([])
+  })
+
+  it('BotThreads.ids: live ones only', () => {
+    let now = 1_800_000_000_000
+    const b = new ext.BotThreads({ [id(1)]: now - ext.BOT_THREADS.ttlMs - 1, [id(2)]: now }, () => {}, () => now)
+    expect(b.ids()).toEqual([id(2)])
+    now += ext.BOT_THREADS.ttlMs + 1
+    expect(b.ids()).toEqual([])
+  })
+
+  it('handleInbound, run: a message in the bot\'s thread moves its cursor; in another thread it does not', async () => {
+    for (const [ours, want] of [[true, 1], [false, 0]] as Array<[boolean, number]>) {
+      const h = inboundHarness({ action: 'deliver', access: {} }, OWNER, { inBotThread: () => ours })
+      const m = h.msg('szia', { dm: false }) as { channel: { isThread: () => boolean } }
+      m.channel.isThread = () => true
+      await h.handleInbound(m)
+      expect(h.cursorNotes, String(ours)).toHaveLength(want)
+    }
   })
 })
