@@ -188,7 +188,7 @@ describe('createHttpsRedeemTransport', () => {
   let origin = ''
   let plainOrigin = ''
   let mode: 'ok' | 'big' | 'slow' | 'redirect' = 'ok'
-  let seen: { method?: string; url?: string; type?: string; body: string }[] = []
+  let seen: { method?: string; url?: string; type?: string; body: string; auth?: string }[] = []
   const savedEnv = process.env['NODE_TLS_REJECT_UNAUTHORIZED']
 
   beforeAll(async () => {
@@ -205,7 +205,7 @@ describe('createHttpsRedeemTransport', () => {
       let body = ''
       req.on('data', (c: Buffer) => (body += c.toString('utf8')))
       req.on('end', () => {
-        seen.push({ method: req.method, url: req.url, type: req.headers['content-type'], body })
+        seen.push({ method: req.method, url: req.url, type: req.headers['content-type'], body, auth: req.headers['authorization'] })
         if (mode === 'slow') return // never answers
         if (mode === 'redirect') {
           res.writeHead(307, { location: plainOrigin + '/elsewhere' })
@@ -255,6 +255,16 @@ describe('createHttpsRedeemTransport', () => {
     expect(seen).toEqual([
       { method: 'POST', url: SUPPORT_REDEEM_PATH, type: 'application/json', body: '{"code":"' + CODE + '","purpose":"support"}' },
     ])
+  })
+
+  // PR1b 2b-3: the reconcile's self-probe sends its token as a bearer; the redeem sends none.
+  it.skipIf(!OPENSSL)('sends the bearer only when one is given, in the Authorization header', async () => {
+    mode = 'ok'
+    seen = []
+    await createHttpsRedeemTransport({ extraCa: cert })(req())
+    await createHttpsRedeemTransport({ extraCa: cert })(req({ bearer: TOKEN }))
+    expect(seen.map((s) => s.auth)).toEqual([undefined, 'Bearer ' + TOKEN])
+    expect(seen[1].body).not.toContain(TOKEN)
   })
 
   it.skipIf(!OPENSSL)('REFUSES a certificate it cannot verify, and the request body never reaches the server', async () => {

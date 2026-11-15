@@ -53,6 +53,20 @@ describe('the security teardown of support access (terv-v7 3.9)', () => {
     expect(readFileSync(join(sshDir, 'authorized_keys'), 'latin1')).toBe(OWN_LINE + '\n')
   })
 
+  it('a machine that never had support does not even wait for the keys-file lock another writer holds', async () => {
+    writeFileSync(join(sshDir, 'authorized_keys.lock'), 'held by another writer\n')
+    const started = Date.now()
+    expect(await takeSupportAccessDownWith(deps(), 'password_change')).toEqual({ ok: true, removedLines: 0 })
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(readFileSync(join(sshDir, 'authorized_keys.lock'), 'utf8')).toBe('held by another writer\n')
+  })
+
+  it('a machine without even a .ssh folder: nothing is created there', async () => {
+    rmSync(sshDir, { recursive: true })
+    expect(await takeSupportAccessDownWith(deps(), 'password_change')).toEqual({ ok: true, removedLines: 0 })
+    expect(existsSync(sshDir)).toBe(false)
+  })
+
   it('takes the token and the lines away, and closes the open rows with the reason', async () => {
     mkdirSync(supportDir, { recursive: true, mode: 0o700 })
     writeSupportToken(supportDir, TOKEN)

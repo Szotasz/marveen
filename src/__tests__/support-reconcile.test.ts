@@ -168,6 +168,12 @@ describe('the support reconcile (terv-v7 3.8; Dani 32056 G1-G6)', () => {
     expect(rows.revoked).toEqual(['replaced'])
   })
 
+  it('a key pinned again under the same name with another blob is not the recorded key: unpinned', async () => {
+    await enable()
+    const rotated = { ...TEST_ONLY_KEYS[1], name: TEST_ONLY_KEYS[0].name }
+    expect(await reconcileSupportStandby(deps({ pins: { keys: [rotated], fromCidrs: TEST_ONLY_FROM } }))).toBe('removed_unpinned')
+  })
+
   it('a deviant support line goes; a missing one is not written back', async () => {
     await enable()
     const record = readGroupRecord(supportDir)
