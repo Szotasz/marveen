@@ -3099,7 +3099,7 @@
             </div>
             <button class="btn-primary" id="chConnectBtn">
               <span class="btn-text" data-i18n="channel.connect_btn">Összekapcsolás</span>
-              <span class="btn-loading" hidden><span class="spinner"></span> Csatlakozas...</span>
+              <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="channel.connecting">Csatlakozás...</span></span>
             </button>
           </div>
           <div id="chConnected" hidden>
@@ -3187,8 +3187,8 @@
             </div>
             <div class="tg-connected-actions">
               <button class="btn-secondary" id="chTestBtn" data-i18n="channel.test_btn">Kapcsolat tesztelése</button>
-              <button class="btn-secondary" id="chReconnectBtn" hidden>Channel-MCP reconnect</button>
-              <button class="btn-secondary" id="chSmokeTestBtn" hidden>Slack csatorna smoke-test</button>
+              <button class="btn-secondary" id="chReconnectBtn" hidden data-i18n="channel.reconnect_btn">Channel-MCP újracsatlakoztatása</button>
+              <button class="btn-secondary" id="chSmokeTestBtn" hidden data-i18n="channel.smoke_test_btn">Slack-csatorna smoke-test</button>
               <button class="btn-danger" id="chDisconnectBtn" data-i18n="channel.disconnect_btn">Leválasztás</button>
             </div>
           </div>
