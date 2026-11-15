@@ -132,11 +132,13 @@ describe("the routine's enable refusals, as sentences", () => {
   const say = (code: string): string =>
     spawnSync('/bin/sh', ['-c', `${mail.join('\n')}\n${fn}\nenable_refusal "$1"`, '_', code], { encoding: 'utf8', timeout: 10_000 }).stdout
 
-  it('already_on (Bence 78560, Dani F1 on #2779): turn it off first, with the disable line, then a new code', () => {
+  it('already_on (Bence 78560, Dani F1 on #2779): turn it off first, with the disable line, then run again; the code is not spent (Bence 78639)', () => {
     const out = say('already_on')
     expect(out).toContain('(already_on)')
     expect(out).toContain(`~/.marveen/support/kit/${KIT_LAUNCHER_NAME} disable`)
-    expect(out).toContain('új kódot')
+    expect(out).toContain('futtasd újra ezt a sort')
+    expect(out).toContain('nem fogy el')
+    expect(out).not.toContain('új kódot')
     expect(out).not.toContain('Küldd el nekünk')
   })
 
@@ -153,6 +155,15 @@ describe("the routine's enable refusals, as sentences", () => {
 
   it('an unknown code still falls through to the generic sentence with the code in it', () => {
     expect(say('something_new')).toContain('A bekapcsolás nem sikerült (something_new)')
+  })
+})
+
+describe('a finished disable', () => {
+  it('says the machine stays on the marveen.io account until the Profile page removes it (Dani 78558)', () => {
+    const tail = LAUNCHER.slice(LAUNCHER.indexOf('if [ "$MODE" = disable ]; then'))
+    const done = tail.slice(0, tail.indexOf('  exit 0\n'))
+    expect(done).toContain('A levétel kész ezen a gépen.')
+    expect(done).toContain('„Gép eltávolítása a supportból”')
   })
 })
 
