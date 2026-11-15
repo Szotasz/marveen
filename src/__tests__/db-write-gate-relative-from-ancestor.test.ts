@@ -41,7 +41,8 @@ const DENY = { deny: true, reason: 'install-file' }
 const PASS = { deny: false }
 
 // <HOME> and <BASE> are filled in when the test runs (the temp dirs exist only then)
-const HOME_SPELLINGS = ['cd ~', 'cd $HOME', 'cd "$HOME"', 'cd ${HOME}', 'cd <HOME>', 'cd', 'cd <BASE> && cd home']
+const HOME_SPELLINGS = ['cd ~', 'cd $HOME', 'cd "$HOME"', 'cd ${HOME}', 'cd <HOME>', 'cd', 'cd <BASE> && cd home',
+  'pushd ~', 'pushd $HOME', 'pushd <HOME>']
 const fill = (c: string) => c.replace('<HOME>', home).replace('<BASE>', base)
 const writes = (rel: string) => [`echo x > ${rel}`, `rm -f ${rel}`, `cp /tmp/a ${rel}`, `tee ${rel} < /tmp/a`, `mv /tmp/a ${rel}`]
 
@@ -66,6 +67,7 @@ describe('a relative path from an ancestor directory reaches a protected home pa
   it('a directory change to an unknown place: the relative word is read against the protected tails (fail closed)', () => {
     expect(bash('cd "$WHERE" && echo x > .gitconfig')).toEqual(DENY)
     expect(bash('cd - && rm -f .config/git/config')).toEqual(DENY)
+    expect(bash('pushd /tmp && popd && echo x > .gitconfig')).toEqual(DENY)
     expect(bash('cd "$(cat /tmp/where)" && echo x > git/config')).toEqual(DENY)
     // a command that sets HOME itself: its ~ is not the real home, so the place is unknown (not the real home, where
     // this relative path would name nothing protected)

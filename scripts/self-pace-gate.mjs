@@ -718,9 +718,10 @@ export function cwdAfterSegment(seg, ctx) {
   const name = words[0].value
   if (name !== 'cd' && name !== 'pushd' && name !== 'popd') return
   const arg = words.slice(1).find((w) => !/^-[LPe@]+$/.test(w.value))
-  // WRITEGATERELPATH1115: a bare `cd`, `cd ~`, `cd $HOME` and `cd ${HOME}` go to the home, unless the command gives HOME
-  // a value of its own (then the home is not known here)
-  if (name === 'cd' && (!arg || arg.value === '~' || /^\$(?:HOME|\{HOME\})$/.test(arg.value))) {
+  // WRITEGATERELPATH1115: a bare `cd`, and `cd` or `pushd` to `~`, `$HOME` or `${HOME}`, go to the home, unless the command
+  // gives HOME a value of its own (then the home is not known here). A bare `pushd` swaps the stack: unknown, below.
+  const homeArg = !!arg && (arg.value === '~' || /^\$(?:HOME|\{HOME\})$/.test(arg.value))
+  if ((name === 'cd' && !arg) || ((name === 'cd' || name === 'pushd') && homeArg)) {
     ctx.cwd = ctx.homeTouched ? null : homedir()
     return
   }
