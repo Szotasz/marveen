@@ -153,6 +153,15 @@ describe("the routine's enable refusals, as sentences", () => {
     expect(say('service_unavailable')).toContain('írj nekünk (hello@marveen.io), és küldd el ezt a kódot: service_unavailable.')
   })
 
+  it('a release whose pins are not complete (no key, no source address, malformed) says: update Marveen (Geri 78991)', () => {
+    for (const code of ['support_keys_unset', 'support_from_unset', 'support_pins_invalid']) {
+      const out = say(code)
+      expect(out, code).toContain('(' + code + ')')
+      expect(out, code).toContain('Ez a Marveen-kiadás még nem tartalmazza a távoli segítség beállításait (' + code + '). Frissítsd a Marveent.')
+      expect(out, code).not.toContain('A bekapcsolás nem sikerült')
+    }
+  })
+
   it('an unknown code still falls through to the generic sentence with the code in it', () => {
     expect(say('something_new')).toContain('A bekapcsolás nem sikerült (something_new)')
   })
