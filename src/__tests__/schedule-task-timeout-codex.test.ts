@@ -109,7 +109,11 @@ describe('done-run wiring in the watchdog sweep: no second injection after prove
   // bounding the lost branch by it left everything after the chain's real end
   // unchecked, and the anchor itself was the wrong mechanism's).
   const lostEndIdx = SRC.indexOf('taskInflightMap.delete(key)', lostBranchIdx)
-  const enqueueRe = /insertPendingTaskRetryIfNew\([^)]*'lost-injection'/
+  // Round-5 finding: a semantically identical duplicate spelled with double
+  // quotes ("lost-injection") evaded a single-quote count regex. The pattern
+  // accepts either quote style and one level of nested parentheses in the
+  // argument list, so equivalent spellings cannot slip past the count.
+  const enqueueRe = /insertPendingTaskRetryIfNew\((?:[^()]|\([^()]*\))*["']lost-injection["']/
   const giveupIdx = SRC.indexOf("decideLostRedeliveryAction(priorAttempts) === 'giveup'", lostBranchIdx)
 
   it('branch anchors line up: done -> alert -> lost, the lost branch bounded by its terminal delete', () => {
@@ -135,7 +139,7 @@ describe('done-run wiring in the watchdog sweep: no second injection after prove
     // catch-up scan -- must fail here. Checking only the prefix before the
     // branch was the round-4 blocker: everything after the lost branch was
     // unchecked.
-    expect(SRC.match(/insertPendingTaskRetryIfNew\([^)]*'lost-injection'/g)).toHaveLength(1)
+    expect(SRC.match(new RegExp(enqueueRe.source, 'g'))).toHaveLength(1)
     // ...and that one call sits inside the lost branch: after the branch
     // opens, before its own terminal taskInflightMap.delete(key) statement.
     const enqueueIdx = SRC.search(enqueueRe)
