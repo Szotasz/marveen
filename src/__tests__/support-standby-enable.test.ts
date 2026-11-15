@@ -123,6 +123,9 @@ describe('enable and disable support standby', () => {
 
   it('refuses when the pins of this release are unset or invalid', async () => {
     expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps({ pins: { keys: [], fromCidrs: [] } }))).toEqual({ ok: false, problem: 'support_keys_unset' })
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps({ pins: { keys: [], fromCidrs: TEST_ONLY_FROM } }))).toEqual({ ok: false, problem: 'support_keys_unset' })
+    // keys pinned, no source address yet (this release): that, not "no key" (Geri 78991)
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps({ pins: { keys: TEST_ONLY_KEYS, fromCidrs: [] } }))).toEqual({ ok: false, problem: 'support_from_unset' })
     const twice = { keys: [TEST_ONLY_KEYS[0], TEST_ONLY_KEYS[0]], fromCidrs: TEST_ONLY_FROM }
     expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps({ pins: twice }))).toEqual({ ok: false, problem: 'support_pins_invalid' })
     expect(calls).toEqual([])

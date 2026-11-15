@@ -2113,8 +2113,8 @@ async function enableSupportStandby(input, deps) {
   if (!code.ok) return no(code.problem);
   if (input.consentVersion !== SUPPORT_CONSENT_VERSION) return no("consent_invalid");
   const { keys, fromCidrs } = deps.pins;
-  if (keys.length === 0 || fromCidrs.length === 0) return no("support_keys_unset");
-  if (!validateSupportPins(keys, fromCidrs).ok) return no("support_pins_invalid");
+  const pins = validateSupportPins(keys, fromCidrs);
+  if (!pins.ok) return no(pins.code);
   if (readSupportToken(deps.supportDir).kind !== "missing" || readGroupRecord(deps.supportDir).kind !== "missing") return no("already_on");
   const sshd = await deps.probeSshd(fromCidrs);
   if (!sshd.ok) return no(sshd.problem);
