@@ -1,0 +1,85 @@
+// CODEXEVID d72ba2bd: probeTurnEvidence must ALSO weigh the Codex rollout
+// mtime. Measured 2026-11-15 on this install: 38 "Scheduled injection never
+// started a turn ... recording as lost" redeliveries in one day (webesdavid
+// 18, tenderbot 10, bence 8, guszti 2), 58 since 11-14, every one a DUPLICATE
+// task run -- the scheduled-injection watchdog judged "did a turn start" from
+// the Claude-Code transcript alone, and for an agent whose tmux pane runs
+// OpenAI Codex that transcript never moves. The running session's rollout
+// file under <CODEX_HOME>/sessions/YYYY/MM/DD/ does.
+//
+// These cases extend schedule-task-timeout.test.ts (which stays untouched and
+// covers the Claude-only behaviour); probeTurnEvidence stays PURE -- the codex
+// reader is an injected dep exactly like readLocal/readRemote.
+import { describe, expect, it, vi } from 'vitest'
+import {
+  probeTurnEvidence,
+  decideTaskTimeout,
+  TASK_FIRE_GRACE_MS,
+  type TaskInflightEntry,
+} from '../web/schedule-runner.js'
+import { OWNER_ESCALATION_EXTRA_MS } from '../pending-retries.js'
+
+const GRACE = TASK_FIRE_GRACE_MS
+const BASE_OPTS = { graceMs: GRACE, timeoutMs: 2_700_000, maxTrackMs: 6 * 60 * 60_000, ownerExtraMs: OWNER_ESCALATION_EXTRA_MS }
+
+type ProbeFields = Pick<TaskInflightEntry, 'injectedAt' | 'sawTurn' | 'host' | 'workingDir' | 'configDirs' | 'remoteWorkdir'>
+
+// A local codex-motor agent entry: injected at T, no turn observed yet.
+const T = Date.parse('2026-11-15T11:07:00.000Z')
+function makeEntry(over: Partial<ProbeFields> = {}): ProbeFields {
+  return { injectedAt: T, sawTurn: false, host: null, workingDir: '/workdirs/dex', configDirs: [], remoteWorkdir: undefined, ...over }
+}
+
+describe('probeTurnEvidence: codex rollout mtime as turn evidence', () => {
+  it('(d) idle pane, Claude mtime stale, rollout mtime past the injection => sawTurn, decision done not lost', async () => {
+    const entry = makeEntry()
+    const probed = probeTurnEvidence(entry, 'idle', {
+      readLocal: () => T - 60_000,   // the Claude transcript last moved BEFORE the send
+      codexMtime: () => T + 5_000,   // the running rollout file advanced after it
+    })
+    expect(probed.sawTurn).toBe(true)
+    // ...and that evidence flips the sweep's verdict from a lost-redelivery to a finished run.
+    const decided = decideTaskTimeout({ ...entry, sawTurn: probed.sawTurn } as TaskInflightEntry, 'idle', T + GRACE + 1, BASE_OPTS)
+    expect(decided).toBe('done')
+    expect(decided).not.toBe('lost')
+  })
+
+  it('(e) no codex evidence => exactly today’s lost verdict', () => {
+    const entry = makeEntry()
+    const probed = probeTurnEvidence(entry, 'idle', { readLocal: () => T - 60_000 })
+    expect(probed.sawTurn).toBe(false)
+    expect(decideTaskTimeout({ ...entry, sawTurn: probed.sawTurn } as TaskInflightEntry, 'idle', T + GRACE + 1, BASE_OPTS)).toBe('lost')
+  })
+
+  it('a codex reader that reports nothing (null) changes nothing', () => {
+    const probed = probeTurnEvidence(makeEntry(), 'idle', { readLocal: () => T - 60_000, codexMtime: () => null })
+    expect(probed.sawTurn).toBe(false)
+  })
+
+  it('only a rollout mtime STRICTLY newer than the injection counts (stale is not a turn)', () => {
+    expect(probeTurnEvidence(makeEntry(), 'idle', { readLocal: () => null, codexMtime: () => T }).sawTurn).toBe(false)
+    expect(probeTurnEvidence(makeEntry(), 'idle', { readLocal: () => null, codexMtime: () => T - 1 }).sawTurn).toBe(false)
+    expect(probeTurnEvidence(makeEntry(), 'idle', { readLocal: () => null, codexMtime: () => T + 1 }).sawTurn).toBe(true)
+  })
+
+  it('codex evidence is consulted for LOCAL hosts only, like readLocal', () => {
+    const codexMtime = vi.fn(() => T + 5_000)
+    const probed = probeTurnEvidence(makeEntry({ host: 'laptop.local', remoteWorkdir: '/remote/workdirs/dex' }), 'idle', { codexMtime })
+    expect(probed.sawTurn).toBe(false)
+    expect(codexMtime).not.toHaveBeenCalled()
+  })
+
+  it('a busy pane still short-circuits to sawTurn without any mtime reader', () => {
+    expect(probeTurnEvidence(makeEntry({ sawTurn: false }), 'busy', {}).sawTurn).toBe(true)
+    expect(probeTurnEvidence(makeEntry({ sawTurn: true }), 'idle', {}).sawTurn).toBe(true)
+  })
+
+  it('the Claude transcript alone still works: fresh claude mtime, no codex reader', () => {
+    expect(probeTurnEvidence(makeEntry(), 'idle', { readLocal: () => T + 1_000 }).sawTurn).toBe(true)
+  })
+
+  it('mtimeSeen keeps reporting the CLAUDE transcript mtime (what the sweep logs)', () => {
+    const probed = probeTurnEvidence(makeEntry(), 'idle', { readLocal: () => T - 60_000, codexMtime: () => T + 5_000 })
+    expect(probed.mtimeSeen).toBe(T - 60_000)
+  })
+})
