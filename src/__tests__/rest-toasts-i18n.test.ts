@@ -4,7 +4,8 @@
 // terminal input toasts. They were Hungarian strings ("Hiba: …", "Hangbeállítás mentve", "URL masolva"),
 // or English ones on the terminal, so the dashboard showed them in one language whatever it was set to.
 // After the earlier blocks (#2754, #2771, #2792) no toast in app.js is a string literal any more; the
-// file-wide checks below keep it that way. The real handlers run here against the real t().
+// file-wide checks below keep it that way. The real handlers run here against the real t(). The skill
+// import's own fallback ('Import hiba', when the server sends no error) followed in a review follow-up.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 
@@ -72,7 +73,8 @@ describe('no toast in app.js is a hardcoded string any more', () => {
   it('no showToast() or thrown error falls back to a Hungarian literal', () => {
     const hits = APP.split('\n').map((l, i) => [i + 1, l.trim()] as const)
       .filter(([, l]) => /showToast\(|throw new Error\(/.test(l))
-      .filter(([, l]) => /'[^']*[áéíóöőúüű][^']*'|'(Hiba|Ismeretlen|Sikertelen)\b/i.test(l))
+      // A Hungarian word anywhere in the literal, not only at its start ('Import hiba' got past that).
+      .filter(([, l]) => /'[^']*[áéíóöőúüű][^']*'|'[^']*\b(Hiba|Ismeretlen|Sikertelen)\b[^']*'/i.test(l))
     expect(hits).toEqual([])
   })
 
@@ -83,7 +85,8 @@ describe('no toast in app.js is a hardcoded string any more', () => {
     }
   })
 
-  it('the five fallbacks without a server error read "<error>: <failed>"', () => {
+  it('the six fallbacks without a server error read "<error>: <failed>"', () => {
+    expect(ERROR_SITES.importSkill).toContain("throw new Error(err.error || t('common.failed'))")
     const save = ERROR_SITES.saveSchedule
     expect(save.match(/throw new Error\(err\.error \|\| t\('common\.failed'\)\)/g)).toHaveLength(2)
     expect(ERROR_SITES.saveConnector).toContain("throw new Error(err.error || t('common.failed'))")
@@ -122,6 +125,28 @@ describe('the handlers speak the dashboard language', () => {
     }
     expect(await run(async () => ({ ok: true }))).toEqual([t('agents.voice.saved')])
     expect(await run(async () => { throw new Error('net') })).toEqual([t('common.error_save')])
+  })
+
+  it.each([
+    ['hu', 'Hiba: Sikertelen'],
+    ['en', 'Error: Failed'],
+  ] as const)('the skill import refused without a server error (%s)', async (lang, want) => {
+    async function run(reply: Record<string, unknown>) {
+      const toasts: string[] = []
+      const part = { hidden: false }
+      const btn = { disabled: false, querySelector: () => part }
+      const handler = new Function('skillModalScope', 'skillFile', 'currentAgent', 'document', 'FormData', 'fetch', 'agentApiName', 'showToast', 't', 'closeModal', 'skillModalOverlay', 'loadGlobalSkills', 'loadSkills', `return ${ERROR_SITES.importSkill}`)(
+        'global', { name: 'x.zip' }, null, { getElementById: () => btn }, class { append() {} },
+        async () => ({ ok: false, json: async () => reply }), () => 'anna', (m: string) => { toasts.push(m) }, makeT(lang),
+        () => {}, null, () => {}, () => {},
+      ) as () => Promise<void>
+      await handler()
+      expect(btn.disabled).toBe(false)
+      return toasts
+    }
+    expect(await run({})).toEqual([want])
+    // A server error text still goes through as it is.
+    expect(await run({ error: 'bad zip' })).toEqual([want.replace(/: .*/, ': bad zip')])
   })
 
   it.each(['hu', 'en'] as const)('the autonomy level: a refusal without a server error (%s)', async (lang) => {
