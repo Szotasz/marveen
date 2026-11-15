@@ -34,6 +34,7 @@ window._i18n.en = {
   'common.all':               'All',
   'common.none':              'None',
   'common.unknown':           'Unknown',
+  'common.failed':            'Failed',
   'common.error_load':        'Error loading data',
 
   // --- Overview dynamic ---
@@ -1670,7 +1671,7 @@ window._i18n.en = {
   'agents.export_all.done': 'Fleet exported',
   'agents.export_all.done_secrets': 'Fleet exported (with secrets)',
   'agents.import.done': 'Agent imported: {name}',
-  'agents.import.fleet_done': 'Fleet imported: {n} agents',
+  'agents.import.fleet_done': 'Fleet imported: {n} agent(s)',
   'agents.import.note_secrets': '(with secrets)',
   'agents.import.note_overwritten': '(overwritten)',
   'agents.import.note_skipped': '({n} skipped)',
