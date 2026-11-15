@@ -19430,6 +19430,8 @@ function formatSettingValue(value) {
 // markup (`content`) is built by the caller from elements, never from HTML.
 function confirmDialog({ title, message, okLabel, danger = false, content = null, wide = false, bodyClass = '', cancelLabel = '' }) {
   return new Promise((resolve) => {
+    // Where the focus was (the button that asked, usually), so it goes back there afterwards.
+    const previous = document.activeElement
     const overlay = document.createElement('div')
     overlay.className = 'modal-overlay active'
     overlay.setAttribute('role', 'dialog')
@@ -19473,9 +19475,25 @@ function confirmDialog({ title, message, okLabel, danger = false, content = null
     const finish = (answer) => {
       document.removeEventListener('keydown', onKey)
       overlay.remove()
+      if (previous && previous.isConnected && typeof previous.focus === 'function') previous.focus()
       resolve(answer)
     }
-    const onKey = (e) => { if (e.key === 'Escape') finish(false) }
+    // Tab stays inside the dialog: from its last focusable element on to the first, and Shift+Tab
+    // back, so the focus cannot wander to the page behind the backdrop.
+    const focusables = () => [...modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => !el.disabled && el.offsetParent !== null)
+    const onKey = (e) => {
+      if (e.key === 'Escape') { finish(false); return }
+      if (e.key !== 'Tab') return
+      const items = focusables()
+      if (!items.length) return
+      const first = items[0]
+      const last = items[items.length - 1]
+      const active = document.activeElement
+      const outside = !modal.contains(active)
+      if (e.shiftKey && (active === first || outside)) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && (active === last || outside)) { e.preventDefault(); first.focus() }
+    }
     document.addEventListener('keydown', onKey)
     overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false) })
     closeBtn.addEventListener('click', () => finish(false))
