@@ -147,7 +147,7 @@
         "hook": "browser-content-notice",
         "gate": false,
         "purpose": "PostToolUse hook: envelope browser / search payloads as untrusted content.",
-        "fingerprint": "ab2d2a8500a038c3ba079e3a14edb86a3bcf0007eb492bc2f64cdfed46b4cd65"
+        "fingerprint": "2d90dda698943dd0527eb4b497fc8536c325d46bfdee609bc2665ef60f5e6461"
       },
       {
         "index": 5,
