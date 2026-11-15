@@ -76,8 +76,8 @@
       channel (a thread counts with its parent): 30 s between two, at most 3 per 10 min, then one log line;
     - G2: `pin_message` / `unpin_message`, listed only with `DISCORD_ADMIN_ACTIONS=pin`, only in allowed channels.
       Deleting messages and changing roles are not built (an inventory test pins that);
-    - D4: with an ack reaction set in access.json (`/discord:access set ackReaction 👀`), the answered message also gets
-      ✅ once the reply has gone out to that chat (never for a failed reply);
+    - D4: the answered message gets ✅ once the reply has gone out to that chat (never for a failed reply), with or
+      without an ack reaction (Zoli 2026-11-15); an ack set in access.json stays as it was;
     - D5: `edit_message` over 2000 characters: the first part is the edit, the rest new messages after it (reply's
       chunking, max 8 parts, refused before anything changes).
 - **How it gets in**: `scripts/patch-discord-plugin.py`, at every channel start, puts the overlay

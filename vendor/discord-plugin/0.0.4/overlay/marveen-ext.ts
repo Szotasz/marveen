@@ -767,8 +767,8 @@ export function adminTools(actions: readonly AdminAction[]): Array<{ name: strin
   ]
 }
 
-// D4: the "done" mark. When the access file sets an ack reaction (the "working" mark on receipt), the message the
-// session answers gets this one too, once the reply has gone out to that chat. Per chat the last acked message;
+// D4: the "done" mark (Zoli 2026-11-15: with or without an ack reaction). The message the session answers gets it
+// once the reply has gone out to that chat; never after a failed reply. Per chat the last delivered message;
 // bounded, oldest dropped first.
 export const DONE_REACTION = '✅'
 export const DONE_MARKS_MAX = 500

@@ -422,8 +422,8 @@ lista mellett bot nem írhat). DM-ben soha. Hurokvédelem csatornánként: két 
 **Kitűzés.** `DISCORD_ADMIN_ACTIONS=pin` (csak a gazda, felülírás-kulcs): az ágens kitűzhet és levehet egy üzenetet
 az engedélyezett csatornákban. Üresen ezek az eszközök nem is látszanak. Üzenet törlése és szerep-módosítás nincs.
 
-**Kész-jel.** Ha a Discord `access.json`-ban be van állítva az érkezés-jelző reakció (`/discord:access set
-ackReaction 👀`), a megválaszolt üzenet a válasz kimenetele után ✅-t is kap. Ack nélkül nincs kész-jel sem.
+**Kész-jel.** A megválaszolt üzenet a válasz kimenetele után ✅-t kap (sikertelen válasz után nem). Ha az
+`access.json`-ban érkezés-jelző reakció is be van állítva (`/discord:access set ackReaction 👀`), az ugyanúgy megmarad.
 
 **Slash-parancsok.** Ha a `DISCORD_OWNER_USER_ID` be van állítva, a dashboard parancslistája (ugyanaz, amiből a
 Telegram-menü készül) Discord slash-parancsként is megjelenik, de csak a bottal folytatott DM-ben, és csak a
