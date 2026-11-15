@@ -287,7 +287,7 @@ function inBotThread(msg: Message): boolean { // MARVEEN-EXT
 const typingKeeper = new TypingKeeper() // MARVEEN-EXT
 // DCEXT1111 A5: ids that reached the session; a delete is reported only for these. // MARVEEN-EXT
 const deliveredIds = new BoundedIds() // MARVEEN-EXT
-// DCEXT1111 D4: with an ack reaction set, the answered message also gets the "done" mark after the reply. // MARVEEN-EXT
+// DCEXT1111 D4: the answered message gets the "done" mark after the reply (an ack reaction, if set, stays). // MARVEEN-EXT
 const doneMarks = new DoneMarks<Message>() // MARVEEN-EXT
 
 function noteSent(id: string): void {
@@ -1386,8 +1386,8 @@ async function handleInbound(msg: Message, recovered = false, edited = false): P
   const access = result.access
   if (access.ackReaction) {
     void msg.react(access.ackReaction).catch(() => {})
-    doneMarks.note(to, msg) // DCEXT1111 D4: the reply to this chat marks it done // MARVEEN-EXT
   }
+  doneMarks.note(to, msg) // DCEXT1111 D4 (Zoli 2026-11-15): the reply to this chat marks it done, with or without an ack // MARVEEN-EXT
 
   // Attachments are listed (name/type/size) but not downloaded — the model
   // calls download_attachment when it wants them. Keeps the notification

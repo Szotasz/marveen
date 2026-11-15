@@ -1737,7 +1737,7 @@ describe('G2: pin_message / unpin_message, only with DISCORD_ADMIN_ACTIONS=pin',
   })
 })
 
-describe('D4: the "done" mark next to the ack', () => {
+describe('D4: the "done" mark after the reply, with or without an ack', () => {
   it('DoneMarks: per chat the last acked message, taken once; bounded', () => {
     const d = new ext.DoneMarks(2)
     d.note('a', 'm1'); d.note('a', 'm2'); d.note('b', 'm3')
@@ -1748,7 +1748,7 @@ describe('D4: the "done" mark next to the ack', () => {
     expect(ext.DONE_REACTION).toBe('✅')
   })
 
-  it('handleInbound, run: with an ack reaction the message is noted for its chat; without one nothing is', async () => {
+  it('handleInbound, run: the message is noted for its chat with an ack reaction AND without one (Zoli 2026-11-15)', async () => {
     const marks = new ext.DoneMarks()
     const h = inboundHarness({ action: 'deliver', access: { ackReaction: '👀' } }, OWNER, { doneMarks: marks })
     const m = h.msg('szia')
@@ -1756,8 +1756,13 @@ describe('D4: the "done" mark next to the ack', () => {
     expect(marks.take('1438000000000000500')).toBe(m)
     const none = new ext.DoneMarks()
     const q = inboundHarness({ action: 'deliver', access: {} }, OWNER, { doneMarks: none })
-    await q.handleInbound(q.msg('szia'))
-    expect(none.take('1438000000000000500')).toBeUndefined()
+    const plain = q.msg('szia')
+    await q.handleInbound(plain)
+    expect(none.take('1438000000000000500')).toBe(plain)
+    const dropped = new ext.DoneMarks()
+    const d = inboundHarness({ action: 'drop' }, OWNER, { doneMarks: dropped })
+    await d.handleInbound(d.msg('szia'))
+    expect(dropped.take('1438000000000000500')).toBeUndefined() // nothing delivered, nothing to mark
   })
 
   it('reply, run: after the reply went out the noted message gets ✅, once; a failed reply marks nothing', async () => {
