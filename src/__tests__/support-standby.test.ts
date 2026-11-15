@@ -206,6 +206,32 @@ describe('runSupportCli', () => {
     expect(c.err).toEqual([])
   })
 
+  // SUPPORTMENTOUT1114: the launcher's first question. One line, the verdict as a code, never a path.
+  it('verify-kit prints kit=ok for a kit that verifies, and the problem code otherwise; both exit 0', async () => {
+    const ok = io()
+    expect(await runSupportCli(['verify-kit'], ok.io, {
+      status: () => deps().deps, installKit: noInstall, ...NO_STANDBY,
+      verifyKit: () => ({ ok: true, kitDir: '/home/x/.marveen/support/kit', manifest: { files: {}, installRoot: '/opt/m', nodePath: '/usr/bin/node', nodeMin: 20, release: 'abc1234' } }),
+    })).toBe(0)
+    expect(ok.out.join('')).toBe('kit=ok\n')
+    const bad = io()
+    expect(await runSupportCli(['verify-kit'], bad.io, {
+      status: () => deps().deps, installKit: noInstall, ...NO_STANDBY,
+      verifyKit: () => ({ ok: false, problem: 'kit_mismatch', detail: '/home/x/.marveen/support/kit/support-access is not the file the manifest names' }),
+    })).toBe(0)
+    expect(bad.out.join('')).toBe('kit=kit_mismatch\n')
+    expect(bad.err).toEqual([])
+  })
+
+  it('verify-kit is a call it does not know when no verifier is given, and with an argument', async () => {
+    const c = io()
+    expect(await runSupportCli(['verify-kit'], c.io, { status: () => deps().deps, installKit: noInstall, ...NO_STANDBY })).toBe(2)
+    const d = io()
+    expect(await runSupportCli(['verify-kit', 'x'], d.io, {
+      status: () => deps().deps, installKit: noInstall, ...NO_STANDBY, verifyKit: () => { throw new Error('must not run') },
+    })).toBe(2)
+  })
+
   const ROOT_ARGS = ['--install-root', '/opt/marveen', '--node', '/usr/bin/node', '--release', 'abc1234']
 
   it.each([

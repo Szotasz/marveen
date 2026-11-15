@@ -1944,9 +1944,11 @@ async function writeKit(opts) {
 
 // src/support-kit-sources.ts
 var KIT_HASHES_FILE = "scripts/support-kit.sha256";
+var KIT_LAUNCHER_NAME = "support-access";
 var KIT_DISPATCHER_NAME = "support-dispatch.sh";
 var KIT_ROUTINE_NAME = "support-standby.mjs";
 var KIT_SOURCES = [
+  { name: KIT_LAUNCHER_NAME, treePath: "scripts/support-access", executable: true },
   { name: KIT_DISPATCHER_NAME, treePath: "scripts/support-dispatch.sh", executable: false },
   { name: KIT_ROUTINE_NAME, treePath: "scripts/support-standby.mjs", executable: false }
 ];
@@ -2194,7 +2196,7 @@ function supportConsentText(version) {
 }
 
 // src/support-standby-cli.ts
-var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n       support-standby.mjs enable --consent <version>   (the code on standard input)\n       support-standby.mjs disable\n       support-standby.mjs consent-text --consent <version>\n";
+var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n       support-standby.mjs verify-kit\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n       support-standby.mjs enable --consent <version>   (the code on standard input)\n       support-standby.mjs disable\n       support-standby.mjs consent-text --consent <version>\n";
 var SUPPORT_CODE_MAX_INPUT = 64;
 function startedFromKit(moduleUrl = import.meta.url) {
   try {
@@ -2276,9 +2278,17 @@ async function readStdinCapped(max, stdin = process.stdin) {
   }
   return Buffer.concat(chunks).toString("utf8");
 }
+function createVerifyKit(account = currentLoginUser()) {
+  return () => verifyKit({ supportDir: join10(account.home, SUPPORT_DIR_IN_HOME) });
+}
 async function runSupportCli(argv, io, deps) {
   if (argv.length === 1 && argv[0] === "status") {
     io.out(formatSupportStatus(await supportStatus(deps.status())));
+    return 0;
+  }
+  if (argv.length === 1 && argv[0] === "verify-kit" && deps.verifyKit !== void 0) {
+    const verdict = deps.verifyKit();
+    io.out("kit=" + (verdict.ok ? "ok" : verdict.problem) + "\n");
     return 0;
   }
   const installArgs = argv[0] === "install-kit" ? parseInstallKitArgs(argv.slice(1)) : null;
@@ -2332,6 +2342,7 @@ async function main(argv) {
       {
         status: createStatusDeps,
         installKit: createInstallKit(),
+        verifyKit: createVerifyKit(),
         standby: () => createStandbyDeps(),
         readCode: () => readStdinCapped(SUPPORT_CODE_MAX_INPUT)
       }
@@ -2362,6 +2373,7 @@ export {
   createInstallKit,
   createStandbyDeps,
   createStatusDeps,
+  createVerifyKit,
   formatSupportStatus,
   grantSupportLines,
   main,

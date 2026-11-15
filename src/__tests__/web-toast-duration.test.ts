@@ -25,10 +25,10 @@ describe('showToast is never given a boolean as its duration', () => {
   it('the reconnect and smoke-test errors stay long enough to read', () => {
     const app = readFileSync(join(WEB, 'app.js'), 'utf8')
     for (const call of [
-      "showToast(data.message || 'Reconnect sikertelen', 8000)",
-      "showToast('Reconnect hiba', 8000)",
-      "showToast(data.error || 'Smoke-test sikertelen', 8000)",
-      "showToast('Smoke-test hiba', 8000)",
+      "showToast(data.message || t('channel.toast.reconnect_failed'), 8000)",
+      "showToast(t('channel.toast.reconnect_error'), 8000)",
+      "showToast(data.error || t('channel.smoke_test.failed'), 8000)",
+      "showToast(t('channel.smoke_test.error'), 8000)",
     ]) expect(app).toContain(call)
   })
 })
