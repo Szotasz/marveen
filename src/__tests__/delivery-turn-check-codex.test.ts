@@ -196,17 +196,20 @@ describe('runDeliveryTurnCheck: codex rollouts as second evidence source', () =>
     expect(await runDeliveryTurnCheck(req([128549]), 60, 30 * 60_000, d)).toBe('alerted')
   })
 
-  it('seen wins over a Claude-side blocked-by-hook verdict (the agent is not running Claude Code at all)', async () => {
+  it('a Claude-side blocked-by-hook verdict is final: no codex scan, alert exactly as today (A5)', async () => {
     writeClaudeTranscript('a.jsonl', [
       JSON.stringify({
         type: 'system', level: 'warning', timestamp: iso(SENT + 300),
         content: `UserPromptSubmit operation blocked by hook:\nOriginal prompt: ${envelope(128550)}`,
       }),
     ])
-    writeRollout([rolloutLine(128550)])
-    const d = deps()
-    expect(await runDeliveryTurnCheck(req([128550]), 60, 30 * 60_000, d)).toBe('confirmed')
-    expect(d.notify).not.toHaveBeenCalled()
+    writeRollout([rolloutLine(128550)]) // carries the tag; must NOT be consulted for this verdict
+    const codexSessionDirs = vi.fn(async () => [codexSessions])
+    const d = deps({ codexSessionDirs })
+    expect(await runDeliveryTurnCheck(req([128550]), 60, 30 * 60_000, d)).toBe('alerted')
+    expect(codexSessionDirs).not.toHaveBeenCalled()
+    const text = String(d.notify.mock.calls[0][0])
+    expect(text).toContain('blocked by a UserPromptSubmit hook')
   })
 
   it('no claude transcript at all (unknown) + rollout evidence => confirmed', async () => {
@@ -221,6 +224,24 @@ describe('runDeliveryTurnCheck: codex rollouts as second evidence source', () =>
     rmSync(claudeDir, { recursive: true, force: true })
     const d = deps({ readCodexEvidence: async () => null })
     expect(await runDeliveryTurnCheck(req([128552]), 60, 30 * 60_000, d)).toBe('unknown')
+    expect(d.notify).not.toHaveBeenCalled()
+  })
+
+  it('no claude transcript + readable rollout WITHOUT the tag => unknown, no alert (A7: the scan is rescue-only)', async () => {
+    // R1-D72B-1451 blocker 1 red case: a readable, fresh rollout holding
+    // unrelated messages must not convert an unknown into an 'absent'.
+    rmSync(claudeDir, { recursive: true, force: true })
+    writeRollout([rolloutAssistant()])
+    const d = deps()
+    expect(await runDeliveryTurnCheck(req([128556]), 60, 30 * 60_000, d)).toBe('unknown')
+    expect(d.notify).not.toHaveBeenCalled()
+  })
+
+  it('no claude transcript, two ids, rollout sees only one => unknown for the request, no alert', async () => {
+    rmSync(claudeDir, { recursive: true, force: true })
+    writeRollout([rolloutLine(128557)])
+    const d = deps()
+    expect(await runDeliveryTurnCheck(req([128557, 128558]), 60, 30 * 60_000, d)).toBe('unknown')
     expect(d.notify).not.toHaveBeenCalled()
   })
 

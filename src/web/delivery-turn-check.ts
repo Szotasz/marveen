@@ -296,7 +296,14 @@ export async function readCodexTurnEvidence(
   return out
 }
 
-/** PURE. 'seen' from either source wins; otherwise the Claude verdict (if any) is kept. */
+/**
+ * PURE. A 'seen' from either source wins; otherwise the Claude verdict (if
+ * any) is kept verbatim, and an id NEITHER side could see is left unset.
+ * R1-D72B-1451 blocker fix (A7): a readable rollout that lacks the tag must
+ * not turn an unknown into an 'absent' -- that would alert where today's
+ * check stays silent. The codex scan is rescue-only: it can confirm, never
+ * accuse. Unset ids are read as unknown by the caller (no alert, no confirm).
+ */
 function mergeTurnEvidence(
   claude: Map<number, TurnEvidence> | null,
   codex: Map<number, TurnEvidence>,
@@ -305,8 +312,8 @@ function mergeTurnEvidence(
   const out = new Map<number, TurnEvidence>()
   for (const id of msgIds) {
     const c = claude?.get(id)
-    const x = codex.get(id)
-    out.set(id, c === 'seen' || x === 'seen' ? 'seen' : (c ?? x ?? 'absent'))
+    if (codex.get(id) === 'seen' || c === 'seen') out.set(id, 'seen')
+    else if (c !== undefined) out.set(id, c)
   }
   return out
 }
@@ -414,8 +421,11 @@ export async function runDeliveryTurnCheck(
   // Only a 'seen' from codex can rescue a miss; nothing weakens a verdict:
   // no resolvable dirs, or nothing readable there, leaves `evidence` exactly
   // as the Claude scan produced it.
-  const hasMiss = evidence == null || req.msgIds.some((id) => (evidence?.get(id) ?? 'absent') !== 'seen')
-  if (hasMiss && deps.codexSessionDirs != null && deps.readCodexEvidence != null) {
+  // R1-D72B-1451 blocker fix (A5): the scan runs ONLY for an 'absent' verdict
+  // or an unknown transcript dir. 'blocked-by-hook' is a definitive verdict
+  // (a hook blocked THIS prompt); codex evidence must not be able to mask it.
+  const claudeAbsent = evidence == null || req.msgIds.some((id) => evidence?.get(id) === 'absent')
+  if (claudeAbsent && deps.codexSessionDirs != null && deps.readCodexEvidence != null) {
     let dirs: string[] = []
     try {
       dirs = await deps.codexSessionDirs(req.toAgent)
@@ -440,11 +450,22 @@ export async function runDeliveryTurnCheck(
     return 'unknown'
   }
   const misses: Array<{ id: number; evidence: Exclude<TurnEvidence, 'seen'> }> = []
+  let blindIds = 0
   for (const id of req.msgIds) {
-    const e = evidence.get(id) ?? 'absent'
+    const e = evidence.get(id)
+    if (e === undefined) {
+      // Neither source could see this id (unknown transcript dir, no codex
+      // 'seen'): today's unknown semantics -- contributes no alert (A7).
+      blindIds++
+      continue
+    }
     if (e !== 'seen') misses.push({ id, evidence: e })
   }
   if (misses.length === 0) {
+    if (blindIds > 0) {
+      logger.debug({ to: req.toAgent, ids: req.msgIds }, 'delivery-turn-check: no verdict for some ids (unknown), no alert')
+      return 'unknown'
+    }
     logger.debug({ to: req.toAgent, ids: req.msgIds }, 'delivery-turn-check: prompt seen in transcript')
     return 'confirmed'
   }
