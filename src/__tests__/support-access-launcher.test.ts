@@ -128,8 +128,9 @@ describe("the launcher's manifest reader, on the cases the routine's reader is h
 describe("the routine's enable refusals, as sentences", () => {
   // The function exactly as the committed launcher carries it, run alone.
   const fn = LAUNCHER.slice(LAUNCHER.indexOf('enable_refusal() {'), LAUNCHER.indexOf('\n}\n', LAUNCHER.indexOf('enable_refusal() {')) + 3)
+  const mail = LAUNCHER.split('\n').filter((l) => l.startsWith('SUPPORT_MAIL='))
   const say = (code: string): string =>
-    spawnSync('/bin/sh', ['-c', `${fn}\nenable_refusal "$1"`, '_', code], { encoding: 'utf8', timeout: 10_000 }).stdout
+    spawnSync('/bin/sh', ['-c', `${mail.join('\n')}\n${fn}\nenable_refusal "$1"`, '_', code], { encoding: 'utf8', timeout: 10_000 }).stdout
 
   it('already_on (Bence 78560, Dani F1 on #2779): turn it off first, with the disable line, then a new code', () => {
     const out = say('already_on')
@@ -137,6 +138,17 @@ describe("the routine's enable refusals, as sentences", () => {
     expect(out).toContain(`~/.marveen/support/kit/${KIT_LAUNCHER_NAME} disable`)
     expect(out).toContain('új kódot')
     expect(out).not.toContain('Küldd el nekünk')
+  })
+
+  it('names the one support address, hello@marveen.io, wherever it asks the customer to write (the owner, 78568)', () => {
+    expect(mail).toEqual(['SUPPORT_MAIL=hello@marveen.io'])
+    expect(LAUNCHER).not.toMatch(/aiamindennapokban/)
+    const asks = LAUNCHER.split('\n').filter((l) => /[Íí]rj nekünk|[Kk]üldd el nekünk/.test(l))
+    expect(asks.length).toBeGreaterThan(5)
+    for (const l of asks) expect(l).toContain('$SUPPORT_MAIL')
+    expect(say('rate_limited')).not.toContain('hello@')
+    expect(say('keys_file_layout')).toContain('(hello@marveen.io)')
+    expect(say('service_unavailable')).toContain('írj nekünk (hello@marveen.io), és küldd el ezt a kódot: service_unavailable.')
   })
 
   it('an unknown code still falls through to the generic sentence with the code in it', () => {

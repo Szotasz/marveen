@@ -35,7 +35,7 @@ umask 077
 
 stop() {
   printf '%s\n' "$1" >&2
-  printf '%s\n' "A kódot most még ne írd be. Küldd el nekünk, amit a parancs kiírt, és megmondjuk a következő lépést." >&2
+  printf '%s\n' "A kódot most még ne írd be. Küldd el nekünk ($SUPPORT_MAIL), amit a parancs kiírt, és megmondjuk a következő lépést." >&2
   exit "${2:-1}"
 }
 # After the code was typed: the hint above would be wrong.
@@ -43,6 +43,8 @@ halt() {
   printf '%s\n' "$1" >&2
   exit "${2:-1}"
 }
+# Where the customer writes to us (the owner, 78568: the marveen.io address, never another domain).
+SUPPORT_MAIL=hello@marveen.io
 # Where the customer can always close: the Profile page (Mira 78449, final names).
 PROFILE_CLOSE="Lépj be a marveen.io Profil oldalára, és ott zárd le a hozzáférést a „Support-hozzáférés lezárása” gombbal (vagy véglegesen a „Gép eltávolítása a supportból” gombbal)."
 
@@ -52,17 +54,17 @@ enable_refusal() {
     code_required|code_shape|code_rejected|license_key_not_accepted)
       echo "A kód nem érvényes vagy lejárt. Kérj újat a Profil oldalon a „Kód kérése” gombbal, és futtasd újra ezt a sort." ;;
     rate_limited) echo "Túl sok próbálkozás volt. Várj néhány percet, utána futtasd újra." ;;
-    service_unavailable|answer_unreadable) echo "A marveen.io most nem érhető el innen. Próbáld újra később; ha továbbra sem megy, írj nekünk ($1)." ;;
-    consent_invalid) echo "A hozzájárulás verziója nem az, amit ez a Marveen ismer ($1). Frissítsd a Marveent, vagy írj nekünk." ;;
+    service_unavailable|answer_unreadable) echo "A marveen.io most nem érhető el innen. Próbáld újra később; ha továbbra sem megy, írj nekünk ($SUPPORT_MAIL), és küldd el ezt a kódot: $1." ;;
+    consent_invalid) echo "A hozzájárulás verziója nem az, amit ez a Marveen ismer ($1). Frissítsd a Marveent, vagy írj nekünk ($SUPPORT_MAIL)." ;;
     support_keys_unset|support_pins_invalid) echo "Ez a Marveen-kiadás még nem tartalmazza a support kulcsait ($1). Frissítsd a Marveent." ;;
     tunnel_permitted) echo "A géped SSH-beállítása legalább egy esetben hálózati alagutat enged (PermitTunnel). Amíg ez így van, a support-belépés nem kapcsolható be. A beállítást a gép rendszergazdája tudja kikapcsolni." ;;
     sshd_*|root_login_disabled|authorized_keys_path_unsupported|other_key_source|force_command_set|accept_env_too_wide)
-      echo "A géped SSH-beállítása miatt a support-belépés nem kapcsolható be ($1). Ezt a gép rendszergazdája tudja rendezni; küldd el nekünk ezt a kódot." ;;
+      echo "A géped SSH-beállítása miatt a support-belépés nem kapcsolható be ($1). Ezt a gép rendszergazdája tudja rendezni; küldd el nekünk ezt a kódot ($SUPPORT_MAIL)." ;;
     kit_*) echo "A support-készlet nincs rendben ($1). Frissítsd a Marveent, utána futtasd újra ezt a sort." ;;
     already_on) echo "A távoli segítség már be van kapcsolva ezen a gépen, vagy egy korábbi bekapcsolás félbemaradt ($1). Előbb kapcsold ki így: ~/@@SUPPORT_DIR@@/@@KIT_DIR@@/@@LAUNCHER@@ disable, utána kérj új kódot a Profil oldalon, és futtasd újra ezt a sort." ;;
     enable_not_from_kit) echo "A bekapcsolás nem a support-készletből indult ($1). Futtasd pontosan a Profil oldalon látható sort." ;;
-    keys_file_layout|enable_write_failed) echo "A géped kulcsfájlja nem írható a várt módon ($1). Küldd el nekünk ezt a kódot." ;;
-    *) echo "A bekapcsolás nem sikerült ($1). Küldd el nekünk ezt a kódot." ;;
+    keys_file_layout|enable_write_failed) echo "A géped kulcsfájlja nem írható a várt módon ($1). Küldd el nekünk ezt a kódot ($SUPPORT_MAIL)." ;;
+    *) echo "A bekapcsolás nem sikerült ($1). Küldd el nekünk ezt a kódot ($SUPPORT_MAIL)." ;;
   esac
 }
 
@@ -169,7 +171,7 @@ if [ -z "$NODE" ]; then
   c=$(PATH=$CALLER_PATH command -v node 2>/dev/null) || c=
   if [ -n "$c" ] && [ -f "$c" ] && [ -x "$c" ]; then NODE=$c; fi
 fi
-[ -n "$NODE" ] || stop "A Marveen futtatókörnyezete (Node.js) ezen a gépen nem található. Így a távoli segítség most nem kapcsolható be. Két lehetőséged van: (1) futtasd újra a Marveen telepítőjét; (2) írj nekünk, és lépésenként megmondjuk, mit tegyél."
+[ -n "$NODE" ] || stop "A Marveen futtatókörnyezete (Node.js) ezen a gépen nem található. Így a távoli segítség most nem kapcsolható be. Két lehetőséged van: (1) futtasd újra a Marveen telepítőjét; (2) írj nekünk ($SUPPORT_MAIL), és lépésenként megmondjuk, mit tegyél."
 if [ "$NODE" != "$MNODE" ]; then
   # Resolved ONCE to its absolute path (links too), then only that path is used.
   ABS=$(env -i PATH=@@RUN_PATH@@ LC_ALL=C "$NODE" -e 'process.stdout.write(process.execPath)' 2>/dev/null) || ABS=
@@ -185,9 +187,9 @@ VER=$(env -i PATH=@@RUN_PATH@@ LC_ALL=C "$NODE" --version 2>/dev/null) || VER=
 MAJOR=${VER#v}
 MAJOR=${MAJOR%%.*}
 case "$MAJOR" in
-  ''|*[!0-9]*) stop "A Marveen futtatókörnyezete (Node.js) ezen a gépen nem indul (talált: ${VER:-nincs}, kell: legalább $NODEMIN). Futtasd újra a Marveen telepítőjét, vagy írj nekünk." ;;
+  ''|*[!0-9]*) stop "A Marveen futtatókörnyezete (Node.js) ezen a gépen nem indul (talált: ${VER:-nincs}, kell: legalább $NODEMIN). Futtasd újra a Marveen telepítőjét, vagy írj nekünk ($SUPPORT_MAIL)." ;;
 esac
-[ "$MAJOR" -ge "$NODEMIN" ] || stop "A Marveen futtatókörnyezete (Node.js) túl régi (talált: $VER, kell: legalább $NODEMIN). Futtasd újra a Marveen telepítőjét, vagy írj nekünk."
+[ "$MAJOR" -ge "$NODEMIN" ] || stop "A Marveen futtatókörnyezete (Node.js) túl régi (talált: $VER, kell: legalább $NODEMIN). Futtasd újra a Marveen telepítőjét, vagy írj nekünk ($SUPPORT_MAIL)."
 [ -z "${NOTE_NODE:-}" ] || printf '%s\n' "A Marveen saját Node.js-e nem található; ezt használom: $NODE ($VER)."
 
 # --- one run of the KIT's routine through the loader (stdin: the caller's) ---
@@ -290,8 +292,8 @@ case "$rc" in
   2) stop "Ez a Marveen-kiadás még nem tudja megmutatni a hozzájárulás szövegét. Frissítsd a Marveent." ;;
   1)
     case "$ERR" in
-      "consent-text: refused: consent_text_unset") stop "Ez a Marveen-kiadás még nem tartalmazza a jóváhagyott hozzájárulás-szöveget, ezért a távoli segítség még nem kapcsolható be. Frissítsd a Marveent, vagy írj nekünk." ;;
-      "consent-text: refused: consent_invalid") stop "A hozzájárulás verziója nem az, amit ez a Marveen ismer (consent_invalid). Frissítsd a Marveent, vagy írj nekünk." ;;
+      "consent-text: refused: consent_text_unset") stop "Ez a Marveen-kiadás még nem tartalmazza a jóváhagyott hozzájárulás-szöveget, ezért a távoli segítség még nem kapcsolható be. Frissítsd a Marveent, vagy írj nekünk ($SUPPORT_MAIL)." ;;
+      "consent-text: refused: consent_invalid") stop "A hozzájárulás verziója nem az, amit ez a Marveen ismer (consent_invalid). Frissítsd a Marveent, vagy írj nekünk ($SUPPORT_MAIL)." ;;
       *) stop "A hozzájárulás szövege nem olvasható ki (1)." ;;
     esac
     ;;
@@ -329,7 +331,7 @@ case "$rc" in
   1)
     case "$ERR" in
       "enable: refused: "*) halt "$(enable_refusal "${ERR#enable: refused: }")" ;;
-      *) halt "A bekapcsolás nem sikerült. Küldd el nekünk, amit a parancs kiírt." ;;
+      *) halt "A bekapcsolás nem sikerült. Küldd el nekünk ($SUPPORT_MAIL), amit a parancs kiírt." ;;
     esac
     ;;
   *) judge "$rc" "$OUT" "A bekapcsolás"; halt "A bekapcsolás nem sikerült ($rc)." ;;
