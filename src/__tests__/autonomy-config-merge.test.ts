@@ -3,7 +3,7 @@
 // the owner narrowed stays, and the level is never touched. The merge is idempotent. Raising the level
 // itself stays the owner's step (an owner session on the dashboard; the token gets 403), see the end.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, chmodSync, symlinkSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -168,5 +168,44 @@ describe('update.sh', () => {
 
   it('the old inline merge is gone (one merge, one place to change)', () => {
     expect(UPDATE).not.toContain("const existing = new Set(live.categories.map(c => c.key));")
+  })
+})
+
+describe('the dashboard start (src/web/autonomy-config-boot.ts)', () => {
+  let store = ''
+  beforeEach(() => { store = mkdtempSync(join(tmpdir(), 'emailmax3-boot-')) })
+  afterEach(() => rmSync(store, { recursive: true, force: true }))
+  const boot = async () => (await import('../web/autonomy-config-boot.js')).mergeAutonomyConfigAtBoot({ root: ROOT, store })
+
+  it('raises the factory 2 to 3 on the first start, writes nothing on the next (the same script update.sh runs)', async () => {
+    writeFileSync(join(store, 'autonomy-config.json'), JSON.stringify(liveWith({ level: 1 })))
+    const first = await boot()
+    expect(first).toMatchObject({ added: 0, raised: ['email_send'], wrote: true, line: 'added=0 raised=email_send' })
+    const after = JSON.parse(readFileSync(join(store, 'autonomy-config.json'), 'utf8'))
+    expect([emailOf(after).level, emailOf(after).maxLevel]).toEqual([1, 3])
+    const bytes = readFileSync(join(store, 'autonomy-config.json'))
+    expect(await boot()).toMatchObject({ wrote: false, line: 'added=0 raised=-' })
+    expect(readFileSync(join(store, 'autonomy-config.json')).equals(bytes)).toBe(true)
+  })
+
+  it('a narrowed ceiling stays, and no config yet means nothing to do (the installer seeds it)', async () => {
+    expect(await boot()).toBeNull()
+    writeFileSync(join(store, 'autonomy-config.json'), JSON.stringify(liveWith({ maxLevel: 1 })))
+    expect(await boot()).toMatchObject({ wrote: false, raised: [] })
+  })
+
+  it('leaves no temp file behind, and its temp name is one the store watcher counts as a system file', async () => {
+    writeFileSync(join(store, 'autonomy-config.json'), JSON.stringify(liveWith({})))
+    await boot()
+    expect(readdirSync(store)).toEqual(['autonomy-config.json'])
+    expect(readFileSync(SCRIPT, 'utf8')).toMatch(/\.tmp`/)
+  })
+
+  it('index.ts runs it at start, before the web server, and a failure only logs', () => {
+    const idx = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
+    const at = idx.indexOf('await mergeAutonomyConfigAtBoot()')
+    expect(at).toBeGreaterThan(idx.indexOf('initDatabase()'))
+    expect(at).toBeLessThan(idx.indexOf('startWebServer(WEB_PORT)'))
+    expect(idx.slice(at - 200, at + 400)).toMatch(/try \{[\s\S]*catch \(err\) \{\s*logger\.warn/)
   })
 })

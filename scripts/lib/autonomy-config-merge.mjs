@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Merge the shipped seed-config/autonomy-config.json into an install's store/autonomy-config.json.
 //
-// Called by update.sh (and only by an update or install path: an agent's own session may not write
+// Called by update.sh and by the dashboard at start (src/web/autonomy-config-boot.ts), and only there: an agent's own session may not write
 // store/autonomy-config.json at all, the db-write-gate refuses it, GATEFILES1110). Two things, both
 // idempotent, so a second run writes nothing:
 //   1. A category the install does not have yet is added from the seed, as the seed ships it.
@@ -13,6 +13,7 @@
 // Usage: node autonomy-config-merge.mjs <seed.json> <store/autonomy-config.json>
 // Prints one line, `added=<n> raised=<keys or ->`, and exits 0; a file that is missing or does not
 // parse is left alone (exit 1, nothing written).
+import { randomBytes } from 'node:crypto'
 import { readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -45,30 +46,38 @@ export function mergeAutonomyConfig(seed, live, raises = MAX_LEVEL_RAISES) {
   return { config: out, added, raised }
 }
 
+/**
+ * Read both files, merge, and write the target only if something changed (same mode, a sibling temp file
+ * renamed over it; the temp name ends in .tmp, which the store watcher counts as a system file).
+ * Throws on a file that is missing or does not parse; the target is then left alone.
+ */
+export function mergeAutonomyConfigFiles(seedPath, targetPath) {
+  const seed = JSON.parse(readFileSync(seedPath, 'utf8'))
+  const live = JSON.parse(readFileSync(targetPath, 'utf8'))
+  const { config, added, raised } = mergeAutonomyConfig(seed, live)
+  if (!added && !raised.length) return { added, raised, wrote: false }
+  config.updated_at = Math.floor(Date.now() / 1000)
+  let mode = 0o644
+  try { mode = statSync(targetPath).mode & 0o777 } catch { /* keep the default */ }
+  const tmp = `${targetPath}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
+  writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode })
+  renameSync(tmp, targetPath)
+  return { added, raised, wrote: true }
+}
+
+/** The one line both callers print or log. */
+export const describeMerge = ({ added, raised }) => `added=${added} raised=${raised.length ? raised.join(',') : '-'}`
+
 function main(argv) {
   const [seedPath, targetPath] = argv
   if (!seedPath || !targetPath) { process.stderr.write('usage: autonomy-config-merge.mjs <seed.json> <target.json>\n'); return 2 }
-  let result
   try {
-    const seed = JSON.parse(readFileSync(seedPath, 'utf8'))
-    const live = JSON.parse(readFileSync(targetPath, 'utf8'))
-    result = mergeAutonomyConfig(seed, live)
+    process.stdout.write(describeMerge(mergeAutonomyConfigFiles(seedPath, targetPath)) + '\n')
+    return 0
   } catch (err) {
     process.stderr.write(`autonomy-config-merge: left alone (${err instanceof Error ? err.message : String(err)})\n`)
     return 1
   }
-  const { config, added, raised } = result
-  if (added || raised.length) {
-    config.updated_at = Math.floor(Date.now() / 1000)
-    // Same file, same mode: write a sibling and rename it over the target.
-    let mode = 0o644
-    try { mode = statSync(targetPath).mode & 0o777 } catch { /* keep the default */ }
-    const tmp = `${targetPath}.tmp-${process.pid}`
-    writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode })
-    renameSync(tmp, targetPath)
-  }
-  process.stdout.write(`added=${added} raised=${raised.length ? raised.join(',') : '-'}\n`)
-  return 0
 }
 
 // Run as a command, not when imported. Compared as real paths: started through a path with a link in it
