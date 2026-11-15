@@ -84,7 +84,7 @@ cp "$KIT/manifest" "$HOMEDIR/manifest.bak"
 printf 'extra line\n' >> "$KIT/manifest"
 OUT=$("$L" 2>&1); rc=$?
 check "changed manifest: exit 1" "$rc" 1
-contains "it says kit_manifest_unreadable" "$OUT" "kit_manifest_unreadable"
+contains "the launcher's own reader refuses it" "$OUT" "A készlet jegyzéke nem a várt alakú, vagy hiányzik"
 cp "$HOMEDIR/manifest.bak" "$KIT/manifest"; rm -f "$HOMEDIR/manifest.bak"
 
 echo "(h2) a manifest with a carriage return, or without its final line end: refused before node runs"
@@ -92,11 +92,11 @@ cp "$KIT/manifest" "$HOMEDIR/manifest.bak"
 sed 's/$/\r/' "$HOMEDIR/manifest.bak" > "$KIT/manifest"
 OUT=$("$L" 2>&1); rc=$?
 check "CR in the manifest: exit 1" "$rc" 1
-contains "CR: kit_manifest_unreadable" "$OUT" "kit_manifest_unreadable"
+contains "CR: the launcher's own refusal, before node runs" "$OUT" "A készlet jegyzéke nem a várt alakú (kit_manifest_unreadable)."
 printf '%s' "$(cat "$HOMEDIR/manifest.bak")" > "$KIT/manifest"
 OUT=$("$L" 2>&1); rc=$?
 check "no final LF: exit 1" "$rc" 1
-contains "no final LF: kit_manifest_unreadable" "$OUT" "kit_manifest_unreadable"
+contains "no final LF: the launcher's own refusal, before node runs" "$OUT" "A készlet jegyzéke nem a várt alakú (kit_manifest_unreadable)."
 cp "$HOMEDIR/manifest.bak" "$KIT/manifest"; rm -f "$HOMEDIR/manifest.bak"
 
 echo "(d2) disable runs the TREE's routine even when the kit's routine is not the manifest's (N14/a)"
@@ -120,7 +120,7 @@ echo "(i) the kit folder as a link: refused"
 mv "$KIT" "$SUPPORT/kit-real"; ln -s "$SUPPORT/kit-real" "$KIT"
 OUT=$("$SUPPORT/kit-real/support-access" 2>&1); rc=$?
 check "kit folder link: exit 1" "$rc" 1
-contains "it says kit_link" "$OUT" "kit_link"
+contains "the launcher's own refusal of the link" "$OUT" "A support-készlet mappája link"
 rm "$KIT"; mv "$SUPPORT/kit-real" "$KIT"
 
 echo "(j) an unknown argument is a usage error"
