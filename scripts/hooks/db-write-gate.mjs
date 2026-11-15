@@ -760,9 +760,51 @@ function pathWords(text, ctx = {}) {
   return [...out]
 }
 
+// WRITEGATERELPATH1115: is the current directory one that HOLDS a protected path (an ancestor of one, or inside a
+// protected directory)? From there a relative word can name the path without any path-like spelling (a bare name).
+// Cached per target list and directory.
+const holdsCache = new WeakMap()
+function cwdHoldsTarget(ctx) {
+  if (!ctx.cwd) return false
+  const { list } = installTargets(ctx.root, ctx.subAgent === true, ctx.projectDir, ctx.configDir)
+  let byCwd = holdsCache.get(list)
+  if (!byCwd) holdsCache.set(list, (byCwd = new Map()))
+  const cwd = resolve(String(ctx.cwd))
+  if (!byCwd.has(cwd)) {
+    const key = pathKey(cwd)
+    byCwd.set(cwd, list.some((t) => (t.pattern ? ['ancestor', 'exact', 'under'].includes(patternRel(key, t)) : underKey(t.key, key) || (t.dir && underKey(key, t.key)))))
+  }
+  return byCwd.get(cwd)
+}
+
+// WRITEGATERELPATH1115: a relative word after a change to an unknown directory. It may be read from any directory, so it
+// is compared with every protected path's TAIL: the word's segments as the last segments of the path ('unresolved', read
+// as the path itself), as a run of its segments (an 'ancestor'), or a protected directory's tail followed by more ('under').
+function lostCwdRel(word, list) {
+  const W = normalizePathSegments('/' + word).filter((x) => x !== '' && x !== '.')
+  if (!W.length || W.includes('..')) return W.length ? 'unresolved' : null
+  let best = null
+  for (const t of list) {
+    if (t.pattern) continue
+    const T = normalizePathSegments(t.abs).filter((x) => x !== '')
+    for (let start = 0; start < T.length; start++) {
+      const n = Math.min(W.length, T.length - start)
+      let ok = true
+      for (let i = 0; i < n && ok; i++) ok = nameForms(W[i]).some((f) => f.toLowerCase() === T[start + i].toLowerCase())
+      if (!ok) continue
+      if (start + W.length === T.length) return 'unresolved'
+      if (start + W.length > T.length) { if (t.dir) return 'under'; continue }
+      best = 'ancestor'
+    }
+  }
+  return best
+}
+
 function isCandidate(word, ctx) {
   if (GLOB_CHAR_RX.test(word) || UNRESOLVED_RX.test(word)) return true
+  if (ctx.cwdLost && !word.startsWith('/') && !word.startsWith('~')) return true
   if (ctx.cwdInsideDir && !word.startsWith('/') && !word.startsWith('~')) return true
+  if (!word.startsWith('/') && !word.startsWith('~') && cwdHoldsTarget(ctx)) return true
   if (PATH_LIKE_RX.test(word)) return true
   const root = basename(ctx.root).toLowerCase()
   return nameForms(word).some((f) => f.split('/').some((s) => TARGET_SEGMENT_NAMES.has(s) || s === root))
@@ -822,7 +864,7 @@ export function classifyWord(word, ctx) {
     return best
   }
   const abs = w.startsWith('/') ? w : (ctx.cwd ? resolve(ctx.cwd, w) : null)
-  if (!abs) return null
+  if (!abs) return ctx.cwdLost ? lostCwdRel(w, list) : null
   const key = pathKey(abs)
   let best = null
   for (const t of list) {
@@ -1055,6 +1097,9 @@ function moveCwd(own, seg, ctx) {
   cwdAfterSegment(own, ctx)
   const first = shellWords(String(own ?? '').trim())?.[0]?.value
   const isCd = first === 'cd' || first === 'pushd'
+  // WRITEGATERELPATH1115: a directory change to a place this gate cannot know: the relative words after it are read
+  // against every protected path's tail (fail closed), not dropped
+  if (first === 'cd' || first === 'pushd' || first === 'popd') ctx.cwdLost = !ctx.cwd
   if (altBefore) {
     const a = { ...ctx, cwd: altBefore }
     cwdAfterSegment(own, a)
@@ -1284,6 +1329,9 @@ export function subshellParts(own) {
   return { opens, body: body.trim(), closes }
 }
 
+// A directory change anywhere in a command (cd, pushd, popd as a word of their own).
+const DIR_CHANGE_RX = /(?:^|[\s;&|(`{])(?:cd|pushd|popd)(?=$|[\s;&|)`}])/
+
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
   const cmd = String(command ?? '')
@@ -1291,7 +1339,9 @@ export function installFileDeny(command, opts = {}) {
   // test), whose hits include the literal reading's; the real reading (for python a python start, py-inline-data.py)
   // is computed only past it. (Only the segment reading below and the dotglob test read it.)
   const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd, true),
-    reShell: true }
+    reShell: true,
+    // WRITEGATERELPATH1115: a command that sets HOME itself: a `cd ~` / `cd $HOME` there leads to no known directory
+    homeTouched: /(?<![$\w{])HOME(?!\w)/.test(cmd.replace(/\$(?=['"])|["'\\]/g, '')) }
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir
     && (t.pattern ? ['exact', 'under'].includes(patternRel(pathKey(cwd), t)) : underKey(pathKey(cwd), t.key)))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
@@ -1301,7 +1351,9 @@ export function installFileDeny(command, opts = {}) {
   // INSTRWRITEEXEC1105: a printf/echo escape glued to a name (`scripts/hooks\\n`, `\\x2f`) hides it from the raw text, so
   // a command with a backslash is also read with its escapes decoded
   const decoded = cmd.includes('\\') ? decodePrintEscapes(cmd) : ''
-  if (!hitsIn(cmd, ctx).length && !(decoded && hitsIn(decoded, ctx).length) && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd) && !CLAUDE_DIR_WORD_RX.test(cmd) && !COPIER_WORD_RX.test(cmd)) return false
+  // WRITEGATERELPATH1115: the fast path reads every word from the caller's cwd. After a change of directory a relative
+  // word lands elsewhere, so a command that changes directory always goes on to the segments, which follow the cwd.
+  if (!DIR_CHANGE_RX.test(cmd) && !hitsIn(cmd, ctx).length && !(decoded && hitsIn(decoded, ctx).length) && !IMPLICIT_WRITER_RX.test(cmd) && !GIT_WORD_RX.test(cmd) && !CLAUDE_DIR_WORD_RX.test(cmd) && !COPIER_WORD_RX.test(cmd)) return false
   // WORKERCFGDIR1104: read over the WHOLE command, a pipe carries a quoted glob to the next segment (`printf '*' | xargs rm`)
   // GATESCRIPTARG1111: a python/node script-file run is no re-shelling program for its quoted arguments (reShellText)
   ctx.reShell = reShellsText(reShellText(cmd, ctx.root))

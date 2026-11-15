@@ -718,7 +718,14 @@ export function cwdAfterSegment(seg, ctx) {
   const name = words[0].value
   if (name !== 'cd' && name !== 'pushd' && name !== 'popd') return
   const arg = words.slice(1).find((w) => !/^-[LPe@]+$/.test(w.value))
-  if (name === 'popd' || !arg || arg.dollar || /[$`*?[]/.test(arg.value) || arg.value === '-') { ctx.cwd = null; return }
+  // WRITEGATERELPATH1115: a bare `cd`, `cd ~`, `cd $HOME` and `cd ${HOME}` go to the home, unless the command gives HOME
+  // a value of its own (then the home is not known here)
+  if (name === 'cd' && (!arg || arg.value === '~' || /^\$(?:HOME|\{HOME\})$/.test(arg.value))) {
+    ctx.cwd = ctx.homeTouched ? null : homedir()
+    return
+  }
+  // a substitution the parser replaced with its NUL-fenced marker (run-time output) is no known directory either
+  if (name === 'popd' || !arg || arg.dollar || /[$`*?[\u0000]/.test(arg.value) || arg.value === '-') { ctx.cwd = null; return }
   // a ~ under a HOME the command set itself is not the real home (EGRESSHOME1106); ~+ / ~- / ~N are the cwd, the
   // previous cwd and the dir stack (Dani 71720), never the home: unknown here
   if ((ctx.homeTouched && arg.value.startsWith('~')) || DIR_TILDE_WORD_RX.test(arg.value)) { ctx.cwd = null; return }
