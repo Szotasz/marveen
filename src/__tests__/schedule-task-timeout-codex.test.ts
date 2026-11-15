@@ -102,13 +102,21 @@ describe('done-run wiring in the watchdog sweep: no second injection after prove
   const doneBranchIdx = SRC.indexOf("if (decision === 'done' || decision === 'abandoned') {")
   const alertBranchIdx = SRC.indexOf("} else if (decision === 'alert') {", doneBranchIdx)
   const lostBranchIdx = SRC.indexOf("} else if (decision === 'lost') {", alertBranchIdx)
-  const staleBranchIdx = SRC.indexOf("if (decision === 'stale')", lostBranchIdx)
+  // The sweep's decision chain ENDS at the lost branch (done -> alert ->
+  // escalate -> lost&&parked -> lost). The later "if (decision === 'stale')"
+  // in this file belongs to the catch-up scan's own decision variable, not to
+  // this chain, so it is deliberately NOT an anchor here (round-4 finding:
+  // bounding the lost branch by it left everything after the chain's real end
+  // unchecked, and the anchor itself was the wrong mechanism's).
+  const lostEndIdx = SRC.indexOf('taskInflightMap.delete(key)', lostBranchIdx)
+  const enqueueRe = /insertPendingTaskRetryIfNew\([^)]*'lost-injection'/
+  const giveupIdx = SRC.indexOf("decideLostRedeliveryAction(priorAttempts) === 'giveup'", lostBranchIdx)
 
-  it('branch anchors line up: done -> alert -> lost -> stale', () => {
+  it('branch anchors line up: done -> alert -> lost, the lost branch bounded by its terminal delete', () => {
     expect(doneBranchIdx).toBeGreaterThan(0)
     expect(alertBranchIdx).toBeGreaterThan(doneBranchIdx)
     expect(lostBranchIdx).toBeGreaterThan(alertBranchIdx)
-    expect(staleBranchIdx).toBeGreaterThan(lostBranchIdx)
+    expect(lostEndIdx).toBeGreaterThan(lostBranchIdx)
   })
 
   it('the done/abandoned branch enqueues NO pending retry', () => {
@@ -121,12 +129,21 @@ describe('done-run wiring in the watchdog sweep: no second injection after prove
     expect(doneBranch).not.toMatch(/appendTaskRun\([^)]*'lost'/)
   })
 
-  it("the 'lost-injection' retry enqueue lives only inside the lost branch", () => {
-    // Before the lost branch opens there is no lost-injection reason at all...
-    expect(SRC.slice(0, lostBranchIdx)).not.toContain("'lost-injection'")
-    // ...and the one real call sits inside the lost branch, before the stale
-    // branch that closes the decision chain.
-    const lostRegion = SRC.slice(lostBranchIdx, staleBranchIdx)
-    expect(lostRegion).toMatch(/insertPendingTaskRetryIfNew\([^)]*'lost-injection'/)
+  it("the 'lost-injection' retry enqueue exists EXACTLY ONCE, inside the lost branch", () => {
+    // Exactly one lost-injection enqueue in the whole sweep source: a second
+    // one ANYWHERE -- before the branch, in a later section, or in the
+    // catch-up scan -- must fail here. Checking only the prefix before the
+    // branch was the round-4 blocker: everything after the lost branch was
+    // unchecked.
+    expect(SRC.match(/insertPendingTaskRetryIfNew\([^)]*'lost-injection'/g)).toHaveLength(1)
+    // ...and that one call sits inside the lost branch: after the branch
+    // opens, before its own terminal taskInflightMap.delete(key) statement.
+    const enqueueIdx = SRC.search(enqueueRe)
+    expect(enqueueIdx).toBeGreaterThan(lostBranchIdx)
+    expect(enqueueIdx).toBeLessThan(lostEndIdx)
+    // ...past the give-up check of this branch: a retry is enqueued only
+    // where the sweep decided NOT to give up on the occurrence.
+    expect(giveupIdx).toBeGreaterThan(lostBranchIdx)
+    expect(enqueueIdx).toBeGreaterThan(giveupIdx)
   })
 })
