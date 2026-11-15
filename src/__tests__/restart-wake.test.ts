@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -8,13 +8,17 @@ const sendSystemDirective = vi.fn(async (..._a: unknown[]): Promise<'sent'> => '
 vi.mock('../web/system-directive.js', () => ({ sendSystemDirective: (...a: unknown[]) => sendSystemDirective(...a) }))
 
 import {
+  MAIN_RESTART_WAKE_REASON,
   RESTART_WAKE_DELAY_MS,
   __resetRestartWake,
   cancelRestartWake,
   hasPendingRestartWake,
+  mainRestartWakePrompt,
   restartOptsFromBody,
   restartWakePrompt,
+  scheduleMainRestartWake,
   scheduleRestartWake,
+  wantsMainRestartWake,
   type RestartWakeOutcome,
 } from '../web/restart-wake.js'
 import { logger } from '../logger.js'
@@ -104,6 +108,24 @@ describe('scheduleRestartWake: one wake, after the boot grace, as the last resta
     expect(hasPendingRestartWake('devy')).toBe(false)
   })
 
+  it('a caller that passes no text gets the --continue text, unchanged (the callers before MAINRESTARTWAKE1115)', async () => {
+    scheduleRestartWake('devy', 'agent-devy', 'api-restart', { send })
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS)
+    await flush()
+    expect(sent.map((s) => s.text)).toEqual([restartWakePrompt('api-restart')])
+  })
+
+  it('deps.text replaces the --continue text, and only the text: same agent, session, grace and one-wake rule', async () => {
+    scheduleRestartWake('devy', 'agent-devy', 'api-restart', { send, text: 'SAJAT SZOVEG' })
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS - 1)
+    await flush()
+    expect(send).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    await flush()
+    expect(sent).toEqual([{ agent: 'devy', session: 'agent-devy', text: 'SAJAT SZOVEG' }])
+    expect(sent[0].text).not.toContain('--continue')
+  })
+
   it('a failing delivery is logged and does not escape as an unhandled rejection', async () => {
     const boom = vi.fn(async (): Promise<RestartWakeOutcome> => { throw new Error('tmux gone') })
     scheduleRestartWake('devy', 'agent-devy', 'api-restart', { send: boom })
@@ -163,6 +185,103 @@ describe('restartWakePrompt', () => {
   })
 })
 
+// MAINRESTARTWAKE1115: the manual restart of the main agent is fresh (no
+// --continue) and nothing typed into the new session, so it sat idle until its
+// next input (measured 2026-11-14: 23:09:33 -> 23:15:12, the first scheduled task).
+describe('mainRestartWakePrompt: the fresh main restart gets a text that does not claim the conversation is back', () => {
+  const p = mainRestartWakePrompt('manual-main-restart', '/srv/app/HANDOFF.md')
+  it('is a RESTART-WAKE that names the caller and the handoff file, and tells an idle agent not to invent work', () => {
+    expect(p.startsWith('[RESTART-WAKE]')).toBe(true)
+    expect(p).toContain('ok: manual-main-restart')
+    expect(p).toContain('/srv/app/HANDOFF.md')
+    // A manual restart asks for no handoff first: a leftover file must not be followed blindly.
+    expect(p).toContain('nezd meg a datumat')
+    expect(p).toContain('egy regi atado nem a mostani allapot')
+    expect(p).toContain('kanban')
+    expect(p).toContain('ne talalj ki magadnak feladatot')
+  })
+  it('says the conversation is NOT back, and carries none of the --continue wording', () => {
+    expect(p).toContain('NEM maradt meg')
+    expect(p).not.toContain('--continue')
+    expect(p).not.toContain('megmaradt, de')
+    expect(p).not.toContain('utolso lepeseidet')
+    expect(p).not.toBe(restartWakePrompt('manual-main-restart'))
+  })
+})
+
+describe('wantsMainRestartWake: the manual main restart wakes unless told not to', () => {
+  it('no body, an empty body or {}: wake (the dashboard button sends no body)', () => {
+    expect(wantsMainRestartWake('')).toBe(true)
+    expect(wantsMainRestartWake('   ')).toBe(true)
+    expect(wantsMainRestartWake(Buffer.alloc(0))).toBe(true)
+    expect(wantsMainRestartWake('{}')).toBe(true)
+    expect(wantsMainRestartWake('{"force": true}')).toBe(true)
+  })
+  it('exactly {"wake": false} switches it off, as a string or a Buffer, with or without force', () => {
+    expect(wantsMainRestartWake('{"wake": false}')).toBe(false)
+    expect(wantsMainRestartWake(Buffer.from('{"wake": false}'))).toBe(false)
+    expect(wantsMainRestartWake('{"force": true, "wake": false}')).toBe(false)
+  })
+  it('only the literal false switches it off; an unreadable body keeps the default', () => {
+    for (const body of ['{"wake": "false"}', '{"wake": 0}', '{"wake": null}', '{"wake": true}', 'not json', 'null', '[]', '"wake"']) {
+      expect(wantsMainRestartWake(body), body).toBe(true)
+    }
+  })
+})
+
+describe('scheduleMainRestartWake: one fresh-restart wake for the main agent, on the shared timer', () => {
+  const sent: Array<{ agent: string; session: string; text: string }> = []
+  const send = vi.fn(async (agent: string, session: string, text: string): Promise<RestartWakeOutcome> => {
+    sent.push({ agent, session, text })
+    return 'sent'
+  })
+  beforeEach(() => { vi.useFakeTimers(); __resetRestartWake(); sent.length = 0; send.mockClear(); sendSystemDirective.mockClear() })
+  afterEach(() => { __resetRestartWake(); vi.useRealTimers() })
+
+  it('sends nothing during the boot grace, then exactly one wake with the fresh-restart text', async () => {
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', { send })
+    expect(hasPendingRestartWake('marveen')).toBe(true)
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS - 1)
+    await flush()
+    expect(send).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    await flush()
+    expect(sent).toEqual([{
+      agent: 'marveen',
+      session: 'marveen-channels',
+      text: mainRestartWakePrompt(MAIN_RESTART_WAKE_REASON, '/srv/app/HANDOFF.md'),
+    }])
+    expect(hasPendingRestartWake('marveen')).toBe(false)
+    vi.advanceTimersByTime(10 * RESTART_WAKE_DELAY_MS)
+    await flush()
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('two manual restarts inside the grace end in one wake, after the last one', async () => {
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', { send })
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS - 5_000)
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', { send })
+    vi.advanceTimersByTime(5_000)
+    await flush()
+    expect(send).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS)
+    await flush()
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('the default sender is the same authenticated directive: waits for an idle pane, gives up on a busy one', async () => {
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md')
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS)
+    await flush()
+    for (let i = 0; i < 20 && sendSystemDirective.mock.calls.length === 0; i++) await flush()
+    expect(sendSystemDirective).toHaveBeenCalledTimes(1)
+    const [agent, session, text, host, opts] = sendSystemDirective.mock.calls[0]
+    expect([agent, session, host]).toEqual(['marveen', 'marveen-channels', null])
+    expect(String(text)).toBe(mainRestartWakePrompt(MAIN_RESTART_WAKE_REASON, '/srv/app/HANDOFF.md'))
+    expect(opts).toEqual({ waitForIdle: true, onBusyTimeout: 'abort' })
+  })
+})
+
 // The IO-heavy modules (agent-process, the runners, the routes) cannot be
 // imported here, so the wiring is pinned at the source: WHICH callers ask for a
 // wake, and the one condition under which restartAgentProcess schedules it. The
@@ -199,5 +318,57 @@ describe('wiring: the wake is asked for by the decided callers only (b\')', () =
     const guard = src('web/context-guard-runner.ts')
     expect(guard).toContain('restartAgentProcess(name, { fresh: true, ownsResume: true })')
     expect(guard).not.toMatch(/restartAgentProcess\([^)]*wake/)
+  })
+})
+
+describe('wiring: the fresh main wake is owed by the two manual restart routes only (MAINRESTARTWAKE1115)', () => {
+  const CALL = 'if (wantsMainRestartWake('
+  const SCHEDULE = "scheduleMainRestartWake(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, join(PROJECT_ROOT, 'HANDOFF.md'))"
+
+  it('POST /api/marveen/restart: scheduled after hardRestartMarveenChannels() and after its 500 exit, before the ok answer', () => {
+    const route = src('web/routes/marveen.ts')
+    const start = route.indexOf("path === '/api/marveen/restart' && method === 'POST'")
+    const end = route.indexOf("path === '/api/marveen/avatar'", start)
+    const body = route.slice(start, end)
+    const hard = body.indexOf('hardRestartMarveenChannels()')
+    const failed = body.indexOf("if (!result.ok) { json(res, { error: result.error || 'Restart failed' }, 500); return true }")
+    const wake = body.indexOf(CALL)
+    const ok = body.indexOf('json(res, { ok: true })')
+    expect(hard).toBeGreaterThan(-1)
+    expect(failed).toBeGreaterThan(hard)
+    expect(wake).toBeGreaterThan(failed)
+    expect(ok).toBeGreaterThan(wake)
+    expect(body).toContain(SCHEDULE)
+    expect(body.match(/scheduleMainRestartWake\(/g)).toHaveLength(1)
+  })
+
+  it('POST /api/agents/:name/restart (main branch): scheduled only inside the ok branch of hardRestartMarveenChannels()', () => {
+    const route = src('web/routes/agents.ts')
+    const start = route.indexOf('if (isMainChannelsAgent(name)) {', route.indexOf('restartMatch && method'))
+    const end = route.indexOf('if (!existsSync(agentDir(name)))', start)
+    const body = route.slice(start, end)
+    const hard = body.indexOf('hardRestartMarveenChannels()')
+    const okBranch = body.indexOf('if (r.ok) {')
+    const wake = body.indexOf(CALL)
+    const failed = body.indexOf("json(res, { error: r.error || 'Restart failed' }, 500)")
+    expect(hard).toBeGreaterThan(-1)
+    expect(okBranch).toBeGreaterThan(hard)
+    expect(wake).toBeGreaterThan(okBranch)
+    expect(failed).toBeGreaterThan(wake)
+    expect(body).toContain(SCHEDULE)
+    expect(body.match(/scheduleMainRestartWake\(/g)).toHaveLength(1)
+  })
+
+  it('no other caller of hardRestartMarveenChannels() schedules it: the guard brings its own directive, the rest is recovery', () => {
+    const web = join(SRC, 'web')
+    const files = (readdirSync(web, { recursive: true }) as string[])
+      .map((f) => f.split('\\').join('/'))
+      .filter((f) => f.endsWith('.ts') && !f.includes('__tests__'))
+    const hardCallers = files.filter((f) => readFileSync(join(web, f), 'utf8').includes('hardRestartMarveenChannels('))
+    const wakers = files.filter((f) => readFileSync(join(web, f), 'utf8').includes('scheduleMainRestartWake('))
+    // Negative control for the scan itself: it does see the other callers.
+    expect(hardCallers).toEqual(expect.arrayContaining(['context-guard-runner.ts', 'channel-monitor.ts']))
+    expect(hardCallers.length).toBeGreaterThan(wakers.length)
+    expect(wakers.sort()).toEqual(['restart-wake.ts', 'routes/agents.ts', 'routes/marveen.ts'])
   })
 })

@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
-import { restartOptsFromBody } from '../restart-wake.js'
+import { restartOptsFromBody, scheduleMainRestartWake, wantsMainRestartWake } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
@@ -2724,14 +2724,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // the precedent in the channels-config handler above. Sub-agents unchanged.
     if (isMainChannelsAgent(name)) {
       // A kezi restart nem vagja el a futo turnt. Beragadt fo-agensnel csak explicit {"force": true} atlepi a kaput.
-      const force = wantsForceRestart(await readBody(req))
+      const mainRestartBody = await readBody(req)
+      const force = wantsForceRestart(mainRestartBody)
       if (force) logger.warn({ route: '/api/agents/:name/restart' }, 'manual main restart forced past the pane gate')
       if (!force) {
         const gate = await gateManualRestart(MAIN_CHANNELS_SESSION)
         if (!gate.allow) { json(res, { error: 'restart-blocked', reason: gate.reason, hint: MANUAL_RESTART_FORCE_HINT }, 409); return true }
       }
       const r = hardRestartMarveenChannels()
-      if (r.ok) { json(res, { ok: true }); return true }
+      if (r.ok) {
+        // MAINRESTARTWAKE1115: same wake as POST /api/marveen/restart -- the same restart must not
+        // wake or stay silent depending on which of the two URLs asked for it. See restart-wake.ts.
+        if (wantsMainRestartWake(mainRestartBody)) scheduleMainRestartWake(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, join(PROJECT_ROOT, 'HANDOFF.md'))
+        json(res, { ok: true })
+        return true
+      }
       json(res, { error: r.error || 'Restart failed' }, 500)
       return true
     }

@@ -22,6 +22,22 @@
 // someone else. No caller in this repository sends {"wake": false} today; the
 // switch is there for an external script that restarts an agent and then types
 // its own instruction, so it does not get a second one ~25 s later.
+//
+// MAINRESTARTWAKE1115: the MANUAL restart of the main agent is the one fresh
+// restart that had no directive of its own. POST /api/marveen/restart (and the
+// main branch of POST /api/agents/<name>/restart) respawn the channels session
+// with no --continue and typed nothing into it, so the fresh session sat at an
+// empty prompt until some other input arrived. Measured 2026-11-14: a manual
+// restart at 23:09:33 stayed idle until the first scheduled task fired at
+// 23:15:12. Those two routes now owe the main agent one wake with its own text
+// (mainRestartWakePrompt: the conversation is NOT back, so it points at
+// HANDOFF.md and the kanban instead of "your last steps"). Every other caller
+// of hardRestartMarveenChannels() stays without one: the context guard and the
+// restart gate inject their own directive, and the recovery paths (reauth,
+// inbound probe, stuck input, onboarding, rotation) restart a session that had
+// nothing to resume. The pending wake is an in-memory timer: a dashboard
+// restart inside the boot grace loses it, and the session then waits for its
+// next input exactly as it did before this change.
 import { logger } from '../logger.js'
 
 /** Grace for the restarted session's boot + SessionStart hooks, as the restart gate's WAKE_DELAY_MS. */
@@ -66,6 +82,46 @@ export function restartOptsFromBody(raw: string): { fresh: boolean; wake?: Resta
   return { fresh, wake: { reason: 'api-restart' } }
 }
 
+/** What the manual main restart puts into the wake text and the log as the caller. */
+export const MAIN_RESTART_WAKE_REASON = 'manual-main-restart'
+
+/**
+ * The wake text for a FRESH manual restart of the main agent. Unlike
+ * restartWakePrompt it must not say the conversation is back: the new session
+ * knows nothing, so it is pointed at what survives a restart on disk. Nobody
+ * asked for a handoff before a manual restart, so the file may be a leftover
+ * of an older context-guard restart: the text says to check its date first.
+ */
+export function mainRestartWakePrompt(reason: string, handoffPath: string): string {
+  return (
+    `[RESTART-WAKE] A munkamenetedet kezzel ujrainditottak (friss inditas, ok: ${reason}): ` +
+    'a korabbi beszelgetes NEM maradt meg. ' +
+    `Ha letezik a ${handoffPath} fajl, nezd meg a datumat: ha friss, olvasd be, es FOLYTASD az ott leirt munkat; ` +
+    'egy regi atado nem a mostani allapot, azt ne kovesd. ' +
+    'Nezd meg a kanban tabladat es a hot memoriaidat is. ' +
+    'Ne kezdd elolrol, ami mar kesz, es ne delegald ujra, amit mar atadtal. ' +
+    'Ha nem volt futo munkad, az is teljes erteku allapot: olyankor ne talalj ki magadnak feladatot.'
+  )
+}
+
+/**
+ * The manual main restart's body -> wake or not. ON unless the body says
+ * exactly {"wake": false}, as restartOptsFromBody does for the sub-agents: the
+ * dashboard button sends no body and must wake, and a script that restarts the
+ * main agent and then types its own first prompt can switch it off. Reads the
+ * same body the force flag is read from; an unreadable one keeps the default.
+ */
+export function wantsMainRestartWake(body: Buffer | string): boolean {
+  let parsed: unknown = {}
+  try {
+    const text = typeof body === 'string' ? body : body.toString('utf-8')
+    parsed = JSON.parse(text.trim() === '' ? '{}' : text)
+  } catch {
+    parsed = {}
+  }
+  return !(parsed !== null && typeof parsed === 'object' && (parsed as Record<string, unknown>).wake === false)
+}
+
 const pending = new Map<string, ReturnType<typeof setTimeout>>()
 
 async function sendAsDirective(agent: string, session: string, text: string): Promise<RestartWakeOutcome> {
@@ -78,19 +134,21 @@ async function sendAsDirective(agent: string, session: string, text: string): Pr
 /**
  * Owe the agent one wake, delivered after the boot grace. A pending wake for
  * the same agent is replaced, so the wake lands once, after the LAST restart.
+ * `deps.text` replaces the --continue text (the fresh main restart has its
+ * own); a caller that does not pass it gets restartWakePrompt(reason) as before.
  */
 export function scheduleRestartWake(
   agent: string,
   session: string,
   reason: string,
-  deps: { send?: RestartWakeSender; delayMs?: number } = {},
+  deps: { send?: RestartWakeSender; delayMs?: number; text?: string } = {},
 ): void {
   const previous = pending.get(agent)
   if (previous) clearTimeout(previous)
   const timer = setTimeout(() => {
     pending.delete(agent)
     const send = deps.send ?? sendAsDirective
-    send(agent, session, restartWakePrompt(reason)).then(
+    send(agent, session, deps.text ?? restartWakePrompt(reason)).then(
       (outcome) => {
         if (outcome === 'sent') logger.info({ agent, reason }, 'restart-wake: delivered')
         else logger.info({ agent, reason, outcome }, 'restart-wake: not delivered, the pane was not idle')
@@ -100,6 +158,24 @@ export function scheduleRestartWake(
   }, deps.delayMs ?? RESTART_WAKE_DELAY_MS)
   timer.unref?.()
   pending.set(agent, timer)
+}
+
+/**
+ * Owe the main agent the fresh-restart wake. Called by the two manual restart
+ * routes only, after hardRestartMarveenChannels() answered ok. Same timer map
+ * as the sub-agents (keyed by the agent id), so two manual restarts inside the
+ * grace still end in one wake.
+ */
+export function scheduleMainRestartWake(
+  agent: string,
+  session: string,
+  handoffPath: string,
+  deps: { send?: RestartWakeSender; delayMs?: number } = {},
+): void {
+  scheduleRestartWake(agent, session, MAIN_RESTART_WAKE_REASON, {
+    ...deps,
+    text: mainRestartWakePrompt(MAIN_RESTART_WAKE_REASON, handoffPath),
+  })
 }
 
 /** Drop a pending wake (a fresh restart brings its own directive). True when one was pending. */
