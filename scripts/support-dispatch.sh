@@ -754,8 +754,16 @@ run_stop() {
   trap '' HUP INT TERM
   [ "$GROUP" -eq 1 ] && kill -TERM "-$CMD" 2>/dev/null
   kill_tree "$CMD" TERM
+  # The grace is for the whole group: the top command often dies on TERM at once while a member is still in its
+  # TERM handler, and it must get the grace too, not a KILL right away (Samu's review of #2800). Without a group,
+  # only the command itself can be watched.
   _w=0
-  while [ "$_w" -lt "$RUN_GRACE_S" ] && kill -0 "$CMD" 2>/dev/null; do
+  while [ "$_w" -lt "$RUN_GRACE_S" ]; do
+    if [ "$GROUP" -eq 1 ]; then
+      kill -0 "-$CMD" 2>/dev/null || break
+    else
+      kill -0 "$CMD" 2>/dev/null || break
+    fi
     sleep 1
     _w=$((_w + 1))
   done

@@ -352,7 +352,7 @@ describe('run <text>: stopped at the cap, by a disable, by a revoke; the whole g
   const pidFile = () => join(home, 'grandchild.pid')
   const termMarker = () => join(home, 'grandchild.term')
   const ignoresTerm = () => "sh -c 'echo $$ > " + pidFile() + "; trap \"\" TERM; while :; do sleep 1; done' & sleep 60"
-  const leavesOnTerm = () => "sh -c 'echo $$ > " + pidFile() + '; trap "touch ' + termMarker() + "; exit 0\" TERM; while :; do sleep 1; done' & sleep 60"
+  const leavesOnTerm = () => "sh -c 'echo $$ > " + pidFile() + '; trap "sleep 1; touch ' + termMarker() + "; exit 0\" TERM; while :; do sleep 1; done' & sleep 60"
 
   it('the cap is what is left of the 60 minutes; a grandchild that ignores TERM is killed with the group; the end event says -1', async () => {
     writeFileSync(join(bin, 'etime'), '59:57\n')
