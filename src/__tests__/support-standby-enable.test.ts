@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { disableSupportStandby, enableSupportStandby, SUPPORT_CONSENT_VERSION, type StandbyDeps } from '../support-standby-enable.js'
@@ -146,6 +146,13 @@ describe('enable and disable support standby', () => {
     await makeKit(false)
     expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toEqual({ ok: false, problem: 'kit_mismatch' })
     expect(calls).toEqual(['probe', 'probe'])
+    nothingWritten()
+  })
+
+  it('refuses with the kit\'s own reason when the kit is there but not safe', async () => {
+    chmodSync(join(supportDir, 'kit'), 0o770)
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toEqual({ ok: false, problem: 'kit_writable_by_others' })
+    expect(calls).toEqual(['probe'])
     nothingWritten()
   })
 

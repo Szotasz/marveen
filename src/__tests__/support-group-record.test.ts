@@ -102,6 +102,17 @@ describe('the group record text', () => {
   ])('does not read %s as a record', (_label, text) => {
     expect(parseGroupRecord(text)).toBeNull()
   })
+
+  it('reads a canonical record up to the cap, and not one byte past it', () => {
+    const withPath = (length: number): SupportGroupRecord => ({ ...RECORD, dispatchPath: '/' + 'p'.repeat(length - 1) })
+    const room = GROUP_RECORD_MAX_BYTES - (TEXT.length - RECORD.dispatchPath.length)
+    const atCap = formatGroupRecord(withPath(room))
+    expect(atCap.length).toBe(GROUP_RECORD_MAX_BYTES)
+    expect(parseGroupRecord(atCap)).toEqual(withPath(room))
+    const pastCap = formatGroupRecord(withPath(room + 1))
+    expect(pastCap.length).toBe(GROUP_RECORD_MAX_BYTES + 1)
+    expect(parseGroupRecord(pastCap)).toBeNull()
+  })
 })
 
 describe('the group record on disk', () => {
@@ -125,6 +136,20 @@ describe('the group record on disk', () => {
     expect(readdirSync(dir)).toEqual([SUPPORT_GROUP_RECORD_FILE])
     writeGroupRecord(dir, { ...RECORD, consentVersion: 2 })
     expect(readGroupRecord(dir)).toMatchObject({ kind: 'ok', record: { consentVersion: 2 } })
+  })
+
+  it.each<[string, number]>([
+    ['zero', 0],
+    ['one that would leave the owner write-only', 0o477],
+  ])('writes the file 0600 and reads it back under a umask of %s', (_label, mask) => {
+    const saved = process.umask(mask)
+    try {
+      writeGroupRecord(dir, RECORD)
+    } finally {
+      process.umask(saved)
+    }
+    expect(statSync(file()).mode & 0o777).toBe(0o600)
+    expect(readGroupRecord(dir)).toEqual({ kind: 'ok', record: RECORD })
   })
 
   it('says missing when there is no record or no folder', () => {
