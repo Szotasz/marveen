@@ -502,7 +502,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'fleet-auth': '93c48bc9916ec0da',
   'fleet-roster': '4849b0f0ec0dab70',
   'skill-section': 'ccb3df74b18e6c8f',
-  'claude-md-prompt': '47a4cd6b4097e6be',
+  'claude-md-prompt': '4dd8c53bacb18579',
   'precompact-prompt': 'ba0d64daf27b1316',
   'mcp-list-channel': 'a7ccf3ed2f0ca342',
   'memory-search-label': '9ddf9811134c353e',
