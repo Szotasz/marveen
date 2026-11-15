@@ -14,7 +14,8 @@
 // kit of this release from the install tree; the installer and the updater
 // call it, the dashboard never does); `enable --consent <n>` (the one-time
 // code on standard input; runs only as the kit's copy, started by the
-// loader); `disable` (also from the tree, also without a kit).
+// loader); `disable` (also from the tree, also without a kit); `consent-text
+// --consent <n>` (the approved consent text of that version; reads nothing).
 import { randomUUID } from 'node:crypto'
 import { accessSync, constants, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
@@ -28,6 +29,7 @@ import { readSupportToken } from './support-access-token.js'
 import { readGroupRecord } from './support-group-record.js'
 import { createHttpsRedeemTransport } from './support-access-redeem.js'
 import { disableSupportStandby, enableSupportStandby, type StandbyDeps } from './support-standby-enable.js'
+import { supportConsentText } from './support-consent-text.js'
 
 // What the dashboard and the tests use from the same file the command line runs.
 export { buildSupportGrantLines, buildSupportLine } from './support-access-line.js'
@@ -39,7 +41,8 @@ export const SUPPORT_CLI_USAGE =
   '       support-standby.mjs verify-kit\n' +
   '       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n' +
   '       support-standby.mjs enable --consent <version>   (the code on standard input)\n' +
-  '       support-standby.mjs disable\n'
+  '       support-standby.mjs disable\n' +
+  '       support-standby.mjs consent-text --consent <version>\n'
 
 /** No support code is longer than this; standard input is not read past it. */
 export const SUPPORT_CODE_MAX_INPUT = 64
@@ -217,6 +220,15 @@ export async function runSupportCli(argv: readonly string[], io: CliIo, deps: Cl
     }
     // Until the real dispatcher (PR1c), the kit's dispatcher refuses every start: say so (Dani 78357, Q3).
     io.out('standby=on\nstandby_keys=' + done.keys.join(',') + '\nsupport_lines=' + done.lines + '\nlogins=refused_by_this_release\n')
+    return 0
+  }
+  if (argv.length === 3 && argv[0] === 'consent-text' && argv[1] === '--consent' && /^[1-9][0-9]{0,3}$/.test(argv[2])) {
+    const consent = supportConsentText(Number(argv[2]))
+    if (!consent.ok) {
+      io.err('consent-text: refused: ' + consent.problem + '\n')
+      return 1
+    }
+    io.out(consent.text)
     return 0
   }
   if (argv.length === 1 && argv[0] === 'disable') {
