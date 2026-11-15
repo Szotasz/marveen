@@ -98,7 +98,7 @@ test('`status` runs as a program, exits with 0 and writes nothing', () => {
       'node=ok',
       'node_version=' + process.version,
       'node_minimum=20',
-      'pins=support_keys_unset',
+      'pins=support_from_unset',
       'sshd=not_asked',
       'sshd_version=unknown',
     ])

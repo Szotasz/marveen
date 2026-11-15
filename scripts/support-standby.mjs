@@ -14,7 +14,18 @@ import { isIP } from "node:net";
 var SUPPORT_KEY_TYPE = "sk-ssh-ed25519@openssh.com";
 var SUPPORT_MAX_KEYS = 2;
 var SUPPORT_MAX_FROM = 2;
-var SUPPORT_KEYS = [];
+var SUPPORT_KEYS = [
+  {
+    name: "owner",
+    pub: "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIHLMzY1CCtV2IFehNnYjZE6wFvpislH2aT8ZAC31OIoqAAAAE3NzaDptYXJ2ZWVuLXN1cHBvcnQ=",
+    fingerprint: "SHA256:z0v+T57GHbJHUkp6H1EQ3Z7wbkax9DxQYUNtBM9pAAY"
+  },
+  {
+    name: "eva",
+    pub: "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIEVQi3MvWfHpqcxDjcq1nRPxAK9aywz/Fv5xNqGPhFlKAAAAE3NzaDptYXJ2ZWVuLXN1cHBvcnQ=",
+    fingerprint: "SHA256:6Xc4IPpnXluHEdITNQFygVCr3OyBvnkdBtD8LOqJP+E"
+  }
+];
 var SUPPORT_FROM_CIDRS = [];
 var KEY_NAME = /^[a-z0-9]{1,16}$/;
 var SK_APPLICATION = /^ssh:[A-Za-z0-9._-]{0,64}$/;
