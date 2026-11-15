@@ -11,14 +11,15 @@
 //     `sshd -T -C user=..,addr=..,host=..,laddr=..,lport=..`, once for every
 //     combination this file plans.
 //
-// ONLY ROOT CAN SEE THE WHOLE CONFIGURATION (measured on OpenSSH 9.6, Dani's
+// A NON-ROOT ANSWER NEEDS A PROOF (measured on OpenSSH 8.9 to 10.0, Dani's
 // review of #2765): with the stock `Include /etc/ssh/sshd_config.d/*.conf`
 // and that directory at 0700 or 0711, a non-root `sshd -T` exits with 0 and
-// prints the configuration WITHOUT the drop-ins, while the daemon applies them
-// (`permittunnel no` for the user, `yes` for root). A glob in a directory the
-// user cannot list matches nothing, in silence. So an answer asked as another
-// user than root is never enough for a line: the assessment refuses it with
-// its own reason before it reads anything.
+// prints the configuration WITHOUT the drop-ins, while the daemon applies them.
+// So an answer asked as another user than root counts only together with the
+// proof of support-access-sshd-nonroot.ts (every Include visible, the daemon a
+// plain listener, no edit newer than its last reload). Without that proof the
+// assessment refuses before it reads anything (`sshd_config_not_fully_readable`);
+// with a failed proof it refuses with the proof's own reason.
 //
 // WHY NOT THE PLAIN `sshd -T` (measured on OpenSSH 8.9, 9.2, 9.6 and 10.0):
 // it does not apply `Match` blocks. A setting switched on only inside a Match
@@ -39,6 +40,7 @@
 // unknown is a refusal: the support line is never written on a guess.
 import { isIP } from 'node:net'
 import { SUPPORT_MIN_SSHD, sshdAtLeast, type SshdVersion } from './support-access-line.js'
+import type { NonRootProblem } from './support-access-sshd-nonroot.js'
 
 /** Why support access cannot be enabled on this sshd. */
 export type SshdProblem =
@@ -53,6 +55,7 @@ export type SshdProblem =
   | 'force_command_set'
   | 'accept_env_too_wide'
   | 'sshd_config_not_fully_readable'
+  | NonRootProblem
 
 /**
  * The OpenSSH version in what sshd printed, or null. Only a line that STARTS
@@ -380,6 +383,8 @@ export interface SshdAssessmentInput {
   readonly localAddresses: readonly string[]
   /** One answer per planned connection. More than planned is fine; fewer is a refusal. */
   readonly answers: readonly SshdProbeAnswer[]
+  /** For a login user that is not root: whether the answers could see what the daemon applies. Missing = not proven. */
+  readonly nonRootProof?: { readonly ok: true } | { readonly ok: false; readonly problem: NonRootProblem }
 }
 
 export type SshdAssessment =
@@ -393,9 +398,9 @@ export type SshdAssessment =
  *   version unknown            no line: its options cannot be trusted to mean anything
  *   older than 8.4             no line: verify-required is unknown there and sshd
  *                              drops the whole line (measured)
- *   not asked as root          no line: a non-root `sshd -T` can miss a drop-in
- *                              the daemon applies (measured), so nothing it says
- *                              is enough; no answer is read
+ *   not asked as root          no line without the non-root proof: a non-root
+ *                              `sshd -T` can miss a drop-in the daemon applies
+ *                              (measured); a failed proof gives its own reason
  *   configuration unknown      no line. An answer that is missing, empty or
  *                              unreadable; answers that disagree about the
  *                              ports or the listen addresses; a planned
@@ -403,7 +408,7 @@ export type SshdAssessment =
  *                              recomputed here, with the listen addresses)
  *   UseDNS is on               no line: `Match Host` would then be matched
  *                              against a name this machine cannot know here
- *   root login by key is off   no line: the login user is root (see above), and the line would be dead
+ *   root login by key is off   no line when the login user is root: it would be dead
  *   tunnels are permitted      NO LINE. `restrict` does not refuse a tunnel
  *                              device on every sshd build (measured), no key
  *                              option forbids one, and on a tunnel-only
@@ -430,7 +435,10 @@ export function assessSshd(input: SshdAssessmentInput): SshdAssessment {
   if (version === null) return { ok: false, problem: 'sshd_version_unknown', version }
   if (!sshdAtLeast(version, SUPPORT_MIN_SSHD)) return { ok: false, problem: 'sshd_too_old', version }
   const refuse = (problem: SshdProblem): SshdAssessment => ({ ok: false, problem, version })
-  if (!input.loginIsRoot) return refuse('sshd_config_not_fully_readable')
+  if (!input.loginIsRoot) {
+    if (input.nonRootProof === undefined) return refuse('sshd_config_not_fully_readable')
+    if (!input.nonRootProof.ok) return refuse(input.nonRootProof.problem)
+  }
 
   const configs: SshdEffectiveConfig[] = []
   for (const answer of input.answers) {
@@ -454,7 +462,7 @@ export function assessSshd(input: SshdAssessmentInput): SshdAssessment {
   if (!planned.every((spec) => asked.has(formatSshdConnectionSpec(spec)))) return refuse('sshd_config_unknown')
 
   if (!configs.every((c) => c.useDns === 'no')) return refuse('sshd_usedns_enabled')
-  if (!configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse('root_login_disabled')
+  if (input.loginIsRoot && !configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse('root_login_disabled')
   if (!configs.every((c) => c.permitTunnel === 'no')) return refuse('tunnel_permitted')
   const account = { user: input.loginUser, home: input.loginHome }
   const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles, account)

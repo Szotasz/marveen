@@ -3,8 +3,8 @@
 // Source: src/support-standby-cli.ts. Rebuild: node scripts/build-support-standby.mjs
 
 // src/support-standby-cli.ts
-import { accessSync as accessSync2, constants as constants3, readFileSync as readFileSync4, realpathSync as realpathSync2 } from "node:fs";
-import { join as join6 } from "node:path";
+import { accessSync as accessSync2, constants as constants4, readFileSync as readFileSync4, realpathSync as realpathSync2 } from "node:fs";
+import { join as join7 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/support-access-pins.ts
@@ -113,7 +113,119 @@ function validateSupportPins(keys, fromCidrs) {
 
 // src/support-access-sshd-run.ts
 import { execFile } from "node:child_process";
-import { networkInterfaces, userInfo } from "node:os";
+import { closeSync, constants, fstatSync, mkdtempSync, openSync, readSync, readdirSync, rmSync, statSync } from "node:fs";
+import { networkInterfaces, tmpdir, userInfo } from "node:os";
+import { join } from "node:path";
+
+// src/support-access-sshd-nonroot.ts
+import { posix } from "node:path";
+var SSHD_LISTENER_PROGRAM = "/usr/sbin/sshd";
+var SSHD_MAIN_CONFIG = "/etc/ssh/sshd_config";
+var SSHD_CONFIG_DIR = "/etc/ssh";
+var NONROOT_MAX_DEPTH = 16;
+var NONROOT_MAX_FILES = 256;
+var NONROOT_MAX_FILE_BYTES = 256 * 1024;
+var UNPARSED_CHARS = /["'\\~%$#]/;
+var GLOB_CHARS = /[*?[\]{}]/;
+function includeArguments(text) {
+  const out = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\r$/, "").trim();
+    if (line.length === 0 || line.startsWith("#")) continue;
+    const m = /^([A-Za-z]+)(?:\s*=\s*|\s+|$)(.*)$/.exec(line);
+    if (m === null || m[1].toLowerCase() !== "include") continue;
+    const value = m[2].trim();
+    if (value.length === 0 || UNPARSED_CHARS.test(value)) return null;
+    out.push(...value.split(/\s+/));
+  }
+  return out;
+}
+function includeTarget(arg) {
+  if (arg.length === 0 || UNPARSED_CHARS.test(arg)) return null;
+  const full = arg.startsWith("/") ? arg : SSHD_CONFIG_DIR + "/" + arg;
+  if (posix.normalize(full) !== full || full.endsWith("/")) return null;
+  const dir = posix.dirname(full);
+  const pattern = posix.basename(full);
+  if (GLOB_CHARS.test(dir) || /[[\]{}]/.test(pattern) || pattern.length === 0) return null;
+  return { dir, pattern };
+}
+function patternMatches(pattern, name) {
+  const re = "^" + pattern.replace(/[.+^$()|\\/]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+  return new RegExp(re).test(name);
+}
+function walkIncludes(fs, main2 = SSHD_MAIN_CONFIG) {
+  const files = [];
+  const mainDir = posix.dirname(main2);
+  const mainDirTime = fs.ctimeNs(mainDir);
+  if (mainDirTime === null) return { ok: false, problem: "sshd_config_unknown" };
+  files.push({ path: mainDir, ctimeNs: mainDirTime });
+  const listedDirs = /* @__PURE__ */ new Set([mainDir]);
+  const seen = /* @__PURE__ */ new Set();
+  const visit = (path, depth) => {
+    if (depth > NONROOT_MAX_DEPTH || files.length >= NONROOT_MAX_FILES) return "sshd_config_include_unparsed";
+    if (seen.has(path)) return null;
+    seen.add(path);
+    const read = fs.readText(path, NONROOT_MAX_FILE_BYTES);
+    if (read.kind === "missing") return depth === 0 ? "sshd_config_unknown" : null;
+    if (read.kind === "unreadable") return "sshd_config_unknown";
+    files.push({ path, ctimeNs: read.ctimeNs });
+    const args = includeArguments(read.text);
+    if (args === null) return "sshd_config_include_unparsed";
+    for (const arg of args) {
+      const target = includeTarget(arg);
+      if (target === null) return "sshd_config_include_unparsed";
+      const listed = fs.listDir(target.dir);
+      if (listed.kind === "unlistable") return "sshd_config_include_unlistable";
+      if (listed.kind === "missing") continue;
+      if (!listedDirs.has(target.dir)) {
+        listedDirs.add(target.dir);
+        files.push({ path: target.dir, ctimeNs: listed.ctimeNs });
+      }
+      for (const name of [...listed.names].sort()) {
+        if (!patternMatches(target.pattern, name)) continue;
+        const problem2 = visit(target.dir + "/" + name, depth + 1);
+        if (problem2 !== null) return problem2;
+      }
+    }
+    return null;
+  };
+  const problem = visit(main2, 0);
+  return problem === null ? { ok: true, files } : { ok: false, problem };
+}
+var LISTENER_PREFIX = "sshd: " + SSHD_LISTENER_PROGRAM + " ";
+var LISTENER_FLAGS = /^((?:-[De] )*)\[listener\] /;
+function listenerTitleProblem(cmdline) {
+  const title = cmdline.replace(/\0/g, " ").trim() + " ";
+  if (!title.startsWith(LISTENER_PREFIX)) return "sshd_daemon_unknown";
+  const rest = title.slice(LISTENER_PREFIX.length);
+  if (LISTENER_FLAGS.test(rest)) return null;
+  return /\[listener\] /.test(rest) ? "sshd_daemon_options" : "sshd_daemon_unknown";
+}
+function pidfileOf(sshdT) {
+  let found = null;
+  for (const raw of sshdT.split("\n")) {
+    const m = /^pidfile (.*)$/i.exec(raw.trim());
+    if (m === null) continue;
+    if (found !== null) return null;
+    found = m[1];
+  }
+  return found !== null && /^\/[A-Za-z0-9._/-]+$/.test(found) ? found : null;
+}
+function checkDaemon(fs, pidfile, walked) {
+  if (pidfile === null) return { ok: false, problem: "sshd_daemon_unknown" };
+  const pidText = fs.readText(pidfile, 64);
+  if (pidText.kind !== "ok" || !/^[1-9][0-9]{0,9}\n?$/.test(pidText.text)) return { ok: false, problem: "sshd_daemon_unknown" };
+  const pidTime = pidText.ctimeNs;
+  const pid = pidText.text.trim();
+  const comm = fs.readText("/proc/" + pid + "/comm", 64);
+  if (comm.kind !== "ok" || comm.text !== "sshd\n") return { ok: false, problem: "sshd_daemon_unknown" };
+  const cmdline = fs.readText("/proc/" + pid + "/cmdline", 4096);
+  if (cmdline.kind !== "ok") return { ok: false, problem: "sshd_daemon_unknown" };
+  const title = listenerTitleProblem(cmdline.text);
+  if (title !== null) return { ok: false, problem: title };
+  if (walked.some((f) => f.ctimeNs > pidTime)) return { ok: false, problem: "sshd_reload_pending" };
+  return { ok: true };
+}
 
 // src/support-access-sshd.ts
 import { isIP as isIP2 } from "node:net";
@@ -457,7 +569,10 @@ function assessSshd(input) {
   if (version === null) return { ok: false, problem: "sshd_version_unknown", version };
   if (!sshdAtLeast(version, SUPPORT_MIN_SSHD)) return { ok: false, problem: "sshd_too_old", version };
   const refuse = (problem) => ({ ok: false, problem, version });
-  if (!input.loginIsRoot) return refuse("sshd_config_not_fully_readable");
+  if (!input.loginIsRoot) {
+    if (input.nonRootProof === void 0) return refuse("sshd_config_not_fully_readable");
+    if (!input.nonRootProof.ok) return refuse(input.nonRootProof.problem);
+  }
   const configs = [];
   for (const answer of input.answers) {
     const config = answer.text === null ? null : parseSshdEffectiveConfig(answer.text);
@@ -479,7 +594,7 @@ function assessSshd(input) {
   const asked = new Set(input.answers.map((a) => formatSshdConnectionSpec(a.spec)));
   if (!planned.every((spec) => asked.has(formatSshdConnectionSpec(spec)))) return refuse("sshd_config_unknown");
   if (!configs.every((c) => c.useDns === "no")) return refuse("sshd_usedns_enabled");
-  if (!configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse("root_login_disabled");
+  if (input.loginIsRoot && !configs.every((c) => ROOT_LOGIN_BY_KEY.has(c.permitRootLogin))) return refuse("root_login_disabled");
   if (!configs.every((c) => c.permitTunnel === "no")) return refuse("tunnel_permitted");
   const account = { user: input.loginUser, home: input.loginHome };
   const keysFiles = supportKeysFiles(configs[0].authorizedKeysFiles, account);
@@ -499,6 +614,7 @@ function assessSshd(input) {
 
 // src/support-access-sshd-run.ts
 var SSHD_PROGRAM = "/usr/sbin/sshd";
+var SSH_KEYGEN_PROGRAM = "/usr/bin/ssh-keygen";
 var SSHD_PROBE_TIMEOUT_MS = 5e3;
 var SSHD_PROBE_MAX_QUERIES = 64;
 function reachableLocalAddresses(all) {
@@ -526,13 +642,27 @@ async function askSshd(input, deps) {
     loginHome: deps.user.home,
     fromCidrs: input.fromCidrs
   };
-  if (versionText === null || !deps.user.isRoot) return assessSshd({ ...base, localAddresses: [], answers: [] });
+  if (versionText === null) return assessSshd({ ...base, localAddresses: [], answers: [] });
+  if (deps.user.isRoot) return askAll(base, [], deps, null);
+  let keyDir = null;
+  try {
+    keyDir = deps.makePrivateDir();
+    const keyPath = join(keyDir, "probe_host_key");
+    const made = await deps.run(SSH_KEYGEN_PROGRAM, ["-q", "-t", "ed25519", "-N", "", "-f", keyPath], SSHD_PROBE_TIMEOUT_MS);
+    if (made.code !== 0) return assessSshd({ ...base, localAddresses: [], answers: [], nonRootProof: { ok: false, problem: "sshd_config_unknown" } });
+    return await askAll(base, ["-h", keyPath], deps, keyPath);
+  } finally {
+    if (keyDir !== null) deps.removeDir(keyDir);
+  }
+}
+async function askAll(base, hostKeyArgs, deps, keyPath) {
   const localAddresses = reachableLocalAddresses(deps.interfaceAddresses());
-  const refused = (answers2) => assessSshd({ ...base, localAddresses, answers: answers2 });
-  const ask = async (spec) => {
+  let nonRootProof;
+  const refused = (answers2) => assessSshd({ ...base, localAddresses, answers: answers2, nonRootProof });
+  const ask = async (spec, extra = []) => {
     const connection = formatSshdConnectionSpec(spec);
     if (connection === null) return { spec, text: null };
-    const out = await deps.run(SSHD_PROGRAM, ["-T", "-C", connection], SSHD_PROBE_TIMEOUT_MS);
+    const out = await deps.run(SSHD_PROGRAM, ["-T", ...hostKeyArgs, ...extra, "-C", connection], SSHD_PROBE_TIMEOUT_MS);
     return { spec, text: out.code === 0 ? out.stdout : null };
   };
   const discovery = planSshdProbes({ ...base, localAddresses, listenPorts: null });
@@ -540,6 +670,17 @@ async function askSshd(input, deps) {
   const first = await ask(discovery[0]);
   const firstConfig = first.text === null ? null : parseSshdEffectiveConfig(first.text);
   if (firstConfig === null) return refused([first]);
+  if (keyPath !== null) {
+    const named = await ask(discovery[0], ["-f", SSHD_MAIN_CONFIG]);
+    if (named.text !== first.text) {
+      nonRootProof = { ok: false, problem: "sshd_config_unknown" };
+      return refused([]);
+    }
+    const walk = walkIncludes(deps.fs);
+    const daemon = !walk.ok ? walk : deps.platform === "linux" ? checkDaemon(deps.fs, pidfileOf(first.text), walk.files) : { ok: false, problem: "sshd_daemon_unknown" };
+    nonRootProof = daemon.ok ? { ok: true } : { ok: false, problem: daemon.problem };
+    if (!nonRootProof.ok) return refused([]);
+  }
   const plan = planSshdProbes({
     ...base,
     localAddresses: probeLocalAddresses(localAddresses, firstConfig.listenAddresses),
@@ -556,6 +697,49 @@ function currentLoginUser() {
   const info = userInfo();
   return { name: info.username, isRoot: process.getuid?.() === 0, home: info.homedir };
 }
+function readCapped(path, max) {
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  } catch (err) {
+    return err.code === "ENOENT" ? { kind: "missing" } : { kind: "unreadable" };
+  }
+  try {
+    const st = fstatSync(fd, { bigint: true });
+    if (!st.isFile()) return { kind: "unreadable" };
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    for (; ; ) {
+      const got = readSync(fd, buf, n, buf.length - n, n);
+      if (got === 0) break;
+      n += got;
+      if (n > max) return { kind: "unreadable" };
+    }
+    return { kind: "ok", text: buf.subarray(0, n).toString("latin1"), ctimeNs: st.ctimeNs };
+  } catch {
+    return { kind: "unreadable" };
+  } finally {
+    closeSync(fd);
+  }
+}
+var realNonRootFs = {
+  readText: readCapped,
+  listDir: (path) => {
+    try {
+      const names = readdirSync(path);
+      return { kind: "ok", names, ctimeNs: statSync(path, { bigint: true }).ctimeNs };
+    } catch (err) {
+      return err.code === "ENOENT" ? { kind: "missing" } : { kind: "unlistable" };
+    }
+  },
+  ctimeNs: (path) => {
+    try {
+      return statSync(path, { bigint: true }).ctimeNs;
+    } catch {
+      return null;
+    }
+  }
+};
 function createSshdProbeDeps(user = currentLoginUser()) {
   return {
     run: (file, args, timeoutMs) => new Promise((resolve3) => {
@@ -575,7 +759,16 @@ function createSshdProbeDeps(user = currentLoginUser()) {
       );
     }),
     user,
-    interfaceAddresses: () => Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal })))
+    interfaceAddresses: () => Object.values(networkInterfaces()).flatMap((list) => (list ?? []).map((a) => ({ address: a.address, internal: a.internal }))),
+    makePrivateDir: () => mkdtempSync(join(tmpdir(), "marveen-sshd-probe-")),
+    removeDir: (path) => {
+      try {
+        rmSync(path, { recursive: true, force: true });
+      } catch {
+      }
+    },
+    fs: realNonRootFs,
+    platform: process.platform
   };
 }
 
@@ -635,23 +828,23 @@ function formatSupportStatus(report) {
 // src/support-kit.ts
 import { createHash as createHash2, randomBytes } from "node:crypto";
 import {
-  closeSync,
-  constants,
-  fstatSync,
+  closeSync as closeSync2,
+  constants as constants2,
+  fstatSync as fstatSync2,
   fsyncSync,
   lstatSync,
   mkdirSync,
-  openSync,
+  openSync as openSync2,
   readFileSync,
-  readSync,
-  readdirSync,
+  readSync as readSync2,
+  readdirSync as readdirSync2,
   renameSync,
-  rmSync,
-  statSync,
+  rmSync as rmSync2,
+  statSync as statSync2,
   unlinkSync,
   writeSync
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { join as join2, resolve } from "node:path";
 var KIT_SUBFOLDER = "kit";
 var KIT_MANIFEST_NAME = "manifest";
 var KIT_LOCK_NAME = "kit.lock";
@@ -751,7 +944,7 @@ function readKitFile(path, uid, max) {
   const no = (problem, detail, tooLarge = false) => ({ ok: false, finding: { problem, detail: path + detail }, tooLarge });
   let fd;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    fd = openSync2(path, constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK);
   } catch (err) {
     const code = err.code;
     if (code === "ENOENT") return no("kit_file_missing", " does not exist");
@@ -759,33 +952,33 @@ function readKitFile(path, uid, max) {
     return no("kit_mismatch", " cannot be opened");
   }
   try {
-    const st = fstatSync(fd);
+    const st = fstatSync2(fd);
     if (!st.isFile()) return no("kit_mismatch", " is not a regular file");
     if (uid !== null && st.uid !== uid) return no("kit_foreign_owner", " belongs to another user");
     if ((st.mode & 18) !== 0) return no("kit_writable_by_others", " can be written by group or others");
     const buf = Buffer.alloc(max + 1);
     let n = 0;
     for (; ; ) {
-      const got = readSync(fd, buf, n, buf.length - n, n);
+      const got = readSync2(fd, buf, n, buf.length - n, n);
       if (got === 0) break;
       n += got;
       if (n > max) return no("kit_mismatch", " is larger than a kit file may be", true);
     }
     return { ok: true, bytes: buf.subarray(0, n) };
   } finally {
-    closeSync(fd);
+    closeSync2(fd);
   }
 }
 function verifyKit(opts) {
   const supportDir = resolve(opts.supportDir);
   const uid = opts.uid === void 0 ? ownUid() : opts.uid;
-  const kitDir = join(supportDir, KIT_SUBFOLDER);
+  const kitDir = join2(supportDir, KIT_SUBFOLDER);
   const refuse = (finding) => ({ ok: false, ...finding });
   for (const folder of [supportDir, kitDir]) {
     const finding = folderFinding(folder, uid);
     if (finding !== null) return refuse(finding);
   }
-  const manifestPath = join(kitDir, KIT_MANIFEST_NAME);
+  const manifestPath = join2(kitDir, KIT_MANIFEST_NAME);
   const manifestRead = readKitFile(manifestPath, uid, KIT_MANIFEST_MAX_BYTES);
   if (!manifestRead.ok) {
     const missingOrLarge = manifestRead.finding.problem === "kit_file_missing" || manifestRead.tooLarge;
@@ -794,7 +987,7 @@ function verifyKit(opts) {
   const manifest = parseKitManifest(manifestRead.bytes.toString("latin1"));
   if (manifest === null) return refuse({ problem: "kit_manifest_unreadable", detail: manifestPath + " is not a manifest" });
   for (const name of Object.keys(manifest.files).sort()) {
-    const path = join(kitDir, name);
+    const path = join2(kitDir, name);
     const read = readKitFile(path, uid, KIT_FILE_MAX_BYTES);
     if (!read.ok) return refuse(read.finding);
     if (sha256Hex(read.bytes) !== manifest.files[name]) {
@@ -806,16 +999,16 @@ function verifyKit(opts) {
 var defaultSleep = (ms) => new Promise((done) => setTimeout(done, ms));
 async function withKitLock(supportDir, tuning, work) {
   const { lockRetries = 20, lockRetryDelayMs = 100, staleLockMs = 15e3, sleep = defaultSleep } = tuning;
-  const lockPath = join(resolve(supportDir), KIT_LOCK_NAME);
+  const lockPath = join2(resolve(supportDir), KIT_LOCK_NAME);
   let fd = null;
   for (let attempt = 0; attempt < lockRetries && fd === null; attempt++) {
     try {
-      fd = openSync(lockPath, "wx", 384);
+      fd = openSync2(lockPath, "wx", 384);
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
       let stale = false;
       try {
-        stale = Date.now() - statSync(lockPath).mtimeMs > staleLockMs;
+        stale = Date.now() - statSync2(lockPath).mtimeMs > staleLockMs;
       } catch {
         continue;
       }
@@ -840,7 +1033,7 @@ async function withKitLock(supportDir, tuning, work) {
     return out;
   } finally {
     try {
-      closeSync(fd);
+      closeSync2(fd);
     } catch {
     }
     try {
@@ -850,21 +1043,21 @@ async function withKitLock(supportDir, tuning, work) {
   }
 }
 function writeNewFile(path, content, mode) {
-  const fd = openSync(path, "wx", mode);
+  const fd = openSync2(path, "wx", mode);
   try {
     writeSync(fd, content);
     fsyncSync(fd);
   } finally {
-    closeSync(fd);
+    closeSync2(fd);
   }
 }
 function syncFolder(path) {
   try {
-    const fd = openSync(path, "r");
+    const fd = openSync2(path, "r");
     try {
       fsyncSync(fd);
     } finally {
-      closeSync(fd);
+      closeSync2(fd);
     }
   } catch {
   }
@@ -891,12 +1084,12 @@ async function writeKit(opts) {
   if (lstatOrNull(supportDir) === null) mkdirSync(supportDir, { recursive: true, mode: 448 });
   const parentFinding = folderFinding(supportDir, uid);
   if (parentFinding !== null) throw new KitError(parentFinding.problem, parentFinding.detail + "; the kit is not written there");
-  const kitDir = join(supportDir, KIT_SUBFOLDER);
+  const kitDir = join2(supportDir, KIT_SUBFOLDER);
   return withKitLock(supportDir, tuning, () => {
     const cleaned = [];
-    for (const name of readdirSync(supportDir).sort()) {
+    for (const name of readdirSync2(supportDir).sort()) {
       if (!LEFTOVER.test(name)) continue;
-      rmSync(join(supportDir, name), { recursive: true, force: true });
+      rmSync2(join2(supportDir, name), { recursive: true, force: true });
       cleaned.push(name);
     }
     const existing = lstatOrNull(kitDir);
@@ -905,33 +1098,33 @@ async function writeKit(opts) {
       if (finding !== null) throw new KitError(finding.problem, finding.detail + "; the kit is not written over it");
     }
     const suffix = randomBytes(8).toString("hex");
-    const staging = join(supportDir, ".kit-new-" + suffix);
-    const aside = join(supportDir, ".kit-old-" + suffix);
+    const staging = join2(supportDir, ".kit-new-" + suffix);
+    const aside = join2(supportDir, ".kit-old-" + suffix);
     mkdirSync(staging, { mode: 448 });
     try {
-      for (const file of files) writeNewFile(join(staging, file.name), file.content, file.executable ? 448 : 384);
-      writeNewFile(join(staging, KIT_MANIFEST_NAME), Buffer.from(manifestText, "latin1"), 384);
+      for (const file of files) writeNewFile(join2(staging, file.name), file.content, file.executable ? 448 : 384);
+      writeNewFile(join2(staging, KIT_MANIFEST_NAME), Buffer.from(manifestText, "latin1"), 384);
       for (const file of files) {
-        if (sha256Hex(readFileSync(join(staging, file.name))) !== file.sha256) {
+        if (sha256Hex(readFileSync(join2(staging, file.name))) !== file.sha256) {
           throw new KitError("kit_mismatch", `${file.name} does not hold what was just written`);
         }
       }
       syncFolder(staging);
     } catch (err) {
-      rmSync(staging, { recursive: true, force: true });
+      rmSync2(staging, { recursive: true, force: true });
       throw err;
     }
     if (existing !== null) {
       try {
         renameSync(kitDir, aside);
       } catch (err) {
-        rmSync(staging, { recursive: true, force: true });
+        rmSync2(staging, { recursive: true, force: true });
         throw err;
       }
     }
     renameSync(staging, kitDir);
     syncFolder(supportDir);
-    if (existing !== null) rmSync(aside, { recursive: true, force: true });
+    if (existing !== null) rmSync2(aside, { recursive: true, force: true });
     const verdict = verifyKit({ supportDir });
     if (!verdict.ok) throw new KitError(verdict.problem, "the kit that was just written does not verify: " + verdict.detail);
     return { kitDir, replaced: existing !== null, cleaned };
@@ -939,8 +1132,8 @@ async function writeKit(opts) {
 }
 
 // src/support-kit-install.ts
-import { accessSync, constants as constants2, closeSync as closeSync2, fstatSync as fstatSync2, lstatSync as lstatSync2, openSync as openSync2, readSync as readSync2, statSync as statSync2 } from "node:fs";
-import { join as join2 } from "node:path";
+import { accessSync, constants as constants3, closeSync as closeSync3, fstatSync as fstatSync3, lstatSync as lstatSync2, openSync as openSync3, readSync as readSync3, statSync as statSync3 } from "node:fs";
+import { join as join3 } from "node:path";
 
 // src/support-kit-sources.ts
 var KIT_HASHES_FILE = "scripts/support-kit.sha256";
@@ -972,23 +1165,23 @@ var SAFE_ABSOLUTE_PATH3 = /^\/[A-Za-z0-9._/-]+$/;
 function readTreeFile(path, max) {
   let fd;
   try {
-    fd = openSync2(path, constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK);
+    fd = openSync3(path, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
   } catch {
     return null;
   }
   try {
-    if (!fstatSync2(fd).isFile()) return null;
+    if (!fstatSync3(fd).isFile()) return null;
     const buf = Buffer.alloc(max + 1);
     let n = 0;
     for (; ; ) {
-      const got = readSync2(fd, buf, n, buf.length - n, n);
+      const got = readSync3(fd, buf, n, buf.length - n, n);
       if (got === 0) break;
       n += got;
       if (n > max) return null;
     }
     return buf.subarray(0, n);
   } finally {
-    closeSync2(fd);
+    closeSync3(fd);
   }
 }
 async function installKit(input) {
@@ -1004,19 +1197,19 @@ async function installKit(input) {
   }
   if (!rootIsFolder) throw new KitError("kit_input_invalid", "the install root is not a folder");
   try {
-    if (!statSync2(nodePath).isFile()) throw new Error("not a file");
-    accessSync(nodePath, constants2.X_OK);
+    if (!statSync3(nodePath).isFile()) throw new Error("not a file");
+    accessSync(nodePath, constants3.X_OK);
   } catch {
     throw new KitError("kit_input_invalid", "the node path is not an executable file");
   }
-  const hashesBytes = readTreeFile(join2(installRoot, KIT_HASHES_FILE), HASHES_MAX_BYTES);
+  const hashesBytes = readTreeFile(join3(installRoot, KIT_HASHES_FILE), HASHES_MAX_BYTES);
   const stored = hashesBytes === null ? null : parseKitHashes(hashesBytes.toString("latin1"));
   if (stored === null) {
     throw new KitError("kit_source_mismatch", "the stored hashes of this release are missing or unreadable; nothing was written");
   }
   const files = [];
   for (const source of KIT_SOURCES) {
-    const content = readTreeFile(join2(installRoot, source.treePath), KIT_SOURCE_MAX_BYTES);
+    const content = readTreeFile(join3(installRoot, source.treePath), KIT_SOURCE_MAX_BYTES);
     if (content === null) {
       throw new KitError("kit_source_mismatch", source.name + " is missing from the install tree or is not a plain file; nothing was written");
     }
@@ -1026,26 +1219,26 @@ async function installKit(input) {
 }
 
 // src/support-access-fs.ts
-import { lstatSync as lstatSync4, readFileSync as readFileSync3, statSync as statSync4 } from "node:fs";
-import { join as join5 } from "node:path";
+import { lstatSync as lstatSync4, readFileSync as readFileSync3, statSync as statSync5 } from "node:fs";
+import { join as join6 } from "node:path";
 
 // src/remote-enroll-fs.ts
 import {
-  openSync as openSync3,
-  closeSync as closeSync3,
+  openSync as openSync4,
+  closeSync as closeSync4,
   writeSync as writeSync2,
   fsyncSync as fsyncSync2,
   readFileSync as readFileSync2,
   renameSync as renameSync2,
   unlinkSync as unlinkSync2,
   mkdirSync as mkdirSync2,
-  statSync as statSync3,
+  statSync as statSync4,
   lstatSync as lstatSync3,
   existsSync,
   chmodSync,
   realpathSync
 } from "node:fs";
-import { join as join4, resolve as resolve2 } from "node:path";
+import { join as join5, resolve as resolve2 } from "node:path";
 
 // src/remote-enroll-core.ts
 var REMOTE_PORT = 3420;
@@ -1063,7 +1256,7 @@ function isTestRun() {
 
 // src/ssh-dir.ts
 import { homedir } from "node:os";
-import { join as join3 } from "node:path";
+import { join as join4 } from "node:path";
 var SSH_DIR_GUARD_CODE = "ENROLL813";
 var SshDirGuardError = class extends Error {
   code = SSH_DIR_GUARD_CODE;
@@ -1073,7 +1266,7 @@ var SshDirGuardError = class extends Error {
   }
 };
 function realSshDir() {
-  return join3(homedir(), ".ssh");
+  return join4(homedir(), ".ssh");
 }
 function describeTestRunSignal() {
   const signals = [];
@@ -1133,7 +1326,7 @@ function ensureSshDir(sshDir, warnings) {
     chmodSync(sshDir, SSH_DIR_MODE);
     return;
   }
-  const st = statSync3(sshDir);
+  const st = statSync4(sshDir);
   if (!st.isDirectory()) {
     throw new Error(`${sshDir} exists but is not a directory`);
   }
@@ -1146,7 +1339,7 @@ function ensureSshDir(sshDir, warnings) {
 async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const fd = openSync3(lockPath, "wx", AUTH_KEYS_MODE);
+      const fd = openSync4(lockPath, "wx", AUTH_KEYS_MODE);
       try {
         writeSync2(fd, `${process.pid}
 `);
@@ -1156,7 +1349,7 @@ async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
       try {
-        const st = statSync3(lockPath);
+        const st = statSync4(lockPath);
         if (Date.now() - st.mtimeMs > staleMs) {
           unlinkSync2(lockPath);
           continue;
@@ -1173,7 +1366,7 @@ async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
 }
 function releaseLock(fd, lockPath) {
   try {
-    closeSync3(fd);
+    closeSync4(fd);
   } catch {
   }
   try {
@@ -1182,13 +1375,13 @@ function releaseLock(fd, lockPath) {
   }
 }
 function writeAtomic(sshDir, authPath, content, encoding = "utf8") {
-  const tmpPath = join4(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
-  const tfd = openSync3(tmpPath, "wx", AUTH_KEYS_MODE);
+  const tmpPath = join5(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
+  const tfd = openSync4(tmpPath, "wx", AUTH_KEYS_MODE);
   try {
     writeSync2(tfd, content, null, encoding);
     fsyncSync2(tfd);
   } finally {
-    closeSync3(tfd);
+    closeSync4(tfd);
   }
   chmodSync(tmpPath, AUTH_KEYS_MODE);
   try {
@@ -1219,8 +1412,8 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
     throw new AuthorizedKeysRewriteError("AUTHORIZED_KEYS_FILE_NAME", "only authorized_keys and authorized_keys2 can be rewritten");
   }
   const warnings = [];
-  const authPath = join4(sshDir, fileName);
-  const lockPath = join4(sshDir, LOCK_NAME);
+  const authPath = join5(sshDir, fileName);
+  const lockPath = join5(sshDir, LOCK_NAME);
   const encoding = preserveBytes ? "latin1" : "utf8";
   if (refuseSymlink && lstatOrNull2(sshDir)?.isSymbolicLink()) {
     throw new AuthorizedKeysRewriteError(
@@ -1249,7 +1442,7 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
         );
       }
       if (existsSync(authPath)) {
-        const st = statSync3(authPath);
+        const st = statSync4(authPath);
         if (looserThan(st.mode, AUTH_KEYS_MODE)) {
           warnings.push(
             `${authPath} permissions were ${fmtMode(st.mode)} (looser than 0600); the rewritten file is 0600`
@@ -1321,18 +1514,18 @@ function lstatOrNull3(path) {
 }
 function statOrNull(path) {
   try {
-    return statSync4(path);
+    return statSync5(path);
   } catch {
     return null;
   }
 }
 function keysFileLayout(sshDir) {
-  const second = lstatOrNull3(join5(sshDir, SECOND_FILE));
+  const second = lstatOrNull3(join6(sshDir, SECOND_FILE));
   if (second === null) return "separate";
-  const first = lstatOrNull3(join5(sshDir, "authorized_keys"));
+  const first = lstatOrNull3(join6(sshDir, "authorized_keys"));
   const sameAsFirst = (st) => first !== null && first.isFile() && st.dev === first.dev && st.ino === first.ino;
   if (second.isSymbolicLink()) {
-    const target = statOrNull(join5(sshDir, SECOND_FILE));
+    const target = statOrNull(join6(sshDir, SECOND_FILE));
     if (target === null) return "link-to-nothing";
     return sameAsFirst(target) ? "link-to-first" : "link-elsewhere";
   }
@@ -1340,20 +1533,20 @@ function keysFileLayout(sshDir) {
 }
 function assertLayoutForGrant(sshDir) {
   const layout = keysFileLayout(sshDir);
-  const second = join5(sshDir, SECOND_FILE);
+  const second = join6(sshDir, SECOND_FILE);
   if (layout === "link-elsewhere") throw new SupportKeysLayoutError(`${second} is a symbolic link to another file than authorized_keys; nothing was written`);
   if (layout === "hard-link") throw new SupportKeysLayoutError(`${second} is a hard link of authorized_keys; nothing was written`);
 }
 function splitWarning(sshDir, before) {
   if (before !== "hard-link" || keysFileLayout(sshDir) === "hard-link") return [];
   return [
-    `${join5(sshDir, "authorized_keys")} and ${join5(sshDir, SECOND_FILE)} were one file under two names; taking the support lines out split them into two files. Both hold the other lines as they were, but an edit of one no longer shows in the other`
+    `${join6(sshDir, "authorized_keys")} and ${join6(sshDir, SECOND_FILE)} were one file under two names; taking the support lines out split them into two files. Both hold the other lines as they were, but an edit of one no longer shows in the other`
   ];
 }
 async function removeEverySupportLine(base, fileName, operation) {
   const { sshDir, pinnedBlobs, ...lock } = base;
   if (fileName === SECOND_FILE) {
-    const secondPath = join5(sshDir, SECOND_FILE);
+    const secondPath = join6(sshDir, SECOND_FILE);
     const layout = keysFileLayout(sshDir);
     if (layout === "link-to-first" || layout === "link-to-nothing") {
       return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a link to authorized_keys (or to nothing); it was cleaned through that file`] };
@@ -1504,17 +1697,17 @@ function parseInstallKitArgs(argv) {
   return out.installRoot !== void 0 && out.nodePath !== void 0 && out.release !== void 0 ? { installRoot: out.installRoot, nodePath: out.nodePath, release: out.release } : null;
 }
 function createInstallKit(account = currentLoginUser()) {
-  return (args) => installKit({ ...args, supportDir: join6(account.home, SUPPORT_DIR_IN_HOME) });
+  return (args) => installKit({ ...args, supportDir: join7(account.home, SUPPORT_DIR_IN_HOME) });
 }
 function createStatusDeps(account = currentLoginUser()) {
-  const sshDir = join6(account.home, ".ssh");
+  const sshDir = join7(account.home, ".ssh");
   return {
     nodeVersion: process.version,
     pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
     probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
     isExecutable: (path) => {
       try {
-        accessSync2(path, constants3.X_OK);
+        accessSync2(path, constants4.X_OK);
         return true;
       } catch {
         return false;
@@ -1522,7 +1715,7 @@ function createStatusDeps(account = currentLoginUser()) {
     },
     readKeysFile: (name) => {
       try {
-        return readFileSync4(join6(sshDir, name), "latin1");
+        return readFileSync4(join7(sshDir, name), "latin1");
       } catch (err) {
         return err.code === "ENOENT" ? null : "unreadable";
       }
