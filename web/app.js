@@ -3486,6 +3486,9 @@ let wizardPersonalityPending = null
 function openModal(overlay) {
   overlay.classList.add('active')
   document.body.style.overflow = 'hidden'
+  // What the fields held when the modal opened (an edit modal is filled before this), so closing it
+  // asks only about real changes, not about text it was opened with.
+  overlay._openValues = new Map(unsavedInputFields(overlay).map(f => [f, f.value]))
 }
 function closeModal(overlay) {
   overlay.classList.remove('active')
@@ -3497,18 +3500,33 @@ function closeModal(overlay) {
   if (overlay && overlay.id === 'skillModalOverlay') skillModalScope = null
 }
 
-// True if any visible text/textarea field inside the overlay has typed
-// content. Used to gate backdrop-click close so a stray click can't
-// silently discard unsaved input (data loss reported 2026-08-19: a full
-// card description was lost by clicking outside the "Új kártya" modal).
+// True if any visible text/textarea field inside the overlay has content that was not there when the
+// modal opened. Used to gate the close so a stray click can't silently discard unsaved input (data loss
+// reported 2026-08-19: a full card description was lost by clicking outside the "Új kártya" modal).
+// An edit modal (a card, a memory, a schedule) opens filled; it used to ask "unsaved text" on every
+// close, also when nothing had been changed.
 function overlayHasUnsavedInput(overlay) {
-  const fields = overlay.querySelectorAll(
-    'input[type="text"]:not([list]), input[type="date"], input[type="email"], input[type="url"], textarea',
-  )
-  for (const f of fields) {
-    if (f.offsetParent !== null && f.value && f.value.trim()) return true
+  const opened = overlay._openValues
+  for (const f of unsavedInputFields(overlay)) {
+    if (f.offsetParent === null || f.readOnly || f.disabled || !f.value || !f.value.trim()) continue
+    if (opened && opened.get(f) === f.value) continue
+    return true
   }
   return false
+}
+
+// The text fields whose content a close could lose.
+function unsavedInputFields(overlay) {
+  return [...overlay.querySelectorAll(
+    'input[type="text"]:not([list]), input[type="date"], input[type="email"], input[type="url"], textarea',
+  )]
+}
+
+// A save that keeps its modal open (the agent's settings): the saved text is what the field now holds
+// "as opened", so closing afterwards does not ask about changes that are already saved.
+function markFieldSaved(el) {
+  const overlay = el && el.closest ? el.closest('.modal-overlay') : null
+  if (overlay && overlay._openValues) overlay._openValues.set(el, el.value)
 }
 
 // The default question before a guarded modal closes: none for an empty form; with typed input, a
@@ -5922,6 +5940,7 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     })
     if (!res.ok) throw new Error()
     currentAgent.model = newModel
+    markFieldSaved(customModelInput)
     const triggeredAt = Math.floor(Date.now() / 1000)
     document.getElementById('agentDetailModelRestarting').hidden = false
     document.getElementById('processLabel').textContent = t('agents.process_label')
@@ -6553,6 +6572,7 @@ document.getElementById('saveClaudeMdBtn').addEventListener('click', async () =>
       body: JSON.stringify({ claudeMd: document.getElementById('editClaudeMd').value }),
     })
     if (!res.ok) throw new Error()
+    markFieldSaved(document.getElementById('editClaudeMd'))
     showToast(t('agents.claude_md_saved'))
   } catch { showToast(t('common.error_save')) }
 })
@@ -6566,6 +6586,7 @@ document.getElementById('saveSoulMdBtn').addEventListener('click', async () => {
       body: JSON.stringify({ soulMd: document.getElementById('editSoulMd').value }),
     })
     if (!res.ok) throw new Error()
+    markFieldSaved(document.getElementById('editSoulMd'))
     showToast(t('agents.soul_md_saved'))
   } catch { showToast(t('common.error_save')) }
 })
@@ -6579,6 +6600,7 @@ document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => 
       body: JSON.stringify({ mcpJson: document.getElementById('editMcpJson').value }),
     })
     if (!res.ok) throw new Error()
+    markFieldSaved(document.getElementById('editMcpJson'))
     showToast('.mcp.json mentve')
   } catch { showToast(t('common.error_save')) }
 })
@@ -14758,6 +14780,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
       }),
     })
     if (!res.ok) throw new Error()
+    markFieldSaved(document.getElementById('editTeamTagline'))
     // The server sanitizes the team config (strips self-references and
     // unknown agent ids) and reports what it dropped in `warnings`. Surface
     // that to the operator so a mistyped name isn't silently lost.
