@@ -32,8 +32,22 @@ export interface SupportKeyPin {
   readonly fingerprint: string
 }
 
-/** Pinned support keys. Empty until the key ceremony; changed only by a release. */
-export const SUPPORT_KEYS: readonly SupportKeyPin[] = []
+/**
+ * Pinned support keys, from the key ceremony of 2026-11-15 (two YubiKeys, ed25519-sk, resident,
+ * verify-required, application ssh:marveen-support). Changed only by a release.
+ */
+export const SUPPORT_KEYS: readonly SupportKeyPin[] = [
+  {
+    name: 'owner',
+    pub: 'AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIHLMzY1CCtV2IFehNnYjZE6wFvpislH2aT8ZAC31OIoqAAAAE3NzaDptYXJ2ZWVuLXN1cHBvcnQ=',
+    fingerprint: 'SHA256:z0v+T57GHbJHUkp6H1EQ3Z7wbkax9DxQYUNtBM9pAAY',
+  },
+  {
+    name: 'eva',
+    pub: 'AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIEVQi3MvWfHpqcxDjcq1nRPxAK9aywz/Fv5xNqGPhFlKAAAAE3NzaDptYXJ2ZWVuLXN1cHBvcnQ=',
+    fingerprint: 'SHA256:6Xc4IPpnXluHEdITNQFygVCr3OyBvnkdBtD8LOqJP+E',
+  },
+]
 
 /** Pinned source addresses, each an exact host: IPv4 `/32` or IPv6 `/128`. */
 export const SUPPORT_FROM_CIDRS: readonly string[] = []

@@ -101,10 +101,11 @@ describe('scripts/support-standby.mjs', () => {
     })
     expect(run.stderr).toBe('')
     expect(run.status).toBe(0)
-    // The shipped pins are empty, so sshd is not asked: the answer is the same on every machine.
+    // The shipped pins have the ceremony keys but no source address yet, so sshd is not asked: the answer is the same on
+    // every machine.
     const lines = run.stdout.trimEnd().split('\n')
     expect(lines.slice(0, 1)).toEqual(['node=ok'])
-    expect(lines.slice(2, 6)).toEqual(['node_minimum=20', 'pins=support_keys_unset', 'sshd=not_asked', 'sshd_version=unknown'])
+    expect(lines.slice(2, 6)).toEqual(['node_minimum=20', 'pins=support_from_unset', 'sshd=not_asked', 'sshd_version=unknown'])
     // The keys files are the login user's from the user database, so on a developer or CI machine they may exist
     // (count 0) or not; HOME does not move them (Dani's review of #2765, S1): another HOME gives the same answer.
     expect(lines[7]).toMatch(/^support_lines=(?:absent|0)$/)
