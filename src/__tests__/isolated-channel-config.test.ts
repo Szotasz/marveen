@@ -167,6 +167,39 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(after.plugins[TG][0].projectPath).toBe(join(SANDBOX, 'agents', 'testagent'))
   })
 
+  it.each(['{', '[]', 'null'])('PLUGINREGCLOBBER1107: a torn/non-object own registry (%s) is reseeded from the shared file, re-pointed', (torn) => {
+    const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')!
+    const ip = join(cfg, 'plugins', 'installed_plugins.json')
+    writeFileSync(ip, torn)
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    const after = JSON.parse(readFileSync(ip, 'utf-8'))
+    expect(after.plugins[TG]).toHaveLength(1)
+    expect(after.plugins[TG][0].projectPath).toBe(join(SANDBOX, 'agents', 'testagent'))
+  })
+
+  it('PLUGINREGCLOBBER1107: an own entry that is an EMPTY array is refilled from the shared file', () => {
+    const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')!
+    const ip = join(cfg, 'plugins', 'installed_plugins.json')
+    writeFileSync(ip, JSON.stringify({ version: 2, plugins: { [TG]: [] } }))
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    const after = JSON.parse(readFileSync(ip, 'utf-8'))
+    expect(after.plugins[TG]).toHaveLength(1)
+    expect(after.plugins[TG][0].projectPath).toBe(join(SANDBOX, 'agents', 'testagent'))
+  })
+
+  it('PLUGINREGCLOBBER1107: a KEPT own project entry with a stale projectPath is re-pointed, nothing else touched', () => {
+    const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')!
+    const ip = join(cfg, 'plugins', 'installed_plugins.json')
+    writeFileSync(ip, JSON.stringify({ version: 2, plugins: {
+      [TG]: [{ scope: 'project', projectPath: '/old/root/agents/testagent', installPath: '/own', installedAt: 'T0' }],
+      'u@m': [{ scope: 'user', installPath: '/u' }],
+    } }))
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    const after = JSON.parse(readFileSync(ip, 'utf-8'))
+    expect(after.plugins[TG][0]).toEqual({ scope: 'project', projectPath: join(SANDBOX, 'agents', 'testagent'), installPath: '/own', installedAt: 'T0' })
+    expect(after.plugins['u@m'][0]).toEqual({ scope: 'user', installPath: '/u' })
+  })
+
   it('a CHANNEL-LESS agent (null provider) disables EVERY channel plugin', () => {
     // AUTHISO25: dani/geri-class agents have no bot token at all. Their
     // isolated settings.json must not enable any channel plugin -- a loaded

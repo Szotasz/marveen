@@ -1341,8 +1341,16 @@ function provisionIsolatedConfigDir(
     // a plugin installed that late is never spawned for the session: no bun
     // child, no bot.pid, the watchdog's "plugin disappeared" grace, and a
     // service-manager restart (the recurring FAILED) unless /reload-plugins ran.
-    // Rule: an id the agent's own registry already lists is kept as is; only
-    // ids it lacks are added from the shared file, re-pointed at this cwd.
+    // Rule: an id the agent's own registry already lists is kept (only its
+    // project-scoped entries are re-pointed at this cwd, which repairs a stale
+    // path after the install root moved or a config dir came back from a
+    // backup); ids it lacks, or lists as an empty array, are added from the
+    // shared file, re-pointed at this cwd. A torn or non-object own file is
+    // reseeded from the shared file.
+    // Consequence: a plugin REMOVED from the shared registry stays in every
+    // agent's own registry. Taking a plugin off the fleet is a per-agent step
+    // (each config dir's own registry, or scripts/lib/channel-plugin-refresh.sh,
+    // which refreshes every one); editing the shared file does not remove it.
     const sharedInstalled = join(sharedPlugins, 'installed_plugins.json')
     const ownInstalled = join(pluginsDir, 'installed_plugins.json')
     if (existsSync(sharedInstalled)) {
@@ -1359,6 +1367,15 @@ function provisionIsolatedConfigDir(
         const merged: Reg = own ?? { ...shared, plugins: {} }
         if (!isPlainObject(merged.plugins)) merged.plugins = {}
         let changed = own === null
+        for (const entries of Object.values(merged.plugins!)) {
+          if (!Array.isArray(entries)) continue
+          entries.forEach((e, i) => {
+            if (e && e.scope === 'project' && e.projectPath !== cwd) {
+              entries[i] = { ...e, projectPath: cwd }
+              changed = true
+            }
+          })
+        }
         for (const [id, entries] of Object.entries(shared.plugins ?? {})) {
           const have = merged.plugins![id]
           if (Array.isArray(have) && have.length > 0) continue
