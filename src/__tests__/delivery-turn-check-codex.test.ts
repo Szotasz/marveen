@@ -126,6 +126,23 @@ describe('classifyCodexRolloutLines (PURE, mirrors classifyTranscriptLines)', ()
   it('an assistant message echoing the tag is not a delivered prompt', () => {
     expect(classifyCodexRolloutLines([rolloutAssistant()], 128547, SENT)).toBe('absent')
   })
+  it('an assistant row carrying the tag in a plain text part is not a delivered prompt (role gate, A4)', () => {
+    // Hand-mutant B red case: dropping the role check survives every other
+    // test because output_text parts are filtered in codexTextOf -- a 'text'
+    // part is NOT filtered, so the role gate is the only guard here.
+    const echo = JSON.stringify({
+      timestamp: iso(SENT + 300), ordinal: 8924, type: 'response_item',
+      payload: { type: 'message', id: 'msg_echo', role: 'assistant', content: [{ type: 'text', text: envelope(128561) }] },
+    })
+    expect(classifyCodexRolloutLines([echo], 128561, SENT)).toBe('absent')
+  })
+  it('plain-string content with a non-user role is not a delivered prompt either (role gate, A4)', () => {
+    const line = JSON.stringify({
+      timestamp: iso(SENT + 300), type: 'response_item',
+      payload: { type: 'message', role: 'assistant', content: envelope(128562) },
+    })
+    expect(classifyCodexRolloutLines([line], 128562, SENT)).toBe('absent')
+  })
   it('non-message payload types (function_call_output etc.) are not evidence', () => {
     const line = JSON.stringify({
       timestamp: iso(SENT + 300), ordinal: 8923, type: 'response_item',
