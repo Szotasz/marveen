@@ -11,6 +11,8 @@
 // covers the Claude-only behaviour); probeTurnEvidence stays PURE -- the codex
 // reader is an injected dep exactly like readLocal/readRemote.
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   probeTurnEvidence,
   decideTaskTimeout,
@@ -81,5 +83,50 @@ describe('probeTurnEvidence: codex rollout mtime as turn evidence', () => {
   it('mtimeSeen keeps reporting the CLAUDE transcript mtime (what the sweep logs)', () => {
     const probed = probeTurnEvidence(makeEntry(), 'idle', { readLocal: () => T - 60_000, codexMtime: () => T + 5_000 })
     expect(probed.mtimeSeen).toBe(T - 60_000)
+  })
+})
+
+// SUPPLEMENT (d72ba2bd): measured on this install 2026-11-15, the 21 scheduled
+// Codex-agent tasks of the day were ALL redelivered as duplicate runs after a
+// false "never started a turn" verdict -- the exact regression this PR fixes
+// at the evidence level. The unit tests above pin decideTaskTimeout's verdict;
+// these guard the SWEEP that consumes it, so a run PROVEN done stays a dead
+// end for retries: the done/abandoned branch must not enqueue a pending retry
+// or record a 'lost' run, and the lost-redelivery enqueue must stay inside the
+// lost branch (a misplaced one is what turns a proven run into a second
+// injection). Source-text-guard style, same as the 'lost-redelivery wiring'
+// suite in schedule-task-timeout.test.ts -- the sweep owns in-memory state a
+// unit harness cannot reach.
+describe('done-run wiring in the watchdog sweep: no second injection after proven evidence', () => {
+  const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+  const doneBranchIdx = SRC.indexOf("if (decision === 'done' || decision === 'abandoned') {")
+  const alertBranchIdx = SRC.indexOf("} else if (decision === 'alert') {", doneBranchIdx)
+  const lostBranchIdx = SRC.indexOf("} else if (decision === 'lost') {", alertBranchIdx)
+  const staleBranchIdx = SRC.indexOf("if (decision === 'stale')", lostBranchIdx)
+
+  it('branch anchors line up: done -> alert -> lost -> stale', () => {
+    expect(doneBranchIdx).toBeGreaterThan(0)
+    expect(alertBranchIdx).toBeGreaterThan(doneBranchIdx)
+    expect(lostBranchIdx).toBeGreaterThan(alertBranchIdx)
+    expect(staleBranchIdx).toBeGreaterThan(lostBranchIdx)
+  })
+
+  it('the done/abandoned branch enqueues NO pending retry', () => {
+    const doneBranch = SRC.slice(doneBranchIdx, alertBranchIdx)
+    expect(doneBranch).not.toMatch(/insertPendingTaskRetryIfNew/)
+  })
+
+  it("the done/abandoned branch records NO 'lost' task run", () => {
+    const doneBranch = SRC.slice(doneBranchIdx, alertBranchIdx)
+    expect(doneBranch).not.toMatch(/appendTaskRun\([^)]*'lost'/)
+  })
+
+  it("the 'lost-injection' retry enqueue lives only inside the lost branch", () => {
+    // Before the lost branch opens there is no lost-injection reason at all...
+    expect(SRC.slice(0, lostBranchIdx)).not.toContain("'lost-injection'")
+    // ...and the one real call sits inside the lost branch, before the stale
+    // branch that closes the decision chain.
+    const lostRegion = SRC.slice(lostBranchIdx, staleBranchIdx)
+    expect(lostRegion).toMatch(/insertPendingTaskRetryIfNew\([^)]*'lost-injection'/)
   })
 })
