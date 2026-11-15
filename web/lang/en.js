@@ -2350,6 +2350,8 @@ window._i18n.en = {
   'onboarding.step3.desc':       'Last step: pair yourself so the bot replies to you.',
   'onboarding.step3.li1':        'Send a message to your bot on Telegram or Slack.',
   'onboarding.step3.li2':        'Refresh the list, then approve yourself below.',
+  'onboarding.step3.li1_teams':  'Send a message to your bot in Microsoft Teams.',
+  'onboarding.step3.li2_teams':  'Once the bot replies to you in Teams, reload the page: this step then closes by itself.',
   'onboarding.step3.refresh_btn':'Refresh list',
   'onboarding.step3.no_pending': 'No pending pairing yet. Message the bot, then refresh.',
   'onboarding.step3.approve_btn':'Approve',

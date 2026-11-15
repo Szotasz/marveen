@@ -208,8 +208,20 @@ function existingChannelTokens(): { botToken: string | null; appToken: string | 
   return { botToken, appToken }
 }
 
+// TEAMSPAIRED1115: the Teams plugin (claude-channel-teams 0.3.0, src/pairing/allowlist.ts) keeps its paired users
+// in <stateDir>/allowlist.json as {"version":1,"entries":[{"aad_object_id":"<uuid>",...}]} and writes no access.json.
+// Paired = at least one entry with an object id; any other shape the plugin itself treats as empty.
+function teamsPaired(): boolean {
+  try {
+    const a = JSON.parse(readFileSync(join(channelStateDir('teams'), 'allowlist.json'), 'utf-8')) as { version?: unknown; entries?: unknown }
+    if (!a || a.version !== 1 || !Array.isArray(a.entries)) return false
+    return a.entries.some((e) => !!e && typeof (e as { aad_object_id?: unknown }).aad_object_id === 'string' && (e as { aad_object_id: string }).aad_object_id.trim() !== '')
+  } catch { return false }
+}
+
 function paired(): boolean {
   if (CHANNEL_PROVIDER === 'gromzo') return gromzoEnrolled()
+  if (CHANNEL_PROVIDER === 'teams') return teamsPaired()
   try {
     const a = JSON.parse(readFileSync(join(channelStateDir(CHANNEL_PROVIDER), 'access.json'), 'utf-8')) as {
       allowFrom?: unknown[]; groups?: Record<string, unknown>
