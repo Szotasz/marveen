@@ -1585,6 +1585,33 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_config_change_log_key ON config_change_log(key, created_at)`)
 
+  // --- Support access (SUPPORTKULCS1109, PR1b 2b-2) ---
+  // One row per enabling of support standby (terv-v7 3.7). Never a token, a code
+  // or an address: the grant id, the consent the owner gave, the key names.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS support_consents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      grant_id TEXT NOT NULL UNIQUE,
+      consent_version INTEGER NOT NULL,
+      consent_at TEXT NOT NULL,
+      locale TEXT,
+      key_names TEXT NOT NULL,
+      created_via TEXT NOT NULL CHECK (created_via IN ('button', 'command')),
+      actor TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      revoked_at INTEGER,
+      revoked_via TEXT CHECK (revoked_via IS NULL OR revoked_via IN ('button', 'command', 'external', 'replaced', 'security_reset', 'password_change', 'user_delete', 'tampered'))
+    )
+  `)
+  // The support password bucket (Dani 78357, Q4): one row, the state as JSON, kept over a restart.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS support_password_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      state TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
   // --- Store File Audit (fs-watch events on store/) ---
   // Records every write/rename in the store/ directory. Content is NEVER
   // stored -- only path, event type and file size. Sensitive files
@@ -7325,6 +7352,65 @@ export interface ConfigChangeLogRow {
   new_value: string | null
   actor: string
   created_at: number
+}
+
+// --- Support access (SUPPORTKULCS1109) ---
+export type SupportRevokedVia = 'button' | 'command' | 'external' | 'replaced' | 'security_reset' | 'password_change' | 'user_delete' | 'tampered'
+
+export interface SupportConsentRow {
+  id: number
+  grant_id: string
+  consent_version: number
+  consent_at: string
+  locale: string | null
+  key_names: string
+  created_via: 'button' | 'command'
+  actor: string
+  created_at: number
+  revoked_at: number | null
+  revoked_via: SupportRevokedVia | null
+}
+
+/** One enabling. A second row for the same grant id is not written (the first stays). True when a row was written. */
+export function insertSupportConsent(row: {
+  grantId: string
+  consentVersion: number
+  consentAt: string
+  locale: string | null
+  keyNames: readonly string[]
+  createdVia: 'button' | 'command'
+  actor: string
+}): boolean {
+  const info = db.prepare(
+    'INSERT OR IGNORE INTO support_consents (grant_id, consent_version, consent_at, locale, key_names, created_via, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(row.grantId, row.consentVersion, row.consentAt, row.locale, row.keyNames.join(','), row.createdVia, row.actor, Math.floor(Date.now() / 1000))
+  return info.changes === 1
+}
+
+/** Close every open consent row (standby went off). Returns how many rows it closed. */
+export function revokeOpenSupportConsents(via: SupportRevokedVia): number {
+  return db.prepare('UPDATE support_consents SET revoked_at = ?, revoked_via = ? WHERE revoked_at IS NULL').run(Math.floor(Date.now() / 1000), via).changes
+}
+
+export function listSupportConsents(limit = 50): SupportConsentRow[] {
+  return db.prepare('SELECT * FROM support_consents ORDER BY created_at DESC, id DESC LIMIT ?').all(limit) as SupportConsentRow[]
+}
+
+/** The stored support password state, parsed; undefined when there is none yet, null when it does not parse. */
+export function loadSupportPasswordStateRaw(): unknown {
+  const row = db.prepare('SELECT state FROM support_password_state WHERE id = 1').get() as { state: string } | undefined
+  if (row === undefined) return undefined
+  try {
+    return JSON.parse(row.state)
+  } catch {
+    return null
+  }
+}
+
+export function saveSupportPasswordState(state: object): void {
+  db.prepare(
+    'INSERT INTO support_password_state (id, state, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at',
+  ).run(JSON.stringify(state), Math.floor(Date.now() / 1000))
 }
 
 export function getRecentConfigChanges(limit = 200): ConfigChangeLogRow[] {

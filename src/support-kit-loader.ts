@@ -83,9 +83,11 @@ process.exitCode = code;
 export const KIT_RUN_ENV: Readonly<Record<string, string>> = { PATH: '/usr/bin:/bin', LC_ALL: 'C' }
 /** No more of the routine's output than this is kept; a longer output is a failure. */
 export const KIT_RUN_MAX_OUTPUT = 64 * 1024
+/** The routine's stderr is kept too (a refusal says its reason there), up to this; more is a failure. */
+export const KIT_RUN_MAX_STDERR = 4 * 1024
 
 export type KitRunResult =
-  | { readonly ok: true; readonly code: number; readonly stdout: string }
+  | { readonly ok: true; readonly code: number; readonly stdout: string; readonly stderr: string }
   | { readonly ok: false; readonly problem: KitProblem | 'kit_run_failed' | 'kit_no_output' }
 
 export interface KitRunInput {
@@ -103,13 +105,13 @@ export interface KitRunInput {
  * a kit mismatch); a routine code is 0 to 63; exit 0 with no output is a
  * failure too (the routine always answers).
  */
-export function kitRunOutcome(run: { code: number | null; signal: NodeJS.Signals | null; tooLong: boolean; stdout: string }): KitRunResult {
-  const { code, signal, tooLong, stdout } = run
+export function kitRunOutcome(run: { code: number | null; signal: NodeJS.Signals | null; tooLong: boolean; stdout: string; stderr: string }): KitRunResult {
+  const { code, signal, tooLong, stdout, stderr } = run
   if (tooLong || signal !== null || code === null) return { ok: false, problem: 'kit_run_failed' }
   if (code === KIT_LOADER_EXIT.mismatch) return { ok: false, problem: 'kit_mismatch' }
   if (LOADER_CODES.has(code) || code < 0 || code > 63) return { ok: false, problem: 'kit_run_failed' }
   if (code === 0 && stdout.length === 0) return { ok: false, problem: 'kit_no_output' }
-  return { ok: true, code, stdout }
+  return { ok: true, code, stdout, stderr }
 }
 
 /** The node arguments of one run: the loader text, then everything that varies after `--`. */
@@ -136,28 +138,37 @@ export function runKitRoutine(input: KitRunInput): Promise<KitRunResult> {
     try {
       child = spawn(verdict.manifest.nodePath, kitRunArgs(expected, routinePath, input.args), {
         env: { ...KIT_RUN_ENV },
-        stdio: ['pipe', 'pipe', 'ignore'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         timeout: input.timeoutMs,
       })
     } catch {
       resolve({ ok: false, problem: 'kit_run_failed' })
       return
     }
-    const chunks: Buffer[] = []
-    let size = 0
     let tooLong = false
-    child.stdout?.on('data', (chunk: Buffer) => {
-      size += chunk.length
-      if (size > KIT_RUN_MAX_OUTPUT) {
-        tooLong = true
-        child.kill('SIGKILL')
-        return
+    const collector = (cap: number) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      return {
+        add(chunk: Buffer): void {
+          size += chunk.length
+          if (size > cap) {
+            tooLong = true
+            child.kill('SIGKILL')
+            return
+          }
+          chunks.push(chunk)
+        },
+        text: (): string => Buffer.concat(chunks).toString('utf8'),
       }
-      chunks.push(chunk)
-    })
+    }
+    const out = collector(KIT_RUN_MAX_OUTPUT)
+    const err = collector(KIT_RUN_MAX_STDERR)
+    child.stdout?.on('data', (chunk: Buffer) => out.add(chunk))
+    child.stderr?.on('data', (chunk: Buffer) => err.add(chunk))
     child.on('error', () => resolve({ ok: false, problem: 'kit_run_failed' }))
     child.on('close', (code, signal) => {
-      resolve(kitRunOutcome({ code, signal, tooLong, stdout: Buffer.concat(chunks).toString('utf8') }))
+      resolve(kitRunOutcome({ code, signal, tooLong, stdout: out.text(), stderr: err.text() }))
     })
     child.stdin?.on('error', () => {
       /* the routine may exit before it reads; the exit code says what happened */

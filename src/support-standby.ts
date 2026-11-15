@@ -7,6 +7,7 @@
 // is one sshd probe, one curl check and one way of counting support lines.
 import { parseSkEd25519Blob, validateSupportPins, type SupportKeyPin, type SupportPinsProblem } from './support-access-pins.js'
 import { countSupportLines } from './support-access-line.js'
+import { SUPPORT_CONSENT_VERSION } from './support-standby-enable.js'
 import type { SshdAssessment, SshdProblem, SupportKeysFileName } from './support-access-sshd.js'
 
 /**
@@ -145,6 +146,8 @@ export function formatSupportStatus(report: SupportStatusReport): string {
       'support_lines_second_file=' + keysFileText(report.keysFiles.authorized_keys2),
       'standby=' + report.standby.state,
       'standby_keys=' + (report.standby.keys.length === 0 ? 'none' : report.standby.keys.join(',')),
+      // The launcher takes the version it shows and passes to enable from here (Samu 78475, Geri 78479).
+      'consent_version=' + SUPPORT_CONSENT_VERSION,
     ].join('\n') + '\n'
   )
 }
