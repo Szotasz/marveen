@@ -3,8 +3,9 @@
 // Source: src/support-standby-cli.ts. Rebuild: node scripts/build-support-standby.mjs
 
 // src/support-standby-cli.ts
-import { accessSync as accessSync2, constants as constants4, readFileSync as readFileSync4, realpathSync as realpathSync2 } from "node:fs";
-import { join as join7 } from "node:path";
+import { randomUUID } from "node:crypto";
+import { accessSync as accessSync2, constants as constants6, readFileSync as readFileSync4, realpathSync as realpathSync2 } from "node:fs";
+import { join as join10 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/support-access-pins.ts
@@ -775,6 +776,13 @@ function createSshdProbeDeps(user = currentLoginUser()) {
 // src/support-standby.ts
 var SUPPORT_ROUTINE_MIN_NODE_MAJOR = 20;
 var SUPPORT_DISPATCH_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+function standbyOf(files) {
+  const { token, record } = files;
+  if (token === "invalid" || record.kind === "invalid") return { state: "invalid", keys: [] };
+  if (token === "missing" && record.kind === "missing") return { state: "off", keys: [] };
+  if (token === "ok" && record.kind === "ok") return { state: "on", keys: record.keys };
+  return { state: "partial", keys: [] };
+}
 function nodeMajor(version) {
   const m = /^v(\d{1,3})\.\d{1,3}\.\d{1,3}/.exec(version);
   return m === null ? null : Number(m[1]);
@@ -805,7 +813,8 @@ async function supportStatus(deps) {
     keysFiles: {
       authorized_keys: keysFileState(deps.readKeysFile("authorized_keys"), pinnedBlobs),
       authorized_keys2: keysFileState(deps.readKeysFile("authorized_keys2"), pinnedBlobs)
-    }
+    },
+    standby: standbyOf(deps.readStandbyFiles())
   };
 }
 function keysFileText(state) {
@@ -821,7 +830,9 @@ function formatSupportStatus(report) {
     "sshd_version=" + (report.sshdVersion ?? "unknown"),
     "curl=" + (report.curl === null ? "missing" : "present"),
     "support_lines=" + keysFileText(report.keysFiles.authorized_keys),
-    "support_lines_second_file=" + keysFileText(report.keysFiles.authorized_keys2)
+    "support_lines_second_file=" + keysFileText(report.keysFiles.authorized_keys2),
+    "standby=" + report.standby.state,
+    "standby_keys=" + (report.standby.keys.length === 0 ? "none" : report.standby.keys.join(","))
   ].join("\n") + "\n";
 }
 
@@ -1218,27 +1229,427 @@ async function installKit(input) {
   return writeKit({ supportDir, files, installRoot, nodePath, nodeMin: SUPPORT_ROUTINE_MIN_NODE_MAJOR, release, ...tuning });
 }
 
+// src/support-access-token.ts
+import {
+  closeSync as closeSync4,
+  constants as constants4,
+  fchmodSync,
+  fstatSync as fstatSync4,
+  fsyncSync as fsyncSync2,
+  lstatSync as lstatSync3,
+  openSync as openSync4,
+  readSync as readSync4,
+  renameSync as renameSync2,
+  unlinkSync as unlinkSync2,
+  writeSync as writeSync2
+} from "node:fs";
+import { randomBytes as randomBytes2 } from "node:crypto";
+import { join as join4 } from "node:path";
+var SUPPORT_TOKEN_FILE = "support-access.token";
+var TOKEN_MODE = 384;
+var TOKEN_READ_CAP = 64;
+var SUPPORT_TOKEN_SHAPE = /^mst_[A-Za-z0-9_-]{43}$/;
+function isSupportToken(value) {
+  return typeof value === "string" && SUPPORT_TOKEN_SHAPE.test(value);
+}
+var SENTENCES = {
+  token_shape: "the value is not a support token",
+  token_dir_unsafe: "the token directory is missing, is not a directory of this user, or is writable by others",
+  token_path_unsafe: "the token path exists and is not a regular file",
+  token_readback: "the token file does not hold what was written",
+  token_remains: "the token file is still there after the removal"
+};
+var SupportTokenError = class extends Error {
+  code;
+  constructor(code) {
+    super(SENTENCES[code]);
+    this.name = "SupportTokenError";
+    this.code = code;
+  }
+};
+function lstatOrNull2(path) {
+  try {
+    return lstatSync3(path);
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+function effectiveUid() {
+  return typeof process.geteuid === "function" ? process.geteuid() : null;
+}
+function dirState(dir) {
+  const st = lstatOrNull2(dir);
+  if (st === null) return "missing";
+  const uid = effectiveUid();
+  if (!st.isDirectory() || (st.mode & 18) !== 0 || uid !== null && st.uid !== uid) return "unsafe";
+  return "ok";
+}
+function assertSafeDir(dir) {
+  if (dirState(dir) !== "ok") throw new SupportTokenError("token_dir_unsafe");
+}
+function writeSupportToken(dir, token) {
+  if (!isSupportToken(token)) throw new SupportTokenError("token_shape");
+  assertSafeDir(dir);
+  const target = join4(dir, SUPPORT_TOKEN_FILE);
+  const existing = lstatOrNull2(target);
+  if (existing !== null && !existing.isFile()) throw new SupportTokenError("token_path_unsafe");
+  const tmp = join4(dir, "." + SUPPORT_TOKEN_FILE + "." + process.pid + "." + randomBytes2(6).toString("hex") + ".tmp");
+  const fd = openSync4(tmp, "wx", TOKEN_MODE);
+  try {
+    try {
+      fchmodSync(fd, TOKEN_MODE);
+      writeSync2(fd, token + "\n");
+      fsyncSync2(fd);
+    } finally {
+      closeSync4(fd);
+    }
+    renameSync2(tmp, target);
+  } catch (err) {
+    try {
+      unlinkSync2(tmp);
+    } catch {
+    }
+    throw err;
+  }
+  const back = readSupportToken(dir);
+  if (back.kind !== "ok" || back.token !== token) {
+    removeSupportToken(dir);
+    throw new SupportTokenError("token_readback");
+  }
+}
+function readSupportToken(dir) {
+  const state = dirState(dir);
+  if (state === "missing") return { kind: "missing" };
+  if (state === "unsafe") return { kind: "invalid", reason: "dir" };
+  const target = join4(dir, SUPPORT_TOKEN_FILE);
+  let fd;
+  try {
+    fd = openSync4(target, constants4.O_RDONLY | constants4.O_NOFOLLOW | constants4.O_NONBLOCK);
+  } catch (err) {
+    const code = err.code;
+    if (code === "ENOENT") return { kind: "missing" };
+    return { kind: "invalid", reason: "not_a_file" };
+  }
+  let content;
+  try {
+    const st = fstatSync4(fd);
+    if (!st.isFile()) return { kind: "invalid", reason: "not_a_file" };
+    const uid = effectiveUid();
+    if (uid !== null && st.uid !== uid) return { kind: "invalid", reason: "owner" };
+    if ((st.mode & 63) !== 0) return { kind: "invalid", reason: "mode" };
+    const buf = Buffer.alloc(TOKEN_READ_CAP + 1);
+    const n = readSync4(fd, buf, 0, buf.length, 0);
+    if (n > TOKEN_READ_CAP) return { kind: "invalid", reason: "size" };
+    content = buf.subarray(0, n).toString("utf8");
+  } finally {
+    closeSync4(fd);
+  }
+  const token = content.endsWith("\n") ? content.slice(0, -1) : content;
+  if (!isSupportToken(token)) return { kind: "invalid", reason: "shape" };
+  return { kind: "ok", token };
+}
+function removeSupportToken(dir) {
+  const target = join4(dir, SUPPORT_TOKEN_FILE);
+  if (lstatOrNull2(target) === null) return { removed: false };
+  try {
+    unlinkSync2(target);
+  } catch {
+  }
+  if (lstatOrNull2(target) !== null) throw new SupportTokenError("token_remains");
+  return { removed: true };
+}
+
+// src/support-group-record.ts
+import { randomBytes as randomBytes3 } from "node:crypto";
+import {
+  closeSync as closeSync5,
+  constants as constants5,
+  fchmodSync as fchmodSync2,
+  fstatSync as fstatSync5,
+  fsyncSync as fsyncSync3,
+  lstatSync as lstatSync4,
+  openSync as openSync5,
+  readSync as readSync5,
+  renameSync as renameSync3,
+  unlinkSync as unlinkSync3,
+  writeSync as writeSync3
+} from "node:fs";
+import { join as join5 } from "node:path";
+var SUPPORT_GROUP_RECORD_FILE = "support-access.group";
+var HEADER = "marveen-support-group 1";
+var RECORD_MODE = 384;
+var GROUP_RECORD_MAX_BYTES = 2048;
+var GRANT_ID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+var KEY_NAME3 = /^[a-z0-9]{1,16}$/;
+var FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}$/;
+var CIDR = /^[0-9A-Fa-f:.]+\/(?:32|128)$/;
+var SAFE_ABSOLUTE_PATH4 = /^\/[A-Za-z0-9._/-]+$/;
+var UTC_SECOND = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+var GroupRecordError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "GroupRecordError";
+    this.code = code;
+  }
+};
+function recordProblem(r) {
+  if (!GRANT_ID2.test(r.grantId)) return "the grant id is not a uuid";
+  if (!Number.isInteger(r.consentVersion) || r.consentVersion < 1 || r.consentVersion > 9999) return "the consent version is not a small positive number";
+  if (!UTC_SECOND.test(r.consentAt) || Number.isNaN(Date.parse(r.consentAt))) return "the consent time is not a UTC second";
+  if (r.keys.length < 1 || r.keys.length > 2) return "a group has one or two keys";
+  const names = r.keys.map((k) => k.name);
+  if (new Set(names).size !== names.length || names.join("\n") !== [...names].sort().join("\n")) return "the keys are not distinct and in name order";
+  if (!r.keys.every((k) => KEY_NAME3.test(k.name) && FINGERPRINT.test(k.fingerprint))) return "a key is not a name and a fingerprint";
+  if (r.fromCidrs.length < 1 || r.fromCidrs.length > 2 || !r.fromCidrs.every((c) => CIDR.test(c))) return "the sources are not one or two host addresses";
+  if (!SAFE_ABSOLUTE_PATH4.test(r.dispatchPath)) return "the dispatcher path is not a plain absolute path";
+  const { major, minor } = r.sshd;
+  if (!Number.isInteger(major) || !Number.isInteger(minor) || major < 1 || major > 99 || minor < 0 || minor > 99) return "the sshd version is not a version";
+  return null;
+}
+function formatGroupRecord(r) {
+  const problem = recordProblem(r);
+  if (problem !== null) throw new GroupRecordError("group_record_invalid", problem);
+  const lines = [HEADER, "grant-id " + r.grantId, "consent " + r.consentVersion, "consent-at " + r.consentAt];
+  for (const k of r.keys) lines.push("key " + k.name + " " + k.fingerprint);
+  for (const c of r.fromCidrs) lines.push("from " + c);
+  lines.push("dispatch " + r.dispatchPath, "sshd " + r.sshd.major + "." + r.sshd.minor);
+  return lines.join("\n") + "\n";
+}
+function parseGroupRecord(text) {
+  if (text.length > GROUP_RECORD_MAX_BYTES || !text.endsWith("\n")) return null;
+  const lines = text.slice(0, -1).split("\n");
+  if (lines[0] !== HEADER) return null;
+  const single = /* @__PURE__ */ new Map();
+  const keys = [];
+  const fromCidrs = [];
+  for (const line of lines.slice(1)) {
+    const parts = line.split(" ");
+    if (parts[0] === "key" && parts.length === 3) keys.push({ name: parts[1], fingerprint: parts[2] });
+    else if (parts[0] === "from" && parts.length === 2) fromCidrs.push(parts[1]);
+    else if (["grant-id", "consent", "consent-at", "dispatch", "sshd"].includes(parts[0]) && parts.length === 2) {
+      if (single.has(parts[0])) return null;
+      single.set(parts[0], parts[1]);
+    } else return null;
+  }
+  const sshd = /^(\d{1,2})\.(\d{1,2})$/.exec(single.get("sshd") ?? "");
+  const consent = single.get("consent") ?? "";
+  const record = {
+    grantId: single.get("grant-id") ?? "",
+    consentVersion: /^[1-9][0-9]{0,3}$/.test(consent) ? Number(consent) : NaN,
+    consentAt: single.get("consent-at") ?? "",
+    keys,
+    fromCidrs,
+    dispatchPath: single.get("dispatch") ?? "",
+    sshd: { major: sshd === null ? NaN : Number(sshd[1]), minor: sshd === null ? NaN : Number(sshd[2]) }
+  };
+  if (recordProblem(record) !== null) return null;
+  return formatGroupRecord(record) === text ? record : null;
+}
+function lstatOrNull3(path) {
+  try {
+    return lstatSync4(path);
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+function effectiveUid2() {
+  return typeof process.geteuid === "function" ? process.geteuid() : null;
+}
+function dirIsSafe(dir) {
+  const st = lstatOrNull3(dir);
+  const uid = effectiveUid2();
+  return st !== null && st.isDirectory() && (st.mode & 18) === 0 && (uid === null || st.uid === uid);
+}
+function readGroupRecord(supportDir) {
+  const dir = lstatOrNull3(supportDir);
+  if (dir === null) return { kind: "missing" };
+  if (!dirIsSafe(supportDir)) return { kind: "invalid" };
+  let fd;
+  try {
+    fd = openSync5(join5(supportDir, SUPPORT_GROUP_RECORD_FILE), constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
+  } catch (err) {
+    return err.code === "ENOENT" ? { kind: "missing" } : { kind: "invalid" };
+  }
+  try {
+    const st = fstatSync5(fd);
+    const uid = effectiveUid2();
+    if (!st.isFile() || (st.mode & 63) !== 0 || uid !== null && st.uid !== uid) return { kind: "invalid" };
+    const buf = Buffer.alloc(GROUP_RECORD_MAX_BYTES + 1);
+    const n = readSync5(fd, buf, 0, buf.length, 0);
+    if (n > GROUP_RECORD_MAX_BYTES) return { kind: "invalid" };
+    const record = parseGroupRecord(buf.subarray(0, n).toString("latin1"));
+    return record === null ? { kind: "invalid" } : { kind: "ok", record };
+  } finally {
+    closeSync5(fd);
+  }
+}
+function writeGroupRecord(supportDir, record) {
+  const text = formatGroupRecord(record);
+  if (!dirIsSafe(supportDir)) throw new GroupRecordError("group_dir_unsafe", "the support folder is missing, not a folder of this user, or writable by others");
+  const target = join5(supportDir, SUPPORT_GROUP_RECORD_FILE);
+  const existing = lstatOrNull3(target);
+  if (existing !== null && !existing.isFile()) throw new GroupRecordError("group_record_unsafe", "something that is not a regular file stands at the record path");
+  const tmp = join5(supportDir, "." + SUPPORT_GROUP_RECORD_FILE + "." + process.pid + "." + randomBytes3(6).toString("hex") + ".tmp");
+  const fd = openSync5(tmp, "wx", RECORD_MODE);
+  try {
+    try {
+      fchmodSync2(fd, RECORD_MODE);
+      writeSync3(fd, text);
+      fsyncSync3(fd);
+    } finally {
+      closeSync5(fd);
+    }
+    renameSync3(tmp, target);
+  } catch (err) {
+    try {
+      unlinkSync3(tmp);
+    } catch {
+    }
+    throw err;
+  }
+  const back = readGroupRecord(supportDir);
+  if (back.kind !== "ok" || formatGroupRecord(back.record) !== text) {
+    removeGroupRecord(supportDir);
+    throw new GroupRecordError("group_record_readback", "the record file does not hold what was written");
+  }
+}
+function removeGroupRecord(supportDir) {
+  const target = join5(supportDir, SUPPORT_GROUP_RECORD_FILE);
+  if (lstatOrNull3(target) === null) return false;
+  unlinkSync3(target);
+  if (lstatOrNull3(target) !== null) throw new GroupRecordError("group_record_unsafe", "the record file is still there after the removal");
+  return true;
+}
+
+// src/support-access-redeem.ts
+import { request } from "node:https";
+var SUPPORT_CODE_SHAPE = /^msc_[A-Za-z0-9_-]{32}$/;
+var SUPPORT_SERVICE_ORIGIN = "https://api.marveen.io";
+var SUPPORT_REDEEM_PATH = "/support/v1/code-redeem";
+var SUPPORT_REDEEM_TIMEOUT_MS = 1e4;
+var SUPPORT_REDEEM_MAX_BODY_BYTES = 1024;
+function classifySupportCode(input) {
+  if (typeof input !== "string") return { ok: false, problem: "code_required" };
+  const code = input.trim();
+  if (code.length === 0) return { ok: false, problem: "code_required" };
+  if (code.startsWith("mrv_")) return { ok: false, problem: "license_key_not_accepted" };
+  if (!SUPPORT_CODE_SHAPE.test(code)) return { ok: false, problem: "code_shape" };
+  return { ok: true, code };
+}
+function tokenFromBody(body) {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const keys = Object.keys(parsed);
+  if (keys.length !== 1 || keys[0] !== "token") return null;
+  const token = parsed.token;
+  return isSupportToken(token) ? token : null;
+}
+async function redeemSupportCode(code, deps) {
+  if (!SUPPORT_CODE_SHAPE.test(code)) throw new Error("redeemSupportCode needs a code that classifySupportCode accepted");
+  let res;
+  try {
+    res = await deps.transport({
+      origin: SUPPORT_SERVICE_ORIGIN,
+      path: SUPPORT_REDEEM_PATH,
+      body: JSON.stringify({ code, purpose: "support" }),
+      timeoutMs: SUPPORT_REDEEM_TIMEOUT_MS,
+      maxBodyBytes: SUPPORT_REDEEM_MAX_BODY_BYTES
+    });
+  } catch {
+    return { ok: false, problem: "service_unavailable" };
+  }
+  if (res.status === 401) return { ok: false, problem: "code_rejected" };
+  if (res.status === 429) return { ok: false, problem: "rate_limited" };
+  if (res.status !== 200) return { ok: false, problem: "service_unavailable" };
+  const token = tokenFromBody(res.body);
+  if (token === null) return { ok: false, problem: "answer_unreadable" };
+  return { ok: true, token };
+}
+function createHttpsRedeemTransport(opts = {}) {
+  return (req) => new Promise((resolve3, reject) => {
+    let url;
+    try {
+      url = new URL(req.path, req.origin);
+    } catch {
+      reject(new Error("the service address is not a URL"));
+      return;
+    }
+    if (url.protocol !== "https:") {
+      reject(new Error("the service address is not https"));
+      return;
+    }
+    let settled = false;
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      fn();
+    };
+    const call = request(
+      url,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(req.body) },
+        rejectUnauthorized: true,
+        ...opts.extraCa === void 0 ? {} : { ca: opts.extraCa }
+      },
+      (res) => {
+        const chunks = [];
+        let size = 0;
+        res.on("data", (chunk) => {
+          size += chunk.length;
+          if (size > req.maxBodyBytes) {
+            call.destroy();
+            finish(() => reject(new Error("the answer is longer than the limit")));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("end", () => finish(() => resolve3({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") })));
+        res.on("error", () => finish(() => reject(new Error("the answer could not be read"))));
+      }
+    );
+    const deadline = setTimeout(() => {
+      call.destroy();
+      finish(() => reject(new Error("no answer within the time limit")));
+    }, req.timeoutMs);
+    call.on("error", () => finish(() => reject(new Error("the request failed"))));
+    call.end(req.body);
+  });
+}
+
+// src/support-standby-enable.ts
+import { join as join9 } from "node:path";
+
 // src/support-access-fs.ts
-import { lstatSync as lstatSync4, readFileSync as readFileSync3, statSync as statSync5 } from "node:fs";
-import { join as join6 } from "node:path";
+import { lstatSync as lstatSync6, readFileSync as readFileSync3, statSync as statSync5 } from "node:fs";
+import { join as join8 } from "node:path";
 
 // src/remote-enroll-fs.ts
 import {
-  openSync as openSync4,
-  closeSync as closeSync4,
-  writeSync as writeSync2,
-  fsyncSync as fsyncSync2,
+  openSync as openSync6,
+  closeSync as closeSync6,
+  writeSync as writeSync4,
+  fsyncSync as fsyncSync4,
   readFileSync as readFileSync2,
-  renameSync as renameSync2,
-  unlinkSync as unlinkSync2,
+  renameSync as renameSync4,
+  unlinkSync as unlinkSync4,
   mkdirSync as mkdirSync2,
   statSync as statSync4,
-  lstatSync as lstatSync3,
+  lstatSync as lstatSync5,
   existsSync,
   chmodSync,
   realpathSync
 } from "node:fs";
-import { join as join5, resolve as resolve2 } from "node:path";
+import { join as join7, resolve as resolve2 } from "node:path";
 
 // src/remote-enroll-core.ts
 var REMOTE_PORT = 3420;
@@ -1256,7 +1667,7 @@ function isTestRun() {
 
 // src/ssh-dir.ts
 import { homedir } from "node:os";
-import { join as join4 } from "node:path";
+import { join as join6 } from "node:path";
 var SSH_DIR_GUARD_CODE = "ENROLL813";
 var SshDirGuardError = class extends Error {
   code = SSH_DIR_GUARD_CODE;
@@ -1266,7 +1677,7 @@ var SshDirGuardError = class extends Error {
   }
 };
 function realSshDir() {
-  return join4(homedir(), ".ssh");
+  return join6(homedir(), ".ssh");
 }
 function describeTestRunSignal() {
   const signals = [];
@@ -1339,9 +1750,9 @@ function ensureSshDir(sshDir, warnings) {
 async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const fd = openSync4(lockPath, "wx", AUTH_KEYS_MODE);
+      const fd = openSync6(lockPath, "wx", AUTH_KEYS_MODE);
       try {
-        writeSync2(fd, `${process.pid}
+        writeSync4(fd, `${process.pid}
 `);
       } catch {
       }
@@ -1351,7 +1762,7 @@ async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
       try {
         const st = statSync4(lockPath);
         if (Date.now() - st.mtimeMs > staleMs) {
-          unlinkSync2(lockPath);
+          unlinkSync4(lockPath);
           continue;
         }
       } catch {
@@ -1366,29 +1777,29 @@ async function acquireLock(lockPath, retries, delayMs, staleMs, sleep) {
 }
 function releaseLock(fd, lockPath) {
   try {
-    closeSync4(fd);
+    closeSync6(fd);
   } catch {
   }
   try {
-    unlinkSync2(lockPath);
+    unlinkSync4(lockPath);
   } catch {
   }
 }
 function writeAtomic(sshDir, authPath, content, encoding = "utf8") {
-  const tmpPath = join5(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
-  const tfd = openSync4(tmpPath, "wx", AUTH_KEYS_MODE);
+  const tmpPath = join7(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`);
+  const tfd = openSync6(tmpPath, "wx", AUTH_KEYS_MODE);
   try {
-    writeSync2(tfd, content, null, encoding);
-    fsyncSync2(tfd);
+    writeSync4(tfd, content, null, encoding);
+    fsyncSync4(tfd);
   } finally {
-    closeSync4(tfd);
+    closeSync6(tfd);
   }
   chmodSync(tmpPath, AUTH_KEYS_MODE);
   try {
-    renameSync2(tmpPath, authPath);
+    renameSync4(tmpPath, authPath);
   } catch (err) {
     try {
-      unlinkSync2(tmpPath);
+      unlinkSync4(tmpPath);
     } catch {
     }
     throw err;
@@ -1412,10 +1823,10 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
     throw new AuthorizedKeysRewriteError("AUTHORIZED_KEYS_FILE_NAME", "only authorized_keys and authorized_keys2 can be rewritten");
   }
   const warnings = [];
-  const authPath = join5(sshDir, fileName);
-  const lockPath = join5(sshDir, LOCK_NAME);
+  const authPath = join7(sshDir, fileName);
+  const lockPath = join7(sshDir, LOCK_NAME);
   const encoding = preserveBytes ? "latin1" : "utf8";
-  if (refuseSymlink && lstatOrNull2(sshDir)?.isSymbolicLink()) {
+  if (refuseSymlink && lstatOrNull4(sshDir)?.isSymbolicLink()) {
     throw new AuthorizedKeysRewriteError(
       "AUTHORIZED_KEYS_SYMLINK",
       `${sshDir} is a symbolic link; refusing to add access through it`
@@ -1433,7 +1844,7 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
   const fd = await acquireLock(lockPath, lockRetries, lockRetryDelayMs, staleLockMs, sleep);
   try {
     let existing = "";
-    const link = lstatOrNull2(authPath);
+    const link = lstatOrNull4(authPath);
     if (link !== null) {
       if (link.isSymbolicLink() && refuseSymlink) {
         throw new AuthorizedKeysRewriteError(
@@ -1479,9 +1890,9 @@ async function rewriteAuthorizedKeysLocked(opts, transform) {
     releaseLock(fd, lockPath);
   }
 }
-function lstatOrNull2(path) {
+function lstatOrNull4(path) {
   try {
-    return lstatSync3(path);
+    return lstatSync5(path);
   } catch (err) {
     if (err.code === "ENOENT") return null;
     throw err;
@@ -1505,9 +1916,9 @@ var SupportKeysLayoutError = class extends Error {
     this.name = "SupportKeysLayoutError";
   }
 };
-function lstatOrNull3(path) {
+function lstatOrNull5(path) {
   try {
-    return lstatSync4(path);
+    return lstatSync6(path);
   } catch {
     return null;
   }
@@ -1520,12 +1931,12 @@ function statOrNull(path) {
   }
 }
 function keysFileLayout(sshDir) {
-  const second = lstatOrNull3(join6(sshDir, SECOND_FILE));
+  const second = lstatOrNull5(join8(sshDir, SECOND_FILE));
   if (second === null) return "separate";
-  const first = lstatOrNull3(join6(sshDir, "authorized_keys"));
+  const first = lstatOrNull5(join8(sshDir, "authorized_keys"));
   const sameAsFirst = (st) => first !== null && first.isFile() && st.dev === first.dev && st.ino === first.ino;
   if (second.isSymbolicLink()) {
-    const target = statOrNull(join6(sshDir, SECOND_FILE));
+    const target = statOrNull(join8(sshDir, SECOND_FILE));
     if (target === null) return "link-to-nothing";
     return sameAsFirst(target) ? "link-to-first" : "link-elsewhere";
   }
@@ -1533,20 +1944,20 @@ function keysFileLayout(sshDir) {
 }
 function assertLayoutForGrant(sshDir) {
   const layout = keysFileLayout(sshDir);
-  const second = join6(sshDir, SECOND_FILE);
+  const second = join8(sshDir, SECOND_FILE);
   if (layout === "link-elsewhere") throw new SupportKeysLayoutError(`${second} is a symbolic link to another file than authorized_keys; nothing was written`);
   if (layout === "hard-link") throw new SupportKeysLayoutError(`${second} is a hard link of authorized_keys; nothing was written`);
 }
 function splitWarning(sshDir, before) {
   if (before !== "hard-link" || keysFileLayout(sshDir) === "hard-link") return [];
   return [
-    `${join6(sshDir, "authorized_keys")} and ${join6(sshDir, SECOND_FILE)} were one file under two names; taking the support lines out split them into two files. Both hold the other lines as they were, but an edit of one no longer shows in the other`
+    `${join8(sshDir, "authorized_keys")} and ${join8(sshDir, SECOND_FILE)} were one file under two names; taking the support lines out split them into two files. Both hold the other lines as they were, but an edit of one no longer shows in the other`
   ];
 }
 async function removeEverySupportLine(base, fileName, operation) {
   const { sshDir, pinnedBlobs, ...lock } = base;
   if (fileName === SECOND_FILE) {
-    const secondPath = join6(sshDir, SECOND_FILE);
+    const secondPath = join8(sshDir, SECOND_FILE);
     const layout = keysFileLayout(sshDir);
     if (layout === "link-to-first" || layout === "link-to-nothing") {
       return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a link to authorized_keys (or to nothing); it was cleaned through that file`] };
@@ -1679,8 +2090,106 @@ function reconcileFirstFile(base, expected, operation) {
   });
 }
 
+// src/support-standby-enable.ts
+var SUPPORT_CONSENT_VERSION = 1;
+function utcSecond(d) {
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+async function enableSupportStandby(input, deps) {
+  const no = (problem) => ({ ok: false, problem });
+  if (!deps.startedFromKit) return no("enable_not_from_kit");
+  const code = classifySupportCode(input.code);
+  if (!code.ok) return no(code.problem);
+  if (input.consentVersion !== SUPPORT_CONSENT_VERSION) return no("consent_invalid");
+  const { keys, fromCidrs } = deps.pins;
+  if (keys.length === 0 || fromCidrs.length === 0) return no("support_keys_unset");
+  if (!validateSupportPins(keys, fromCidrs).ok) return no("support_pins_invalid");
+  if (readSupportToken(deps.supportDir).kind !== "missing" || readGroupRecord(deps.supportDir).kind !== "missing") return no("already_on");
+  const sshd = await deps.probeSshd(fromCidrs);
+  if (!sshd.ok) return no(sshd.problem);
+  const kit = verifyKit({ supportDir: deps.supportDir });
+  if (!kit.ok) return no(kit.problem);
+  if (kit.manifest.files[KIT_DISPATCHER_NAME] === void 0) return no("kit_mismatch");
+  const dispatchPath = join9(kit.kitDir, KIT_DISPATCHER_NAME);
+  const layout = keysFileLayout(deps.sshDir);
+  if (layout === "link-elsewhere" || layout === "hard-link") return no("keys_file_layout");
+  const redeemed = await redeemSupportCode(code.code, { transport: deps.redeemTransport });
+  if (!redeemed.ok) return no(redeemed.problem);
+  const pinnedBlobs = new Set(keys.map((k) => k.pub));
+  const grantId = deps.newGrantId();
+  const sortedKeys = [...keys].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  try {
+    writeSupportToken(deps.supportDir, redeemed.token);
+    writeGroupRecord(deps.supportDir, {
+      grantId,
+      consentVersion: SUPPORT_CONSENT_VERSION,
+      consentAt: utcSecond(deps.now()),
+      keys: sortedKeys.map((k) => ({ name: k.name, fingerprint: k.fingerprint })),
+      fromCidrs: [...fromCidrs],
+      dispatchPath,
+      sshd: sshd.version
+    });
+    await grantSupportLines({
+      sshDir: deps.sshDir,
+      pinnedBlobs,
+      grant: { keys: sortedKeys, fromCidrs, grantId, consentVersion: SUPPORT_CONSENT_VERSION, dispatchPath, sshd: sshd.version }
+    });
+    return { ok: true, keys: sortedKeys.map((k) => k.name), lines: sortedKeys.length };
+  } catch (err) {
+    try {
+      await revokeSupportLines({ sshDir: deps.sshDir, pinnedBlobs });
+    } catch {
+    }
+    try {
+      removeGroupRecord(deps.supportDir);
+    } catch {
+    }
+    try {
+      removeSupportToken(deps.supportDir);
+    } catch {
+    }
+    if (err instanceof SupportKeysLayoutError) return no("keys_file_layout");
+    if (err instanceof SupportLineError) return no("support_pins_invalid");
+    return no("enable_write_failed");
+  }
+}
+async function disableSupportStandby(deps) {
+  const pinnedBlobs = new Set(deps.pins.keys.map((k) => k.pub));
+  let removedLines = 0;
+  let linesFailed = false;
+  try {
+    removedLines = (await revokeSupportLines({ sshDir: deps.sshDir, pinnedBlobs })).removed;
+  } catch {
+    linesFailed = true;
+  }
+  let tokenFailed = false;
+  try {
+    removeSupportToken(deps.supportDir);
+  } catch {
+    tokenFailed = true;
+  }
+  let recordFailed = false;
+  try {
+    removeGroupRecord(deps.supportDir);
+  } catch {
+    recordFailed = true;
+  }
+  if (linesFailed) return { ok: false, problem: "lines_remain", removedLines };
+  if (tokenFailed) return { ok: false, problem: "token_remains", removedLines };
+  if (recordFailed) return { ok: false, problem: "record_remains", removedLines };
+  return { ok: true, removedLines };
+}
+
 // src/support-standby-cli.ts
-var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n";
+var SUPPORT_CLI_USAGE = "usage: support-standby.mjs status\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n       support-standby.mjs enable --consent <version>   (the code on standard input)\n       support-standby.mjs disable\n";
+var SUPPORT_CODE_MAX_INPUT = 64;
+function startedFromKit(moduleUrl = import.meta.url) {
+  try {
+    return new URL(moduleUrl).protocol === "data:";
+  } catch {
+    return false;
+  }
+}
 var INSTALL_KIT_FLAGS = {
   "--install-root": "installRoot",
   "--node": "nodePath",
@@ -1697,17 +2206,17 @@ function parseInstallKitArgs(argv) {
   return out.installRoot !== void 0 && out.nodePath !== void 0 && out.release !== void 0 ? { installRoot: out.installRoot, nodePath: out.nodePath, release: out.release } : null;
 }
 function createInstallKit(account = currentLoginUser()) {
-  return (args) => installKit({ ...args, supportDir: join7(account.home, SUPPORT_DIR_IN_HOME) });
+  return (args) => installKit({ ...args, supportDir: join10(account.home, SUPPORT_DIR_IN_HOME) });
 }
 function createStatusDeps(account = currentLoginUser()) {
-  const sshDir = join7(account.home, ".ssh");
+  const sshDir = join10(account.home, ".ssh");
   return {
     nodeVersion: process.version,
     pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
     probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
     isExecutable: (path) => {
       try {
-        accessSync2(path, constants4.X_OK);
+        accessSync2(path, constants6.X_OK);
         return true;
       } catch {
         return false;
@@ -1715,12 +2224,44 @@ function createStatusDeps(account = currentLoginUser()) {
     },
     readKeysFile: (name) => {
       try {
-        return readFileSync4(join7(sshDir, name), "latin1");
+        return readFileSync4(join10(sshDir, name), "latin1");
       } catch (err) {
         return err.code === "ENOENT" ? null : "unreadable";
       }
+    },
+    readStandbyFiles: () => {
+      const supportDir = join10(account.home, SUPPORT_DIR_IN_HOME);
+      const token = readSupportToken(supportDir);
+      const record = readGroupRecord(supportDir);
+      return {
+        token: token.kind === "ok" ? "ok" : token.kind,
+        record: record.kind === "ok" ? { kind: "ok", keys: record.record.keys.map((k) => k.name) } : record
+      };
     }
   };
+}
+function createStandbyDeps(account = currentLoginUser(), moduleUrl = import.meta.url) {
+  return {
+    supportDir: join10(account.home, SUPPORT_DIR_IN_HOME),
+    sshDir: join10(account.home, ".ssh"),
+    pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
+    probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
+    redeemTransport: createHttpsRedeemTransport(),
+    now: () => /* @__PURE__ */ new Date(),
+    newGrantId: () => randomUUID(),
+    startedFromKit: startedFromKit(moduleUrl)
+  };
+}
+async function readStdinCapped(max, stdin = process.stdin) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of stdin) {
+    const b = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    size += b.length;
+    if (size > max) return null;
+    chunks.push(b);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 async function runSupportCli(argv, io, deps) {
   if (argv.length === 1 && argv[0] === "status") {
@@ -1739,6 +2280,25 @@ async function runSupportCli(argv, io, deps) {
       return 1;
     }
   }
+  if (argv.length === 3 && argv[0] === "enable" && argv[1] === "--consent" && /^[1-9][0-9]{0,3}$/.test(argv[2])) {
+    const code = await deps.readCode();
+    const done = await enableSupportStandby({ code: code ?? "", consentVersion: Number(argv[2]) }, deps.standby());
+    if (!done.ok) {
+      io.err("enable: refused: " + done.problem + "\n");
+      return 1;
+    }
+    io.out("standby=on\nstandby_keys=" + done.keys.join(",") + "\nsupport_lines=" + done.lines + "\nlogins=refused_by_this_release\n");
+    return 0;
+  }
+  if (argv.length === 1 && argv[0] === "disable") {
+    const done = await disableSupportStandby(deps.standby());
+    if (!done.ok) {
+      io.err("disable: incomplete: " + done.problem + "\n");
+      return 1;
+    }
+    io.out("standby=off\nremoved_lines=" + done.removedLines + "\n");
+    return 0;
+  }
   io.err(SUPPORT_CLI_USAGE);
   return 2;
 }
@@ -1747,7 +2307,12 @@ async function main(argv) {
     return await runSupportCli(
       argv,
       { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
-      { status: createStatusDeps, installKit: createInstallKit() }
+      {
+        status: createStatusDeps,
+        installKit: createInstallKit(),
+        standby: () => createStandbyDeps(),
+        readCode: () => readStdinCapped(SUPPORT_CODE_MAX_INPUT)
+      }
     );
   } catch {
     process.stderr.write("support-standby: stopped on an unexpected error\n");
@@ -1768,17 +2333,21 @@ if (startedDirectly()) {
 }
 export {
   SUPPORT_CLI_USAGE,
+  SUPPORT_CODE_MAX_INPUT,
   SUPPORT_ROUTINE_MIN_NODE_MAJOR,
   buildSupportGrantLines,
   buildSupportLine,
   createInstallKit,
+  createStandbyDeps,
   createStatusDeps,
   formatSupportStatus,
   grantSupportLines,
   main,
   parseInstallKitArgs,
+  readStdinCapped,
   reconcileSupportLinesOnDisk,
   revokeSupportLines,
   runSupportCli,
+  startedFromKit,
   supportStatus
 };

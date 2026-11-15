@@ -102,7 +102,11 @@ test('`status` runs as a program, exits with 0 and writes nothing', () => {
       'sshd=not_asked',
       'sshd_version=unknown',
     ])
-    assert.deepEqual(lines.slice(7), ['support_lines=absent', 'support_lines_second_file=absent'])
+    // The keys files are the login user's: on a developer machine they may exist (count 0), on the runner not.
+    assert.match(lines[7], /^support_lines=(?:absent|0)$/)
+    assert.match(lines[8], /^support_lines_second_file=(?:absent|0)$/)
+    // The login user has no support folder: standby is off (PR1b 2b-1).
+    assert.deepEqual(lines.slice(9), ['standby=off', 'standby_keys=none'])
     assert.deepEqual(readdirSync(home), [])
   } finally {
     rmSync(home, { recursive: true, force: true })
