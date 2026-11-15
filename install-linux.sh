@@ -2141,7 +2141,13 @@ if [ "$CHANNEL_PROVIDER" = "teams" ]; then
     [ "$(id -u)" -eq 0 ] || _ms_priv="sudo"
     _ms_args=()
     for _p in $TEAMS_ALLOWLIST_PLUGINS; do _ms_args+=(--add-plugin "$_p"); done
-    if $_ms_priv mkdir -p "$(dirname "$TEAMS_MANAGED_FILE")" 2>/dev/null \
+    # 353a3859: the mkdir must not inherit a LOOSE caller umask -- under umask 002 the
+    # fresh /etc/claude-code is 0775 (group-writable) and managed-settings-write.py
+    # correctly refuses to write into it, so the enablement silently degraded to the
+    # manual fallback. OR-ing the umask with 022 only tightens: a loose caller gets
+    # 0755 (002 -> 022), a stricter caller keeps its own result (077 -> 0700), so the
+    # directory is never group- or other-writable and never looser than the caller.
+    if (umask "$(printf '%04o' "$(( $(umask) | 0022 ))")"; $_ms_priv mkdir -p "$(dirname "$TEAMS_MANAGED_FILE")") 2>/dev/null \
       && $_ms_priv python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$TEAMS_MANAGED_FILE" --create "${_ms_args[@]}"; then
       ok "Teams engedelyezve a managed-settings allowlistben ($TEAMS_MANAGED_FILE)"
     else
