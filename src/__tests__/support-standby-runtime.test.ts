@@ -84,6 +84,19 @@ describe('the security teardown of support access (terv-v7 3.9)', () => {
     expect(await takeSupportAccessDownWith(deps(), 'user_delete')).toEqual({ ok: true, removedLines: 1 })
   })
 
+  // Samu's review of #2786, N1: "never throws" holds when the consent rows cannot be written.
+  it('a failure closing the consent rows does not throw: the machine is clean, the answer says so', async () => {
+    mkdirSync(supportDir, { recursive: true, mode: 0o700 })
+    writeSupportToken(supportDir, TOKEN)
+    getDb().exec('ALTER TABLE support_consents RENAME TO support_consents_away')
+    try {
+      expect(await takeSupportAccessDownWith(deps(), 'password_change')).toEqual({ ok: true, removedLines: 0 })
+    } finally {
+      getDb().exec('ALTER TABLE support_consents_away RENAME TO support_consents')
+    }
+    expect(existsSync(join(supportDir, SUPPORT_TOKEN_FILE))).toBe(false)
+  })
+
   it('what cannot be taken down is told to the owner, and the rows stay open', async () => {
     mkdirSync(supportDir, { recursive: true, mode: 0o700 })
     writeSupportToken(supportDir, TOKEN)

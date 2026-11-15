@@ -455,11 +455,13 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     const hash = await hashPassword(newPassword)
     updateDashboardUserPassword(user.id, hash)
-    // SUPPORTKULCS1109 (terv-v7 3.9): a password change takes support access off this machine.
-    await takeSupportAccessDown('password_change')
     // Revoke every other session of this user; keep the caller's own if present.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
     revokeAllForUser(user.id, presented ?? undefined)
+    // SUPPORTKULCS1109 (terv-v7 3.9): a password change takes support access off this machine. AFTER the sessions
+    // are revoked (Samu's review of #2786, N1): the teardown may wait for a running reconcile's lock, and the old
+    // sessions must not stay valid meanwhile.
+    await takeSupportAccessDown('password_change')
     json(res, { ok: true })
     return true
   }

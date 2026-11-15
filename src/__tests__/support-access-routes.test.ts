@@ -15,7 +15,8 @@ vi.mock('../notify.js', () => ({
 }))
 
 import { getDb, initDatabase, listSupportConsents } from '../db.js'
-import { _clearSessionCacheForTest } from '../web/auth-sessions.js'
+import { _clearSessionCacheForTest, resolveSession } from '../web/auth-sessions.js'
+import { parseCookies, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import { _resetThrottleForTest } from '../web/login-throttle.js'
 import { tryHandleAuth } from '../web/routes/auth.js'
 import {
@@ -391,6 +392,38 @@ describe('/api/support-access', () => {
     await enabling
     await reconciling
     expect(order).toEqual(['enable started', 'enable done', 'reconcile off'])
+  })
+
+  // Samu's review of #2786, N1: the old sessions go BEFORE the teardown, which may wait for the lock.
+  it('a password change revokes the other sessions at once, even while the support lock is held', async () => {
+    const other = await callWith(tryHandleAuth, 'POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
+    const otherToken = parseCookies(String(other.res.headers['Set-Cookie']).split(';')[0])[SESSION_COOKIE_NAME] ?? ''
+    expect(resolveSession(otherToken)).not.toBeNull()
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    let started = false
+    const enabling = call('POST', '/api/support-access/enable', { body: { consentVersion: 1, password: GOOD_PW, code: CODE } }, {
+      runKit: async () => {
+        started = true
+        await gate
+        return { ok: true, code: 1, stdout: '', stderr: 'enable: refused: code_rejected\n' }
+      },
+    })
+    while (!started) await new Promise((r) => setTimeout(r, 5))
+    let changed = false
+    const change = callWith(tryHandleAuth, 'POST', '/api/auth/password', {
+      auth: { kind: 'session', user: 'alice' },
+      body: { current_password: GOOD_PW, new_password: 'brand-new-pass-1' },
+    }).then((r) => {
+      changed = true
+      return r
+    })
+    for (let i = 0; i < 40 && resolveSession(otherToken) !== null; i++) await new Promise((r) => setTimeout(r, 5))
+    expect(resolveSession(otherToken)).toBeNull()
+    expect(changed).toBe(false)
+    release()
+    await enabling
+    expect((await change).res.statusCode).toBe(200)
   })
 
   it('disables without a password and closes the open rows', async () => {

@@ -131,7 +131,13 @@ export async function takeSupportAccessDownWith(deps: Pick<StandbyDeps, 'support
     return null
   }
   if (done.ok) {
-    const closed = revokeOpenSupportConsents(via)
+    // Never throws (Samu's review of #2786, N1): a failed row update is logged, the machine is already clean.
+    let closed = 0
+    try {
+      closed = revokeOpenSupportConsents(via)
+    } catch {
+      logger.warn({ via }, 'support access: taken down, but the consent rows could not be closed')
+    }
     if (done.removedLines > 0 || closed > 0) logger.info({ via, removedLines: done.removedLines, closed }, 'support access: taken down')
   } else {
     logger.warn({ via, problem: done.problem }, 'support access: teardown incomplete')
