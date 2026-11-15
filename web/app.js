@@ -7087,7 +7087,7 @@ async function generateInvite() {
     const res = await fetch(`${channelApiBase()}/invites`, { method: 'POST' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || t('common.unknown'))
+      throw new Error(err.error || t('common.failed'))
     }
     const data = await res.json()
     if (data.deepLink) {
@@ -7118,7 +7118,7 @@ async function revokeInviteToken(token) {
     const res = await fetch(`${channelApiBase()}/invites/${encodeURIComponent(token)}`, { method: 'DELETE' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || t('common.unknown'))
+      throw new Error(err.error || t('common.failed'))
     }
     showToast(t('channel.toast.invite_revoked'))
     refreshInvites()
@@ -7205,7 +7205,7 @@ async function submitApproveModal() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requireMention, allowFromAll }),
     })
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || t('common.unknown'))
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || t('common.failed'))
     document.getElementById('chApproveModalOverlay').hidden = true
     const item = document.querySelector(`[data-req-id="${CSS.escape(String(id))}"]`)
     if (item) item.remove()
@@ -7226,7 +7226,7 @@ async function denyChannelRequest(id, itemEl) {
   if (itemEl) itemEl.remove()
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests/${id}/deny`, { method: 'POST' })
-    if (!res.ok) throw new Error(t('common.unknown'))
+    if (!res.ok) throw new Error(t('common.failed'))
     showToast(t('channel.toast.denied'))
     refreshChannelRequests()
   } catch (err) {

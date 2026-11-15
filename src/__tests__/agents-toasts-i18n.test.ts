@@ -189,8 +189,11 @@ describe('the Agents page toasts come from the language files', () => {
       const fleet = (extra: Record<string, unknown>) => ({ status: 200, data: { ok: true, kind: 'fleet', imported: [{ name: 'a' }, { name: 'b' }], skipped: [], ...extra } })
       expect(await run('hu', fleet({}))).toEqual(['Flotta importálva: 2 ügynök'])
       expect(await run('hu', fleet({ includedSecrets: true, skipped: [{ name: 'x!', reason: 'invalid name' }] }))).toEqual(['Flotta importálva: 2 ügynök (titkokkal) (1 kihagyva)'])
-      expect(await run('en', fleet({}))).toEqual(['Fleet imported: 2 agents'])
-      expect(await run('en', fleet({ includedSecrets: true, skipped: [{ name: 'x!', reason: 'invalid name' }] }))).toEqual(['Fleet imported: 2 agents (with secrets) (1 skipped)'])
+      expect(await run('en', fleet({}))).toEqual(['Fleet imported: 2 agent(s)'])
+      // Review of #2754: a one-agent bundle read "1 agents" in English.
+      expect(await run('en', fleet({ imported: [{ name: 'a' }] }))).toEqual(['Fleet imported: 1 agent(s)'])
+      expect(await run('hu', fleet({ imported: [{ name: 'a' }] }))).toEqual(['Flotta importálva: 1 ügynök'])
+      expect(await run('en', fleet({ includedSecrets: true, skipped: [{ name: 'x!', reason: 'invalid name' }] }))).toEqual(['Fleet imported: 2 agent(s) (with secrets) (1 skipped)'])
     })
 
     it('the error, in both languages; the server error still wins', async () => {

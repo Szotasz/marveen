@@ -181,10 +181,11 @@ describe('the Channels tab toasts come from the language files', () => {
     })
   })
 
-  describe('the fallbacks without a server error read "<error>: <unknown>"', () => {
+  // Review of #2771: "Unknown" read less clearly than "failed" for an action the user just clicked.
+  describe('the fallbacks without a server error read "<error>: <failed>"', () => {
     it.each([
-      ['hu', 'Hiba: Ismeretlen'],
-      ['en', 'Error: Unknown'],
+      ['hu', 'Hiba: Sikertelen'],
+      ['en', 'Error: Failed'],
     ] as const)('generating an invite and denying a request (%s)', async (lang, want) => {
       const toasts: string[] = []
       const refused = async () => ({ ok: false, json: async () => ({}) })
@@ -197,6 +198,13 @@ describe('the Channels tab toasts come from the language files', () => {
       ) as (id: number, el?: unknown) => Promise<void>
       await deny(1)
       expect(toasts).toEqual([want, want])
+    })
+
+    it('all four fallbacks use common.failed (invite create and revoke, request approve and deny)', () => {
+      for (const src of [GENERATE_INVITE, REVOKE_INVITE, SUBMIT_APPROVE, DENY_REQUEST]) {
+        expect(src).toContain("t('common.failed')")
+        expect(src).not.toContain("t('common.unknown')")
+      }
     })
   })
 

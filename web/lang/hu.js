@@ -34,6 +34,7 @@ window._i18n.hu = {
   'common.all':               'Mind',
   'common.none':              'Nincs',
   'common.unknown':           'Ismeretlen',
+  'common.failed':            'Sikertelen',
   'common.error_load':        'Hiba a betöltés során',
 
   // --- Overview dynamic ---
