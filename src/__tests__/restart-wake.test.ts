@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { readFileSync, readdirSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -8,10 +8,12 @@ const sendSystemDirective = vi.fn(async (..._a: unknown[]): Promise<'sent'> => '
 vi.mock('../web/system-directive.js', () => ({ sendSystemDirective: (...a: unknown[]) => sendSystemDirective(...a) }))
 
 import {
+  MAIN_HANDOFF_FRESH_MS,
   MAIN_RESTART_WAKE_REASON,
   RESTART_WAKE_DELAY_MS,
   __resetRestartWake,
   cancelRestartWake,
+  freshHandoff,
   hasPendingRestartWake,
   mainRestartWakePrompt,
   restartOptsFromBody,
@@ -29,6 +31,7 @@ import { logger } from '../logger.js'
 // at most one wake; a fresh restart never gets one.
 
 const flush = async (): Promise<void> => { for (let i = 0; i < 5; i++) await Promise.resolve() }
+const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 describe('scheduleRestartWake: one wake, after the boot grace, as the last restart asked', () => {
   const sent: Array<{ agent: string; session: string; text: string }> = []
@@ -189,23 +192,91 @@ describe('restartWakePrompt', () => {
 // --continue) and nothing typed into the new session, so it sat idle until its
 // next input (measured 2026-11-14: 23:09:33 -> 23:15:12, the first scheduled task).
 describe('mainRestartWakePrompt: the fresh main restart gets a text that does not claim the conversation is back', () => {
-  const p = mainRestartWakePrompt('manual-main-restart', '/srv/app/HANDOFF.md')
-  it('is a RESTART-WAKE that names the caller and the handoff file, and tells an idle agent not to invent work', () => {
-    expect(p.startsWith('[RESTART-WAKE]')).toBe(true)
-    expect(p).toContain('ok: manual-main-restart')
-    expect(p).toContain('/srv/app/HANDOFF.md')
-    // A manual restart asks for no handoff first: a leftover file must not be followed blindly.
-    expect(p).toContain('nezd meg a datumat')
-    expect(p).toContain('egy regi atado nem a mostani allapot')
-    expect(p).toContain('kanban')
-    expect(p).toContain('ne talalj ki magadnak feladatot')
+  const T0 = Date.UTC(2026, 10, 15, 16, 21, 30)
+  const fresh = mainRestartWakePrompt('manual-main-restart', { path: '/srv/app/HANDOFF.md', mtimeMs: T0, ageMs: 12 * 60_000 + 5_000 })
+  const none = mainRestartWakePrompt('manual-main-restart', null)
+
+  it('a fresh handoff is named WITH its time (review C1): the stamp to the minute and its age', () => {
+    expect(fresh.startsWith('[RESTART-WAKE]')).toBe(true)
+    expect(fresh).toContain('ok: manual-main-restart')
+    expect(fresh).toContain('A /srv/app/HANDOFF.md atado friss (irva: 2026-11-15T16:21Z, 12 perce)')
+    expect(fresh).toContain('olvasd be, es FOLYTASD az ott leirt munkat')
+    // what happened after the handoff is not in it: the kanban and the hot memories are still named
+    expect(fresh).toContain('Ami az atado ota tortent')
+    expect(fresh).toContain('kanban')
+    expect(fresh).toContain('hot memoria')
+    // the freshness is no longer the model's call
+    expect(fresh).not.toContain('nezd meg a datumat')
   })
-  it('says the conversation is NOT back, and carries none of the --continue wording', () => {
-    expect(p).toContain('NEM maradt meg')
-    expect(p).not.toContain('--continue')
-    expect(p).not.toContain('megmaradt, de')
-    expect(p).not.toContain('utolso lepeseidet')
-    expect(p).not.toBe(restartWakePrompt('manual-main-restart'))
+
+  it('a handoff written inside the last minute says so instead of "0 perce"', () => {
+    const p = mainRestartWakePrompt('manual-main-restart', { path: '/srv/app/HANDOFF.md', mtimeMs: T0, ageMs: 59_999 })
+    expect(p).toContain('(irva: 2026-11-15T16:21Z, kevesebb mint egy perce)')
+  })
+
+  it('a stale or missing handoff (null) is not mentioned at all: only the kanban and the hot memories (review C1)', () => {
+    expect(none.startsWith('[RESTART-WAKE]')).toBe(true)
+    expect(none).toContain('ok: manual-main-restart')
+    expect(none).not.toContain('HANDOFF')
+    expect(none).not.toContain('atado')
+    expect(none).toContain('Nezd meg a kanban tabladat es a hot memoriaidat, es FOLYTASD onnan a megkezdett munkat')
+  })
+
+  it('both texts say what NOT to do: no invented task, and no channel post about the restart (review C2)', () => {
+    for (const p of [fresh, none]) {
+      expect(p).toContain('ne talalj ki magadnak feladatot')
+      expect(p).toContain('Az ujrainditasrol a csatornadra NE kuldj uzenetet.')
+      expect(p).toContain('Ne kezdd elolrol, ami mar kesz')
+    }
+  })
+
+  it('both say the conversation is NOT back, and carry none of the --continue wording', () => {
+    for (const p of [fresh, none]) {
+      expect(p).toContain('NEM maradt meg')
+      expect(p).not.toContain('--continue')
+      expect(p).not.toContain('megmaradt, de')
+      expect(p).not.toContain('utolso lepeseidet')
+      expect(p).not.toBe(restartWakePrompt('manual-main-restart'))
+    }
+    // the --continue text is not touched by the review round: it has no channel sentence
+    expect(restartWakePrompt('api-restart')).not.toContain('csatornadra')
+  })
+})
+
+describe('freshHandoff: the code decides whether the handoff file is worth naming (review C1)', () => {
+  const NOW = Date.UTC(2026, 10, 15, 18, 0, 0)
+  const at = (ageMs: number) => ({ mtimeMs: () => NOW - ageMs })
+
+  it('a file inside the bound is fresh, with its mtime and its age', () => {
+    expect(freshHandoff('/x/HANDOFF.md', NOW, at(5 * 60_000))).toEqual({ path: '/x/HANDOFF.md', mtimeMs: NOW - 5 * 60_000, ageMs: 5 * 60_000 })
+  })
+
+  it('the bound itself is still fresh, one millisecond past it is not', () => {
+    expect(freshHandoff('/x/HANDOFF.md', NOW, at(MAIN_HANDOFF_FRESH_MS))).not.toBeNull()
+    expect(freshHandoff('/x/HANDOFF.md', NOW, at(MAIN_HANDOFF_FRESH_MS + 1))).toBeNull()
+    expect(MAIN_HANDOFF_FRESH_MS).toBe(2 * 60 * 60 * 1000)
+  })
+
+  it('a missing or unreadable file is the same answer as a stale one: null', () => {
+    expect(freshHandoff('/x/HANDOFF.md', NOW, { mtimeMs: () => null })).toBeNull()
+    // the default reader, on a path that does not exist (no seam): null, not a throw
+    expect(freshHandoff(join(SRC_DIR, 'no-such-dir', 'HANDOFF.md'), NOW)).toBeNull()
+  })
+
+  it('the default reader reads the real mtime: this test file is "fresh" right after its own mtime and stale days later', () => {
+    const self = fileURLToPath(import.meta.url)
+    const real = statSync(self).mtimeMs
+    expect(freshHandoff(self, real + 1_000)).toEqual({ path: self, mtimeMs: real, ageMs: 1_000 })
+    expect(freshHandoff(self, real + 3 * 24 * 60 * 60 * 1000)).toBeNull()
+  })
+
+  it('a file stamped in the future (a clock that moved) counts as written now', () => {
+    expect(freshHandoff('/x/HANDOFF.md', NOW, { mtimeMs: () => NOW + 60_000 })).toEqual({ path: '/x/HANDOFF.md', mtimeMs: NOW + 60_000, ageMs: 0 })
+  })
+
+  it('maxAgeMs replaces the bound (the seam the scheduler does not use)', () => {
+    expect(freshHandoff('/x/HANDOFF.md', NOW, { mtimeMs: () => NOW - 10_000, maxAgeMs: 9_999 })).toBeNull()
+    expect(freshHandoff('/x/HANDOFF.md', NOW, { mtimeMs: () => NOW - 10_000, maxAgeMs: 10_000 })).not.toBeNull()
   })
 })
 
@@ -238,8 +309,11 @@ describe('scheduleMainRestartWake: one fresh-restart wake for the main agent, on
   beforeEach(() => { vi.useFakeTimers(); __resetRestartWake(); sent.length = 0; send.mockClear(); sendSystemDirective.mockClear() })
   afterEach(() => { __resetRestartWake(); vi.useRealTimers() })
 
+  const NOW = Date.UTC(2026, 10, 15, 18, 0, 0)
+  const seams = (mtime: number | null) => ({ send, now: () => NOW, mtimeMs: () => mtime })
+
   it('sends nothing during the boot grace, then exactly one wake with the fresh-restart text', async () => {
-    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', { send })
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', seams(NOW - 7 * 60_000))
     expect(hasPendingRestartWake('marveen')).toBe(true)
     vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS - 1)
     await flush()
@@ -249,10 +323,65 @@ describe('scheduleMainRestartWake: one fresh-restart wake for the main agent, on
     expect(sent).toEqual([{
       agent: 'marveen',
       session: 'marveen-channels',
-      text: mainRestartWakePrompt(MAIN_RESTART_WAKE_REASON, '/srv/app/HANDOFF.md'),
+      text: mainRestartWakePrompt(MAIN_RESTART_WAKE_REASON, { path: '/srv/app/HANDOFF.md', mtimeMs: NOW - 7 * 60_000, ageMs: 7 * 60_000 }),
     }])
+    expect(sent[0].text).toContain('/srv/app/HANDOFF.md atado friss (irva: 2026-11-15T17:53Z, 7 perce)')
     expect(hasPendingRestartWake('marveen')).toBe(false)
     vi.advanceTimersByTime(10 * RESTART_WAKE_DELAY_MS)
+    await flush()
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('a stale handoff and a missing one end in the same text: the file is not mentioned (review C1)', async () => {
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', seams(NOW - MAIN_HANDOFF_FRESH_MS - 1))
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS)
+    await flush()
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', seams(null))
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS)
+    await flush()
+    expect(sent.map((x) => x.text)).toEqual([
+      mainRestartWakePrompt(MAIN_RESTART_WAKE_REASON, null),
+      mainRestartWakePrompt(MAIN_RESTART_WAKE_REASON, null),
+    ])
+    expect(sent[0].text).not.toContain('HANDOFF')
+  })
+
+  it('the freshness is read when the wake is SENT, not when it is scheduled (review C1)', async () => {
+    // no file when the restart is asked for; one is written during the boot grace
+    let mtime: number | null = null
+    let clock = NOW
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', { send, now: () => clock, mtimeMs: () => mtime })
+    mtime = NOW + 10_000
+    clock = NOW + RESTART_WAKE_DELAY_MS
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS)
+    await flush()
+    expect(sent).toHaveLength(1)
+    expect(sent[0].text).toContain('/srv/app/HANDOFF.md atado friss')
+    expect(sent[0].text).toContain('kevesebb mint egy perce')
+    // and the other way: fresh at schedule time, past the bound by the time the wake is sent
+    sent.length = 0
+    clock = NOW
+    mtime = NOW - MAIN_HANDOFF_FRESH_MS + 1_000
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', { send, now: () => clock, mtimeMs: () => mtime })
+    clock = NOW + RESTART_WAKE_DELAY_MS
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS)
+    await flush()
+    expect(sent).toHaveLength(1)
+    expect(sent[0].text).not.toContain('HANDOFF')
+  })
+
+  it('another restart of the main session drops the owed wake; a manual restart cancels first and schedules after (review C3)', async () => {
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', seams(null))
+    // a guard / recovery restart inside the grace: hardRestartMarveenChannels() cancels, nobody schedules
+    expect(cancelRestartWake('marveen')).toBe(true)
+    vi.advanceTimersByTime(10 * RESTART_WAKE_DELAY_MS)
+    await flush()
+    expect(send).not.toHaveBeenCalled()
+    // a second MANUAL restart: the same cancel, then the route schedules -> exactly one wake
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', seams(null))
+    expect(cancelRestartWake('marveen')).toBe(true)
+    scheduleMainRestartWake('marveen', 'marveen-channels', '/srv/app/HANDOFF.md', seams(null))
+    vi.advanceTimersByTime(RESTART_WAKE_DELAY_MS)
     await flush()
     expect(send).toHaveBeenCalledTimes(1)
   })
@@ -277,7 +406,8 @@ describe('scheduleMainRestartWake: one fresh-restart wake for the main agent, on
     expect(sendSystemDirective).toHaveBeenCalledTimes(1)
     const [agent, session, text, host, opts] = sendSystemDirective.mock.calls[0]
     expect([agent, session, host]).toEqual(['marveen', 'marveen-channels', null])
-    expect(String(text)).toBe(mainRestartWakePrompt(MAIN_RESTART_WAKE_REASON, '/srv/app/HANDOFF.md'))
+    // no seam here: the real reader finds no /srv/app/HANDOFF.md, so the file is not named
+    expect(String(text)).toBe(mainRestartWakePrompt(MAIN_RESTART_WAKE_REASON, null))
     expect(opts).toEqual({ waitForIdle: true, onBusyTimeout: 'abort' })
   })
 })
@@ -357,6 +487,23 @@ describe('wiring: the fresh main wake is owed by the two manual restart routes o
     expect(failed).toBeGreaterThan(wake)
     expect(body).toContain(SCHEDULE)
     expect(body.match(/scheduleMainRestartWake\(/g)).toHaveLength(1)
+  })
+
+  it('hardRestartMarveenChannels() drops a pending main wake FIRST, before any of its restart paths (review C3)', () => {
+    const mon = src('web/channel-monitor.ts')
+    const start = mon.indexOf('export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {')
+    expect(start).toBeGreaterThan(-1)
+    const body = mon.slice(start, mon.indexOf('\nexport ', start + 1))
+    const cancel = body.indexOf('cancelRestartWake(MAIN_AGENT_ID)')
+    expect(cancel).toBeGreaterThan(-1)
+    // before the first statement that can leave the function or restart anything
+    for (const later of ['return {', 'launchctl', 'respawnMarveenSessionFresh()', 'stampFableOverageConsentSharedRoots()']) {
+      expect(body.indexOf(later)).toBeGreaterThan(cancel)
+    }
+    expect(body.match(/cancelRestartWake\(/g)).toHaveLength(1)
+    expect(mon).toContain("import { cancelRestartWake } from './restart-wake.js'")
+    // and the function schedules nothing itself: the two manual routes do, after it returned ok
+    expect(body).not.toContain('scheduleMainRestartWake(')
   })
 
   it('no other caller of hardRestartMarveenChannels() schedules it: the guard brings its own directive, the rest is recovery', () => {

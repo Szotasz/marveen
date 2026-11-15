@@ -41,6 +41,7 @@ import {
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
+import { cancelRestartWake } from './restart-wake.js'
 import { paneRunsClaude, scheduleHardRestartVerify } from './hard-restart-verify.js'
 import { freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors, supervisorWaitDecision, type SupervisorWait } from './channels-supervisor.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
@@ -1960,6 +1961,10 @@ function verifyHardRestartLater(): void {
 }
 
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
+  // MAINRESTARTWAKE1115 (review C3): a manual restart may have left a wake pending for the main
+  // session. Any restart of that session drops it here; the two manual routes schedule their own
+  // AFTER this call, so a guard or recovery restart inside the grace gets its own directive only.
+  cancelRestartWake(MAIN_AGENT_ID)
   // FABLEFALL1: the restarted session boots from the main/worker shared config
   // roots, which the per-agent spawn-time stamp never covers -- stamp them now
   // so the model consent dialog cannot render on the fresh boot (change-only,
