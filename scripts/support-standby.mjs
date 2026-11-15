@@ -228,6 +228,100 @@ function checkDaemon(fs, pidfile, walked) {
   return { ok: true };
 }
 
+// src/support-access-sshd-darwin.ts
+var DARWIN_SSH_PLIST = "/System/Library/LaunchDaemons/ssh.plist";
+var DARWIN_SSH_LABEL = "com.openssh.sshd";
+var DARWIN_SSH_PROGRAM = "/usr/libexec/sshd-keygen-wrapper";
+var DARWIN_SSH_ARGUMENTS = ["sshd-keygen-wrapper"];
+var PLUTIL_PROGRAM = "/usr/bin/plutil";
+var LAUNCHCTL_PROGRAM = "/bin/launchctl";
+var NETSTAT_PROGRAM = "/usr/sbin/netstat";
+var PLIST_KEYS = /* @__PURE__ */ new Set([
+  "Label",
+  "Program",
+  "ProgramArguments",
+  "inetdCompatibility",
+  "Sockets",
+  "Disabled",
+  "MaterializeDatalessFiles",
+  "POSIXSpawnType",
+  "StandardErrorPath",
+  "SHAuthorizationRight"
+]);
+var UNKNOWN = { ok: false, problem: "sshd_daemon_unknown" };
+var OK = { ok: true };
+var isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+function darwinPlistCheck(json) {
+  if (json === null) return UNKNOWN;
+  let p;
+  try {
+    p = JSON.parse(json);
+  } catch {
+    return UNKNOWN;
+  }
+  if (!isObject(p) || Object.keys(p).some((k) => !PLIST_KEYS.has(k))) return UNKNOWN;
+  if (p.Label !== DARWIN_SSH_LABEL || p.Program !== DARWIN_SSH_PROGRAM) return UNKNOWN;
+  const args = p.ProgramArguments;
+  if (!Array.isArray(args) || args.length === 0 || args[0] !== DARWIN_SSH_ARGUMENTS[0]) return UNKNOWN;
+  if (args.length !== DARWIN_SSH_ARGUMENTS.length) return { ok: false, problem: "sshd_daemon_options" };
+  const inetd = p.inetdCompatibility;
+  if (!isObject(inetd) || inetd.Wait !== false || Object.keys(inetd).some((k) => k !== "Wait" && k !== "Instances")) return UNKNOWN;
+  const sockets = p.Sockets;
+  if (!isObject(sockets) || Object.keys(sockets).join(",") !== "Listeners") return UNKNOWN;
+  const listeners = sockets.Listeners;
+  if (!isObject(listeners) || listeners.SockServiceName !== "ssh") return UNKNOWN;
+  if (Object.keys(listeners).some((k) => k !== "SockServiceName" && k !== "Bonjour")) return UNKNOWN;
+  return OK;
+}
+function darwinEnabledCheck(text) {
+  if (text === null) return UNKNOWN;
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith('"' + DARWIN_SSH_LABEL + '" '));
+  return lines.length === 1 && lines[0] === '"' + DARWIN_SSH_LABEL + '" => enabled' ? OK : UNKNOWN;
+}
+function darwinJobCheck(text) {
+  if (text === null) return UNKNOWN;
+  const lines = text.split("\n").map((l) => l.trim());
+  const has = (line) => lines.includes(line);
+  if (!has("path = " + DARWIN_SSH_PLIST) || !has("program = " + DARWIN_SSH_PROGRAM)) return UNKNOWN;
+  const at = lines.indexOf("arguments = {");
+  if (at < 0) return UNKNOWN;
+  const end = lines.indexOf("}", at);
+  if (end < 0) return UNKNOWN;
+  const args = lines.slice(at + 1, end);
+  if (args[0] !== DARWIN_SSH_ARGUMENTS[0]) return UNKNOWN;
+  if (args.length !== DARWIN_SSH_ARGUMENTS.length) return { ok: false, problem: "sshd_daemon_options" };
+  const sockets = lines.indexOf("sockets = {");
+  if (sockets < 0 || lines[sockets + 1] !== '"Listeners" = {' || !lines.slice(sockets + 2, sockets + 6).includes("service name = ssh")) return UNKNOWN;
+  const properties = lines.find((l) => l.startsWith("properties = "));
+  if (properties === void 0 || !properties.slice("properties = ".length).split(" | ").includes("inetd-compatible")) return UNKNOWN;
+  return OK;
+}
+function darwinListenersCheck(text) {
+  if (text === null) return UNKNOWN;
+  const on22 = [];
+  for (const raw of text.split("\n")) {
+    const cols = raw.trim().split(/\s+/);
+    if (cols.length < 6 || cols[5] !== "LISTEN" || !/^tcp[46]*$/.test(cols[0])) continue;
+    if (/[.:]22$/.test(cols[3])) on22.push(cols[0] + " " + cols[3]);
+  }
+  return on22.sort().join(",") === "tcp4 *.22,tcp6 *.22" ? OK : UNKNOWN;
+}
+function darwinWalkOwnerCheck(owners) {
+  return owners.every((o) => o !== null && o.uid === 0 && (o.mode & 18) === 0) ? OK : UNKNOWN;
+}
+function checkDarwinDaemon(evidence) {
+  for (const check of [
+    darwinWalkOwnerCheck(evidence.walkOwners),
+    darwinPlistCheck(evidence.plistJson),
+    darwinEnabledCheck(evidence.printDisabled),
+    darwinJobCheck(evidence.printJob),
+    darwinListenersCheck(evidence.netstat)
+  ]) {
+    if (!check.ok) return check;
+  }
+  return OK;
+}
+
 // src/support-access-sshd.ts
 import { isIP as isIP2 } from "node:net";
 
@@ -678,7 +772,7 @@ async function askAll(base, hostKeyArgs, deps, keyPath) {
       return refused([]);
     }
     const walk = walkIncludes(deps.fs);
-    const daemon = !walk.ok ? walk : deps.platform === "linux" ? checkDaemon(deps.fs, pidfileOf(first.text), walk.files) : { ok: false, problem: "sshd_daemon_unknown" };
+    const daemon = !walk.ok ? walk : deps.platform === "linux" ? checkDaemon(deps.fs, pidfileOf(first.text), walk.files) : deps.platform === "darwin" ? await askDarwinDaemon(deps, walk.files) : { ok: false, problem: "sshd_daemon_unknown" };
     nonRootProof = daemon.ok ? { ok: true } : { ok: false, problem: daemon.problem };
     if (!nonRootProof.ok) return refused([]);
   }
@@ -693,6 +787,19 @@ async function askAll(base, hostKeyArgs, deps, keyPath) {
     answers.push(formatSshdConnectionSpec(spec) === formatSshdConnectionSpec(first.spec) ? first : await ask(spec));
   }
   return refused(answers);
+}
+async function askDarwinDaemon(deps, walked) {
+  const out = async (file, args) => {
+    const r = await deps.run(file, args, SSHD_PROBE_TIMEOUT_MS);
+    return r.code === 0 ? r.stdout : null;
+  };
+  return checkDarwinDaemon({
+    walkOwners: walked.map((f) => deps.fs.owner?.(f.path) ?? null),
+    plistJson: await out(PLUTIL_PROGRAM, ["-convert", "json", "-o", "-", DARWIN_SSH_PLIST]),
+    printDisabled: await out(LAUNCHCTL_PROGRAM, ["print-disabled", "system"]),
+    printJob: await out(LAUNCHCTL_PROGRAM, ["print", "system/" + DARWIN_SSH_LABEL]),
+    netstat: await out(NETSTAT_PROGRAM, ["-an"])
+  });
 }
 function currentLoginUser() {
   const info = userInfo();
@@ -736,6 +843,14 @@ var realNonRootFs = {
   ctimeNs: (path) => {
     try {
       return statSync(path, { bigint: true }).ctimeNs;
+    } catch {
+      return null;
+    }
+  },
+  owner: (path) => {
+    try {
+      const st = statSync(path);
+      return { uid: st.uid, mode: st.mode };
     } catch {
       return null;
     }
