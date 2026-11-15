@@ -280,11 +280,20 @@ EOF_STATUS
 case "$CV" in
   ''|*[!0-9]*) stop "Ez a Marveen-kiadás még nem tudja bekapcsolni a távoli segítséget (a hozzájárulás verzióját nem adja meg). Frissítsd a Marveent." ;;
 esac
-CT=$(run_kit consent-text --consent "$CV" </dev/null); rc=$?
+ERRF=$(mktemp 2>/dev/null) || stop "Ideiglenes fájl nem hozható létre; a hozzájárulás szövege nem kérhető le."
+CT=$(run_kit consent-text --consent "$CV" </dev/null 2>"$ERRF"); rc=$?
+ERR=$(head -c 512 "$ERRF" 2>/dev/null); rm -f "$ERRF"
 judge "$rc" "$CT" "A hozzájárulás szövegének lekérdezése"
 case "$rc" in
   0) ;;
   2) stop "Ez a Marveen-kiadás még nem tudja megmutatni a hozzájárulás szövegét. Frissítsd a Marveent." ;;
+  1)
+    case "$ERR" in
+      "consent-text: refused: consent_text_unset") stop "Ez a Marveen-kiadás még nem tartalmazza a jóváhagyott hozzájárulás-szöveget, ezért a távoli segítség még nem kapcsolható be. Frissítsd a Marveent, vagy írj nekünk." ;;
+      "consent-text: refused: consent_invalid") stop "A hozzájárulás verziója nem az, amit ez a Marveen ismer (consent_invalid). Frissítsd a Marveent, vagy írj nekünk." ;;
+      *) stop "A hozzájárulás szövege nem olvasható ki (1)." ;;
+    esac
+    ;;
   *) stop "A hozzájárulás szövege nem olvasható ki ($rc)." ;;
 esac
 printf '%s\n' "$CT"
