@@ -1617,6 +1617,7 @@ import {
   fsyncSync as fsyncSync3,
   lstatSync as lstatSync4,
   openSync as openSync4,
+  readdirSync as readdirSync2,
   readSync as readSync3,
   renameSync as renameSync3,
   unlinkSync as unlinkSync3,
@@ -1624,6 +1625,7 @@ import {
 } from "node:fs";
 import { join as join6 } from "node:path";
 var SUPPORT_GROUP_RECORD_FILE = "support-access.group";
+var SUPPORT_RUN_DIR = "support-access.run";
 var HEADER = "marveen-support-group 1";
 var RECORD_MODE = 384;
 var GROUP_RECORD_MAX_BYTES = 2048;
@@ -1770,6 +1772,23 @@ function removeGroupRecord(supportDir) {
   if (lstatOrNull4(target) !== null) throw new GroupRecordError("group_record_unsafe", "the record file is still there after the removal");
   return true;
 }
+function stopRunningDispatchers(supportDir) {
+  const dir = join6(supportDir, SUPPORT_RUN_DIR);
+  const st = lstatOrNull4(dir);
+  if (st === null || !st.isDirectory()) return 0;
+  let removed = 0;
+  for (const name of readdirSync2(dir)) {
+    if (!/^[0-9]{1,10}$/.test(name)) continue;
+    const target = join6(dir, name);
+    if (!lstatOrNull4(target)?.isFile()) continue;
+    try {
+      unlinkSync3(target);
+      removed++;
+    } catch {
+    }
+  }
+  return removed;
+}
 
 // src/support-kit.ts
 import { createHash as createHash2, randomBytes as randomBytes3 } from "node:crypto";
@@ -1783,7 +1802,7 @@ import {
   openSync as openSync5,
   readFileSync as readFileSync3,
   readSync as readSync4,
-  readdirSync as readdirSync2,
+  readdirSync as readdirSync3,
   renameSync as renameSync4,
   rmSync as rmSync2,
   statSync as statSync4,
@@ -2033,7 +2052,7 @@ async function writeKit(opts) {
   const kitDir = join7(supportDir, KIT_SUBFOLDER);
   return withKitLock(supportDir, tuning, () => {
     const cleaned = [];
-    for (const name of readdirSync2(supportDir).sort()) {
+    for (const name of readdirSync3(supportDir).sort()) {
       if (!LEFTOVER.test(name)) continue;
       rmSync2(join7(supportDir, name), { recursive: true, force: true });
       cleaned.push(name);
@@ -2184,6 +2203,10 @@ async function disableSupportStandby(deps) {
     removeGroupRecord(deps.supportDir);
   } catch {
     recordFailed = true;
+  }
+  try {
+    stopRunningDispatchers(deps.supportDir);
+  } catch {
   }
   if (linesFailed) return { ok: false, problem: "lines_remain", removedLines };
   if (tokenFailed) return { ok: false, problem: "token_remains", removedLines };

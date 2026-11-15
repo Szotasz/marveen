@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { disableSupportStandby, enableSupportStandby, SUPPORT_CONSENT_VERSION, type StandbyDeps } from '../support-standby-enable.js'
 import { readSupportToken, SUPPORT_TOKEN_FILE } from '../support-access-token.js'
-import { readGroupRecord, SUPPORT_GROUP_RECORD_FILE } from '../support-group-record.js'
+import { readGroupRecord, SUPPORT_GROUP_RECORD_FILE, SUPPORT_RUN_DIR } from '../support-group-record.js'
 import { writeKit } from '../support-kit.js'
 import { KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js'
 import { countSupportLines } from '../support-access-line.js'
@@ -224,6 +224,29 @@ describe('enable and disable support standby', () => {
     nothingWritten()
     expect(keysText()).toBe(OWN_LINE + '\n')
     expect(await disableSupportStandby(deps())).toEqual({ ok: true, removedLines: 0 })
+  })
+
+  it('disable removes the pid files of running dispatchers, and only those', async () => {
+    await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())
+    const runDir = join(supportDir, SUPPORT_RUN_DIR)
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, '4242'), 'pid=4242\n')
+    writeFileSync(join(runDir, '17'), 'pid=17\n')
+    writeFileSync(join(runDir, 'body.4242'), 'x')
+    mkdirSync(join(runDir, 'r.4242'))
+    mkdirSync(join(runDir, '99'))
+    expect(await disableSupportStandby(deps())).toEqual({ ok: true, removedLines: 2 })
+    expect(readdirSync(runDir).sort()).toEqual(['99', 'body.4242', 'r.4242'])
+  })
+
+  it('a run folder that is a link is left alone; disable still succeeds', async () => {
+    await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())
+    const elsewhere = join(supportDir, 'elsewhere')
+    mkdirSync(elsewhere)
+    writeFileSync(join(elsewhere, '4242'), 'pid=4242\n')
+    symlinkSync(elsewhere, join(supportDir, SUPPORT_RUN_DIR))
+    expect(await disableSupportStandby(deps())).toEqual({ ok: true, removedLines: 2 })
+    expect(existsSync(join(elsewhere, '4242'))).toBe(true)
   })
 
   it('disable works without a kit, and still removes the token and the record when the lines cannot be removed', async () => {
