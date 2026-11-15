@@ -150,7 +150,9 @@ async function removeEverySupportLine(
   base: SupportFsBase,
   fileName: AuthorizedKeysFileName,
   operation: string,
-): Promise<{ authorizedKeysPath: string; removed: number; warnings: string[] }> {
+  /** Checked under the lock, before anything changes: false leaves the file as it is (skipped). */
+  guard?: () => boolean,
+): Promise<{ authorizedKeysPath: string; removed: number; warnings: string[]; skipped?: true }> {
   const { sshDir, pinnedBlobs, ...lock } = base
   if (fileName === SECOND_FILE) {
     const secondPath = join(sshDir, SECOND_FILE)
@@ -179,7 +181,12 @@ async function removeEverySupportLine(
       return { authorizedKeysPath: secondPath, removed: 0, warnings: [`${secondPath} is a symbolic link to another file; it holds no support line and was not written`] }
     }
   }
+  let skipped = false
   const out = await rewriteAuthorizedKeysLocked({ sshDir, fileName, operation, preserveBytes: true, ...lock }, (existing) => {
+    if (guard !== undefined && !guard()) {
+      skipped = true
+      return { content: null, result: 0 }
+    }
     const { content, removed } = removeSupportLines(existing, pinnedBlobs)
     // The count uses the same recogniser the removal used, so it can only
     // catch a remover that stopped early. The proof that the lines are gone
@@ -190,7 +197,7 @@ async function removeEverySupportLine(
     }
     return { content: removed === 0 ? null : content, result: removed }
   })
-  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings }
+  return { authorizedKeysPath: out.authorizedKeysPath, removed: out.result, warnings: out.warnings, ...(skipped ? { skipped: true as const } : {}) }
 }
 
 /** Raised when a removal ran and support lines are still in the file. */
@@ -286,6 +293,23 @@ export async function revokeSupportLines(opts: SupportFsBase): Promise<RevokeSup
     removedFromSecond: second.removed,
     warnings: [...first.warnings, ...second.warnings, ...splitWarning(opts.sshDir, layoutBefore)],
   }
+}
+
+/**
+ * Remove every support line, but only while `stillValid` holds, checked UNDER THE LOCK of authorized_keys, the one
+ * lock grant and revoke take (Dani 32056, G3: the token_revoked removal re-reads the token file there, and goes on
+ * only if the token that got the answer is still the one in place). When it does not hold, nothing is changed and
+ * the answer is `skipped`. authorized_keys2 is cleaned after it as in revokeSupportLines (a grant never writes it).
+ */
+export async function revokeSupportLinesIf(
+  opts: SupportFsBase,
+  stillValid: () => boolean,
+): Promise<{ readonly skipped: true } | { readonly skipped: false; readonly removed: number }> {
+  const operation = 'remove support access lines from'
+  const first = await removeEverySupportLine(opts, 'authorized_keys', operation, stillValid)
+  if (first.skipped === true) return { skipped: true }
+  const second = await removeEverySupportLine(opts, SECOND_FILE, operation)
+  return { skipped: false, removed: first.removed + second.removed }
 }
 
 /** Why a reconcile expected no line: the builder's own refusal, or a grant that is not even the typed shape. */

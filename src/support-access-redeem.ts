@@ -62,6 +62,8 @@ export interface RedeemRequest {
   readonly body: string
   readonly timeoutMs: number
   readonly maxBodyBytes: number
+  /** The bearer token of the access check (the reconcile's self-probe); the redeem has none. Never logged. */
+  readonly bearer?: string
 }
 
 export interface RedeemResponse {
@@ -167,7 +169,11 @@ export function createHttpsRedeemTransport(opts: { readonly extraCa?: string } =
         url,
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(req.body) },
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(req.body),
+            ...(req.bearer === undefined ? {} : { authorization: 'Bearer ' + req.bearer }),
+          },
           rejectUnauthorized: true,
           ...(opts.extraCa === undefined ? {} : { ca: opts.extraCa }),
         },

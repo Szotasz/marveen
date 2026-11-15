@@ -68,6 +68,7 @@ import {
   logConfigChange,
 } from '../../db.js'
 import { supportPasswordGate } from '../support-password.js'
+import { takeSupportAccessDown } from '../support-standby-runtime.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -454,6 +455,8 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     const hash = await hashPassword(newPassword)
     updateDashboardUserPassword(user.id, hash)
+    // SUPPORTKULCS1109 (terv-v7 3.9): a password change takes support access off this machine.
+    await takeSupportAccessDown('password_change')
     // Revoke every other session of this user; keep the caller's own if present.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
     revokeAllForUser(user.id, presented ?? undefined)
@@ -668,6 +671,8 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     deleteDashboardUser(username)
     revokeAllForUser(user.id)
+    // SUPPORTKULCS1109 (terv-v7 3.9): removing a dashboard login takes support access off this machine.
+    await takeSupportAccessDown('user_delete')
     // Deleting the last user is the documented way to return to token-only mode.
     logger.info({ username, remaining: countDashboardUsers(true) }, 'dashboard user deleted')
     json(res, { ok: true })

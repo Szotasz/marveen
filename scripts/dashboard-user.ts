@@ -27,6 +27,7 @@ import { hashPassword, assertPasswordPolicy, PasswordPolicyError } from '../src/
 import { revokeAllForUser } from '../src/web/auth-sessions.js'
 import { securityReset } from '../src/web/security-reset.js'
 import { notifySecurityEvent } from '../src/notify.js'
+import { takeSupportAccessDown } from '../src/web/support-standby-runtime.js'
 import { promptHidden } from '../src/hidden-prompt.js'
 
 function usage(): never {
@@ -105,6 +106,8 @@ async function main(): Promise<void> {
       const hash = await hashPassword(pw)
       updateDashboardUserPassword(user.id, hash)
       revokeAllForUser(user.id)
+      // SUPPORTKULCS1109 (terv-v7 3.9): a password reset takes support access off this machine.
+      await takeSupportAccessDown('password_change')
       // Same audit + channel ping as the HTTP break-glass: a password reset
       // that skipped the current-password proof must always leave a trace.
       logConfigChange('security.break_glass_password_reset', null, user.username, 'cli')
@@ -134,12 +137,16 @@ async function main(): Promise<void> {
       }
       revokeAllForUser(user.id)
       deleteDashboardUser(username)
+      // SUPPORTKULCS1109 (terv-v7 3.9): removing a dashboard login takes support access off this machine.
+      await takeSupportAccessDown('user_delete')
       const remaining = listDashboardUsers().length
       process.stdout.write(`Removed "${username}".${remaining === 0 ? ' No users left -- back to token-only mode.' : ''}\n`)
       break
     }
     case 'security:reset': {
       const r = securityReset('cli')
+      // SUPPORTKULCS1109 (terv-v7 3.9): the break-glass reset takes support access off this machine too.
+      await takeSupportAccessDown('security_reset')
       await notifySecurityEvent(`🚨 Biztonsági reset futott a dashboard CLI-ből: ${r.deviceKeysRevoked} eszközkulcs visszavonva, ${r.sessionsCleared} böngésző-munkamenet törölve. A hozzáférési token és a jelszavak változatlanok.`)
       process.stdout.write(
         `Security reset done: ${r.deviceKeysRevoked} device key(s) revoked, ${r.sessionsCleared} browser session(s) cleared.\n` +

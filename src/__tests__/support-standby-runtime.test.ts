@@ -1,0 +1,83 @@
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const notifyOwner = vi.fn(async (_text: string) => true)
+vi.mock('../notify.js', () => ({
+  notifyOwner: (text: string) => notifyOwner(text),
+  notifyChannel: vi.fn(async () => {}),
+  notifyTelegram: vi.fn(async () => {}),
+  notifySecurityEvent: vi.fn(async () => {}),
+}))
+
+import { getDb, initDatabase, insertSupportConsent, listSupportConsents } from '../db.js'
+import { buildSupportLine } from '../support-access-line.js'
+import { writeSupportToken, SUPPORT_TOKEN_FILE } from '../support-access-token.js'
+import { hasSupportState, takeSupportAccessDownWith } from '../web/support-standby-runtime.js'
+import { TEST_ONLY_FROM, TEST_ONLY_KEYS } from './helpers/sk-test-keys.js'
+
+const GRANT = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
+const TOKEN = 'mst_' + 'TESTONLY'.repeat(5) + '_-0'
+const OWN_LINE = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH owner@laptop'
+
+describe('the security teardown of support access (terv-v7 3.9)', () => {
+  let root: string
+  let supportDir: string
+  let sshDir: string
+  const deps = () => ({ supportDir, sshDir, pins: { keys: TEST_ONLY_KEYS, fromCidrs: TEST_ONLY_FROM } })
+  const line = () =>
+    buildSupportLine({ key: TEST_ONLY_KEYS[0], grantId: GRANT, consentVersion: 1, dispatchPath: '/home/x/.marveen/support/kit/support-dispatch.sh', fromCidrs: TEST_ONLY_FROM, sshd: { major: 9, minor: 6 } })
+
+  beforeAll(() => {
+    process.env.NODE_ENV = 'test'
+    initDatabase(':memory:')
+  })
+  beforeEach(() => {
+    getDb().exec('DELETE FROM support_consents')
+    notifyOwner.mockClear()
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'support-teardown-')))
+    supportDir = join(root, 'home', '.marveen', 'support')
+    sshDir = join(root, 'home', '.ssh')
+    mkdirSync(sshDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(sshDir, 'authorized_keys'), OWN_LINE + '\n', { mode: 0o600 })
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('a machine that never had support: nothing is touched, not even a lock under .ssh', async () => {
+    expect(hasSupportState(deps())).toBe(false)
+    expect(await takeSupportAccessDownWith(deps(), 'password_change')).toEqual({ ok: true, removedLines: 0 })
+    expect(readdirSync(sshDir)).toEqual(['authorized_keys'])
+    expect(readFileSync(join(sshDir, 'authorized_keys'), 'latin1')).toBe(OWN_LINE + '\n')
+  })
+
+  it('takes the token and the lines away, and closes the open rows with the reason', async () => {
+    mkdirSync(supportDir, { recursive: true, mode: 0o700 })
+    writeSupportToken(supportDir, TOKEN)
+    writeFileSync(join(sshDir, 'authorized_keys'), OWN_LINE + '\n' + line() + '\n')
+    insertSupportConsent({ grantId: GRANT, consentVersion: 1, consentAt: '2026-11-15T06:10:00Z', locale: 'hu', keyNames: ['key1'], createdVia: 'button', actor: 'session:alice' })
+    expect(await takeSupportAccessDownWith(deps(), 'security_reset')).toEqual({ ok: true, removedLines: 1 })
+    expect(existsSync(join(supportDir, SUPPORT_TOKEN_FILE))).toBe(false)
+    expect(readFileSync(join(sshDir, 'authorized_keys'), 'latin1')).toBe(OWN_LINE + '\n')
+    expect(listSupportConsents().map((r) => r.revoked_via)).toEqual(['security_reset'])
+  })
+
+  it('a support line without the folder is found too (read only) and taken away', async () => {
+    writeFileSync(join(sshDir, 'authorized_keys'), OWN_LINE + '\n' + line() + '\n')
+    expect(hasSupportState(deps())).toBe(true)
+    expect(await takeSupportAccessDownWith(deps(), 'user_delete')).toEqual({ ok: true, removedLines: 1 })
+  })
+
+  it('what cannot be taken down is told to the owner, and the rows stay open', async () => {
+    mkdirSync(supportDir, { recursive: true, mode: 0o700 })
+    writeSupportToken(supportDir, TOKEN)
+    insertSupportConsent({ grantId: GRANT, consentVersion: 1, consentAt: '2026-11-15T06:10:00Z', locale: null, keyNames: ['key1'], createdVia: 'button', actor: 'x' })
+    rmSync(join(sshDir, 'authorized_keys'))
+    mkdirSync(join(sshDir, 'authorized_keys'))
+    expect(await takeSupportAccessDownWith(deps(), 'password_change')).toMatchObject({ ok: false, problem: 'lines_remain' })
+    expect(notifyOwner).toHaveBeenCalledTimes(1)
+    expect(listSupportConsents().map((r) => r.revoked_via)).toEqual([null])
+  })
+})
