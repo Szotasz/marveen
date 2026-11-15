@@ -63,7 +63,7 @@ describe('the committed launcher', () => {
   })
 
   it('never puts the one-time code in an argument: it reaches the routine on standard input', () => {
-    expect(LAUNCHER).toContain(`OUT=$(printf '%s\\n' "$CODE" | run_kit enable); rc=$?`)
+    expect(LAUNCHER).toContain(`OUT=$(printf '%s\\n' "$CODE" | run_kit enable --consent `)
     expect(LAUNCHER).not.toMatch(/run_kit[^\n]*"\$CODE"/)
   })
 })

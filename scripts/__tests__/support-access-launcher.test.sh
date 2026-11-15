@@ -87,6 +87,35 @@ check "changed manifest: exit 1" "$rc" 1
 contains "it says kit_manifest_unreadable" "$OUT" "kit_manifest_unreadable"
 cp "$HOMEDIR/manifest.bak" "$KIT/manifest"; rm -f "$HOMEDIR/manifest.bak"
 
+echo "(h2) a manifest with a carriage return, or without its final line end: refused before node runs"
+cp "$KIT/manifest" "$HOMEDIR/manifest.bak"
+sed 's/$/\r/' "$HOMEDIR/manifest.bak" > "$KIT/manifest"
+OUT=$("$L" 2>&1); rc=$?
+check "CR in the manifest: exit 1" "$rc" 1
+contains "CR: kit_manifest_unreadable" "$OUT" "kit_manifest_unreadable"
+printf '%s' "$(cat "$HOMEDIR/manifest.bak")" > "$KIT/manifest"
+OUT=$("$L" 2>&1); rc=$?
+check "no final LF: exit 1" "$rc" 1
+contains "no final LF: kit_manifest_unreadable" "$OUT" "kit_manifest_unreadable"
+cp "$HOMEDIR/manifest.bak" "$KIT/manifest"; rm -f "$HOMEDIR/manifest.bak"
+
+echo "(d2) disable runs the TREE's routine even when the kit's routine is not the manifest's (N14/a)"
+cp "$KIT/support-standby.mjs" "$HOMEDIR/routine.bak"
+printf '\n// changed\n' >> "$KIT/support-standby.mjs"
+OUT=$("$L" disable 2>&1); rc=$?
+check "disable with a changed kit routine: exit 1 (the tree's routine has no disable yet)" "$rc" 1
+case "$OUT" in *kit_mismatch*) fail "disable looked at the kit's hash" ;; *) pass "disable did not depend on the kit's hash" ;; esac
+contains "it says this release cannot take it off here" "$OUT" "még nem tudja helyben levenni"
+cp "$HOMEDIR/routine.bak" "$KIT/support-standby.mjs"; rm -f "$HOMEDIR/routine.bak"
+
+echo "(l) the manifest's node is gone: a fixed place is used, resolved and named"
+cp "$KIT/manifest" "$HOMEDIR/manifest.bak"
+sed 's#^node .*#node /nonexistent/bin/node#' "$HOMEDIR/manifest.bak" > "$KIT/manifest"
+OUT=$("$L" 2>&1)
+contains "it names the node it uses instead" "$OUT" "ezt használom: $(readlink -f "$NODE")"
+contains "and still reaches status" "$OUT" "node=ok"
+cp "$HOMEDIR/manifest.bak" "$KIT/manifest"; rm -f "$HOMEDIR/manifest.bak"
+
 echo "(i) the kit folder as a link: refused"
 mv "$KIT" "$SUPPORT/kit-real"; ln -s "$SUPPORT/kit-real" "$KIT"
 OUT=$("$SUPPORT/kit-real/support-access" 2>&1); rc=$?
