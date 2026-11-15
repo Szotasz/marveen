@@ -150,8 +150,9 @@ INSTRUCTION_PATTERNS = [
 # (tool, source, bytes, pattern counts, nonce only), so the shared-store log is
 # not a second copy of a mailbox that agents without the mail server could read.
 # A forged frame keeps only EXCERPT_CHARS either side of each of the first
-# EXCERPT_MAX matches, with offsets: an outside sender can plant a frame in one
-# mail, and the whole search result around it must not follow it into the log.
+# EXCERPT_MAX matches, with offsets, cut at the edges of the content block or
+# dict string field that holds the match: an outside sender can plant a frame
+# in one mail, and the neighbouring items must not follow it into the log.
 # Their source is logged without query or fragment (a logged-in URL can carry a
 # token). Same server list as ENVELOPE_MCP_SERVERS in src/web/agent-scaffold.ts.
 PRIVATE_PAYLOAD_RX = re.compile(r"^mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright)__")
@@ -192,8 +193,42 @@ def envelope(text, tool_name, source, nonce):
     )
 
 
-def extract_text(tool_response):
-    """Flatten a tool_response into scannable text.
+def _field_spans(node, dumped, base):
+    """(start, end) of every string leaf of node inside dumped = json.dumps(node).
+
+    Keys and strings are searched in serialisation order from a cursor; between
+    two of them only structure, numbers and literals can stand, none of which
+    holds a quote, so each find lands on its own item. A key json.dumps renders
+    differently from str(key) (True -> "true") falls back to one span.
+    """
+    spans, cur = [], 0
+
+    def walk(n):
+        nonlocal cur
+        if isinstance(n, dict):
+            for k, v in n.items():
+                key = json.dumps(str(k), ensure_ascii=False)
+                cur = dumped.index(key, cur) + len(key)
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+        elif isinstance(n, str):
+            s = json.dumps(n, ensure_ascii=False)
+            i = dumped.index(s, cur)
+            spans.append((base + i, base + i + len(s)))
+            cur = i + len(s)
+
+    try:
+        walk(node)
+    except ValueError:
+        return [(base, base + len(dumped))]
+    return spans
+
+
+def flatten(tool_response):
+    """Flatten a tool_response into scannable text, plus the (start, end) span
+    of each content block or dict string field in it (excerpt boundaries).
 
     MCP results arrive as a list of content blocks ({"type":"text","text":...});
     built-in tools may hand back a string or a dict. Anything unrecognised is
@@ -201,23 +236,40 @@ def extract_text(tool_response):
     last thing that should go unscanned.
     """
     if tool_response is None:
-        return ""
+        return "", []
     if isinstance(tool_response, str):
-        return tool_response
+        return tool_response, [(0, len(tool_response))]
     if isinstance(tool_response, list):
-        parts = []
+        parts, spans, pos = [], [], 0
         for block in tool_response:
-            if isinstance(block, dict):
-                text = block.get("text")
-                parts.append(text if isinstance(text, str) else json.dumps(block, ensure_ascii=False))
-            elif isinstance(block, str):
-                parts.append(block)
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                part = block["text"]
+                spans.append((pos, pos + len(part)))
+            elif isinstance(block, dict):
+                part = json.dumps(block, ensure_ascii=False)
+                spans += _field_spans(block, part, pos)
             else:
-                parts.append(str(block))
-        return "\n".join(parts)
+                part = block if isinstance(block, str) else str(block)
+                spans.append((pos, pos + len(part)))
+            parts.append(part)
+            pos += len(part) + 1
+        return "\n".join(parts), spans
     if isinstance(tool_response, dict):
-        return json.dumps(tool_response, ensure_ascii=False)
-    return str(tool_response)
+        dumped = json.dumps(tool_response, ensure_ascii=False)
+        return dumped, _field_spans(tool_response, dumped, 0)
+    text = str(tool_response)
+    return text, [(0, len(text))]
+
+
+def extract_text(tool_response):
+    return flatten(tool_response)[0]
+
+
+def excerpt(scanned, spans, a, b):
+    """EXCERPT_CHARS either side of match [a, b), never past the item holding it.
+    A match outside every item (a key, JSON structure) keeps only itself."""
+    lo, hi = next(((s, e) for s, e in spans if s <= a < e), (a, b))
+    return scanned[max(lo, a - EXCERPT_CHARS):min(hi, b + EXCERPT_CHARS)]
 
 
 def wrap_response(tool_response, tool_name, source, nonce):
@@ -395,7 +447,7 @@ def main():
     tool_name = str(payload.get("tool_name") or "unknown")
     tool_input = payload.get("tool_input")
     tool_response = payload.get("tool_response")
-    text = extract_text(tool_response)
+    text, item_spans = flatten(tool_response)
     if not text:
         return
 
@@ -431,7 +483,7 @@ def main():
         record["payload"] = scanned
     elif framing:
         spans = sorted(m.span() for _, rx in FRAMING_PATTERNS for m in rx.finditer(scanned))[:EXCERPT_MAX]
-        record["excerpts"] = [{"offset": a, "text": scanned[max(0, a - EXCERPT_CHARS):b + EXCERPT_CHARS]} for a, b in spans]
+        record["excerpts"] = [{"offset": a, "text": excerpt(scanned, item_spans, a, b)} for a, b in spans]
     log_record(record)
 
     # The label says two things that both matter: the imperatives are data, AND

@@ -478,7 +478,8 @@ holds the tool, source, byte count, pattern counts and nonce, plus the payload
 itself, except for the catalog mail, calendar, Drive and playwright servers below,
 whose record keeps no payload, a source without query string or fragment, and,
 when a forged frame matched, only 200 characters either side of each of the first
-five matches with their character offsets; the log sits in the shared
+five matches with their character offsets, never past the content block or
+dict string field that holds the match; the log sits in the shared
 `store/`, so every agent running as the same OS user can read it. The log is
 capped: past `BROWSER_CONTENT_LOG_MAX_BYTES` (default 10 MiB) it moves to
 `browser-content.log.1`, replacing an older one, so at most about twice the cap
