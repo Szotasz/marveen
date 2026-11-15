@@ -200,6 +200,54 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(after.plugins['u@m'][0]).toEqual({ scope: 'user', installPath: '/u' })
   })
 
+  // docs/agent-fleet.md, "Pluginok izolált config-mappában": what taking a plugin off the fleet takes.
+  it('PLUGINREGCLOBBER1107 (docs): a plugin removed only from the own registry comes back while the shared one lists it; removed from both, it stays gone', () => {
+    const sharedIp = join(SANDBOX, 'home', '.claude', 'plugins', 'installed_plugins.json')
+    const shared = JSON.parse(readFileSync(sharedIp, 'utf-8'))
+    shared.plugins['x@m'] = [{ scope: 'user', installPath: '/x-plugin' }]
+    writeFileSync(sharedIp, JSON.stringify(shared))
+    const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')!
+    const ip = join(cfg, 'plugins', 'installed_plugins.json')
+    const drop = (path: string) => {
+      const reg = JSON.parse(readFileSync(path, 'utf-8'))
+      delete reg.plugins['x@m']
+      writeFileSync(path, JSON.stringify(reg))
+    }
+    expect(JSON.parse(readFileSync(ip, 'utf-8')).plugins['x@m']).toHaveLength(1)
+    // Own registry only: the next launch adds it back from the shared file.
+    drop(ip)
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    expect(JSON.parse(readFileSync(ip, 'utf-8')).plugins['x@m']).toHaveLength(1)
+    // Shared registry only: the agent keeps it.
+    drop(sharedIp)
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    expect(JSON.parse(readFileSync(ip, 'utf-8')).plugins['x@m']).toHaveLength(1)
+    // Both: gone, and it stays gone.
+    drop(ip)
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    expect(JSON.parse(readFileSync(ip, 'utf-8')).plugins).not.toHaveProperty('x@m')
+    expect(JSON.parse(readFileSync(ip, 'utf-8')).plugins[TG]).toHaveLength(1)
+  })
+
+  it('PLUGINREGCLOBBER1107 (docs): a non-channel plugin switched off in the shared settings.json is off in the isolated one at the next launch', () => {
+    const sharedSettings = join(SANDBOX, 'home', '.claude', 'settings.json')
+    const s = JSON.parse(readFileSync(sharedSettings, 'utf-8'))
+    s.enabledPlugins['x@m'] = true
+    writeFileSync(sharedSettings, JSON.stringify(s))
+    const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')!
+    const own = () => JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf-8')).enabledPlugins
+    expect(own()['x@m']).toBe(true)
+    s.enabledPlugins['x@m'] = false
+    writeFileSync(sharedSettings, JSON.stringify(s))
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    expect(own()['x@m']).toBe(false)
+    // The isolated file's own older value does not survive: enabledPlugins is never inherited from it.
+    delete s.enabledPlugins['x@m']
+    writeFileSync(sharedSettings, JSON.stringify(s))
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    expect(own()).not.toHaveProperty('x@m')
+  })
+
   it('a CHANNEL-LESS agent (null provider) disables EVERY channel plugin', () => {
     // AUTHISO25: dani/geri-class agents have no bot token at all. Their
     // isolated settings.json must not enable any channel plugin -- a loaded
