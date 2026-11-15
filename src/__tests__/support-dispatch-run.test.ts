@@ -125,6 +125,7 @@ function ssh(command: string, opts: { input?: Buffer | string; consent?: string;
     env: ENV({ SSH_ORIGINAL_COMMAND: command, ...opts.env }),
     input: opts.input ?? '',
     timeout: 30_000,
+    maxBuffer: 64 * 1024 * 1024,
   })
   return { status: r.status, stdout: r.stdout, stderr: r.stderr.toString('utf8') }
 }
@@ -211,6 +212,30 @@ describe('run <text>: the command runs, and is logged before and after', () => {
     expect(r.status).toBe(0)
     expect(readFileSync(target).equals(bytes)).toBe(true)
     expect(runEvents()[0].stdin_bytes).toBe(String(bytes.length))
+  })
+
+  it('a 3 MB output written as fast as it goes reaches the client whole and is counted', () => {
+    // 3 MB written as fast as possible, then the command exits at once: the last pipe-buffer of it is still on its
+    // way through the relay when the dispatcher sees the exit, and must not be cut off.
+    const r = run('head -c 3000000 /dev/zero')
+    expect(r.status).toBe(0)
+    expect(r.stdout.length).toBe(3_000_000)
+    expect(runEvents()[0].stdout_bytes).toBe('3000000')
+  })
+
+  it('a slow client still gets all of it: the command exits while its output waits in the relay (M31)', () => {
+    // A reader that waits 1 s before it reads, like a slow ssh client: every byte must still arrive and be counted.
+    // This guards the relay against cutting a slow reader. It does NOT reliably catch the mutant that drops the
+    // relay grace (M31): whether bytes are still in the relay when the command exits depends on how the pipes fill
+    // on this machine. That mutant is measured outside the suite (meres/d7/slow-reader.sh, a 2 s reader): Debian 12,
+    // 100 kB: with the grace 100000 of 100000, without it 65536 of 100000, 3 of 3 runs each.
+    const r = spawnSync('/bin/sh', ['-c', '"$@" | (sleep 1; wc -c)', 'sh', '/bin/sh', ...args()], {
+      env: ENV({ SSH_ORIGINAL_COMMAND: 'run head -c 80000 /dev/zero' }),
+      input: '',
+      timeout: 30_000,
+    })
+    expect(r.stdout.toString().trim()).toBe('80000')
+    expect(runEvents()[0]).toMatchObject({ exit: '0', stdout_bytes: '80000' })
   })
 
   it('a large stdout passes whole and is counted', () => {
