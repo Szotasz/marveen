@@ -5,18 +5,18 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
 
-export type ExtConfig = { ownerUserId: string; backfill: boolean; channelPolicy: ChannelPolicy; slashCommands: SlashCommand[] | null }
+export type ExtConfig = { ownerUserId: string; backfill: boolean; channelPolicy: ChannelPolicy; slashCommands: SlashCommand[] | null; adminActions: AdminAction[] }
 
 const SNOWFLAKE = /^[1-9][0-9]{16,19}$/
 
-// A missing or unreadable file means the safe side: nobody named, no backfill, no slash commands.
+// A missing or unreadable file means the safe side: nobody named, no backfill, no slash commands, no admin tools.
 export function loadExtConfig(dir: string): ExtConfig {
   try {
     const raw = JSON.parse(readFileSync(join(dir, 'marveen-ext.json'), 'utf8')) as Record<string, unknown>
     const owner = typeof raw?.ownerUserId === 'string' && SNOWFLAKE.test(raw.ownerUserId) ? raw.ownerUserId : ''
-    return { ownerUserId: owner, backfill: raw?.backfill === true, channelPolicy: parseChannelPolicy(raw?.channelPolicy), slashCommands: parseSlashCommands(raw?.slashCommands) }
+    return { ownerUserId: owner, backfill: raw?.backfill === true, channelPolicy: parseChannelPolicy(raw?.channelPolicy), slashCommands: parseSlashCommands(raw?.slashCommands), adminActions: parseAdminActions(raw?.adminActions) }
   } catch {
-    return { ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null }
+    return { ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null, adminActions: [] }
   }
 }
 
@@ -694,4 +694,75 @@ export function threadRecoveryTargets(threadIds: readonly string[], cursor: Read
     .filter(t => SNOWFLAKE_ID.test(t) && cursor[t] !== undefined)
     .sort((a, b) => (BigInt(cursor[a]!) > BigInt(cursor[b]!) ? -1 : 1))
     .slice(0, max)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR5 (Zoli 2026-11-11 12:52): A9 bot-to-bot only on an explicit mention, G2 pin/unpin only
+// ---------------------------------------------------------------------------------------------------------------
+
+// A9: another bot's message passes only when it names OUR bot in its text (<@id> or <@!id>). Not @everyone/@here,
+// not a role, not a mention pattern, and not a reply to our message: Discord puts the replied-to user into the
+// message's mention list, so the list is not used, only the text.
+export function explicitlyAddressed(content: string, selfId: string | null | undefined): boolean {
+  return !!selfId && (content.includes(`<@${selfId}>`) || content.includes(`<@!${selfId}>`))
+}
+
+// A bot must be named for the channel: in its allowFrom, or holding one of its roles (B1). An empty allowFrom,
+// which lets anyone human speak, never lets a bot in.
+export function botSenderAllowed(groupAllowFrom: readonly string[], allowRoles: readonly string[] | undefined, botId: string, memberRoleIds: readonly string[]): boolean {
+  if (groupAllowFrom.includes(botId)) return true
+  return !!allowRoles && allowRoles.length > 0 && memberRoleIds.some(r => allowRoles.includes(r))
+}
+
+// The loop guard, per channel (a thread counts with its parent). Pinned by tests.
+export const BOT_LOOP = { cooldownMs: 30_000, maxPerWindow: 3, windowMs: 10 * 60_000 } as const
+
+export class BotLoopGuard {
+  private readonly accepted = new Map<string, number[]>()
+  private readonly reported = new Set<string>()
+
+  constructor(private readonly log: (msg: string) => void = () => {}) {}
+
+  // Whether a bot message may go on now; an accepted one is counted. Over the cap: dropped until the oldest
+  // accepted one leaves the window, one log line per stretch (nothing goes to Discord).
+  allow(channelId: string, now: number): boolean {
+    const recent = (this.accepted.get(channelId) ?? []).filter(t => t > now - BOT_LOOP.windowMs)
+    this.accepted.set(channelId, recent)
+    const last = recent[recent.length - 1]
+    if (last !== undefined && now - last < BOT_LOOP.cooldownMs) return false
+    if (recent.length >= BOT_LOOP.maxPerWindow) {
+      if (!this.reported.has(channelId)) {
+        this.reported.add(channelId)
+        this.log(`discord channel: bot messages in ${channelId} over ${BOT_LOOP.maxPerWindow} per ${BOT_LOOP.windowMs / 60_000} min: dropped until the window frees up`)
+      }
+      return false
+    }
+    this.reported.delete(channelId)
+    recent.push(now)
+    return true
+  }
+}
+
+// G2: the only writing admin actions, behind DISCORD_ADMIN_ACTIONS (empty by default). Deleting messages and
+// changing roles are not built (Zoli's decision).
+export const ADMIN_ACTIONS = ['pin'] as const
+export type AdminAction = (typeof ADMIN_ACTIONS)[number]
+
+export function parseAdminActions(raw: unknown): AdminAction[] {
+  if (!Array.isArray(raw)) return []
+  return ADMIN_ACTIONS.filter(a => raw.includes(a))
+}
+
+// The tools exist (are listed) only when switched on: off, the model does not even see them.
+export function adminTools(actions: readonly AdminAction[]): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
+  if (!actions.includes('pin')) return []
+  const schema = {
+    type: 'object',
+    properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } },
+    required: ['chat_id', 'message_id'],
+  }
+  return [
+    { name: 'pin_message', description: 'Pin a message in an allowed Discord channel.', inputSchema: schema },
+    { name: 'unpin_message', description: 'Unpin a message in an allowed Discord channel.', inputSchema: schema },
+  ]
 }
