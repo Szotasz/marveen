@@ -251,6 +251,13 @@ describe('/api/support-access', () => {
     expect(runs).toEqual([])
   })
 
+  it('a right password clears the wrong ones before it', async () => {
+    for (let i = 0; i < 4; i++) expect((await enable('wrong-' + i)).res.statusCode).toBe(401)
+    expect((await enable(GOOD_PW)).res.statusCode).toBe(200)
+    for (let i = 0; i < 4; i++) expect((await enable('wrong-again-' + i)).res.statusCode).toBe(401)
+    expect((await enable(GOOD_PW)).res.statusCode).toBe(200)
+  })
+
   it('the bucket is not the login\'s: wrong support passwords do not lock the login', async () => {
     for (let i = 0; i < 5; i++) await enable('wrong-' + i)
     const login = await callWith(tryHandleAuth, 'POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
