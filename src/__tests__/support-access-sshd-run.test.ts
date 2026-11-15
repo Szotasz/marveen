@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
+import { join } from 'node:path'
+import { LAUNCHCTL_PROGRAM, NETSTAT_PROGRAM, PLUTIL_PROGRAM } from '../support-access-sshd-darwin.js'
 import {
   createSshdProbeDeps,
   currentLoginUser,
@@ -79,6 +82,10 @@ function fake(
     machine?: Machine
     platform?: string
     makeDirThrows?: boolean
+    /** macOS: what plutil, launchctl and netstat print (each null = the program failed). */
+    darwin?: Partial<Record<'plist' | 'disabled' | 'job' | 'netstat', string | null>>
+    /** macOS: these programs print their usual text and still exit with 1. */
+    darwinExit1?: readonly ('plist' | 'disabled' | 'job' | 'netstat')[]
   } = {},
 ): { deps: SshdProbeDeps; calls: Call[]; made: string[]; removed: string[] } {
   const calls: Call[] = []
@@ -89,6 +96,14 @@ function fake(
     run: async (file, args, timeoutMs) => {
       calls.push({ file, args: [...args], timeoutMs })
       if (file === SSH_KEYGEN_PROGRAM) return over.keygen ?? { code: 0, stdout: '', stderr: '' }
+      const darwinOut = (key: 'plist' | 'disabled' | 'job' | 'netstat'): ProgramResult => {
+        const text = over.darwin !== undefined && key in over.darwin ? over.darwin[key] : MAC[key]
+        if (text === null || text === undefined) return { code: 1, stdout: '', stderr: 'x' }
+        return { code: over.darwinExit1?.includes(key) === true ? 1 : 0, stdout: text, stderr: '' }
+      }
+      if (file === PLUTIL_PROGRAM) return darwinOut('plist')
+      if (file === LAUNCHCTL_PROGRAM) return darwinOut(args[0] === 'print-disabled' ? 'disabled' : 'job')
+      if (file === NETSTAT_PROGRAM) return darwinOut('netstat')
       if (args[0] === '-V') return over.version ?? { code: 0, stdout: V_10_0, stderr: '' }
       const out = over.answer === undefined ? sshdT() : over.answer(args)
       return typeof out === 'string' ? { code: 0, stdout: out, stderr: '' } : out
@@ -121,6 +136,33 @@ function fake(
 interface Machine {
   files: Map<string, { text: string; ctimeNs: bigint } | 'unreadable'>
   dirs: Map<string, { names: string[]; ctimeNs: bigint } | 'unlistable'>
+  /** Owner and mode by path; a path not named is root's, 0644 (files) or 0755 (folders). */
+  owners?: Map<string, { uid: number; mode: number } | null>
+}
+
+// macOS 26 as measured (EREDMENY 5.17, 5.18): the plist and launchd's job view verbatim; print-disabled and netstat
+// carry the measured lines.
+const MAC_DIR = join(__dirname, 'fixtures', 'support-sshd-darwin')
+const MAC = {
+  plist: readFileSync(join(MAC_DIR, 'ssh-plist.json'), 'utf8'),
+  disabled: 'disabled services = {\n\t\t"com.openssh.sshd" => enabled\n\t}\n',
+  job: readFileSync(join(MAC_DIR, 'launchctl-print-job.txt'), 'utf8'),
+  netstat: 'tcp4       0      0  *.22                   *.*                    LISTEN\ntcp6       0      0  *.22                   *.*                    LISTEN\n',
+}
+
+/** A stock macOS 26: the main file, the one drop-in, and the nested Include it brings (measured). No pidfile, no /proc. */
+function macMachine(): Machine {
+  return {
+    files: new Map<string, { text: string; ctimeNs: bigint } | 'unreadable'>([
+      ['/etc/ssh/sshd_config', { text: 'Include /etc/ssh/sshd_config.d/*\n#Port 22\n', ctimeNs: 100n }],
+      ['/etc/ssh/sshd_config.d/100-macos.conf', { text: 'UsePAM yes\nAcceptEnv LANG LC_*\nInclude /etc/ssh/crypto.conf\n', ctimeNs: 100n }],
+      ['/etc/ssh/crypto.conf', { text: 'Ciphers aes256-gcm@openssh.com\n', ctimeNs: 100n }],
+    ]),
+    dirs: new Map<string, { names: string[]; ctimeNs: bigint } | 'unlistable'>([
+      ['/etc/ssh', { names: ['crypto.conf', 'sshd_config', 'sshd_config.d'], ctimeNs: 90n }],
+      ['/etc/ssh/sshd_config.d', { names: ['100-macos.conf'], ctimeNs: 90n }],
+    ]),
+  }
 }
 
 /** A stock Debian machine with a listener: one drop-in, the pidfile written after every config file. */
@@ -157,6 +199,10 @@ function machineFs(m: Machine): SshdProbeDeps['fs'] {
       if (f !== undefined && f !== 'unreadable') return f.ctimeNs
       const d = m.dirs.get(path)
       return d !== undefined && d !== 'unlistable' ? d.ctimeNs : null
+    },
+    owner: (path) => {
+      if (m.owners?.has(path)) return m.owners.get(path) ?? null
+      return m.dirs.has(path) ? { uid: 0, mode: 0o40755 } : { uid: 0, mode: 0o100644 }
     },
   }
 }
@@ -307,11 +353,56 @@ describe('probeSshd', () => {
     expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toMatchObject({ ok: false, problem: 'sshd_config_unknown' })
   })
 
-  it('as another user: refuses on a platform whose daemon check is not measured yet', async () => {
-    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, platform: 'darwin' }).deps)).toMatchObject({
+  it('as another user: refuses on a platform whose daemon check is not measured', async () => {
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, platform: 'freebsd' }).deps)).toMatchObject({
       ok: false,
       problem: 'sshd_daemon_unknown',
     })
+  })
+
+  // macOS 26 (EREDMENY 5.17, 5.18; Dani 78522): launchd's job instead of a listener and a pidfile.
+  it('as another user on macOS: answers on the measured machine, walking the nested Include, with no pidfile', async () => {
+    const { deps, calls } = fake({ isRoot: false, platform: 'darwin', machine: macMachine() })
+    expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toMatchObject({ ok: true })
+    expect(calls.filter((c) => c.file !== SSHD_PROGRAM && c.file !== SSH_KEYGEN_PROGRAM).map((c) => [c.file, ...c.args].join(' '))).toEqual([
+      PLUTIL_PROGRAM + ' -convert json -o - /System/Library/LaunchDaemons/ssh.plist',
+      LAUNCHCTL_PROGRAM + ' print-disabled system',
+      LAUNCHCTL_PROGRAM + ' print system/com.openssh.sshd',
+      NETSTAT_PROGRAM + ' -an',
+    ])
+  })
+
+  it.each<[string, Parameters<typeof fake>[0], string]>([
+    ['the plist with another argument', { darwin: { plist: MAC.plist.replace('["sshd-keygen-wrapper"]', '["sshd-keygen-wrapper","-x"]') } }, 'sshd_daemon_options'],
+    ['plutil failing', { darwin: { plist: null } }, 'sshd_daemon_unknown'],
+    ['Remote Login off', { darwin: { disabled: MAC.disabled.replace('enabled', 'disabled') } }, 'sshd_daemon_unknown'],
+    ['the loaded job of another plist', { darwin: { job: MAC.job.replace('path = /System/Library/LaunchDaemons/ssh.plist', 'path = /Library/LaunchDaemons/x.plist') } }, 'sshd_daemon_unknown'],
+    ['a second sshd on 22, bound to one address', { darwin: { netstat: MAC.netstat + 'tcp4 0 0 127.0.0.1.22 *.* LISTEN\n' } }, 'sshd_daemon_unknown'],
+  ])('as another user on macOS: refuses %s', async (_label, over, problem) => {
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, platform: 'darwin', machine: macMachine(), ...over }).deps)).toMatchObject({ ok: false, problem })
+  })
+
+  it.each([['plist'], ['disabled'], ['job'], ['netstat']] as const)('as another user on macOS: a program that exits with 1 is no answer, even with its usual text (%s)', async (key) => {
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, platform: 'darwin', machine: macMachine(), darwinExit1: [key] }).deps)).toMatchObject({ ok: false, problem: 'sshd_daemon_unknown' })
+  })
+
+  it('as another user on macOS: refuses a configuration file or folder that is not root\'s, or that others can write', async () => {
+    for (const [path, owner] of [
+      ['/etc/ssh/crypto.conf', { uid: 501, mode: 0o100644 }],
+      ['/etc/ssh/sshd_config.d/100-macos.conf', { uid: 0, mode: 0o100666 }],
+      ['/etc/ssh/sshd_config.d', { uid: 0, mode: 0o40777 }],
+      ['/etc/ssh/sshd_config', null],
+    ] as const) {
+      const machine = macMachine()
+      machine.owners = new Map([[path, owner]])
+      expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, platform: 'darwin', machine }).deps)).toMatchObject({ ok: false, problem: 'sshd_daemon_unknown' })
+    }
+  })
+
+  it('as root on macOS: none of the non-root checks run', async () => {
+    const { deps, calls } = fake({ platform: 'darwin', machine: macMachine(), darwin: { plist: null, disabled: null, job: null, netstat: null } })
+    expect(await probeSshd({ fromCidrs: SOURCES }, deps)).toMatchObject({ ok: true })
+    expect(calls.every((c) => c.file === SSHD_PROGRAM)).toBe(true)
   })
 
   it('as another user: a failed or impossible host key is a refusal, and the folder still goes', async () => {

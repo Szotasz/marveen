@@ -110,6 +110,8 @@ export interface NonRootFs {
   readonly listDir: (path: string) => DirList
   /** The change time of a path (following a link) in nanoseconds, or null when it cannot be read. */
   readonly ctimeNs: (path: string) => bigint | null
+  /** The owner and the mode bits of a path (following a link, as sshd does), or null when it cannot be read. macOS uses it. */
+  readonly owner?: (path: string) => { readonly uid: number; readonly mode: number } | null
 }
 
 export type IncludeWalk =
