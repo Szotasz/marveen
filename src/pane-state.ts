@@ -629,7 +629,10 @@ export function stripSessionTitleBanner(coloredPane: string): string {
 // cannot push a running turn back out of the live windows. COUNTING is stricter:
 // detectBackgroundAgents reports only when every row is a measured `◯` row, and
 // says nothing (null) otherwise.
-const BG_AGENT_MAIN_RX = /^\s+⏺ main\s*$/
+// PANEGLYPH1115: the header's bullet is Claude Code's platform bullet, `macos ? "⏺" : "●"` (U+23FA / U+25CF; read
+// from the 2.1.325 binary, the same switch already in 2.1.169), so a Linux host draws `  ● main`. Exactly these two,
+// no wider class: the rows keep their own strict `◯` check.
+const BG_AGENT_MAIN_RX = /^\s+[⏺●] main\s*$/
 const BG_AGENT_ROW_RX = /^\s+◯ \S/
 // The footer's lead: the mode words + `on`, then the shift+tab hint and/or the
 // first `·` segment; or the no-mode `? for shortcuts` footer.
