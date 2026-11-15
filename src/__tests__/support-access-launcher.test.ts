@@ -125,6 +125,25 @@ describe("the launcher's manifest reader, on the cases the routine's reader is h
   })
 })
 
+describe("the routine's enable refusals, as sentences", () => {
+  // The function exactly as the committed launcher carries it, run alone.
+  const fn = LAUNCHER.slice(LAUNCHER.indexOf('enable_refusal() {'), LAUNCHER.indexOf('\n}\n', LAUNCHER.indexOf('enable_refusal() {')) + 3)
+  const say = (code: string): string =>
+    spawnSync('/bin/sh', ['-c', `${fn}\nenable_refusal "$1"`, '_', code], { encoding: 'utf8', timeout: 10_000 }).stdout
+
+  it('already_on (Bence 78560, Dani F1 on #2779): turn it off first, with the disable line, then a new code', () => {
+    const out = say('already_on')
+    expect(out).toContain('(already_on)')
+    expect(out).toContain(`~/.marveen/support/kit/${KIT_LAUNCHER_NAME} disable`)
+    expect(out).toContain('új kódot')
+    expect(out).not.toContain('Küldd el nekünk')
+  })
+
+  it('an unknown code still falls through to the generic sentence with the code in it', () => {
+    expect(say('something_new')).toContain('A bekapcsolás nem sikerült (something_new)')
+  })
+})
+
 describe('the code check', () => {
   const caseGlob = (code: string): boolean =>
     spawnSync('/bin/sh', ['-c', `case "$1" in ${supportCodeGlob()}) exit 0 ;; *) exit 1 ;; esac`, '_', code], { timeout: 10_000 }).status === 0
