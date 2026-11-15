@@ -766,3 +766,28 @@ export function adminTools(actions: readonly AdminAction[]): Array<{ name: strin
     { name: 'unpin_message', description: 'Unpin a message in an allowed Discord channel.', inputSchema: schema },
   ]
 }
+
+// D4: the "done" mark. When the access file sets an ack reaction (the "working" mark on receipt), the message the
+// session answers gets this one too, once the reply has gone out to that chat. Per chat the last acked message;
+// bounded, oldest dropped first.
+export const DONE_REACTION = '✅'
+export const DONE_MARKS_MAX = 500
+
+export class DoneMarks<T> {
+  private readonly pending = new Map<string, T>()
+
+  constructor(private readonly max: number = DONE_MARKS_MAX) {}
+
+  note(chatId: string, message: T): void {
+    this.pending.delete(chatId)
+    this.pending.set(chatId, message)
+    while (this.pending.size > this.max) this.pending.delete(this.pending.keys().next().value!)
+  }
+
+  // The message to mark after a reply to this chat, once.
+  take(chatId: string): T | undefined {
+    const m = this.pending.get(chatId)
+    this.pending.delete(chatId)
+    return m
+  }
+}
