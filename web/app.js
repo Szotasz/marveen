@@ -13994,9 +13994,10 @@ function renderTeamGraph(container, data, opts = {}) {
       <div class="team-node-meta${tagline ? ' team-node-tagline' : ''}">${escapeHtml(tagline || roleLabel)}</div>
       <div class="team-node-meta team-node-status"><span class="process-dot ${runDotClass}"></span>${escapeHtml(runLabel)}</div>
     `
-    if (node.id !== mainAgentId) {
-      div.addEventListener('click', () => openAgentDetail(node.id))
-    }
+    // The main agent opens too: openAgentDetail() hands it to openMarveenDetail(). It used to be
+    // left without a click (from before the main agent had a detail view), so its card on the
+    // overview and in the org chart looked clickable but did nothing.
+    div.addEventListener('click', () => openAgentDetail(node.id))
     // Drag-and-drop reporting edit (Team page only). Any agent except the main
     // one can be dragged; any node can be a drop target (dropping onto the main
     // agent makes the report a direct report of it).
