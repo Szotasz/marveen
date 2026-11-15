@@ -71,7 +71,7 @@ const EXPECTED: Record<string, string[]> = {
     'persona-change-notify.py',
     // MARVEENGAPS1020 (c): WebSearch and WebFetch results reach the main agent
     // framed as untrusted content (an allowlisted host's text is still external).
-    'browser-content-notice.py @ WebSearch|WebFetch',
+    'browser-content-notice.py @ WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright)__.*',
   ],
   // A failed tool call fires PostToolUseFailure, never PostToolUse
   // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.

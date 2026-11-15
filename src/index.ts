@@ -37,6 +37,7 @@ import { startSettingsHealth } from './settings-health.js'
 import { noticeNetTargetDrift } from './net-target-notice.js'
 import { AGENTS_BASE_DIR, agentDir, listAgentNames, readFileOr } from './web/agent-config.js'
 import { migrateSenderRoleGates } from './web/sender-role-gate-store.js'
+import { mergeAutonomyConfigAtBoot } from './web/autonomy-config-boot.js'
 import {
   acquirePortLock,
   acquirePidfileLock,
@@ -507,6 +508,16 @@ async function main(): Promise<void> {
     if (moved) logger.info({ agents: moved }, 'sender-role gates moved to store/agent-sender-role-gates.json (once)')
   } catch (err) {
     logger.error({ err }, 'sender-role gate migration failed')
+  }
+
+  // EMAILMAX3-1115: the autonomy-config seed merge (new categories; email_send ceiling 2 -> 3 only from the
+  // factory 2, the level untouched), the same script update.sh runs. Here it lands on the restart that
+  // brings the new dist. Idempotent; a failure is logged and the config stays as it was.
+  try {
+    const merged = await mergeAutonomyConfigAtBoot()
+    if (merged?.wrote) logger.info({ merge: merged.line }, 'autonomy-config.json merged from the seed')
+  } catch (err) {
+    logger.warn({ err }, 'autonomy-config seed merge did not run; the file is unchanged')
   }
 
   // Backfill embeddings for memories saved before Ollama was available.

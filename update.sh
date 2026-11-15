@@ -1378,6 +1378,32 @@ run_unit_maintenance() {
 run_unit_maintenance
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AUTONOMY CONFIG MERGE (EMAILMAX3-1115) -- above the up-to-date exit, for the
+# reason UNIT MAINTENANCE gives: a merge placed only after that exit runs only on
+# an update that pulls something, and the update that pulls a new merge still
+# runs the old copy of this file. Here it runs on every update.sh run, the
+# dashboard button and the seeded auto-update task included, and it is
+# idempotent (a second run writes nothing). What it does is in the script:
+# categories the install lacks are added, and a raised ceiling (email_send
+# maxLevel 2 -> 3) is applied only while the install still holds the factory 2;
+# a level is never touched. The script runs here, on the update path: an agent
+# session may not write store/autonomy-config.json (db-write-gate).
+autonomy_config_merge() {
+  local seed="$INSTALL_DIR/seed-config/autonomy-config.json" target="$INSTALL_DIR/store/autonomy-config.json" out
+  [ -f "$seed" ] && [ -f "$target" ] && [ -f "$INSTALL_DIR/scripts/lib/autonomy-config-merge.mjs" ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  out=$(node "$INSTALL_DIR/scripts/lib/autonomy-config-merge.mjs" "$seed" "$target" 2>/dev/null) || out=""
+  case "$out" in
+    "added=0 raised=-") ;;
+    added=*) echo -e "  ${GREEN}✓${NC} autonomy-config.json: ${out}" ;;
+    # Never silent: a run that printed nothing did not merge (an unreadable file, or the script did not run).
+    *) echo -e "  ${ORANGE}⚠${NC} autonomy-config.json: a seed-merge nem futott le, a fajl valtozatlan" ;;
+  esac
+  return 0
+}
+autonomy_config_merge
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SEED REFRESH -- update a shipped skill/task copy ONLY while it is provably
 # untouched, and sits here (above the up-to-date exit) for the same reason the
 # unit maintenance does.
@@ -1917,24 +1943,9 @@ if [ -d "$SEED_CONFIG_DIR" ]; then
     if [ ! -f "$target" ]; then
       cp "$cfg" "$target"
       echo -e "  ${GREEN}✓${NC} Seed config: $cfg_name"
-    elif [ "$cfg_name" = "autonomy-config.json" ] && command -v node >/dev/null 2>&1; then
-      MERGED=$(node -e "
-        const seed = JSON.parse(require('fs').readFileSync('$cfg','utf8'));
-        const live = JSON.parse(require('fs').readFileSync('$target','utf8'));
-        const existing = new Set(live.categories.map(c => c.key));
-        let added = 0;
-        for (const c of seed.categories) {
-          if (!existing.has(c.key)) { live.categories.push(c); added++; }
-        }
-        if (added) {
-          live.updated_at = Math.floor(Date.now()/1000);
-          require('fs').writeFileSync('$target', JSON.stringify(live,null,2)+'\n');
-        }
-        console.log(added);
-      " 2>/dev/null || echo "0")
-      if [ "$MERGED" != "0" ] && [ -n "$MERGED" ]; then
-        echo -e "  ${GREEN}✓${NC} autonomy-config.json: ${MERGED} uj kategoria merge-elve"
-      fi
+    elif [ "$cfg_name" = "autonomy-config.json" ]; then
+      # The same merge as above the up-to-date exit (idempotent: there it has usually run already).
+      autonomy_config_merge
     fi
   done
 fi

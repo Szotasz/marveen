@@ -2528,7 +2528,7 @@ function openNewCardModal(status) {
 
 function populateAssigneeSelect(selectId, selected) {
   const sel = document.getElementById(selectId)
-  sel.innerHTML = '<option value="">-- Nincs --</option>'
+  sel.innerHTML = `<option value="">${escapeHtml(t('kanban.meta.none'))}</option>`
   for (const a of kanbanAssignees) {
     const opt = document.createElement('option')
     opt.value = a.name
@@ -2632,7 +2632,8 @@ async function renderCardLabelsSection(card) {
   }
 
   const attachedIds = new Set(attached.map((l) => l.id))
-  addSelect.innerHTML = `<option value="">-- ${t('kanban.label.add_placeholder')} --</option>`
+  // The key already carries its dashes (index.html shows it as is), so none are added here.
+  addSelect.innerHTML = `<option value="">${escapeHtml(t('kanban.label.add_placeholder'))}</option>`
   for (const label of kanbanAllLabels) {
     if (attachedIds.has(label.id)) continue
     const opt = document.createElement('option')
@@ -2890,7 +2891,7 @@ async function showCardDetail(card) {
   const assignee = rawDetailAssignee
     ? kanbanAssignees.find((a) => a.name.toLowerCase() === rawDetailAssignee.toLowerCase())
     : null
-  const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || '-- nincs --')
+  const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || t('kanban.meta.none'))
   const priorityLabels = { low: t('kanban.priority.low'), normal: t('kanban.priority.normal'), high: t('kanban.priority.high'), urgent: t('kanban.priority.urgent') }
   const statusLabels = { planned: t('kanban.status.planned'), in_progress: t('kanban.status.in_progress'), testing: t('kanban.status.testing'), waiting: t('kanban.status.waiting'), done: t('kanban.status.done') }
 
@@ -2987,7 +2988,7 @@ async function showCardDetail(card) {
     const current = card.assignee || ''
     const sel = document.createElement('select')
     sel.style.cssText = 'padding:2px 6px; border-radius:4px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:inherit'
-    sel.innerHTML = '<option value="">-- Nincs --</option>'
+    sel.innerHTML = `<option value="">${escapeHtml(t('kanban.meta.none'))}</option>`
     for (const a of kanbanAssignees) {
       const opt = document.createElement('option')
       opt.value = a.name
@@ -3001,7 +3002,7 @@ async function showCardDetail(card) {
     const save = async () => {
       const newVal = sel.value || null
       if (newVal === current || (newVal === null && !current)) {
-        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
         return
       }
       try {
@@ -3015,7 +3016,7 @@ async function showCardDetail(card) {
         if (r.status === 409) {
           const e = await r.json().catch(() => ({}))
           if (e.conflict === 'stale_version') {
-            assigneeValueEl.textContent = current ? current : '-- nincs --'
+            assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
             showToast(t('kanban.toast.stale_version'), 6000)
             loadKanban && loadKanban()
             return
@@ -3027,18 +3028,18 @@ async function showCardDetail(card) {
         const saved = await r.json().catch(() => ({}))
         if (Number.isInteger(saved.version)) card.version = saved.version
         card.assignee = newVal
-        assigneeValueEl.textContent = newVal ? newVal : '-- nincs --'
+        assigneeValueEl.textContent = newVal ? newVal : t('kanban.meta.none')
         showToast(t('kanban.toast.assignee_updated'))
         loadKanban && loadKanban()
       } catch {
-        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
         showToast(t('kanban.toast.save_error'))
       }
     }
     sel.addEventListener('change', save)
     sel.addEventListener('blur', () => {
       if (assigneeValueEl.querySelector('select')) {
-        assigneeValueEl.textContent = card.assignee ? card.assignee : '-- nincs --'
+        assigneeValueEl.textContent = card.assignee ? card.assignee : t('kanban.meta.none')
       }
     })
   })
@@ -3128,7 +3129,7 @@ async function showCardDetail(card) {
   // Author select for new comment. Default to the bot assignee resolved by
   // type (never a hard-coded display name -- BOT_NAME differs per deployment),
   // falling back to the first assignee. The old literal 'Marveen' never matched
-  // on non-Marveen installs, so the select stayed on "-- Nincs --" and the
+  // on non-Marveen installs, so the select stayed on "-- nincs --" and the
   // comment submit silently no-opped (addCommentBtn returns when !author).
   // (Resolution of the #254/#241 overlap: keep #241's type-resolved default
   // over #254's hard-coded "Gábor" -- same deployment-agnostic reasoning.)
@@ -6340,7 +6341,7 @@ document.getElementById('voiceInstallBtn').addEventListener('click', async () =>
   } catch {
     btn.disabled = false
     btn.textContent = 'Telepítés'
-    showToast('Hiba a telepítés során')
+    showToast(t('agents.voice.install_error'))
   }
 })
 
@@ -6358,8 +6359,8 @@ document.getElementById('saveVoiceConfigBtn').addEventListener('click', async ()
     // OWNERGATE3-1104: the server may refuse (403 owner_session_required); show why instead of a generic error.
     const reply = await readActionReply(r)
     if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(r, reply.body) })); return }
-    showToast('Hangbeállítás mentve')
-  } catch { showToast('Hiba a mentés során') }
+    showToast(t('agents.voice.saved'))
+  } catch { showToast(t('common.error_save')) }
 })
 
 document.getElementById('saveProfileBtn').addEventListener('click', async () => {
@@ -6519,7 +6520,7 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
 
 document.getElementById('authFlowCopyBtn').addEventListener('click', () => {
   const url = document.getElementById('authFlowUrl').textContent
-  navigator.clipboard.writeText(url).then(() => showToast('URL masolva'))
+  navigator.clipboard.writeText(url).then(() => showToast(t('common.toast.copied')))
 })
 
 document.getElementById('memoryIsolationToggle').addEventListener('change', async (e) => {
@@ -6604,7 +6605,7 @@ document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => 
     })
     if (!res.ok) throw new Error()
     markFieldSaved(document.getElementById('editMcpJson'))
-    showToast('.mcp.json mentve')
+    showToast(t('agents.mcp_json_saved'))
   } catch { showToast(t('common.error_save')) }
 })
 
@@ -7502,7 +7503,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
       loadSkills(agentApiName())
     }
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -8461,7 +8462,7 @@ saveScheduleBtn.addEventListener('click', async () => {
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.error || 'Hiba')
+        throw new Error(err.error || t('common.failed'))
       }
       showToast(t('tasks.toast.updated'))
     } else {
@@ -8473,14 +8474,14 @@ saveScheduleBtn.addEventListener('click', async () => {
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.error || 'Ismeretlen hiba')
+        throw new Error(err.error || t('common.failed'))
       }
       showToast(t('tasks.toast.created'))
     }
     closeModal(scheduleModalOverlay)
     loadSchedules()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     saveScheduleBtn.disabled = false
     saveScheduleBtn.querySelector('.btn-text').hidden = false
@@ -10039,7 +10040,7 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
     loadCatalog()
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -10065,7 +10066,7 @@ async function catalogUninstall(item) {
     loadCatalog()
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 }
 
@@ -12300,7 +12301,7 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Hiba')
+      throw new Error(err.error || t('common.failed'))
     }
     const result = await res.json()
     const savedName = result.name || name
@@ -12323,7 +12324,7 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     }
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -12888,7 +12889,7 @@ memImportSaveBtn.addEventListener('click', async () => {
       loadMemories()
       loadMemStats()
     } else {
-      showToast('Hiba: ' + (data.error || 'Ismeretlen'))
+      showToast(`${t('common.error')}: ${data.error || t('common.unknown')}`)
     }
   } catch (err) {
     memImportProgress.hidden = true
@@ -12938,7 +12939,7 @@ document.getElementById('migrateScanBtn').addEventListener('click', async () => 
       body: JSON.stringify({ sourcePath: path }),
     })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    if (!res.ok) throw new Error(data.error || t('common.failed'))
 
     migrateFindings = data.findings
     renderMigrateFindings(data)
@@ -12946,7 +12947,7 @@ document.getElementById('migrateScanBtn').addEventListener('click', async () => 
     document.getElementById('migrateStep1').hidden = true
     document.getElementById('migrateStep2').hidden = false
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -13033,7 +13034,7 @@ document.getElementById('migrateRunBtn').addEventListener('click', async () => {
       body: JSON.stringify({ findings: migrateFindings, agentId }),
     })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    if (!res.ok) throw new Error(data.error || t('common.failed'))
 
     // Show results
     document.getElementById('migrateStep2').hidden = true
@@ -13052,7 +13053,7 @@ document.getElementById('migrateRunBtn').addEventListener('click', async () => {
       ${data.details ? '<div class="migrate-result-details">' + data.details.map(d => escapeHtml(d)).join('<br>') + '</div>' : ''}
     `
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -17108,7 +17109,7 @@ async function setAutonomyLevel(key, level) {
     })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      showToast(data.error || 'Hiba')
+      showToast(data.error || t('common.error_save'))
       return
     }
     // Refresh the settings tab autonomy grid if it is visible
@@ -19430,6 +19431,8 @@ function formatSettingValue(value) {
 // markup (`content`) is built by the caller from elements, never from HTML.
 function confirmDialog({ title, message, okLabel, danger = false, content = null, wide = false, bodyClass = '', cancelLabel = '' }) {
   return new Promise((resolve) => {
+    // Where the focus was (the button that asked, usually), so it goes back there afterwards.
+    const previous = document.activeElement
     const overlay = document.createElement('div')
     overlay.className = 'modal-overlay active'
     overlay.setAttribute('role', 'dialog')
@@ -19473,9 +19476,25 @@ function confirmDialog({ title, message, okLabel, danger = false, content = null
     const finish = (answer) => {
       document.removeEventListener('keydown', onKey)
       overlay.remove()
+      if (previous && previous.isConnected && typeof previous.focus === 'function') previous.focus()
       resolve(answer)
     }
-    const onKey = (e) => { if (e.key === 'Escape') finish(false) }
+    // Tab stays inside the dialog: from its last focusable element on to the first, and Shift+Tab
+    // back, so the focus cannot wander to the page behind the backdrop.
+    const focusables = () => [...modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => !el.disabled && el.offsetParent !== null)
+    const onKey = (e) => {
+      if (e.key === 'Escape') { finish(false); return }
+      if (e.key !== 'Tab') return
+      const items = focusables()
+      if (!items.length) return
+      const first = items[0]
+      const last = items[items.length - 1]
+      const active = document.activeElement
+      const outside = !modal.contains(active)
+      if (e.shiftKey && (active === first || outside)) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && (active === last || outside)) { e.preventDefault(); first.focus() }
+    }
     document.addEventListener('keydown', onKey)
     overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false) })
     closeBtn.addEventListener('click', () => finish(false))
@@ -21445,7 +21464,7 @@ async function handleAgentLogin(agentName, btn) {
       setTimeout(() => loadAgents(), 1500)
     }
   } catch (e) {
-    showToast('Hiba: ' + (e.message || e))
+    showToast(`${t('common.error')}: ${e.message || e}`)
     btn.textContent = origText
     btn.dataset.phase = 'start'
     btn.disabled = false
@@ -21571,7 +21590,7 @@ function openTerminalModal(agentName) {
     if (!terminalInputEnabled) {
       // Read-only mode: input gate is OFF. Drop the keystroke locally (server
       // would 403 it anyway) and nudge the user to the toggle.
-      showToast('Terminal input is off. Enable it with the header toggle first.')
+      showToast(t('terminal.input_off'))
       return
     }
     const special = ESC_TO_SPECIAL[data]
@@ -21630,12 +21649,12 @@ document.getElementById('terminalInputToggle')?.addEventListener('change', (e) =
       }
       terminalInputEnabled = reply.body.enabled === true
       syncTerminalInputToggleUI()
-      showToast(terminalInputEnabled ? 'Terminal input enabled (audit-logged)' : 'Terminal input disabled')
+      showToast(t(terminalInputEnabled ? 'terminal.input_enabled' : 'terminal.input_disabled'))
     })
     .catch(() => {
       terminalInputEnabled = false
       syncTerminalInputToggleUI()
-      showToast('Could not change terminal input state')
+      showToast(t('terminal.input_toggle_failed'))
     })
 })
 

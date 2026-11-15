@@ -56,7 +56,7 @@ enable_refusal() {
     rate_limited) echo "Túl sok próbálkozás volt. Várj néhány percet, utána futtasd újra." ;;
     service_unavailable|answer_unreadable) echo "A marveen.io most nem érhető el innen. Próbáld újra később; ha továbbra sem megy, írj nekünk ($SUPPORT_MAIL), és küldd el ezt a kódot: $1." ;;
     consent_invalid) echo "A hozzájárulás verziója nem az, amit ez a Marveen ismer ($1). Frissítsd a Marveent, vagy írj nekünk ($SUPPORT_MAIL)." ;;
-    support_keys_unset|support_pins_invalid) echo "Ez a Marveen-kiadás még nem tartalmazza a support kulcsait ($1). Frissítsd a Marveent." ;;
+    support_keys_unset|support_from_unset|support_pins_invalid) echo "Ez a Marveen-kiadás még nem tartalmazza a távoli segítség beállításait ($1). Frissítsd a Marveent." ;;
     tunnel_permitted) echo "A géped SSH-beállítása legalább egy esetben hálózati alagutat enged (PermitTunnel). Amíg ez így van, a support-belépés nem kapcsolható be. A beállítást a gép rendszergazdája tudja kikapcsolni." ;;
     sshd_*|root_login_disabled|authorized_keys_path_unsupported|other_key_source|force_command_set|accept_env_too_wide)
       echo "A géped SSH-beállítása miatt a support-belépés nem kapcsolható be ($1). Ezt a gép rendszergazdája tudja rendezni; küldd el nekünk ezt a kódot ($SUPPORT_MAIL)." ;;

@@ -60,6 +60,7 @@ export type EnableProblem =
   | SupportCodeProblem
   | 'consent_invalid'
   | 'support_keys_unset'
+  | 'support_from_unset'
   | 'support_pins_invalid'
   | 'already_on'
   | SshdProblem
@@ -86,8 +87,9 @@ export async function enableSupportStandby(input: { readonly code: unknown; read
   if (!code.ok) return no(code.problem)
   if (input.consentVersion !== SUPPORT_CONSENT_VERSION) return no('consent_invalid')
   const { keys, fromCidrs } = deps.pins
-  if (keys.length === 0 || fromCidrs.length === 0) return no('support_keys_unset')
-  if (!validateSupportPins(keys, fromCidrs).ok) return no('support_pins_invalid')
+  // the pins' own answer: no key, no source address, or malformed (Geri 78991: the source address was reported as no key)
+  const pins = validateSupportPins(keys, fromCidrs)
+  if (!pins.ok) return no(pins.code)
   if (readSupportToken(deps.supportDir).kind !== 'missing' || readGroupRecord(deps.supportDir).kind !== 'missing') return no('already_on')
 
   const sshd = await deps.probeSshd(fromCidrs)

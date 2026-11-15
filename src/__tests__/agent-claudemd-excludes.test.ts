@@ -71,6 +71,21 @@ it(`${KEY}: listed sub-agent gets the root CLAUDE.md excluded, an unlisted one d
   expect(lines).toEqual([[{ agent: NAME }, `root CLAUDE.md excluded for this agent (${KEY})`]])
 })
 
+it(`${KEY}: '*' covers every sub-agent, also one not named anywhere, but never the main agent`, () => {
+  for (const v of ['*', ' * ', `nobody,*`]) {
+    env.value = v
+    spawn(NAME)
+    spawn(OTHER)
+    expect(settingsOf(NAME).claudeMdExcludes, v).toEqual([ROOT_MD])
+    expect(settingsOf(OTHER).claudeMdExcludes, v).toEqual([ROOT_MD])
+    expect(agentExcludesRootClaudeMd(MAIN_AGENT_ID), v).toBe(false)
+  }
+  // a '*' inside a name is not the wildcard
+  env.value = 'mdexcl-*'
+  spawn(NAME)
+  expect(settingsOf(NAME)).not.toHaveProperty('claudeMdExcludes')
+})
+
 it(`${KEY}: unset or cleared env removes the key at the next spawn (and a stale value too)`, () => {
   env.value = NAME
   spawn(NAME)
