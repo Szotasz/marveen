@@ -109,7 +109,10 @@ describe('scripts/support-standby.mjs', () => {
     // (count 0) or not; HOME does not move them (Dani's review of #2765, S1): another HOME gives the same answer.
     expect(lines[7]).toMatch(/^support_lines=(?:absent|0)$/)
     expect(lines[8]).toMatch(/^support_lines_second_file=(?:absent|0)$/)
-    expect(lines).toHaveLength(9)
+    // The support folder is the login user's too: on a developer or CI machine it is normally not there.
+    expect(lines[9]).toMatch(/^standby=(?:off|on|partial|invalid)$/)
+    expect(lines[10]).toMatch(/^standby_keys=/)
+    expect(lines).toHaveLength(11)
     const other = mkdtempSync(join(tmpdir(), 'support-standby-other-home-'))
     try {
       mkdirSync(join(other, '.ssh'))
@@ -123,12 +126,28 @@ describe('scripts/support-standby.mjs', () => {
     expect(readdirSync(home)).toEqual([])
   })
 
+  // The copy in the install tree never enables: only the kit's copy, started by the loader, may (it refuses at once,
+  // before the pins, sshd, the kit or the service are touched).
+  it('`enable` from the file in the tree is refused, and writes nothing', () => {
+    const run = spawnSync(process.execPath, [FILE, 'enable', '--consent', '1'], {
+      encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin', HOME: home },
+      input: 'msc_' + 'TESTONLY'.repeat(4) + '\n',
+      timeout: 30_000,
+    })
+    expect(run.status).toBe(1)
+    expect(run.stdout).toBe('')
+    expect(run.stderr).toBe('enable: refused: enable_not_from_kit\n')
+    expect(readdirSync(home)).toEqual([])
+  })
+
   it('an unknown subcommand prints the usage and exits with 2', () => {
     const run = spawnSync(process.execPath, [FILE, 'bogus'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: home }, timeout: 30_000 })
     expect(run.status).toBe(2)
     expect(run.stdout).toBe('')
     expect(run.stderr).toBe(
-      'usage: support-standby.mjs status\n       support-standby.mjs verify-kit\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n',
+      'usage: support-standby.mjs status\n       support-standby.mjs verify-kit\n       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n' +
+        '       support-standby.mjs enable --consent <version>   (the code on standard input)\n       support-standby.mjs disable\n',
     )
     expect(readdirSync(home)).toEqual([])
   })

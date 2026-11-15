@@ -8,11 +8,14 @@
 // node_modules: only node's own modules. The dashboard imports the same
 // source modules directly; a test proves both give byte-identical lines.
 //
-// Subcommands so far: `status` (looks, never writes, needs no code),
-// `verify-kit` (is the kit on this machine what its manifest says; looks,
-// never writes; the sh launcher asks it before anything else) and
-// `install-kit` (writes the kit of this release from the install tree; the
-// installer and the updater call it, the dashboard never does).
+// Subcommands: `status` (looks, never writes, needs no code); `verify-kit`
+// (is the kit on this machine what its manifest says; looks, never writes;
+// the sh launcher asks it before anything else); `install-kit` (writes the
+// kit of this release from the install tree; the installer and the updater
+// call it, the dashboard never does); `enable --consent <n>` (the one-time
+// code on standard input; runs only as the kit's copy, started by the
+// loader); `disable` (also from the tree, also without a kit).
+import { randomUUID } from 'node:crypto'
 import { accessSync, constants, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,6 +24,10 @@ import { createSshdProbeDeps, currentLoginUser, probeSshd } from './support-acce
 import { formatSupportStatus, supportStatus, type SupportStatusDeps } from './support-standby.js'
 import { KitError, verifyKit, type KitVerdict, type WriteKitResult } from './support-kit.js'
 import { installKit, SUPPORT_DIR_IN_HOME } from './support-kit-install.js'
+import { readSupportToken } from './support-access-token.js'
+import { readGroupRecord } from './support-group-record.js'
+import { createHttpsRedeemTransport } from './support-access-redeem.js'
+import { disableSupportStandby, enableSupportStandby, type StandbyDeps } from './support-standby-enable.js'
 
 // What the dashboard and the tests use from the same file the command line runs.
 export { buildSupportGrantLines, buildSupportLine } from './support-access-line.js'
@@ -30,7 +37,25 @@ export { SUPPORT_ROUTINE_MIN_NODE_MAJOR, formatSupportStatus, supportStatus } fr
 export const SUPPORT_CLI_USAGE =
   'usage: support-standby.mjs status\n' +
   '       support-standby.mjs verify-kit\n' +
-  '       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n'
+  '       support-standby.mjs install-kit --install-root <path> --node <path> --release <commit>\n' +
+  '       support-standby.mjs enable --consent <version>   (the code on standard input)\n' +
+  '       support-standby.mjs disable\n'
+
+/** No support code is longer than this; standard input is not read past it. */
+export const SUPPORT_CODE_MAX_INPUT = 64
+
+/**
+ * Is this run the kit's copy, started by the loader? The loader imports the
+ * file's bytes from a data: URL, so this module's own URL says so; a direct
+ * start of any file says file:. `moduleUrl` is for tests.
+ */
+export function startedFromKit(moduleUrl: string = import.meta.url): boolean {
+  try {
+    return new URL(moduleUrl).protocol === 'data:'
+  } catch {
+    return false
+  }
+}
 
 export interface InstallKitArgs {
   readonly installRoot: string
@@ -93,7 +118,43 @@ export function createStatusDeps(account = currentLoginUser()): SupportStatusDep
         return (err as NodeJS.ErrnoException).code === 'ENOENT' ? null : 'unreadable'
       }
     },
+    readStandbyFiles: () => {
+      const supportDir = join(account.home, SUPPORT_DIR_IN_HOME)
+      const token = readSupportToken(supportDir)
+      const record = readGroupRecord(supportDir)
+      return {
+        token: token.kind === 'ok' ? 'ok' : token.kind,
+        record: record.kind === 'ok' ? { kind: 'ok', keys: record.record.keys.map((k) => k.name) } : record,
+      }
+    },
   }
+}
+
+/** The real dependencies of `enable` and `disable`: one account, from the user database. `account` is for tests. */
+export function createStandbyDeps(account = currentLoginUser(), moduleUrl: string = import.meta.url): StandbyDeps {
+  return {
+    supportDir: join(account.home, SUPPORT_DIR_IN_HOME),
+    sshDir: join(account.home, '.ssh'),
+    pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
+    probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
+    redeemTransport: createHttpsRedeemTransport(),
+    now: () => new Date(),
+    newGrantId: () => randomUUID(),
+    startedFromKit: startedFromKit(moduleUrl),
+  }
+}
+
+/** Standard input, at most `max` bytes; more is an error, nothing is read past it. */
+export async function readStdinCapped(max: number, stdin: AsyncIterable<Buffer | string> = process.stdin): Promise<string | null> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of stdin) {
+    const b = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+    size += b.length
+    if (size > max) return null
+    chunks.push(b)
+  }
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 export interface CliIo {
@@ -106,6 +167,9 @@ export interface CliDeps {
   readonly installKit: (args: InstallKitArgs) => Promise<WriteKitResult>
   /** The verdict on the kit of the login user (SUPPORTMENTOUT1114: the launcher's first question). Absent: `verify-kit` is not offered. */
   readonly verifyKit?: () => KitVerdict
+  readonly standby: () => StandbyDeps
+  /** The one-time code from standard input, or null when there was more than a code can be. */
+  readonly readCode: () => Promise<string | null>
 }
 
 /**
@@ -144,6 +208,26 @@ export async function runSupportCli(argv: readonly string[], io: CliIo, deps: Cl
       return 1
     }
   }
+  if (argv.length === 3 && argv[0] === 'enable' && argv[1] === '--consent' && /^[1-9][0-9]{0,3}$/.test(argv[2])) {
+    const code = await deps.readCode()
+    const done = await enableSupportStandby({ code: code ?? '', consentVersion: Number(argv[2]) }, deps.standby())
+    if (!done.ok) {
+      io.err('enable: refused: ' + done.problem + '\n')
+      return 1
+    }
+    // Until the real dispatcher (PR1c), the kit's dispatcher refuses every start: say so (Dani 78357, Q3).
+    io.out('standby=on\nstandby_keys=' + done.keys.join(',') + '\nsupport_lines=' + done.lines + '\nlogins=refused_by_this_release\n')
+    return 0
+  }
+  if (argv.length === 1 && argv[0] === 'disable') {
+    const done = await disableSupportStandby(deps.standby())
+    if (!done.ok) {
+      io.err('disable: incomplete: ' + done.problem + '\n')
+      return 1
+    }
+    io.out('standby=off\nremoved_lines=' + done.removedLines + '\n')
+    return 0
+  }
   io.err(SUPPORT_CLI_USAGE)
   return 2
 }
@@ -159,7 +243,13 @@ export async function main(argv: readonly string[]): Promise<number> {
     return await runSupportCli(
       argv,
       { out: (text) => process.stdout.write(text), err: (text) => process.stderr.write(text) },
-      { status: createStatusDeps, installKit: createInstallKit(), verifyKit: createVerifyKit() },
+      {
+        status: createStatusDeps,
+        installKit: createInstallKit(),
+        verifyKit: createVerifyKit(),
+        standby: () => createStandbyDeps(),
+        readCode: () => readStdinCapped(SUPPORT_CODE_MAX_INPUT),
+      },
     )
   } catch {
     process.stderr.write('support-standby: stopped on an unexpected error\n')

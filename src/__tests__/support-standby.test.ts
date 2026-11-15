@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -10,10 +10,14 @@ import {
   SUPPORT_ROUTINE_MIN_NODE_MAJOR,
   type SupportStatusDeps,
 } from '../support-standby.js'
-import { createStatusDeps, runSupportCli, SUPPORT_CLI_USAGE } from '../support-standby-cli.js'
+import { createStatusDeps, readStdinCapped, runSupportCli, startedFromKit, SUPPORT_CLI_USAGE } from '../support-standby-cli.js'
+import type { StandbyDeps } from '../support-standby-enable.js'
+import { writeSupportToken } from '../support-access-token.js'
+import { writeGroupRecord } from '../support-group-record.js'
 import { KitError } from '../support-kit.js'
 import { buildSupportGrantLines } from '../support-access-line.js'
 import type { SshdAssessment } from '../support-access-sshd.js'
+import type { StandbyFiles } from '../support-standby.js'
 import { currentLoginUser } from '../support-access-sshd-run.js'
 import { TEST_ONLY_KEYS, TEST_ONLY_FROM } from './helpers/sk-test-keys.js'
 
@@ -46,6 +50,7 @@ function deps(over: Partial<SupportStatusDeps> = {}): { deps: SupportStatusDeps;
         return path === '/usr/bin/curl'
       },
       readKeysFile: (name) => (name === 'authorized_keys' ? [PERSONAL, ...LINES].join('\n') + '\n' : null),
+      readStandbyFiles: () => ({ token: 'missing', record: { kind: 'missing' } }),
       ...over,
     },
   }
@@ -73,8 +78,20 @@ describe('supportStatus', () => {
       sshdVersion: '10.0',
       curl: '/usr/bin/curl',
       keysFiles: { authorized_keys: { state: 'read', supportLines: 2 }, authorized_keys2: { state: 'absent' } },
+      standby: { state: 'off', keys: [] },
     })
     expect(d.probed).toEqual([[...TEST_ONLY_FROM]])
+  })
+
+  it.each<[string, StandbyFiles, string, string[]]>([
+    ['off: neither file', { token: 'missing', record: { kind: 'missing' } }, 'off', []],
+    ['on: both', { token: 'ok', record: { kind: 'ok', keys: ['key1', 'key2'] } }, 'on', ['key1', 'key2']],
+    ['partial: the token only', { token: 'ok', record: { kind: 'missing' } }, 'partial', []],
+    ['partial: the record only', { token: 'missing', record: { kind: 'ok', keys: ['key1'] } }, 'partial', []],
+    ['invalid: a token that is not ours to use', { token: 'invalid', record: { kind: 'ok', keys: ['key1'] } }, 'invalid', []],
+    ['invalid: a record that is not ours to use', { token: 'ok', record: { kind: 'invalid' } }, 'invalid', []],
+  ])('standby is %s', async (_label, files, state, keys) => {
+    expect((await supportStatus(deps({ readStandbyFiles: () => files }).deps)).standby).toEqual({ state, keys })
   })
 
   it('the node minimum is 20, said in one place', async () => {
@@ -144,7 +161,7 @@ describe('formatSupportStatus', () => {
   it('prints one fact per line, with the fixed keys and words the launcher matches on', async () => {
     expect(formatSupportStatus(await supportStatus(deps().deps))).toBe(
       'node=ok\nnode_version=v22.22.3\nnode_minimum=20\npins=ok\nsshd=ok\nsshd_version=10.0\ncurl=present\n' +
-        'support_lines=2\nsupport_lines_second_file=absent\n',
+        'support_lines=2\nsupport_lines_second_file=absent\nstandby=off\nstandby_keys=none\n',
     )
     const bad = await supportStatus(
       deps({
@@ -156,10 +173,20 @@ describe('formatSupportStatus', () => {
     )
     expect(formatSupportStatus(bad)).toBe(
       'node=too_old\nnode_version=v18.20.0\nnode_minimum=20\npins=support_keys_unset\nsshd=not_asked\nsshd_version=unknown\n' +
-        'curl=missing\nsupport_lines=unreadable\nsupport_lines_second_file=unreadable\n',
+        'curl=missing\nsupport_lines=unreadable\nsupport_lines_second_file=unreadable\nstandby=off\nstandby_keys=none\n',
     )
+    const on = await supportStatus(deps({ readStandbyFiles: () => ({ token: 'ok', record: { kind: 'ok', keys: ['key1', 'key2'] } }) }).deps)
+    expect(formatSupportStatus(on).endsWith('standby=on\nstandby_keys=key1,key2\n')).toBe(true)
   })
 })
+
+/** For the subcommands that must not reach enable or disable. */
+const NO_STANDBY = {
+  standby: (): never => {
+    throw new Error('standby must not run here')
+  },
+  readCode: async (): Promise<string | null> => null,
+}
 
 describe('runSupportCli', () => {
   function io(): { out: string[]; err: string[]; io: { out: (t: string) => void; err: (t: string) => void } } {
@@ -174,7 +201,7 @@ describe('runSupportCli', () => {
 
   it('status prints the report and exits with 0', async () => {
     const c = io()
-    expect(await runSupportCli(['status'], c.io, { status: () => deps().deps, installKit: noInstall })).toBe(0)
+    expect(await runSupportCli(['status'], c.io, { status: () => deps().deps, installKit: noInstall, ...NO_STANDBY })).toBe(0)
     expect(c.out.join('')).toContain('sshd=ok\n')
     expect(c.err).toEqual([])
   })
@@ -183,13 +210,13 @@ describe('runSupportCli', () => {
   it('verify-kit prints kit=ok for a kit that verifies, and the problem code otherwise; both exit 0', async () => {
     const ok = io()
     expect(await runSupportCli(['verify-kit'], ok.io, {
-      status: () => deps().deps, installKit: noInstall,
+      status: () => deps().deps, installKit: noInstall, ...NO_STANDBY,
       verifyKit: () => ({ ok: true, kitDir: '/home/x/.marveen/support/kit', manifest: { files: {}, installRoot: '/opt/m', nodePath: '/usr/bin/node', nodeMin: 20, release: 'abc1234' } }),
     })).toBe(0)
     expect(ok.out.join('')).toBe('kit=ok\n')
     const bad = io()
     expect(await runSupportCli(['verify-kit'], bad.io, {
-      status: () => deps().deps, installKit: noInstall,
+      status: () => deps().deps, installKit: noInstall, ...NO_STANDBY,
       verifyKit: () => ({ ok: false, problem: 'kit_mismatch', detail: '/home/x/.marveen/support/kit/support-access is not the file the manifest names' }),
     })).toBe(0)
     expect(bad.out.join('')).toBe('kit=kit_mismatch\n')
@@ -198,10 +225,10 @@ describe('runSupportCli', () => {
 
   it('verify-kit is a call it does not know when no verifier is given, and with an argument', async () => {
     const c = io()
-    expect(await runSupportCli(['verify-kit'], c.io, { status: () => deps().deps, installKit: noInstall })).toBe(2)
+    expect(await runSupportCli(['verify-kit'], c.io, { status: () => deps().deps, installKit: noInstall, ...NO_STANDBY })).toBe(2)
     const d = io()
     expect(await runSupportCli(['verify-kit', 'x'], d.io, {
-      status: () => deps().deps, installKit: noInstall, verifyKit: () => { throw new Error('must not run') },
+      status: () => deps().deps, installKit: noInstall, ...NO_STANDBY, verifyKit: () => { throw new Error('must not run') },
     })).toBe(2)
   })
 
@@ -227,6 +254,7 @@ describe('runSupportCli', () => {
     const c = io()
     let touched = false
     const code = await runSupportCli(argv, c.io, {
+      ...NO_STANDBY,
       status: () => {
         touched = true
         return deps().deps
@@ -248,6 +276,7 @@ describe('runSupportCli', () => {
     const argv = ['install-kit', '--release', 'abc1234', '--node', '/usr/bin/node', '--install-root', '/opt/marveen']
     const code = await runSupportCli(argv, c.io, {
       status: () => deps().deps,
+      ...NO_STANDBY,
       installKit: async (args) => {
         seen.push(args)
         return { kitDir: '/home/x/.marveen/support/kit', replaced: true, cleaned: ['.kit-old-0123456789abcdef'] }
@@ -263,6 +292,7 @@ describe('runSupportCli', () => {
     const c = io()
     const code = await runSupportCli(['install-kit', ...ROOT_ARGS], c.io, {
       status: () => deps().deps,
+      ...NO_STANDBY,
       installKit: async () => {
         throw new KitError('kit_source_mismatch', 'support-standby.mjs in /home/someone/secret-place is not the file of this release')
       },
@@ -273,6 +303,8 @@ describe('runSupportCli', () => {
     await expect(
       runSupportCli(['install-kit', ...ROOT_ARGS], c.io, {
         status: () => deps().deps,
+        ...NO_STANDBY,
+      ...NO_STANDBY,
         installKit: async () => {
           throw new Error('disk on fire')
         },
@@ -343,5 +375,112 @@ describe('createStatusDeps', () => {
     expect(real.isExecutable(join(root, 'data'))).toBe(false)
     expect(real.isExecutable(join(root, 'missing'))).toBe(false)
     expect(real.nodeVersion).toBe(process.version)
+  })
+})
+
+describe('enable and disable on the command line', () => {
+  function io(): { out: string[]; err: string[]; io: { out: (t: string) => void; err: (t: string) => void } } {
+    const out: string[] = []
+    const err: string[] = []
+    return { out, err, io: { out: (t) => out.push(t), err: (t) => err.push(t) } }
+  }
+  const fakeStandby = (over: Partial<StandbyDeps> = {}): StandbyDeps => ({
+    supportDir: '/nonexistent/support',
+    sshDir: '/nonexistent/.ssh',
+    pins: { keys: TEST_ONLY_KEYS, fromCidrs: TEST_ONLY_FROM },
+    probeSshd: async () => ({ ok: true, version: { major: 9, minor: 6 }, keysFiles: ['authorized_keys'] }),
+    redeemTransport: async () => {
+      throw new Error('no network in this test')
+    },
+    now: () => new Date(0),
+    newGrantId: () => '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+    startedFromKit: false,
+    ...over,
+  })
+
+  it('tells the kit copy from the tree copy by its own URL', () => {
+    expect(startedFromKit('data:text/javascript;base64,AAAA')).toBe(true)
+    expect(startedFromKit('file:///opt/marveen/scripts/support-standby.mjs')).toBe(false)
+    expect(startedFromKit('not a url')).toBe(false)
+  })
+
+  it('enable takes the code from standard input, never from an argument, and says why it refuses', async () => {
+    const c = io()
+    let read = 0
+    const code = await runSupportCli(['enable', '--consent', '1'], c.io, {
+      status: () => deps().deps,
+      installKit: async () => {
+        throw new Error('no')
+      },
+      standby: () => fakeStandby(),
+      readCode: async () => {
+        read++
+        return 'msc_' + 'TESTONLY'.repeat(4)
+      },
+    })
+    expect(read).toBe(1)
+    expect(code).toBe(1)
+    expect(c.err.join('')).toBe('enable: refused: enable_not_from_kit\n')
+    expect(c.out).toEqual([])
+  })
+
+  it.each([[['enable']], [['enable', '--consent']], [['enable', '--consent', '0']], [['enable', '--consent', 'one']], [['enable', 'msc_x']], [['enable', '--consent', '1', 'extra']], [['disable', 'now']]])(
+    '%j is the usage, and reads no standard input',
+    async (argv) => {
+      const c = io()
+      let read = false
+      const code = await runSupportCli(argv, c.io, {
+        status: () => deps().deps,
+        installKit: async () => {
+          throw new Error('no')
+        },
+        standby: () => {
+          throw new Error('no')
+        },
+        readCode: async () => {
+          read = true
+          return null
+        },
+      })
+      expect(code).toBe(2)
+      expect(read).toBe(false)
+      expect(c.err.join('')).toBe(SUPPORT_CLI_USAGE)
+    },
+  )
+
+  it('more standard input than a code can be is no code', async () => {
+    expect(await readStdinCapped(64, (async function* () { yield 'x'.repeat(65) })())).toBeNull()
+    expect(await readStdinCapped(64, (async function* () { yield 'msc_'; yield Buffer.from('abc') })())).toBe('msc_abc')
+  })
+})
+
+// Geri 78368: the status says what the record MEANS, never what it says.
+describe('the status and the group record', () => {
+  let home: string | null = null
+  afterEach(() => {
+    if (home !== null) rmSync(home, { recursive: true, force: true })
+    home = null
+  })
+
+  it('prints on and the key names, and no source address, grant id or consent', async () => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), 'support-status-home-')))
+    const supportDir = join(home, '.marveen', 'support')
+    mkdirSync(supportDir, { recursive: true, mode: 0o700 })
+    writeSupportToken(supportDir, 'mst_' + 'TESTONLY'.repeat(5) + '_-0')
+    writeGroupRecord(supportDir, {
+      grantId: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+      consentVersion: 1,
+      consentAt: '2026-11-15T06:10:00Z',
+      keys: TEST_ONLY_KEYS.map((k) => ({ name: k.name, fingerprint: k.fingerprint })),
+      fromCidrs: [...TEST_ONLY_FROM],
+      dispatchPath: join(supportDir, 'kit', 'support-dispatch.sh'),
+      sshd: { major: 9, minor: 6 },
+    })
+    const real = createStatusDeps({ name: 'marveen', isRoot: false, home })
+    const text = formatSupportStatus(await supportStatus({ ...real, pins: { keys: [], fromCidrs: [] } }))
+    expect(text).toContain('standby=on\nstandby_keys=key1,key2\n')
+    for (const secret of ['203.0.113.7', '3f2504e0', 'consent', '2026-11-15', TEST_ONLY_KEYS[0].fingerprint, 'mst_']) {
+      expect(text).not.toContain(secret)
+    }
   })
 })

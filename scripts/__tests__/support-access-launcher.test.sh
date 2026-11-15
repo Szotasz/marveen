@@ -49,10 +49,12 @@ OUT=$(printf 'msc_%s\n' 'abcdefghijklmnopqrstuvwxyz012345' | "$L" enable 2>&1); 
 check "enable not ready: exit 1" "$rc" 1
 case "$OUT" in *"Írd be"*) fail "it asked for a code on a machine that is not ready" ;; *) pass "no code asked" ;; esac
 
-echo "(d) disable runs the TREE's routine; this release has no disable yet, and it says so"
+echo "(d) disable runs the TREE's routine; with nothing on, it is done, and it names the Profile page removal"
 OUT=$("$L" disable 2>&1); rc=$?
-check "disable on a release without it: exit 1" "$rc" 1
-contains "it points to the Profile page" "$OUT" "Profil oldal"
+check "disable with nothing on: exit 0" "$rc" 0
+contains "the routine's own line" "$OUT" "standby=off"
+contains "it says it is done here" "$OUT" "A levétel kész ezen a gépen."
+contains "it points to the Profile page removal" "$OUT" "Gép eltávolítása a supportból"
 
 echo "(e) a NODE_OPTIONS preload in the caller's environment does not run (env -i)"
 MARK="$HOMEDIR/preload-ran"
@@ -104,9 +106,9 @@ echo "(d2) disable runs the TREE's routine even when the kit's routine is not th
 cp "$KIT/support-standby.mjs" "$HOMEDIR/routine.bak"
 printf '\n// changed\n' >> "$KIT/support-standby.mjs"
 OUT=$("$L" disable 2>&1); rc=$?
-check "disable with a changed kit routine: exit 1 (the tree's routine has no disable yet)" "$rc" 1
+check "disable with a changed kit routine: exit 0 (the tree's routine ran)" "$rc" 0
 case "$OUT" in *kit_mismatch*) fail "disable looked at the kit's hash" ;; *) pass "disable did not depend on the kit's hash" ;; esac
-contains "it says this release cannot take it off here" "$OUT" "még nem tudja helyben levenni"
+contains "the tree's routine answered" "$OUT" "standby=off"
 cp "$HOMEDIR/routine.bak" "$KIT/support-standby.mjs"; rm -f "$HOMEDIR/routine.bak"
 
 echo "(l) the manifest's node is gone: a fixed place is used, resolved and named"
