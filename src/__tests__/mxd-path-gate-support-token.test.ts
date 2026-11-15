@@ -44,7 +44,7 @@ describe('DENY: the token, by any spelling of its folder', () => {
     () => `cat ${S()}/support-access.token`,
     () => `cat ~/.marveen/support/support-access.token`,
     () => `cat "$HOME/.marveen/support/support-access.token"`,
-    // Dani's trap on #2788 (1): a cd to an ancestor, then a relative path. The file name decides here.
+    // A relative path from an ancestor directory: the file name decides here.
     () => `cd ~ && cat .marveen/support/support-access.token`,
     () => `cd / && cat ${S().slice(1)}/support-access.token`,
     () => `D=~/.marveen; cat "$D/support/support-access.token"`,
