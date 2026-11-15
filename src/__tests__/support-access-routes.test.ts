@@ -323,6 +323,7 @@ describe('/api/support-access', () => {
     ['the service is unreachable', refused('service_unavailable'), 502, 'code_exchange_unavailable'],
     ['the service limits', refused('rate_limited'), 429, 'rate_limited'],
     ['sshd is not ready', refused('sshd_too_old'), 409, 'sshd_too_old'],
+    ['standby is on already (Dani F1)', refused('already_on'), 409, 'already_on'],
     ['the write failed', refused('enable_write_failed'), 500, 'enable_write_failed'],
     ['an answer that names no reason', () => ({ ok: true, code: 1, stdout: '', stderr: 'enable: refused: Bad Code\n' }), 500, 'enable_failed'],
     ['another exit code', () => ({ ok: true, code: 3, stdout: '', stderr: 'enable: refused: code_rejected\n' }), 500, 'enable_failed'],
