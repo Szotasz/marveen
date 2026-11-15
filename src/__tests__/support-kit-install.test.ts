@@ -44,8 +44,8 @@ describe('installKit', () => {
     }
     writeFileSync(join(tree, KIT_HASHES_FILE), list)
   }
-  const RELEASE_1 = { 'support-dispatch.sh': '#!/bin/sh\nexit 1 # 1\n', 'support-standby.mjs': 'export const r = 1\n' }
-  const RELEASE_2 = { 'support-dispatch.sh': '#!/bin/sh\nexit 1 # 2\n', 'support-standby.mjs': 'export const r = 2\n' }
+  const RELEASE_1 = { 'support-access': '#!/bin/sh\nexit 1 # launcher 1\n', 'support-dispatch.sh': '#!/bin/sh\nexit 1 # 1\n', 'support-standby.mjs': 'export const r = 1\n' }
+  const RELEASE_2 = { 'support-access': '#!/bin/sh\nexit 1 # launcher 2\n', 'support-dispatch.sh': '#!/bin/sh\nexit 1 # 2\n', 'support-standby.mjs': 'export const r = 2\n' }
   const input = (over: Partial<InstallKitInput> = {}): InstallKitInput => ({
     installRoot: tree,
     nodePath: NODE,
@@ -81,8 +81,15 @@ describe('installKit', () => {
     for (const name of ['support-dispatch.sh', 'support-standby.mjs', KIT_MANIFEST_NAME]) {
       expect(statSync(join(supportDir, 'kit', name)).mode & 0o777).toBe(0o600)
     }
+    // The launcher is the one file the user starts by its path (SUPPORTMENTOUT1114).
+    expect(kitText('support-access')).toBe('#!/bin/sh\nexit 1 # launcher 1\n')
+    expect(statSync(join(supportDir, 'kit', 'support-access')).mode & 0o777).toBe(0o700)
     expect(parseKitManifest(kitText(KIT_MANIFEST_NAME))).toEqual({
-      files: { 'support-dispatch.sh': sha(RELEASE_1['support-dispatch.sh']), 'support-standby.mjs': sha(RELEASE_1['support-standby.mjs']) },
+      files: {
+        'support-access': sha(RELEASE_1['support-access']),
+        'support-dispatch.sh': sha(RELEASE_1['support-dispatch.sh']),
+        'support-standby.mjs': sha(RELEASE_1['support-standby.mjs']),
+      },
       installRoot: tree,
       nodePath: NODE,
       nodeMin: SUPPORT_ROUTINE_MIN_NODE_MAJOR,

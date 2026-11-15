@@ -31,8 +31,9 @@ export const KIT_LAUNCHER_NAME = 'support-access'
 export const KIT_DISPATCHER_NAME = 'support-dispatch.sh'
 export const KIT_ROUTINE_NAME = 'support-standby.mjs'
 
-/** Every file of the kit but the manifest, in name order. The launcher (KIT_LAUNCHER_NAME, 0700) joins when it exists. */
+/** Every file of the kit but the manifest, in name order. The launcher is the one file the user starts (0700). */
 export const KIT_SOURCES: readonly KitSource[] = [
+  { name: KIT_LAUNCHER_NAME, treePath: 'scripts/support-access', executable: true },
   { name: KIT_DISPATCHER_NAME, treePath: 'scripts/support-dispatch.sh', executable: false },
   { name: KIT_ROUTINE_NAME, treePath: 'scripts/support-standby.mjs', executable: false },
 ]
