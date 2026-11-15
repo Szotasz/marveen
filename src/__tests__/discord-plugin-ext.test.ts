@@ -262,7 +262,7 @@ function slice(from: string, to: string): string {
 const PERMISSION_REPLY_RE = new RegExp(SERVER.match(/const PERMISSION_REPLY_RE = \/(.*)\/i\n/)![1]!, 'i')
 
 type AutoThreadFn = (msg: unknown, access: unknown, recovered: boolean, edited: boolean) => Promise<{ id: string; sendTyping(): Promise<void> } | null | false>
-function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | null = OWNER, o: { history?: { text: string; count: number }; openAutoThread?: AutoThreadFn; inBotThread?: (m: unknown) => boolean } = {}) {
+function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | null = OWNER, o: { history?: { text: string; count: number }; openAutoThread?: AutoThreadFn; inBotThread?: (m: unknown) => boolean; doneMarks?: unknown } = {}) {
   const historyCalls: string[] = []
   const typingStarts: string[] = []
   const deliveredIds = new ext.BoundedIds()
@@ -275,7 +275,7 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
     'gate', 'ChannelType', 'dmChannelUsers', 'liveDelivered', 'recoveryOpen', 'backfillCursor', 'PERMISSION_REPLY_RE',
     'mayDecidePermission', 'currentOwner', 'decidedPermissions', 'mcp', 'pendingPermissions', 'permissionMessages',
     'safeAttName', 'voiceMeta', 'inboundAttachments', 'forwardedParts', 'replyContextMeta',
-    'typingKeeper', 'deliveredIds', 'channelHistory', 'openAutoThread', 'inBotThread',
+    'typingKeeper', 'deliveredIds', 'channelHistory', 'openAutoThread', 'inBotThread', 'doneMarks',
     `${slice('async function handleInbound(', '// DCEXT1111 F4: deliver, once')}\nreturn handleInbound`,
   )(
     async () => gateResult, { DM: 1, GuildText: 0 }, new Map(), new Set(), true,
@@ -288,7 +288,7 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
     ext.forwardedParts, ext.replyContextMeta,
     { start: (c: string, send: () => Promise<unknown>) => { typingStarts.push(c); void send() } }, deliveredIds,
     async (m: { id: string }) => { historyCalls.push(m.id); return o.history ?? { text: '', count: 0 } },
-    o.openAutoThread ?? (async () => null), o.inBotThread ?? (() => false),
+    o.openAutoThread ?? (async () => null), o.inBotThread ?? (() => false), o.doneMarks ?? new ext.DoneMarks(),
   ) as (msg: unknown, recovered?: boolean, edited?: boolean) => Promise<boolean>
   type Snap = { content: string; attachments: Map<string, { name: string; size: number; contentType: string }> }
   const msg = (content: string, o: { dm?: boolean; author?: string; snapshots?: Snap[]; reference?: { id: string; username: string; content: string; attachments?: string[] } | 'gone' } = {}) => ({
@@ -448,7 +448,8 @@ const OUTBOUND_SITES = [
   'await interaction.reply({ content: `↪ ${text}`, ephemeral: true })',
   '.startThread({ name })',
   'await ch.threads.create({ name })',
-  'const edited = await msg.edit(args.text as string)',
+  'const edited = await msg.edit(parts[0]!)',
+  'const sent = await ch.send({ content: part })',
   "await interaction.reply({ content: 'Not authorized.', ephemeral: true })",
   "await interaction.reply({ content: 'Already answered.', ephemeral: true })",
   "await interaction.reply({ content: 'Details no longer available.', ephemeral: true })",
@@ -1297,6 +1298,9 @@ describe('C2: rename_thread, only the bot\'s own thread', () => {
   })
 })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const replyHarnessRef: { fn: any } = { fn: null }
+
 describe('C4: a reply to a forum channel opens a post', () => {
   it('forumPostTitle: the first non-empty line, markdown heading marks dropped, at most 100', () => {
     expect(ext.forumPostTitle('\n# Heti jelentés\n\nrészletek')).toBe('Heti jelentés')
@@ -1321,12 +1325,12 @@ describe('C4: a reply to a forum channel opens a post', () => {
   })
 
   // The reply case itself, run with fakes: what goes to Discord, in which order.
-  function replyHarness(o: { forum: boolean; text: string; files?: string[]; reply_to?: string }) {
+  function replyHarness(o: { forum: boolean; text: string; files?: string[]; reply_to?: string; doneMarks?: unknown; failSend?: boolean }) {
     const calls: Array<{ op: string; arg: Record<string, unknown> }> = []
     const added: string[] = []
     const post = { id: id(50), send: async (p: Record<string, unknown>) => { calls.push({ op: 'post.send', arg: p }); return { id: id(51 + calls.length) } } }
     const forum = o.forum ? { threads: { create: async (a: Record<string, unknown>) => { calls.push({ op: 'threads.create', arg: a }); return post } } } : null
-    const ch = { isThread: () => false, parentId: null, send: async (p: Record<string, unknown>) => { calls.push({ op: 'ch.send', arg: p }); return { id: id(60 + calls.length) } } }
+    const ch = { isThread: () => false, parentId: null, send: async (p: Record<string, unknown>) => { if (o.failSend) throw new Error('Missing Access'); calls.push({ op: 'ch.send', arg: p }); return { id: id(60 + calls.length) } } }
     const chunk = new Function(`${slice('function chunk(', 'async function fetchTextChannel(')}\nreturn chunk`)()
     const raw = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1335,12 +1339,12 @@ describe('C4: a reply to a forum channel opens a post', () => {
     const run = new Function(
       'buildButtonRows', 'embedSpec', 'selectSpec', 'MAX_COMPONENT_ROWS', 'StringSelectMenuBuilder', 'ActionRowBuilder', 'allowedForum',
       'fetchAllowedChannel', 'assertSendable', 'statSync', 'MAX_ATTACHMENT_BYTES', 'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'MAX_REPLY_CHUNKS',
-      'typingKeeper', 'forumPostTitle', 'noteSent', 'botThreads',
+      'typingKeeper', 'forumPostTitle', 'noteSent', 'botThreads', 'doneMarks', 'DONE_REACTION',
       `${wrapped}\nreturn replyCase`,
     )(
       () => [], ext.embedSpec, ext.selectSpec, 5, class {}, class {}, async () => forum,
       async () => ch, () => {}, () => ({ size: 1 }), 25 * 1024 * 1024, () => ({ groups: {} }), 2000, chunk, 8,
-      { stop: () => {} }, ext.forumPostTitle, () => {}, { add: (t: string) => added.push(t) },
+      { stop: () => {} }, ext.forumPostTitle, () => {}, { add: (t: string) => added.push(t) }, o.doneMarks ?? new ext.DoneMarks(), ext.DONE_REACTION,
     ) as (a: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>
     return { go: () => run({ chat_id: '1438000000000000800', text: o.text, files: o.files, reply_to: o.reply_to }), calls, added }
   }
@@ -1357,6 +1361,8 @@ describe('C4: a reply to a forum channel opens a post', () => {
     expect(h.added).toEqual([id(50)])
     expect(r.content[0]!.text).toContain(`the post is thread ${id(50)}`)
   })
+
+  replyHarnessRef.fn = replyHarness
 
   it('reply, run: not a forum -> the channel path exactly as before (quote on the first part, no post)', async () => {
     const h = replyHarness({ forum: false, text: 'szia', reply_to: id(3) })
@@ -1728,5 +1734,79 @@ describe('G2: pin_message / unpin_message, only with DISCORD_ADMIN_ACTIONS=pin',
     const OURS = new Set(['recentSentIds', 'pendingPermissions', 'permissionMessages', 'liveDelivered', 'answeredChoices', 'decidedPermissions', 'pending', 'running', 'seen', 'reported', 'ids', 'dmChannelUsers'])
     expect(receivers.filter(r => !OURS.has(r!))).toEqual([])
     expect(SERVER).not.toMatch(/delete_message|add_role|remove_role/)
+  })
+})
+
+describe('D4: the "done" mark next to the ack', () => {
+  it('DoneMarks: per chat the last acked message, taken once; bounded', () => {
+    const d = new ext.DoneMarks(2)
+    d.note('a', 'm1'); d.note('a', 'm2'); d.note('b', 'm3')
+    expect(d.take('a')).toBe('m2')
+    expect(d.take('a')).toBeUndefined()
+    d.note('c', 'm4'); d.note('d', 'm5') // b dropped as the oldest
+    expect(d.take('b')).toBeUndefined()
+    expect(ext.DONE_REACTION).toBe('✅')
+  })
+
+  it('handleInbound, run: with an ack reaction the message is noted for its chat; without one nothing is', async () => {
+    const marks = new ext.DoneMarks()
+    const h = inboundHarness({ action: 'deliver', access: { ackReaction: '👀' } }, OWNER, { doneMarks: marks })
+    const m = h.msg('szia')
+    await h.handleInbound(m)
+    expect(marks.take('1438000000000000500')).toBe(m)
+    const none = new ext.DoneMarks()
+    const q = inboundHarness({ action: 'deliver', access: {} }, OWNER, { doneMarks: none })
+    await q.handleInbound(q.msg('szia'))
+    expect(none.take('1438000000000000500')).toBeUndefined()
+  })
+
+  it('reply, run: after the reply went out the noted message gets ✅, once; a failed reply marks nothing', async () => {
+    const reacted: string[] = []
+    const marks = new ext.DoneMarks()
+    marks.note('1438000000000000800', { react: async (e: string) => { reacted.push(e) } })
+    const h = replyHarnessRef.fn({ forum: false, text: 'kész', doneMarks: marks })
+    await h.go()
+    expect(reacted).toEqual(['✅'])
+    await replyHarnessRef.fn({ forum: false, text: 'még egy', doneMarks: marks }).go()
+    expect(reacted).toEqual(['✅'])
+    const failed = new ext.DoneMarks()
+    failed.note('1438000000000000800', { react: async (e: string) => { reacted.push(`fail-${e}`) } })
+    await expect(replyHarnessRef.fn({ forum: false, text: 'x', doneMarks: failed, failSend: true }).go()).rejects.toThrow()
+    expect(reacted).toEqual(['✅'])
+  })
+})
+
+describe('D5: edit_message over 2000 characters', () => {
+  function editHarness(o: { textChunkLimit?: number } = {}) {
+    const calls: Array<{ op: string; arg: unknown }> = []
+    const raw = SERVER.slice(SERVER.indexOf("      case 'edit_message': {"), SERVER.indexOf("      case 'download_attachment': {"))
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const tsc = require('typescript')
+    const js = tsc.transpileModule(`async function call(args: any) { switch ('edit_message') { ${raw} } }`, { compilerOptions: { target: tsc.ScriptTarget.ES2022 } }).outputText
+    const chunk = new Function(`${slice('function chunk(', 'async function fetchTextChannel(')}\nreturn chunk`)()
+    const ch = {
+      send: async (p: { content: string }) => { calls.push({ op: 'send', arg: p.content.length }); return { id: id(90 + calls.length) } },
+      messages: { fetch: async (mid: string) => ({ id: mid, edit: async (t: string) => { calls.push({ op: 'edit', arg: t.length }); return { id: mid } } }) },
+    }
+    const call = new Function('fetchAllowedChannel', 'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'MAX_REPLY_CHUNKS', 'noteSent', `${js}\nreturn call`)(
+      async () => ch, () => ({ textChunkLimit: o.textChunkLimit }), 2000, chunk, 8, () => {},
+    ) as (a: unknown) => Promise<{ content: Array<{ text: string }> }>
+    return { run: (text: string) => call({ chat_id: '1438000000000000500', message_id: id(5), text }), calls }
+  }
+
+  it('the case, run: 2500 characters -> the edit takes the first 2000, the rest is one new message after it', async () => {
+    const h = editHarness()
+    const r = await h.run('x'.repeat(2500))
+    expect(h.calls).toEqual([{ op: 'edit', arg: 2000 }, { op: 'send', arg: 500 }])
+    expect(r.content[0]!.text).toMatch(/^edited \(id: \d+\), the rest in 1 new message\(s\)/)
+  })
+
+  it('the case, run: a short edit is one edit, as before; more than 8 parts is refused before anything changes', async () => {
+    const short = editHarness()
+    expect((await short.run('rövid')).content[0]!.text).toBe(`edited (id: ${id(5)})`)
+    expect(short.calls).toEqual([{ op: 'edit', arg: 5 }])
+    const long = editHarness()
+    await expect(long.run('y'.repeat(2000 * 8 + 1))).rejects.toThrow(/9 messages \(max 8\): nothing changed/)
+    expect(long.calls).toEqual([])
   })
 })
