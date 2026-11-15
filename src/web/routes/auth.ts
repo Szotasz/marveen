@@ -67,6 +67,7 @@ import {
   deleteDashboardUser,
   logConfigChange,
 } from '../../db.js'
+import { supportPasswordGate } from '../support-password.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -348,6 +349,9 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
 
     recordSuccess(usernameLc)
+    // SUPPORTKULCS1109 (Dani 78357, Q4): a successful password login ends every lock of the support password
+    // bucket, the hard one too (the third lock of a day holds until exactly this).
+    supportPasswordGate().ownerLoggedIn()
     // Session fixation defence: if a (valid) session cookie accompanied the
     // login, revoke it -- login always mints a fresh id.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
