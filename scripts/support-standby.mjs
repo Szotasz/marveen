@@ -2104,12 +2104,15 @@ async function enableSupportStandby(input, deps) {
   const { keys, fromCidrs } = deps.pins;
   if (keys.length === 0 || fromCidrs.length === 0) return no("support_keys_unset");
   if (!validateSupportPins(keys, fromCidrs).ok) return no("support_pins_invalid");
+  if (readSupportToken(deps.supportDir).kind !== "missing" || readGroupRecord(deps.supportDir).kind !== "missing") return no("already_on");
   const sshd = await deps.probeSshd(fromCidrs);
   if (!sshd.ok) return no(sshd.problem);
   const kit = verifyKit({ supportDir: deps.supportDir });
   if (!kit.ok) return no(kit.problem);
   if (kit.manifest.files[KIT_DISPATCHER_NAME] === void 0) return no("kit_mismatch");
   const dispatchPath = join9(kit.kitDir, KIT_DISPATCHER_NAME);
+  const layout = keysFileLayout(deps.sshDir);
+  if (layout === "link-elsewhere" || layout === "hard-link") return no("keys_file_layout");
   const redeemed = await redeemSupportCode(code.code, { transport: deps.redeemTransport });
   if (!redeemed.ok) return no(redeemed.problem);
   const pinnedBlobs = new Set(keys.map((k) => k.pub));

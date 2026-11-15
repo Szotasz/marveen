@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { disableSupportStandby, enableSupportStandby, SUPPORT_CONSENT_VERSION, type StandbyDeps } from '../support-standby-enable.js'
@@ -166,18 +166,53 @@ describe('enable and disable support standby', () => {
     nothingWritten()
   })
 
-  it('takes everything back when the lines cannot be written (a hard-linked second file), and says why', async () => {
+  // Dani's review of #2779, F2: a layout the grant would refuse must not cost the code.
+  it('refuses a keys-file layout a grant could not keep (a hard-linked second file) before it redeems the code', async () => {
     linkSync(join(sshDir, 'authorized_keys'), join(sshDir, 'authorized_keys2'))
     expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toEqual({ ok: false, problem: 'keys_file_layout' })
+    expect(calls).toEqual(['probe'])
     nothingWritten()
     expect(keysText()).toBe(OWN_LINE + '\n')
   })
 
-  it('takes the token back when the record cannot be written', async () => {
+  it('refuses a second file that links elsewhere before it redeems the code; a link to the first file is fine', async () => {
+    writeFileSync(join(root, 'elsewhere'), '')
+    symlinkSync(join(root, 'elsewhere'), join(sshDir, 'authorized_keys2'))
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toEqual({ ok: false, problem: 'keys_file_layout' })
+    expect(calls).toEqual(['probe'])
+    nothingWritten()
+    rmSync(join(sshDir, 'authorized_keys2'))
+    symlinkSync('authorized_keys', join(sshDir, 'authorized_keys2'))
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toMatchObject({ ok: true })
+  })
+
+  // Dani's review of #2779, F1: a second enable would redeem a second code and overwrite the token.
+  it('refuses while standby is on, before sshd or the service is asked; the first token stays', async () => {
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toMatchObject({ ok: true })
+    calls = []
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toEqual({ ok: false, problem: 'already_on' })
+    expect(calls).toEqual([])
+    expect(readSupportToken(supportDir)).toEqual({ kind: 'ok', token: TOKEN })
+  })
+
+  it('a half state is on too (only the token, or only the record): switch off first', async () => {
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toMatchObject({ ok: true })
+    rmSync(join(supportDir, SUPPORT_GROUP_RECORD_FILE))
+    calls = []
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toEqual({ ok: false, problem: 'already_on' })
+    await disableSupportStandby(deps())
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toMatchObject({ ok: true })
+    rmSync(join(supportDir, SUPPORT_TOKEN_FILE))
+    calls = []
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toEqual({ ok: false, problem: 'already_on' })
+    expect(calls).toEqual([])
+  })
+
+  it('something that is not a record at the record path counts as on: switch off first (the write failure is in the fault tests)', async () => {
     mkdirSync(join(supportDir, SUPPORT_GROUP_RECORD_FILE))
-    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toEqual({ ok: false, problem: 'enable_write_failed' })
+    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, deps())).toEqual({ ok: false, problem: 'already_on' })
+    expect(calls).toEqual([])
     expect(existsSync(join(supportDir, SUPPORT_TOKEN_FILE))).toBe(false)
-    expect(countSupportLines(keysText(), TEST_ONLY_BLOBS)).toBe(0)
   })
 
   it('disables: the lines, the token and the record go; the owner\'s line stays; twice is fine', async () => {

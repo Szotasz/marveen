@@ -8,13 +8,19 @@
 //
 //   1. the code has the shape of a support code (no network yet);
 //   2. the pins of this release are set and valid;
-//   3. sshd is asked (root, or the non-root proof), and must answer `ok`;
-//   4. the kit is verified, and its manifest names the dispatcher: the lines
+//   3. standby is not on already: no token and no record (Dani's review of
+//      #2779, F1: a second enable would redeem a second code and overwrite
+//      the token; switch off first);
+//   4. sshd is asked (root, or the non-root proof), and must answer `ok`;
+//   5. the kit is verified, and its manifest names the dispatcher: the lines
 //      bind that path (Dani 78357, Q3: the kit is checked before any line);
-//   5. the code is redeemed for the narrow token;
-//   6. the token, 7. the group record, 8. the lines are written.
+//   6. the keys files are laid out so that a grant can keep them right (the
+//      grant checks again under its lock; F2: a layout it would refuse must
+//      not cost the code);
+//   7. the code is redeemed for the narrow token;
+//   8. the token, 9. the group record, 10. the lines are written.
 //
-// If 6-8 fail, everything that was written goes again (the lines, the record,
+// If 8-10 fail, everything that was written goes again (the lines, the record,
 // the token), and the answer is the failure.
 //
 // DISABLE works from the tree too, without a kit: lines first (a removal
@@ -24,13 +30,13 @@
 // Until the real dispatcher exists (PR1c) the kit carries a placeholder that
 // refuses every start, so an enabled standby opens no login (Dani 78357, Q3).
 import { join } from 'node:path'
-import { grantSupportLines, revokeSupportLines, SupportKeysLayoutError } from './support-access-fs.js'
+import { grantSupportLines, keysFileLayout, revokeSupportLines, SupportKeysLayoutError } from './support-access-fs.js'
 import { SupportLineError } from './support-access-line.js'
 import { validateSupportPins, type SupportKeyPin } from './support-access-pins.js'
 import { classifySupportCode, redeemSupportCode, type RedeemProblem, type RedeemTransport, type SupportCodeProblem } from './support-access-redeem.js'
 import type { SshdAssessment, SshdProblem } from './support-access-sshd.js'
-import { removeSupportToken, writeSupportToken } from './support-access-token.js'
-import { removeGroupRecord, writeGroupRecord } from './support-group-record.js'
+import { readSupportToken, removeSupportToken, writeSupportToken } from './support-access-token.js'
+import { readGroupRecord, removeGroupRecord, writeGroupRecord } from './support-group-record.js'
 import { verifyKit, type KitProblem } from './support-kit.js'
 import { KIT_DISPATCHER_NAME } from './support-kit-sources.js'
 
@@ -54,6 +60,7 @@ export type EnableProblem =
   | 'consent_invalid'
   | 'support_keys_unset'
   | 'support_pins_invalid'
+  | 'already_on'
   | SshdProblem
   | KitProblem
   | RedeemProblem
@@ -80,6 +87,7 @@ export async function enableSupportStandby(input: { readonly code: unknown; read
   const { keys, fromCidrs } = deps.pins
   if (keys.length === 0 || fromCidrs.length === 0) return no('support_keys_unset')
   if (!validateSupportPins(keys, fromCidrs).ok) return no('support_pins_invalid')
+  if (readSupportToken(deps.supportDir).kind !== 'missing' || readGroupRecord(deps.supportDir).kind !== 'missing') return no('already_on')
 
   const sshd = await deps.probeSshd(fromCidrs)
   if (!sshd.ok) return no(sshd.problem)
@@ -87,6 +95,8 @@ export async function enableSupportStandby(input: { readonly code: unknown; read
   if (!kit.ok) return no(kit.problem)
   if (kit.manifest.files[KIT_DISPATCHER_NAME] === undefined) return no('kit_mismatch')
   const dispatchPath = join(kit.kitDir, KIT_DISPATCHER_NAME)
+  const layout = keysFileLayout(deps.sshDir)
+  if (layout === 'link-elsewhere' || layout === 'hard-link') return no('keys_file_layout')
 
   const redeemed = await redeemSupportCode(code.code, { transport: deps.redeemTransport })
   if (!redeemed.ok) return no(redeemed.problem)

@@ -11,13 +11,27 @@ import { KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js
 import { enableSupportStandby } from '../support-standby-enable.js'
 import { TEST_ONLY_BLOBS, TEST_ONLY_FROM, TEST_ONLY_KEYS } from './helpers/sk-test-keys.js'
 
-// A failure AFTER the lines were written: the grant writes for real, then throws.
-// Enable must take the lines back too, not only the token and the record.
+// Faults inside the grant. 'after-write': the grant writes for real, then throws; enable must take the lines back
+// too, not only the token and the record. 'layout': the layout changed between enable's own check and the grant's
+// (the grant refuses under its lock); enable must still say keys_file_layout.
+// 'record': the group record cannot be written after the token was; the token must go again.
+const fault = vi.hoisted(() => ({ mode: 'after-write' as 'after-write' | 'layout' | 'record' }))
+vi.mock('../support-group-record.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../support-group-record.js')>()
+  return {
+    ...real,
+    writeGroupRecord: (...args: Parameters<typeof real.writeGroupRecord>) => {
+      if (fault.mode === 'record') throw new real.GroupRecordError('group_record_readback', 'TEST ONLY: the record did not read back')
+      real.writeGroupRecord(...args)
+    },
+  }
+})
 vi.mock('../support-access-fs.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../support-access-fs.js')>()
   return {
     ...real,
     grantSupportLines: async (...args: Parameters<typeof real.grantSupportLines>) => {
+      if (fault.mode === 'layout') throw new real.SupportKeysLayoutError('TEST ONLY: the layout changed under the lock')
       await real.grantSupportLines(...args)
       throw new Error('TEST ONLY: a failure after the lines were written')
     },
@@ -58,6 +72,45 @@ describe('enable support standby, a failure after the lines were written', () =>
   })
   afterEach(() => {
     rmSync(root, { recursive: true, force: true })
+  })
+
+  const run = () =>
+    enableSupportStandby(
+      { code: CODE, consentVersion: 1 },
+      {
+        supportDir,
+        sshDir,
+        pins: { keys: TEST_ONLY_KEYS, fromCidrs: TEST_ONLY_FROM },
+        probeSshd: async () => ({ ok: true, version: { major: 9, minor: 6 }, keysFiles: ['authorized_keys', 'authorized_keys2'] }),
+        redeemTransport: async () => ({ status: 200, body: JSON.stringify({ token: TOKEN }) }),
+        now: () => new Date('2026-11-15T06:10:00Z'),
+        newGrantId: () => '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+        startedFromKit: true,
+      },
+    )
+
+  it('a layout refusal under the grant\'s lock is still keys_file_layout, and nothing stays', async () => {
+    fault.mode = 'layout'
+    try {
+      expect(await run()).toEqual({ ok: false, problem: 'keys_file_layout' })
+    } finally {
+      fault.mode = 'after-write'
+    }
+    expect(readFileSync(join(sshDir, 'authorized_keys'), 'latin1')).toBe(OWN_LINE + '\n')
+    expect(existsSync(join(supportDir, SUPPORT_TOKEN_FILE))).toBe(false)
+    expect(existsSync(join(supportDir, SUPPORT_GROUP_RECORD_FILE))).toBe(false)
+  })
+
+  it('takes the token back when the record cannot be written, and writes no line', async () => {
+    fault.mode = 'record'
+    try {
+      expect(await run()).toEqual({ ok: false, problem: 'enable_write_failed' })
+    } finally {
+      fault.mode = 'after-write'
+    }
+    expect(existsSync(join(supportDir, SUPPORT_TOKEN_FILE))).toBe(false)
+    expect(existsSync(join(supportDir, SUPPORT_GROUP_RECORD_FILE))).toBe(false)
+    expect(readFileSync(join(sshDir, 'authorized_keys'), 'latin1')).toBe(OWN_LINE + '\n')
   })
 
   it('takes the lines back as well as the token and the record, and answers enable_write_failed', async () => {
