@@ -51,6 +51,7 @@ import { registerModelWriteCommands, readModelChoices as readChoiceList, readHol
 import { contextClear } from './session-control.js'
 import { pullFleetBrake } from './routes/fleet-freeze.js'
 import { readFleetFreeze, REASON_MAX as FLEET_REASON_MAX } from './fleet-freeze.js'
+import { discordOptionsText, OPTIONS_DISCORD_ONLY_REPLY } from './discord-options.js'
 
 function clip(s: string, n: number): string {
   const one = s.replace(/\s+/g, ' ').trim()
@@ -811,6 +812,11 @@ export function registerBuiltinCommands(): void {
     },
   })
   registerCommand({ name: 'commands', kind: 'read', description: 'a saját parancsaid, az érvénytelenek külön', run: ctx => reply(ctx, customCommandsText()) })
+  // Owner request 2026-11-15: the Discord channel's switches, read-only, Discord only (Telegram is not used here).
+  registerCommand({
+    name: 'options', kind: 'read', description: 'a Discord-csatorna kapcsolói, értékkel és az állítás helyével (csak Discordon)',
+    run: ctx => reply(ctx, ctx.channel === 'discord' ? discordOptionsText() : OPTIONS_DISCORD_ONLY_REPLY),
+  })
 
   // ÍR, megerősítés nélkül (CMD920 3.3, 3.4). /new and /clear are shipped
   // as default CUSTOM commands (custom-commands.ts DEFAULT_COMMANDS).

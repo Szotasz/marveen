@@ -127,7 +127,7 @@ def remaining():
 # src/__tests__/marveen-commands-hook.test.ts.
 BUILTIN_NAMES = frozenset({
     "help", "status", "queue", "runs", "jobs", "approvals", "model",
-    "context", "usage", "board", "commands", "stop", "resume",
+    "context", "usage", "board", "commands", "stop", "resume", "options",
 })
 
 WINDOW_LABELS = [
