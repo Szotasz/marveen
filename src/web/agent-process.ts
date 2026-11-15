@@ -1398,9 +1398,12 @@ function provisionIsolatedConfigDir(
     // shared file, re-pointed at this cwd. A torn or non-object own file is
     // reseeded from the shared file.
     // Consequence: a plugin REMOVED from the shared registry stays in every
-    // agent's own registry. Taking a plugin off the fleet is a per-agent step
-    // (each config dir's own registry, or scripts/lib/channel-plugin-refresh.sh,
-    // which refreshes every one); editing the shared file does not remove it.
+    // agent's own registry, and one removed only from an agent's own registry
+    // comes back at the next launch while the shared one still lists it.
+    // Taking a plugin off the fleet is therefore a per-agent step, shared file
+    // first (docs/agent-fleet.md, "Pluginok izolált config-mappában").
+    // scripts/lib/channel-plugin-refresh.sh does not do it: it only runs
+    // `claude plugin update` where a registry already lists the id.
     const sharedInstalled = join(sharedPlugins, 'installed_plugins.json')
     const ownInstalled = join(pluginsDir, 'installed_plugins.json')
     if (existsSync(sharedInstalled)) {
