@@ -1,0 +1,84 @@
+system/com.openssh.sshd = {
+	active count = 0
+	copy count = 1
+	path = /System/Library/LaunchDaemons/ssh.plist
+	type = LaunchDaemon
+	state = not running
+
+	program = /usr/libexec/sshd-keygen-wrapper
+	arguments = {
+		sshd-keygen-wrapper
+	}
+
+	stderr path = /dev/null
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		MallocSpaceEfficient => 0
+		XPC_SERVICE_NAME => com.openssh.sshd
+	}
+
+	domain = system
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 0
+	last exit code = (never exited)
+
+	event triggers = {
+		Listeners => {
+			keepalive = 0
+			service = com.openssh.sshd
+			stream = com.apple.bonjour.registration
+			monitor = com.apple.UserEventAgent-System
+			descriptor = {
+				"Bonjour" => [
+					0 = "ssh"
+					1 = "sftp-ssh"
+				]
+				"SockServiceName" => "ssh"
+			}
+		}
+	}
+
+	event channels = {
+		"com.apple.bonjour.registration" = {
+			port = 0x0
+			active = 0
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 1
+		}
+	}
+
+	sockets = {
+		"Listeners" = {
+			type = stream
+			service name = ssh
+
+			sockets = {
+				7 (no bytes to read)
+				8 (no bytes to read)
+			}
+
+			active = 0
+			passive = 1
+			bonjour = 1
+			ipv4v6 = 0
+			receive_packet_info = 0
+		}
+	}
+
+	spawn type = interactive (4)
+	jetsam priority = 180
+	jetsam memory limit (active, soft) = 30 MB
+	jetsam memory limit (inactive, soft) = 30 MB
+	jetsamproperties category = daemon
+	jetsam thread limit = 32
+	cpumon = default
+
+	properties = partial import | dataless file mode | inetd-compatible | abandon process group | system service | tle system
+}

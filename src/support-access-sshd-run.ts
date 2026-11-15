@@ -15,8 +15,9 @@
 //   passed with `-h`; the directory is removed afterwards, also on failure. The
 //   key is never used for a connection. sshd is also asked once with
 //   `-f /etc/ssh/sshd_config`: the answer must be the same, or the probe does
-//   not know which file the daemon reads. The daemon check is Linux only for
-//   now; elsewhere (macOS, not measured yet) it refuses.
+//   not know which file the daemon reads. The daemon check exists for Linux
+//   (support-access-sshd-nonroot.ts) and macOS (support-access-sshd-darwin.ts,
+//   measured on macOS 26); elsewhere it refuses.
 // - Every failure is a refusal, never a rejection. A program that is missing,
 //   exits with anything but 0, or runs into the time limit gives no text, and
 //   no text means "configuration unknown" in the assessment; anything that
@@ -33,6 +34,15 @@ import {
   type DaemonFs,
   type NonRootProblem,
 } from './support-access-sshd-nonroot.js'
+import {
+  checkDarwinDaemon,
+  DARWIN_SSH_LABEL,
+  DARWIN_SSH_PLIST,
+  LAUNCHCTL_PROGRAM,
+  NETSTAT_PROGRAM,
+  PLUTIL_PROGRAM,
+  type DarwinCheck,
+} from './support-access-sshd-darwin.js'
 import {
   assessSshd,
   formatSshdConnectionSpec,
@@ -79,7 +89,7 @@ export interface SshdProbeDeps {
   readonly removeDir: (path: string) => void
   /** Read the configuration files, the pidfile and /proc, for the non-root proof. */
   readonly fs: DaemonFs
-  /** process.platform: the daemon check knows `linux` only. */
+  /** process.platform: the daemon check knows `linux` and `darwin` (support-access-sshd-darwin.ts). */
   readonly platform: string
 }
 
@@ -170,7 +180,9 @@ async function askAll(base: ProbeBase, hostKeyArgs: readonly string[], deps: Ssh
       ? walk
       : deps.platform === 'linux'
         ? checkDaemon(deps.fs, pidfileOf(first.text as string), walk.files)
-        : { ok: false as const, problem: 'sshd_daemon_unknown' as const }
+        : deps.platform === 'darwin'
+          ? await askDarwinDaemon(deps, walk.files)
+          : { ok: false as const, problem: 'sshd_daemon_unknown' as const }
     nonRootProof = daemon.ok ? { ok: true } : { ok: false, problem: daemon.problem }
     if (!nonRootProof.ok) return refused([])
   }
@@ -187,6 +199,21 @@ async function askAll(base: ProbeBase, hostKeyArgs: readonly string[], deps: Ssh
     answers.push(formatSshdConnectionSpec(spec) === formatSshdConnectionSpec(first.spec) ? first : await ask(spec))
   }
   return refused(answers)
+}
+
+/** macOS: what launchd and netstat say about the daemon, and who owns what the walk read (the four checks D1-D4). */
+async function askDarwinDaemon(deps: SshdProbeDeps, walked: readonly { readonly path: string }[]): Promise<DarwinCheck> {
+  const out = async (file: string, args: readonly string[]): Promise<string | null> => {
+    const r = await deps.run(file, args, SSHD_PROBE_TIMEOUT_MS)
+    return r.code === 0 ? r.stdout : null
+  }
+  return checkDarwinDaemon({
+    walkOwners: walked.map((f) => deps.fs.owner?.(f.path) ?? null),
+    plistJson: await out(PLUTIL_PROGRAM, ['-convert', 'json', '-o', '-', DARWIN_SSH_PLIST]),
+    printDisabled: await out(LAUNCHCTL_PROGRAM, ['print-disabled', 'system']),
+    printJob: await out(LAUNCHCTL_PROGRAM, ['print', 'system/' + DARWIN_SSH_LABEL]),
+    netstat: await out(NETSTAT_PROGRAM, ['-an']),
+  })
 }
 
 /**
@@ -247,6 +274,14 @@ export const realNonRootFs: DaemonFs = {
   ctimeNs: (path) => {
     try {
       return statSync(path, { bigint: true }).ctimeNs
+    } catch {
+      return null
+    }
+  },
+  owner: (path) => {
+    try {
+      const st = statSync(path)
+      return { uid: st.uid, mode: st.mode }
     } catch {
       return null
     }
