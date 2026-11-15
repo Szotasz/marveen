@@ -84,14 +84,14 @@ describe('the stored kit hashes', () => {
   })
 })
 
-describe('the placeholder dispatcher', () => {
-  it('refuses every start, with or without the arguments a support line passes', () => {
+describe('the dispatcher in the tree (the gate itself is tested in support-dispatch.test.ts)', () => {
+  it('refuses every start from the tree: it only runs from a kit folder', () => {
     const path = join(ROOT, 'scripts', 'support-dispatch.sh')
-    for (const args of [[], ['--key', 'k1', '--fp', 'SHA256:x', '--grant', 'g', '--consent', '1'], ['status']]) {
-      const run = spawnSync('/bin/sh', [path, ...args], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 })
+    for (const args of [[], ['--key', 'k1', '--fp', 'SHA256:' + 'A'.repeat(43), '--grant', '3f2504e0-4f89-41d3-9a0c-0305e82c3301', '--consent', '1'], ['status']]) {
+      const run = spawnSync('/bin/sh', [path, ...args], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', SSH_ORIGINAL_COMMAND: 'status' }, timeout: 10_000 })
       expect(run.status).toBe(1)
       expect(run.stdout).toBe('')
-      expect(run.stderr).toBe('support access: refused (the dispatcher of this release does not open sessions)\n')
+      expect(run.stderr).toMatch(/^support access: refused \((bad_arguments|bad_path)\)\n$/)
     }
   })
 })
