@@ -6876,7 +6876,7 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
   btn.disabled = true
   btn.textContent = t('agents.btn.running')
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
     if (!res.ok) {
       showToast(data.error || t('channel.smoke_test.failed'), 8000)
