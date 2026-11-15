@@ -11,8 +11,9 @@
 # scripts/support-standby.mjs, scripts/support-kit.sha256).
 set -u
 if [ "${CI:-}" != "true" ] && [ ! -f /.dockerenv ]; then
-  echo "refusing: this test writes ~/.marveen/support; run it in CI or in a container (see the header)" >&2
-  exit 2
+  # The runner's skip contract (src/__tests__/setup/suite-outcome.ts): exit 77 with a reason line.
+  echo "SKIP (control unmet): this test writes ~/.marveen/support; it runs in CI or in a container (see the header)"
+  exit 77
 fi
 ROOT=$(cd "$(dirname "$0")/../.." && pwd -P)
 NODE=$(command -v node)
@@ -112,7 +113,13 @@ echo "(l) the manifest's node is gone: a fixed place is used, resolved and named
 cp "$KIT/manifest" "$HOMEDIR/manifest.bak"
 sed 's#^node .*#node /nonexistent/bin/node#' "$HOMEDIR/manifest.bak" > "$KIT/manifest"
 OUT=$("$L" 2>&1)
-contains "it names the node it uses instead" "$OUT" "ezt használom: $(readlink -f "$NODE")"
+# The launcher's order (N19): the fixed places first, the caller's PATH last; the one it takes is resolved.
+WANT=
+for c in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+  if [ -f "$c" ] && [ -x "$c" ]; then WANT=$c; break; fi
+done
+[ -n "$WANT" ] || WANT=$NODE
+contains "it names the node it uses instead" "$OUT" "ezt használom: $(readlink -f "$WANT")"
 contains "and still reaches status" "$OUT" "node=ok"
 cp "$HOMEDIR/manifest.bak" "$KIT/manifest"; rm -f "$HOMEDIR/manifest.bak"
 
