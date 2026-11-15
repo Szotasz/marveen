@@ -3304,12 +3304,15 @@ async function showCardDetail(card) {
   // Breakdown button
   document.getElementById('cardBreakdownBtn').onclick = async () => {
     const btn = document.getElementById('cardBreakdownBtn')
+    // The label is "⚡ <span data-i18n>…</span>"; put its own nodes back afterwards, so it keeps its
+    // icon and follows a language switch (it used to be overwritten with a hardcoded "Breakdown").
+    const label = [...btn.childNodes]
     btn.disabled = true
     btn.textContent = t('kanban.breakdown.generating')
     try {
       const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Hiba'); btn.disabled = false; btn.textContent = 'Breakdown'; return }
+      if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed')); return }
       breakdownMode = 'kanban'
       breakdownCardId = card.id
       breakdownSubtasks = data.subtasks
@@ -3317,10 +3320,10 @@ async function showCardDetail(card) {
       const dodSec = document.getElementById('breakdownDoDSection')
       if (dodSec) dodSec.style.display = 'none'
     } catch (err) {
-      showToast('Breakdown hiba')
+      showToast(t('kanban.breakdown.failed'))
     } finally {
       btn.disabled = false
-      btn.textContent = 'Breakdown'
+      btn.replaceChildren(...label)
     }
   }
 
@@ -3333,13 +3336,13 @@ async function triggerBreakdown(card) {
   try {
     const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || 'Breakdown hiba'); return }
+    if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed')); return }
     breakdownMode = 'kanban'
     breakdownCardId = card.id
     breakdownSubtasks = data.subtasks
     showBreakdownModal(data.subtasks, card)
   } catch {
-    showToast('Breakdown hiba')
+    showToast(t('kanban.breakdown.failed'))
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '⚡' }
   }
@@ -3366,12 +3369,12 @@ function showBreakdownModal(subtasks, parentCard) {
         <input type="text" class="breakdown-title-input" value="${escapeHtml(st.title)}"
           style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:0.9em">
         <label style="font-size:0.8em; white-space:nowrap">
-          <input type="checkbox" class="breakdown-check" data-idx="${i}" checked> Bele
+          <input type="checkbox" class="breakdown-check" data-idx="${i}" checked> ${escapeHtml(t('kanban.breakdown.include'))}
         </label>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
         <select class="breakdown-assignee-select" style="padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:0.85em">
-          <option value="">-- nincs --</option>
+          <option value="">${escapeHtml(t('kanban.unassigned'))}</option>
           ${assigneeOptions}
         </select>
         <span class="priority-badge priority-${escapeHtml(st.priority)}">${escapeHtml(priorityLabels[st.priority] || st.priority)}</span>
@@ -3408,7 +3411,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
         body: JSON.stringify({ subtasks: accepted, success_criteria: successCriteria }),
       })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Hiba'); return }
+      if (!res.ok) { showToast(data.error || t('common.error_save')); return }
       closeModal(breakdownOverlay)
       showToast(t('kanban.breakdown.promoted', { count: data.child_count }))
       loadIdeasPage()
@@ -3420,7 +3423,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
       body: JSON.stringify({ subtasks: accepted }),
     })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || 'Hiba'); return }
+    if (!res.ok) { showToast(data.error || t('common.error_save')); return }
     closeModal(breakdownOverlay)
     closeModal(cardDetailOverlay)
     showToast(t('kanban.breakdown.created_count', { count: data.created.length }))
@@ -21355,14 +21358,14 @@ async function openIdeaBreakdown(id) {
   // populated by loadKanban(). If the user lands here without visiting the board,
   // fetch it so the AI-suggested assignees are selectable.
   if (!kanbanAssignees.length) {
-    try { kanbanAssignees = await (await fetch('/api/kanban/assignees')).json() } catch { /* dropdown falls back to "nincs" */ }
+    try { kanbanAssignees = await (await fetch('/api/kanban/assignees')).json() } catch { /* dropdown falls back to "unassigned" */ }
   }
   showToast(t('ideas.toast.ai_elaborating'))
   try {
     const res = await fetch(`/api/ideas/${id}/breakdown`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || 'Breakdown hiba'); return }
-    if (!data.subtasks || !data.subtasks.length) { showToast('Az AI nem adott vissza részfeladatot'); return }
+    if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed')); return }
+    if (!data.subtasks || !data.subtasks.length) { showToast(t('ideas.toast.no_subtasks')); return }
     breakdownMode = 'idea'
     breakdownIdeaId = id
     breakdownSubtasks = data.subtasks
@@ -21371,7 +21374,7 @@ async function openIdeaBreakdown(id) {
     const dodSection = document.getElementById('breakdownDoDSection')
     if (dodSection) { dodSection.style.display = ''; document.getElementById('breakdownSuccessCriteria').value = '' }
   } catch {
-    showToast('Breakdown hiba')
+    showToast(t('kanban.breakdown.failed'))
   }
 }
 

@@ -353,6 +353,8 @@ window._i18n.hu = {
   'kanban.breakdown.modal_title': 'Breakdown javaslat',
   'kanban.breakdown.success_label': 'Siker-kritérium (opcionális)',
   'kanban.breakdown.success_placeholder': 'Mikor tekinthető sikeresnek a feladat?',
+  'kanban.breakdown.failed': 'Hiba a feladat szétbontása során',
+  'kanban.breakdown.include': 'Bele',
   'kanban.detail.new_label':     '+ Új címke',
   'kanban.detail.subtask_placeholder': 'Új részfeladat neve...',
   'kanban.btn.archive':          'Archiválás',

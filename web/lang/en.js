@@ -353,6 +353,8 @@ window._i18n.en = {
   'kanban.breakdown.modal_title': 'Breakdown proposal',
   'kanban.breakdown.success_label': 'Success criteria (optional)',
   'kanban.breakdown.success_placeholder': 'When is the task considered successful?',
+  'kanban.breakdown.failed': 'Error while breaking down the task',
+  'kanban.breakdown.include': 'Include',
   'kanban.detail.new_label':     '+ New label',
   'kanban.detail.subtask_placeholder': 'New subtask name...',
   'kanban.btn.archive':          'Archive',
