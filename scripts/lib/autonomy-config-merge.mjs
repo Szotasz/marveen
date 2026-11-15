@@ -60,7 +60,9 @@ export function mergeAutonomyConfigFiles(seedPath, targetPath) {
   let mode = 0o644
   try { mode = statSync(targetPath).mode & 0o777 } catch { /* keep the default */ }
   const tmp = `${targetPath}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
-  writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode })
+  // flag 'wx': the temp file is created here and now, never opened through something already at that name
+  // (a planted link would otherwise send the config text into another file).
+  writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode, flag: 'wx' })
   renameSync(tmp, targetPath)
   return { added, raised, wrote: true }
 }

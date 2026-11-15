@@ -201,6 +201,19 @@ describe('the dashboard start (src/web/autonomy-config-boot.ts)', () => {
     expect(readFileSync(SCRIPT, 'utf8')).toMatch(/\.tmp`/)
   })
 
+  it("the temp file is created exclusively (flag 'wx') under a random name: a link planted at that name is an error, not a path", () => {
+    const src = readFileSync(SCRIPT, 'utf8')
+    expect(src).toMatch(/writeFileSync\(tmp, [^\n]*flag: 'wx'/)
+    expect(src).toMatch(/randomBytes\(4\)\.toString\('hex'\)/)
+    // What 'wx' does with a link already at the name: EEXIST, and the link's target is not written.
+    const victim = join(store, 'victim.txt')
+    writeFileSync(victim, 'untouched')
+    const planted = join(store, 'planted.tmp')
+    symlinkSync(victim, planted)
+    expect(() => writeFileSync(planted, 'x', { flag: 'wx' })).toThrow(/EEXIST/)
+    expect(readFileSync(victim, 'utf8')).toBe('untouched')
+  })
+
   it('index.ts runs it at start, before the web server, and a failure only logs', () => {
     const idx = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
     const at = idx.indexOf('await mergeAutonomyConfigAtBoot()')
