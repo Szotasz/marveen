@@ -314,6 +314,13 @@
     {"name": "COPYSUBST1116 control: --t with a variable is no recipient", "cmd": "python3 plain.py --t $TIMEOUT", "main": false, "sub": false},
     {"name": "COPYSUBST1116 control: eval \"$(ssh-agent -s)\" runs no script", "cmd": "eval \"$(ssh-agent -s)\"", "main": false, "sub": false},
     {"name": "COPYSUBST1116 control: bash -c with an escaped $(...) and no address", "cmd": "bash -c \"echo \\$(date)\"", "main": false, "sub": false},
-    {"name": "COPYSUBST1116 control: --b with a $(...) is no recipient", "cmd": "python3 plain.py --b $(cat x)", "main": false, "sub": false}
+    {"name": "COPYSUBST1116 control: --b with a $(...) is no recipient", "cmd": "python3 plain.py --b $(cat x)", "main": false, "sub": false},
+    {"name": "COPYSUBST1116 (Revizor 4123 L1): an ANSI-C $'--to' flag name", "cmd": "python3 tool.py $'--to' a@example.com", "main": true, "sub": true},
+    {"name": "COPYSUBST1116 (Revizor 4123 L2): builtin eval of an addressed run", "cmd": "builtin eval 'python3 tool.py --to a@example.com'", "main": true, "sub": true},
+    {"name": "COPYSUBST1116 (Revizor 4123 L2): command eval of an addressed run", "cmd": "command eval 'python3 tool.py --to a@example.com'", "main": true, "sub": true},
+    {"name": "COPYSUBST1116 (Revizor 4123 L2): eval -- of an addressed run", "cmd": "eval -- 'python3 tool.py --to a@example.com'", "main": true, "sub": true},
+    {"name": "COPYSUBST1116 (Revizor 4123 L3): eval of an ANSI-C body", "cmd": "eval $'python3 tool.py --to a@example.com'", "main": true, "sub": true},
+    {"name": "COPYSUBST1116 (Revizor 4123 L3): bash -c of an ANSI-C body", "cmd": "bash -c $'python3 tool.py --to a@example.com'", "main": true, "sub": true},
+    {"name": "COPYSUBST1116 control: an ANSI-C word with no address", "cmd": "python3 plain.py $'--text' $'a\\tb'", "main": false, "sub": false}
   ]
 }

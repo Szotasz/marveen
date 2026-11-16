@@ -1341,10 +1341,17 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
     }
     return false
   }
-  if (prog === 'eval') {
+  let evalRest = rest
+  let isEval = prog === 'eval'
+  if ((prog === 'builtin' || prog === 'command') && rest.length && basename(rest[0]) === 'eval') {
+    isEval = true // Revizor 4123 L2: `builtin eval ...`
+    evalRest = rest.slice(1)
+  }
+  if (isEval) {
     // COPYSUBST1116: eval runs its joined words as a command line
-    if (depth >= SHELL_C_DEPTH || !rest.length) return false
-    const line = rest.join(' ')
+    if (evalRest[0] === '--') evalRest = evalRest.slice(1) // Revizor 4123 L2: `eval -- ...`
+    if (depth >= SHELL_C_DEPTH || !evalRest.length) return false
+    const line = evalRest.join(' ')
     return [...new Set([line, undoDquoteEscapes(line)])].some((b) => scriptRunSends(b, cwd, readScript, depth + 1, cmdWords))
   }
   let script
@@ -1868,7 +1875,7 @@ export function writtenScripts(cmd, cwd) {
 }
 
 export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
-  const bound = bindLiteralVars(cmdIn)
+  const bound = bindLiteralVars(decodeAnsiC(cmdIn)) // Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'`
   const allWritten = writtenScripts(bound, cwd)
   // Dani (review of #2586): a P that exists now may survive the write: its body is judged next to the file on disk
   for (const [path, body] of allWritten) {
@@ -1899,6 +1906,64 @@ export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScri
     ...(SUBST_CD.test(cmd) ? ['cd', SUBST_MARK] : [])]
   if (segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))) return true
   return flatAddressedRunSends(cmd, cwd, readScript, depth, cmdWords)
+}
+
+const ANSI_C_SIMPLE = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+// the text of a bash $'...' string: its backslash escapes decoded (an unknown one keeps its backslash); see the python twin
+function ansiCBody(body) {
+  let out = ''
+  for (let i = 0; i < body.length;) {
+    const ch = body[i]
+    if (ch !== '\\' || i + 1 >= body.length) { out += ch; i++; continue }
+    const e = body[i + 1]
+    if (Object.hasOwn(ANSI_C_SIMPLE, e)) { out += ANSI_C_SIMPLE[e]; i += 2; continue }
+    const tail = body.slice(i + 1)
+    let m = /^[0-7]{1,3}/.exec(tail)
+    let code = m ? parseInt(m[0], 8) : null
+    if (!m) {
+      m = /^x([0-9A-Fa-f]{1,2})/.exec(tail) || /^u([0-9A-Fa-f]{1,4})/.exec(tail) || /^U([0-9A-Fa-f]{1,8})/.exec(tail)
+      if (m) code = parseInt(m[1], 16)
+    }
+    if (m) {
+      try { out += String.fromCodePoint(code) } catch { out += '�' }
+      i += 1 + m[0].length
+      continue
+    }
+    if (e === 'c' && i + 2 < body.length) { out += String.fromCharCode(body.charCodeAt(i + 2) & 0x1f); i += 3; continue }
+    out += ch + e
+    i += 2
+  }
+  return out
+}
+
+// COPYSUBST1116 (Revizor 4123 L1, L3): every unquoted bash $'...' word as the single-quoted text it stands for
+function decodeAnsiC(cmd) {
+  if (!cmd.includes("$'")) return cmd
+  let out = ''
+  let q = null
+  for (let i = 0; i < cmd.length;) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += cmd.slice(i, i + 2); i += 2; continue }
+      if (ch === q) q = null
+      out += ch
+      i++
+      continue
+    }
+    if (ch === '\\' && i + 1 < cmd.length) { out += cmd.slice(i, i + 2); i += 2; continue }
+    if (ch === '$' && cmd[i + 1] === "'") {
+      let j = i + 2
+      while (j < cmd.length && cmd[j] !== "'") j += cmd[j] === '\\' ? 2 : 1
+      const text = ansiCBody(cmd.slice(i + 2, Math.min(j, cmd.length)))
+      out += "'" + text.replaceAll("'", "'\\''") + "'"
+      i = j + 1
+      continue
+    }
+    if (ch === "'" || ch === '"') q = ch
+    out += ch
+    i++
+  }
+  return out
 }
 
 // the shell's double-quote escapes undone: \$ \` \" \\ -> the character, backslash-newline -> nothing

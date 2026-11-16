@@ -1910,8 +1910,12 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
                    for b in dict.fromkeys((body, _undo_dquote_escapes(body)))):
                 return True
         return False
+    if prog in ("builtin", "command") and rest and _basename(rest[0]) == "eval":
+        prog, rest = "eval", rest[1:]   # Revizor 4123 L2: `builtin eval ...`
     if prog == "eval":
         # COPYSUBST1116: eval runs its joined words as a command line
+        if rest and rest[0] == "--":
+            rest = rest[1:]   # Revizor 4123 L2: `eval -- ...`
         if depth >= _SHELL_C_DEPTH or not rest:
             return False
         line = " ".join(rest)
@@ -2648,6 +2652,7 @@ def _outside_bodies(cmd: str, lo: int, hi: int) -> str:
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
     if read_script is None:
         read_script = _read_script_head
+    cmd = _decode_ansi_c(cmd)   # Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'` read as the shell reads them
     cmd = _bind_literal_vars(cmd)
     written = _written_scripts(cmd, cwd)
     # Dani (review of #2586): a P that exists now may survive the write (read-only, noclobber set elsewhere): its body
@@ -2682,6 +2687,69 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
            for toks in segments for h in _command_heads(toks)):
         return True
     return _flat_addressed_run_sends(cmd, cwd, read_script, depth, cmd_words)
+
+
+_ANSI_C_SIMPLE = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+                  "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+def _ansi_c_body(body: str) -> str:
+    """the text of a bash $'...' string: its backslash escapes decoded (an unknown one keeps its backslash, as bash)"""
+    out = []
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch); i += 1; continue
+        e = body[i + 1]
+        if e in _ANSI_C_SIMPLE:
+            out.append(_ANSI_C_SIMPLE[e]); i += 2; continue
+        m = (re.match(r"[0-7]{1,3}", body[i + 1:]) or (re.match(r"x([0-9A-Fa-f]{1,2})", body[i + 1:]))
+             or re.match(r"u([0-9A-Fa-f]{1,4})", body[i + 1:]) or re.match(r"U([0-9A-Fa-f]{1,8})", body[i + 1:]))
+        if m:
+            digits = m.group(1) if m.groups() else m.group(0)
+            code = int(digits, 8 if not m.groups() else 16)
+            try:
+                out.append(chr(code))
+            except (ValueError, OverflowError):
+                out.append("�")
+            i += 1 + len(m.group(0)); continue
+        if e == "c" and i + 2 < n:
+            out.append(chr(ord(body[i + 2]) & 0x1f)); i += 3; continue
+        out.append(ch + e); i += 2
+    return "".join(out)
+
+
+def _decode_ansi_c(cmd: str) -> str:
+    """COPYSUBST1116 (Revizor 4123 L1, L3): every unquoted bash $'...' word as the single-quoted text it stands for, so a
+    flag name, an address or a -c / eval body written that way is read as the shell reads it. Twin: decodeAnsiC."""
+    if "$'" not in cmd:
+        return cmd
+    out = []
+    q = None
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
+            j = i + 2
+            while j < n and cmd[j] != "'":
+                j += 2 if cmd[j] == "\\" else 1
+            text = _ansi_c_body(cmd[i + 2:min(j, n)])
+            out.append("'" + text.replace("'", "'\\''") + "'")
+            i = j + 1
+            continue
+        if ch in "'\"":
+            q = ch
+        out.append(ch); i += 1
+    return "".join(out)
 
 
 def _undo_dquote_escapes(s: str) -> str:

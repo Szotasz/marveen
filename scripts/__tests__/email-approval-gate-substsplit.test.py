@@ -107,6 +107,12 @@ try:
         ("an argparse prefix --bc", f"{T} --bc a@example.com"),
         ("eval of an addressed run", f"eval '{T} --to a@example.com'"),
         ("--cc $(cat addr.txt)", f"{T} --cc $(cat addr.txt)"),
+        # Revizor 4123 L1-L3: the flag name, the eval line or the -c body written as an ANSI-C string; builtin / -- eval
+        ("an ANSI-C $'--to' flag name", f"{T} $'--to' a@example.com"),
+        ("builtin eval", f"builtin eval '{T} --to a@example.com'"),
+        ("eval --", f"eval -- '{T} --to a@example.com'"),
+        ("eval $'...'", f"eval $'{T} --to a@example.com'"),
+        ("bash -c $'...'", f"bash -c $'{T} --to a@example.com'"),
     ):
         code, err = rc(cmd)
         check(f"{name} -> exit 2", code == 2, f"exit={code} err={err[:200]!r}")
