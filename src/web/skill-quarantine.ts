@@ -29,7 +29,8 @@
 // that a skill has no business carrying. An empty list does not mean safe.
 // The load-bearing control is that nothing goes live without that approval,
 // while the switch is ON. SKILLAPPROVALOFF1101 (owner, 2026-11-01): the hold is
-// a switch, SKILL_QUARANTINE, OFF by default. OFF, a queued skill goes live at
+// a switch, SKILL_QUARANTINE, ON by default since SKILLQUARANTINEDEF1109 (owner,
+// 2026-11-16). OFF, a queued skill goes live at
 // once on the same path (goLiveUnquarantined below): scanned, bound to the
 // scanned hash, one audit line in store/skills-audit.jsonl, and what the scan
 // cannot show in full still waits. There, the scan and the audit are a record,

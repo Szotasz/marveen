@@ -62,7 +62,8 @@ const pendingIds = () => (existsSync(PENDING) ? readdirSync(PENDING).filter((n) 
 
 beforeAll(() => { process.env.NODE_ENV = 'test'; initDatabase(':memory:') })
 beforeEach(() => {
-  sw.value = undefined
+  // SKILLQUARANTINEDEF1109: the default is ON now, so the OFF cases below set OFF explicitly; S1 reads the real chain.
+  sw.value = '0'
   rmSync(GLOBAL, { recursive: true, force: true })
   rmSync(STORE, { recursive: true, force: true })
   getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
@@ -70,11 +71,12 @@ beforeEach(() => {
 })
 
 describe('the default', () => {
-  it('S1: the registry default is OFF, and with nothing set the quarantine is off', () => {
+  it('S1: the registry default is ON (SKILLQUARANTINEDEF1109), and with nothing set the quarantine is on', () => {
+    sw.value = undefined
     const def = SETTINGS_REGISTRY.find((s) => s.key === 'SKILL_QUARANTINE')!
-    expect(def.default).toBe('0')
+    expect(def.default).toBe('1')
     expect(def.type).toBe('boolean')
-    expect(q.quarantineOn()).toBe(false)
+    expect(q.quarantineOn()).toBe(true)
   })
 
   it('S1b: a settings read that throws counts as ON; only a truthy value is ON', () => {
@@ -355,11 +357,12 @@ describe('the switch itself', () => {
   const setIt = (value: string, auth: Auth) => call('POST', '/api/settings', { key: 'SKILL_QUARANTINE', value }, auth, tryHandleSettings)
   const resetIt = (auth: Auth) => call('DELETE', '/api/settings/SKILL_QUARANTINE', undefined, auth, tryHandleSettings)
 
-  it('S9: once a login exists, turning it OFF (set or reset) takes the owner session; turning it ON does not', async () => {
+  it('S9: once a login exists, turning it OFF takes the owner session; turning it ON, or resetting it to the ON default, does not', async () => {
     await call('POST', '/api/auth/users', { username: 'owner', password: 'super-secret-pw' }, TOKEN, tryHandleAuth)
     sw.value = '1'
     expect((await setIt('0', TOKEN)).status).toBe(403)
-    expect((await resetIt(TOKEN)).status).toBe(403)
+    // SKILLQUARANTINEDEF1109: the default is ON, so a reset lands on ON, which is not a loosening.
+    expect((await resetIt(TOKEN)).status).toBe(200)
     expect((await setIt('0', { kind: 'token', agent: 'soma', tokenAgent: 'soma' })).status).toBe(403)
     expect((await setIt('0', SESSION)).status).toBe(200)
     sw.value = '0'
