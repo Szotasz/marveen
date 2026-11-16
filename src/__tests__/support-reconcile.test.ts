@@ -12,7 +12,7 @@ import { readGroupRecord, SUPPORT_GROUP_RECORD_FILE, writeGroupRecord, type Supp
 import { writeKit } from '../support-kit.js'
 import { KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js'
 import { reconcileSupportStandby, type ReconcileDeps, type ReconcileRevokedVia } from '../support-reconcile.js'
-import { enableSupportStandby, type StandbyDeps } from '../support-standby-enable.js'
+import { enableSupportStandby, SUPPORT_CONSENT_VERSION, type StandbyDeps } from '../support-standby-enable.js'
 import { TEST_ONLY_BLOBS, TEST_ONLY_FROM, TEST_ONLY_KEYS } from './helpers/sk-test-keys.js'
 
 // TEST ONLY values: a code and tokens of the right shape, issued by nobody.
@@ -108,7 +108,7 @@ describe('the support reconcile (terv-v7 3.8; Dani 32056 G1-G6)', () => {
   })
 
   const enable = async (): Promise<void> => {
-    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, standby())).toMatchObject({ ok: true })
+    expect(await enableSupportStandby({ code: CODE, consentVersion: SUPPORT_CONSENT_VERSION }, standby())).toMatchObject({ ok: true })
     expect(supportLines()).toBe(2)
   }
 
@@ -208,7 +208,7 @@ describe('the support reconcile (terv-v7 3.8; Dani 32056 G1-G6)', () => {
     rows.has.clear()
     await reconcileSupportStandby(deps())
     await reconcileSupportStandby(deps())
-    expect(rows.inserted.map((r) => [r.grantId, r.consentVersion, r.consentAt])).toEqual([[GRANT, 1, '2026-11-15T06:10:00Z']])
+    expect(rows.inserted.map((r) => [r.grantId, r.consentVersion, r.consentAt])).toEqual([[GRANT, SUPPORT_CONSENT_VERSION, '2026-11-15T06:10:00Z']])
   })
 
   it('token_revoked: on 401 with exactly that body, the lines go first, then the token and the record; external', async () => {

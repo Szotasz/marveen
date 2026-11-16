@@ -161,7 +161,7 @@ describe('formatSupportStatus', () => {
   it('prints one fact per line, with the fixed keys and words the launcher matches on', async () => {
     expect(formatSupportStatus(await supportStatus(deps().deps))).toBe(
       'node=ok\nnode_version=v22.22.3\nnode_minimum=20\npins=ok\nsshd=ok\nsshd_version=10.0\ncurl=present\n' +
-        'support_lines=2\nsupport_lines_second_file=absent\nstandby=off\nstandby_keys=none\nconsent_version=1\n',
+        'support_lines=2\nsupport_lines_second_file=absent\nstandby=off\nstandby_keys=none\nconsent_version=2\nconsent_lang=hu\nconsent_sha256=1edde713149d360f3aef27d51e3e379557ece268f8716380acbfee7621e1152b\n',
     )
     const bad = await supportStatus(
       deps({
@@ -173,10 +173,10 @@ describe('formatSupportStatus', () => {
     )
     expect(formatSupportStatus(bad)).toBe(
       'node=too_old\nnode_version=v18.20.0\nnode_minimum=20\npins=support_keys_unset\nsshd=not_asked\nsshd_version=unknown\n' +
-        'curl=missing\nsupport_lines=unreadable\nsupport_lines_second_file=unreadable\nstandby=off\nstandby_keys=none\nconsent_version=1\n',
+        'curl=missing\nsupport_lines=unreadable\nsupport_lines_second_file=unreadable\nstandby=off\nstandby_keys=none\nconsent_version=2\nconsent_lang=hu\nconsent_sha256=1edde713149d360f3aef27d51e3e379557ece268f8716380acbfee7621e1152b\n',
     )
     const on = await supportStatus(deps({ readStandbyFiles: () => ({ token: 'ok', record: { kind: 'ok', keys: ['key1', 'key2'] } }) }).deps)
-    expect(formatSupportStatus(on).endsWith('standby=on\nstandby_keys=key1,key2\nconsent_version=1\n')).toBe(true)
+    expect(formatSupportStatus(on).endsWith('standby=on\nstandby_keys=key1,key2\nconsent_version=2\nconsent_lang=hu\nconsent_sha256=1edde713149d360f3aef27d51e3e379557ece268f8716380acbfee7621e1152b\n')).toBe(true)
   })
 })
 
@@ -475,7 +475,7 @@ describe('enable and disable on the command line', () => {
     expect(touched).toBe(false)
   })
 
-  it.each([['2'], ['9999']])('consent-text: a version this release does not know (%s) is consent_invalid', async (v) => {
+  it.each([['3'], ['9999']])('consent-text: a version this release does not know (%s) is consent_invalid', async (v) => {
     const c = io()
     expect(await runSupportCli(['consent-text', '--consent', v], c.io, { status: () => deps().deps, installKit: noInstall, ...NO_STANDBY })).toBe(1)
     expect(c.err.join('')).toBe('consent-text: refused: consent_invalid\n')
@@ -526,7 +526,8 @@ describe('the status and the group record', () => {
     for (const secret of ['203.0.113.7', '3f2504e0', '2026-11-15', TEST_ONLY_KEYS[0].fingerprint, 'mst_']) {
       expect(text).not.toContain(secret)
     }
-    // The one consent line is the routine's own version (Samu 78475), not the record's.
-    expect(text.split('\n').filter((l) => l.includes('consent'))).toEqual(['consent_version=1'])
+    // The consent lines are the routine's own version, the launcher's language and that text's sha256 (Samu 78475,
+    // 79440, 79453), not the record's.
+    expect(text.split('\n').filter((l) => l.includes('consent'))).toEqual(['consent_version=2', 'consent_lang=hu', 'consent_sha256=1edde713149d360f3aef27d51e3e379557ece268f8716380acbfee7621e1152b'])
   })
 })

@@ -8,6 +8,7 @@
 import { parseSkEd25519Blob, validateSupportPins, type SupportKeyPin, type SupportPinsProblem } from './support-access-pins.js'
 import { countSupportLines } from './support-access-line.js'
 import { SUPPORT_CONSENT_VERSION } from './support-standby-enable.js'
+import { SUPPORT_CONSENT_LAUNCHER_LANG, supportConsentSha256 } from './support-consent-text.js'
 import type { SshdAssessment, SshdProblem, SupportKeysFileName } from './support-access-sshd.js'
 
 /**
@@ -148,6 +149,10 @@ export function formatSupportStatus(report: SupportStatusReport): string {
       'standby_keys=' + (report.standby.keys.length === 0 ? 'none' : report.standby.keys.join(',')),
       // The launcher takes the version it shows and passes to enable from here (Samu 78475, Geri 78479).
       'consent_version=' + SUPPORT_CONSENT_VERSION,
+      // which text that version is, in the language the launcher shows it (RUFLOIDEAS1115, Samu 79440 / 79453);
+      // the launcher does not read these two
+      'consent_lang=' + SUPPORT_CONSENT_LAUNCHER_LANG,
+      'consent_sha256=' + (supportConsentSha256(SUPPORT_CONSENT_VERSION, SUPPORT_CONSENT_LAUNCHER_LANG) ?? 'none'),
     ].join('\n') + '\n'
   )
 }

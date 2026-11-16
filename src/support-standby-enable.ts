@@ -74,7 +74,7 @@ export type EnableResult =
   | { readonly ok: false; readonly problem: EnableProblem }
 
 /** The highest consent version this release knows; a newer one is refused (the owner saw text this build cannot show). */
-export const SUPPORT_CONSENT_VERSION = 1
+export const SUPPORT_CONSENT_VERSION = 2
 
 function utcSecond(d: Date): string {
   return d.toISOString().replace(/\.\d{3}Z$/, 'Z')

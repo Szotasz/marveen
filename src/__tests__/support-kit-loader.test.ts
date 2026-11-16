@@ -112,7 +112,7 @@ describe('running the kit copy of the routine', () => {
     })
     expect(direct.status).toBe(0)
     expect(viaKit).toEqual({ ok: true, code: 0, stdout: direct.stdout, stderr: direct.stderr })
-    expect(direct.stdout.trimEnd().split('\n')).toHaveLength(12)
+    expect(direct.stdout.trimEnd().split('\n')).toHaveLength(14)
     // A call the routine does not know: its own exit code comes back.
     // Its stderr comes back too: a refusal names its reason there (2b-2's enable route reads it).
     expect(await runKitRoutine({ supportDir, args: ['bogus'], timeoutMs: 30_000 })).toEqual({ ok: true, code: 2, stdout: '', stderr: SUPPORT_CLI_USAGE })

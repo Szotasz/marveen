@@ -12,10 +12,32 @@ import { createStandbyDeps } from '../support-standby-cli.js'
 import { disableSupportStandby, type DisableResult, type StandbyDeps } from '../support-standby-enable.js'
 import { withSupportStandbyLock } from './support-standby-lock.js'
 import { countSupportLines } from '../support-access-line.js'
+import { SUPPORT_CONSENT_LAUNCHER_LANG, supportConsentSha256 } from '../support-consent-text.js'
+import type { SupportGroupRecord } from '../support-group-record.js'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const SUPPORT_RECONCILE_EVERY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * The consent row the reconcile writes for an enabling that has none (Samu 78359, Q1), copied from the group record:
+ * with the sha256 of the RECORDED version's approved text in the launcher's language (that enabling came from the
+ * launcher), NULL when that version has none.
+ */
+export function insertConsentFromRecord(r: Pick<SupportGroupRecord, 'grantId' | 'consentVersion' | 'consentAt' | 'keys'>): void {
+  insertSupportConsent({
+    grantId: r.grantId,
+    consentVersion: r.consentVersion,
+    // the launcher's enabling: the owner saw the launcher's (Hungarian) text
+    consentLang: SUPPORT_CONSENT_LAUNCHER_LANG,
+    consentSha256: supportConsentSha256(r.consentVersion, SUPPORT_CONSENT_LAUNCHER_LANG),
+    consentAt: r.consentAt,
+    locale: null,
+    keyNames: r.keys.map((k) => k.name),
+    createdVia: 'command',
+    actor: 'reconcile',
+  })
+}
 /** The first run waits a little after the start, so it does not compete with the start itself. */
 export const SUPPORT_RECONCILE_FIRST_DELAY_MS = 60 * 1000
 
@@ -37,17 +59,7 @@ export async function runSupportReconcile(over: { standby?: StandbyDeps; transpo
     transport: over.transport ?? createHttpsRedeemTransport(),
     consents: {
       has: (grantId) => getDb().prepare('SELECT 1 FROM support_consents WHERE grant_id = ?').get(grantId) !== undefined,
-      insertFromRecord: (r) => {
-        insertSupportConsent({
-          grantId: r.grantId,
-          consentVersion: r.consentVersion,
-          consentAt: r.consentAt,
-          locale: null,
-          keyNames: r.keys.map((k) => k.name),
-          createdVia: 'command',
-          actor: 'reconcile',
-        })
-      },
+      insertFromRecord: insertConsentFromRecord,
       revokeOpen: (via) => {
         revokeOpenSupportConsents(via)
       },

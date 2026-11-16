@@ -1603,6 +1603,12 @@ export function initDatabase(dbPathOverride?: string): void {
       revoked_via TEXT CHECK (revoked_via IS NULL OR revoked_via IN ('button', 'command', 'external', 'replaced', 'security_reset', 'password_change', 'user_delete', 'tampered'))
     )
   `)
+  // Which text the owner agreed to: the sha256 of that version's approved text (RUFLOIDEAS1115, Samu 79440).
+  // NULL on the rows written before this column, and for a version without an approved text.
+  // And in which language the owner saw it ('hu' or 'en'; Mira 79456): the sha256 is of that language's text.
+  const consentCols = (db.prepare('PRAGMA table_info(support_consents)').all() as { name: string }[]).map((c) => c.name)
+  if (!consentCols.includes('consent_sha256')) db.exec('ALTER TABLE support_consents ADD COLUMN consent_sha256 TEXT')
+  if (!consentCols.includes('consent_lang')) db.exec("ALTER TABLE support_consents ADD COLUMN consent_lang TEXT CHECK (consent_lang IS NULL OR consent_lang IN ('hu', 'en'))")
   // The support password bucket (Dani 78357, Q4): one row, the state as JSON, kept over a restart.
   db.exec(`
     CREATE TABLE IF NOT EXISTS support_password_state (
@@ -7361,6 +7367,8 @@ export interface SupportConsentRow {
   id: number
   grant_id: string
   consent_version: number
+  consent_sha256: string | null
+  consent_lang: 'hu' | 'en' | null
   consent_at: string
   locale: string | null
   key_names: string
@@ -7375,6 +7383,8 @@ export interface SupportConsentRow {
 export function insertSupportConsent(row: {
   grantId: string
   consentVersion: number
+  consentSha256: string | null
+  consentLang: 'hu' | 'en' | null
   consentAt: string
   locale: string | null
   keyNames: readonly string[]
@@ -7382,8 +7392,8 @@ export function insertSupportConsent(row: {
   actor: string
 }): boolean {
   const info = db.prepare(
-    'INSERT OR IGNORE INTO support_consents (grant_id, consent_version, consent_at, locale, key_names, created_via, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(row.grantId, row.consentVersion, row.consentAt, row.locale, row.keyNames.join(','), row.createdVia, row.actor, Math.floor(Date.now() / 1000))
+    'INSERT OR IGNORE INTO support_consents (grant_id, consent_version, consent_sha256, consent_lang, consent_at, locale, key_names, created_via, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(row.grantId, row.consentVersion, row.consentSha256, row.consentLang, row.consentAt, row.locale, row.keyNames.join(','), row.createdVia, row.actor, Math.floor(Date.now() / 1000))
   return info.changes === 1
 }
 

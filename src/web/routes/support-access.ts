@@ -15,6 +15,7 @@
 // on with one line. Disable and the status are always reachable.
 import type http from 'node:http'
 import { getDashboardUser, insertSupportConsent, revokeOpenSupportConsents } from '../../db.js'
+import { supportConsentLangOf, supportConsentSha256 } from '../../support-consent-text.js'
 import { logger } from '../../logger.js'
 import { readGroupRecord } from '../../support-group-record.js'
 import { runKitRoutine } from '../../support-kit-loader.js'
@@ -207,6 +208,8 @@ async function handleEnable(ctx: RouteContext, deps: SupportAccessDeps): Promise
     insertSupportConsent({
       grantId: record.record.grantId,
       consentVersion: record.record.consentVersion,
+      consentLang: supportConsentLangOf(locale),
+      consentSha256: supportConsentSha256(record.record.consentVersion, supportConsentLangOf(locale)),
       consentAt: record.record.consentAt,
       locale: typeof locale === 'string' ? locale : null,
       keyNames: record.record.keys.map((k) => k.name),
