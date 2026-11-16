@@ -106,6 +106,7 @@ describe('parseSshdEffectiveConfig', () => {
       acceptEnv: ['LANG', 'LC_*'],
       listenPorts: [22],
       listenAddresses: ['0.0.0.0', '::'],
+      hostKeys: ['/etc/ssh/ssh_host_rsa_key', '/etc/ssh/ssh_host_ecdsa_key', '/etc/ssh/ssh_host_ed25519_key'],
     })
   })
 
@@ -421,13 +422,31 @@ describe('assessSshd', () => {
   const every = (text: string | null): SshdAssessmentInput => ({ ...ok, answers: answers(() => text) })
 
   it('accepts the measured defaults from 8.9 and 10.0, and says which files a removal has to clean', () => {
-    expect(assessSshd(ok)).toEqual({ ok: true, version: { major: 10, minor: 0 }, keysFiles: ['authorized_keys', 'authorized_keys2'] })
+    expect(assessSshd(ok)).toEqual({
+      ok: true,
+      version: { major: 10, minor: 0 },
+      keysFiles: ['authorized_keys', 'authorized_keys2'],
+      listenPorts: [22],
+      hostKeyFiles: ['/etc/ssh/ssh_host_rsa_key', '/etc/ssh/ssh_host_ecdsa_key', '/etc/ssh/ssh_host_ed25519_key'],
+    })
     expect(assessSshd({ ...ok, versionText: V_8_9 })).toMatchObject({ ok: true, version: { major: 8, minor: 9 } })
     // The macOS setting names one file.
     expect(assessSshd(every(config({ authorizedkeysfile: '.ssh/authorized_keys' })))).toMatchObject({
       ok: true,
       keysFiles: ['authorized_keys'],
     })
+  })
+
+  it('hands over the hostkey files without the probe\'s throwaway -h key (the host key cross-check, Dani 79778)', () => {
+    const probeKey = '/tmp/marveen-sshd-probe-x/probe_host_key'
+    const withProbe = every('hostkey ' + probeKey + '\n' + T_DEFAULT)
+    expect(assessSshd({ ...withProbe, probeHostKey: probeKey })).toMatchObject({
+      ok: true,
+      hostKeyFiles: ['/etc/ssh/ssh_host_rsa_key', '/etc/ssh/ssh_host_ecdsa_key', '/etc/ssh/ssh_host_ed25519_key'],
+    })
+    // measured (OpenSSH 10.2p1, not root): with no HostKey in the configuration the answer names only the probe's key
+    const onlyProbe = every(T_DEFAULT.replace(/^hostkey .*\n/gm, '') + 'hostkey ' + probeKey + '\n')
+    expect(assessSshd({ ...onlyProbe, probeHostKey: probeKey })).toMatchObject({ ok: true, hostKeyFiles: [] })
   })
 
   it('refuses when the version cannot be read', () => {

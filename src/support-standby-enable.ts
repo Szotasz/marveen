@@ -12,13 +12,18 @@
 //      #2779, F1: a second enable would redeem a second code and overwrite
 //      the token; switch off first);
 //   4. sshd is asked (root, or the non-root proof), and must answer `ok`;
+//      then its ed25519 host key is asked with ssh-keyscan (support-access-hostkey.ts):
+//      none, or not exactly one, is host_key_missing; one that no root-owned
+//      .pub file confirms is host_key_unverified (Dani 79778);
 //   5. the kit is verified, and its manifest names the dispatcher: the lines
 //      bind that path (Dani 78357, Q3: the kit is checked before any line);
 //   6. the keys files are laid out so that a grant can keep them right (the
 //      grant checks again under its lock; F2: a layout it would refuse must
 //      not cost the code);
 //   7. the code is redeemed for the narrow token;
-//   8. the token, 9. the group record, 10. the lines are written.
+//   8. the token, 9. the group record, 10. the lines are written;
+//  11. the host key is sent to marveen.io with the token. Only 200 is "stored";
+//      any other answer does not stop the enable: the daily reconcile sends it again.
 //
 // If 8-10 fail, everything that was written goes again (the lines, the record,
 // the token), and the answer is the failure.
@@ -39,6 +44,7 @@ import type { SshdAssessment, SshdProblem } from './support-access-sshd.js'
 import { readSupportToken, removeSupportToken, writeSupportToken } from './support-access-token.js'
 import { readGroupRecord, removeGroupRecord, stopRunningDispatchers, writeGroupRecord } from './support-group-record.js'
 import { verifyKit, type KitProblem } from './support-kit.js'
+import { sendSupportHostKey, type HostKeySendResult, type OwnHostKey } from './support-access-hostkey.js'
 import { KIT_DISPATCHER_NAME } from './support-kit-sources.js'
 
 export interface StandbyDeps {
@@ -48,6 +54,8 @@ export interface StandbyDeps {
   readonly sshDir: string
   readonly pins: { readonly keys: readonly SupportKeyPin[]; readonly fromCidrs: readonly string[] }
   readonly probeSshd: (fromCidrs: readonly string[]) => Promise<SshdAssessment>
+  /** The ed25519 host key sshd offers on its first port, confirmed by a root-owned .pub (readOwnHostKey). Never rejects. */
+  readonly readHostKey: (sshd: { readonly listenPorts: readonly number[]; readonly hostKeyFiles: readonly string[] }) => Promise<OwnHostKey>
   readonly redeemTransport: RedeemTransport
   readonly now: () => Date
   readonly newGrantId: () => string
@@ -64,13 +72,15 @@ export type EnableProblem =
   | 'support_pins_invalid'
   | 'already_on'
   | SshdProblem
+  | 'host_key_missing'
+  | 'host_key_unverified'
   | KitProblem
   | RedeemProblem
   | 'keys_file_layout'
   | 'enable_write_failed'
 
 export type EnableResult =
-  | { readonly ok: true; readonly keys: readonly string[]; readonly lines: number }
+  | { readonly ok: true; readonly keys: readonly string[]; readonly lines: number; readonly hostKey: HostKeySendResult }
   | { readonly ok: false; readonly problem: EnableProblem }
 
 /** The highest consent version this release knows; a newer one is refused (the owner saw text this build cannot show). */
@@ -94,6 +104,9 @@ export async function enableSupportStandby(input: { readonly code: unknown; read
 
   const sshd = await deps.probeSshd(fromCidrs)
   if (!sshd.ok) return no(sshd.problem)
+  const own = await deps.readHostKey(sshd)
+  if (own.kind !== 'ok') return no(own.kind === 'missing' ? 'host_key_missing' : 'host_key_unverified')
+  const hostKey = own.key
   const kit = verifyKit({ supportDir: deps.supportDir })
   if (!kit.ok) return no(kit.problem)
   if (kit.manifest.files[KIT_DISPATCHER_NAME] === undefined) return no('kit_mismatch')
@@ -123,7 +136,6 @@ export async function enableSupportStandby(input: { readonly code: unknown; read
       pinnedBlobs,
       grant: { keys: sortedKeys, fromCidrs, grantId, consentVersion: SUPPORT_CONSENT_VERSION, dispatchPath, sshd: sshd.version },
     })
-    return { ok: true, keys: sortedKeys.map((k) => k.name), lines: sortedKeys.length }
   } catch (err) {
     // Take back whatever was written, each step on its own: one failure must not keep the others in place.
     try {
@@ -145,6 +157,9 @@ export async function enableSupportStandby(input: { readonly code: unknown; read
     if (err instanceof SupportLineError) return no('support_pins_invalid')
     return no('enable_write_failed')
   }
+  // Outside the try: a failed send must not take back what was written.
+  const sent = await sendSupportHostKey({ token: redeemed.token, hostKey }, deps.redeemTransport)
+  return { ok: true, keys: sortedKeys.map((k) => k.name), lines: sortedKeys.length, hostKey: sent }
 }
 
 export type DisableResult =

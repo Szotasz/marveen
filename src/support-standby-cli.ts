@@ -28,6 +28,7 @@ import { installKit, SUPPORT_DIR_IN_HOME } from './support-kit-install.js'
 import { readSupportToken } from './support-access-token.js'
 import { readGroupRecord } from './support-group-record.js'
 import { createHttpsRedeemTransport } from './support-access-redeem.js'
+import { readOwnHostKey, readRootOwnedPub } from './support-access-hostkey.js'
 import { disableSupportStandby, enableSupportStandby, type StandbyDeps } from './support-standby-enable.js'
 import { supportConsentText } from './support-consent-text.js'
 
@@ -140,6 +141,7 @@ export function createStandbyDeps(account = currentLoginUser(), moduleUrl: strin
     sshDir: join(account.home, '.ssh'),
     pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
     probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
+    readHostKey: (sshd) => readOwnHostKey(sshd, { run: createSshdProbeDeps(account).run, readRootPub: readRootOwnedPub }),
     redeemTransport: createHttpsRedeemTransport(),
     now: () => new Date(),
     newGrantId: () => randomUUID(),
@@ -219,7 +221,7 @@ export async function runSupportCli(argv: readonly string[], io: CliIo, deps: Cl
       return 1
     }
     // Until the real dispatcher (PR1c), the kit's dispatcher refuses every start: say so (Dani 78357, Q3).
-    io.out('standby=on\nstandby_keys=' + done.keys.join(',') + '\nsupport_lines=' + done.lines + '\nlogins=refused_by_this_release\n')
+    io.out('standby=on\nstandby_keys=' + done.keys.join(',') + '\nsupport_lines=' + done.lines + '\nhost_key=' + done.hostKey + '\nlogins=refused_by_this_release\n')
     return 0
   }
   if (argv.length === 3 && argv[0] === 'consent-text' && argv[1] === '--consent' && /^[1-9][0-9]{0,3}$/.test(argv[2])) {
