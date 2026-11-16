@@ -346,6 +346,9 @@ kérés a terminálban marad). Felülírás-kulcs: `.env`-ből nem olvasódik.
 **Szerepek csatornánként.** `DISCORD_CHANNEL_POLICY` (csak a gazda, felülírás-kulcs), például
 `{"<csatorna-ID>": {"allowRoles": ["<szerep-ID>"]}}`. Ahol szerep van megadva, ott a csatorna engedélyezett
 felhasználói MELLETT a szerep birtokosai is írhatnak a botnak (üres felhasználói lista mellett csak ők).
+A szerep **ID-ja** kell, nem a neve: a mentés a nem-ID tételt elutasítja, a csatorna-indítás pedig minden
+eldobott tételt egy `LOUD` sorral jelez. Vigyázat: az `@everyone` szerep ID-ja a szerver (guild) ID-ja, érvényes
+ID, tehát átmegy, és a csatornát a szerver MINDEN tagjának megnyitja.
 Nem az `access.json`-ban él, mert a `/discord:access group add` a csatorna bejegyzését felülírja.
 Ugyanitt kapcsolható be csatornánként a **csatorna-előzmény**: `{"<csatorna-ID>": {"history": true}}` (a
 szerepekkel együtt is). Ilyenkor a botnak szóló üzenet elé bekerül, amit a csatornában a bot utolsó üzenete óta
