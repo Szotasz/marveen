@@ -2145,8 +2145,9 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
 #   (a) its program text or argument list is built by one of the class mechanisms:
 #       - a shell (sh, bash, zsh, dash), source / `.`, python or a JS runtime (not npx) reads its PROGRAM from a
 #         process substitution (`<(...)`, zsh `=(...)`: as the script operand, or stdin redirected from one), from a
-#         here-string, or from a stdin heredoc (also `cat <<TAG | <program>`); /dev/stdin, /dev/fd/0 and
-#         /proc/self/fd/0 as the script operand are stdin, another /dev/fd/N is undecidable;
+#         here-string, or from a stdin heredoc, also through a pipe from a segment whose program only copies such a
+#         stdin (cat with no file operand, tee: _uv_copier_output); /dev/stdin, /dev/fd/0 and /proc/self/fd/0 as the
+#         script operand are stdin, another /dev/fd/N is undecidable;
 #       - xargs (or gxargs) builds the argument list of its command template;
 #   (b) the built text could be a send. The text the gate can read is judged with the gates' existing markers: a
 #       shell's text with is_send_invocation, script_run_sends and this rule one level deeper, an interpreter's text
@@ -2155,8 +2156,8 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
 #       whole (`"$CMD"`, `"$(cat f)"`), a `<` left at a segment end (a substitution the scanner did not mark), a heredoc
 #       without a readable body. An xargs template is judged AS WRITTEN with the send markers; an address probe stands
 #       in for what xargs adds only where that is a recipient value: the template ends in a recipient flag (--to /
-#       --cc / --bcc, an argparse prefix of one, curl's --mail-rcpt), or the -I / -J / -i / --replace string stands
-#       right after one (or glued to one with `=`). A shell -c program in the template is judged with the replace
+#       --cc / --bcc, an argparse prefix of one, curl's --mail-rcpt), or the -I / -J / -i / --replace string is in
+#       the word right after one (or glued to one with `=`). A shell -c program in the template is judged with the replace
 #       string and the positional parameters as that address; a -c program that IS the input cannot be told. A helper
 #       script that xargs runs is judged by the script-run rule as before, not here (Marveen's real-traffic control).
 # A shell `-c` string and an eval line are searched for the same shapes one level deeper (up to _SHELL_C_DEPTH).
@@ -2166,7 +2167,8 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
 _UNVERIFIABLE_HINT = re.compile(r"<<|<\(|=\(|xargs")
 _UV_HEREDOC = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n(?:.*?\n)?\3(?=\s|$)", re.S)
 _UV_MARK = re.compile(r"^__GATE(HEREDOC|PROCSUBST)(\d+)__$")
-_UV_CAT_PIPE = re.compile(r"(?<![^\s;&|(])cat\s+<< (__GATEHEREDOC\d+__)[ \t]*\|&?(?!\|)([^\n;&|]*)")
+_UV_PIPE_OUT, _UV_PIPE_IN = "__GATEPIPEOUT__", "__GATEPIPEIN__"
+_UV_COPIERS = ("cat", "tee")   # a program whose standard output is its standard input
 _UV_STDIN_PATHS = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
 _UV_FD_PATH = re.compile(r"^/(?:dev/fd|proc/self/fd)/\d+$")
 _UV_WHOLE_EXPANSION = re.compile(r"^\s*(?:\$(?:\w+|\{[^}]*\}|\(.*\)|[@*#?$!-])|`.*`)\s*$", re.S)
@@ -2188,7 +2190,8 @@ def _uv_mark(cmd: str, texts: list) -> str:
     def heredoc(m):
         texts.append(("heredoc", m.group(0)[len(m.group(1)) + 1:len(m.group(0)) - len(m.group(3))]))
         head = re.match(r"<<-?\s*(['\"]?)\w+\1", m.group(1))
-        return f"<< __GATEHEREDOC{len(texts) - 1}__" + m.group(1)[head.end():]
+        sep = "" if re.search(r"(?:^|[\s;&|(])\d+$", m.string[:m.start()]) else " "   # `0<<TAG` keeps its fd
+        return f"{sep}<< __GATEHEREDOC{len(texts) - 1}__" + m.group(1)[head.end():]
     cmd = _UV_HEREDOC.sub(heredoc, cmd)
     out, q, i, n = [], None, 0, len(cmd)
     while i < n:
@@ -2203,6 +2206,17 @@ def _uv_mark(cmd: str, texts: list) -> str:
             q = ch; out.append(ch); i += 1; continue
         if ch == "\\" and i + 1 < n:
             out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|("):
+            while i < n and cmd[i] != "\n":   # a comment: an apostrophe in it opens no quote
+                out.append(cmd[i]); i += 1
+            continue
+        if ch == "|" and not (i > 0 and cmd[i - 1] == ">"):
+            if i + 1 < n and cmd[i + 1] == "|":
+                out.append("||"); i += 2; continue
+            # a pipe: the segment before it ends in _UV_PIPE_OUT, the one after it starts with _UV_PIPE_IN
+            out.append(f" {_UV_PIPE_OUT} | {_UV_PIPE_IN} ")
+            i += 2 if i + 1 < n and cmd[i + 1] == "&" else 1
+            continue
         if i + 1 < n and cmd[i + 1] == "(" and (ch == "<" or (ch == "=" and (i == 0 or cmd[i - 1] in " \t\n;&|(<"))):
             depth, j, iq = 1, i + 2, None
             while j < n and depth > 0:
@@ -2257,9 +2271,10 @@ def _uv_text(word, texts):
     return True, (_uv_produced_text(text) if kind == "procsubst" else text)
 
 
-def _uv_stdin_and_args(rest, texts):
-    """(stdin feed, the words without redirections); a feed is ("text", str or None) or ("file",)"""
-    feed, args, i = None, [], 0
+def _uv_stdin_and_args(rest, texts, feed=None):
+    """(stdin feed, the words without redirections); a feed is ("text", str or None) or ("file",); `feed` is what a
+    pipe brings in, and a redirection overrides it"""
+    args, i = [], 0
     while i < len(rest):
         t = rest[i]
         nxt = rest[i + 1] if i + 1 < len(rest) else ""
@@ -2332,7 +2347,23 @@ def _uv_program_text_sends(kind, text, cwd, depth, texts) -> bool:
     return _heredoc_body_sends(text, kind)
 
 
-def _uv_head(head, cwd, depth, texts) -> bool:
+def _uv_copier_output(head, texts):
+    """EMAILGATESUBST1116 (Dani's #2842 review B1): the text a pipeline segment writes into the pipe when its program
+    only copies its stdin -- cat with no file operand (only switches, `-` and `--`) or tee (its file operands are
+    extra outputs), behind any path or wrapper -- and that stdin is a heredoc or a here-string in any spelling.
+    ("text", None) when that text is unreadable; None when the segment is no such copier."""
+    prog = _basename(head[0])
+    if prog not in _UV_COPIERS:
+        return None
+    feed, args = _uv_stdin_and_args(head[1:], texts)
+    if feed is None or feed[0] != "text":
+        return None
+    if prog == "cat" and any(not a.startswith("-") for a in args):
+        return None   # a file operand: the output is not only the stdin
+    return feed
+
+
+def _uv_head(head, cwd, depth, texts, pipe_feed=None) -> bool:
     prog, rest = _basename(head[0]), list(head[1:])
     while prog == "builtin" and rest:
         prog, rest = _basename(rest[0]), rest[1:]
@@ -2342,7 +2373,7 @@ def _uv_head(head, cwd, depth, texts) -> bool:
             "py" if _PYTHON.match(prog) else "js" if _NODEISH.match(prog) and prog.lower() != "npx" else None)
     if kind is None:
         return False
-    feed, args = _uv_stdin_and_args(rest, texts)
+    feed, args = _uv_stdin_and_args(rest, texts, pipe_feed)
     src, word = _uv_program_source(kind, prog, args)
     if src == "file":
         marked, text = _uv_text(word, texts)
@@ -2364,8 +2395,13 @@ def _uv_shell_word(w: str) -> str:
     return w if re.match(r"^[A-Za-z0-9_@%+=:,./$-]+$", w) else "'" + w.replace("'", "'\\''") + "'"
 
 
-def _uv_xargs_templates(words, repl=None, j=0):
-    """[(template words, replace string or None)] for the words after xargs; an unknown option is read both ways"""
+def _uv_xargs_templates(words, repl=None, j=0, _memo=None):
+    """[(template words, replace string or None)] for the words after xargs; an unknown option is read both ways,
+    memoized on (index, replace string) so a run of unknown options costs linear time (Dani's #2842 review R1)"""
+    memo = {} if _memo is None else _memo
+    key = (j, repl)
+    if key in memo:
+        return memo[key]
     out = []
     while j < len(words):
         t = words[j]
@@ -2380,7 +2416,7 @@ def _uv_xargs_templates(words, repl=None, j=0):
                 j += 2
                 continue
             if not eq and name not in _XARGS_LONG_FLAG:
-                out += _uv_xargs_templates(words, repl, j + 2)
+                out += _uv_xargs_templates(words, repl, j + 2, memo)
             j += 1
             continue
         if t.startswith("-") and len(t) > 1:
@@ -2395,12 +2431,13 @@ def _uv_xargs_templates(words, repl=None, j=0):
                         repl = val or "{}"
                     break
                 if c not in _XARGS_SHORT_FLAG:
-                    out += _uv_xargs_templates(words, repl, j + 2)
+                    out += _uv_xargs_templates(words, repl, j + 2, memo)
                     break
             j += step
             continue
         break
-    return out + [(words[j:], repl)]
+    memo[key] = list(dict.fromkeys(out + [(tuple(words[j:]), repl)]))
+    return memo[key]
 
 
 def _uv_xargs_sends(words, cwd, texts) -> bool:
@@ -2413,7 +2450,7 @@ def _uv_xargs_sends(words, cwd, texts) -> bool:
         if is_send_invocation(" ".join(_uv_shell_word(w) for w in template)):
             return True   # the template program is itself a send
         if repl:
-            hit = any((w == repl and i > 0 and _UV_RCPT_FLAG.match(template[i - 1])) or
+            hit = any((repl in w and i > 0 and _UV_RCPT_FLAG.match(template[i - 1])) or
                       (_UV_RCPT_GLUED.match(w) and repl in w) for i, w in enumerate(template))
             filled = [w.replace(repl, _UV_PROBE_ADDR) for w in template]
         else:
@@ -2445,13 +2482,18 @@ def _uv_xargs_sends(words, cwd, texts) -> bool:
 
 
 def _uv_sends(cmd: str, cwd, depth: int, texts: list) -> bool:
-    # a heredoc on a bare `cat` line piped into a program is that program's stdin
-    marked = _UV_CAT_PIPE.sub(lambda m: m.group(2).rstrip() + " << " + m.group(1), _uv_mark(cmd, texts))
     try:
-        segments = _segments_tokens(marked)
+        segments = _segments_tokens(_uv_mark(cmd, texts))
     except ValueError:
         return False   # unparseable: is_send_invocation's legacy fallback judges it
+    pipe_feed = None   # what the previous segment writes into the pipe, when it is a copier
     for toks in segments:
+        feed_in = pipe_feed if toks[0] == _UV_PIPE_IN else None
+        pipe_feed = None
+        pipes_out = toks[-1] == _UV_PIPE_OUT
+        toks = [t for t in toks if t not in (_UV_PIPE_IN, _UV_PIPE_OUT)]
+        if not toks:
+            continue   # e.g. `( ... ) |`: a subshell is no copier here
         if toks[-1] in ("<", "="):
             # a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
             texts.append(("procsubst", None))
@@ -2459,8 +2501,11 @@ def _uv_sends(cmd: str, cwd, depth: int, texts: list) -> bool:
         for i, t in enumerate(toks):
             if _basename(t) in ("xargs", "gxargs") and _uv_xargs_sends(toks[i + 1:], cwd, texts):
                 return True
-        if any(h and _uv_head(h, cwd, depth, texts) for h in _command_heads(toks)):
+        heads = [h for h in _command_heads(toks) if h]
+        if any(_uv_head(h, cwd, depth, texts, feed_in) for h in heads):
             return True
+        if pipes_out:
+            pipe_feed = next((f for f in (_uv_copier_output(h, texts) for h in heads) if f), None)
     return False
 
 

@@ -54,6 +54,21 @@ describe('a send command built by process substitution, a here-string, a stdin h
     expect(TABLE.cases.filter((c) => !c.expected).length).toBeGreaterThan(10)
   })
 
+  it('a run of unknown xargs options costs linear time in both copies (the option reading is memoized)', () => {
+    const cmd = 'echo x | xargs ' + Array(40).fill('-Z').join(' ') + ' true'
+    const t0 = Date.now()
+    expect(unverifiableSendConstruction(cmd, dir)).toBe(false)
+    expect(Date.now() - t0).toBeLessThan(1000)
+    const pyMs = Number(execFileSync('python3', ['-c', `
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(GATE_PY)})
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+t = time.time(); assert g.unverifiable_send_construction(sys.argv[1], sys.argv[2]) is False
+print(int((time.time() - t) * 1000))
+`, cmd, dir], { encoding: 'utf-8' }).trim())
+    expect(pyMs).toBeLessThan(1000)
+  })
+
   it('the sub-agent gate denies such a command with its own reason, before the send checks', () => {
     for (const c of TABLE.cases.filter((x) => x.expected)) {
       expect(gateDecision('Bash', { command: c.cmd }, null, dir), c.cmd).toEqual({ deny: true, kind: 'unverifiable-construction' })

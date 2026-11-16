@@ -1001,7 +1001,9 @@ export function isSendInvocation(cmd, depth = 0) {
 // is written out; unverifiable-construction-cases.json binds the two. gateDecision calls it before the send checks.
 const UNVERIFIABLE_HINT = /<<|<\(|=\(|xargs/
 const UV_HEREDOC = /(<<-?\s*(['"]?)(\w+)\2[^\n]*)\n(?:[\s\S]*?\n)?\3(?=\s|$)/g
-const UV_CAT_PIPE = /(?<![^\s;&|(])cat\s+<< (__GATEHEREDOC\d+__)[ \t]*\|&?(?!\|)([^\n;&|]*)/g
+const UV_PIPE_OUT = '__GATEPIPEOUT__'
+const UV_PIPE_IN = '__GATEPIPEIN__'
+const UV_COPIERS = ['cat', 'tee'] // a program whose standard output is its standard input
 const UV_MARK = /^__GATE(HEREDOC|PROCSUBST)(\d+)__$/
 const UV_STDIN_PATHS = ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']
 const UV_FD_PATH = /^\/(?:dev\/fd|proc\/self\/fd)\/\d+$/
@@ -1019,10 +1021,11 @@ const XARGS_LONG_FLAG = ['null', 'no-run-if-empty', 'interactive', 'verbose', 'e
 const uvTokens = (cmd) => segmentsTokens(stripShellComments(cmd))
 
 function uvMark(cmdIn, texts) {
-  const cmd = cmdIn.replace(UV_HEREDOC, (g0, g1, _q, tag) => {
+  const cmd = cmdIn.replace(UV_HEREDOC, (g0, g1, _q, tag, offset, whole) => {
     texts.push(['heredoc', g0.slice(g1.length + 1, g0.length - tag.length)])
     const head = /<<-?\s*(['"]?)\w+\1/.exec(g1)
-    return `<< __GATEHEREDOC${texts.length - 1}__` + g1.slice(head.index + head[0].length)
+    const sep = /(?:^|[\s;&|(])\d+$/.test(whole.slice(0, offset)) ? '' : ' ' // `0<<TAG` keeps its fd
+    return `${sep}<< __GATEHEREDOC${texts.length - 1}__` + g1.slice(head.index + head[0].length)
   })
   let out = ''
   let q = null
@@ -1036,6 +1039,18 @@ function uvMark(cmdIn, texts) {
     }
     if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
     if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+    if (ch === '#' && (i === 0 || ' \t\n;&|('.includes(cmd[i - 1]))) {
+      while (i < cmd.length && cmd[i] !== '\n') out += cmd[i++] // a comment: an apostrophe in it opens no quote
+      i--
+      continue
+    }
+    if (ch === '|' && !(i > 0 && cmd[i - 1] === '>')) {
+      if (cmd[i + 1] === '|') { out += '||'; i++; continue }
+      // a pipe: the segment before it ends in UV_PIPE_OUT, the one after it starts with UV_PIPE_IN
+      out += ` ${UV_PIPE_OUT} | ${UV_PIPE_IN} `
+      if (cmd[i + 1] === '&') i++
+      continue
+    }
     if (cmd[i + 1] === '(' && (ch === '<' || (ch === '=' && (i === 0 || ' \t\n;&|(<'.includes(cmd[i - 1]))))) {
       let depth = 1
       let j = i + 2
@@ -1083,8 +1098,8 @@ function uvText(word, texts) {
   return { marked: true, text: kind === 'procsubst' ? uvProducedText(text) : text }
 }
 
-function uvStdinAndArgs(rest, texts) {
-  let feed = null
+function uvStdinAndArgs(rest, texts, pipeFeed = null) {
+  let feed = pipeFeed // what a pipe brings in; a redirection overrides it
   const args = []
   for (let i = 0; i < rest.length;) {
     const t = rest[i]
@@ -1154,7 +1169,17 @@ function uvProgramTextSends(kind, text, cwd, depth, texts) {
   return heredocBodySends(text, kind)
 }
 
-function uvHead(head, cwd, depth, texts) {
+// Dani's #2842 review B1: see _uv_copier_output in hooks/outgoing-copy-gate.py.
+function uvCopierOutput(head, texts) {
+  const prog = basename(head[0])
+  if (!UV_COPIERS.includes(prog)) return null
+  const { feed, args } = uvStdinAndArgs(head.slice(1), texts)
+  if (!feed || feed.file) return null
+  if (prog === 'cat' && args.some((a) => !a.startsWith('-'))) return null // a file operand: the output is not only the stdin
+  return feed
+}
+
+function uvHead(head, cwd, depth, texts, pipeFeed = null) {
   let prog = basename(head[0])
   let rest = head.slice(1)
   while (prog === 'builtin' && rest.length) { prog = basename(rest[0]); rest = rest.slice(1) }
@@ -1162,7 +1187,7 @@ function uvHead(head, cwd, depth, texts) {
   const kind = WRAPPER_SHELL.test(prog) ? 'sh' : (prog === 'source' || prog === '.') ? 'src'
     : PYTHON.test(prog) ? 'py' : (NODEISH.test(prog) && prog.toLowerCase() !== 'npx') ? 'js' : null
   if (!kind) return false
-  const { feed, args } = uvStdinAndArgs(rest, texts)
+  const { feed, args } = uvStdinAndArgs(rest, texts, pipeFeed)
   let { src, word } = uvProgramSource(kind, prog, args)
   if (src === 'file') {
     const r = uvText(word, texts)
@@ -1178,7 +1203,10 @@ function uvHead(head, cwd, depth, texts) {
 
 const uvShellWord = (w) => (/^[A-Za-z0-9_@%+=:,./$-]+$/.test(w) ? w : "'" + w.replaceAll("'", "'\\''") + "'")
 
-function uvXargsTemplates(words, replIn = null, jIn = 0) {
+// memoized on (index, replace string): a run of unknown options costs linear time (Dani's #2842 review R1)
+function uvXargsTemplates(words, replIn = null, jIn = 0, memo = new Map()) {
+  const key = `${jIn}\u0000${replIn}`
+  if (memo.has(key)) return memo.get(key)
   const out = []
   let repl = replIn
   let j = jIn
@@ -1190,7 +1218,7 @@ function uvXargsTemplates(words, replIn = null, jIn = 0) {
       const name = eq < 0 ? t.slice(2) : t.slice(2, eq)
       if (name === 'replace') repl = eq < 0 ? '{}' : t.slice(eq + 1)
       if (eq < 0 && XARGS_LONG_VAL.includes(name)) { j += 2; continue }
-      if (eq < 0 && !XARGS_LONG_FLAG.includes(name)) out.push(...uvXargsTemplates(words, repl, j + 2))
+      if (eq < 0 && !XARGS_LONG_FLAG.includes(name)) out.push(...uvXargsTemplates(words, repl, j + 2, memo))
       j++
       continue
     }
@@ -1204,14 +1232,17 @@ function uvXargsTemplates(words, replIn = null, jIn = 0) {
           if (c === 'I' || c === 'J' || c === 'i') repl = val || '{}'
           break
         }
-        if (!XARGS_SHORT_FLAG.includes(c)) { out.push(...uvXargsTemplates(words, repl, j + 2)); break }
+        if (!XARGS_SHORT_FLAG.includes(c)) { out.push(...uvXargsTemplates(words, repl, j + 2, memo)); break }
       }
       j += step
       continue
     }
     break
   }
-  return [...out, [words.slice(j), repl]]
+  const seen = new Map()
+  for (const [t, r] of [...out, [words.slice(j), repl]]) seen.set(JSON.stringify([t, r]), [t, r])
+  memo.set(key, [...seen.values()])
+  return memo.get(key)
 }
 
 function uvXargsSends(words, cwd, texts) {
@@ -1222,7 +1253,7 @@ function uvXargsSends(words, cwd, texts) {
     let hit
     let filled
     if (repl) {
-      hit = template.some((w, i) => (w === repl && i > 0 && UV_RCPT_FLAG.test(template[i - 1])) || (UV_RCPT_GLUED.test(w) && w.includes(repl)))
+      hit = template.some((w, i) => (w.includes(repl) && i > 0 && UV_RCPT_FLAG.test(template[i - 1])) || (UV_RCPT_GLUED.test(w) && w.includes(repl)))
       filled = template.map((w) => w.replaceAll(repl, UV_PROBE_ADDR))
     } else {
       hit = UV_RCPT_FLAG.test(template[template.length - 1])
@@ -1252,11 +1283,15 @@ function uvXargsSends(words, cwd, texts) {
 }
 
 function uvSends(cmd, cwd, depth, texts) {
-  // a heredoc on a bare `cat` line piped into a program is that program's stdin
-  const marked = uvMark(cmd, texts).replace(UV_CAT_PIPE, (_m, tag, consumer) => consumer.trimEnd() + ' << ' + tag)
   let segments
-  try { segments = uvTokens(marked) } catch { return false } // unparseable: isSendInvocation's legacy fallback judges it
+  try { segments = uvTokens(uvMark(cmd, texts)) } catch { return false } // unparseable: isSendInvocation's legacy fallback judges it
+  let pipeFeed = null // what the previous segment writes into the pipe, when it is a copier
   for (let toks of segments) {
+    const feedIn = toks[0] === UV_PIPE_IN ? pipeFeed : null
+    pipeFeed = null
+    const pipesOut = toks[toks.length - 1] === UV_PIPE_OUT
+    toks = toks.filter((t) => t !== UV_PIPE_IN && t !== UV_PIPE_OUT)
+    if (!toks.length) continue // e.g. `( ... ) |`: a subshell is no copier here
     if (toks[toks.length - 1] === '<' || toks[toks.length - 1] === '=') {
       // a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
       texts.push(['procsubst', null])
@@ -1265,7 +1300,9 @@ function uvSends(cmd, cwd, depth, texts) {
     for (let i = 0; i < toks.length; i++) {
       if ((basename(toks[i]) === 'xargs' || basename(toks[i]) === 'gxargs') && uvXargsSends(toks.slice(i + 1), cwd, texts)) return true
     }
-    if (commandHeads(toks).some((h) => h && h.length && uvHead(h, cwd, depth, texts))) return true
+    const heads = commandHeads(toks).filter((h) => h && h.length)
+    if (heads.some((h) => uvHead(h, cwd, depth, texts, feedIn))) return true
+    if (pipesOut) pipeFeed = heads.map((h) => uvCopierOutput(h, texts)).find((f) => f) ?? null
   }
   return false
 }
