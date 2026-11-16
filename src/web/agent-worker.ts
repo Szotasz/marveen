@@ -1136,7 +1136,9 @@ async function clearWorkerContext(ctx: WorkerCtx): Promise<void> {
     // Typed-ahead floor (R1 review corner): see CLEAR_READY_SETTLE_MS. The pane can
     // still show the pre-/clear idle prompt until the TUI reads the Enter, so the
     // first readiness poll runs only after the old fixed-sleep floor has passed.
-    execFileSync('/bin/sleep', [(CLEAR_READY_SETTLE_MS / 1000).toFixed(1)], { timeout: 3000 })
+    // Async on purpose: these waits are up to the 8s budget long, and a synchronous
+    // /bin/sleep here would block the dashboard event loop (42b085b3).
+    await sleepMs(CLEAR_READY_SETTLE_MS)
     // Loaded TUIs can take ~3.5s to process /clear (0038ce9c), so poll the pane
     // state instead of sleeping a fixed time. Fail open past the budget: a dispatch
     // must deliver, the request is never dropped here (the exhaustion is logged).
@@ -1144,7 +1146,7 @@ async function clearWorkerContext(ctx: WorkerCtx): Promise<void> {
     let clearReady = false
     while (Date.now() < clearDeadline) {
       if (await isSessionReadyForPrompt(ctx.session)) { clearReady = true; break }
-      execFileSync('/bin/sleep', [(CLEAR_READY_POLL_MS / 1000).toFixed(1)], { timeout: 2000 })
+      await sleepMs(CLEAR_READY_POLL_MS)
     }
     if (!clearReady) {
       logger.warn({ session: ctx.session }, 'agent-worker: /clear did not return an idle prompt within budget (continuing)')
