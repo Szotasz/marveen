@@ -321,6 +321,8 @@
     {"name": "COPYSUBST1116 (Revizor 4123 L2): eval -- of an addressed run", "cmd": "eval -- 'python3 tool.py --to a@example.com'", "main": true, "sub": true},
     {"name": "COPYSUBST1116 (Revizor 4123 L3): eval of an ANSI-C body", "cmd": "eval $'python3 tool.py --to a@example.com'", "main": true, "sub": true},
     {"name": "COPYSUBST1116 (Revizor 4123 L3): bash -c of an ANSI-C body", "cmd": "bash -c $'python3 tool.py --to a@example.com'", "main": true, "sub": true},
-    {"name": "COPYSUBST1116 control: an ANSI-C word with no address", "cmd": "python3 plain.py $'--text' $'a\\tb'", "main": false, "sub": false}
+    {"name": "COPYSUBST1116 control: an ANSI-C word with no address", "cmd": "python3 plain.py $'--text' $'a\\tb'", "main": false, "sub": false},
+    {"name": "COPYSUBST1116 KNOWN LIMIT (Marveen 4128, Revizor 4123 L4): eval \"$(cmd)\" runs a line the gate cannot know; it passes so that eval \"$(pyenv init -)\" keeps working", "cmd": "eval \"$(echo python3 tool.py --to a@example.com)\"", "main": false, "sub": false},
+    {"name": "COPYSUBST1116 KNOWN LIMIT control (Marveen 4128): eval \"$(pyenv init -)\" passes", "cmd": "eval \"$(pyenv init -)\"", "main": false, "sub": false}
   ]
 }

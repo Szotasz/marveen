@@ -116,6 +116,20 @@ try:
     ):
         code, err = rc(cmd)
         check(f"{name} -> exit 2", code == 2, f"exit={code} err={err[:200]!r}")
+
+    print("== KNOWN LIMIT (Marveen 4128, Revizor 4123 L4): eval \"$(cmd)\" is not stopped")
+    # The line eval runs comes from a command the gate cannot evaluate. Stopping every such eval would stop
+    # eval "$(pyenv init -)" and eval "$(ssh-agent -s)" too, so it passes by decision; this pins the decision, and a
+    # change of it must change this test. A cost of the fail-closed rule above is stated here as well (Revizor 4123 L5):
+    # a variable on --to / --cc / --bcc asks for approval even when it is no address.
+    for name, cmd in (
+        ("eval \"$(echo ... --to a@x)\" passes", f"eval \"$(echo {T} --to a@example.com)\""),
+        ("eval \"$(pyenv init -)\" passes", "eval \"$(pyenv init -)\""),
+    ):
+        code, err = rc(cmd)
+        check(f"{name} -> exit 0", code == 0, f"exit={code} err={err[:200]!r}")
+    code, err = rc(f"{T} --cc \"$CC_COMPILER\"")
+    check("the stated cost: --cc \"$CC_COMPILER\" -> exit 2", code == 2, f"exit={code} err={err[:200]!r}")
 finally:
     shutil.rmtree(td, ignore_errors=True)
 
