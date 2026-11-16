@@ -19,7 +19,7 @@ What a cached server.ts is decides what happens, never its folder name:
 - the vendored upstream file (sha256), or that file with the old DCBTN1023
   tagged lines in it: ours goes in ("overlaid");
 - a file this script wrote (its sha256 in the .marveen-overlay.json manifest
-  next to it): brought to the current overlay and settings ("upgraded"), or
+  next to it, or byte-identical to a vendored overlay server.ts): brought to the current overlay and settings ("upgraded"), or
   left alone when already current ("already");
 - anything else (a plugin update): left alone, one loud line, the plugin runs
   as shipped ("unknown"). Nothing is ever written over a file we cannot name.
@@ -61,6 +61,8 @@ EXT_CONFIG = "marveen-ext.json"
 SNOWFLAKE = re.compile(r"^[1-9][0-9]{16,19}$")
 # The overlay's id shape for channels and roles (marveen-ext.ts SNOWFLAKE_ID).
 SNOWFLAKE_ID = re.compile(r"^[0-9]{15,20}\Z")
+# DISCORD_CHANNEL_POLICY's on/off keys per channel, as the overlay's parseChannelPolicy reads them.
+CHANNEL_POLICY_FLAGS = ("history", "autoThread")
 
 
 def log(msg):
@@ -194,6 +196,13 @@ def channel_policy_drops(policy):
         if not isinstance(v, dict):
             out.append(f"channel {ch}: not an object")
             continue
+        for k, flag in v.items():
+            if k == "allowRoles":
+                continue
+            if k not in CHANNEL_POLICY_FLAGS:
+                out.append(f"channel {ch}: unknown key {k!r}")
+            elif flag is not True and flag is not False:
+                out.append(f"channel {ch}: {k} is {flag!r}, only a literal true turns it on")
         roles = v.get("allowRoles")
         if roles is None:
             continue
@@ -212,13 +221,21 @@ def identify(dirpath, text_bytes, vendor):
     if h in vendor:
         return "upstream", vendor[h], None
     # Ours before DCBTN: the overlay carries the DCBTN-tagged button lines too.
+    manifest = None
     try:
         with open(os.path.join(dirpath, MANIFEST), encoding="utf-8") as f:
             manifest = json.load(f)
-        if manifest.get("files", {}).get("server.ts") == h and manifest.get("upstream") in vendor:
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict):
+            manifest = None
+        elif manifest["files"].get("server.ts") == h and manifest.get("upstream") in vendor:
             return "ours", vendor[manifest["upstream"]], manifest
     except Exception:
-        pass
+        manifest = None
+    # A vendored overlay server.ts is ours even when the manifest is missing or stale: a run that
+    # failed between writing server.ts and writing the manifest must not strand the overlay.
+    for entry in vendor.values():
+        if sha(entry["overlay"]["server.ts"]) == h:
+            return "ours", entry, manifest
     try:
         text = text_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -287,6 +304,10 @@ def apply_file(path, vendor, ext_on, ext):
             log(f"LOUD: vendor/discord-plugin missing or empty -- {path} left as shipped")
         return "unknown"
     old_files, manifest_rejected = manifest_old_files(manifest, vendor)
+    if kind == "ours":
+        # Without a manifest naming them, the overlay's own supporting files are the ones we wrote.
+        old_files |= {n for n in entry["overlay"] if n != "server.ts" and os.path.isfile(os.path.join(dirpath, n))
+                      and read_bytes(os.path.join(dirpath, n)) == entry["overlay"][n]}
 
     try:
         if not ext_on:
@@ -307,7 +328,8 @@ def apply_file(path, vendor, ext_on, ext):
             same = all(
                 os.path.isfile(os.path.join(dirpath, n)) and read_bytes(os.path.join(dirpath, n)) == data
                 for n, data in want.items()
-            ) and old_files | {"server.ts", EXT_CONFIG} == set(want) and not manifest_rejected
+            ) and old_files | {"server.ts", EXT_CONFIG} == set(want) and not manifest_rejected and manifest is not None and (
+                manifest.get("files") == {n: sha(d) for n, d in want.items() if n != EXT_CONFIG})
             if same:
                 return "already"
         # Supporting files first, server.ts last: until it is replaced, the old
