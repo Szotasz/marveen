@@ -461,7 +461,7 @@ describe('/status CSATORNA follows the command\'s channel', () => {
     })
 
     it('switched off, no file, no plugin', () => {
-      expect(discordPluginPatchStatus(write({ mode: 'off', files: [] }))).toBe('kikapcsolva (DISCORD_PLUGIN_EXT=0): a hivatalos plugin fut')
+      expect(discordPluginPatchStatus(write({ mode: 'off', files: [] }))).toBe('kikapcsolva (DISCORD_PLUGIN_EXT=off): a hivatalos plugin fut')
       expect(discordPluginPatchStatus(join(dir, 'nincs.json'))).toMatch(/^nincs adat/)
       expect(discordPluginPatchStatus(write({ mode: 'on', files: [] }))).toBe('nincs Discord plugin a cache-ben')
     })
