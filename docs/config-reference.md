@@ -352,10 +352,12 @@ ID, tehát átmegy, és a csatornát a szerver MINDEN tagjának megnyitja.
 Nem az `access.json`-ban él, mert a `/discord:access group add` a csatorna bejegyzését felülírja.
 Ugyanitt kapcsolható be csatornánként a **csatorna-előzmény**: `{"<csatorna-ID>": {"history": true}}` (a
 szerepekkel együtt is). Ilyenkor a botnak szóló üzenet elé bekerül, amit a csatornában a bot utolsó üzenete óta
-írtak (legfeljebb 20 üzenet, csak azoktól, akik a botnak is írhatnának). Alapból ki van kapcsolva.
+írtak (legfeljebb 20 üzenet, csak azoktól, akik a botnak is írhatnának). Alapból ki van kapcsolva. Az értéke
+idézőjel nélküli `true` vagy `false`; mást (`"true"`, `1`) és ismeretlen kulcsot (elírást) a mentés visszautasít.
 Szintén itt kapcsolható be az **automatikus szál**: `{"<csatorna-ID>": {"autoThread": true}}`. Ilyenkor a botnak
 szóló üzenet szálat nyit magán, és a válasz abba megy (csak olyan csatornán, ahol a botot meg kell szólítani).
 Ha a szál nem nyitható meg, egy sor megy a csatornába, és az üzenet nem jut el a sessionig. Alapból ki van kapcsolva.
+A `history`-hoz hasonlóan csak idézőjel nélküli `true` vagy `false` lehet.
 
 **Slash-parancsok.** Ha a `DISCORD_OWNER_USER_ID` be van állítva, a dashboard parancslistája (ugyanaz, amiből a
 Telegram-menü készül) Discord slash-parancsként is megjelenik, de csak a bottal folytatott DM-ben, és csak a

@@ -305,7 +305,7 @@ export function discordPluginPatchStatus(stateFile = join(STORE_DIR, 'discord-pl
     slash_commands?: number | null
     files?: Array<{ version: string; path: string; status: string }>
   }
-  if (state.mode === 'off') return 'kikapcsolva (DISCORD_PLUGIN_EXT=0): a hivatalos plugin fut'
+  if (state.mode === 'off') return 'kikapcsolva (DISCORD_PLUGIN_EXT=off): a hivatalos plugin fut'
   const files = state.files ?? []
   if (files.length === 0) return 'nincs Discord plugin a cache-ben'
   const missing: string[] = []
