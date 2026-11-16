@@ -205,6 +205,15 @@ if True:
                "store/backup/.../codes.json": os.path.join(backup, "codes.json"),
                "store/backup/.../users.json": os.path.join(backup, "users.json"),
                "a store/ symlink into store/backup/": os.path.join(td, "lista.json")}
+    # Revizor 4089 L5: other spellings of store/backup (the same folder on a case-insensitive file system; on a
+    # case-sensitive one they are created as real folders, so the case-folded rule is what is tested there)
+    for spelling in ("BACKUP", "Backup", "bAcKuP"):
+        p = os.path.join(WROOT, "store", spelling, "beeboard", "20261116", "users.json")
+        if not os.path.exists(p):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+        refused[f"store/{spelling}/.../users.json"] = p
     for label, f in refused.items():
         for flag in ("--attach", "--text"):
             argv = (["--subject", "T", "--text", os.path.join(td, "l.txt"), "--attach", f] if flag == "--attach"

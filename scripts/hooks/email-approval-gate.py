@@ -1245,7 +1245,7 @@ def canonical_forms_text() -> str:
 # What this does not see (the same limits as the canonical senders): which `python3` PATH finds, and a file swapped
 # between this check and the run (the write protection of scripts/hooks/ is a text-level gate, not an OS boundary).
 GMAIL_DRAFT_REL = "scripts/hooks/gmail-draft.py"
-GMAIL_DRAFT_SHA256 = "d5bb048affa12e120269b2d8983d5ae64b89c0351cc176ebacc5f469edd803d3"
+GMAIL_DRAFT_SHA256 = "e9d910280848df746435c5af78e2655360856fcd319fda8d83584b70bcfccce7"
 _DRAFT_VALUE_FLAGS = frozenset(("--subject", "--text", "--html", "--to", "--cc", "--bcc", "--inline", "--attach",
                                 "--signature-html", "--signature-text", "--thread", "--in-reply-to"))
 _DRAFT_REPEATABLE = frozenset(("--inline", "--attach"))

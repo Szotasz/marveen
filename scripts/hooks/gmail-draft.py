@@ -73,7 +73,12 @@ def checked_file(path):
     parts = real[len(store) + 1:].split(os.sep)
     # Revizor 4080 / Marveen 4083: store/backup/ holds copies of state files (sessions, codes, users) under
     # ordinary names, so the whole tree is out
-    if parts[0] == "backup":
+    # Revizor 4089 L5: on a case-insensitive file system store/BACKUP is the same folder, and realpath keeps the
+    # spelling it was given: compared case-folded AND as the same directory
+    backup = os.path.join(store, "backup")
+    first = os.path.join(store, parts[0])
+    if parts[0].casefold() == "backup" or (os.path.isdir(backup) and os.path.exists(first)
+                                           and os.path.samefile(first, backup)):
         sys.exit("gmail-draft: a file under store/backup/ is not used: %s" % path)
     if any(part.startswith(".") or SECRET_NAME.search(part) for part in parts):
         sys.exit("gmail-draft: a hidden or secret-looking file is not used: %s" % path)
