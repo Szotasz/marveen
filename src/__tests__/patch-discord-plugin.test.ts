@@ -330,6 +330,35 @@ describe('patch-discord-plugin.py', () => {
     expect(existsSync(server + '.marveen-tmp')).toBe(false)
   })
 
+  // Review F-A1 (#2700): server.ts is in place before the manifest; a failed manifest write must not strand the overlay.
+  it('a manifest write that fails after server.ts: the overlay is still ours, the off switch still restores, the next run heals', () => {
+    const blocker = join(dir, '.marveen-overlay.json.marveen-tmp')
+    mkdirSync(blocker) // a directory at the manifest's temp name: write_atomic fails there, after server.ts was replaced
+    const first = run()
+    expect(first.stderr).toMatch(/cannot write in .*0\.0\.4: \w+Error -- left as it was/)
+    expect(readFileSync(server, 'utf-8')).toBe(readFileSync(join(OVERLAY, 'server.ts'), 'utf-8'))
+    expect(existsSync(join(dir, '.marveen-overlay.json'))).toBe(false)
+    // switch on, still blocked: recognised as ours (not the LOUD "left as shipped"), nothing worse
+    const state = join(cache, 'state.json')
+    const second = run(['--state', state])
+    expect(second.stderr).not.toMatch(/not a plugin version this install knows/)
+    expect(readState(state).files[0].status).toBe('unwritable')
+    // switch off, still blocked: the official file comes back and everything we wrote is removed
+    setOverrides({ DISCORD_PLUGIN_EXT: 'off' })
+    const off = run(['--state', state])
+    expect(off.stderr).toMatch(/restored .*server\.ts to the official plugin 0\.0\.4/)
+    expect(sha(readFileSync(server))).toBe(UPSTREAM_SHA)
+    expect(readdirSync(dir).sort()).toEqual(['.marveen-overlay.json.marveen-tmp', 'server.ts'])
+    // the blocker gone and the switch on: overlaid, and a manifest-less overlay heals to a current one
+    rmSync(blocker, { recursive: true })
+    setOverrides({ DISCORD_PLUGIN_EXT: 'on' })
+    expect(run().stderr).toMatch(/overlaid .*from upstream/)
+    rmSync(join(dir, '.marveen-overlay.json'))
+    expect(run(['--state', state]).stderr).toMatch(/upgraded .*from ours/)
+    expect(JSON.parse(readFileSync(join(dir, '.marveen-overlay.json'), 'utf-8')).files['server.ts']).toBe(sha(readFileSync(server)))
+    expect(run().stderr).toBe('')
+  })
+
   it('the switch reads as the settings store reads a flag (true/1/yes/on), absent = on', () => {
     for (const [v, on] of [['true', true], ['on', true], ['1', true], ['false', false], ['0', false], ['', false]] as Array<[string, boolean]>) {
       copyFileSync(UPSTREAM, server)
