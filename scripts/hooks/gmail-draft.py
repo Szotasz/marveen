@@ -71,6 +71,10 @@ def checked_file(path):
     if not real.startswith(store + os.sep):
         sys.exit("gmail-draft: only a file under the install's store/ is used: %s" % path)
     parts = real[len(store) + 1:].split(os.sep)
+    # Revizor 4080 / Marveen 4083: store/backup/ holds copies of state files (sessions, codes, users) under
+    # ordinary names, so the whole tree is out
+    if parts[0] == "backup":
+        sys.exit("gmail-draft: a file under store/backup/ is not used: %s" % path)
     if any(part.startswith(".") or SECRET_NAME.search(part) for part in parts):
         sys.exit("gmail-draft: a hidden or secret-looking file is not used: %s" % path)
     if not os.path.isfile(real):

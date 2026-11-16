@@ -189,11 +189,22 @@ if True:
         fh.write("x")
     os.symlink(outside, os.path.join(td, "link.txt"))
     os.symlink(token, os.path.join(td, "plain.txt"))
+    backup = os.path.join(WROOT, "store", "backup", "beeboard", "20261116")
+    os.makedirs(backup)
+    for name in ("sessions.json", "codes.json", "users.json"):
+        with open(os.path.join(backup, name), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+    os.symlink(os.path.join(backup, "users.json"), os.path.join(td, "lista.json"))
     refused = {"a file outside store/": outside, "store/.dashboard-token": token,
                "a token-named file": os.path.join(td, "api-token.txt"), "an ssh key name": os.path.join(td, "id_ed25519"),
                "a .pem": os.path.join(td, "cert.pem"), "a hidden directory": os.path.join(WROOT, "store", ".rejtett", "a.txt"),
                "a symlink in store/ to outside": os.path.join(td, "link.txt"),
-               "a plain-named symlink to the token": os.path.join(td, "plain.txt")}
+               "a plain-named symlink to the token": os.path.join(td, "plain.txt"),
+               # Revizor 4080 / Marveen 4083: the whole store/backup/ tree (state copies under ordinary names)
+               "store/backup/.../sessions.json": os.path.join(backup, "sessions.json"),
+               "store/backup/.../codes.json": os.path.join(backup, "codes.json"),
+               "store/backup/.../users.json": os.path.join(backup, "users.json"),
+               "a store/ symlink into store/backup/": os.path.join(td, "lista.json")}
     for label, f in refused.items():
         for flag in ("--attach", "--text"):
             argv = (["--subject", "T", "--text", os.path.join(td, "l.txt"), "--attach", f] if flag == "--attach"
