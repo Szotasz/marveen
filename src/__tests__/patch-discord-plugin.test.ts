@@ -172,6 +172,19 @@ describe('patch-discord-plugin.py', () => {
     expect(ext().channelPolicy).toEqual({})
   })
 
+  it('DISCORD_CHANNEL_POLICY entries the overlay will drop are named loudly; the object itself is passed on', () => {
+    const policy = { '1438000000000000700': { allowRoles: ['Moderátor', '1438000000000009001'] }, general: { allowRoles: ['1438000000000009001'] } }
+    setOverrides({ DISCORD_CHANNEL_POLICY: JSON.stringify(policy) })
+    const r = run()
+    expect(r.status).toBe(0)
+    expect(r.stderr).toContain("LOUD: DISCORD_CHANNEL_POLICY channel 1438000000000000700: allowRoles entry 'Moderátor' is not a Discord role id (the id, not the name) -- dropped")
+    expect(r.stderr).toContain("LOUD: DISCORD_CHANNEL_POLICY channel 'general' is not a Discord channel id -- dropped")
+    expect(r.stderr).not.toContain("'1438000000000009001'")
+    expect(ext().channelPolicy).toEqual(policy)
+    setOverrides({ DISCORD_CHANNEL_POLICY: JSON.stringify({ '1438000000000000700': { allowRoles: ['1438000000000009001'] } }) })
+    expect(run().stderr).not.toContain('DISCORD_CHANNEL_POLICY')
+  })
+
   it('an owner id that is not a Discord user id is not used, loudly', () => {
     for (const bad of ['0', '-290903699524550656', 'zoli', '1234', '2909036995245505561234']) {
       setOverrides({ DISCORD_OWNER_USER_ID: bad })

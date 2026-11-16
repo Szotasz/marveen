@@ -623,6 +623,29 @@ describe('B1: roles per channel (DISCORD_CHANNEL_POLICY)', () => {
     for (const junk of [null, [], 'x', 7]) expect(ext.parseChannelPolicy(junk)).toEqual({})
   })
 
+  it('the setting refuses on save what the overlay would drop silently (a role NAME, a non-id channel)', async () => {
+    const { SETTINGS_REGISTRY } = await import('../config-registry.js')
+    const validate = SETTINGS_REGISTRY.find(d => d.key === 'DISCORD_CHANNEL_POLICY')!.validate!
+    const CH = id(1)
+    for (const ok of ['', '  ', '{}', JSON.stringify({ [CH]: { allowRoles: [ROLE, ROLE2] } }), JSON.stringify({ [CH]: {} }), JSON.stringify({ [CH]: { allowRoles: [] } })]) {
+      expect(validate(ok), ok).toBeNull()
+    }
+    for (const [bad, says] of [
+      [{ [CH]: { allowRoles: ['Moderátor'] } }, /not a Discord role id \(the role's id, not its name\): "Moderátor"/],
+      [{ [CH]: { allowRoles: [ROLE, 5] } }, /not a Discord role id/],
+      [{ [CH]: { allowRoles: ROLE } }, /allowRoles: a list is required/],
+      [{ 'general': { allowRoles: [ROLE] } }, /Not a Discord channel id: "general"/],
+      [{ [CH]: 'x' }, /a JSON object is required/],
+      [[1], /A JSON object is required/],
+    ] as const) {
+      expect(validate(JSON.stringify(bad)), JSON.stringify(bad)).toMatch(says)
+    }
+    expect(validate('{ bad')).toMatch(/Invalid JSON/)
+    // whatever validate accepts, the overlay keeps every listed role
+    const accepted = { [CH]: { allowRoles: [ROLE, ROLE2] } }
+    expect(ext.parseChannelPolicy(accepted)).toEqual(accepted)
+  })
+
   it('channelSenderAllowed: without roles the upstream rule; with roles, allowFrom OR a role (empty allowFrom = role holders only)', () => {
     const f = ext.channelSenderAllowed
     expect(f([], undefined, OTHER, [])).toBe(true) // upstream: empty allowFrom = anyone

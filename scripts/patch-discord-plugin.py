@@ -57,6 +57,8 @@ DCBTN_TAG = "// MARVEEN-PATCH(dcbtn1023)"
 MANIFEST = ".marveen-overlay.json"
 EXT_CONFIG = "marveen-ext.json"
 SNOWFLAKE = re.compile(r"^[1-9][0-9]{16,19}$")
+# The overlay's id shape for channels and roles (marveen-ext.ts SNOWFLAKE_ID).
+SNOWFLAKE_ID = re.compile(r"^[0-9]{15,20}\Z")
 
 
 def log(msg):
@@ -139,7 +141,32 @@ def settings(install_dir):
             policy = parsed
         except ValueError:
             log("LOUD: DISCORD_CHANNEL_POLICY is set but is not a JSON object -- NOT used (no channel extras)")
+        for line in channel_policy_drops(policy):
+            log(f"LOUD: DISCORD_CHANNEL_POLICY {line} -- dropped, that channel keeps the plain allowFrom rule")
     return ext_on, {"ownerUserId": owner, "backfill": bool(backfill), "channelPolicy": policy}
+
+
+def channel_policy_drops(policy):
+    """What the overlay's parseChannelPolicy (marveen-ext.ts) will silently drop, one line each. The object
+    itself is passed on unchanged; this only makes the drop visible (a role NAME instead of its id, say)."""
+    out = []
+    for ch, v in policy.items():
+        if not SNOWFLAKE_ID.match(ch):
+            out.append(f"channel {ch!r} is not a Discord channel id")
+            continue
+        if not isinstance(v, dict):
+            out.append(f"channel {ch}: not an object")
+            continue
+        roles = v.get("allowRoles")
+        if roles is None:
+            continue
+        if not isinstance(roles, list):
+            out.append(f"channel {ch}: allowRoles is not a list")
+            continue
+        for r in roles:
+            if not (isinstance(r, str) and SNOWFLAKE_ID.match(r)):
+                out.append(f"channel {ch}: allowRoles entry {r!r} is not a Discord role id (the id, not the name)")
+    return out
 
 
 def identify(dirpath, text_bytes, vendor):
