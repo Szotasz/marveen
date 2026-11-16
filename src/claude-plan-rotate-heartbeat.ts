@@ -90,23 +90,31 @@ export function activeReadingFromProbe(
 /** PLANROTATEDEADLOCK1115 P4: a header-less 429 whose retry-after is longer than this is a spent quota, not a burst. */
 export const RATE_LIMIT_EXHAUSTED_RETRY_AFTER_SEC = 300
 
+/** P4: the previous header-less 429 counts toward "twice in a row" only when it is at most this old (Samu, #2821). */
+export const HEADERLESS_429_FRESH_MS = 30 * 60_000
+
+/** P4: a retry-after longer than the weekly window parks a plan no further than the weekly window (Dani N2, #2821). */
+export const RETRY_AFTER_CAP_SEC = 7 * 24 * 3600
+
 /**
  * PLANROTATEDEADLOCK1115 P4 (Samu 79317): the reading for an active-plan probe that answered 429 and that
  * activeReadingFromProbe could not read (no 5h window). Measured on the chain: such a 429 used to read as "no data"
  * and the decision stayed silent on exactly the exhausted plan.
  * - unified headers present and any window or the overall status "rejected": exhausted;
- * - no unified headers: exhausted when retry-after > 300 s, or when the previous probe of this plan was a header-less
- *   429 too (a burst limit clears within a tick); otherwise null (no reading).
+ * - no unified headers: exhausted when retry-after > 300 s, or when the previous probe of this plan, at most
+ *   HEADERLESS_429_FRESH_MS ago, was a header-less 429 too (a burst limit clears within a tick); otherwise null.
  * Exhausted = a 5h window at 100% "rejected" until the weekly reset (when known) or retry-after (else an hour).
+ * retry-after is capped at RETRY_AFTER_CAP_SEC.
  */
 export function exhaustedReadingFrom429(input: {
   usage: { fiveHour: unknown; sevenDay: { usedPercent: number; resetsAt: number; status: string | null } | null; overallStatus: string | null } | null
   retryAfterSec?: number
-  previous?: { error?: string; headerless?: boolean }
+  previous?: { at?: number; error?: string; headerless?: boolean }
   nowMs: number
   source: string
 }): ActiveReading | null {
-  const { usage, retryAfterSec, previous, nowMs, source } = input
+  const { usage, previous, nowMs, source } = input
+  const retryAfterSec = input.retryAfterSec === undefined ? undefined : Math.min(input.retryAfterSec, RETRY_AFTER_CAP_SEC)
   const nowSec = Math.floor(nowMs / 1000)
   if (usage) {
     const rejected = usage.overallStatus === 'rejected' || usage.sevenDay?.status === 'rejected'
@@ -120,6 +128,7 @@ export function exhaustedReadingFrom429(input: {
   }
   const longWait = (retryAfterSec ?? 0) > RATE_LIMIT_EXHAUSTED_RETRY_AFTER_SEC
   const twice = previous?.error === 'rate_limited' && previous.headerless === true
+    && typeof previous.at === 'number' && nowMs - previous.at <= HEADERLESS_429_FRESH_MS
   if (!longWait && !twice) return null
   return { source, fiveHour: { usedPercent: 100, resetsAt: nowSec + (longWait ? retryAfterSec! : 3600), status: 'rejected' } }
 }

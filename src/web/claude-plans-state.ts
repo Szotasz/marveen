@@ -98,8 +98,10 @@ export interface ClaudePlansState {
 export interface RotationBackendRecord {
   /** Unix epoch ms of the last finished check (the liveness alert reads it). */
   lastCheckAt?: number
-  /** Owner signals that could not be sent; retried on the next tick, oldest first. */
+  /** Owner signals that could not be sent, each with its original [HH:MM]; retried on the next tick, oldest first. */
   pendingSignals?: string[]
+  /** How many unsent signals fell off the end of pendingSignals; told to the owner in one line. */
+  pendingDropped?: number
   /** NO_ALTERNATIVE signals already sent, one key per agent, plan, trigger and window. */
   noAlternativeSent?: string[]
   /** Unix epoch ms of the last stale-check alert, so one stale episode alerts once. */
@@ -144,6 +146,7 @@ function readBackend(v: unknown): RotationBackendRecord | undefined {
   const lastCheckAt = num(v.lastCheckAt); if (lastCheckAt !== undefined) out.lastCheckAt = lastCheckAt
   const staleAlertAt = num(v.staleAlertAt); if (staleAlertAt !== undefined) out.staleAlertAt = staleAlertAt
   const pendingSignals = strings(v.pendingSignals); if (pendingSignals?.length) out.pendingSignals = pendingSignals
+  const pendingDropped = num(v.pendingDropped); if (pendingDropped !== undefined && pendingDropped > 0) out.pendingDropped = pendingDropped
   const noAlternativeSent = strings(v.noAlternativeSent); if (noAlternativeSent?.length) out.noAlternativeSent = noAlternativeSent
   return Object.keys(out).length ? out : undefined
 }

@@ -6,10 +6,12 @@ import { join } from 'node:path'
 import type { ClaudePlansState } from '../web/claude-plans-state.js'
 import { rotationActionFromLine } from '../claude-plan-rotate-check-run.js'
 import {
-  runRotationTick, staleCheckAlert, lineField, ROTATION_STALE_AFTER_MS, type RotationBackendDeps,
+  runRotationTick, staleCheckAlert, lineField, clockHHMM, ROTATION_STALE_AFTER_MS, PENDING_SIGNALS_KEPT, type RotationBackendDeps,
 } from '../web/claude-rotation-backend.js'
 import { withRotationLock } from '../web/claude-rotation-lock.js'
-import { exhaustedReadingFrom429, RATE_LIMIT_EXHAUSTED_RETRY_AFTER_SEC } from '../claude-plan-rotate-heartbeat.js'
+import {
+  exhaustedReadingFrom429, RATE_LIMIT_EXHAUSTED_RETRY_AFTER_SEC, HEADERLESS_429_FRESH_MS, RETRY_AFTER_CAP_SEC,
+} from '../claude-plan-rotate-heartbeat.js'
 import { probePlanUsage, parseRetryAfter, observationFromProbe, usageFromProbe } from '../claude-plan-usage-probe.js'
 
 const NOW = 1_800_000_000_000
@@ -65,8 +67,33 @@ describe('a backend tick (PLANROTATEDEADLOCK1115 P3)', () => {
     expect(h.order[0]).toMatch(/^signal-FAILED:/)
     expect(h.order[1]).toBe('rotate:marveen->b')
     expect(h.state().backend?.pendingSignals).toHaveLength(1)
+    // the retry a tick later carries the time it was first meant for
+    const later = { ...h.deps, now: () => NOW + 10 * 60_000 }
+    await runRotationTick(later)
+    expect(h.order[2]).toBe(`signal:[${clockHHMM(NOW)}] ${h.order[0].slice('signal-FAILED:'.length)}`)
+    expect(h.state().backend?.pendingSignals).toBeUndefined()
+  })
+
+  it('a signal failing again keeps its first time, not a second one', async () => {
+    const h = harness([[ROTATE], [], []], { notifyOk: [false, false] })
     await runRotationTick(h.deps)
-    expect(h.order[2]).toMatch(/^signal:Claude plan switch/)
+    await runRotationTick({ ...h.deps, now: () => NOW + 10 * 60_000 })
+    expect(h.state().backend?.pendingSignals).toEqual([`[${clockHHMM(NOW)}] ${h.order[0].slice('signal-FAILED:'.length)}`])
+  })
+
+  it(`the queue keeps the last ${PENDING_SIGNALS_KEPT} unsent signals; the dropped count is told in one line first`, async () => {
+    const many = Array.from({ length: PENDING_SIGNALS_KEPT + 5 }, (_, i) => `FLEET_SKIPPED fleetPlan=b n=${i}`)
+    const h = harness([many, []], { notifyOk: Array(many.length).fill(false) })
+    await runRotationTick(h.deps)
+    const b = h.state().backend
+    expect(b?.pendingSignals).toHaveLength(PENDING_SIGNALS_KEPT)
+    expect(b?.pendingSignals?.[0]).toContain('n=5')
+    expect(b?.pendingDropped).toBe(5)
+    await runRotationTick(h.deps)
+    const sent = h.order.slice(many.length)
+    expect(sent[0]).toMatch(/^signal:5 earlier Claude plan rotation signal\(s\) could not be delivered and were dropped/)
+    expect(sent[1]).toContain('n=5')
+    expect(h.state().backend?.pendingDropped).toBeUndefined()
     expect(h.state().backend?.pendingSignals).toBeUndefined()
   })
 
@@ -178,10 +205,23 @@ describe('exhaustedReadingFrom429 (P4)', () => {
     expect(read({ retryAfterSec: 301 })?.fiveHour).toEqual({ usedPercent: 100, resetsAt: nowS + 301, status: 'rejected' })
   })
   it('C twice in a row (the previous probe was a header-less 429 too): exhausted', () => {
-    expect(read({ previous: { error: 'rate_limited', headerless: true } })?.fiveHour.status).toBe('rejected')
+    const at = NOW - 10 * 60_000
+    expect(read({ previous: { at, error: 'rate_limited', headerless: true } })?.fiveHour.status).toBe('rejected')
     // a previous 429 WITH headers, or another error, is not "twice"
-    expect(read({ previous: { error: 'rate_limited' } })).toBeNull()
-    expect(read({ previous: { error: 'network', headerless: true } })).toBeNull()
+    expect(read({ previous: { at, error: 'rate_limited' } })).toBeNull()
+    expect(read({ previous: { at, error: 'network', headerless: true } })).toBeNull()
+  })
+  it('C: an OLD header-less 429 and a short one now are not "twice" (Samu, #2821)', () => {
+    const prev = { error: 'rate_limited', headerless: true }
+    expect(read({ previous: { ...prev, at: NOW - HEADERLESS_429_FRESH_MS } })?.fiveHour.status).toBe('rejected')
+    expect(read({ previous: { ...prev, at: NOW - HEADERLESS_429_FRESH_MS - 1 } })).toBeNull()
+    expect(read({ previous: { ...prev, at: NOW - 3 * 86400_000 }, retryAfterSec: 30 })).toBeNull()
+    expect(read({ previous: prev })).toBeNull()
+  })
+  it('a retry-after past the weekly window parks the plan no further than the week (Dani N2)', () => {
+    const far = 365 * 86400
+    expect(read({ retryAfterSec: far })?.fiveHour.resetsAt).toBe(nowS + RETRY_AFTER_CAP_SEC)
+    expect(read({ usage: { fiveHour: null, sevenDay: null, overallStatus: 'rejected' }, retryAfterSec: far })?.fiveHour.resetsAt).toBe(nowS + RETRY_AFTER_CAP_SEC)
   })
 })
 

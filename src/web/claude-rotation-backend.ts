@@ -14,7 +14,7 @@
 // P6: every finished tick writes backend.lastCheckAt; a separate watch alerts the owner once per stale episode when
 // rotation is on and the last check is older than 30 minutes.
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { APP_TZ, MAIN_AGENT_ID } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { notifyOwner } from '../notify.js'
 import { rotateCheckOnce, type RotationAction } from '../claude-plan-rotate-check-run.js'
@@ -29,6 +29,8 @@ export const ROTATION_DEFAULT_EVERY_MIN = 10
 export const ROTATION_STALE_AFTER_MS = 30 * 60_000
 export const ROTATION_STALE_WATCH_EVERY_MS = 5 * 60_000
 const NO_ALT_KEYS_KEPT = 50
+/** Unsent owner signals kept for the retry; older ones are dropped and counted (Samu, #2821). */
+export const PENDING_SIGNALS_KEPT = 20
 
 type Lang = 'hu' | 'en'
 
@@ -99,6 +101,17 @@ function failText(lang: Lang, agentId: string, status: number, payload: Record<s
     : `A(z) ${agentId} Claude-plan váltása NEM sikerült (HTTP ${status}): ${err}`
 }
 
+function droppedText(lang: Lang, n: number): string {
+  return lang === 'en'
+    ? `${n} earlier Claude plan rotation signal(s) could not be delivered and were dropped (only the last ${PENDING_SIGNALS_KEPT} are kept).`
+    : `A Claude-plan rotáció ${n} korábbi jelzése nem ért célba, és kiesett a sorból (csak az utolsó ${PENDING_SIGNALS_KEPT} marad meg).`
+}
+
+/** HH:MM in the box's zone (SCHEDULER_TZ), for the original time of a queued signal. */
+export function clockHHMM(ms: number): string {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: APP_TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms))
+}
+
 /** The NO_ALTERNATIVE dedupe key: kind, agent, plan label, trigger, and the window's end rounded to 30 minutes. */
 export function noAlternativeKey(a: RotationAction, nowMs: number): string {
   const f = (k: string) => lineField(a.line, k)
@@ -122,15 +135,22 @@ async function tickBody(deps: RotationBackendDeps): Promise<RotationTickSummary>
   const lang = deps.lang()
   const summary: RotationTickSummary = { actions: [], rotated: [], signalsSent: 0, signalsQueued: 0 }
   const queued: string[] = []
-  const send = async (text: string): Promise<void> => {
-    let ok = false
-    try { ok = await deps.notify(text) } catch { ok = false }
-    if (ok) summary.signalsSent++
-    else { queued.push(text); summary.signalsQueued++; logger.warn('claude rotation backend: owner signal not delivered, queued for the next tick') }
+  const notify = async (text: string): Promise<boolean> => {
+    try { return await deps.notify(text) } catch { return false }
+  }
+  // A signal queued for a retry keeps the time it was first meant for, so a late "restarts now" says when.
+  const send = async (text: string, retry = false): Promise<void> => {
+    if (await notify(text)) { summary.signalsSent++; return }
+    queued.push(retry ? text : `[${clockHHMM(deps.now())}] ${text}`)
+    summary.signalsQueued++
+    logger.warn('claude rotation backend: owner signal not delivered, queued for the next tick')
   }
 
-  // Signals a previous tick could not deliver, oldest first.
-  for (const text of deps.readState().backend?.pendingSignals ?? []) await send(text)
+  // Signals a previous tick could not deliver: first how many fell off the queue, then the rest, oldest first.
+  const before = deps.readState().backend
+  let dropped = before?.pendingDropped ?? 0
+  if (dropped > 0 && await notify(droppedText(lang, dropped))) { summary.signalsSent++; dropped = 0 }
+  for (const text of before?.pendingSignals ?? []) await send(text, true)
 
   const noAltSent = new Set(deps.readState().backend?.noAlternativeSent ?? [])
   const noAltAdded: string[] = []
@@ -171,12 +191,16 @@ async function tickBody(deps: RotationBackendDeps): Promise<RotationTickSummary>
   const s = deps.readState()
   const prev: RotationBackendRecord = s.backend ?? {}
   const keys = [...(prev.noAlternativeSent ?? []), ...noAltAdded].slice(-NO_ALT_KEYS_KEPT)
+  const over = Math.max(0, queued.length - PENDING_SIGNALS_KEPT)
+  if (over > 0) { dropped += over; logger.warn({ dropped: over }, 'claude rotation backend: unsent owner signals dropped, the queue is full') }
+  const kept = queued.slice(over)
   deps.writeState({
     ...s,
     backend: {
       ...prev,
       lastCheckAt: deps.now(),
-      ...(queued.length ? { pendingSignals: queued } : { pendingSignals: undefined }),
+      ...(kept.length ? { pendingSignals: kept } : { pendingSignals: undefined }),
+      pendingDropped: dropped > 0 ? dropped : undefined,
       ...(keys.length ? { noAlternativeSent: keys } : {}),
     },
   })
