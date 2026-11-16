@@ -156,12 +156,19 @@ def identify(dirpath, text_bytes, vendor):
 
 def write_atomic(path, data):
     tmp = path + ".marveen-tmp"
+    # A leftover (or planted) temp entry is unlinked, never followed: os.remove on a symlink removes the link.
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    created = False
     try:
-        with open(tmp, "wb") as f:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666)
+        created = True
+        with os.fdopen(fd, "wb") as f:
             f.write(data)
         os.replace(tmp, path)
+        created = False
     finally:
-        if os.path.exists(tmp):
+        if created and os.path.lexists(tmp):
             os.remove(tmp)
 
 
@@ -169,6 +176,23 @@ def desired_files(entry, ext):
     files = dict(entry["overlay"])
     files[EXT_CONFIG] = (json.dumps(ext, indent=1, sort_keys=True) + "\n").encode("utf-8")
     return files
+
+
+def manifest_old_files(manifest, vendor):
+    """The manifest's file names that may be removed: plain basenames of the vendored overlay set (or
+    marveen-ext.json). The manifest is a file in the plugin folder, not ours to trust: anything else
+    (a path, ../, an absolute name) is skipped loudly and never handed to os.remove. (names, rejected?)"""
+    known = {n for e in vendor.values() for n in e["overlay"]} | {EXT_CONFIG}
+    names, rejected = set(), False
+    for name in (manifest or {}).get("files", {}):
+        if name == "server.ts":
+            continue
+        if isinstance(name, str) and name in known and name not in ("", ".", "..") and os.path.basename(name) == name:
+            names.add(name)
+        else:
+            rejected = True
+            log(f"LOUD: {MANIFEST} names {name!r}, which is not one of the overlay's own files -- not removed")
+    return names, rejected
 
 
 def apply_file(path, vendor, ext_on, ext):
@@ -186,7 +210,7 @@ def apply_file(path, vendor, ext_on, ext):
         else:
             log(f"LOUD: vendor/discord-plugin missing or empty -- {path} left as shipped")
         return "unknown"
-    old_files = set((manifest or {}).get("files", {})) - {"server.ts"}
+    old_files, manifest_rejected = manifest_old_files(manifest, vendor)
 
     try:
         if not ext_on:
@@ -207,7 +231,7 @@ def apply_file(path, vendor, ext_on, ext):
             same = all(
                 os.path.isfile(os.path.join(dirpath, n)) and read_bytes(os.path.join(dirpath, n)) == data
                 for n, data in want.items()
-            ) and old_files | {"server.ts", EXT_CONFIG} == set(want)
+            ) and old_files | {"server.ts", EXT_CONFIG} == set(want) and not manifest_rejected
             if same:
                 return "already"
         # Supporting files first, server.ts last: until it is replaced, the old
