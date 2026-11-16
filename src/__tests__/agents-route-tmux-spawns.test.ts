@@ -183,9 +183,15 @@ describe('tmux spawns of the agents read paths', () => {
     })
   }
 
-  it('listAgentSummaries lists exactly once', () => {
+  it('listAgentSummaries lists once for existence and once for creation times', () => {
     const rows = listAgentSummaries()
-    expect(count('list-sessions')).toBe(1)
+    // One list-sessions answers which sessions exist, the other carries their
+    // creation times (getAgentRunningSince). Both are memoized in the batch, so
+    // the count does not grow with the agents -- it replaces one display-message
+    // per running agent, which named its session with -t and asked for a time
+    // key: tmux 3.2a segfaults its server when that session is already gone.
+    expect(count('list-sessions')).toBe(2)
+    expect(calls.filter(c => c.includes('-t') && c.some(a => a.includes('session_created')))).toEqual([])
     expect(rows.map(r => r.name)).toEqual(expect.arrayContaining(['alpha', 'beta', 'gamma']))
   })
 

@@ -2291,10 +2291,22 @@ export function sessionExistsOnHost(host: string | null, session: string): boole
 export function getAgentRunningSince(name: string, session: string = agentSessionName(name)): number | null {
   try {
     const target = agentTmuxTarget(name)
-    const host = target.host
-    const out = captureTmux(target, ['display-message', '-p', '-t', exactTmuxTarget(session), '#{session_created}']).trim()
-    const ts = parseInt(out, 10)
-    return Number.isFinite(ts) ? ts : null
+    // Never `display-message -t <session> '#{session_created}'` here. On tmux
+    // 3.2a (the Ubuntu 22.04 package) a time-key format (session_created,
+    // session_activity, window_activity, ...) expanded for a -t target that does
+    // not exist dereferences a NULL session and the tmux SERVER segfaults --
+    // every agent session on the host dies with it (fixed in tmux 3.3). The
+    // session can vanish between the caller's running-check and this read (the
+    // roster's run state is cached), and that race took a whole fleet down
+    // twice. `list-sessions` takes no target, so read it and match the name here.
+    const out = captureTmux(target, ['list-sessions', '-F', '#{session_created} #{session_name}'])
+    for (const line of out.split('\n')) {
+      const sp = line.indexOf(' ')
+      if (sp <= 0 || line.slice(sp + 1) !== session) continue
+      const ts = parseInt(line.slice(0, sp), 10)
+      return Number.isFinite(ts) ? ts : null
+    }
+    return null
   } catch {
     return null
   }
