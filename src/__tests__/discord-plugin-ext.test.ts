@@ -1372,6 +1372,33 @@ describe('C2: rename_thread, only the bot\'s own thread', () => {
     expect(at('mayRenameThread(')).toBeLessThan(at('await ch.setName(name)'))
   })
 
+  // Review #2783: the guard itself, executed (the case sliced from server.ts, as the reply case is).
+  function renameHarness(ch: Record<string, unknown>, botId: string | undefined = 'bot') {
+    const renamed: string[] = []
+    const chan = { ...ch, setName: async (n: string) => { renamed.push(n); return { id: 'th', name: n } } }
+    const raw = SERVER.slice(SERVER.indexOf("case 'rename_thread': {"), SERVER.indexOf("case 'discord_info': {"))
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const tsc = require('typescript')
+    const wrapped = tsc.transpileModule(`async function renameCase(args: any) { switch ('rename_thread') { ${raw} } }`, { compilerOptions: { target: tsc.ScriptTarget.ES2022 } }).outputText
+    const run = new Function('threadName', 'fetchAllowedChannel', 'mayRenameThread', 'client', `${wrapped}\nreturn renameCase`)(
+      (n: unknown) => String(n), async () => chan, ext.mayRenameThread, { user: botId ? { id: botId } : null },
+    ) as (a: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>
+    return { go: () => run({ chat_id: 'th', name: 'Új név' }), renamed }
+  }
+
+  it('rename_thread, run: the bot\'s own thread is renamed; someone else\'s thread, a channel, no bot user: refused, nothing renamed', async () => {
+    const own = renameHarness({ isThread: () => true, ownerId: 'bot' })
+    expect((await own.go()).content[0]!.text).toBe('thread renamed (id: th, name: Új név)')
+    expect(own.renamed).toEqual(['Új név'])
+    for (const h of [
+      renameHarness({ isThread: () => true, ownerId: 'zoli' }),
+      renameHarness({ isThread: () => false, ownerId: 'bot' }),
+      renameHarness({ isThread: () => true, ownerId: null }, undefined),
+    ]) {
+      await expect(h.go()).rejects.toThrow('only a thread the bot opened itself can be renamed')
+      expect(h.renamed).toEqual([])
+    }
+  })
 })
 
 describe('C4: a reply to a forum channel opens a post', () => {
