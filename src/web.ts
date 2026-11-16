@@ -91,6 +91,7 @@ import { tryHandleConnectors } from './web/routes/connectors.js'
 import { tryHandleDocs } from './web/routes/docs.js'
 import { tryHandleResearch } from './web/routes/research.js'
 import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
+import { tryHandleAgentPackages } from './web/routes/agent-packages.js'
 import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
 import { tryHandleReviewAction } from './web/routes/review-action.js'
@@ -261,6 +262,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleConnectors(routeCtx)) return
       if (await tryHandleDocs(routeCtx)) return
       if (await tryHandleResearch(routeCtx)) return
+      if (await tryHandleAgentPackages(routeCtx)) return
       if (await tryHandleAgentsSkills(routeCtx)) return
       if (await tryHandleReviewAction(routeCtx)) return
       if (await tryHandleSkills(routeCtx)) return

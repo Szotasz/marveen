@@ -104,7 +104,8 @@ const JSON_FIELD_RX = new RegExp(`("(?:${SECRET_NAMES_RX})"\\s*:\\s*")(?:[^"\\\\
  *    comma or semicolon; `max_tokens=`, `next_page_token=` and a bare `token=` with no value stay)
  *  - the same names as JSON string fields: `"token":"..."`
  *  - known token SHAPES even when unadorned: `sk-ant-...`, GitHub (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`,
- *    `github_pat_...`), a Telegram bot token (`123456789:AA...`), a JWT (`eyJ...`.`...`.`...`)
+ *    `github_pat_...`), a Telegram bot token (`123456789:AA...`), a JWT (`eyJ...`.`...`.`...`), an agent package
+ *    device token (`mdt_...`)
  * Unmatched text is returned byte-for-byte unchanged.
  */
 export function redactLogMessage(msg: string): string {
@@ -121,6 +122,9 @@ export function redactLogMessage(msg: string): string {
   out = out.replace(/\bsk-ant-[A-Za-z0-9_-]{8,}/g, REDACTED)
   out = out.replace(/(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{16,}/g, REDACTED)
   out = out.replace(/(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}/g, REDACTED)
+  // Agent package device token (MIOAGENTINSTALL1114, M15): `mdt_` + 43 base64url characters; a safety net, the
+  // token is never a logger argument. 8+ so a cut-off token is masked too.
+  out = out.replace(/(?<![A-Za-z0-9])mdt_[A-Za-z0-9_-]{8,}/g, REDACTED)
   // Telegram bot token: 8-10 digits, a colon, 35 token characters (also inside `.../bot<token>/sendMessage`).
   out = out.replace(/(?<!\d)\d{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/g, REDACTED)
   // JWT: three base64url segments, the first starting with the `{"` header prefix `eyJ`.
