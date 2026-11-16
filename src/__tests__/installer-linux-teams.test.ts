@@ -257,12 +257,12 @@ describe('install-linux.sh: the machine-wide allowlist on a teams install', () =
     expect(statSync(f).mode & 0o777).toBe(0o644)
     expect(r.stdout).toContain('ok: Teams engedelyezve')
   })
-  it('a stricter caller umask (077) keeps the fresh dir 0700, never relaxed to 0755 (353a3859)', () => {
+  it('a stricter caller umask (077) still gets the explicit 0755 dir, never the umask-derived 0700 (353a3859)', () => {
     const dir = join(tempDir(), 'claude-code')
     const f = join(dir, 'managed-settings.json')
     const r = run(f, 'umask 077')
     expect(r.status).toBe(0)
-    expect(statSync(dir).mode & 0o777).toBe(0o700)
+    expect(statSync(dir).mode & 0o777).toBe(0o755)
     expect(existsSync(f)).toBe(true)
   })
   it('a loose caller umask (002) gets the dir tightened to 0755, not the writer-refused 0775 (353a3859)', () => {
