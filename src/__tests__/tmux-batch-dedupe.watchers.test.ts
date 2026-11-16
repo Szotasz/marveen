@@ -195,7 +195,8 @@ describe('watcher run-state prepasses', () => {
     expectOneListSpawn()
   })
 
-  it('reauth: a timed-out list-sessions resets one pass and starts, messages, alerts nothing', async () => {
+  it('reauth: a timed-out list-sessions skips one pass and starts, messages, alerts nothing', async () => {
+    vi.setSystemTime(new Date('2026-11-16T01:00:00Z'))
     const deletes = vi.spyOn(Map.prototype, 'delete')
     expect(startReauthHealer()).not.toBeNull()
     await vi.advanceTimersByTimeAsync(90_000)
@@ -210,7 +211,7 @@ describe('watcher run-state prepasses', () => {
     await vi.advanceTimersByTimeAsync(90_000)
     expectOnlyListAndMainCaptures()
     for (const map of maps) {
-      for (const session of runningOrder) expect(map.has(session)).toBe(false)
+      for (const session of runningOrder) expect(map.has(session)).toBe(true)
     }
 
     h.listError = null
@@ -219,6 +220,37 @@ describe('watcher run-state prepasses', () => {
     await vi.advanceTimersByTimeAsync(90_000)
     expect(panes()).toEqual([MAIN_CHANNELS_SESSION, ...runningOrder])
     expectOneListSpawn()
+  })
+
+  it('reauth: a failed batch preserves cooldowns until a healthy read confirms absent sessions', async () => {
+    // Keep the independent morning summary from consuming the seeded quiet state.
+    vi.setSystemTime(new Date('2026-11-16T01:00:00Z'))
+    const deletes = vi.spyOn(Map.prototype, 'delete')
+    expect(startReauthHealer()).not.toBeNull()
+    await vi.advanceTimersByTimeAsync(90_000)
+    const maps = [...new Set(deletedMaps(deletes, 'agent-dedupe-c'))]
+    expect(maps).toHaveLength(2)
+    const state = { consecutiveDead: 3, lastActionAtMs: Date.now() }
+    for (const map of maps) {
+      for (const name of h.agents) map.set(`agent-${name}`, state)
+    }
+
+    h.listError = listTimeoutError()
+    h.spawns.length = 0
+    await vi.advanceTimersByTimeAsync(90_000)
+    expectOnlyListAndMainCaptures()
+    for (const map of maps) {
+      for (const name of h.agents) expect(map.get(`agent-${name}`)).toEqual(state)
+    }
+
+    h.listError = null
+    h.sessions = ''
+    h.spawns.length = 0
+    await vi.advanceTimersByTimeAsync(180_000)
+    expectOnlyListAndMainCaptures()
+    for (const map of maps) {
+      for (const name of h.agents) expect(map.has(`agent-${name}`)).toBe(false)
+    }
   })
 
   it('intake: a timed-out list-sessions resets one pass and starts, messages, alerts nothing', async () => {

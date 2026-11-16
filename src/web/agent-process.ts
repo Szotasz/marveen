@@ -2042,6 +2042,11 @@ function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: {
 }
 
 let tmuxBatch: Map<string, { out?: string; err?: unknown }> | null = null
+let batchListSessionsFailed = false
+
+export function tmuxBatchListSessionsFailed(): boolean {
+  return batchListSessionsFailed
+}
 
 /**
  * Run `fn` with a per-call memo for READ-ONLY tmux queries: inside it, identical `list-sessions`
@@ -2051,6 +2056,7 @@ let tmuxBatch: Map<string, { out?: string; err?: unknown }> | null = null
 export function withTmuxBatch<T>(fn: () => T): T {
   if (tmuxBatch !== null) return assertSync(fn())
   tmuxBatch = new Map()
+  batchListSessionsFailed = false
   try {
     return assertSync(fn())
   } finally {
@@ -2083,6 +2089,7 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
       return out
     } catch (err) {
       tmuxBatch.set(key, { err })
+      batchListSessionsFailed = true
       throw err
     }
   }

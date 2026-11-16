@@ -6,7 +6,7 @@ import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.
 import { resolveFromPath } from '../platform.js'
 import { agentConfigRoot, listAgentNames } from './agent-config.js'
 import { resolveOauthTokenFileSetting } from './agent-oauth-token-file.js'
-import { withTmuxBatch, isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
+import { withTmuxBatch, tmuxBatchListSessionsFailed, isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
 import { isRestartInFlight } from './restart-lock.js'
 import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
@@ -575,7 +575,10 @@ export function startReauthHealer(): NodeJS.Timeout | null {
     const names = listAgentNames()
     // Read run state once at pass start; this synchronous loop keeps the same observation moment.
     const running = withTmuxBatch(() => new Map(names.map(name => [name, isAgentRunning(name)])))
-    for (const name of names) {
+    if (tmuxBatchListSessionsFailed()) {
+      // A shared read failure must not erase every agent's escalation cooldown.
+      logger.warn('reauth-healer: batched list-sessions failed -- skipping agent pass')
+    } else for (const name of names) {
       const session = resolveAgentSession(name)
       if (!running.get(name)) {
         watchState.delete(session)
