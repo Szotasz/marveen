@@ -87,8 +87,7 @@ def load_module(path, name):
     return mod
 
 
-ARGS = (" --subject 'Ajánlat' --text /tmp/level.txt --html /tmp/level.html --to partner@example.com"
-        " --vault-client GMAIL_X_OAUTH_CLIENT --vault-refresh GMAIL_X_COMPOSE_REFRESH")
+ARGS = " --subject 'Ajánlat' --text /tmp/level.txt --html /tmp/level.html --to partner@example.com"
 
 # --- the pin and the writer's own text ---------------------------------------------------------------------------
 gate_mod = load_module(GATE_SRC, "eag_gmaildraft")
@@ -134,15 +133,20 @@ check("the writer has exactly four urlopen calls (vault, token, drafts.create, d
 
 # --- the writer itself: isolated start, argparse, the MIME it builds -----------------------------------------------
 proc = subprocess.run([sys.executable, "-I", "-S", WRITER, "--help"], capture_output=True, text=True)
-check("the writer starts under python3 -I -S (stdlib only, no site)", proc.returncode == 0 and "--vault-refresh"
+check("the writer starts under python3 -I -S (stdlib only, no site)", proc.returncode == 0 and "--signature-text"
       in proc.stdout, f"rc={proc.returncode} err={proc.stderr[:200]!r}")
-proc = subprocess.run([sys.executable, "-I", "-S", WRITER, "--subject", "x", "--text", "t", "--vault-client", "GMAIL_A",
-                       "--vault-refresh", "GMAIL_B", "--also"], capture_output=True, text=True)
+proc = subprocess.run([sys.executable, "-I", "-S", WRITER, "--subject", "x", "--text", "t", "--also"],
+                       capture_output=True, text=True)
 check("the writer refuses an abbreviated flag (allow_abbrev=False, so the gate's full-name list is what runs)",
       proc.returncode == 2 and "unrecognized" in proc.stderr, f"rc={proc.returncode}")
 
-w = load_module(WRITER, "gmail_draft_writer")
-with tempfile.TemporaryDirectory() as td:
+WTD = os.path.realpath(tempfile.mkdtemp(prefix="gmaildraft-writer-"))
+atexit.register(shutil.rmtree, WTD, True)
+WROOT = make_install(WTD, "inst")
+w = load_module(os.path.join(WROOT, REL), "gmail_draft_writer")
+if True:
+    td = os.path.join(WROOT, "store", "levelek")
+    os.makedirs(td)
     png = os.path.join(td, "logo.png")
     with open(png, "wb") as fh:
         fh.write(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (120).to_bytes(4, "big") + (40).to_bytes(4, "big")
@@ -157,7 +161,7 @@ with tempfile.TemporaryDirectory() as td:
     a = w.parse_args(["--subject", "Árajánlat", "--text", os.path.join(td, "l.txt"), "--html",
                       os.path.join(td, "l.html"), "--to", "a@example.com", "--cc", "b@example.com", "--inline", png,
                       "--attach", ics, "--signature-text", os.path.join(td, "s.txt"), "--signature-html",
-                      os.path.join(td, "s.html"), "--vault-client", "GMAIL_A", "--vault-refresh", "GMAIL_B"])
+                      os.path.join(td, "s.html")])
     m, want = w.build_message(a)
     raw = m.as_string()
     msg = email.message_from_string(raw)
@@ -173,6 +177,59 @@ with tempfile.TemporaryDirectory() as td:
           msg.get_content_type() == "multipart/mixed" and msg["To"] == "a@example.com" and msg["Cc"] == "b@example.com"
           and "gmail_signature" in html and want == ["meghivo.ics", "logo.png"], f"type={msg.get_content_type()}")
 
+    # Revizor 4076 L2 (Marveen 4078): files only from store/, not hidden, not secret-looking, symlinks resolved
+    outside = os.path.join(WTD, "outside.txt")
+    token = os.path.join(WROOT, "store", ".dashboard-token")
+    for f in (outside, token, os.path.join(td, "api-token.txt"), os.path.join(td, "id_ed25519"),
+              os.path.join(td, "cert.pem")):
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("x")
+    os.makedirs(os.path.join(WROOT, "store", ".rejtett"))
+    with open(os.path.join(WROOT, "store", ".rejtett", "a.txt"), "w", encoding="utf-8") as fh:
+        fh.write("x")
+    os.symlink(outside, os.path.join(td, "link.txt"))
+    os.symlink(token, os.path.join(td, "plain.txt"))
+    refused = {"a file outside store/": outside, "store/.dashboard-token": token,
+               "a token-named file": os.path.join(td, "api-token.txt"), "an ssh key name": os.path.join(td, "id_ed25519"),
+               "a .pem": os.path.join(td, "cert.pem"), "a hidden directory": os.path.join(WROOT, "store", ".rejtett", "a.txt"),
+               "a symlink in store/ to outside": os.path.join(td, "link.txt"),
+               "a plain-named symlink to the token": os.path.join(td, "plain.txt")}
+    for label, f in refused.items():
+        for flag in ("--attach", "--text"):
+            argv = (["--subject", "T", "--text", os.path.join(td, "l.txt"), "--attach", f] if flag == "--attach"
+                    else ["--subject", "T", "--text", f])
+            try:
+                w.build_message(w.parse_args(argv))
+                ok = False
+            except SystemExit as e:
+                ok = "gmail-draft:" in str(e.code)
+            check(f"the writer refuses {label} as {flag}", ok)
+    try:
+        w.build_message(w.parse_args(["--subject", "T", "--text", os.path.join(td, "l.txt"), "--attach",
+                                      os.path.join(td, "s.txt")]))
+        ok = True
+    except SystemExit:
+        ok = False
+    check("the writer takes a plain file under store/", ok)
+    # Revizor 4076 L3: a line break in a header value is refused by the writer itself (harness E)
+    for flag, value in (("--subject", "hi\nBcc: evil@example.org"), ("--to", "a@example.com\r\nBcc: e@x.hu"),
+                        ("--cc", "b@example.com\n"), ("--bcc", "c@example.com\r"), ("--in-reply-to", "<a@b>\nX: y")):
+        proc = subprocess.run([sys.executable, "-I", "-S", os.path.join(WROOT, REL), "--subject", "T", "--text",
+                               os.path.join(td, "l.txt"), flag, value], capture_output=True, text=True)
+        check(f"the writer refuses a line break in {flag}", proc.returncode == 2 and "line break" in proc.stderr,
+              f"rc={proc.returncode} err={proc.stderr[-160:]!r}")
+
+vault_reads = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+               and n.func.id == "vault_get"]
+check("the writer reads exactly the two fixed vault keys (one mailbox per install, Marveen 4078)",
+      sorted(ast.unparse(c.args[0]) for c in vault_reads) == ["VAULT_CLIENT_KEY", "VAULT_REFRESH_KEY"]
+      and w.VAULT_CLIENT_KEY == "GMAIL_DRAFT_OAUTH_CLIENT" and w.VAULT_REFRESH_KEY == "GMAIL_DRAFT_COMPOSE_REFRESH",
+      f"reads={[ast.unparse(c.args[0]) for c in vault_reads]}")
+check("no --vault-* flag: the mailbox cannot be picked on the command line", "--vault" not in writer_text)
+check("Revizor 4076 L4: the proxy and CA-bundle environment is dropped before any request",
+      all(k in writer_text for k in ('"HTTPS_PROXY"', '"https_proxy"', '"ALL_PROXY"', '"SSL_CERT_FILE"',
+                                     '"SSL_CERT_DIR"')) and "os.environ.pop" in writer_text)
+
 # --- the gate: canonical call = draft ----------------------------------------------------------------------------
 TD = os.path.realpath(tempfile.mkdtemp(prefix="eag-gmaildraft-"))
 atexit.register(shutil.rmtree, TD, True)
@@ -186,9 +243,8 @@ drafts = {
     "with 2>&1 at the end": ("python3 -I -S " + ABS2 + ARGS + " 2>&1", "/"),
     "--flag=value forms, repeated --attach, --also-attach": (
         "python3 -I -S " + ABS2 + " --subject=Teszt --text=/tmp/a.txt --to=a@example.com --attach /tmp/x.pdf"
-        " --attach /tmp/y.pdf --also-attach --vault-client GMAIL_A --vault-refresh GMAIL_B", "/"),
-    "no recipient at all": ("python3 -I -S " + ABS2 + " --subject T --text /tmp/a.txt --vault-client GMAIL_A"
-                            " --vault-refresh GMAIL_B", "/"),
+        " --attach /tmp/y.pdf --also-attach", "/"),
+    "no recipient at all": ("python3 -I -S " + ABS2 + " --subject T --text /tmp/a.txt", "/"),
 }
 for label, (cmd, cwd) in drafts.items():
     code, out, err = run_gate(L2, cmd, cwd)
@@ -221,6 +277,14 @@ sends = {
     "a repeated --to": "python3 -I -S " + ABS2 + ARGS + " --to other@example.com",
     "a value starting with -": "python3 -I -S " + ABS2 + ARGS.replace("'Ajánlat'", "-x"),
     "a trailing comment": "python3 -I -S " + ABS2 + ARGS + " # draft",
+    # Revizor 4076 L1 (harness B, C, D, F): the shell joins a backslash-newline, the scanner would not
+    "B backslash-newline in --cc": "python3 -I -S " + ABS2 + ARGS + " --cc\\\n=evil@y.hu",
+    "C backslash-newline in --bcc": "python3 -I -S " + ABS2 + ARGS + " --bcc\\\n=evil@y.hu",
+    "D backslash-newline in a value": "python3 -I -S " + ABS2 + ARGS.replace("--subject 'Ajánlat'", "--subject\\\n=x"),
+    "F a value that starts with =": "python3 -I -S " + ABS2 + ARGS + " --cc =ls",
+    "a --cc==x value": "python3 -I -S " + ABS2 + ARGS + " --cc==evil@y.hu",
+    "a backslash-newline between two words": "python3 -I -S " + ABS2 + " \\\n" + ARGS,
+    "a --vault flag (no longer the writer's)": "python3 -I -S " + ABS2 + ARGS + " --vault-refresh GMAIL_X",
     "a relative path from another cwd": ("python3 -I -S " + REL + ARGS, "/"),
 }
 for label, cmd in sends.items():

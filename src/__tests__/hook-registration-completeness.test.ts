@@ -80,6 +80,8 @@ const EXEMPT: Record<string, string> = {
     'shared library: the Python twin of scripts/recipient-ledger.mjs, imported by email-approval-gate.py and sender_check.py when the recipient ledger is on for the main agent; not itself a hook',
   'sender_check.py':
     'sender-side check, run by scripts/support-mail/send.py (import) and scripts/graph-mail.ts (CLI) before they deliver; not a PreToolUse hook',
+  'gmail-draft.py':
+    'the canonical Gmail draft writer (GMAILDRAFT1116), run by an agent as a CLI; it lives in scripts/hooks/ for the write protection, and email-approval-gate.py pins its sha256; not a hook',
   'credential_lib.py':
     'shared library: the credential detector and state, imported by credential-gate.py and scripts/credential-gate-cli.py (CREDGATE1003); not itself a hook',
   'memory-save.sh':

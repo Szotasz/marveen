@@ -3,10 +3,13 @@
     python3 -I -S <install>/scripts/hooks/gmail-draft.py --subject S --text FILE [--html FILE]
         [--to A] [--cc A] [--bcc A] [--inline IMG ...] [--attach FILE ...] [--also-attach]
         [--signature-html FILE --signature-text FILE] [--thread ID --in-reply-to MSGID]
-        --vault-client KEY --vault-refresh KEY
+
+Every file (body, signature, image, attachment) must be under the install's store/, not hidden, not secret-looking.
+The mailbox is the one whose OAuth client and gmail.compose refresh token the owner stored in the vault as
+GMAIL_DRAFT_OAUTH_CLIENT and GMAIL_DRAFT_COMPOSE_REFRESH; no other vault key is read.
 
 What it does, and the whole of what it reaches on the network:
-  1. GET  http://127.0.0.1:<dashboard port>/api/vault/<KEY>   the OAuth client and the refresh token (two reads)
+  1. GET  http://127.0.0.1:<dashboard port>/api/vault/GMAIL_DRAFT_*   the OAuth client and the refresh token
   2. POST https://oauth2.googleapis.com/token                  a fresh access token (refresh_token grant)
   3. POST https://gmail.googleapis.com/gmail/v1/users/me/drafts    drafts.create: the draft
   4. GET  https://gmail.googleapis.com/gmail/v1/users/me/drafts/<id>?format=full   the read-back
@@ -44,8 +47,37 @@ from email.mime.text import MIMEText
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 DRAFTS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/drafts"
-VAULT_KEY = re.compile(r"^GMAIL_[A-Z0-9_]{1,64}$")
+# Revizor 4076 L2 (Marveen 4078): ONE mailbox per install, by fixed vault key names. The owner stores his own
+# mailbox's OAuth client JSON and gmail.compose refresh token under these names; no other key is read.
+VAULT_CLIENT_KEY = "GMAIL_DRAFT_OAUTH_CLIENT"
+VAULT_REFRESH_KEY = "GMAIL_DRAFT_COMPOSE_REFRESH"
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+MAX_FILE = 25 * 1024 * 1024
+SECRET_NAME = re.compile(r"(?i)token|vault|secret|credential|passw|\.(pem|key|p12|pfx|der|crt|kdbx)$|^id_|_ed25519|_rsa")
+
+# Revizor 4076 L4: -I drops the PYTHON* settings only. A proxy or a CA bundle from the environment would route the
+# access token (which can send) through someone else's TLS endpoint, so they are dropped before any request.
+for _k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+           "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE"):
+    os.environ.pop(_k, None)
+
+
+def checked_file(path):
+    """Revizor 4076 L2 (Marveen 4078): every file the draft carries (body, signature, image, attachment) must be a
+    regular file of at most 25 MB under the install's store/, symlinks resolved, with no hidden (dot) component and
+    no name that looks like a secret (token, vault, secret, credential, password, a key or certificate file)."""
+    real = os.path.realpath(path)
+    store = os.path.realpath(os.path.join(ROOT, "store"))
+    if not real.startswith(store + os.sep):
+        sys.exit("gmail-draft: only a file under the install's store/ is used: %s" % path)
+    parts = real[len(store) + 1:].split(os.sep)
+    if any(part.startswith(".") or SECRET_NAME.search(part) for part in parts):
+        sys.exit("gmail-draft: a hidden or secret-looking file is not used: %s" % path)
+    if not os.path.isfile(real):
+        sys.exit("gmail-draft: not a regular file: %s" % path)
+    if os.path.getsize(real) > MAX_FILE:
+        sys.exit("gmail-draft: file over 25 MB: %s" % path)
+    return real
 
 
 def dashboard_base():
@@ -57,8 +89,6 @@ def dashboard_base():
 
 
 def vault_get(key):
-    if not VAULT_KEY.match(key):
-        sys.exit("gmail-draft: a vault key must look like GMAIL_<NAME>: %r" % key)
     with open(os.path.join(ROOT, "store", ".dashboard-token"), encoding="utf-8") as fh:
         tok = fh.read().strip()
     rq = urllib.request.Request(dashboard_base() + "/api/vault/" + key, headers={"Authorization": "Bearer " + tok})
@@ -72,11 +102,11 @@ def vault_get(key):
     return value
 
 
-def access_token(client_key, refresh_key):
-    raw = json.loads(vault_get(client_key))
+def access_token():
+    raw = json.loads(vault_get(VAULT_CLIENT_KEY))
     c = raw.get("installed") or raw.get("web") or raw
     form = {"client_id": c["client_id"], "client_secret": c["client_secret"],
-            "refresh_token": vault_get(refresh_key), "grant_type": "refresh_token"}
+            "refresh_token": vault_get(VAULT_REFRESH_KEY), "grant_type": "refresh_token"}
     rq = urllib.request.Request(TOKEN_URL, data=urllib.parse.urlencode(form).encode(), method="POST",
                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
@@ -140,12 +170,12 @@ def fix_img_tag(tag, size):
 
 
 def read_text(path):
-    with open(path, encoding="utf-8") as fh:
+    with open(checked_file(path), encoding="utf-8") as fh:
         return fh.read()
 
 
 def read_bytes(path):
-    with open(path, "rb") as fh:
+    with open(checked_file(path), "rb") as fh:
         return fh.read()
 
 
@@ -261,18 +291,22 @@ def parse_args(argv):
     ap.add_argument("--signature-text")
     ap.add_argument("--thread")
     ap.add_argument("--in-reply-to")
-    ap.add_argument("--vault-client", required=True, help="vault key of the OAuth client JSON (GMAIL_...)")
-    ap.add_argument("--vault-refresh", required=True, help="vault key of the refresh token (GMAIL_...)")
     a = ap.parse_args(argv)
     if a.thread and not SAFE_ID.match(a.thread):
         ap.error("--thread is not a Gmail thread id")
+    # Revizor 4076 L3: a CR or LF in a header value would add a header (a Bcc nobody read); refused here, not left
+    # to the email package's version
+    for flag, value in (("subject", a.subject), ("to", a.to), ("cc", a.cc), ("bcc", a.bcc),
+                        ("in-reply-to", a.in_reply_to)):
+        if value and ("\r" in value or "\n" in value):
+            ap.error("--%s holds a line break" % flag)
     return a
 
 
 def main(argv=None):
     a = parse_args(sys.argv[1:] if argv is None else argv)
     m, want = build_message(a)
-    at = access_token(a.vault_client, a.vault_refresh)
+    at = access_token()
     did = create_draft(at, m, a.thread)
     print(did)
     readback(at, did, (("to", a.to), ("cc", a.cc)), want)

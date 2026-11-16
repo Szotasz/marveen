@@ -1245,10 +1245,9 @@ def canonical_forms_text() -> str:
 # What this does not see (the same limits as the canonical senders): which `python3` PATH finds, and a file swapped
 # between this check and the run (the write protection of scripts/hooks/ is a text-level gate, not an OS boundary).
 GMAIL_DRAFT_REL = "scripts/hooks/gmail-draft.py"
-GMAIL_DRAFT_SHA256 = "76cd0cfda18577129e62aea31f7cdce97e11aa083740abb004037a220bf762ca"
+GMAIL_DRAFT_SHA256 = "a29fb5592ec2688ce3e4f51069c34b9351ae9317bdf9bf6483db5b0c0ada202c"
 _DRAFT_VALUE_FLAGS = frozenset(("--subject", "--text", "--html", "--to", "--cc", "--bcc", "--inline", "--attach",
-                                "--signature-html", "--signature-text", "--thread", "--in-reply-to",
-                                "--vault-client", "--vault-refresh"))
+                                "--signature-html", "--signature-text", "--thread", "--in-reply-to"))
 _DRAFT_REPEATABLE = frozenset(("--inline", "--attach"))
 _DRAFT_BOOL_FLAGS = frozenset(("--also-attach",))
 
@@ -1276,6 +1275,11 @@ def _sha256_file(path: str) -> str:
 def canonical_draft_run(cmd: str, cwd):
     """GMAILDRAFT1116: {'to': [...], 'cc': [...], 'bcc': [...]} when the whole command is one literal run of this
     install's own, unmodified Gmail draft writer (see above), else None. Any doubt is None: a send."""
+    # Revizor 4076 L1: a backslash-newline inside a word is joined by the shell (`--cc\<newline>=x` runs as
+    # `--cc=x`), while the scanner ends the word there and reads `=x` as the next one: what the gate and the ledger
+    # read would not be what the writer gets. No line continuation at all, and no value starting with `=`.
+    if "\\\n" in cmd:
+        return None
     try:
         sc = _ShapeScanner(cmd.strip(" \t\n"))
         words = sc.words_until_operator()
@@ -1301,7 +1305,7 @@ def canonical_draft_run(cmd: str, cwd):
                     if j >= len(args):
                         return None
                     value = args[j]
-                if value.startswith("-"):
+                if value.startswith(("-", "=")) or not value.strip():
                     return None
                 if name in ("--to", "--cc", "--bcc"):
                     fields[name[2:]] = [v.strip() for v in value.split(",") if v.strip()]
