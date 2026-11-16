@@ -30,7 +30,10 @@
     - B1: roles per channel (`DISCORD_CHANNEL_POLICY`): a role holder may speak and click there;
     - E1: a wedged gateway is noticed and the client logs in again, governed for IDENTIFY: at most every
       5 min, backoff 5 to 60 min, max 20 per 24 h (`$DISCORD_STATE_DIR/reconnects.json`). Event silence alone
-      never triggers it.
+      never triggers it. Readiness comes from the shard events (`shardReady`/`shardResume` vs
+      `shardReconnecting`/`shardDisconnect`), not `client.isReady()`: in discord.js 14.25.1
+      `Client#destroy()` leaves `ws.destroyed` true for good, and a second `destroy()` does nothing, so
+      the reconnect resets it before logging in again.
 - **How it gets in**: `scripts/patch-discord-plugin.py`, at every channel start, puts the overlay
   over a cached `server.ts` ONLY when that file is this exact upstream version (or our own earlier
   output). Any other file -- a plugin update -- is left as shipped, with one loud log line.
