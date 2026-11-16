@@ -1487,6 +1487,9 @@ async function recoverMissed(readyAt: number): Promise<void> { // MARVEEN-EXT
 const RECONNECT_FILE = join(STATE_DIR, 'reconnects.json') // MARVEEN-EXT
 let lastEventAt = Date.now() // MARVEEN-EXT
 let notReadySince: number | null = null // MARVEEN-EXT
+// Readiness from the shard events, not client.isReady(): Client#destroy() leaves ws.destroyed true for good // MARVEEN-EXT
+// (discord.js 14.25.1), so after one reconnect isReady() would never be true again. // MARVEEN-EXT
+let gatewayReady = false // MARVEEN-EXT
 let badSamples = 0 // MARVEEN-EXT
 let reconnecting = false // MARVEEN-EXT
 let lastHeldReason = '' // MARVEEN-EXT
@@ -1497,10 +1500,14 @@ function readReconnects(): number[] { // MARVEEN-EXT
     return Array.isArray(v) ? v.filter((t): t is number => typeof t === 'number') : [] // MARVEEN-EXT
   } catch { return [] } // MARVEEN-EXT
 } // MARVEEN-EXT
+client.on('shardReady', () => { gatewayReady = true }) // MARVEEN-EXT
+client.on('shardResume', () => { gatewayReady = true }) // MARVEEN-EXT
+client.on('shardReconnecting', () => { gatewayReady = false }) // MARVEEN-EXT
+client.on('shardDisconnect', () => { gatewayReady = false }) // MARVEEN-EXT
 async function livenessTick(): Promise<void> { // MARVEEN-EXT
   if (reconnecting || shuttingDown) return // MARVEEN-EXT
   const now = Date.now() // MARVEEN-EXT
-  const ready = client.isReady() // MARVEEN-EXT
+  const ready = gatewayReady // MARVEEN-EXT
   if (ready) notReadySince = null // MARVEEN-EXT
   else notReadySince ??= now // MARVEEN-EXT
   const v = assessHealth({ ready, notReadyForMs: ready ? 0 : now - notReadySince!, pingMs: client.ws.ping, eventSilenceMs: now - lastEventAt }) // MARVEEN-EXT
@@ -1525,7 +1532,11 @@ async function livenessTick(): Promise<void> { // MARVEEN-EXT
   } // MARVEEN-EXT
   process.stderr.write(`discord channel: gateway unhealthy (${v.reason}) -- logging in again\n`) // MARVEEN-EXT
   try { // MARVEEN-EXT
+    gatewayReady = false // MARVEEN-EXT
     await client.destroy() // MARVEEN-EXT
+    // WebSocketManager#destroy() returns early once destroyed is true: without this the next reconnect's // MARVEEN-EXT
+    // destroy() would leave the wedged shard as it is, and login() would try to connect a shard that is not idle. // MARVEEN-EXT
+    ;(client.ws as unknown as { destroyed: boolean }).destroyed = false // private in the typings, plain field at runtime // MARVEEN-EXT
     await client.login(TOKEN) // MARVEEN-EXT
   } catch (err) { // MARVEEN-EXT
     process.stderr.write(`discord channel: login again failed: ${err}\n`) // MARVEEN-EXT
