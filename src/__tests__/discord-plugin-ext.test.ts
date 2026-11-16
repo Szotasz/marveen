@@ -666,6 +666,17 @@ describe('B1: roles per channel (DISCORD_CHANNEL_POLICY)', () => {
       expect(validate(JSON.stringify(bad)), JSON.stringify(bad)).toMatch(says)
     }
     expect(validate('{ bad')).toMatch(/Invalid JSON/)
+    // review #2717: the on/off keys take only a literal boolean, and an unknown key (a typo) is refused
+    for (const ok of [{ [CH]: { history: true } }, { [CH]: { history: false, allowRoles: [ROLE] } }, { [CH]: { autoThread: true, history: true } }]) expect(validate(JSON.stringify(ok))).toBeNull()
+    for (const [bad, says] of [
+      [{ [CH]: { history: 'true' } }, /history: true or false is required \(no quotes\)/],
+      [{ [CH]: { history: 1 } }, /history: true or false is required/],
+      [{ [CH]: { history: null } }, /history: true or false is required/],
+      [{ [CH]: { histroy: true } }, /unknown key "histroy" \(known: allowRoles, history/],
+      [{ [CH]: { autoThread: 'yes' } }, /autoThread: true or false is required/],
+    ] as const) {
+      expect(validate(JSON.stringify(bad)), JSON.stringify(bad)).toMatch(says)
+    }
     // whatever validate accepts, the overlay keeps every listed role
     const accepted = { [CH]: { allowRoles: [ROLE, ROLE2] } }
     expect(ext.parseChannelPolicy(accepted)).toEqual(accepted)
@@ -786,22 +797,63 @@ describe('E1: liveness and the IDENTIFY-aware reconnect governor (#1965)', () =>
     for (let i = 1; i < history.length; i++) expect(history[i]! - history[i - 1]!).toBeGreaterThanOrEqual(5 * 60_000)
   })
 
-  // The overlay's own readReconnects + livenessTick, run with a fake client and an in-memory file.
+  // The overlay's own readReconnects + shard listeners + livenessTick, run with a fake client, an in-memory file
+  // and a fake clock. The fake client behaves as discord.js 14.25.1 does: destroy() leaves ws.destroyed true
+  // (WebSocketManager.js:322-325), a destroy() on a destroyed manager does nothing, and isReady() is
+  // !ws.destroyed && status Ready (Client.js:242-244).
   function tickHarness(o: { ready?: boolean; ping?: number; silenceMs?: number; file?: string | null; writeFails?: boolean } = {}) {
     const files: Record<string, string> = {}
     if (o.file) files['R'] = o.file
     const calls: string[] = []
-    const now = Date.now()
-    const client = { isReady: () => o.ready ?? true, ws: { ping: o.ping ?? -1 }, destroy: async () => { calls.push('destroy') }, login: async () => { calls.push('login') } }
-    const code = `let lastEventAt = ${now - (o.silenceMs ?? 5 * 3600_000)}; let notReadySince = null; let badSamples = 0; let reconnecting = false; let lastHeldReason = ''; const shuttingDown = false;\n` +
+    const clock = { now: Date.now() }
+    const on: Record<string, Array<() => void>> = {}
+    const ws = { ping: o.ping ?? -1, destroyed: false, status: o.ready ?? true }
+    const client = {
+      ws,
+      isReady: () => !ws.destroyed && ws.status,
+      on: (ev: string, fn: () => void) => { (on[ev] ??= []).push(fn) },
+      destroy: async () => { if (ws.destroyed) { calls.push('destroy-noop'); return } ws.destroyed = true; ws.status = false; calls.push('destroy') },
+      login: async () => { calls.push('login') },
+    }
+    const emit = (ev: string) => { ws.status = ev === 'shardReady' || ev === 'shardResume'; for (const fn of on[ev] ?? []) fn() }
+    const code = `let lastEventAt = ${clock.now - (o.silenceMs ?? 5 * 3600_000)}; let notReadySince = null; let gatewayReady = ${o.ready ?? true}; let badSamples = 0; let reconnecting = false; let lastHeldReason = ''; const shuttingDown = false;\n` +
       `${slice('function readReconnects(', 'setInterval(() => { void livenessTick() }')}\nreturn livenessTick`
-    const tick = new Function('RECONNECT_FILE', 'client', 'assessHealth', 'LIVENESS', 'reconnectDecision', 'readFileSync', 'writeFileSync', 'TOKEN', code)(
+    const tick = new Function('RECONNECT_FILE', 'client', 'assessHealth', 'LIVENESS', 'reconnectDecision', 'readFileSync', 'writeFileSync', 'TOKEN', 'Date', code)(
       'R', client, ext.assessHealth, ext.LIVENESS, ext.reconnectDecision,
       (p: string) => { if (!(p in files)) throw new Error('ENOENT'); return files[p] },
       (p: string, d: string) => { if (o.writeFails) throw new Error('EACCES'); files[p] = d },
-      't') as () => Promise<void>
-    return { tick, calls, files }
+      't', { now: () => clock.now }) as () => Promise<void>
+    return { tick, calls, files, clock, ws, emit }
   }
+
+  // Review E1 (#2703): after one reconnect a healthy gateway must read as healthy, so it is not logged in again.
+  it('run: one stall, then 24 healthy hours: exactly one login, though ws.destroyed stays true', async () => {
+    const h = tickHarness()
+    await h.tick(); await h.tick()
+    expect(h.calls).toEqual(['destroy', 'login'])
+    expect(h.ws.destroyed).toBe(false) // reset after destroy(), so the next destroy() really tears down
+    h.ws.ping = 90
+    h.emit('shardReady')
+    for (let i = 0; i < 24 * 3600_000 / ext.LIVENESS.probeIntervalMs; i++) {
+      h.clock.now += ext.LIVENESS.probeIntervalMs
+      await h.tick()
+    }
+    expect(h.calls).toEqual(['destroy', 'login'])
+  })
+
+  it('run: a second stall is a real second reconnect: destroy() tears the shard down, not a no-op', async () => {
+    const h = tickHarness()
+    await h.tick(); await h.tick()
+    h.emit('shardReady')
+    h.clock.now += 3600_000 // past the backoff
+    h.emit('shardReconnecting') // the gateway drops and never comes back
+    for (let i = 0; i < 20; i++) { h.clock.now += ext.LIVENESS.probeIntervalMs; await h.tick() }
+    expect(h.calls).toEqual(['destroy', 'login', 'destroy', 'login'])
+    // a resume counts as ready again: no third login
+    h.emit('shardResume'); h.ws.ping = 90
+    for (let i = 0; i < 400; i++) { h.clock.now += ext.LIVENESS.probeIntervalMs; await h.tick() }
+    expect(h.calls).toHaveLength(4)
+  })
 
   it('run: two bad samples -> the reconnect is recorded FIRST, then destroy + login, once', async () => {
     const h = tickHarness()
@@ -829,6 +881,7 @@ describe('E1: liveness and the IDENTIFY-aware reconnect governor (#1965)', () =>
 
   it('the wiring: raw events feed the silence clock, the probe runs on the pinned interval', () => {
     expect(SERVER).toContain("client.on('raw', () => { lastEventAt = Date.now() })")
+    expect(SERVER).not.toMatch(/const ready = client\.isReady\(\)/)
     expect(SERVER).toContain('setInterval(() => { void livenessTick() }, LIVENESS.probeIntervalMs).unref()')
   })
 })
@@ -1318,6 +1371,7 @@ describe('C2: rename_thread, only the bot\'s own thread', () => {
     expect(at('await fetchAllowedChannel(args.chat_id as string)')).toBeLessThan(at('mayRenameThread('))
     expect(at('mayRenameThread(')).toBeLessThan(at('await ch.setName(name)'))
   })
+
 })
 
 describe('C4: a reply to a forum channel opens a post', () => {
