@@ -1035,12 +1035,18 @@ def main():
             check("LIVE: the scope unit is no longer active", st.stdout.strip() != "active", st.stdout)
 
             # a ~20 MB job under a 2G cap gets the hint from the REAL memory.peak (sampled every 0.5 s)
-            p = E.run(["--max-mem", "2G", "--min-mb", "0", "--", "python3", "-c",
-                       "import time; b = bytearray(20 * 2**20); time.sleep(2)"])
-            fin = E.events()[-1]
-            check("LIVE: a small job under a 2G cap: finish line max_mem_hint 256M and the stderr note",
-                  p.returncode == 0 and fin.get("max_mem_hint") == "256M" and isinstance(fin.get("peak_mb"), int)
-                  and "--max-mem 256M is enough next time" in p.stderr, (p.returncode, fin, p.stderr[-300:]))
+            kernel = tuple(int(x) for x in os.uname().release.split("-")[0].split(".")[:2])
+            if kernel < (5, 19):
+                print("  SKIP LIVE cap hint (kernel %s has no cgroup memory.peak, needs >= 5.19)"
+                      % os.uname().release)
+            else:
+                p = E.run(["--max-mem", "2G", "--min-mb", "0", "--", "python3", "-c",
+                           "import time; b = bytearray(20 * 2**20); time.sleep(2)"])
+                fin = E.events()[-1]
+                check("LIVE: a small job under a 2G cap: finish line max_mem_hint 256M and the stderr note",
+                      p.returncode == 0 and fin.get("max_mem_hint") == "256M"
+                      and isinstance(fin.get("peak_mb"), int) and "--max-mem 256M is enough next time" in p.stderr,
+                      (p.returncode, fin, p.stderr[-300:]))
 
             # a descendant that ignores SIGTERM: stop escalates to SIGKILL (TimeoutStopSec=5s)
             os.remove(pidf)
@@ -2395,49 +2401,65 @@ sys.exit(g.main(sys.argv[4:]))
 
 def hint_finish(td, W):
     """The finish line of capped runs with a given exit code and peak: the hint
-    only for exit 0, a peak of at most a quarter of the cap, and a hint below the cap."""
+    only for exit 0, a peak of at most a quarter of the cap, and a hint that lowers
+    the run's own memory floor max(--min-mb, cap + reserve)."""
     E = Env(td)
     py = os.path.join(os.path.dirname(W), "heavy-job-gate.py")
     seen = []
 
     def run(rc, peak, cap, *extra, **env):
         p = subprocess.run([sys.executable, "-c", HINT_RUNNER, py, str(rc), str(peak)] + list(extra)
-                           + ["--max-mem", cap, "--min-mb", "0", "--", "true"],
+                           + ["--max-mem", cap, "--", "true"],
                            env=E.env(**env), capture_output=True, text=True, timeout=30)
         fin = E.events()[-1]
-        seen.append((rc, peak, cap, p.returncode, fin.get("max_mem_hint")))
+        seen.append((rc, peak, cap, extra, p.returncode, fin.get("event"), fin.get("max_mem_hint")))
         return p, fin
 
-    p, fin = run(0, 51, "2G")
-    ok = (p.returncode == 0 and fin.get("event") == "finish" and fin.get("max_mem_hint") == "256M"
-          and "--max-mem 256M is enough next time" in p.stderr)
-    p, fin = run(1, 51, "2G")  # a failed job: its peak says nothing about what it needs
-    ok = ok and p.returncode == 1 and "max_mem_hint" not in fin and "is enough next time" not in p.stderr
-    p, fin = run(0, 513, "2G")  # 513 * 4 > 2048: the cap is not oversized
-    ok = ok and "max_mem_hint" not in fin
-    p, fin = run(0, 64, "256M")  # 64 * 4 == 256, but the hint (256M) is not below the cap
-    ok = ok and "max_mem_hint" not in fin
-    p, fin = run(0, 51, "2G", "--allow-uncapped", HEAVY_JOB_NO_SCOPE="1")  # no cap, no cap hint
-    ok = ok and p.returncode == 0 and "max_mem_hint" not in fin
+    def no_hint(p, fin, rc=0):
+        return (p.returncode == rc and fin.get("event") == "finish" and "max_mem_hint" not in fin
+                and "is enough next time" not in p.stderr)
+
+    # default --min-mb 2500, reserve 500: a 3G cap's floor is 3572, a 1024M one lowers it to 2500
+    p, fin = run(0, 400, "3G")
+    ok = (p.returncode == 0 and fin.get("event") == "finish" and fin.get("max_mem_hint") == "1024M"
+          and "--max-mem 1024M is enough next time" in p.stderr and "floor 3572 -> 2500 MB" in p.stderr)
+    p, fin = run(1, 400, "3G")  # a failed job: its peak says nothing about what it needs
+    ok = no_hint(p, fin, rc=1) and ok
+    p, fin = run(0, 801, "3G")  # 801 * 4 > 3072: the cap is not oversized
+    ok = no_hint(p, fin) and ok
+    p, fin = run(0, 51, "1536M")  # 1536 + 500 < 2500: the floor is --min-mb either way
+    ok = no_hint(p, fin) and ok
+    p, fin = run(0, 100, "1G", "--min-mb", "0")  # the run's own --min-mb: floor 1524 -> 756
+    ok = ok and fin.get("max_mem_hint") == "256M" and "floor 1524 -> 756 MB" in p.stderr
+    p, fin = run(0, 64, "256M", "--min-mb", "0")  # 64 * 4 == 256, but the hint is the cap itself
+    ok = no_hint(p, fin) and ok
+    p, fin = run(0, 400, "3G", "--allow-uncapped", HEAVY_JOB_NO_SCOPE="1")  # no cap, no cap hint
+    ok = no_hint(p, fin) and ok
     return ok, seen
 
 
 def cap_hint():
     f = gate.cap_hint_mb
-    cases = [(51, 2048, 256), (434, 2048, 1024), (512, 2048, 1024), (513, 2048, None), (100, 512, 256),
-             (64, 256, None), (300, 4096, 768), (129, 1024, 512), (0, 2048, None), (-5, 2048, None),
-             (None, 2048, None), (True, 2048, None)]
-    got = [(peak, cap, f(peak, cap)) for peak, cap, _ in cases]
-    check("cap_hint_mb: twice the peak rounded up to 256M, only when peak*4 <= cap and the hint is below "
-          "the cap; None for an unknown, zero, negative or bool peak",
-          all(f(peak, cap) == want for peak, cap, want in cases), got)
+    # (peak, cap, min_mb, reserve, expected)
+    cases = [(400, 3072, 2500, 500, 1024), (300, 4096, 2500, 500, 768), (1000, 4096, 2500, 500, 2048),
+             (51, 2048, 2500, 500, 256),  # floor 2548 -> 2500
+             (51, 2000, 2500, 500, None), (51, 1536, 2500, 500, None),  # floor is min_mb either way
+             (512, 2048, 0, 500, 1024), (513, 2048, 0, 500, None),  # peak*4 == cap / just above
+             (64, 256, 0, 500, None),  # the hint (256M) is not below the cap
+             (129, 1024, 0, 500, 512), (100, 512, 0, 500, 256),  # rounded up, at least 256
+             (0, 2048, 0, 500, None), (-5, 2048, 0, 500, None), (None, 2048, 0, 500, None),
+             (True, 2048, 0, 500, None)]
+    got = [(c[:4], f(*c[:4])) for c in cases]
+    check("cap_hint_mb: twice the peak rounded up to 256M (at least 256M), only when peak*4 <= cap and "
+          "the hint lowers max(min_mb, cap + reserve); None for an unknown, zero, negative or bool peak",
+          all(f(*c[:4]) == c[4] for c in cases), got)
     with tempfile.TemporaryDirectory() as td:
         ok, info = hint_finish(td, WRAPPER)
-    check("cap hint: finish line max_mem_hint and stderr note only for a capped exit-0 run at <= 1/4 of its cap",
-          ok, info)
+    check("cap hint: finish line max_mem_hint and the floor note only for a capped exit-0 run at <= 1/4 "
+          "of its cap whose hint lowers the floor", ok, info)
     mutants = (
         ("hint-no-quarter-rule", "peak_mb * 4 > cap_mb", "peak_mb > cap_mb"),
-        ("hint-equal-cap", "return hint if hint < cap_mb else None", "return hint"),
+        ("hint-no-floor-rule", "max(min_mb, hint + reserve) < max(min_mb, cap_mb + reserve)", "hint < cap_mb"),
         ("hint-any-exit", "if scoped and code == 0 else None", "if scoped else None"),
     )
     with tempfile.TemporaryDirectory() as mtd:
@@ -2449,7 +2471,6 @@ def cap_hint():
             with tempfile.TemporaryDirectory() as td:
                 ok, info = hint_finish(td, W)
             check("mutant %s: caught by hint_finish" % name, not ok, info)
-
 
 if __name__ == "__main__":
     sys.exit(main())

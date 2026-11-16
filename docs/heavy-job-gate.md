@@ -100,10 +100,13 @@ működés, a kapcsolók és a konfiguráció részletes leírása az
   várakozó nem akasztja meg a sort.
 - **Napló:** `store/heavy-job-log.jsonl`, eseményenként egy JSON-sor (`wait`, `start`,
   `finish`, `refuse` egy `reason` mezővel, `uncapped`, `ollama_unload`, `nested`,
-  `nested_unverified`). Ha egy keretes feladat 0-val lépett ki, és a csúcsa legfeljebb
-  a keret negyede volt, a `finish` sor `max_mem_hint` mezőt kap (a csúcs kétszerese
-  256M-re felfelé kerekítve), és a stderr-en javaslat jelenik meg: a túl nagy keret
-  megemeli a memória-padlót, és a feladat a zárat fogva vár rá. A `cmd` mező csak a program neve és az argumentumok első
+  `nested_unverified`). Ha egy keretes feladat 0-val lépett ki, és a csúcsa
+  legfeljebb a keret negyede volt, a `finish` sor `max_mem_hint` mezőt kap (a csúcs
+  kétszerese 256M-re felfelé kerekítve, legalább 256M), és a stderr-en javaslat
+  jelenik meg, de csak ha a javaslat csökkenti a `max(--min-mb, keret + tartalék)`
+  padlót (tehát a keret alatt van): a feladat a zárat fogva vár a padlóra. A csúcsot
+  a kapu 0,5 mp-enként olvassa, a feladat utolsó fél másodpercének kiugrása
+  kimaradhat. A `cmd` mező csak a program neve és az argumentumok első
   32 karaktere, a teljes argv soha (argv-ben token is lehet). 5 MiB-nál a napló
   egyszer `heavy-job-log.jsonl.1`-re fordul.
 - **Szó szerinti parancs:** ahol a `systemd-run` ismeri az `--expand-environment`
