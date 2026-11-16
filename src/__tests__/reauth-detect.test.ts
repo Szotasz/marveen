@@ -61,6 +61,25 @@ describe('detectReauthNeeded', () => {
     expect(detectReauthNeeded(stale).needsReauth).toBe(false)
   })
 
+  it('ISSUE2817 (Dani D1): an agent\'s own reply lines that open with a marker do not fire', () => {
+    // Dani's measured shapes on #2823 at 1e52fbef: each read as an auth failure there.
+    expect(detectReauthNeeded(turn(['⏺ API Error: 401 jött vissza a Stripe-tól, a kulcsot cserélni kell.'])).needsReauth).toBe(false)
+    expect(detectReauthNeeded(turn([
+      '⏺ Megnéztem a két hívást:',
+      '  API Error: 401 jött a Supabase REST-től is.',
+    ])).needsReauth).toBe(false)
+    expect(detectReauthNeeded(turn([
+      '⏺ Az ügynökök állapota:',
+      '  ● Not logged in: a geri ügynök (régi)',
+      '  ● Fut: a dani ügynök',
+    ])).needsReauth).toBe(false)
+    // The error line followed by another content line is not "the whole reply" either.
+    expect(detectReauthNeeded(turn([
+      '⏺ Please run /login · API Error: 401 OAuth access token is invalid.',
+      '⏺ (the agent kept talking)',
+    ])).needsReauth).toBe(false)
+  })
+
   it('ISSUE2817: a revoked token is detected and named as revoked, not as the generic /login', () => {
     // The verbatim error a customer's main session failed with for ~10 h (marveen#2817).
     const r = detectReauthNeeded('  ⎿  OAuth token revoked · Please run /login')

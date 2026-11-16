@@ -125,15 +125,25 @@ export function detectReauthNeeded(pane: string | null | undefined): ReauthState
 //   (blank)
 //   ──────── (the input box)
 // liveStatusRegion() reads only the one line above the box (here a blank), so the failure was invisible and a
-// customer's main session failed ~10 h with no owner alert (marveen#2817). So the LAST turn's reply block (the lines
-// between the last submitted prompt and the box) is read too, but only a line that OPENS with a marker (after
-// indentation and the reply glyphs), the shape of Claude Code's own error line. A reply that merely mentions
-// "/login" mid-sentence does not match, and a stale failure above a newer prompt (e.g. "❯ /login" and its
-// "Login successful") is outside the block.
+// customer's main session failed ~10 h with no owner alert (marveen#2817). So the LAST turn's reply (the lines
+// between the last submitted prompt and the box) is read too, under two conditions together (Dani's review of
+// #2823: an agent's own reply line such as "⏺ API Error: 401 came back from Stripe" or a "● Not logged in: ..."
+// bullet must not count):
+//  1. the error IS the whole reply: its first content line is the error, and no other reply line opens with a
+//     content glyph (⏺ / ●); only the "✻ ..." completed-turn line and wrapped continuation lines may follow;
+//  2. that line is Claude Code's own error composite: "Please run /login", "OAuth token revoked/expired", or
+//     "API Error: 401" followed by Claude Code's own continuation ("OAuth access token is invalid", {"type":"error").
+// A stale failure above a newer prompt (e.g. "❯ /login" and its "Login successful") is outside the block.
 const LAST_TURN_MAX_LINES = 40
 const PROMPT_LINE_RX = /^[❯>]\s+\S/
-const LINE_START = '^[\\s⏺●⎿]*(?:'
-const ANCHORED_MARKERS = REAUTH_MARKERS.map((m) => ({ rx: new RegExp(LINE_START + m.rx.source + ')', 'i'), reason: m.reason }))
+const CONTENT_GLYPH_RX = /^\s*[⏺●]/
+const DONE_LINE_RX = /^\s*✻ /
+const LAST_TURN_ERROR_MARKERS: { rx: RegExp; reason: string }[] = [
+  { rx: /^[\s⏺●⎿]*OAuth token (?:has been )?revoked\b/i, reason: 'OAuth token revoked' },
+  { rx: /^[\s⏺●⎿]*OAuth token (?:has )?expired\b/i, reason: 'OAuth token expired' },
+  { rx: /^[\s⏺●⎿]*(?:Not logged in\s*[·∙•]\s*)?Please run\s+\/login\b/i, reason: 'Please run /login' },
+  { rx: /^[\s⏺●⎿]*API Error:\s*401\b.*(?:OAuth access token is invalid|\{"type":"error")/i, reason: 'API Error: 401' },
+]
 
 function lastTurnErrorLine(pane: string): ReauthState {
   const lines = pane.split('\n')
@@ -150,10 +160,13 @@ function lastTurnErrorLine(pane: string): ReauthState {
   if (start < 0) return { needsReauth: false }
   const block = lines.slice(start + 1, top)
   if (ESCALATION_QUOTE_MARKERS.some((rx) => block.some((l) => rx.test(l)))) return { needsReauth: false }
-  for (const line of block) {
-    for (const m of ANCHORED_MARKERS) {
-      if (m.rx.test(line)) return { needsReauth: true, reason: m.reason }
-    }
+  const content = block.filter((l) => l.trim() !== '' && !DONE_LINE_RX.test(l))
+  if (content.length === 0) return { needsReauth: false }
+  // Condition 1: the error is the whole reply (no second content-glyph line after it).
+  if (content.slice(1).some((l) => CONTENT_GLYPH_RX.test(l))) return { needsReauth: false }
+  // Condition 2: the first line is Claude Code's own error composite.
+  for (const m of LAST_TURN_ERROR_MARKERS) {
+    if (m.rx.test(content[0])) return { needsReauth: true, reason: m.reason }
   }
   return { needsReauth: false }
 }
