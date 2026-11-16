@@ -741,7 +741,10 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
 
 const GATE_MSG =
   'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl vagy interpreter-egysoros kulso URL-re, ' +
-  'akkor is, ha az URL valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
+  'akkor is, ha az URL egy SHELL-VALTOZOBAN all. Amit NEM fog: olyan hosztot, ami nem szerepel ' +
+  'literalisan a parancsban (parancs-behelyettesitesbol, kornyezeti valtozobol vagy egy korabbi ' +
+  'parancs kimenetebol szamolt ertek). Az ATMEGY, es ez dokumentalt korlat, nem engedely. ' +
+  'A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
   '(10/8, 172.16/12, 192.168/16, *.local) szabadok. Kulso tartalmat ' +
   'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas, kerd a fo-agenst.'
 function isInvokedDirectly() {

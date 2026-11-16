@@ -1004,3 +1004,43 @@ describe('vendor-API domain allowlist ("domains" key, opt-in)', () => {
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
+
+// MAINBASHEGRESS1116, the second half of kanban ab72dbea: the block MESSAGE is
+// part of the gate, because it is the only text the next agent reads. The
+// message used to say the gate catches a URL "even if it is in a variable" and
+// stop there, which reads as a general claim about indirection. Measured
+// 2026-11-16: the VARIABLE claim is true, and a host that arrives from a
+// COMMAND SUBSTITUTION passes. The hook header has always named that limit
+// ("a value computed at runtime by a command substitution"); the message did
+// not, so the one surface a blocked caller sees overstated the coverage.
+//
+// Pin all three facts together. Separately, each one invites the wrong fix: the
+// passing substitution looks like a bug to close here (it is direction (b), a
+// network-level gate), and the message looks like prose.
+describe('the block message states the coverage it actually has', () => {
+  const HOST = 'app.isolutions.hu'
+
+  it('a URL in a shell variable IS denied, so the message may claim it', () => {
+    expect(classify(`U=https://${HOST}/iskb/; curl -s "$U"`).deny).toBe(true)
+    expect(classify(`curl -s https://${HOST}/iskb/`).deny).toBe(true)
+  })
+
+  it('a host computed by a command substitution is NOT denied (documented limit)', () => {
+    // The substitution BODY carries no network primitive, so the recursive pass
+    // finds nothing, and the outer command no longer contains the host.
+    expect(classify(`curl -s $(printf %s https://${HOST}/iskb/)`).deny).toBe(false)
+    // Positive control for the recursion itself: a network call INSIDE the
+    // substitution is still caught, so the result above is about the computed
+    // VALUE, not about substitutions being skipped.
+    expect(classify(`R=$(curl -s https://${HOST}/iskb/); echo "$R"`).deny).toBe(true)
+  })
+
+  it('the message names the substitution limit instead of implying coverage', () => {
+    const src = readFileSync(HOOK, 'utf-8')
+    const msg = src.slice(src.indexOf('const GATE_MSG ='), src.indexOf('function isInvokedDirectly'))
+    expect(msg).toContain('SHELL-VALTOZOBAN')
+    expect(msg).toContain('parancs-behelyettesitesbol')
+    // And it must not read as permission: the limit is documented, not granted.
+    expect(msg).toContain('dokumentalt korlat, nem engedely')
+  })
+})

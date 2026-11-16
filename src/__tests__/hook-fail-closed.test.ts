@@ -253,8 +253,9 @@ describe('the real security gates on a disposable copy', () => {
     const settings = JSON.parse(readFileSync(join(PROJECT_ROOT, '.claude', 'settings.json'), 'utf-8'))
     const entries = (settings.hooks.PreToolUse as { matcher: string; hooks: { command: string }[] }[])
       .flatMap((e) => e.hooks.map((h) => ({ matcher: e.matcher, command: h.command })))
-    const security = entries.filter((e) => /outgoing-copy-gate\.py|email-approval-gate\.py|egress-gate\.mjs/.test(e.command))
-    expect(security.length).toBe(13)
+    const security = entries.filter((e) => /outgoing-copy-gate\.py|email-approval-gate\.py|egress-gate\.mjs|bash-egress-parser\.mjs/.test(e.command))
+    // 13 -> 14: MAINBASHEGRESS1116 added the Bash egress parser to this surface.
+    expect(security.length).toBe(14)
     for (const e of security) {
       expect(e.command, e.matcher).toContain(GATE_FAIL_CLOSED_TAG)
       const rel = e.command.match(/scripts\/(hooks\/[a-z-]+\.(?:py|mjs))/)![1]

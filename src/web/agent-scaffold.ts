@@ -1353,13 +1353,28 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   ]
 }
 
-// Which agents get the Bash egress parser (EGRESSPARSER923): every sub-agent,
-// NOT the main agent -- the same population the BASH_EGRESS_DENY list binds on
-// every install. The main agent's Bash deny lands only in its OWN config dir
-// (bashEgressDenyTargetPath), because the shared ~/.claude is also the owner's
-// interactive shell; a hook in the repo-shipped project settings would bind the
-// owner's sessions in this project the same way. Widening it to the main agent
-// is a separate owner decision, not a side effect of this gate.
+// Which agents get the Bash egress parser (EGRESSPARSER923) FROM THE SCAFFOLD:
+// every sub-agent, NOT the main agent -- the same population the
+// BASH_EGRESS_DENY list binds on every install.
+//
+// The main agent is exempt HERE, and since MAINBASHEGRESS1116 that no longer
+// means UNCOVERED: it carries the same hook in its own committed project
+// settings (.claude/settings.json), exactly like the outgoing-copy gate below.
+// Injecting a second copy from the scaffold would duplicate it, and writing it
+// into the main agent's nominal user scope is not an option either way -- that
+// path is the shared ~/.claude, which is also the owner's interactive shell.
+//
+// The isolated config dir is NOT a usable carrier for this: the provisioner
+// deletes `hooks` from the clone on every main-agent start and excludes it from
+// the target-only inheritance (#1305), so a hook written there is erased by the
+// next restart. `permissions` survives, which is why the DENY half can live in
+// the isolated dir (bashEgressDenyTargetPath) while the HOOK half cannot.
+//
+// The owner decided on 2026-11-16 that the project scope is the right carrier
+// (kanban ab72dbea): it binds the owner's sessions in THIS checkout only, which
+// is the same trade the copy gate and the email gates already make.
+// main-agent-bash-egress-coverage.test.ts pins the two surfaces together, so
+// the exemption cannot rot back into a gap.
 export function agentGetsBashEgressParser(name: string): boolean {
   return name !== MAIN_AGENT_ID
 }
