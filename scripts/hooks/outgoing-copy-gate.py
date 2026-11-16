@@ -1910,8 +1910,13 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
                    for b in dict.fromkeys((body, _undo_dquote_escapes(body)))):
                 return True
         return False
-    if prog in ("builtin", "command") and rest and _basename(rest[0]) == "eval":
-        prog, rest = "eval", rest[1:]   # Revizor 4123 L2: `builtin eval ...`
+    if prog in ("builtin", "command"):
+        # Revizor 4123 L2, 4138 L8: `builtin eval ...`, `builtin command eval ...`, `command -p eval ...`
+        k = 0
+        while k < len(rest) and (rest[k] in ("builtin", "command", "--") or (re.match(r"^-[pvV]+$", rest[k]))):
+            k += 1
+        if k < len(rest) and _basename(rest[k]) == "eval":
+            prog, rest = "eval", rest[k + 1:]
     if prog == "eval":
         # COPYSUBST1116: eval runs its joined words as a command line
         if rest and rest[0] == "--":
@@ -2723,7 +2728,7 @@ def _ansi_c_body(body: str) -> str:
 def _decode_ansi_c(cmd: str) -> str:
     """COPYSUBST1116 (Revizor 4123 L1, L3): every unquoted bash $'...' word as the single-quoted text it stands for, so a
     flag name, an address or a -c / eval body written that way is read as the shell reads it. Twin: decodeAnsiC."""
-    if "$'" not in cmd:
+    if "$'" not in cmd and '$"' not in cmd:
         return cmd
     out = []
     q = None
@@ -2745,6 +2750,9 @@ def _decode_ansi_c(cmd: str) -> str:
             text = _ansi_c_body(cmd[i + 2:min(j, n)])
             out.append("'" + text.replace("'", "'\\''") + "'")
             i = j + 1
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == '"':
+            i += 1   # Revizor 4138 L7: a locale $"..." string is the "..." string (with no catalogue, as here)
             continue
         if ch in "'\"":
             q = ch

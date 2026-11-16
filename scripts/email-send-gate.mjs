@@ -1343,9 +1343,14 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   }
   let evalRest = rest
   let isEval = prog === 'eval'
-  if ((prog === 'builtin' || prog === 'command') && rest.length && basename(rest[0]) === 'eval') {
-    isEval = true // Revizor 4123 L2: `builtin eval ...`
-    evalRest = rest.slice(1)
+  if (prog === 'builtin' || prog === 'command') {
+    // Revizor 4123 L2, 4138 L8: `builtin eval ...`, `builtin command eval ...`, `command -p eval ...`
+    let k = 0
+    while (k < rest.length && (['builtin', 'command', '--'].includes(rest[k]) || /^-[pvV]+$/.test(rest[k]))) k++
+    if (k < rest.length && basename(rest[k]) === 'eval') {
+      isEval = true
+      evalRest = rest.slice(k + 1)
+    }
   }
   if (isEval) {
     // COPYSUBST1116: eval runs its joined words as a command line
@@ -1938,7 +1943,7 @@ function ansiCBody(body) {
 
 // COPYSUBST1116 (Revizor 4123 L1, L3): every unquoted bash $'...' word as the single-quoted text it stands for
 function decodeAnsiC(cmd) {
-  if (!cmd.includes("$'")) return cmd
+  if (!cmd.includes("$'") && !cmd.includes('$"')) return cmd
   let out = ''
   let q = null
   for (let i = 0; i < cmd.length;) {
@@ -1959,6 +1964,7 @@ function decodeAnsiC(cmd) {
       i = j + 1
       continue
     }
+    if (ch === '$' && cmd[i + 1] === '"') { i++; continue } // Revizor 4138 L7: a locale $"..." string is "..."
     if (ch === "'" || ch === '"') q = ch
     out += ch
     i++

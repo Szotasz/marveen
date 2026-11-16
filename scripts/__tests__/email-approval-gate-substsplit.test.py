@@ -113,6 +113,9 @@ try:
         ("eval --", f"eval -- '{T} --to a@example.com'"),
         ("eval $'...'", f"eval $'{T} --to a@example.com'"),
         ("bash -c $'...'", f"bash -c $'{T} --to a@example.com'"),
+        # Revizor 4138 L7, L8
+        ("a locale $\"--to\" flag name", f"{T} $\"--to\" a@example.com"),
+        ("builtin command eval", f"builtin command eval '{T} --to a@example.com'"),
     ):
         code, err = rc(cmd)
         check(f"{name} -> exit 2", code == 2, f"exit={code} err={err[:200]!r}")
