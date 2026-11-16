@@ -4,8 +4,10 @@
  * - a refused gate answers 409 restart-blocked with the reason and the force hint, and does NOT restart;
  * - an allowed gate restarts once and answers 200;
  * - an explicit {"force": true} skips the gate, restarts, and is logged;
- * - a body that is not an explicit force is gated like no body.
- * The gate and the hard restart are stubbed: no tmux, no launchctl.
+ * - a body that is not an explicit force is gated like no body;
+ * - MAINRESTARTWAKE1115: a restart that took owes the fresh main session one wake; a refused (409) or
+ *   failed (500) restart owes none, and an explicit {"wake": false} switches it off.
+ * The gate, the hard restart and the wake timer are stubbed: no tmux, no launchctl, no directive.
  */
 import { Readable } from 'node:stream'
 import { join } from 'node:path'
@@ -13,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const gate = vi.fn()
 const hard = vi.fn()
+const wake = vi.fn()
 
 vi.mock('../web/manual-restart-gate.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../web/manual-restart-gate.js')>()
@@ -21,6 +24,10 @@ vi.mock('../web/manual-restart-gate.js', async (importOriginal) => {
 vi.mock('../web/channel-monitor.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../web/channel-monitor.js')>()
   return { ...orig, hardRestartMarveenChannels: () => hard() }
+})
+vi.mock('../web/restart-wake.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../web/restart-wake.js')>()
+  return { ...orig, scheduleMainRestartWake: (...a: unknown[]) => wake(...a) }
 })
 
 const { tryHandleMarveen } = await import('../web/routes/marveen.js')
@@ -54,6 +61,7 @@ beforeEach(() => {
   gate.mockReset()
   hard.mockReset()
   hard.mockReturnValue({ ok: true })
+  wake.mockReset()
   warn = vi.spyOn(logger, 'warn')
 })
 afterEach(() => { warn.mockRestore() })
@@ -106,5 +114,55 @@ describe.each(ROUTES)('%s', (_label, path, handle) => {
     expect(await handle(ctx)).toBe(true)
     expect(out.status).toBe(500)
     expect(out.body).toEqual({ error: 'boom' })
+  })
+
+  // MAINRESTARTWAKE1115
+  const HANDOFF = join(PROJECT_ROOT, 'HANDOFF.md')
+
+  it.each([null, '', '{}', 'not json', '{"wake": "false"}', '{"wake": true}'])('a restart that took (body %s) owes the main session exactly one wake, pointed at its HANDOFF.md', async (body) => {
+    gate.mockResolvedValue({ allow: true, reason: 'idle' })
+    const { ctx, out } = fakeCtx(path, body)
+    expect(await handle(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(hard).toHaveBeenCalledTimes(1)
+    expect(wake).toHaveBeenCalledTimes(1)
+    expect(wake).toHaveBeenCalledWith(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, HANDOFF)
+  })
+
+  it('a forced restart owes the wake too', async () => {
+    gate.mockResolvedValue({ allow: false, reason: 'busy' })
+    const { ctx, out } = fakeCtx(path, JSON.stringify({ force: true }))
+    expect(await handle(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(wake).toHaveBeenCalledTimes(1)
+    expect(wake).toHaveBeenCalledWith(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, HANDOFF)
+  })
+
+  it.each(['{"wake": false}', '{"force": true, "wake": false}'])('an explicit %s restarts and answers 200, but owes no wake', async (body) => {
+    gate.mockResolvedValue({ allow: true, reason: 'idle' })
+    const { ctx, out } = fakeCtx(path, body)
+    expect(await handle(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true })
+    expect(hard).toHaveBeenCalledTimes(1)
+    expect(wake).not.toHaveBeenCalled()
+  })
+
+  it('a refused gate (409) owes no wake: the old session is still there', async () => {
+    gate.mockResolvedValue({ allow: false, reason: 'busy' })
+    const { ctx, out } = fakeCtx(path, null)
+    expect(await handle(ctx)).toBe(true)
+    expect(out.status).toBe(409)
+    expect(hard).not.toHaveBeenCalled()
+    expect(wake).not.toHaveBeenCalled()
+  })
+
+  it('a failed hard restart (500) owes no wake', async () => {
+    gate.mockResolvedValue({ allow: true, reason: 'idle' })
+    hard.mockReturnValue({ ok: false, error: 'boom' })
+    const { ctx, out } = fakeCtx(path, null)
+    expect(await handle(ctx)).toBe(true)
+    expect(out.status).toBe(500)
+    expect(wake).not.toHaveBeenCalled()
   })
 })
