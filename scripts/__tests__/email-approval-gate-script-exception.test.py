@@ -36,6 +36,33 @@ def main():
             assert bool(actual) == case['match'], case['name']
         print('PASS: shared JavaScript/Python parser corpus')
 
+        # REPEATENVELOPE (card f2ccb0bb, round 2): the mjs argument parser
+        # returns only the FIRST value of a repeatable flag, so an entry that
+        # makes an envelope flag (--to/--cc/--subject/--body-file) repeatable
+        # would let recipient verification and the envelope hash see only the
+        # first recipient. Such an entry is invalid in ALL THREE validators
+        # (mjs, py, TS) and drops exactly like any other shape-invalid entry.
+        for flag in ('--to', '--cc', '--subject', '--body-file'):
+            # The dangerous shape MOVES the envelope flag from valueArgs to
+            # repeatableArgs (no duplicate): without the fix the entry
+            # validates and the mjs parser then returns only the first value.
+            for repeatable in ([flag], list(CORPUS['entry']['repeatableArgs']) + [flag]):
+                bad = dict(CORPUS['entry'])
+                bad['valueArgs'] = [f for f in bad['valueArgs'] if f != flag]
+                bad['repeatableArgs'] = repeatable
+                assert gate.valid_agent_send_exception(bad) is False, (flag, repeatable)
+                (store / 'agent-send-exceptions.json').write_text(
+                    json.dumps({'agents': {CORPUS['agentName']: bad, 'clean': CORPUS['entry']}}))
+                kept = gate.read_agent_send_exceptions()
+                assert kept == {'agents': {'clean': CORPUS['entry']}}, (flag, repeatable)
+        clean = dict(CORPUS['entry'])
+        clean['repeatableArgs'] = list(CORPUS['entry']['repeatableArgs'])
+        assert gate.valid_agent_send_exception(clean) is True
+        assert gate.valid_agent_send_exception({**clean, 'repeatableArgs': []}) is True
+        (store / 'agent-send-exceptions.json').unlink()
+        assert gate.read_agent_send_exceptions() == {}
+        print('PASS: repeatable envelope flags invalidate the entry in the py validator')
+
         body = install / 'body.txt'
         attachment = install / 'attachment.bin'
         body.write_bytes('Example body.\r\nSecond line.\n'.encode())

@@ -131,6 +131,12 @@ STANDING_PATH = os.path.join(STORE_DIR, "email-standing-recipients.json")
 
 EXCEPTIONS_PATH = os.path.join(STORE_DIR, "agent-send-exceptions.json")
 _EXCEPTION_KEYS = ("scripts", "modes", "valueArgs", "repeatableArgs", "booleanArgs")
+# REPEATENVELOPE (card f2ccb0bb, round 2): the parser returns only the FIRST value of a
+# repeatable flag, so an entry that makes an envelope flag repeatable would let the
+# recipient verification (and this gate's envelope hash) see only the first recipient.
+# Such an entry is invalid in ALL THREE validators: this one, validAgentSendException in
+# email-send-gate.mjs, and readAgentSendExceptions in agent-scaffold.ts.
+_NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
 
 
 def valid_agent_send_exception(entry):
@@ -144,6 +150,7 @@ def valid_agent_send_exception(entry):
     flags = entry["valueArgs"] + entry["repeatableArgs"] + entry["booleanArgs"]
     return (bool(entry["scripts"]) and all(os.path.isabs(p) for p in entry["scripts"])
             and bool(entry["modes"]) and all(m in ("draft", "send") for m in entry["modes"])
+            and not any(f in _NON_REPEATABLE_FLAGS for f in entry["repeatableArgs"])
             and all(re.fullmatch(r"--[a-z][a-z0-9-]*", f) for f in flags)
             and len(set(flags)) == len(flags))
 

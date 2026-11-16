@@ -25,6 +25,7 @@ vi.mock('../web/agent-config.js', async original => ({
 import {
   injectEmailSendGate, injectEmailApprovalGate, ensureGovernanceGateCommands,
   readAgentSendExceptions, writeAgentSettingsFromProfile, agentSettingsPath, hookCommand, EMAIL_AGENT_FLAG, EMAIL_THREAD_REPLY_FLAG,
+  removeEmailApprovalGate, failClosedGateRun,
 } from '../web/agent-scaffold.js'
 import { PROJECT_ROOT } from '../config.js'
 import { loadProfileTemplate } from '../web/profiles.js'
@@ -100,5 +101,106 @@ describe('send exception hook wiring', () => {
     expect(readAgentSendExceptions('<invalid-agent>')).toBeNull()
     configFile.content = JSON.stringify({ agents: { [agentName]: { ...entry, scripts: ['relative.ext'] } } })
     expect(readAgentSendExceptions(agentName)).toBeNull()
+  })
+
+  // REPEATENVELOPE (card f2ccb0bb, round 2): the mjs argument parser returns
+  // only the FIRST value of a repeatable flag, so an entry that makes an
+  // envelope flag (--to/--cc/--subject/--body-file) repeatable would let
+  // recipient verification and the envelope hash see only the first recipient.
+  // The entry is invalid in ALL THREE validators; this one (TS) must drop it
+  // through the same null path as any other shape-invalid entry.
+  it('rejects entries that make an envelope flag repeatable, keeping clean entries', () => {
+    // The dangerous shape MOVES the envelope flag from valueArgs to
+    // repeatableArgs (no duplicate): without the fix the entry validates and
+    // the mjs parser then returns only the first value of the flag.
+    const flagRepeatable = (flag: string) => ({
+      ...entry,
+      valueArgs: entry.valueArgs.filter(f => f !== flag),
+      repeatableArgs: [...entry.repeatableArgs, flag],
+    })
+    for (const flag of ['--to', '--cc', '--subject', '--body-file']) {
+      configFile.content = JSON.stringify({ agents: { [agentName]: flagRepeatable(flag) } })
+      expect(readAgentSendExceptions(agentName), flag).toBeNull()
+    }
+    // Without those flags the entry still validates (the corpus entry repeats
+    // only --attach, which is not an envelope flag).
+    configFile.content = JSON.stringify({ agents: { [agentName]: entry } })
+    expect(readAgentSendExceptions(agentName)).toEqual(entry)
+  })
+})
+
+// EXACTAPPROVALREMOVE (card f2ccb0bb, round 2): removeEmailApprovalGate used to
+// substring-filter and remove the WHOLE PreToolUse entry, so sibling hooks in
+// the same entry and innocent mentions elsewhere were lost. Only hook objects
+// whose command is EXACTLY EMAIL_APPROVAL_COMMAND may go; a matcher whose hooks
+// array becomes empty drops out, and everything else survives.
+describe('approval-gate removal is exact-command', () => {
+  // EMAIL_APPROVAL_COMMAND is module-private; rebuild it with the same exported
+  // builder the scaffold itself composes it from.
+  const approvalCommand = failClosedGateRun(
+    'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"', 'email-approval-gate.py', 10,
+  )
+  const approvalHook = { type: 'command', command: approvalCommand, timeout: 10 }
+  const siblingHook = { type: 'command', command: 'echo sibling', timeout: 5 }
+  const exactApprovalHooks = (settings: Record<string, unknown>) =>
+    entries(settings)
+      .flatMap((e) => (Array.isArray((e as { hooks?: unknown[] }).hooks) ? (e as { hooks: unknown[] }).hooks : []))
+      .filter((h) => (h as { command?: unknown }).command === approvalCommand)
+
+  it('removes only the exact approval hooks; siblings and lookalikes survive, emptied matchers drop', () => {
+    const shared = { matcher: 'Bash', hooks: [approvalHook, siblingHook] }
+    const lookalike = { matcher: '.*send_email.*', hooks: [{ type: 'command', command: `${approvalCommand} --stale`, timeout: 10 }] }
+    const emptied = { matcher: '.*manage_email.*', hooks: [approvalHook] }
+    const settings = { hooks: { PreToolUse: [unrelated, shared, lookalike, emptied] } }
+    removeEmailApprovalGate(settings)
+    expect(entries(settings)).toEqual([
+      unrelated,
+      { matcher: 'Bash', hooks: [siblingHook] }, // the sibling hook survived the removal
+      lookalike, // a command that merely mentions the gate is not the gate
+      // the matcher whose hooks array became empty dropped out entirely
+    ])
+  })
+
+  it('is idempotent and leaves a file without the gate untouched', () => {
+    const settings = { hooks: { PreToolUse: [unrelated] } }
+    removeEmailApprovalGate(settings)
+    removeEmailApprovalGate(settings)
+    expect(entries(settings)).toEqual([unrelated])
+  })
+
+  it('repair counting uses the same exact-command match: a mixed entry is not stale wiring', () => {
+    // One matcher entry carries the exact approval hook PLUS a sibling hook.
+    // Its exact hooks already match the expected wiring, so the repair pass
+    // must leave it alone -- the pre-fix substring comparison read that entry
+    // as stale approval wiring and the repair deleted the sibling with it.
+    const settings = { hooks: { PreToolUse: [unrelated] } }
+    injectEmailApprovalGate(settings)
+    ;(entries(settings)[1] as { hooks: unknown[] }).hooks.push(siblingHook)
+    mkdirSync(join(agentRoot, '.claude'), { recursive: true })
+    writeFileSync(agentSettingsPath(agentName), JSON.stringify(settings))
+    // First call still repairs: the email-send gate itself is missing here.
+    expect(ensureGovernanceGateCommands(agentName, profile, () => entry)).toBe(true)
+    // The mixed entry survives intact (not treated as stale approval wiring).
+    expect(entries(readSettings())).toContainEqual({ matcher: 'Bash', hooks: [approvalHook, siblingHook] })
+    expect(approvalEntries(readSettings())).toHaveLength(7)
+    // Converged: nothing left to do while the grant stands.
+    expect(ensureGovernanceGateCommands(agentName, profile, () => entry)).toBe(false)
+    // Revocation removes the exact hook only; the sibling hook survives in place.
+    expect(ensureGovernanceGateCommands(agentName, profile, () => null)).toBe(true)
+    expect(entries(readSettings())).toContainEqual({ matcher: 'Bash', hooks: [siblingHook] })
+    expect(approvalEntries(readSettings())).toHaveLength(0)
+    expect(ensureGovernanceGateCommands(agentName, profile, () => null)).toBe(false)
+  })
+
+  it('repair counts a lookalike command as missing wiring and adds the exact one beside it', () => {
+    const lookalike = { matcher: 'Bash', hooks: [{ type: 'command', command: `${approvalCommand} --stale`, timeout: 10 }] }
+    const settings = { hooks: { PreToolUse: [unrelated, lookalike] } }
+    writeFileSync(agentSettingsPath(agentName), JSON.stringify(settings))
+    expect(ensureGovernanceGateCommands(agentName, profile, () => entry)).toBe(true)
+    // Seven EXACT approval hooks are wired now; the substring-mentioning
+    // lookalike is not one of them and must survive beside them.
+    expect(exactApprovalHooks(readSettings())).toHaveLength(7)
+    expect(entries(readSettings())).toContainEqual(lookalike)
+    expect(ensureGovernanceGateCommands(agentName, profile, () => entry)).toBe(false)
   })
 })

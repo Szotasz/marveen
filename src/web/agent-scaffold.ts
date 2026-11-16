@@ -1672,6 +1672,10 @@ export interface AgentSendException {
 }
 
 // Same entry validation as scripts/email-send-gate.mjs; invalid siblings do not revoke valid entries.
+// REPEATENVELOPE (card f2ccb0bb, round 2): an envelope flag made repeatable is invalid
+// here too -- the mjs parser returns only the FIRST value of a repeatable flag, so
+// recipient verification (and the py envelope hash) would see only the first recipient.
+const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'])
 export function readAgentSendExceptions(name: string): AgentSendException | null {
   try {
     const config = JSON.parse(readFileSync(join(STORE_DIR, 'agent-send-exceptions.json'), 'utf8'))
@@ -1687,6 +1691,7 @@ export function readAgentSendExceptions(name: string): AgentSendException | null
     const flags = [...entry.valueArgs, ...entry.repeatableArgs, ...entry.booleanArgs]
     if (!entry.scripts.length || !entry.scripts.every((p: string) => isAbsolute(p))
       || !entry.modes.length || !entry.modes.every((m: string) => ['draft', 'send'].includes(m))
+      || entry.repeatableArgs.some((f: string) => NON_REPEATABLE_FLAGS.has(f))
       || !flags.every(f => /^--[a-z][a-z0-9-]*$/.test(f)) || new Set(flags).size !== flags.length) return null
     return entry
   } catch { return null }
@@ -1701,10 +1706,24 @@ const EMAIL_APPROVAL_COMMAND = failClosedGateRun(
   'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"', 'email-approval-gate.py', 10,
 )
 
+// EXACTAPPROVALREMOVE (card f2ccb0bb, round 2): remove ONLY the hook objects whose
+// command is EXACTLY EMAIL_APPROVAL_COMMAND. The old substring filter dropped the
+// WHOLE PreToolUse entry, so sibling hooks living in the same matcher entry -- and
+// innocent mentions of the gate anywhere else in an entry -- were lost with it.
+// A matcher whose hooks array becomes empty drops out; everything else survives.
 export function removeEmailApprovalGate(existing: Record<string, unknown>): void {
   const hooks = existing.hooks as Record<string, unknown> | undefined
   if (hooks && Array.isArray(hooks.PreToolUse)) {
-    hooks.PreToolUse = hooks.PreToolUse.filter(e => !JSON.stringify(e).includes('email-approval-gate.py'))
+    const keptEntries: unknown[] = []
+    for (const e of hooks.PreToolUse as unknown[]) {
+      const entry = e as { hooks?: unknown }
+      if (!Array.isArray(entry.hooks)) { keptEntries.push(e); continue }
+      const keptHooks = entry.hooks.filter((h) => (h as { command?: unknown })?.command !== EMAIL_APPROVAL_COMMAND)
+      if (keptHooks.length === entry.hooks.length) { keptEntries.push(e); continue } // nothing removed: untouched
+      if (keptHooks.length > 0) keptEntries.push({ ...entry, hooks: keptHooks }) // siblings survive in place
+      // else: every hook was the approval hook, so the matcher entry drops out
+    }
+    hooks.PreToolUse = keptEntries
   }
 }
 
@@ -3216,9 +3235,17 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     : hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_AGENT_FLAG, name])
   const approvalExpected: Record<string, unknown> = {}
   if (readExceptionConfig(name)) injectEmailApprovalGate(approvalExpected)
-  const expectedApprovals = (approvalExpected.hooks as Record<string, unknown> | undefined)?.PreToolUse ?? []
-  const actualApprovals = ptu.filter(e => JSON.stringify(e).includes('email-approval-gate.py'))
-  const needApproval = JSON.stringify(actualApprovals) !== JSON.stringify(expectedApprovals)
+  const expectedApprovals = ((approvalExpected.hooks as Record<string, unknown> | undefined)?.PreToolUse ?? []) as unknown[]
+  // EXACTAPPROVALREMOVE: count on the SAME exact-command match removeEmailApprovalGate
+  // uses, not a substring -- an entry carrying the exact approval hook plus sibling
+  // hooks is healthy wiring (not stale), and a command that merely mentions the gate
+  // is not wiring at all. Comparing the exact hook objects keeps the repair
+  // idempotent: after one pass they are the pristine injector-written set.
+  const exactApprovalHooksOf = (entries: unknown[]) => (entries as { hooks?: unknown }[])
+    .flatMap((e) => (Array.isArray(e.hooks) ? e.hooks : []))
+    .filter((h) => (h as { command?: unknown })?.command === EMAIL_APPROVAL_COMMAND)
+  const needApproval = JSON.stringify(exactApprovalHooksOf(ptu))
+    !== JSON.stringify(exactApprovalHooksOf(expectedApprovals))
   const needEmail = agentGetsEmailGate(name)
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)

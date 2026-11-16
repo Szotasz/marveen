@@ -1,19 +1,46 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import corpus from './fixtures/agent-send-exception-cases.json' with { type: 'json' }
 
 const file = vi.hoisted(() => ({ content: '{invalid json', unreadable: false }))
+// SENDAPPROVALBIND (card f2ccb0bb round 2): the agent-side settings file the
+// gate must consult before honoring a SEND-mode exception. `null` = the file is
+// missing; anything else is served verbatim (possibly invalid JSON).
+const agentSettings = vi.hoisted(() => ({ content: null as string | null }))
+// ~/.claude/settings.json, served only while a test targets the MAIN_AGENT_ID
+// branch of the same lookup (`null` = missing).
+const homeSettings = vi.hoisted(() => ({ content: null as string | null }))
+// The install's .env, served for the MAIN_AGENT_ID lookup (empty = no main id).
+const envFile = vi.hoisted(() => ({ content: '' }))
 vi.mock('node:fs', async original => {
   const fs = await original<typeof import('node:fs')>()
+  const root = join(fileURLToPath(import.meta.url), '..', '..', '..', 'scripts')
+  const agentSettingsPath = (name: string) => join(root, '..', 'agents', name, '.claude', 'settings.json')
+  const homeSettingsPath = join(homedir(), '.claude', 'settings.json')
+  const rootEnv = join(root, '..', '.env')
+  const serve = (content: string | null) => {
+    if (content === null) throw new Error('ENOENT: no such file')
+    return content
+  }
   return { ...fs, readFileSync: (...args: Parameters<typeof fs.readFileSync>) => {
     if (String(args[0]).endsWith('/store/agent-send-exceptions.json')) {
       if (file.unreadable) throw new Error('unreadable')
       return file.content
     }
+    if (String(args[0]) === agentSettingsPath(corpus.agentName)) return serve(agentSettings.content)
+    if (String(args[0]) === homeSettingsPath) return serve(homeSettings.content)
+    if (String(args[0]) === rootEnv) return envFile.content
     return fs.readFileSync(...args)
   } }
 })
 // @ts-expect-error -- plain .mjs hook script, no types
-import { agentScriptException, gateDecision, readAgentSendExceptions } from '../../scripts/email-send-gate.mjs'
+import { agentScriptException, gateDecision, readAgentSendExceptions, validAgentSendException } from '../../scripts/email-send-gate.mjs'
+// Namespace import: the unbound-binding deny builder arrives with the fix, and a
+// named import of a missing export would break the whole file at link time.
+// @ts-expect-error -- plain .mjs hook script, no types
+import * as sendGate from '../../scripts/email-send-gate.mjs'
 
 const { agentName, entry, cases } = corpus
 const config = { agents: { [agentName]: entry } }
@@ -21,6 +48,13 @@ const command = cases[0].command
 const verify = (address: string) => ['verified@example.invalid', 'copy@example.invalid'].includes(address)
 const decide = (cmd = command, agent: string | null = agentName, cfg: unknown = config) =>
   gateDecision('Bash', { command: cmd }, verify, process.cwd(), agent, () => cfg)
+// A settings file with the approval-gate PreToolUse hook bound, as the scaffold
+// writes it at spawn time when the grant exists.
+const boundSettings = JSON.stringify({ hooks: { PreToolUse: [
+  { matcher: '.*send_email.*', hooks: [{ type: 'command', command: 'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"', timeout: 10 }] },
+] } })
+// The grant existed at spawn time, so the scaffold bound the gate.
+agentSettings.content = boundSettings
 
 describe('named-script exception', () => {
   it('preserves the script-send denial without an agent identity', () => {
@@ -80,5 +114,111 @@ describe('named-script exception', () => {
 describe('parser conformance (also read by email-approval-gate-script-exception.test.py)', () => {
   for (const c of cases) it(c.name, () => {
     expect(Boolean(agentScriptException(c.command, agentName, config))).toBe(c.match)
+  })
+})
+
+// SENDAPPROVALBIND (card f2ccb0bb, round 2): the mjs reads the exception config
+// live, but the scaffold binds the enabling PreToolUse py hook into the agent's
+// settings file only at spawn time, and only if a grant existed then. A grant
+// added AFTER spawn is seen by this gate while the py approval gate is still
+// unbound -- so before a SEND-mode pass the binding must be verified on the
+// same settings path the scaffold writes (agentSettingsPath), fail-closed.
+describe('send exception requires the bound approval gate (SEND mode only)', () => {
+  afterEach(() => {
+    agentSettings.content = boundSettings
+    homeSettings.content = null
+    envFile.content = ''
+    file.content = '{invalid json'
+  })
+
+  it('denies the send while the gate hook is not bound: missing, unreadable, or hook-less settings', () => {
+    agentSettings.content = null // no settings file at all (grant postdates the spawn)
+    expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
+    agentSettings.content = '{invalid json' // unreadable settings
+    expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
+    agentSettings.content = JSON.stringify({ hooks: { PreToolUse: [
+      { matcher: '.*send_email.*', hooks: [{ type: 'command', command: 'echo unrelated' }] }, // no approval hook
+    ] } })
+    expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
+    agentSettings.content = JSON.stringify({}) // readable file, no hooks key
+    expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
+  })
+
+  it('names the remedy: the agent must be restarted so the scaffold binds the gate', () => {
+    const msg = sendGate.buildApprovalGateUnboundMsg()
+    expect(msg).toContain('email-approval-gate.py')
+    expect(msg.toLowerCase()).toContain('ujra kell inditani') // "must be restarted"
+    expect(msg.toLowerCase()).toContain('respawn')
+  })
+
+  it('allows the send again once the hook is bound', () => {
+    agentSettings.content = null
+    expect(decide().deny).toBe(true)
+    agentSettings.content = boundSettings
+    expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
+  })
+
+  it('a hook elsewhere in the file does not satisfy the binding: only PreToolUse counts', () => {
+    agentSettings.content = JSON.stringify({ hooks: { PostToolUse: [
+      { matcher: '.*send_email.*', hooks: [{ type: 'command', command: 'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"' }] },
+    ] } })
+    expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
+  })
+
+  it('drafts are untouched by the binding check', () => {
+    for (const content of [null, '{invalid json', boundSettings]) {
+      agentSettings.content = content
+      expect(decide(command.replace(' send ', ' draft '))).toEqual({ deny: false, kind: 'script-exception' })
+    }
+  })
+
+  it('an unbound gate still verifies recipients first on no other path: the deny is the binding one', () => {
+    agentSettings.content = null
+    // The binding deny wins even for an unverified recipient: without the py
+    // gate bound, no approval-level enforcement exists at all, so the call must
+    // not slip through to a narrower wording.
+    expect(decide(command.replace('verified@', 'unknown@'))).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
+  })
+
+  it('MAIN_AGENT_ID resolves the home settings file, same fail-closed rule', () => {
+    envFile.content = `MAIN_AGENT_ID=${agentName}\n`
+    agentSettings.content = boundSettings // the agents/<name> file is NOT consulted for the main id
+    homeSettings.content = null
+    expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
+    homeSettings.content = boundSettings
+    expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
+  })
+})
+
+// REPEATENVELOPE (card f2ccb0bb, round 2): the mjs argument parser returns only
+// the FIRST value of a repeatable flag, so an entry that makes an envelope flag
+// repeatable would let recipient verification (and the py envelope hash) see
+// only the first recipient. Such an entry is invalid in ALL THREE validators
+// (mjs, py, TS) and drops exactly like any other shape-invalid entry.
+describe('repeatable envelope flags invalidate the exception entry', () => {
+  // The dangerous shape MOVES the envelope flag from valueArgs to
+  // repeatableArgs (no duplicate): the entry otherwise validates today, and
+  // the parser then returns only the first value of the flag.
+  const flagRepeatable = (flag: string, extra: string[] = []) => ({
+    ...entry,
+    valueArgs: entry.valueArgs.filter(f => f !== flag),
+    repeatableArgs: [...extra, flag],
+  })
+  for (const flag of ['--to', '--cc', '--subject', '--body-file']) {
+    it(`repeatable '${flag}' is invalid`, () => {
+      expect(validAgentSendException(flagRepeatable(flag))).toBe(false)
+      // also invalid alongside a legitimate repeatable flag
+      expect(validAgentSendException(flagRepeatable(flag, entry.repeatableArgs))).toBe(false)
+    })
+  }
+  it('an entry without those repeatable flags still validates', () => {
+    expect(validAgentSendException(entry)).toBe(true)
+    expect(validAgentSendException({ ...entry, repeatableArgs: [] })).toBe(true)
+  })
+  it('the reader drops the invalid entry and keeps valid siblings', () => {
+    file.content = JSON.stringify({ agents: { [agentName]: flagRepeatable('--to'), '<other-agent>': entry } })
+    expect(readAgentSendExceptions()).toEqual({ agents: { '<other-agent>': entry } })
+    // and the named agent falls back to the ordinary script-send deny
+    expect(decide(command, agentName, readAgentSendExceptions())).toMatchObject({ deny: true, kind: 'script-send' })
   })
 })

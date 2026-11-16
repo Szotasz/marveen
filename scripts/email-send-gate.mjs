@@ -60,6 +60,13 @@ try {
 // Install-local operator grants; never redirected by the checked agent's environment.
 export const AGENT_SEND_EXCEPTIONS_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'agent-send-exceptions.json')
 const EXCEPTION_KEYS = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'booleanArgs']
+// REPEATENVELOPE (card f2ccb0bb, round 2): the parser below returns only the FIRST
+// value of a repeatable flag (values.get(flag)?.[0]), so an entry that makes an
+// envelope flag repeatable would let the recipient verification here (and the py
+// envelope hash) see only the first recipient. Such an entry is invalid in ALL THREE
+// validators: this one, valid_agent_send_exception in email-approval-gate.py, and
+// readAgentSendExceptions in agent-scaffold.ts.
+const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'])
 
 export function validAgentSendException(entry) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)
@@ -70,6 +77,7 @@ export function validAgentSendException(entry) {
   const flags = [...entry.valueArgs, ...entry.repeatableArgs, ...entry.booleanArgs]
   return entry.scripts.length > 0 && entry.scripts.every(p => isAbsolute(p))
     && entry.modes.length > 0 && entry.modes.every(m => ['draft', 'send'].includes(m))
+    && !entry.repeatableArgs.some(f => NON_REPEATABLE_FLAGS.has(f))
     && flags.every(f => /^--[a-z][a-z0-9-]*$/.test(f)) && new Set(flags).size === flags.length
 }
 
@@ -79,6 +87,38 @@ export function readAgentSendExceptions() {
     if (!config?.agents || typeof config.agents !== 'object' || Array.isArray(config.agents)) return {}
     return { agents: Object.fromEntries(Object.entries(config.agents).filter(([, e]) => validAgentSendException(e))) }
   } catch { return {} }
+}
+
+// SENDAPPROVALBIND (card f2ccb0bb, round 2): is the py approval gate actually
+// BOUND for this agent? The exception config above is read live, but the
+// scaffold (writeAgentSettingsFromProfile in agent-scaffold.ts) binds the
+// enabling email-approval-gate.py PreToolUse hook into the agent's settings
+// file only at spawn time, and only if a grant existed THEN. A grant added
+// AFTER spawn is seen by this gate while the py approval gate is still
+// unbound -- approval-level enforcement would be bypassed until respawn.
+// The settings path mirrors agentSettingsPath exactly: the main agent
+// (MAIN_AGENT_ID in <root>/.env) -> ~/.claude/settings.json, otherwise
+// <root>/agents/<name>/.claude/settings.json (<root> = one level above
+// scripts/, as in knownAgents). Any read error, a missing file, or no such
+// hook means NOT bound (fail-closed).
+export function agentApprovalGateBound(agentName) {
+  if (!agentName || typeof agentName !== 'string') return false
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  let mainId = null
+  try {
+    const m = readFileSync(join(root, '.env'), 'utf-8').match(/^\s*MAIN_AGENT_ID\s*=\s*['"]?([^'"\s#]+)/m)
+    if (m) mainId = m[1]
+  } catch { /* no .env: the agent cannot be the main agent (fail-closed) */ }
+  const settingsPath = agentName === mainId
+    ? join(homedir(), '.claude', 'settings.json')
+    : join(root, 'agents', agentName, '.claude', 'settings.json')
+  try {
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    const ptu = settings?.hooks?.PreToolUse
+    if (!Array.isArray(ptu)) return false
+    return ptu.some(e => Array.isArray(e?.hooks)
+      && e.hooks.some(h => typeof h?.command === 'string' && h.command.includes('email-approval-gate.py')))
+  } catch { return false }
 }
 
 // Intentionally small shell subset: whole literal words, optionally wholly quoted.
@@ -3398,6 +3438,14 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
     const cmd = String(toolInput?.command ?? '')
     const ex = agentScriptException(cmd, agentName, readExceptionConfig())
     if (ex) {
+      // SENDAPPROVALBIND: a SEND-mode pass requires the py approval gate to be
+      // bound in this agent's settings file, verified FIRST (before the
+      // recipient checks): an unbound gate means no approval-level enforcement
+      // exists at all. Drafts are deliberately untouched -- they put nothing on
+      // the wire and never reach the approval gate.
+      if (ex.mode === 'send' && !agentApprovalGateBound(agentName)) {
+        return { deny: true, kind: 'approval-gate-unbound' }
+      }
       const unparseable = unparseableRecipients({ to: ex.to, cc: ex.cc })
       if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
       const bad = unverifiedRecipients({ to: ex.to, cc: ex.cc }, verify)
@@ -3454,6 +3502,23 @@ export function buildUnparseableRecipientMsg(pieces) {
     'Ket cim egy elemben, cim a megjelenitett nevben vagy tobb <...> ' +
     'nem ellenorizheto a cimzett-ledgerrel, ezert a kapu tilt (fail-closed). ' +
     'Ird at a mezot tiszta cimekre, aztan kuldd ujra.'
+  )
+}
+
+// Wording for a SEND-mode script-exception pass whose enabling approval gate is
+// not bound in the agent's settings file (SENDAPPROVALBIND). The remedy is not a
+// rewrite of the call: the agent must be restarted so the scaffold binds the
+// email-approval-gate.py PreToolUse hook (it re-evaluates the grant on every
+// spawn); until then every send under the exception stays denied (fail-closed).
+export function buildApprovalGateUnboundMsg() {
+  return (
+    'EMAIL-KAPU: TILTVA. A script-kivetel engedelyezne a KULDEST, de az ugynok ' +
+    'settings fajljaban nincs bekotve az email-approval-gate.py PreToolUse hook: ' +
+    'a scaffold csak inditaskor koti be, es csak akkor, ha a kivetel mar akkor megvolt. ' +
+    'Egy inditas utan adott kivetel mellett a jovahagyas (approval) nem is futna le, ' +
+    'ezert a kapu fail-closed: a kuldes tiltva. Javitas: az ugynokot ujra kell inditani ' +
+    '(respawn), hogy a scaffold bekotse az email-approval-gate.py hookot; a draft-mode ' +
+    'hivasokat ez nem erinti.'
   )
 }
 
@@ -3713,6 +3778,7 @@ if (isInvokedDirectly()) {
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
     if (kind === 'unverifiable-construction') deny(buildUnverifiableConstructionMsg(botName, ownerName))
     if (kind === 'script-send') deny(buildScriptSendMsg(botName, ownerName))
+    if (kind === 'approval-gate-unbound') deny(buildApprovalGateUnboundMsg())
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
     // and only for the direct send_email tool. Bash send routes and
