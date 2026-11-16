@@ -1131,12 +1131,21 @@ function nodeScriptOperand(prog, rest) {
   return words[0] ?? null
 }
 
+// COPYSUBST1116 (Marveen 4114): a recipient value the gate cannot read as text (a substitution, also the flattened
+// $__SUBST__ word, a variable, an ANSI-C $'..' string, a backtick) may be any address; see the python twin
+const nonliteralValue = (val) => val.includes('$') || val.includes('`')
+// argparse takes any unambiguous prefix of a long option, so `--bc x@y` is --bcc to the program
+const ADDRESS_FLAG_ABBREV = /^--(to?|cc?|b(?:cc?)?)(?:=([\s\S]*))?$/
+const FLAT_SUBST_WORD = '$__SUBST__'
 function addressFlagGiven(rest) {
   for (let i = 0; i < rest.length; i++) {
-    const m = ADDRESS_FLAG.exec(rest[i])
+    const m = ADDRESS_FLAG_ABBREV.exec(rest[i])
     if (!m) continue
-    const val = m[1] ?? rest[i + 1] ?? ''
-    if (val.includes('@')) return true
+    const nxt = rest[i + 1] ?? ''
+    let val = m[2] ?? nxt
+    if (m[2] === '' && nxt === FLAT_SUBST_WORD) val = nxt // `--to=$(..)` flattened: the word is set apart by a space
+    // the one-letter prefixes count an address only: `--c "$CFG"` is too often no recipient
+    if (val.includes('@') || (m[1].length > 1 && nonliteralValue(val))) return true
   }
   return false
 }
@@ -1325,9 +1334,18 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   if (WRAPPER_SHELL.test(prog)) {
     if (depth >= SHELL_C_DEPTH) return false
     for (let i = 0; i < rest.length - 1; i++) {
-      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1, cmdWords)) return true
+      if (!SHELL_C_FLAG.test(rest[i])) continue
+      // COPYSUBST1116: the body as written AND with the double-quote escapes undone (this only adds a verdict)
+      const body = rest[i + 1]
+      if ([...new Set([body, undoDquoteEscapes(body)])].some((b) => scriptRunSends(b, cwd, readScript, depth + 1, cmdWords))) return true
     }
     return false
+  }
+  if (prog === 'eval') {
+    // COPYSUBST1116: eval runs its joined words as a command line
+    if (depth >= SHELL_C_DEPTH || !rest.length) return false
+    const line = rest.join(' ')
+    return [...new Set([line, undoDquoteEscapes(line)])].some((b) => scriptRunSends(b, cwd, readScript, depth + 1, cmdWords))
   }
   let script
   let kind
@@ -1879,7 +1897,31 @@ export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScri
   const flat = [...cdWords, ...segments.flat()]
   const cmdWords = [...flat, ...envChdirDirs(flat).flatMap((d) => ['cd', d]), ...assignedCdDirs(segments).flatMap((d) => ['cd', d]),
     ...(SUBST_CD.test(cmd) ? ['cd', SUBST_MARK] : [])]
-  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))
+  if (segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))) return true
+  return flatAddressedRunSends(cmd, cwd, readScript, depth, cmdWords)
+}
+
+// the shell's double-quote escapes undone: \$ \` \" \\ -> the character, backslash-newline -> nothing
+function undoDquoteEscapes(s) {
+  return s.replace(/\\([$`"\\\n])/g, (_, c) => (c === '\n' ? '' : c))
+}
+
+// COPYSUBST1116: the tokenizer cuts an unquoted $(...), backtick or <(...) out of its word and splits the command there,
+// so a --to / --cc / --bcc AFTER it fell into a segment of its own and no run was addressed. The command is judged once
+// more with every substitution as one undecidable word, on the base the segmenter reads (no heredoc bodies, no
+// comments), but ONLY the runs that carry an address. See _flat_addressed_run_sends in the python twin.
+function flatAddressedRunSends(cmd, cwd, readScript, depth, cmdWords) {
+  const base = stripShellComments(cmd.replace(HEREDOC_RE, '$1'))
+  const flat = flattenSubstitutions(base)
+  if (flat === base) return false
+  let segments
+  try {
+    segments = segmentsTokens(flat)
+  } catch {
+    return false
+  }
+  return segments.some((toks) => commandHeads(toks).some((h) => h && h.length && addressFlagGiven(h.slice(1))
+    && headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))
 }
 
 // Bence 69517: GNU env reads a long option by any unique prefix (getopt_long); see the python twin.
