@@ -122,6 +122,8 @@ export function envValueTightens(def: SettingDefinition, envValue: string): bool
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
+// A Discord id, exactly as the Discord overlay's parseChannelPolicy accepts it (marveen-ext.ts SNOWFLAKE_ID).
+const DISCORD_SNOWFLAKE_RE = /^[0-9]{15,20}$/
 
 // A '' (use the default) or a number in [0, 1], e.g. a cosine-similarity threshold.
 function validUnitFraction(v: string): string | null {
@@ -1219,12 +1221,28 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     validate: (v: string) => {
       const t = v.trim()
       if (t === '') return null
+      let o: unknown
       try {
-        const o = JSON.parse(t) as unknown
-        return o && typeof o === 'object' && !Array.isArray(o) ? null : 'JSON-objektum kell. / A JSON object is required.'
+        o = JSON.parse(t)
       } catch {
         return 'Érvénytelen JSON. / Invalid JSON.'
       }
+      if (!o || typeof o !== 'object' || Array.isArray(o)) return 'JSON-objektum kell. / A JSON object is required.'
+      // The plugin drops anything that is not a Discord id, and the channel then falls back to the old rule:
+      // say so on save instead (a role NAME is the usual mistake).
+      for (const [ch, v] of Object.entries(o as Record<string, unknown>)) {
+        if (!DISCORD_SNOWFLAKE_RE.test(ch)) return `Nem Discord csatorna-ID: ${JSON.stringify(ch)}. / Not a Discord channel id: ${JSON.stringify(ch)}.`
+        if (!v || typeof v !== 'object' || Array.isArray(v)) return `${ch}: JSON-objektum kell. / ${ch}: a JSON object is required.`
+        if (!('allowRoles' in v)) continue
+        const roles = (v as { allowRoles: unknown }).allowRoles
+        if (!Array.isArray(roles)) return `${ch}.allowRoles: lista kell. / ${ch}.allowRoles: a list is required.`
+        for (const r of roles) {
+          if (typeof r !== 'string' || !DISCORD_SNOWFLAKE_RE.test(r)) {
+            return `${ch}.allowRoles: nem Discord szerep-ID (a szerep ID-ja kell, nem a neve): ${JSON.stringify(r)}. / ${ch}.allowRoles: not a Discord role id (the role's id, not its name): ${JSON.stringify(r)}.`
+          }
+        }
+      }
+      return null
     },
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },

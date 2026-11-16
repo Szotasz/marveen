@@ -5,7 +5,7 @@
 // overlay's button code is then run with fake discord.js builders.
 import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, chmodSync, existsSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, chmodSync, existsSync, readdirSync, symlinkSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
@@ -208,6 +208,19 @@ describe('patch-discord-plugin.py', () => {
     expect(ext().channelPolicy).toEqual({})
   })
 
+  it('DISCORD_CHANNEL_POLICY entries the overlay will drop are named loudly; the object itself is passed on', () => {
+    const policy = { '1438000000000000700': { allowRoles: ['Moderátor', '1438000000000009001'] }, general: { allowRoles: ['1438000000000009001'] } }
+    setOverrides({ DISCORD_CHANNEL_POLICY: JSON.stringify(policy) })
+    const r = run()
+    expect(r.status).toBe(0)
+    expect(r.stderr).toContain("LOUD: DISCORD_CHANNEL_POLICY channel 1438000000000000700: allowRoles entry 'Moderátor' is not a Discord role id (the id, not the name) -- dropped")
+    expect(r.stderr).toContain("LOUD: DISCORD_CHANNEL_POLICY channel 'general' is not a Discord channel id -- dropped")
+    expect(r.stderr).not.toContain("'1438000000000009001'")
+    expect(ext().channelPolicy).toEqual(policy)
+    setOverrides({ DISCORD_CHANNEL_POLICY: JSON.stringify({ '1438000000000000700': { allowRoles: ['1438000000000009001'] } }) })
+    expect(run().stderr).not.toContain('DISCORD_CHANNEL_POLICY')
+  })
+
   it('an owner id that is not a Discord user id is not used, loudly', () => {
     for (const bad of ['0', '-290903699524550656', 'zoli', '1234', '2909036995245505561234']) {
       setOverrides({ DISCORD_OWNER_USER_ID: bad })
@@ -265,6 +278,91 @@ describe('patch-discord-plugin.py', () => {
     const r = run()
     expect(r.stderr).toMatch(/LOUD: .*not a plugin version this install knows/)
     expect(readFileSync(server, 'utf-8')).toBe(tampered)
+  })
+
+  // Security review C1 (#2700): the manifest is a file in the plugin folder; its names must never reach os.remove.
+  function plantBadManifest(): { rel: string; abs: string } {
+    const rel = join(dir, '..', 'victim-rel.txt')
+    const abs = join(install, 'victim-abs.txt')
+    writeFileSync(rel, 'keep me')
+    writeFileSync(abs, 'keep me too')
+    const m = JSON.parse(readFileSync(join(dir, '.marveen-overlay.json'), 'utf-8'))
+    m.files['../victim-rel.txt'] = 'x'
+    m.files[abs] = 'x'
+    writeFileSync(join(dir, '.marveen-overlay.json'), JSON.stringify(m))
+    return { rel, abs }
+  }
+
+  for (const mode of ['update', 'off'] as const) {
+    it(`a manifest naming ../ or an absolute path removes nothing outside the overlay set, loudly (${mode} path)`, () => {
+      run()
+      if (mode === 'update') {
+        // an older overlay of ours, so the update path runs
+        const older = readFileSync(server, 'utf-8').replace('Not authorized.', 'Nope.')
+        writeFileSync(server, older)
+        const m = JSON.parse(readFileSync(join(dir, '.marveen-overlay.json'), 'utf-8'))
+        m.files['server.ts'] = sha(older)
+        writeFileSync(join(dir, '.marveen-overlay.json'), JSON.stringify(m))
+      } else {
+        setOverrides({ DISCORD_PLUGIN_EXT: '0' })
+      }
+      const { rel, abs } = plantBadManifest()
+      const r = run()
+      expect(r.status).toBe(0)
+      expect(readFileSync(rel, 'utf-8')).toBe('keep me')
+      expect(readFileSync(abs, 'utf-8')).toBe('keep me too')
+      expect(r.stderr).toContain(`LOUD: .marveen-overlay.json names '../victim-rel.txt', which is not one of the overlay's own files -- not removed`)
+      expect(r.stderr).toContain(`LOUD: .marveen-overlay.json names '${abs}', which is not one of the overlay's own files -- not removed`)
+      if (mode === 'update') {
+        expect(r.stderr).toMatch(/upgraded .*from ours/)
+        // the rewritten manifest no longer carries the bad names: the next run is a silent no-op
+        expect(Object.keys(JSON.parse(readFileSync(join(dir, '.marveen-overlay.json'), 'utf-8')).files).sort()).toEqual(overlayFiles())
+        expect(run().stderr).toBe('')
+      } else {
+        expect(r.stderr).toMatch(/restored/)
+        expect(readdirSync(dir)).toEqual(['server.ts'])
+      }
+    })
+  }
+
+  it('write_atomic: a link that appears at the temp name after the cleanup (a race) is refused, not followed', () => {
+    const target = join(install, 'race-target.txt')
+    writeFileSync(target, 'outside')
+    const dest = join(dir, 'race.txt')
+    symlinkSync(target, dest + '.marveen-tmp')
+    const py = [
+      'import importlib.util, os, sys',
+      'spec = importlib.util.spec_from_file_location("pdp", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      'os.path.lexists = lambda p: False  # the link "appears" after the cleanup check',
+      'try:\n    m.write_atomic(sys.argv[2], b"inside")\nexcept OSError as e:\n    print("refused", type(e).__name__)',
+    ].join('\n')
+    const r = spawnSync('python3', ['-c', py, SCRIPT, dest], { encoding: 'utf-8' })
+    expect(r.stdout).toMatch(/^refused /)
+    expect(readFileSync(target, 'utf-8')).toBe('outside')
+    expect(existsSync(dest)).toBe(false)
+  })
+
+  it('a bad manifest name on an otherwise current overlay: the manifest is rewritten once, then silence', () => {
+    run()
+    const { rel } = plantBadManifest()
+    const r = run()
+    expect(r.stderr).toMatch(/LOUD: .*not removed/)
+    expect(r.stderr).toMatch(/upgraded .*from ours/)
+    expect(readFileSync(rel, 'utf-8')).toBe('keep me')
+    expect(run().stderr).toBe('')
+  })
+
+  it('a symlink planted at the temp name is not followed: its target is untouched, the file is written', () => {
+    const target = join(install, 'link-target.txt')
+    writeFileSync(target, 'outside')
+    symlinkSync(target, server + '.marveen-tmp')
+    const r = run()
+    expect(r.status).toBe(0)
+    expect(r.stderr).toMatch(/overlaid/)
+    expect(readFileSync(target, 'utf-8')).toBe('outside')
+    expect(lstatSync(server).isSymbolicLink()).toBe(false)
+    expect(readFileSync(server, 'utf-8')).toBe(readFileSync(join(OVERLAY, 'server.ts'), 'utf-8'))
+    expect(existsSync(server + '.marveen-tmp')).toBe(false)
   })
 
   it('the switch reads as the settings store reads a flag (true/1/yes/on), absent = on', () => {
