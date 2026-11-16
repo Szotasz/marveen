@@ -129,6 +129,114 @@ CONFIG_PATH = os.path.join(STORE_DIR, "autonomy-config.json")
 STANDING_PATH = os.path.join(STORE_DIR, "email-standing-recipients.json")
 
 
+EXCEPTIONS_PATH = os.path.join(STORE_DIR, "agent-send-exceptions.json")
+_EXCEPTION_KEYS = ("scripts", "modes", "valueArgs", "repeatableArgs", "booleanArgs")
+
+
+def valid_agent_send_exception(entry):
+    if not isinstance(entry, dict) or any(k not in _EXCEPTION_KEYS for k in entry):
+        return False
+    for key in _EXCEPTION_KEYS:
+        values = entry.get(key)
+        if (not isinstance(values, list) or not all(isinstance(v, str) and v for v in values)
+                or len(set(values)) != len(values)):
+            return False
+    flags = entry["valueArgs"] + entry["repeatableArgs"] + entry["booleanArgs"]
+    return (bool(entry["scripts"]) and all(os.path.isabs(p) for p in entry["scripts"])
+            and bool(entry["modes"]) and all(m in ("draft", "send") for m in entry["modes"])
+            and all(re.fullmatch(r"--[a-z][a-z0-9-]*", f) for f in flags)
+            and len(set(flags)) == len(flags))
+
+
+def read_agent_send_exceptions():
+    try:
+        with open(EXCEPTIONS_PATH, encoding="utf-8") as fh:
+            config = json.load(fh)
+        agents = config.get("agents") if isinstance(config, dict) else None
+        if not isinstance(agents, dict):
+            return {}
+        return {"agents": {n: e for n, e in agents.items() if valid_agent_send_exception(e)}}
+    except (OSError, ValueError):
+        return {}
+
+
+def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
+    """Literal whole-word shell subset; twin of agentScriptException in email-send-gate.mjs.
+
+    check_paths=False is used only to DENY a recognized invocation with relative files.
+    """
+    agents = config.get("agents", {}) if isinstance(config, dict) else {}
+    if not agent_name or not isinstance(agents, dict) or agent_name not in agents:
+        return None
+    entry = agents[agent_name]
+    if (not valid_agent_send_exception(entry) or not isinstance(cmd, str)
+            or re.search(r"[;&|<>$()`\\\n\r\0#*?{}\[\]~]", cmd)):
+        return None
+    tokens, offset = [], 0
+    word = re.compile(r"(?:^|[ \t]+)(?:'([^']*)'|\"([^\"]*)\"|([^ \t'\"\n\r]+))(?=[ \t]|$)")
+    while offset < len(cmd):
+        if re.fullmatch(r"[ \t]*", cmd[offset:]):
+            break
+        match = word.match(cmd, offset)
+        if not match:
+            return None
+        tokens.append(next(g for g in match.groups() if g is not None))
+        offset = match.end()
+    if tokens[:2] == ["/usr/bin/env", "node"]:
+        tokens = tokens[2:]
+    elif tokens and (tokens[0] in ("node", "nodejs") or re.fullmatch(r"/(?:[^/]+/)*node(?:js)?", tokens[0])):
+        tokens = tokens[1:]
+    if len(tokens) < 2:
+        return None
+    script, mode, *args = tokens
+    if script not in entry["scripts"] or mode not in entry["modes"]:
+        return None
+    values, i = {}, 0
+    while i < len(args):
+        flag = args[i]
+        i += 1
+        if flag in entry["booleanArgs"]:
+            values[flag] = True
+            continue
+        repeat = flag in entry["repeatableArgs"]
+        if not repeat and flag not in entry["valueArgs"]:
+            return None
+        if not repeat and flag in values:
+            return None
+        if i >= len(args) or not args[i] or args[i].startswith("-"):
+            return None
+        value = args[i]
+        i += 1
+        if check_paths and flag in ("--body-file", "--attach") and not os.path.isabs(value):
+            return None
+        values.setdefault(flag, []).append(value)
+    return {"script": script, "mode": mode, "to": values.get("--to", [""])[0],
+            "cc": values.get("--cc", [""])[0], "subject": values.get("--subject", [""])[0],
+            "bodyFile": values.get("--body-file", [""])[0], "attach": values.get("--attach", [])}
+
+
+def script_exception_envelope(ex):
+    try:
+        # Preserve file content, including CRLF, in the approval anchor.
+        with open(ex["bodyFile"], encoding="utf-8", newline="") as fh:
+            body = fh.read()
+        env = _load_collect_email_envelope()("send_email", {
+            "to": ex["to"], "cc": ex["cc"], "subject": ex["subject"], "body": body})
+        attachments = []
+        for path in ex["attach"]:
+            with open(path, "rb") as fh:
+                data = fh.read()
+            attachments.append({"name": os.path.basename(path), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+        attachments.sort(key=lambda a: (a["name"], a["sha256"]))
+        if attachments:
+            env["attachments"] = attachments
+        return env
+    except (OSError, UnicodeError) as exc:
+        deny(f"Named-script send: unreadable body/attachment ({exc}). Use the sanctioned form: "
+             "<absolute-script> send --to <address> --subject <subject> --body-file <absolute-file> "
+             "[--attach <absolute-file>].")
+
+
 # The window from approval (resolved_at) to send: a fixed 1800 s, the SAME
 # value as the dashboard's (src/web/routes/approvals.ts APPROVAL_WINDOW_S; a
 # test pins the two). No environment override (ENVRELAXGATE1104): the hook runs
@@ -1327,16 +1435,36 @@ def main():
 
     kind = None
     cmd = ""
+    script_ex = None
+    script_env = None
     if tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        unverifiable, unverifiable_msg = _load_unverifiable_construction()
-        if unverifiable(cmd, payload.get("cwd")):
-            deny(unverifiable_msg)
-        if not (_load_is_send_invocation()(cmd, cwd=payload.get("cwd"))   # MAILURLFILE1118: the URL file's cwd
+        # This hook checks approval, not agent identity: the separate send gate
+        # grants only the --agent entry wired by the scaffold. Recognize every
+        # sanctioned shape here so none can miss the envelope approval check.
+        config = read_agent_send_exceptions()
+        for agent_name in config.get("agents", {}):
+            script_ex = agent_script_exception(cmd, agent_name, config)
+            if script_ex:
+                break
+            if agent_script_exception(cmd, agent_name, config, check_paths=False):
+                deny("Named-script send: use the sanctioned form with absolute --body-file and --attach paths.")
+        if script_ex and script_ex["mode"] == "draft":
+            sys.exit(0)
+        if script_ex:
+            script_env = script_exception_envelope(script_ex)
+        if not script_ex:
+            unverifiable, unverifiable_msg = _load_unverifiable_construction()
+            if unverifiable(cmd, payload.get("cwd")):
+                deny(unverifiable_msg)
+        if not (script_ex or _load_is_send_invocation()(cmd, cwd=payload.get("cwd"))   # MAILURLFILE1118: the URL file's cwd
                 or _load_script_run_sends()(cmd, payload.get("cwd"))):
             sys.exit(0)
         if ledger_enabled():
-            ledger_gate("bash", tool_input, cmd)
+            if script_ex:
+                ledger_gate("send_email", {"to": script_ex["to"], "cc": script_ex["cc"]}, "")
+            else:
+                ledger_gate("bash", tool_input, cmd)
     else:
         if not _MAYBE_MAIL_TOOL.search(tool):
             sys.exit(0)  # no mail kind is possible: the extractor is not needed
@@ -1372,7 +1500,7 @@ def main():
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"
              "Jelezd a gazdanak inter-agent uzenettel vagy a dashboardon; a szint "
              "emelese a store/autonomy-config.json-ban a gazda dontese.")
-    if tool == "Bash" and canonical_sender_send(cmd, payload.get("cwd")):
+    if tool == "Bash" and not script_ex and canonical_sender_send(cmd, payload.get("cwd")):
         # This project's own sender, called literally: it enforces level 2
         # itself (sender_check.py) on the envelope it delivers, standing list
         # included, and consumes the approval there. Not consuming here keeps
@@ -1381,7 +1509,7 @@ def main():
             "email-approval-gate: email_send level 2 -- a kuldo maga ellenorzi a jovahagyast "
             "(vagy az allando cimzett-listat), es elutasitaskor kiirja a level horgonyat."))
         sys.exit(0)
-    if tool == "Bash" and names_own_sender(cmd, payload.get("cwd")):
+    if tool == "Bash" and not script_ex and names_own_sender(cmd, payload.get("cwd")):
         deny(prefix +
              "email_send level 2: ez a parancs a projekt SAJAT kuldojet futtatja, de nem a "
              "kanonikus alakban. A kuldo maga ellenorzi es hasznalja fel a jovahagyast a sajat "
@@ -1401,7 +1529,7 @@ def main():
              "azzal kerj jovahagyast, es a jovahagyas utan ugyanaz a hivas atmegy.")
 
     # level 2: CHECK-BEFORE-SEND
-    env = _load_collect_email_envelope()(tool, tool_input)
+    env = script_env if script_ex else _load_collect_email_envelope()(tool, tool_input)
     if env["unreadable_reason"]:
         deny(prefix +
              f"A level nem horgonyozhato: {env['unreadable_reason']}.\n"
@@ -1428,7 +1556,7 @@ def main():
     # none of which this gate read. The envelope only shows the messageId as a
     # `to` token when `to` is empty, so this is decided on the call itself
     # (PR #2098 review: messageId + a listed `to` -> exit 0 at level 2).
-    hit = None if tool_input.get("messageId") else standing_match(env, standing)
+    hit = None if script_ex or tool_input.get("messageId") else standing_match(env, standing)
     if hit:
         # The list makes the address a CANDIDATE; only the owner's one-time
         # approval makes it live. Checked before the trace, because an address

@@ -57,6 +57,72 @@ try {
   SOURCE_HELP = '(a ledger modul nem toltheto be)'
 }
 
+// Install-local operator grants; never redirected by the checked agent's environment.
+export const AGENT_SEND_EXCEPTIONS_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'agent-send-exceptions.json')
+const EXCEPTION_KEYS = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'booleanArgs']
+
+export function validAgentSendException(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+    || Object.keys(entry).some(k => !EXCEPTION_KEYS.includes(k))) return false
+  if (!EXCEPTION_KEYS.every(k => Array.isArray(entry[k])
+    && entry[k].every(v => typeof v === 'string' && v.length > 0)
+    && new Set(entry[k]).size === entry[k].length)) return false
+  const flags = [...entry.valueArgs, ...entry.repeatableArgs, ...entry.booleanArgs]
+  return entry.scripts.length > 0 && entry.scripts.every(p => isAbsolute(p))
+    && entry.modes.length > 0 && entry.modes.every(m => ['draft', 'send'].includes(m))
+    && flags.every(f => /^--[a-z][a-z0-9-]*$/.test(f)) && new Set(flags).size === flags.length
+}
+
+export function readAgentSendExceptions() {
+  try {
+    const config = JSON.parse(readFileSync(AGENT_SEND_EXCEPTIONS_PATH, 'utf8'))
+    if (!config?.agents || typeof config.agents !== 'object' || Array.isArray(config.agents)) return {}
+    return { agents: Object.fromEntries(Object.entries(config.agents).filter(([, e]) => validAgentSendException(e))) }
+  } catch { return {} }
+}
+
+// Intentionally small shell subset: whole literal words, optionally wholly quoted.
+// No expansion, escapes, quote concatenation, operators or comments, even in quotes.
+// Keep in sync with agent_script_exception in scripts/hooks/email-approval-gate.py.
+export function agentScriptException(cmd, agentName, config) {
+  if (!agentName || !Object.hasOwn(config?.agents ?? {}, agentName)) return null
+  const entry = config.agents[agentName]
+  if (!validAgentSendException(entry) || typeof cmd !== 'string'
+    || /[;&|<>$()`\\\n\r\0#*?{}\[\]~]/.test(cmd)) return null
+  const tokens = []
+  const word = /(?:^|[ \t]+)(?:'([^']*)'|"([^"]*)"|([^ \t'"\n\r]+))(?=[ \t]|$)/gy
+  let offset = 0
+  while (offset < cmd.length) {
+    if (/^[ \t]*$/.test(cmd.slice(offset))) break
+    word.lastIndex = offset
+    const m = word.exec(cmd)
+    if (!m) return null
+    tokens.push(m[1] ?? m[2] ?? m[3])
+    offset = word.lastIndex
+  }
+  if (tokens[0] === '/usr/bin/env' && tokens[1] === 'node') tokens.splice(0, 2)
+  else if (['node', 'nodejs'].includes(tokens[0]) || /^\/(?:[^/]+\/)*node(?:js)?$/.test(tokens[0] ?? '')) tokens.shift()
+  const [script, mode, ...args] = tokens
+  if (!entry.scripts.includes(script) || !entry.modes.includes(mode)) return null
+  const values = new Map()
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i]
+    if (entry.booleanArgs.includes(flag)) {
+      values.set(flag, true)
+      continue
+    }
+    const repeat = entry.repeatableArgs.includes(flag)
+    if (!repeat && !entry.valueArgs.includes(flag)) return null
+    if (!repeat && values.has(flag)) return null
+    const value = args[++i]
+    if (!value || value.startsWith('-')) return null
+    if (['--body-file', '--attach'].includes(flag) && !isAbsolute(value)) return null
+    values.set(flag, [...(values.get(flag) ?? []), value])
+  }
+  return { script, mode, to: values.get('--to')?.[0] ?? '', cc: values.get('--cc')?.[0] ?? '',
+    subject: values.get('--subject')?.[0] ?? '', bodyFile: values.get('--body-file')?.[0] ?? '', attach: values.get('--attach') ?? [] }
+}
+
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
 // command string, and the header's old premise ("a sub-agent has no
@@ -3242,7 +3308,7 @@ function ledgerLookup() {
 // (the only path the thread-reply capability below can narrow),
 // 'unverified-recipient' is a draft/manage_email address with no recorded
 // source, and everything else is the sub-agent governance block.
-export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd()) {
+export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd(), agentName = null, readExceptionConfig = readAgentSendExceptions) {
   const name = String(toolName ?? '')
   // Lazy: only build the ledger lookup when a call actually carries addresses,
   // so a read-shaped tool call never pays a file read.
@@ -3330,6 +3396,14 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
+    const ex = agentScriptException(cmd, agentName, readExceptionConfig())
+    if (ex) {
+      const unparseable = unparseableRecipients({ to: ex.to, cc: ex.cc })
+      if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
+      const bad = unverifiedRecipients({ to: ex.to, cc: ex.cc }, verify)
+      if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
+      return { deny: false, kind: 'script-exception' }
+    }
     if (unverifiableSendConstruction(cmd, cwd)) return { deny: true, kind: 'unverifiable-construction' }
     if (isSendInvocation(cmd, 0, cwd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
     if (scriptRunSends(cmd, cwd)) return { deny: true, kind: 'script-send' }
@@ -3617,7 +3691,9 @@ if (isInvokedDirectly()) {
   }
   let decision
   try {
-    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, payload?.cwd || process.cwd())
+    const agentFlag = process.argv.indexOf('--agent')
+    const agentName = agentFlag >= 0 ? process.argv[agentFlag + 1] : null
+    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, payload?.cwd || process.cwd(), agentName)
   } catch (err) {
     // HOOKDEPLOAD1008: the call needed the ledger, and the ledger module did
     // not load. Anything else that throws here is not this branch's to judge.

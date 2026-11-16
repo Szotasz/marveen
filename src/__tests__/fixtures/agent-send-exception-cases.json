@@ -1,0 +1,176 @@
+{
+  "agentName": "<agent-name>",
+  "entry": {
+    "scripts": [
+      "/absolute/path/to/runner.ext"
+    ],
+    "modes": [
+      "draft",
+      "send"
+    ],
+    "valueArgs": [
+      "--to",
+      "--cc",
+      "--subject",
+      "--body-file"
+    ],
+    "repeatableArgs": [
+      "--attach"
+    ],
+    "booleanArgs": [
+      "--confirm-send"
+    ]
+  },
+  "cases": [
+    {
+      "name": "sanctioned",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "draft",
+      "command": "node /absolute/path/to/runner.ext draft --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "different script",
+      "command": "node /absolute/path/to/other.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "extra html",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --html /absolute/path/to/body.html",
+      "match": false
+    },
+    {
+      "name": "unknown flag",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --unknown value",
+      "match": false
+    },
+    {
+      "name": "missing value",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --subject",
+      "match": false
+    },
+    {
+      "name": "positional",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send unexpected",
+      "match": false
+    },
+    {
+      "name": "cd prefix",
+      "command": "cd /absolute/path && node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "pipe",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send | cat",
+      "match": false
+    },
+    {
+      "name": "substitution",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject $(echo subject) --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "relative body",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "relative attachment",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "other mode",
+      "command": "node /absolute/path/to/runner.ext read --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "duplicate value",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --to other@example.invalid",
+      "match": false
+    },
+    {
+      "name": "assignment",
+      "command": "EXAMPLE=1 node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "quote concatenation",
+      "command": "node /absolute/path/to/run'ner'.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "redirection",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send > /absolute/path/to/output",
+      "match": false
+    },
+    {
+      "name": "newline",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send\necho done",
+      "match": false
+    },
+    {
+      "name": "semicolon",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send; echo done",
+      "match": false
+    },
+    {
+      "name": "backtick",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject `echo subject` --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "innocent",
+      "command": "echo hello",
+      "match": false
+    },
+    {
+      "name": "innocent read",
+      "command": "cat /absolute/path/to/body.txt",
+      "match": false
+    },
+    {
+      "name": "interpreter nodejs",
+      "command": "nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "interpreter /usr/bin/node",
+      "command": "/usr/bin/node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "interpreter /usr/bin/nodejs",
+      "command": "/usr/bin/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "interpreter /usr/bin/env node",
+      "command": "/usr/bin/env node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "interpreter /absolute/path/to/node",
+      "command": "/absolute/path/to/node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "interpreter /absolute/path/to/nodejs",
+      "command": "/absolute/path/to/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "interpreter none",
+      "command": "/absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "repeat attachment",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --attach /absolute/path/to/second.bin",
+      "match": true
+    }
+  ]
+}
