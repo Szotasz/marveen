@@ -35,6 +35,7 @@ import { hardRestartMarveenChannels, restartMainForRotationContinue } from '../c
 import { rotationReadiness } from '../claude-rotation-heartbeat.js'
 import { mainRotationContinueVerdict, type ContinueRestartResult } from '../main-rotation-continue.js'
 import type { RouteContext } from './types.js'
+import { withRotationLock } from '../claude-rotation-lock.js'
 
 /** Minimum gap between two manual probes of the same plan (POST .../probe). */
 export const MANUAL_PROBE_MIN_INTERVAL_MS = 60_000
@@ -413,7 +414,8 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     }
     const wantContinue = b.continue === true
 
-    const r = await rotatePlan({ agentId, targetPlanId, continue: wantContinue })
+    // PLANROTATEDEADLOCK1115 P3: the same lock as the backend tick, so a manual rotation and a tick never interleave.
+    const r = await withRotationLock(() => rotatePlan({ agentId, targetPlanId, continue: wantContinue }))
     json(res, r.payload, r.status)
     return true
   }

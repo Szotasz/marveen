@@ -14,6 +14,7 @@ import { readOperatorAccess } from './web/operator-access.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { tryHandleSupportAccess } from './web/routes/support-access.js'
 import { startSupportReconcile } from './web/support-standby-runtime.js'
+import { startRotationBackend } from './web/claude-rotation-backend.js'
 import { tryHandleOperator } from './web/routes/operator.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
@@ -528,6 +529,8 @@ export function startWebServer(port = 3420): http.Server {
   const pluginMonitorInterval = servicesOff ? undefined : startChannelPluginMonitor()
   // SUPPORTKULCS1109 (terv-v7 3.8): the support reconcile, shortly after the start and then daily.
   if (!servicesOff) startSupportReconcile()
+  // PLANROTATEDEADLOCK1115: the plan rotation runs here, with no agent turn (an exhausted main agent cannot run one).
+  const rotationBackend = servicesOff ? undefined : startRotationBackend()
   if (!servicesOff) logger.info('Channel plugin health monitor started (60s poll)')
 
   // Userbot inbound-probe (gold-standard deafness detector). Safe no-op until
@@ -863,6 +866,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(routerInterval)
     clearInterval(scheduleInterval)
     clearInterval(heartbeatGapInterval)
+    rotationBackend?.stop()
     if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
     workerLivenessCancelled = true
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
