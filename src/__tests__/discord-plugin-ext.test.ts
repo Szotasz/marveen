@@ -649,6 +649,16 @@ describe('B1: roles per channel (DISCORD_CHANNEL_POLICY)', () => {
       expect(validate(JSON.stringify(bad)), JSON.stringify(bad)).toMatch(says)
     }
     expect(validate('{ bad')).toMatch(/Invalid JSON/)
+    // review #2717: the on/off keys take only a literal boolean, and an unknown key (a typo) is refused
+    for (const ok of [{ [CH]: { history: true } }, { [CH]: { history: false, allowRoles: [ROLE] } }]) expect(validate(JSON.stringify(ok))).toBeNull()
+    for (const [bad, says] of [
+      [{ [CH]: { history: 'true' } }, /history: true or false is required \(no quotes\)/],
+      [{ [CH]: { history: 1 } }, /history: true or false is required/],
+      [{ [CH]: { history: null } }, /history: true or false is required/],
+      [{ [CH]: { histroy: true } }, /unknown key "histroy" \(known: allowRoles, history/],
+    ] as const) {
+      expect(validate(JSON.stringify(bad)), JSON.stringify(bad)).toMatch(says)
+    }
     // whatever validate accepts, the overlay keeps every listed role
     const accepted = { [CH]: { allowRoles: [ROLE, ROLE2] } }
     expect(ext.parseChannelPolicy(accepted)).toEqual(accepted)

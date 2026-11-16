@@ -352,7 +352,8 @@ ID, tehát átmegy, és a csatornát a szerver MINDEN tagjának megnyitja.
 Nem az `access.json`-ban él, mert a `/discord:access group add` a csatorna bejegyzését felülírja.
 Ugyanitt kapcsolható be csatornánként a **csatorna-előzmény**: `{"<csatorna-ID>": {"history": true}}` (a
 szerepekkel együtt is). Ilyenkor a botnak szóló üzenet elé bekerül, amit a csatornában a bot utolsó üzenete óta
-írtak (legfeljebb 20 üzenet, csak azoktól, akik a botnak is írhatnának). Alapból ki van kapcsolva.
+írtak (legfeljebb 20 üzenet, csak azoktól, akik a botnak is írhatnának). Alapból ki van kapcsolva. Az értéke
+idézőjel nélküli `true` vagy `false`; mást (`"true"`, `1`) és ismeretlen kulcsot (elírást) a mentés visszautasít.
 
 **Kapcsolat-figyelés.** A plugin 15 mp-enként nézi, él-e a Discord-kapcsolat; elakadásnál újra bejelentkezik,
 de legfeljebb 5 percenként, egyre ritkábban (5-60 perc), és 24 óra alatt legfeljebb 20-szor

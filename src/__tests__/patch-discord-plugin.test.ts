@@ -186,6 +186,16 @@ describe('patch-discord-plugin.py', () => {
     expect(run().stderr).not.toContain('DISCORD_CHANNEL_POLICY')
   })
 
+  it('DISCORD_CHANNEL_POLICY on/off keys: a non-boolean value or an unknown key is named loudly (review #2717)', () => {
+    setOverrides({ DISCORD_CHANNEL_POLICY: JSON.stringify({ '1438000000000000700': { history: 'true' }, '1438000000000000701': { histroy: true, history: false } }) })
+    const r = run()
+    expect(r.stderr).toContain("LOUD: DISCORD_CHANNEL_POLICY channel 1438000000000000700: history is 'true', only a literal true turns it on -- dropped")
+    expect(r.stderr).toContain("LOUD: DISCORD_CHANNEL_POLICY channel 1438000000000000701: unknown key 'histroy' -- dropped")
+    expect(r.stderr).not.toMatch(/1438000000000000701: history/)
+    setOverrides({ DISCORD_CHANNEL_POLICY: JSON.stringify({ '1438000000000000700': { history: true } }) })
+    expect(run().stderr).not.toContain('DISCORD_CHANNEL_POLICY')
+  })
+
   it('an owner id that is not a Discord user id is not used, loudly', () => {
     for (const bad of ['0', '-290903699524550656', 'zoli', '1234', '2909036995245505561234']) {
       setOverrides({ DISCORD_OWNER_USER_ID: bad })
