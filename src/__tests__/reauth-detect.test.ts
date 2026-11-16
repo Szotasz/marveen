@@ -35,6 +35,32 @@ describe('detectReauthNeeded', () => {
     expect(detectReauthNeeded('Your OAuth token has expired.').needsReauth).toBe(true)
   })
 
+  // ISSUE2817 (3): the pane a failed turn leaves, captured verbatim on Claude Code 2.1.325 with an invalid OAuth token
+  // in a throwaway config (2026-11-16). The error is the reply, two lines above the box.
+  const BOX = [
+    '────────────────────────────────────────────────────────────',
+    '❯ ',
+    '────────────────────────────────────────────────────────────',
+    '  ⏸ manual mode on · ? for shortcuts · ← for agents',
+  ]
+  const turn = (reply: string[]) => ['❯ say hi', '', ...reply, '', '✻ Worked for 2s · done 9:55 AM', '', ...BOX].join('\n')
+
+  it('ISSUE2817: detects the auth error of the last turn when the completed-turn line sits between it and the box', () => {
+    const live = turn(['⏺ Please run /login · API Error: 401 OAuth access token is invalid.'])
+    expect(detectReauthNeeded(live)).toEqual({ needsReauth: true, reason: 'Please run /login' })
+    const revoked = turn(['⏺ OAuth token revoked · Please run /login'])
+    expect(detectReauthNeeded(revoked)).toEqual({ needsReauth: true, reason: 'OAuth token revoked' })
+  })
+
+  it('ISSUE2817: a reply that only mentions /login mid-sentence, or a stale failure before a newer prompt, does not fire', () => {
+    expect(detectReauthNeeded(turn(['⏺ The fix is easy: if you see "Please run /login", restart the agent.'])).needsReauth).toBe(false)
+    const stale = [
+      '❯ say hi', '', '⏺ Please run /login · API Error: 401 OAuth access token is invalid.', '',
+      '❯ /login', '', '  ⎿  Login successful', '', ...BOX,
+    ].join('\n')
+    expect(detectReauthNeeded(stale).needsReauth).toBe(false)
+  })
+
   it('ISSUE2817: a revoked token is detected and named as revoked, not as the generic /login', () => {
     // The verbatim error a customer's main session failed with for ~10 h (marveen#2817).
     const r = detectReauthNeeded('  ⎿  OAuth token revoked · Please run /login')

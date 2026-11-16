@@ -112,5 +112,48 @@ export function detectReauthNeeded(pane: string | null | undefined): ReauthState
   for (const m of REAUTH_MARKERS) {
     if (m.rx.test(region)) return { needsReauth: true, reason: m.reason }
   }
+  return lastTurnErrorLine(pane)
+}
+
+// ISSUE2817 (3), measured 2026-11-16 on Claude Code 2.1.325 with an invalid OAuth token in a throwaway config: a
+// turn that fails on auth renders its error as the reply, and the completed-turn line sits between it and the box:
+//   ❯ say hi
+//   (blank)
+//   ⏺ Please run /login · API Error: 401 OAuth access token is invalid.
+//   (blank)
+//   ✻ Worked for 2s · done 9:55 AM
+//   (blank)
+//   ──────── (the input box)
+// liveStatusRegion() reads only the one line above the box (here a blank), so the failure was invisible and a
+// customer's main session failed ~10 h with no owner alert (marveen#2817). So the LAST turn's reply block (the lines
+// between the last submitted prompt and the box) is read too, but only a line that OPENS with a marker (after
+// indentation and the reply glyphs), the shape of Claude Code's own error line. A reply that merely mentions
+// "/login" mid-sentence does not match, and a stale failure above a newer prompt (e.g. "❯ /login" and its
+// "Login successful") is outside the block.
+const LAST_TURN_MAX_LINES = 40
+const PROMPT_LINE_RX = /^[❯>]\s+\S/
+const LINE_START = '^[\\s⏺●⎿]*(?:'
+const ANCHORED_MARKERS = REAUTH_MARKERS.map((m) => ({ rx: new RegExp(LINE_START + m.rx.source + ')', 'i'), reason: m.reason }))
+
+function lastTurnErrorLine(pane: string): ReauthState {
+  const lines = pane.split('\n')
+  const borders: number[] = []
+  for (let i = lines.length - 1; i >= 0 && borders.length < 2; i--) {
+    if (BOX_BORDER_RX.test(lines[i])) borders.push(i)
+  }
+  if (borders.length < 2) return { needsReauth: false }
+  const top = Math.min(borders[0], borders[1])
+  let start = -1
+  for (let i = top - 1; i >= Math.max(0, top - LAST_TURN_MAX_LINES); i--) {
+    if (PROMPT_LINE_RX.test(lines[i])) { start = i; break }
+  }
+  if (start < 0) return { needsReauth: false }
+  const block = lines.slice(start + 1, top)
+  if (ESCALATION_QUOTE_MARKERS.some((rx) => block.some((l) => rx.test(l)))) return { needsReauth: false }
+  for (const line of block) {
+    for (const m of ANCHORED_MARKERS) {
+      if (m.rx.test(line)) return { needsReauth: true, reason: m.reason }
+    }
+  }
   return { needsReauth: false }
 }
