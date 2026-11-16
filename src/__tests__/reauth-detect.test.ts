@@ -35,6 +35,14 @@ describe('detectReauthNeeded', () => {
     expect(detectReauthNeeded('Your OAuth token has expired.').needsReauth).toBe(true)
   })
 
+  it('ISSUE2817: a revoked token is detected and named as revoked, not as the generic /login', () => {
+    // The verbatim error a customer's main session failed with for ~10 h (marveen#2817).
+    const r = detectReauthNeeded('  ⎿  OAuth token revoked · Please run /login')
+    expect(r.needsReauth).toBe(true)
+    expect(r.reason).toBe('OAuth token revoked')
+    expect(detectReauthNeeded('Your OAuth token has been revoked.').reason).toBe('OAuth token revoked')
+  })
+
   it('does NOT fire on a chat message mentioning /login as a topic', () => {
     const pane = '❯ hogyan működik a /login parancs?\n  ⏵⏵ bypass permissions on (shift+tab to cycle)'
     expect(detectReauthNeeded(pane).needsReauth).toBe(false)

@@ -28,6 +28,10 @@ const REAUTH_MARKERS: { rx: RegExp; reason: string }[] = [
   // box can complete. Same first-run-gate family, same restart heal.
   { rx: /Use the url below to sign in|Paste code here if prompted/i, reason: 'Browser sign-in screen (first-run gate)' },
   { rx: /Invalid authentication credentials/i, reason: 'Invalid authentication credentials (401)' },
+  // ISSUE2817 (marveen#2817, measured on a customer install): the main session failed ~10 h with
+  // "OAuth token revoked · Please run /login". Ahead of the generic "/login" marker, so the reason names the cause
+  // (a revoked token needs a new setup-token, not a quota wait).
+  { rx: /OAuth token (?:has been )?revoked/i, reason: 'OAuth token revoked' },
   { rx: /Please run\s+\/login/i, reason: 'Please run /login' },
   { rx: /Not logged in/i, reason: 'Not logged in' },
   { rx: /\bAPI Error:\s*401\b/i, reason: 'API Error: 401' },
