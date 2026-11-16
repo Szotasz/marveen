@@ -113,8 +113,10 @@ describe('scripts/support-standby.mjs', () => {
     // The support folder is the login user's too: on a developer or CI machine it is normally not there.
     expect(lines[9]).toMatch(/^standby=(?:off|on|partial|invalid)$/)
     expect(lines[10]).toMatch(/^standby_keys=/)
-    expect(lines[11]).toBe('consent_version=1')
-    expect(lines).toHaveLength(12)
+    expect(lines[11]).toBe('consent_version=2')
+    expect(lines[12]).toBe('consent_lang=hu')
+    expect(lines[13]).toBe('consent_sha256=1edde713149d360f3aef27d51e3e379557ece268f8716380acbfee7621e1152b')
+    expect(lines).toHaveLength(14)
     const other = mkdtempSync(join(tmpdir(), 'support-standby-other-home-'))
     try {
       mkdirSync(join(other, '.ssh'))

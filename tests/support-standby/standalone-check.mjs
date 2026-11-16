@@ -106,7 +106,8 @@ test('`status` runs as a program, exits with 0 and writes nothing', () => {
     assert.match(lines[7], /^support_lines=(?:absent|0)$/)
     assert.match(lines[8], /^support_lines_second_file=(?:absent|0)$/)
     // The login user has no support folder: standby is off (PR1b 2b-1).
-    assert.deepEqual(lines.slice(9), ['standby=off', 'standby_keys=none', 'consent_version=1'])
+    assert.deepEqual(lines.slice(9), ['standby=off', 'standby_keys=none', 'consent_version=2',
+      'consent_lang=hu', 'consent_sha256=1edde713149d360f3aef27d51e3e379557ece268f8716380acbfee7621e1152b'])
     assert.deepEqual(readdirSync(home), [])
   } finally {
     rmSync(home, { recursive: true, force: true })

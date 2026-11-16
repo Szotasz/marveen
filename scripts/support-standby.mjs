@@ -2121,7 +2121,7 @@ function parseKitHashes(text) {
 }
 
 // src/support-standby-enable.ts
-var SUPPORT_CONSENT_VERSION = 1;
+var SUPPORT_CONSENT_VERSION = 2;
 function utcSecond(d) {
   return d.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
@@ -2214,6 +2214,36 @@ async function disableSupportStandby(deps) {
   return { ok: true, removedLines };
 }
 
+// src/support-consent-text.ts
+import { createHash as createHash3 } from "node:crypto";
+var SUPPORT_CONSENT_LAUNCHER_LANG = "hu";
+var SUPPORT_CONSENT_TEXTS = {
+  1: null,
+  2: {
+    hu: "Mit tehet\xFCnk a g\xE9peden\nA bel\xE9p\xE9s alatt a Marveen csapata, munkat\xE1rsaink \xE9s AI-\xFCgyn\xF6keink, mindent megtehetnek a g\xE9peden, ami a hiba felt\xE1r\xE1s\xE1hoz \xE9s kijav\xEDt\xE1s\xE1hoz sz\xFCks\xE9ges: parancsokat futtathatnak, f\xE1jlokat \xE9s be\xE1ll\xEDt\xE1sokat olvashatnak \xE9s m\xF3dos\xEDthatnak, \xE9s \xFAjraind\xEDthatj\xE1k a Marveent \xE9s a szolg\xE1ltat\xE1sait. Azzal a felhaszn\xE1l\xF3val dolgozunk, amelyikkel a Marveened fut; enn\xE9l t\xF6bb jogot nem szerz\xFCnk. Ha a Marveened rendszergazdak\xE9nt (root) fut, mi is \xEDgy l\xE9p\xFCnk be. A g\xE9peden futtatott parancsokkal csak a hib\xE1t keress\xFCk \xE9s jav\xEDtjuk; a helyi h\xE1l\xF3zatodon l\xE9v\u0151 m\xE1s eszk\xF6z\xF6kh\xF6z nem ny\xFAlunk.\nEgy kapcsolaton legfeljebb 60 percig adhatunk ki parancsot; ut\xE1na \xFAjat csak egy munkat\xE1rsunk nyithat, a saj\xE1t fizikai kulcs\xE1val.\nMit l\xE1tunk\nMindent, amit a jav\xEDt\xE1shoz meg kell n\xE9zn\xFCnk a g\xE9peden: a Marveen napl\xF3it, be\xE1ll\xEDt\xE1sait \xE9s adatait, ha kell, a t\xE1rolt hozz\xE1f\xE9r\xE9si kulcsokat \xE9s a besz\xE9lget\xE9seid r\xE9szleteit is, azt is, amit te vagy a partnereid a csatorn\xE1idra \xEDrtatok.\nAmit a jav\xEDt\xE1s k\xF6zben l\xE1tunk, kitakarva t\xE1roljuk: a munka r\xE9szletes lefoly\xE1s\xE1t legfeljebb 30 napig.\nNyom \xE9s ellen\u0151rz\xE9s\nMinden lefuttatott parancs napl\xF3z\xF3dik a g\xE9peden. A bel\xE9p\xE9sekr\u0151l sz\xF3l\xF3 napl\xF3t 12 h\xF3napig \u0151rizz\xFCk. Az engedett bel\xE9p\xE9sekr\u0151l e-mailt kapsz.\nA hozz\xE1f\xE9r\xE9st a Profil oldaladon egy kattint\xE1ssal b\xE1rmikor lez\xE1rhatod; az \xE9ppen fut\xF3 m\u0171velet ezut\xE1n m\xE9g befejez\u0151dhet, \xFAjat nem ind\xEDthatunk.",
+    en: "What we can do on your machine\nWhile we are signed in, the Marveen team, our staff and our AI agents, can do whatever is needed on your machine to find and fix the problem: run commands, read and change files and settings, and restart Marveen and its services. We work as the user your Marveen runs as; we do not gain any further rights. If your Marveen runs as the system administrator (root), we sign in that way too. We use the commands on your machine only to find and fix the problem; we do not touch other devices on your local network.\nOn one connection we can issue commands for at most 60 minutes; after that only a staff member can open a new one, with their own physical key.\nWhat we see\nWhatever we need to look at on your machine to fix the problem: Marveen's logs, settings and data, and if needed the stored access keys and the details of your conversations, including what you or your partners wrote on your channels.\nWhat we see while fixing is stored with secrets masked: the detailed record of the work for at most 30 days.\nRecord and control\nEvery command we run is logged on your machine. We keep the record of sign-ins for 12 months. You get an e-mail about allowed sign-ins.\nYou can lock access with one click on your Profile page at any time; an operation already running may still finish, but we cannot start a new one."
+  }
+};
+function approved(version, lang) {
+  if (!Object.prototype.hasOwnProperty.call(SUPPORT_CONSENT_TEXTS, version)) return void 0;
+  const byLang = SUPPORT_CONSENT_TEXTS[version];
+  if (byLang === null) return null;
+  const text = byLang[lang];
+  return typeof text === "string" && text.length > 0 ? text : null;
+}
+function supportConsentText(version, lang = SUPPORT_CONSENT_LAUNCHER_LANG) {
+  const text = approved(version, lang);
+  if (text === void 0) return { ok: false, problem: "consent_invalid" };
+  if (text === null) return { ok: false, problem: "consent_text_unset" };
+  return { ok: true, text: text.endsWith("\n") ? text : text + "\n" };
+}
+function supportConsentSha256(version, lang) {
+  if (lang === null) return null;
+  const text = approved(version, lang);
+  if (typeof text !== "string") return null;
+  return createHash3("sha256").update(Buffer.from(text, "utf8")).digest("hex");
+}
+
 // src/support-standby.ts
 var SUPPORT_ROUTINE_MIN_NODE_MAJOR = 20;
 var SUPPORT_DISPATCH_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
@@ -2275,7 +2305,11 @@ function formatSupportStatus(report) {
     "standby=" + report.standby.state,
     "standby_keys=" + (report.standby.keys.length === 0 ? "none" : report.standby.keys.join(",")),
     // The launcher takes the version it shows and passes to enable from here (Samu 78475, Geri 78479).
-    "consent_version=" + SUPPORT_CONSENT_VERSION
+    "consent_version=" + SUPPORT_CONSENT_VERSION,
+    // which text that version is, in the language the launcher shows it (RUFLOIDEAS1115, Samu 79440 / 79453);
+    // the launcher does not read these two
+    "consent_lang=" + SUPPORT_CONSENT_LAUNCHER_LANG,
+    "consent_sha256=" + (supportConsentSha256(SUPPORT_CONSENT_VERSION, SUPPORT_CONSENT_LAUNCHER_LANG) ?? "none")
   ].join("\n") + "\n";
 }
 
@@ -2340,17 +2374,6 @@ async function installKit(input) {
     files.push({ name: source.name, content, sha256: stored.get(source.name), executable: source.executable });
   }
   return writeKit({ supportDir, files, installRoot, nodePath, nodeMin: SUPPORT_ROUTINE_MIN_NODE_MAJOR, release, ...tuning });
-}
-
-// src/support-consent-text.ts
-var SUPPORT_CONSENT_TEXTS = {
-  1: null
-};
-function supportConsentText(version) {
-  const text = Object.prototype.hasOwnProperty.call(SUPPORT_CONSENT_TEXTS, version) ? SUPPORT_CONSENT_TEXTS[version] : void 0;
-  if (text === void 0) return { ok: false, problem: "consent_invalid" };
-  if (text === null || text.length === 0) return { ok: false, problem: "consent_text_unset" };
-  return { ok: true, text: text.endsWith("\n") ? text : text + "\n" };
 }
 
 // src/support-standby-cli.ts

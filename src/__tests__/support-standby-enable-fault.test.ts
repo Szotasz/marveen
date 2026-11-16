@@ -8,7 +8,7 @@ import { SUPPORT_TOKEN_FILE } from '../support-access-token.js'
 import { SUPPORT_GROUP_RECORD_FILE } from '../support-group-record.js'
 import { writeKit } from '../support-kit.js'
 import { KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js'
-import { enableSupportStandby } from '../support-standby-enable.js'
+import { enableSupportStandby, SUPPORT_CONSENT_VERSION } from '../support-standby-enable.js'
 import { TEST_ONLY_BLOBS, TEST_ONLY_FROM, TEST_ONLY_KEYS } from './helpers/sk-test-keys.js'
 
 // Faults inside the grant. 'after-write': the grant writes for real, then throws; enable must take the lines back
@@ -76,7 +76,7 @@ describe('enable support standby, a failure after the lines were written', () =>
 
   const run = () =>
     enableSupportStandby(
-      { code: CODE, consentVersion: 1 },
+      { code: CODE, consentVersion: SUPPORT_CONSENT_VERSION },
       {
         supportDir,
         sshDir,
@@ -115,7 +115,7 @@ describe('enable support standby, a failure after the lines were written', () =>
 
   it('takes the lines back as well as the token and the record, and answers enable_write_failed', async () => {
     const result = await enableSupportStandby(
-      { code: CODE, consentVersion: 1 },
+      { code: CODE, consentVersion: SUPPORT_CONSENT_VERSION },
       {
         supportDir,
         sshDir,

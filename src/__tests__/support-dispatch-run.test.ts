@@ -292,14 +292,14 @@ describe('run <text>: refused before anything runs', () => {
     expect(existsSync(marker())).toBe(false)
     expect(runEvents('run_start')).toEqual([])
   })
-  it('with the consent version this release enables, run is refused (fails closed until the v2 text ships, Samu 78909)', () => {
-    // When the approved v2 text lands, the constant becomes 2 and this test changes with it, on purpose.
-    expect(SUPPORT_CONSENT_VERSION).toBe(1)
+  it('NOT refused: a line made with the consent version this release enables (2, the approved v2 text) runs (Samu 78909)', () => {
+    // Until the approved v2 text shipped, the constant was 1 and this test pinned the refusal; now it pins the opening.
+    expect(SUPPORT_CONSENT_VERSION).toBe(2)
     rmSync(home, { recursive: true, force: true })
     setup(SUPPORT_CONSENT_VERSION)
     const r = run("touch '" + marker() + "'", { consent: String(SUPPORT_CONSENT_VERSION) })
-    expect(reason(r.stderr)).toBe('consent_too_old')
-    expect(existsSync(marker())).toBe(false)
+    expect(r.status).toBe(0)
+    expect(existsSync(marker())).toBe(true)
   })
   it('without a yes from marveen.io', () => {
     writeFileSync(join(bin, 'body'), allowBody('deny'))

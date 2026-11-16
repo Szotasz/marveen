@@ -26,7 +26,7 @@ import { readGroupRecord } from '../support-group-record.js'
 import { writeKit } from '../support-kit.js'
 import { KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js'
 import { reconcileSupportStandby, type ReconcileRevokedVia } from '../support-reconcile.js'
-import { enableSupportStandby, type StandbyDeps } from '../support-standby-enable.js'
+import { enableSupportStandby, SUPPORT_CONSENT_VERSION, type StandbyDeps } from '../support-standby-enable.js'
 import { TEST_ONLY_FROM, TEST_ONLY_KEYS } from './helpers/sk-test-keys.js'
 
 // TEST ONLY values.
@@ -77,7 +77,7 @@ describe('the token_revoked removal, a new enabling between the lines and the to
       newGrantId: () => '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
       startedFromKit: true,
     }
-    expect(await enableSupportStandby({ code: CODE, consentVersion: 1 }, standby)).toMatchObject({ ok: true })
+    expect(await enableSupportStandby({ code: CODE, consentVersion: SUPPORT_CONSENT_VERSION }, standby)).toMatchObject({ ok: true })
     race.newToken = TOKEN2
     const revoked: ReconcileRevokedVia[] = []
     const outcome = await reconcileSupportStandby({

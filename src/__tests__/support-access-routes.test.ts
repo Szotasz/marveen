@@ -142,13 +142,13 @@ describe('/api/support-access', () => {
   const call = (method: string, path: string, opts: { body?: unknown; auth?: RouteContext['auth']; headers?: Record<string, string> } = {}, over: Partial<SupportAccessDeps> = {}) =>
     callWith((ctx) => handleSupportAccess(ctx, deps(over)), method, path, { auth: SESSION, ...opts })
   const enable = (password = GOOD_PW, extra: Record<string, unknown> = {}) =>
-    call('POST', '/api/support-access/enable', { body: { consentVersion: 1, locale: 'hu', password, code: CODE, ...extra } })
+    call('POST', '/api/support-access/enable', { body: { consentVersion: 2, locale: 'hu', password, code: CODE, ...extra } })
 
   // What the kit's routine does on a successful enable, as far as the route can see: the record, and its answer.
-  const enabledBy = (grantId: string) => (): KitRunResult => {
+  const enabledBy = (grantId: string, consentVersion = 2) => (): KitRunResult => {
     writeGroupRecord(supportDir, {
       grantId,
-      consentVersion: 1,
+      consentVersion,
       consentAt: '2026-11-15T07:40:00Z',
       keys: TEST_ONLY_KEYS.map((k) => ({ name: k.name, fingerprint: k.fingerprint })),
       fromCidrs: [...TEST_ONLY_FROM],
@@ -301,12 +301,15 @@ describe('/api/support-access', () => {
       state: 'standby',
       status: { standby: 'on', standby_keys: 'key1,key2', support_lines: '2', logins: 'refused_by_this_release' },
     })
-    expect(runs).toEqual([{ args: ['enable', '--consent', '1'], stdin: CODE, supportDir }])
+    expect(runs).toEqual([{ args: ['enable', '--consent', '2'], stdin: CODE, supportDir }])
     const rows = listSupportConsents()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
       grant_id: GRANT,
-      consent_version: 1,
+      consent_version: 2,
+      // which text: the language the owner used (locale hu) and that text's sha256, the marveen.io value for '2:hu'
+      consent_lang: 'hu',
+      consent_sha256: '1edde713149d360f3aef27d51e3e379557ece268f8716380acbfee7621e1152b',
       consent_at: '2026-11-15T07:40:00Z',
       locale: 'hu',
       key_names: 'key1,key2',
@@ -317,6 +320,21 @@ describe('/api/support-access', () => {
     })
     expect(JSON.stringify(rows) + r.res.body).not.toContain(CODE)
     expect(JSON.stringify(rows) + r.res.body).not.toContain(TEST_ONLY_FROM[0])
+  })
+
+  it('an English dashboard stores en and the English text\'s sha256; an unknown locale stores neither', async () => {
+    expect((await enable(GOOD_PW, { locale: 'en' })).res.statusCode).toBe(200)
+    expect(listSupportConsents().map((row) => [row.consent_lang, row.consent_sha256])).toEqual([['en', '77decc75121d9a0aaf22a0a63983488574dd122320def7d363a2ecce04a80703']])
+    getDb().exec('DELETE FROM support_consents')
+    runAnswer = enabledBy(GRANT2)
+    expect((await enable(GOOD_PW, { locale: 'de' })).res.statusCode).toBe(200)
+    expect(listSupportConsents().map((row) => [row.consent_lang, row.consent_sha256])).toEqual([[null, null]])
+  })
+
+  it('a row whose recorded version has no approved text stores no sha256 (NULL)', async () => {
+    runAnswer = enabledBy(GRANT, 1)
+    expect((await enable()).res.statusCode).toBe(200)
+    expect(listSupportConsents().map((row) => [row.consent_version, row.consent_sha256])).toEqual([[1, null]])
   })
 
   it('a second enable closes the open row as replaced', async () => {
@@ -468,7 +486,7 @@ describe('/api/support-access', () => {
     expect(r.res.statusCode).toBe(200)
     const body = r.json()
     expect(body.enable_available).toBe(false)
-    expect(body.consent_version).toBe(1)
+    expect(body.consent_version).toBe(2)
     expect(body.status).toMatchObject({ pins: 'support_keys_unset', sshd: 'not_asked', standby: 'off' })
     expect(runs).toEqual([])
     expect(listSupportConsents()).toEqual([])
