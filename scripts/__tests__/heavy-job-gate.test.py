@@ -2442,7 +2442,7 @@ def cap_hint():
     f = gate.cap_hint_mb
     # (peak, cap, min_mb, reserve, expected)
     cases = [(400, 3072, 2500, 500, 1024), (300, 4096, 2500, 500, 768), (1000, 4096, 2500, 500, 2048),
-             (51, 2048, 2500, 500, 256),  # floor 2548 -> 2500
+             (51, 2048, 2500, 500, None),  # floor 2548 -> 2500: 48 MB, under one 256M step
              (51, 2000, 2500, 500, None), (51, 1536, 2500, 500, None),  # floor is min_mb either way
              (512, 2048, 0, 500, 1024), (513, 2048, 0, 500, None),  # peak*4 == cap / just above
              (64, 256, 0, 500, None),  # the hint (256M) is not below the cap
@@ -2459,7 +2459,7 @@ def cap_hint():
           "of its cap whose hint lowers the floor", ok, info)
     mutants = (
         ("hint-no-quarter-rule", "peak_mb * 4 > cap_mb", "peak_mb > cap_mb"),
-        ("hint-no-floor-rule", "max(min_mb, hint + reserve) < max(min_mb, cap_mb + reserve)", "hint < cap_mb"),
+        ("hint-no-floor-rule", "max(min_mb, cap_mb + reserve) - max(min_mb, hint + reserve) >= 256", "hint < cap_mb"),
         ("hint-any-exit", "if scoped and code == 0 else None", "if scoped else None"),
     )
     with tempfile.TemporaryDirectory() as mtd:

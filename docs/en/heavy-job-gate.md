@@ -114,7 +114,7 @@ are system errors: report them to the main agent.
    `finish` (exit code, duration, peak memory, OOM kills, scope stop result; a capped
    job that exited 0 and peaked at no more than a quarter of its cap also gets
    `max_mem_hint`, twice the peak rounded up to 256M and at least 256M, plus a stderr
-   note, only if that hint lowers the floor `max(--min-mb, cap + reserve)`, which also
+   note, only if that hint lowers the floor `max(--min-mb, cap + reserve)` by at least 256M, which also
    means it is below the cap: a job waits for its floor while holding the lock. The
    peak is sampled every 0.5 s, so a spike in the job's last half second can be missed),
    `refuse` (with a `reason`), `uncapped`, `ollama_unload`, `nested`,
