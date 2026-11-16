@@ -133,6 +133,10 @@ export function resolveWorkerModel(i: WorkerModelInputs): WorkerModelDecision {
 const WORKER_BOOT_TIMEOUT_MS = 90_000
 // Poll cadence while waiting for the <reqid>.done sentinel.
 const CAPTURE_POLL_MS = 1_500
+// How often to re-check the pane while waiting for /clear to return an idle prompt.
+const CLEAR_READY_POLL_MS = 400
+// Total budget for that pane-state wait before failing open (delivery must go out).
+const CLEAR_READY_BUDGET_MS = 8_000
 // Channel plugins to force-disable in the worker's isolated settings.json.
 const WORKER_DISABLED_PLUGINS = ['telegram', 'slack-channel']
 // ~/.claude entries NOT symlinked into the isolated config dir:
@@ -1118,12 +1122,21 @@ function restartWorkerSession(ctx: WorkerCtx): void {
 }
 
 // Reset context between requests so unrelated one-shots never share/grow context.
-function clearWorkerContext(ctx: WorkerCtx): void {
+async function clearWorkerContext(ctx: WorkerCtx): Promise<void> {
   try {
     execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(ctx.session), '-l', '/clear'], { timeout: 5000 })
     execFileSync('/bin/sleep', ['0.2'], { timeout: 2000 })
     execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(ctx.session), 'Enter'], { timeout: 5000 })
-    execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 })
+    // Loaded TUIs can take ~3.5s to process /clear (0038ce9c), so poll the pane
+    // state instead of sleeping a fixed time.
+    const clearDeadline = Date.now() + CLEAR_READY_BUDGET_MS
+    while (Date.now() < clearDeadline) {
+      if (await isSessionReadyForPrompt(ctx.session)) break
+      execFileSync('/bin/sleep', [(CLEAR_READY_POLL_MS / 1000).toFixed(1)], { timeout: 2000 })
+    }
+    if (Date.now() >= clearDeadline) {
+      logger.warn({ session: ctx.session }, 'agent-worker: /clear did not return an idle prompt within budget (continuing)')
+    }
   } catch (err) {
     logger.warn({ err }, 'agent-worker: /clear failed (continuing)')
   }
@@ -1155,6 +1168,11 @@ async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: numb
   const reqId = nextReqId()
   const outPath = join(ctx.scratchDir, `${reqId}.out`)
   const donePath = join(ctx.scratchDir, `${reqId}.done`)
+  // The whole request closes on the .done sentinel appearing in scratchDir; if
+  // that dir is missing (worker home wiped while the tmux session stayed up),
+  // the worker cannot ever write it and the request is silently lost to a
+  // timeout. Idempotent no-op when the dir is already there.
+  try { mkdirSync(ctx.scratchDir, { recursive: true }) } catch { /* best effort */ }
   for (const p of [outPath, donePath]) { try { rmSync(p, { force: true }) } catch { /* none */ } }
 
   // PANEWRITERS805: /clear + prompt-send is ONE atomic delivery. Unlocked, the
@@ -1163,7 +1181,7 @@ async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: numb
   // cleared context ahead of ours. Deliver mode (not recover): a dispatch must
   // deliver; on a wedged holder we fail open past the budget, logged.
   const sendRes = await withSessionSendLock(ctx.session, null, 'deliver', async () => {
-    clearWorkerContext(ctx)
+    await clearWorkerContext(ctx)
     await sendPromptToSession(ctx.session, buildWorkerPrompt(message, outPath, donePath), null, { lockMode: 'held' })
   })
   if (sendRes.failedOpen) {
