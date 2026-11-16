@@ -137,6 +137,12 @@ const CAPTURE_POLL_MS = 1_500
 const CLEAR_READY_POLL_MS = 400
 // Total budget for that pane-state wait before failing open (delivery must go out).
 const CLEAR_READY_BUDGET_MS = 8_000
+// Settle before the FIRST readiness poll after Enter. Until the TUI actually reads
+// the queued Enter, the pane still shows the pre-/clear idle prompt (the R1 review
+// corner: both confirm captures can land in that stale window), so the first poll
+// must not end before the old fixed 0.5s sleep would have -- delivery is never
+// earlier than the pre-change code in any path, and strictly later in the corner.
+const CLEAR_READY_SETTLE_MS = 500
 // Channel plugins to force-disable in the worker's isolated settings.json.
 const WORKER_DISABLED_PLUGINS = ['telegram', 'slack-channel']
 // ~/.claude entries NOT symlinked into the isolated config dir:
@@ -1127,14 +1133,20 @@ async function clearWorkerContext(ctx: WorkerCtx): Promise<void> {
     execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(ctx.session), '-l', '/clear'], { timeout: 5000 })
     execFileSync('/bin/sleep', ['0.2'], { timeout: 2000 })
     execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(ctx.session), 'Enter'], { timeout: 5000 })
+    // Typed-ahead floor (R1 review corner): see CLEAR_READY_SETTLE_MS. The pane can
+    // still show the pre-/clear idle prompt until the TUI reads the Enter, so the
+    // first readiness poll runs only after the old fixed-sleep floor has passed.
+    execFileSync('/bin/sleep', [(CLEAR_READY_SETTLE_MS / 1000).toFixed(1)], { timeout: 3000 })
     // Loaded TUIs can take ~3.5s to process /clear (0038ce9c), so poll the pane
-    // state instead of sleeping a fixed time.
+    // state instead of sleeping a fixed time. Fail open past the budget: a dispatch
+    // must deliver, the request is never dropped here (the exhaustion is logged).
     const clearDeadline = Date.now() + CLEAR_READY_BUDGET_MS
+    let clearReady = false
     while (Date.now() < clearDeadline) {
-      if (await isSessionReadyForPrompt(ctx.session)) break
+      if (await isSessionReadyForPrompt(ctx.session)) { clearReady = true; break }
       execFileSync('/bin/sleep', [(CLEAR_READY_POLL_MS / 1000).toFixed(1)], { timeout: 2000 })
     }
-    if (Date.now() >= clearDeadline) {
+    if (!clearReady) {
       logger.warn({ session: ctx.session }, 'agent-worker: /clear did not return an idle prompt within budget (continuing)')
     }
   } catch (err) {
