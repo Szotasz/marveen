@@ -170,6 +170,7 @@ ugyanúgy, mintha te gépelted volna be a chat-be.
 | `createdAt` | number | — | Unix timestamp (másodperc), automatikusan töltődik |
 | `description` | string | — | Opcionális leírás (ha nincs SKILL.md frontmatter) |
 | `targetSession` | string | — | Egyedi tmux session név override (alapból: `agent-<name>`) |
+| `essential` | boolean | `false` | Csak `heartbeat` típusnál, és csak ha a `QUOTA_GATE_HARD_AT_PERCENT` be van állítva: a kvóta-kapu 85% fölött (és közeli nullázásnál) is futtatja, egészen a kemény határig. Ott már ez is áll. Kézi szerkesztés után a feladatot újra kell regisztrálni (`schedule-registry-cli.js register <név>`), különben a hash-eltérés leállítja |
 
 `command` típusú feladatoknál extra mezők:
 

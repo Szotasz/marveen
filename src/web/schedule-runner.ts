@@ -108,7 +108,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { findTelegramTopic, telegramTopicsEnabled } from './telegram-topics.js'
 import { runCommandTask } from './command-task.js'
 import { trackDetachedGroup } from './detached-groups.js'
-import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
+import { decideQuotaAction, quotaBlindness, type QuotaSnapshot, type QuotaWorkClass } from '../quota-gate.js'
 import { isAgentBudgetHeld } from './agent-budget-alerts.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
@@ -1423,6 +1423,69 @@ export function quotaWorkClass(task: Pick<ScheduledTask, 'type'>): QuotaWorkClas
   if (task.type === 'command') return 'free'
   if (task.type === 'heartbeat') return 'background'
   return 'owner-facing'
+}
+
+// QUOTA_GATE_HARD_AT_PERCENT, read live once per tick; 0 (tiers off) on any read error.
+function readQuotaHardAtPercent(): number {
+  try { return Number(getEffectiveSettingValue('QUOTA_GATE_HARD_AT_PERCENT')) || 0 } catch { return 0 }
+}
+
+// The gate fails open on an untrusted or stale snapshot (quota-gate.ts); that
+// must not be silent. One log line per state change, and one owner notice when
+// the gate goes blind; quiet until it can see again. In-memory: a dashboard
+// restart repeats at most one notice.
+let quotaBlindState: ReturnType<typeof quotaBlindness> = null
+
+export function noteQuotaBlindness(
+  snapshot: QuotaSnapshot | null,
+  nowMs: number,
+  notify: (text: string) => void = sendQuotaBlindNotice,
+): void {
+  const next = quotaBlindness(snapshot, nowMs)
+  if (next === quotaBlindState) return
+  const prev = quotaBlindState
+  quotaBlindState = next
+  if (!next) {
+    logger.info({ previous: prev }, 'Quota gate sees the quota again (trusted, fresh snapshot)')
+    return
+  }
+  const at = snapshot?.generatedAtMs
+  const ageMinutes = typeof at === 'number' ? Math.round((nowMs - at) / 60_000) : null
+  logger.warn(
+    { state: next, source: snapshot?.source ?? null, ageMinutes },
+    'Quota gate is blind: background tasks run unchecked (fail open) until a trusted, fresh snapshot arrives',
+  )
+  if (prev) return
+  const why = next === 'untrusted-source'
+    ? `a kvóta-pillanatkép forrása "${snapshot?.source ?? 'ismeretlen'}", ami nem mért szám`
+    : `a legutóbbi kvóta-pillanatkép ${ageMinutes ?? '?'} perce készült`
+  notify([
+    `[${BOT_NAME} scheduler] A kvóta-kapu nem látja a keretet: ${why}.`,
+    'A háttérfeladatok ettől még futnak, de a kapu nem tudja visszafogni őket, ha fogy a keret.',
+    'Javítás: a usage-collect feladat (scripts/usage-collect.py) adjon friss, mért számot; a részletek a dashboard.log-ban. Amíg így marad, nem szólok újra.',
+  ].join('\n'))
+}
+
+/** Test helper: forget the last blind state. */
+export function resetQuotaBlindStateForTest(): void {
+  quotaBlindState = null
+}
+
+function sendQuotaBlindNotice(text: string): void {
+  const token = resolveSchedulerAlertToken()
+  const ownerChat = token ? resolveSchedulerOwnerChat() : null
+  if (!token || !ownerChat) {
+    logger.warn({ provider: CHANNEL_PROVIDER }, 'quota-blind notice suppressed: no channel bot token or owner chat')
+    return
+  }
+  ;(async () => {
+    try {
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info('quota-blind notice sent')
+    } catch (err) {
+      logger.warn({ err }, 'quota-blind notice delivery failed')
+    }
+  })()
 }
 
 // Where a task's preCheck script lives, by the same rule the registry hash
@@ -3771,6 +3834,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // fleet draws on ONE subscription quota pool, so the gate below asks the
     // same snapshot about all of them.
     const quotaSnapshot = readQuotaSnapshot()
+    noteQuotaBlindness(quotaSnapshot, now)
+    const quotaHardAtPercent = readQuotaHardAtPercent()
 
     for (const task of tasks) {
       if (!task.enabled) continue
@@ -3843,6 +3908,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
         snapshot: quotaSnapshot,
         nowMs: now,
         workClass: quotaWorkClass(task),
+        essential: task.essential === true,
+        hardAtPercent: quotaHardAtPercent,
       })
       if (quota.action === 'defer') {
         logger.info(

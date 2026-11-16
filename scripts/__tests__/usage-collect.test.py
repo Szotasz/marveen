@@ -476,6 +476,140 @@ class TestCollectClaudeCacheFallback(unittest.TestCase):
             self.assertEqual(result["source"], "estimate")
 
 
+def _rl_headers(pairs):
+    """An http.client.HTTPMessage, the type urllib hands back (case-insensitive get)."""
+    import http.client
+    msg = http.client.HTTPMessage()
+    for k, v in pairs.items():
+        msg[k] = v
+    return msg
+
+
+class _FakeResponse:
+    def __init__(self, status, headers):
+        self.status = status
+        self.headers = headers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestRatelimitHeaderSource(unittest.TestCase):
+    """collect_claude() fourth source: when oauth/usage fails (here: the 403 a
+    setup-token gets) and there is no fresh statusLine file, one minimal
+    Messages call is made and its anthropic-ratelimit-unified-* headers become
+    the snapshot (source "ratelimit_headers"). No network: urlopen is patched;
+    no real token: a sentinel string stands in for it."""
+
+    SENTINEL = "fake-token-SENTINEL-NEVER-PRINT"
+    P = "anthropic-ratelimit-unified-"
+
+    def _full_headers(self):
+        return _rl_headers({
+            f"{self.P}5h-utilization": "0.35",
+            f"{self.P}5h-reset": "1794300000",
+            f"{self.P}5h-status": "allowed",
+            f"{self.P}7d-utilization": "0.22",
+            f"{self.P}7d-reset": "1794800000",
+            f"{self.P}7d-status": "allowed_warning",
+        })
+
+    def _collect(self, urlopen_side_effect):
+        seen = []
+
+        def fake_urlopen(req, timeout=None):
+            seen.append(req)
+            if isinstance(urlopen_side_effect, BaseException):
+                raise urlopen_side_effect
+            return urlopen_side_effect
+
+        with patch.object(uc, "_collect_claude_authoritative",
+                          return_value=(None, "HTTP 403 (env_file token)", "permanent")), \
+             patch.object(uc, "_read_claude_statusline", return_value=(None, None)), \
+             patch.object(uc, "_read_claude_token", return_value=(self.SENTINEL, "env_file")), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen), \
+             patch.object(uc, "_collect_claude_estimate", return_value={"files_scanned": 0}) as est:
+            result = uc.collect_claude()
+        return result, seen, est
+
+    def test_headers_present_give_a_trusted_snapshot(self):
+        result, seen, est = self._collect(_FakeResponse(200, self._full_headers()))
+        est.assert_not_called()
+        self.assertEqual(result["source"], "ratelimit_headers")
+        self.assertEqual(result["windows"]["five_hour"], {"used_percent": 35.0, "resets_at": 1794300000.0, "status": "allowed"})
+        self.assertEqual(result["windows"]["seven_day"]["used_percent"], 22.0)
+        self.assertEqual(result["windows"]["seven_day"]["status"], "allowed_warning")
+        self.assertIn("measured_at", result)
+        self.assertIn("403", result["auth_error"])
+        # exactly one minimal Messages call, token only in the Authorization header
+        self.assertEqual(len(seen), 1)
+        req = seen[0]
+        self.assertEqual(req.full_url, uc.RATELIMIT_PROBE_URL)
+        self.assertEqual(req.get_header("Authorization"), f"Bearer {self.SENTINEL}")
+        body = json.loads(req.data)
+        self.assertEqual(body["max_tokens"], 1)
+        self.assertNotIn(self.SENTINEL, req.full_url + req.data.decode())
+
+    def test_429_with_headers_is_still_a_reading(self):
+        hdrs = self._full_headers()
+        hdrs.replace_header(f"{self.P}5h-utilization", "1.0")
+        err = urllib.error.HTTPError(uc.RATELIMIT_PROBE_URL, 429, "Too Many Requests", hdrs, None)
+        result, _, est = self._collect(err)
+        est.assert_not_called()
+        self.assertEqual(result["source"], "ratelimit_headers")
+        self.assertEqual(result["windows"]["five_hour"]["used_percent"], 100.0)
+
+    def test_headers_missing_fall_back_to_estimate_with_reason(self):
+        result, _, est = self._collect(_FakeResponse(200, _rl_headers({"content-type": "application/json"})))
+        est.assert_called_once()
+        self.assertEqual(result["source"], "estimate")
+        self.assertNotIn("windows", result)
+        self.assertIn("HTTP 200", result["ratelimit_headers_error"])
+        self.assertIn("no anthropic-ratelimit-unified-", result["ratelimit_headers_error"])
+
+    def test_half_a_window_is_not_a_reading(self):
+        # utilization without its reset (and a non-number) must not read as a window
+        hdrs = _rl_headers({f"{self.P}5h-utilization": "0.5", f"{self.P}7d-utilization": "x", f"{self.P}7d-reset": "1"})
+        result, _, est = self._collect(_FakeResponse(200, hdrs))
+        est.assert_called_once()
+        self.assertEqual(result["source"], "estimate")
+
+    def test_rejected_token_falls_back_to_estimate(self):
+        err = urllib.error.HTTPError(uc.RATELIMIT_PROBE_URL, 401, "Unauthorized", _rl_headers({}), None)
+        result, _, est = self._collect(err)
+        est.assert_called_once()
+        self.assertEqual(result["source"], "estimate")
+        self.assertEqual(result["ratelimit_headers_error"], "HTTP 401 (env_file token)")
+
+    def test_token_never_in_output(self):
+        # A network error whose own text carries the token must not leak it:
+        # only the exception type is recorded.
+        cases = [
+            urllib.error.URLError(f"boom {self.SENTINEL}"),
+            urllib.error.HTTPError(uc.RATELIMIT_PROBE_URL, 500, f"err {self.SENTINEL}", _rl_headers({}), None),
+            _FakeResponse(200, self._full_headers()),
+        ]
+        for case in cases:
+            result, _, _ = self._collect(case)
+            snapshot = {"generated_at": "2026-11-16T00:00:00+00:00", "generated_at_local": "x",
+                        "codex": {"ok": False, "error": "n/a"}, "claude": result}
+            out = json.dumps(result) + uc.render_summary(snapshot)
+            self.assertNotIn(self.SENTINEL, out)
+            self.assertNotIn("SENTINEL", out)
+        self.assertEqual(self._collect(cases[0])[0]["ratelimit_headers_error"], "URLError")
+
+    def test_summary_shows_the_windows_for_the_new_source(self):
+        result, _, _ = self._collect(_FakeResponse(200, self._full_headers()))
+        snapshot = {"generated_at": "2026-11-16T00:00:00+00:00", "generated_at_local": "x",
+                    "codex": {"ok": False, "error": "n/a"}, "claude": result}
+        text = uc.render_summary(snapshot)
+        self.assertIn("rate-limit headers", text)
+        self.assertIn("weekly limit: 22.0% used", text)
+
+
 def _resets_at_for_elapsed(now, window_len_sec, elapsed_fraction):
     """Build a resets_at epoch such that, measured from `now`, exactly
     elapsed_fraction of a window_len_sec-long window has passed."""
