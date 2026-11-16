@@ -344,5 +344,7 @@ describe('a truncated dispatcher with a denying gate starts no subcommand (cut a
       run('status')
       expect(subcommandRan(), 'cut after line ' + i).toBe(false)
     }
-  }, 120_000)
+    // One run per line: since #2800 the file has about 900 lines. Alone this takes about 36 s (measured on macOS); in
+    // the full suite, next to the other workers, it went past 120 s once, so the limit leaves room for a loaded machine.
+  }, 300_000)
 })
