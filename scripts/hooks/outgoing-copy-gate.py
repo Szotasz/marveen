@@ -2137,6 +2137,348 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
     return False
 
 
+# EMAILGATESUBST1116: a send command built by process substitution, a here-string, a stdin heredoc or xargs is
+# refused as unverifiable (fail-closed refusal, not expansion: the shell is not re-implemented here). Every gate that
+# classifies Bash sends calls unverifiable_send_construction FIRST and refuses on True with its own wording: this
+# file's main(), email-approval-gate.py (at every level) and the JS twin unverifiableSendConstruction in
+# email-send-gate.mjs; unverifiable-construction-cases.json binds the two copies. A segment is refused when BOTH hold:
+#   (a) its program text or argument list is built by one of the class mechanisms:
+#       - a shell (sh, bash, zsh, dash), source / `.`, python or a JS runtime (not npx) reads its PROGRAM from a
+#         process substitution (`<(...)`, zsh `=(...)`: as the script operand, or stdin redirected from one), from a
+#         here-string, or from a stdin heredoc (also `cat <<TAG | <program>`); /dev/stdin, /dev/fd/0 and
+#         /proc/self/fd/0 as the script operand are stdin, another /dev/fd/N is undecidable;
+#       - xargs (or gxargs) builds the argument list of its command template;
+#   (b) the built text could be a send. The text the gate can read is judged with the gates' existing markers: a
+#       shell's text with is_send_invocation, script_run_sends and this rule one level deeper, an interpreter's text
+#       with the heredoc code rule (_heredoc_body_sends). A text it cannot read cannot be told, which counts as a send:
+#       a process substitution whose command is not one literal echo / printf, a text that is one expansion as a
+#       whole (`"$CMD"`, `"$(cat f)"`), a `<` left at a segment end (a substitution the scanner did not mark), a heredoc
+#       without a readable body. An xargs template is judged AS WRITTEN with the send markers; an address probe stands
+#       in for what xargs adds only where that is a recipient value: the template ends in a recipient flag (--to /
+#       --cc / --bcc, an argparse prefix of one, curl's --mail-rcpt), or the -I / -J / -i / --replace string stands
+#       right after one (or glued to one with `=`). A shell -c program in the template is judged with the replace
+#       string and the positional parameters as that address; a -c program that IS the input cannot be told. A helper
+#       script that xargs runs is judged by the script-run rule as before, not here (Marveen's real-traffic control).
+# A shell `-c` string and an eval line are searched for the same shapes one level deeper (up to _SHELL_C_DEPTH).
+# Not in the class, so not refused here: a data argument or the stdin of a program whose script is a file (the send
+# forms the other rules judge, e.g. `python3 send.py --to x < body.txt`), a pipe from another producer into a
+# program, a program other than the shells / interpreters above, and a value no xargs probe stands for.
+_UNVERIFIABLE_HINT = re.compile(r"<<|<\(|=\(|xargs")
+_UV_HEREDOC = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n(?:.*?\n)?\3(?=\s|$)", re.S)
+_UV_MARK = re.compile(r"^__GATE(HEREDOC|PROCSUBST)(\d+)__$")
+_UV_CAT_PIPE = re.compile(r"(?<![^\s;&|(])cat\s+<< (__GATEHEREDOC\d+__)[ \t]*\|&?(?!\|)([^\n;&|]*)")
+_UV_STDIN_PATHS = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
+_UV_FD_PATH = re.compile(r"^/(?:dev/fd|proc/self/fd)/\d+$")
+_UV_WHOLE_EXPANSION = re.compile(r"^\s*(?:\$(?:\w+|\{[^}]*\}|\(.*\)|[@*#?$!-])|`.*`)\s*$", re.S)
+_UV_PROBE_ADDR = "x@unverifiable.invalid"
+_UV_RCPT_FLAG = re.compile(r"^--(?:to?|cc?|bcc?|b|mail-rcpt)$")   # with argparse prefixes; curl's recipient
+_UV_RCPT_GLUED = re.compile(r"^--(?:to?|cc?|bcc?|b|mail-rcpt)=")
+_UV_POSITIONAL = re.compile(r"\$(?:[0-9@*]|\{[0-9@*]\})")
+_XARGS_SHORT_VAL = "adEIJLnPRsS"   # GNU and BSD xargs options that take a value
+_XARGS_SHORT_OPT = "eil"           # an optional value, glued only
+_XARGS_SHORT_FLAG = "0oprtx"
+_XARGS_LONG_VAL = ("arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var")
+_XARGS_LONG_FLAG = ("null", "no-run-if-empty", "interactive", "verbose", "exit", "open-tty", "show-limits", "help",
+                    "version", "eof", "max-lines", "replace")
+
+
+def _uv_mark(cmd: str, texts: list) -> str:
+    """the command with every heredoc and every unquoted process substitution replaced by a placeholder word; their
+    texts are appended to `texts` (a process substitution's entry is its inner COMMAND, a heredoc's its body)"""
+    def heredoc(m):
+        texts.append(("heredoc", m.group(0)[len(m.group(1)) + 1:len(m.group(0)) - len(m.group(3))]))
+        head = re.match(r"<<-?\s*(['\"]?)\w+\1", m.group(1))
+        return f"<< __GATEHEREDOC{len(texts) - 1}__" + m.group(1)[head.end():]
+    cmd = _UV_HEREDOC.sub(heredoc, cmd)
+    out, q, i, n = [], None, 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if i + 1 < n and cmd[i + 1] == "(" and (ch == "<" or (ch == "=" and (i == 0 or cmd[i - 1] in " \t\n;&|(<"))):
+            depth, j, iq = 1, i + 2, None
+            while j < n and depth > 0:
+                c = cmd[j]
+                j += 1
+                if iq:
+                    if c == iq:
+                        iq = None
+                    continue
+                if c in "'\"":
+                    iq = c
+                elif c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+            texts.append(("procsubst", cmd[i + 2:j - 1] if depth == 0 else None))
+            out.append(f" __GATEPROCSUBST{len(texts) - 1}__ ")
+            i = j
+            continue
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _uv_produced_text(inner):
+    """the text a process substitution's command writes, when it is one literal echo or printf; else None"""
+    if inner is None:
+        return None
+    try:
+        segs = _segments_tokens(inner)
+    except ValueError:
+        return None
+    if len(segs) != 1 or not segs[0]:
+        return None
+    prog, words = _basename(segs[0][0]), segs[0][1:]
+    if prog == "echo":
+        while words and re.match(r"^-[neE]+$", words[0]):
+            words = words[1:]
+        text = " ".join(words)
+        return None if "\\" in text else text
+    if prog == "printf" and len(words) == 1 and "%" not in words[0]:
+        text = words[0].replace("\\n", "\n").replace("\\t", "\t")
+        return None if "\\" in text else text
+    return None
+
+
+def _uv_text(word, texts):
+    """(is a placeholder, its readable program text or None) for a word"""
+    m = _UV_MARK.match(word or "")
+    if not m:
+        return False, None
+    kind, text = texts[int(m.group(2))]
+    return True, (_uv_produced_text(text) if kind == "procsubst" else text)
+
+
+def _uv_stdin_and_args(rest, texts):
+    """(stdin feed, the words without redirections); a feed is ("text", str or None) or ("file",)"""
+    feed, args, i = None, [], 0
+    while i < len(rest):
+        t = rest[i]
+        nxt = rest[i + 1] if i + 1 < len(rest) else ""
+        m = (re.match(r"^(\d*)(<<<)(.*)$", t, re.S) or re.match(r"^(\d*)(<<-?)(.*)$", t, re.S)
+             or re.match(r"^(\d*)(<)(.*)$", t, re.S))
+        if m:
+            target = m.group(3) or nxt
+            if m.group(1) in ("", "0"):
+                if m.group(2) == "<<<":
+                    feed = ("text", target)
+                else:
+                    marked, text = _uv_text(target, texts)
+                    feed = ("text", text) if (marked or m.group(2) != "<") else ("file",)
+            i += 1 if m.group(3) else 2
+            continue
+        m = re.match(r"^(\d*|&)>>?\|?(.*)$", t, re.S)
+        if m:
+            i += 1 if m.group(2) else 2
+            continue
+        args.append(t)
+        i += 1
+    return feed, args
+
+
+def _uv_program_source(kind, prog, args):
+    """("file", word) | ("string", word) | ("stdin", None) | (None, None): where the program text comes from"""
+    if kind == "sh":
+        i, forced = 0, False
+        while i < len(args):
+            t = args[i]
+            if t in ("--", "-"):
+                i += 1
+                break
+            if t in ("--rcfile", "--init-file"):
+                i += 2
+                continue
+            if t.startswith("--"):
+                i += 1
+                continue
+            if t[:1] in ("-", "+") and len(t) > 1:
+                if t[0] == "-" and "c" in t[1:]:
+                    return "string", (args[i + 1] if i + 1 < len(args) else "")
+                forced = forced or (t[0] == "-" and "s" in t[1:])
+                i += 2 if ("o" in t[1:] or "O" in t[1:]) else 1
+                continue
+            break
+        return ("stdin", None) if forced or i >= len(args) else ("file", args[i])
+    if kind == "src":
+        words = [t for t in args if t != "--"]
+        return ("file", words[0]) if words else (None, None)
+    if kind == "py":
+        script, stdin, _ = _python_script_operand(args)
+        if script is not None:
+            return "file", script
+        if stdin or not any(re.match(r"^-[cm]", t) for t in args):
+            return "stdin", None
+        return None, None
+    if any(t in ("-e", "-p", "--eval", "--print") or t.startswith(("--eval=", "--print=")) for t in args):
+        return None, None
+    script = _node_script_operand(prog, args)
+    return ("file", script) if script is not None else ("stdin", None)
+
+
+def _uv_program_text_sends(kind, text, cwd, depth, texts) -> bool:
+    if text is None or _UV_WHOLE_EXPANSION.match(text):
+        return True   # cannot be told: counts as a send
+    if kind in ("sh", "src"):
+        return bool(is_send_invocation(text) or script_run_sends(text, cwd)
+                    or (depth < _SHELL_C_DEPTH and _uv_sends(text, cwd, depth + 1, texts)))
+    return _heredoc_body_sends(text, kind)
+
+
+def _uv_head(head, cwd, depth, texts) -> bool:
+    prog, rest = _basename(head[0]), list(head[1:])
+    while prog == "builtin" and rest:
+        prog, rest = _basename(rest[0]), rest[1:]
+    if prog == "eval":
+        return depth < _SHELL_C_DEPTH and bool(rest) and _uv_sends(" ".join(rest), cwd, depth + 1, texts)
+    kind = ("sh" if _WRAPPER_SHELL.match(prog) else "src" if prog in ("source", ".") else
+            "py" if _PYTHON.match(prog) else "js" if _NODEISH.match(prog) and prog.lower() != "npx" else None)
+    if kind is None:
+        return False
+    feed, args = _uv_stdin_and_args(rest, texts)
+    src, word = _uv_program_source(kind, prog, args)
+    if src == "file":
+        marked, text = _uv_text(word, texts)
+        if marked:
+            return _uv_program_text_sends(kind, text, cwd, depth, texts)
+        if _UV_FD_PATH.match(word) and word not in _UV_STDIN_PATHS:
+            return True   # another descriptor: what feeds it is not read here
+        if word not in _UV_STDIN_PATHS:
+            return False
+        src = "stdin"
+    if src == "string":
+        return kind == "sh" and depth < _SHELL_C_DEPTH and _uv_sends(word, cwd, depth + 1, texts)
+    if src != "stdin" or feed is None or feed[0] == "file":
+        return False
+    return _uv_program_text_sends(kind, feed[1], cwd, depth, texts)
+
+
+def _uv_shell_word(w: str) -> str:
+    return w if re.match(r"^[A-Za-z0-9_@%+=:,./$-]+$", w) else "'" + w.replace("'", "'\\''") + "'"
+
+
+def _uv_xargs_templates(words, repl=None, j=0):
+    """[(template words, replace string or None)] for the words after xargs; an unknown option is read both ways"""
+    out = []
+    while j < len(words):
+        t = words[j]
+        if t == "--":
+            j += 1
+            break
+        if t.startswith("--"):
+            name, eq, val = t[2:].partition("=")
+            if name == "replace":
+                repl = val if eq else "{}"
+            if not eq and name in _XARGS_LONG_VAL:
+                j += 2
+                continue
+            if not eq and name not in _XARGS_LONG_FLAG:
+                out += _uv_xargs_templates(words, repl, j + 2)
+            j += 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            step = 1
+            for k in range(1, len(t)):
+                c = t[k]
+                if c in _XARGS_SHORT_VAL or c in _XARGS_SHORT_OPT:
+                    val = t[k + 1:]
+                    if not val and c in _XARGS_SHORT_VAL:
+                        val, step = (words[j + 1] if j + 1 < len(words) else ""), 2
+                    if c in "IJ" or (c == "i"):
+                        repl = val or "{}"
+                    break
+                if c not in _XARGS_SHORT_FLAG:
+                    out += _uv_xargs_templates(words, repl, j + 2)
+                    break
+            j += step
+            continue
+        break
+    return out + [(words[j:], repl)]
+
+
+def _uv_xargs_sends(words, cwd, texts) -> bool:
+    """The xargs template judged as written; a value probe only where xargs fills a recipient value; a shell -c program
+    in it judged with its placeholder and positional parameters as values."""
+    for template, repl in _uv_xargs_templates(words):
+        template = _uv_stdin_and_args(template, texts)[1]   # a redirection there is xargs' own
+        if not template:
+            continue
+        if is_send_invocation(" ".join(_uv_shell_word(w) for w in template)):
+            return True   # the template program is itself a send
+        if repl:
+            hit = any((w == repl and i > 0 and _UV_RCPT_FLAG.match(template[i - 1])) or
+                      (_UV_RCPT_GLUED.match(w) and repl in w) for i, w in enumerate(template))
+            filled = [w.replace(repl, _UV_PROBE_ADDR) for w in template]
+        else:
+            hit = bool(_UV_RCPT_FLAG.match(template[-1]))
+            filled = template + [_UV_PROBE_ADDR]
+        if hit:
+            line = " ".join(_uv_shell_word(w) for w in filled)
+            if is_send_invocation(line) or script_run_sends(line, cwd):
+                return True
+        for h in _command_heads(template):
+            if not h or not _WRAPPER_SHELL.match(_basename(h[0])):
+                continue
+            k = next((x for x in range(1, len(h)) if _SHELL_C_FLAG.match(h[x])), None)
+            if k is None:
+                continue
+            if k == len(h) - 1:
+                if not repl:
+                    return True   # the -c program itself comes from the input: cannot be told
+                continue
+            text = h[k + 1]
+            if repl and text.strip() == repl:
+                return True   # the -c program is the input line: cannot be told
+            if repl:
+                text = text.replace(repl, _UV_PROBE_ADDR)
+            text = _UV_POSITIONAL.sub(_UV_PROBE_ADDR, text)
+            if is_send_invocation(text) or script_run_sends(text, cwd):
+                return True
+    return False
+
+
+def _uv_sends(cmd: str, cwd, depth: int, texts: list) -> bool:
+    # a heredoc on a bare `cat` line piped into a program is that program's stdin
+    marked = _UV_CAT_PIPE.sub(lambda m: m.group(2).rstrip() + " << " + m.group(1), _uv_mark(cmd, texts))
+    try:
+        segments = _segments_tokens(marked)
+    except ValueError:
+        return False   # unparseable: is_send_invocation's legacy fallback judges it
+    for toks in segments:
+        if toks[-1] in ("<", "="):
+            # a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
+            texts.append(("procsubst", None))
+            toks = toks[:-1] + [f"__GATEPROCSUBST{len(texts) - 1}__"]
+        for i, t in enumerate(toks):
+            if _basename(t) in ("xargs", "gxargs") and _uv_xargs_sends(toks[i + 1:], cwd, texts):
+                return True
+        if any(h and _uv_head(h, cwd, depth, texts) for h in _command_heads(toks)):
+            return True
+    return False
+
+
+UNVERIFIABLE_CONSTRUCTION_MSG = (
+    "Ezt a kuldo parancsot folyamat-behelyettesites (<(...)), here-string (<<<), stdin-heredoc vagy xargs epiti, "
+    "igy a level boritekja (cimzett, torzs) ebben az alakban nem ellenorizheto.\n"
+    "Futtasd a kuldo szkriptet kozvetlenul: a cimzett literalisan (--to cim), a torzs fajlbol "
+    "(< /abszolut/ut/body.txt) vagy --body-ban.")
+
+
+def unverifiable_send_construction(cmd: str, cwd=None, _depth: int = 0) -> bool:
+    """True when a send command is built by process substitution, a here-string, a stdin heredoc or xargs, so the
+    gate cannot verify its envelope (see the EMAILGATESUBST1116 note above)."""
+    if not isinstance(cmd, str) or not _UNVERIFIABLE_HINT.search(cmd):
+        return False
+    return _uv_sends(cmd, cwd, _depth, [])
+
+
 # ISSUE2582 (A): `D=/x; python3 $D/a.py` -- a variable the command itself sets to a literal. The script path was
 # undecidable, so on this gate every such run asked for an approval (10 harmless calls a day in the reporter's fleet).
 # _bind_literal_vars puts the value in place of `$D` / `${D}` on the RAW command, before anything else reads it, and
@@ -4112,6 +4454,9 @@ def main():
                 text, unreadable = collect_mcp_body(tool_input, tool), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
+        if unverifiable_send_construction(cmd, payload.get("cwd")):
+            sys.stderr.write(f"KIMENO-SZOVEG KAPU: TILTVA.\n{UNVERIFIABLE_CONSTRUCTION_MSG}\n")
+            sys.exit(2)
         if not is_send_invocation(cmd):
             http_channel_gate(cmd)  # exits if it is a human-facing HTTP send; else returns
             inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else

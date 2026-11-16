@@ -879,6 +879,16 @@ export function buildScriptSendMsg(botName, ownerName) {
   )
 }
 
+// EMAILGATESUBST1116: the wording for a send command built by process substitution, a here-string, a stdin heredoc or
+// xargs (unverifiableSendConstruction): the envelope cannot be verified in that form.
+export function buildUnverifiableConstructionMsg(botName, ownerName) {
+  return (
+    'TILTVA (governance hard-gate): ezt a kuldo parancsot folyamat-behelyettesites (<(...)), here-string (<<<), ' +
+    'stdin-heredoc vagy xargs epiti, igy a level boritekja (cimzett, torzs) ebben az alakban nem ellenorizheto. ' +
+    'Ha nem levelkuldes: futtasd a programot kozvetlenul, literalis argumentumokkal. ' + buildGateMsg(botName, ownerName)
+  )
+}
+
 export function buildWrapperDepthMsg() {
   return (
     'TILTVA (governance hard-gate): a parancs valodi fejet nem latom. ' +
@@ -984,6 +994,285 @@ export function isSendInvocation(cmd, depth = 0) {
   } catch {
     return SEND_PATTERNS.some((re) => re.test(cmd))
   }
+}
+
+// EMAILGATESUBST1116: a send command built by process substitution, a here-string, a stdin heredoc or xargs is
+// refused as unverifiable. Twin of unverifiable_send_construction in hooks/outgoing-copy-gate.py, where the boundary
+// is written out; unverifiable-construction-cases.json binds the two. gateDecision calls it before the send checks.
+const UNVERIFIABLE_HINT = /<<|<\(|=\(|xargs/
+const UV_HEREDOC = /(<<-?\s*(['"]?)(\w+)\2[^\n]*)\n(?:[\s\S]*?\n)?\3(?=\s|$)/g
+const UV_CAT_PIPE = /(?<![^\s;&|(])cat\s+<< (__GATEHEREDOC\d+__)[ \t]*\|&?(?!\|)([^\n;&|]*)/g
+const UV_MARK = /^__GATE(HEREDOC|PROCSUBST)(\d+)__$/
+const UV_STDIN_PATHS = ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']
+const UV_FD_PATH = /^\/(?:dev\/fd|proc\/self\/fd)\/\d+$/
+const UV_WHOLE_EXPANSION = /^\s*(?:\$(?:\w+|\{[^}]*\}|\([\s\S]*\)|[@*#?$!-])|`[\s\S]*`)\s*$/
+const UV_PROBE_ADDR = 'x@unverifiable.invalid'
+const UV_RCPT_FLAG = /^--(?:to?|cc?|bcc?|b|mail-rcpt)$/ // with argparse prefixes; curl's recipient
+const UV_RCPT_GLUED = /^--(?:to?|cc?|bcc?|b|mail-rcpt)=/
+const UV_POSITIONAL = /\$(?:[0-9@*]|\{[0-9@*]\})/g
+const XARGS_SHORT_VAL = 'adEIJLnPRsS'
+const XARGS_SHORT_OPT = 'eil'
+const XARGS_SHORT_FLAG = '0oprtx'
+const XARGS_LONG_VAL = ['arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var']
+const XARGS_LONG_FLAG = ['null', 'no-run-if-empty', 'interactive', 'verbose', 'exit', 'open-tty', 'show-limits', 'help',
+  'version', 'eof', 'max-lines', 'replace']
+const uvTokens = (cmd) => segmentsTokens(stripShellComments(cmd))
+
+function uvMark(cmdIn, texts) {
+  const cmd = cmdIn.replace(UV_HEREDOC, (g0, g1, _q, tag) => {
+    texts.push(['heredoc', g0.slice(g1.length + 1, g0.length - tag.length)])
+    const head = /<<-?\s*(['"]?)\w+\1/.exec(g1)
+    return `<< __GATEHEREDOC${texts.length - 1}__` + g1.slice(head.index + head[0].length)
+  })
+  let out = ''
+  let q = null
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+      if (ch === q) q = null
+      out += ch
+      continue
+    }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
+    if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+    if (cmd[i + 1] === '(' && (ch === '<' || (ch === '=' && (i === 0 || ' \t\n;&|(<'.includes(cmd[i - 1]))))) {
+      let depth = 1
+      let j = i + 2
+      let iq = null
+      while (j < cmd.length && depth > 0) {
+        const c = cmd[j++]
+        if (iq) { if (c === iq) iq = null; continue }
+        if (c === "'" || c === '"') iq = c
+        else if (c === '(') depth++
+        else if (c === ')') depth--
+      }
+      texts.push(['procsubst', depth === 0 ? cmd.slice(i + 2, j - 1) : null])
+      out += ` __GATEPROCSUBST${texts.length - 1}__ `
+      i = j - 1
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+function uvProducedText(inner) {
+  if (inner == null) return null
+  let segs
+  try { segs = uvTokens(inner) } catch { return null }
+  if (segs.length !== 1 || !segs[0].length) return null
+  const prog = basename(segs[0][0])
+  let words = segs[0].slice(1)
+  if (prog === 'echo') {
+    while (words.length && /^-[neE]+$/.test(words[0])) words = words.slice(1)
+    const text = words.join(' ')
+    return text.includes('\\') ? null : text
+  }
+  if (prog === 'printf' && words.length === 1 && !words[0].includes('%')) {
+    const text = words[0].replaceAll('\\n', '\n').replaceAll('\\t', '\t')
+    return text.includes('\\') ? null : text
+  }
+  return null
+}
+
+function uvText(word, texts) {
+  const m = UV_MARK.exec(word ?? '')
+  if (!m) return { marked: false, text: null }
+  const [kind, text] = texts[Number(m[2])]
+  return { marked: true, text: kind === 'procsubst' ? uvProducedText(text) : text }
+}
+
+function uvStdinAndArgs(rest, texts) {
+  let feed = null
+  const args = []
+  for (let i = 0; i < rest.length;) {
+    const t = rest[i]
+    const nxt = rest[i + 1] ?? ''
+    const m = /^(\d*)(<<<)([\s\S]*)$/.exec(t) || /^(\d*)(<<-?)([\s\S]*)$/.exec(t) || /^(\d*)(<)([\s\S]*)$/.exec(t)
+    if (m) {
+      const target = m[3] || nxt
+      if (m[1] === '' || m[1] === '0') {
+        if (m[2] === '<<<') feed = { text: target }
+        else {
+          const r = uvText(target, texts)
+          feed = (r.marked || m[2] !== '<') ? { text: r.text } : { file: true }
+        }
+      }
+      i += m[3] ? 1 : 2
+      continue
+    }
+    const o = /^(\d*|&)>>?\|?([\s\S]*)$/.exec(t)
+    if (o) { i += o[2] ? 1 : 2; continue }
+    args.push(t)
+    i++
+  }
+  return { feed, args }
+}
+
+function uvProgramSource(kind, prog, args) {
+  if (kind === 'sh') {
+    let i = 0
+    let forced = false
+    while (i < args.length) {
+      const t = args[i]
+      if (t === '--' || t === '-') { i++; break }
+      if (t === '--rcfile' || t === '--init-file') { i += 2; continue }
+      if (t.startsWith('--')) { i++; continue }
+      if ((t[0] === '-' || t[0] === '+') && t.length > 1) {
+        if (t[0] === '-' && t.slice(1).includes('c')) return { src: 'string', word: args[i + 1] ?? '' }
+        forced = forced || (t[0] === '-' && t.slice(1).includes('s'))
+        i += /[oO]/.test(t.slice(1)) ? 2 : 1
+        continue
+      }
+      break
+    }
+    return forced || i >= args.length ? { src: 'stdin' } : { src: 'file', word: args[i] }
+  }
+  if (kind === 'src') {
+    const words = args.filter((t) => t !== '--')
+    return words.length ? { src: 'file', word: words[0] } : { src: null }
+  }
+  if (kind === 'py') {
+    const { script, stdin } = pythonScriptOperand(args)
+    if (script != null) return { src: 'file', word: script }
+    if (stdin || !args.some((t) => /^-[cm]/.test(t))) return { src: 'stdin' }
+    return { src: null }
+  }
+  if (args.some((t) => ['-e', '-p', '--eval', '--print'].includes(t) || t.startsWith('--eval=') || t.startsWith('--print='))) {
+    return { src: null }
+  }
+  const script = nodeScriptOperand(prog, args)
+  return script != null ? { src: 'file', word: script } : { src: 'stdin' }
+}
+
+function uvProgramTextSends(kind, text, cwd, depth, texts) {
+  if (text == null || UV_WHOLE_EXPANSION.test(text)) return true // cannot be told: counts as a send
+  if (kind === 'sh' || kind === 'src') {
+    return isSendInvocation(text) || scriptRunSends(text, cwd) || (depth < SHELL_C_DEPTH && uvSends(text, cwd, depth + 1, texts))
+  }
+  return heredocBodySends(text, kind)
+}
+
+function uvHead(head, cwd, depth, texts) {
+  let prog = basename(head[0])
+  let rest = head.slice(1)
+  while (prog === 'builtin' && rest.length) { prog = basename(rest[0]); rest = rest.slice(1) }
+  if (prog === 'eval') return depth < SHELL_C_DEPTH && rest.length > 0 && uvSends(rest.join(' '), cwd, depth + 1, texts)
+  const kind = WRAPPER_SHELL.test(prog) ? 'sh' : (prog === 'source' || prog === '.') ? 'src'
+    : PYTHON.test(prog) ? 'py' : (NODEISH.test(prog) && prog.toLowerCase() !== 'npx') ? 'js' : null
+  if (!kind) return false
+  const { feed, args } = uvStdinAndArgs(rest, texts)
+  let { src, word } = uvProgramSource(kind, prog, args)
+  if (src === 'file') {
+    const r = uvText(word, texts)
+    if (r.marked) return uvProgramTextSends(kind, r.text, cwd, depth, texts)
+    if (UV_FD_PATH.test(word) && !UV_STDIN_PATHS.includes(word)) return true // another descriptor: its feed is not read here
+    if (!UV_STDIN_PATHS.includes(word)) return false
+    src = 'stdin'
+  }
+  if (src === 'string') return kind === 'sh' && depth < SHELL_C_DEPTH && uvSends(word, cwd, depth + 1, texts)
+  if (src !== 'stdin' || !feed || feed.file) return false
+  return uvProgramTextSends(kind, feed.text, cwd, depth, texts)
+}
+
+const uvShellWord = (w) => (/^[A-Za-z0-9_@%+=:,./$-]+$/.test(w) ? w : "'" + w.replaceAll("'", "'\\''") + "'")
+
+function uvXargsTemplates(words, replIn = null, jIn = 0) {
+  const out = []
+  let repl = replIn
+  let j = jIn
+  while (j < words.length) {
+    const t = words[j]
+    if (t === '--') { j++; break }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=')
+      const name = eq < 0 ? t.slice(2) : t.slice(2, eq)
+      if (name === 'replace') repl = eq < 0 ? '{}' : t.slice(eq + 1)
+      if (eq < 0 && XARGS_LONG_VAL.includes(name)) { j += 2; continue }
+      if (eq < 0 && !XARGS_LONG_FLAG.includes(name)) out.push(...uvXargsTemplates(words, repl, j + 2))
+      j++
+      continue
+    }
+    if (t.startsWith('-') && t.length > 1) {
+      let step = 1
+      for (let k = 1; k < t.length; k++) {
+        const c = t[k]
+        if (XARGS_SHORT_VAL.includes(c) || XARGS_SHORT_OPT.includes(c)) {
+          let val = t.slice(k + 1)
+          if (!val && XARGS_SHORT_VAL.includes(c)) { val = words[j + 1] ?? ''; step = 2 }
+          if (c === 'I' || c === 'J' || c === 'i') repl = val || '{}'
+          break
+        }
+        if (!XARGS_SHORT_FLAG.includes(c)) { out.push(...uvXargsTemplates(words, repl, j + 2)); break }
+      }
+      j += step
+      continue
+    }
+    break
+  }
+  return [...out, [words.slice(j), repl]]
+}
+
+function uvXargsSends(words, cwd, texts) {
+  for (const [raw, repl] of uvXargsTemplates(words)) {
+    const template = uvStdinAndArgs(raw, texts).args // a redirection there is xargs' own
+    if (!template.length) continue
+    if (isSendInvocation(template.map(uvShellWord).join(' '))) return true // the template program is itself a send
+    let hit
+    let filled
+    if (repl) {
+      hit = template.some((w, i) => (w === repl && i > 0 && UV_RCPT_FLAG.test(template[i - 1])) || (UV_RCPT_GLUED.test(w) && w.includes(repl)))
+      filled = template.map((w) => w.replaceAll(repl, UV_PROBE_ADDR))
+    } else {
+      hit = UV_RCPT_FLAG.test(template[template.length - 1])
+      filled = [...template, UV_PROBE_ADDR]
+    }
+    if (hit) {
+      const line = filled.map(uvShellWord).join(' ')
+      if (isSendInvocation(line) || scriptRunSends(line, cwd)) return true
+    }
+    for (const h of commandHeads(template)) {
+      if (!h || !h.length || !WRAPPER_SHELL.test(basename(h[0]))) continue
+      let k = -1
+      for (let x = 1; x < h.length; x++) if (SHELL_C_FLAG.test(h[x])) { k = x; break }
+      if (k < 0) continue
+      if (k === h.length - 1) {
+        if (!repl) return true // the -c program itself comes from the input: cannot be told
+        continue
+      }
+      let text = h[k + 1]
+      if (repl && text.trim() === repl) return true // the -c program is the input line: cannot be told
+      if (repl) text = text.replaceAll(repl, UV_PROBE_ADDR)
+      text = text.replace(UV_POSITIONAL, UV_PROBE_ADDR)
+      if (isSendInvocation(text) || scriptRunSends(text, cwd)) return true
+    }
+  }
+  return false
+}
+
+function uvSends(cmd, cwd, depth, texts) {
+  // a heredoc on a bare `cat` line piped into a program is that program's stdin
+  const marked = uvMark(cmd, texts).replace(UV_CAT_PIPE, (_m, tag, consumer) => consumer.trimEnd() + ' << ' + tag)
+  let segments
+  try { segments = uvTokens(marked) } catch { return false } // unparseable: isSendInvocation's legacy fallback judges it
+  for (let toks of segments) {
+    if (toks[toks.length - 1] === '<' || toks[toks.length - 1] === '=') {
+      // a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
+      texts.push(['procsubst', null])
+      toks = [...toks.slice(0, -1), `__GATEPROCSUBST${texts.length - 1}__`]
+    }
+    for (let i = 0; i < toks.length; i++) {
+      if ((basename(toks[i]) === 'xargs' || basename(toks[i]) === 'gxargs') && uvXargsSends(toks.slice(i + 1), cwd, texts)) return true
+    }
+    if (commandHeads(toks).some((h) => h && h.length && uvHead(h, cwd, depth, texts))) return true
+  }
+  return false
+}
+
+export function unverifiableSendConstruction(cmd, cwd = process.cwd(), depth = 0) {
+  if (typeof cmd !== 'string' || !UNVERIFIABLE_HINT.test(cmd)) return false
+  return uvSends(cmd, cwd, depth, [])
 }
 
 // SCRIPTSENDGATE1020: a sender script under any name. isSendInvocation knows a
@@ -2361,6 +2650,7 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
+    if (unverifiableSendConstruction(cmd, cwd)) return { deny: true, kind: 'unverifiable-construction' }
     if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
     if (scriptRunSends(cmd, cwd)) return { deny: true, kind: 'script-send' }
   }
@@ -2665,6 +2955,7 @@ if (isInvokedDirectly()) {
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
+    if (kind === 'unverifiable-construction') deny(buildUnverifiableConstructionMsg(botName, ownerName))
     if (kind === 'script-send') deny(buildScriptSendMsg(botName, ownerName))
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
