@@ -782,7 +782,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: 0,
     min: 0,
     max: 100,
-    description: 'A kvóta-kapu kemény határa (%). 0 = ki: 85%-tól minden háttér-heartbeat áll, mint eddig. Beállítva (pl. 95): 85% és e határ között csak az essential: true jelölésű heartbeatek futnak, a határon és fölötte egy sem. A task és command feladatokat nem érinti.',
+    description: 'A kvóta-kapu kemény határa (%). 0 = ki: 85%-tól minden háttér-heartbeat áll, mint eddig. Beállítva (pl. 95): 85% és e határ között csak az essential: true jelölésű heartbeatek futnak, a határon és fölötte egy sem. 85 vagy annál kisebb érték mindenkire lejjebb hozza a vonalat (az essential sem fut). A task és command feladatokat nem érinti.',
     module: 'heartbeat',
     secret: false,
     requiresRestart: false,

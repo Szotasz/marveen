@@ -1432,14 +1432,34 @@ function readQuotaHardAtPercent(): number {
 
 // The gate fails open on an untrusted or stale snapshot (quota-gate.ts); that
 // must not be silent. One log line per state change, and one owner notice when
-// the gate goes blind; quiet until it can see again. In-memory: a dashboard
-// restart repeats at most one notice.
+// the gate goes blind; quiet until it can see again. The key of the snapshot that
+// was alerted on is kept in store/, so a restart on the same leftover snapshot
+// (e.g. a disabled collector) does not notify again.
 let quotaBlindState: ReturnType<typeof quotaBlindness> = null
+
+const QUOTA_BLIND_ALERT_PATH = join(PROJECT_ROOT, 'store', 'quota-blind-alert.json')
+
+export interface AlertedKeyStore { read(): string | null; write(key: string): void }
+
+const fileAlertedKeyStore: AlertedKeyStore = {
+  read() {
+    try {
+      const k = (JSON.parse(readFileSync(QUOTA_BLIND_ALERT_PATH, 'utf-8')) as { key?: unknown }).key
+      return typeof k === 'string' ? k : null
+    } catch { return null }
+  },
+  write(key) {
+    try { atomicWriteFileSync(QUOTA_BLIND_ALERT_PATH, JSON.stringify({ key }) + '\n') } catch (err) {
+      logger.warn({ err }, 'schedule-runner: failed to persist the quota blind-alert key')
+    }
+  },
+}
 
 export function noteQuotaBlindness(
   snapshot: QuotaSnapshot | null,
   nowMs: number,
   notify: (text: string) => void = sendQuotaBlindNotice,
+  alerted: AlertedKeyStore = fileAlertedKeyStore,
 ): void {
   const next = quotaBlindness(snapshot, nowMs)
   if (next === quotaBlindState) return
@@ -1447,6 +1467,7 @@ export function noteQuotaBlindness(
   quotaBlindState = next
   if (!next) {
     logger.info({ previous: prev }, 'Quota gate sees the quota again (trusted, fresh snapshot)')
+    if (prev) alerted.write('')
     return
   }
   const at = snapshot?.generatedAtMs
@@ -1456,6 +1477,9 @@ export function noteQuotaBlindness(
     'Quota gate is blind: background tasks run unchecked (fail open) until a trusted, fresh snapshot arrives',
   )
   if (prev) return
+  const key = `${next}|${at ?? 'none'}`
+  if (alerted.read() === key) return // same snapshot already alerted on, before a restart
+  alerted.write(key)
   const why = next === 'untrusted-source'
     ? `a kvóta-pillanatkép forrása "${snapshot?.source ?? 'ismeretlen'}", ami nem mért szám`
     : `a legutóbbi kvóta-pillanatkép ${ageMinutes ?? '?'} perce készült`

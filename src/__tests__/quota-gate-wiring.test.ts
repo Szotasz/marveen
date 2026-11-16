@@ -95,13 +95,16 @@ describe('noteQuotaBlindness -- the blind gate is never silent, and never noisy'
   const fresh = { source: 'ratelimit_headers', generatedAtMs: NOW - 60_000, windows: { seven_day: { used_percent: 22, resets_at: NOW / 1000 + 3600 } } }
   const old = { ...fresh, generatedAtMs: NOW - 3 * 60 * 60_000 }
 
-  beforeEach(() => resetQuotaBlindStateForTest())
+  let saved: string | null = null
+  const store = { read: () => saved, write: (k: string) => { saved = k || null } }
+  const note = (s: Parameters<typeof noteQuotaBlindness>[0], t: number, n: (x: string) => void) => noteQuotaBlindness(s, t, n, store)
+  beforeEach(() => { resetQuotaBlindStateForTest(); saved = null })
   afterEach(() => vi.restoreAllMocks())
 
   it('estimate: one warn + one owner notice, then quiet on every later tick', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const notify = vi.fn()
-    for (let i = 0; i < 5; i++) noteQuotaBlindness(estimate, NOW + i * 60_000, notify)
+    for (let i = 0; i < 5; i++) note(estimate, NOW + i * 60_000, notify)
     expect(warn).toHaveBeenCalledTimes(1)
     expect(notify).toHaveBeenCalledTimes(1)
     expect(notify.mock.calls[0][0]).toContain('"estimate"')
@@ -110,11 +113,11 @@ describe('noteQuotaBlindness -- the blind gate is never silent, and never noisy'
   it('stale > 2h: one warn + one notice; blind kind change logs but does not re-alert', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const notify = vi.fn()
-    noteQuotaBlindness(old, NOW, notify)
-    noteQuotaBlindness(old, NOW + 60_000, notify)
+    note(old, NOW, notify)
+    note(old, NOW + 60_000, notify)
     expect(notify).toHaveBeenCalledTimes(1)
     expect(notify.mock.calls[0][0]).toContain('180 perce')
-    noteQuotaBlindness(estimate, NOW + 120_000, notify)
+    note(estimate, NOW + 120_000, notify)
     expect(warn).toHaveBeenCalledTimes(2)
     expect(notify).toHaveBeenCalledTimes(1)
   })
@@ -123,18 +126,30 @@ describe('noteQuotaBlindness -- the blind gate is never silent, and never noisy'
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never)
     const notify = vi.fn()
-    noteQuotaBlindness(estimate, NOW, notify)
-    noteQuotaBlindness(fresh, NOW, notify)
-    noteQuotaBlindness(fresh, NOW + 60_000, notify)
+    note(estimate, NOW, notify)
+    note(fresh, NOW, notify)
+    note(fresh, NOW + 60_000, notify)
     expect(info).toHaveBeenCalledTimes(1)
-    noteQuotaBlindness(estimate, NOW + 120_000, notify)
+    note(estimate, NOW + 120_000, notify)
+    expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('a restart on the same leftover snapshot does not alert again; a newer snapshot does', () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    const notify = vi.fn()
+    note(estimate, NOW, notify)
+    resetQuotaBlindStateForTest() // dashboard restart: in-memory state lost, store kept
+    note(estimate, NOW + 60_000, notify)
+    expect(notify).toHaveBeenCalledTimes(1)
+    resetQuotaBlindStateForTest()
+    note({ ...estimate, generatedAtMs: NOW }, NOW + 120_000, notify)
     expect(notify).toHaveBeenCalledTimes(2)
   })
 
   it('no snapshot (collector not enabled) is not blind: no log, no notice', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const notify = vi.fn()
-    noteQuotaBlindness(null, NOW, notify)
+    note(null, NOW, notify)
     expect(warn).not.toHaveBeenCalled()
     expect(notify).not.toHaveBeenCalled()
   })

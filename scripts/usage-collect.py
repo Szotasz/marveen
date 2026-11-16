@@ -710,9 +710,9 @@ def _collect_claude_ratelimit_headers():
         },
     )
     try:
-        # 10 s like the usage call: both plus `claude --version` stay inside the
-        # seed task's 30 s timeoutMs.
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        # 8 s (per socket operation, DNS not bounded): with the 10 s usage call and the
+        # 5 s `claude --version` this stays inside the seed task's 30 s timeoutMs.
+        with urllib.request.urlopen(req, timeout=8) as resp:
             status, headers = resp.status, resp.headers
     except urllib.error.HTTPError as e:
         if e.code != 429:
