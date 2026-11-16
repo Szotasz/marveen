@@ -1034,6 +1034,14 @@ def main():
                                  fin.get("unit", "x") + ".scope"], capture_output=True, text=True)
             check("LIVE: the scope unit is no longer active", st.stdout.strip() != "active", st.stdout)
 
+            # a ~20 MB job under a 2G cap gets the hint from the REAL memory.peak (sampled every 0.5 s)
+            p = E.run(["--max-mem", "2G", "--min-mb", "0", "--", "python3", "-c",
+                       "import time; b = bytearray(20 * 2**20); time.sleep(2)"])
+            fin = E.events()[-1]
+            check("LIVE: a small job under a 2G cap: finish line max_mem_hint 256M and the stderr note",
+                  p.returncode == 0 and fin.get("max_mem_hint") == "256M" and isinstance(fin.get("peak_mb"), int)
+                  and "--max-mem 256M is enough next time" in p.stderr, (p.returncode, fin, p.stderr[-300:]))
+
             # a descendant that ignores SIGTERM: stop escalates to SIGKILL (TimeoutStopSec=5s)
             os.remove(pidf)
             t0 = time.monotonic()
@@ -1165,6 +1173,7 @@ def main():
     short_lane()
     file_modes_and_cmd_cut()
     side_lane()
+    cap_hint()
 
     print()
     if fails:
@@ -2369,6 +2378,77 @@ def side_lane():
                 continue
             res = scenario(fn, W, *args)
             check("mutant %s: caught by %s" % (name, fn.__name__), not res[0], res)
+
+
+# Runs the gate at argv[1] with run_child replaced: exit code argv[2], stats {"peak_mb": argv[3]},
+# so the finish path sees a chosen peak without a real cgroup (the fake scope has no memory.peak).
+HINT_RUNNER = r"""
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+rc, peak = int(sys.argv[2]), int(sys.argv[3])
+g.run_child = lambda argv, env, unit=None, max_sec=None: (rc, {"peak_mb": peak})
+sys.exit(g.main(sys.argv[4:]))
+"""
+
+
+def hint_finish(td, W):
+    """The finish line of capped runs with a given exit code and peak: the hint
+    only for exit 0, a peak of at most a quarter of the cap, and a hint below the cap."""
+    E = Env(td)
+    py = os.path.join(os.path.dirname(W), "heavy-job-gate.py")
+    seen = []
+
+    def run(rc, peak, cap, *extra, **env):
+        p = subprocess.run([sys.executable, "-c", HINT_RUNNER, py, str(rc), str(peak)] + list(extra)
+                           + ["--max-mem", cap, "--min-mb", "0", "--", "true"],
+                           env=E.env(**env), capture_output=True, text=True, timeout=30)
+        fin = E.events()[-1]
+        seen.append((rc, peak, cap, p.returncode, fin.get("max_mem_hint")))
+        return p, fin
+
+    p, fin = run(0, 51, "2G")
+    ok = (p.returncode == 0 and fin.get("event") == "finish" and fin.get("max_mem_hint") == "256M"
+          and "--max-mem 256M is enough next time" in p.stderr)
+    p, fin = run(1, 51, "2G")  # a failed job: its peak says nothing about what it needs
+    ok = ok and p.returncode == 1 and "max_mem_hint" not in fin and "is enough next time" not in p.stderr
+    p, fin = run(0, 513, "2G")  # 513 * 4 > 2048: the cap is not oversized
+    ok = ok and "max_mem_hint" not in fin
+    p, fin = run(0, 64, "256M")  # 64 * 4 == 256, but the hint (256M) is not below the cap
+    ok = ok and "max_mem_hint" not in fin
+    p, fin = run(0, 51, "2G", "--allow-uncapped", HEAVY_JOB_NO_SCOPE="1")  # no cap, no cap hint
+    ok = ok and p.returncode == 0 and "max_mem_hint" not in fin
+    return ok, seen
+
+
+def cap_hint():
+    f = gate.cap_hint_mb
+    cases = [(51, 2048, 256), (434, 2048, 1024), (512, 2048, 1024), (513, 2048, None), (100, 512, 256),
+             (64, 256, None), (300, 4096, 768), (129, 1024, 512), (0, 2048, None), (-5, 2048, None),
+             (None, 2048, None), (True, 2048, None)]
+    got = [(peak, cap, f(peak, cap)) for peak, cap, _ in cases]
+    check("cap_hint_mb: twice the peak rounded up to 256M, only when peak*4 <= cap and the hint is below "
+          "the cap; None for an unknown, zero, negative or bool peak",
+          all(f(peak, cap) == want for peak, cap, want in cases), got)
+    with tempfile.TemporaryDirectory() as td:
+        ok, info = hint_finish(td, WRAPPER)
+    check("cap hint: finish line max_mem_hint and stderr note only for a capped exit-0 run at <= 1/4 of its cap",
+          ok, info)
+    mutants = (
+        ("hint-no-quarter-rule", "peak_mb * 4 > cap_mb", "peak_mb > cap_mb"),
+        ("hint-equal-cap", "return hint if hint < cap_mb else None", "return hint"),
+        ("hint-any-exit", "if scoped and code == 0 else None", "if scoped else None"),
+    )
+    with tempfile.TemporaryDirectory() as mtd:
+        for name, old, new in mutants:
+            W = mutant_wrapper(mtd, name, old, new)
+            if W is None:
+                check("mutant %s: applies to the gate source" % name, False, "pattern not found")
+                continue
+            with tempfile.TemporaryDirectory() as td:
+                ok, info = hint_finish(td, W)
+            check("mutant %s: caught by hint_finish" % name, not ok, info)
 
 
 if __name__ == "__main__":

@@ -111,7 +111,10 @@ are system errors: report them to the main agent.
 4. **Teardown.** When the main process ends: `systemctl --user stop <unit>.scope`,
    then a bounded check that the cgroup is empty, `cgroup.kill` as the last resort.
 5. **Log.** One JSON line per event in `store/heavy-job-log.jsonl`: `wait`, `start`,
-   `finish` (exit code, duration, peak memory, OOM kills, scope stop result),
+   `finish` (exit code, duration, peak memory, OOM kills, scope stop result; a capped
+   job that exited 0 and peaked at no more than a quarter of its cap also gets
+   `max_mem_hint`, twice the peak rounded up to 256M, and a stderr note: an oversized
+   cap raises the memory floor, and the job waits for that floor holding the lock),
    `refuse` (with a `reason`), `uncapped`, `ollama_unload`, `nested`,
    `nested_unverified`. The `cmd` field is the program name plus the first 32
    characters of its arguments, never the full argv (a token can be passed in argv).
