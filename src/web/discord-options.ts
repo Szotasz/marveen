@@ -7,8 +7,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { channelStateDir } from '../channel-provider.js'
 import { getEffectiveSettingSource, type SettingSource } from '../settings-store.js'
-
-export const OPTIONS_DISCORD_ONLY_REPLY = '/options csak Discordon érhető el.'
+import { isSettingValueOn } from '../setting-flag.js'
 
 // The plugin's own defaults when a field is missing (vendor/discord-plugin/0.0.4/upstream/server.ts).
 export const ACCESS_DEFAULTS = { dmPolicy: 'pairing', replyToMode: 'first', textChunkLimit: 2000, chunkMode: 'length' } as const
@@ -62,20 +61,35 @@ function settingLine(key: string, r: SettingRead, render: (v: string) => string)
   return `${key}: ${render(r.value)}${r.source === 'default' ? ' (alap)' : ''}`
 }
 
+// As the patcher reads the switch (scripts/patch-telegram-plugin.py is_on, the settings store's flag reading):
+// 1/true/yes/on is on, anything else off ("igen" included).
 function onOff(v: string): string {
-  return /^(1|true|on|yes|igen)$/i.test(v.trim()) ? 'be' : /^(0|false|off|no|nem)$/i.test(v.trim()) ? 'ki' : oneLine(v)
+  return isSettingValueOn(v) ? 'be' : 'ki'
 }
 
-function channelPolicyLines(raw: string): string[] {
+// The overlay's id shape (marveen-ext.ts SNOWFLAKE_ID).
+const SNOWFLAKE_ID = /^[0-9]{15,20}$/
+
+// What the overlay's parseChannelPolicy keeps (marveen-ext.ts): a channel id with an object that has a valid role or
+// a literal true switch; only valid role ids count. The rest is dropped by the plugin, so it is counted apart.
+function channelPolicyLines(raw: string): { lines: string[]; kept: number } {
   const t = raw.trim()
-  if (!t) return []
+  if (!t) return { lines: [], kept: 0 }
   let o: unknown
-  try { o = JSON.parse(t) } catch { return ['  · hibás JSON: a csatorna-indítás figyelmen kívül hagyja'] }
-  if (!o || typeof o !== 'object' || Array.isArray(o)) return ['  · nem JSON-objektum: a csatorna-indítás figyelmen kívül hagyja']
-  return Object.entries(o as Record<string, Record<string, unknown> | null>).map(([ch, p]) => {
-    const yes = (k: string) => (p && p[k] === true ? 'be' : 'ki')
-    return `  · ${oneLine(ch, 25)}: history ${yes('history')}, autoThread ${yes('autoThread')}, allowRoles ${count(p?.allowRoles)}`
-  })
+  try { o = JSON.parse(t) } catch { return { lines: ['  · hibás JSON: a csatorna-indítás figyelmen kívül hagyja'], kept: 0 } }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return { lines: ['  · nem JSON-objektum: a csatorna-indítás figyelmen kívül hagyja'], kept: 0 }
+  const lines: string[] = []
+  let dropped = 0
+  for (const [ch, p] of Object.entries(o as Record<string, unknown>)) {
+    const v = p && typeof p === 'object' && !Array.isArray(p) ? p as Record<string, unknown> : null
+    const roles = v && Array.isArray(v.allowRoles) ? v.allowRoles.filter(r => typeof r === 'string' && SNOWFLAKE_ID.test(r)).length : 0
+    const yes = (k: string) => v?.[k] === true
+    if (!SNOWFLAKE_ID.test(ch) || !v || (roles === 0 && !yes('history') && !yes('autoThread'))) { dropped++; continue }
+    lines.push(`  · ${oneLine(ch, 25)}: history ${yes('history') ? 'be' : 'ki'}, autoThread ${yes('autoThread') ? 'be' : 'ki'}, allowRoles ${roles}`)
+  }
+  const kept = lines.length
+  if (dropped > 0) lines.push(`  · ${dropped} tétel hibás vagy üres: a plugin figyelmen kívül hagyja`)
+  return { lines, kept }
 }
 
 export function discordOptionsText(deps: OptionsDeps = defaultOptionsDeps): string {
@@ -96,12 +110,13 @@ export function discordOptionsText(deps: OptionsDeps = defaultOptionsDeps): stri
   out.push('', 'Marveen-bővítés · állítás: dashboard, Beállítások, Csatornák')
   out.push(settingLine('DISCORD_PLUGIN_EXT', deps.setting('DISCORD_PLUGIN_EXT'), onOff))
   out.push(settingLine('DISCORD_OWNER_USER_ID', deps.setting('DISCORD_OWNER_USER_ID'), v => (v.trim() ? 'beállítva' : 'nincs beállítva')))
+  out.push(settingLine('DISCORD_BACKFILL', deps.setting('DISCORD_BACKFILL'), onOff))
   out.push(settingLine('DISCORD_ADMIN_ACTIONS', deps.setting('DISCORD_ADMIN_ACTIONS'), v => (v.trim() ? oneLine(v) : 'nincs')))
   const policy = deps.setting('DISCORD_CHANNEL_POLICY')
   if (policy === null) out.push('DISCORD_CHANNEL_POLICY: ez a verzió még nem ismeri')
   else {
-    const lines = channelPolicyLines(policy.value)
-    out.push(`DISCORD_CHANNEL_POLICY: ${lines.length === 0 ? 'nincs (alap)' : `${lines.length} csatorna`}`)
+    const { lines, kept } = channelPolicyLines(policy.value)
+    out.push(`DISCORD_CHANNEL_POLICY: ${lines.length === 0 ? 'nincs (alap)' : `${kept} csatorna`}`)
     out.push(...lines)
   }
   return out.join('\n')

@@ -239,6 +239,21 @@ describe('POST /api/commands/dispatch', () => {
     await tryHandleCommands(ctx)
     expect(out.body.commands.map((c: { command: string }) => c.command)).toEqual(['status'])
   })
+  it('GET /api/commands/menu?channel=discord: the Discord slash list; a Discord-only entry only there; a bad channel is a 400', async () => {
+    clearCommandsForTest()
+    registerCommand({ name: 'status', kind: 'read', description: 'á', run: () => {} })
+    registerCommand({ name: 'options', kind: 'read', description: 'k', channels: ['discord'], run: () => {} })
+    const names = async (q: string) => {
+      const { ctx, out } = fakeCtx({}, {}, 'GET', '/api/commands/menu')
+      ctx.url = new URL(`http://localhost:3420/api/commands/menu${q}`)
+      await tryHandleCommands(ctx)
+      return out
+    }
+    expect((await names('')).body.commands.map((c: { command: string }) => c.command)).toEqual(['status'])
+    expect((await names('?channel=telegram')).body.commands.map((c: { command: string }) => c.command)).toEqual(['status'])
+    expect((await names('?channel=discord')).body.commands.map((c: { command: string }) => c.command)).toEqual(['status', 'options'])
+    expect((await names('?channel=slack')).status).toBe(400)
+  })
   it('other paths are not ours', async () => {
     const { ctx } = fakeCtx({}, {}, 'GET', '/api/status')
     expect(await tryHandleCommands(ctx)).toBe(false)

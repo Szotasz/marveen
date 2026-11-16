@@ -127,8 +127,10 @@ def remaining():
 # src/__tests__/marveen-commands-hook.test.ts.
 BUILTIN_NAMES = frozenset({
     "help", "status", "queue", "runs", "jobs", "approvals", "model",
-    "context", "usage", "board", "commands", "stop", "resume", "options",
+    "context", "usage", "board", "commands", "stop", "resume",
 })
+# Registry builtins that exist only on Discord (CommandSpec.channels): on Telegram they are not commands.
+DISCORD_ONLY_NAMES = frozenset({"options"})
 
 WINDOW_LABELS = [
     ("five_hour", "5 órás"),
@@ -789,7 +791,7 @@ def run_discord(payload, attrs, body, sid):
     result, why = dispatch(body, chat_id, is_main_session(payload), forwarded=attr(attrs, "forwarded") == "1",
                            message_id=attr(attrs, "message_id"), discord_user=user_id)
     if result is None:
-        if name not in BUILTIN_NAMES:
+        if name not in BUILTIN_NAMES | DISCORD_ONLY_NAMES:
             log(sd, f"discord /{name}: dashboard unreachable ({why}), not a builtin, passed to the model")
             sys.exit(0)
         replies = [DASHBOARD_DOWN_REPLY.format(name=name, why=why)]

@@ -167,8 +167,8 @@ export async function dispatchForDiscord(
   telegramOwnerChatId: string | null = null,
 ): Promise<DispatchResult> {
   const parsed = parseCommand(text)
-  const helpAsk = parsed !== null && isHelpRequest(parsed.args) && hasCommand(parsed.name)
-  const spec = parsed ? resolveCommand(parsed.name, helpAsk ? [] : parsed.args) : null
+  const helpAsk = parsed !== null && isHelpRequest(parsed.args) && hasCommand(parsed.name, 'discord')
+  const spec = parsed ? resolveCommand(parsed.name, helpAsk ? [] : parsed.args, 'discord') : null
   if (!parsed || !spec) {
     return { handled: false, outcome: parsed ? 'unknown' : 'not-command', replies: [] }
   }
@@ -194,7 +194,13 @@ export async function dispatchForDiscord(
 export async function tryHandleCommands(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
   if (path === '/api/commands/menu' && method === 'GET') {
-    json(res, { commands: botCommandList() })
+    // ?channel=discord: the Discord slash list (scripts/patch-discord-plugin.py); without it the Telegram menu.
+    const channel = ctx.url.searchParams.get('channel')
+    if (channel !== null && channel !== 'telegram' && channel !== 'discord') {
+      json(res, { error: 'unknown channel', known: ['telegram', 'discord'] }, 400)
+      return true
+    }
+    json(res, { commands: botCommandList(channel ?? 'telegram') })
     return true
   }
   // The main session's Stop hook (marveen-commands.py --stop): a turn ended.
