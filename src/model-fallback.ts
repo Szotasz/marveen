@@ -85,8 +85,11 @@ const USAGE_LIMIT_BANNER_REGION_LINES = 15
 // NOT the ">" of the input prompt: a line the user or a scheduler typed is not a banner. The tail of the line is
 // left free on purpose: the measured banners continue ("· resets 5:50pm", ". Your limit will reset at 18:00",
 // "· continuing automatically at 6am · esc to cancel").
+// Dani's review of #2823 (strings extracted from the CC 2.1.325 binary, not measured in a pane): two more banner
+// openings, the goal-mode status "Goal paused · usage limit reached · ..." and the bracketed
+// "[Usage limit reached ... grace window active ...]". Neither can come from a quoted prompt line.
 const USAGE_LIMIT_RX =
-  /^[\s⎿●⚠]*(?:claude (?:ai )?)?(?:you(?:['’]ve| have)? )?(?:your )?\/?(usage limit reached|reached your (?:usage|weekly) limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?(?:\w+ )?(?:usage|weekly) limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|(?:weekly|session) limit reached|upgrade to increase your usage limit)/i
+  /^[\s⎿●⚠[]*(?:goal paused\s*[·∙•]\s*)?(?:claude (?:ai )?)?(?:you(?:['’]ve| have)? )?(?:your )?\/?(usage limit reached|reached your (?:usage|weekly) limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?(?:\w+ )?(?:usage|weekly) limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|(?:weekly|session) limit reached|upgrade to increase your usage limit)/i
 
 // The exhausted-extra-usage reply. Measured on the live install: the main
 // session answered 2798 turns with exactly this synthetic API-error message

@@ -93,6 +93,9 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit("  ⎿  You've hit your session limit · resets 6:20pm")).toBe(true)
     expect(detectsUsageLimit('  ⚠ Approaching usage limit · resets 6:20pm')).toBe(true)
     expect(detectsUsageLimit('● Session limit reached ∙ resets at 2am')).toBe(true)
+    // Dani's review: two openings found in the CC 2.1.325 binary.
+    expect(detectsUsageLimit('  Goal paused · usage limit reached · resumes at 6am')).toBe(true)
+    expect(detectsUsageLimit('  ⎿  [Usage limit reached, grace window active until 6am]')).toBe(true)
   })
 
   it('does NOT match a transient API 429 / generic rate limit', () => {
