@@ -118,6 +118,17 @@ describe('named-script exception', () => {
     }
   })
   it('every interpreter outside the allowlist falls back to the ordinary script-send deny (R5)', () => {
+    // R5 review (both legs): a bare loop passes vacuously if the corpus loses its
+    // interpreter cases, and the R4->R5 rewrite dropped the old named-existence
+    // assertion. Pin the list non-empty and the known red names, then deny each.
+    expect(interpreterRed.map(c => c.name)).toEqual(expect.arrayContaining([
+      'interpreter /tmp/x/node',
+      'interpreter /absolute/path/to/node',
+      'interpreter /absolute/path/to/nodejs',
+      'interpreter /usr/bin/nodejs',
+      'interpreter /usr/local/bin/nodejs',
+    ]))
+    expect(interpreterRed.length).toBeGreaterThanOrEqual(5)
     for (const c of interpreterRed) {
       expect(decide(c.command)).toMatchObject({ deny: true, kind: 'script-send' })
     }
