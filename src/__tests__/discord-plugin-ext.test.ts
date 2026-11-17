@@ -32,11 +32,11 @@ describe('loadExtConfig', () => {
       if (body !== null) writeFileSync(join(dir, 'marveen-ext.json'), body)
       return ext.loadExtConfig(dir)
     }
-    expect(at(JSON.stringify({ ownerUserId: OWNER, backfill: true }))).toEqual({ ownerUserId: OWNER, backfill: true })
-    expect(at(null)).toEqual({ ownerUserId: '', backfill: false })
-    expect(at('{ bad')).toEqual({ ownerUserId: '', backfill: false })
-    expect(at(JSON.stringify({ ownerUserId: 'zoli', backfill: 'yes' }))).toEqual({ ownerUserId: '', backfill: false })
-    expect(at(JSON.stringify({ ownerUserId: 290903699524550656, backfill: 1 }))).toEqual({ ownerUserId: '', backfill: false })
+    expect(at(JSON.stringify({ ownerUserId: OWNER, backfill: true }))).toEqual({ ownerUserId: OWNER, backfill: true, channelPolicy: {} })
+    expect(at(null)).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {} })
+    expect(at('{ bad')).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {} })
+    expect(at(JSON.stringify({ ownerUserId: 'zoli', backfill: 'yes' }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {} })
+    expect(at(JSON.stringify({ ownerUserId: 290903699524550656, backfill: 1 }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {} })
   })
 })
 
@@ -142,7 +142,7 @@ describe('the wiring in the overlay server.ts', () => {
 
   it('the outbound gate asks the resolver for a DM it has not seen; the paired DMs are warmed at ready', () => {
     expect(SERVER).toContain('const userId = ch.recipientId ?? dmChannelUsers.get(id) ?? (await dmResolver.resolve(id, access.allowFrom))')
-    const ready = SERVER.slice(SERVER.indexOf("client.once('ready'"), SERVER.indexOf('client.login(TOKEN)'))
+    const ready = SERVER.slice(SERVER.indexOf("client.once('ready'"), SERVER.indexOf('client.login(TOKEN).catch'))
     // warm first (F2), then the recovery (F4), which needs the DM channels warm() found
     expect(ready).toMatch(/await dmResolver\.warm\(loadAccess\(\)\.allowFrom\) \/\/ MARVEEN-EXT\n\s*await recoverMissed\(readyAt\)/)
     expect(ready).toContain('.finally(() => { recoveryOpen = false; liveDelivered.clear() })')
@@ -352,7 +352,7 @@ describe('F4: recoverMissed (the overlay\'s, run): REST only when due, through h
     const recoverMissed = new Function(
       'backfillCursor', 'cursorRead', 'backfillDue', 'loadAccess', 'dmChannelUsers', 'BACKFILL', 'fetchTextChannel',
       'selectRecovered', 'client', 'liveDelivered', 'handleInbound',
-      `${slice('async function recoverMissed(', "client.once('ready'")}\nreturn recoverMissed`,
+      `${slice('async function recoverMissed(', '// DCEXT1111 E1:')}\nreturn recoverMissed`,
     )(
       { state, markRun: (n: number) => marks.push(n) }, read, ext.backfillDue,
       () => ({ allowFrom: [OWNER], groups: { [GROUP]: {} } }), new Map([[DM, OWNER]]), ext.BACKFILL,
@@ -516,14 +516,16 @@ describe('A1: a follow-up in the bot\'s thread needs no @mention -- only under a
   })
 
   // The overlay's own gate(), run: who gets through in a thread.
-  function gateHarness(o: { groups: Record<string, { requireMention?: boolean; allowFrom?: string[] }>; listed?: string[] }) {
+  function gateHarness(o: { groups: Record<string, { requireMention?: boolean; allowFrom?: string[] }>; listed?: string[]; channelPolicy?: Record<string, { allowRoles: string[] }> }) {
     const threads = new ext.BotThreads(Object.fromEntries((o.listed ?? []).map(t => [t, Date.now()])), () => {})
     const inBotThread = new Function('client', 'botThreads', `${slice('function inBotThread(', 'function noteSent(')}\nreturn inBotThread`)({ user: { id: 'bot' } }, threads)
     const gate = new Function(
       'loadAccess', 'pruneExpired', 'saveAccess', 'ChannelType', 'isMentioned', 'inBotThread', 'randomBytes',
+      'channelSenderAllowed', 'EXT', 'memberRoleIds',
       `${slice('async function gate(', 'async function isMentioned(')}\nreturn gate`,
     )(() => ({ dmPolicy: 'allowlist', allowFrom: [OWNER], groups: o.groups, pending: {} }), () => false, () => {}, { DM: 1 },
-      async (m: { mentioned?: boolean }) => !!m.mentioned, inBotThread, () => Buffer.alloc(3))
+      async (m: { mentioned?: boolean }) => !!m.mentioned, inBotThread, () => Buffer.alloc(3),
+      ext.channelSenderAllowed, { channelPolicy: o.channelPolicy ?? {} }, (m: { roles?: string[] } | null | undefined) => m?.roles ?? [])
     const threadMsg = (parent: string, thread: string, owner: string | null, author = OWNER, mentioned = false) => ({
       author: { id: author }, channelId: thread, mentioned,
       channel: { type: 11, isThread: () => true, parentId: parent, id: thread, ownerId: owner },
@@ -605,5 +607,245 @@ describe('A2 + A3: reply context and forwarded messages (the overlay\'s handleIn
     const dl = SERVER.slice(SERVER.indexOf("case 'download_attachment': {"), SERVER.indexOf("default:", SERVER.indexOf("case 'download_attachment': {")))
     expect(dl).toContain('const all = inboundAttachments(msg)')
     expect(dl).toContain('for (const att of all) {')
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR2 (terv.md 2. PR): B1 role-based access, E1 liveness
+// ---------------------------------------------------------------------------------------------------------------
+const ROLE = '1438000000000009001'
+const ROLE2 = '1438000000000009002'
+
+describe('B1: roles per channel (DISCORD_CHANNEL_POLICY)', () => {
+  it('parseChannelPolicy keeps only well-formed entries', () => {
+    expect(ext.parseChannelPolicy({ [id(1)]: { allowRoles: [ROLE, 'x', 5] }, bad: { allowRoles: [ROLE] }, [id(2)]: { allowRoles: [] }, [id(3)]: 'no' }))
+      .toEqual({ [id(1)]: { allowRoles: [ROLE] } })
+    for (const junk of [null, [], 'x', 7]) expect(ext.parseChannelPolicy(junk)).toEqual({})
+  })
+
+  it('the setting refuses on save what the overlay would drop silently (a role NAME, a non-id channel)', async () => {
+    const { SETTINGS_REGISTRY } = await import('../config-registry.js')
+    const validate = SETTINGS_REGISTRY.find(d => d.key === 'DISCORD_CHANNEL_POLICY')!.validate!
+    const CH = id(1)
+    for (const ok of ['', '  ', '{}', JSON.stringify({ [CH]: { allowRoles: [ROLE, ROLE2] } }), JSON.stringify({ [CH]: {} }), JSON.stringify({ [CH]: { allowRoles: [] } })]) {
+      expect(validate(ok), ok).toBeNull()
+    }
+    for (const [bad, says] of [
+      [{ [CH]: { allowRoles: ['Moderátor'] } }, /not a Discord role id \(the role's id, not its name\): "Moderátor"/],
+      [{ [CH]: { allowRoles: [ROLE, 5] } }, /not a Discord role id/],
+      [{ [CH]: { allowRoles: ROLE } }, /allowRoles: a list is required/],
+      [{ 'general': { allowRoles: [ROLE] } }, /Not a Discord channel id: "general"/],
+      [{ [CH]: 'x' }, /a JSON object is required/],
+      [[1], /A JSON object is required/],
+    ] as const) {
+      expect(validate(JSON.stringify(bad)), JSON.stringify(bad)).toMatch(says)
+    }
+    expect(validate('{ bad')).toMatch(/Invalid JSON/)
+    // whatever validate accepts, the overlay keeps every listed role
+    const accepted = { [CH]: { allowRoles: [ROLE, ROLE2] } }
+    expect(ext.parseChannelPolicy(accepted)).toEqual(accepted)
+  })
+
+  it('channelSenderAllowed: without roles the upstream rule; with roles, allowFrom OR a role (empty allowFrom = role holders only)', () => {
+    const f = ext.channelSenderAllowed
+    expect(f([], undefined, OTHER, [])).toBe(true) // upstream: empty allowFrom = anyone
+    expect(f([OWNER], undefined, OTHER, [ROLE])).toBe(false)
+    expect(f([OWNER], [ROLE], OTHER, [ROLE])).toBe(true)
+    expect(f([OWNER], [ROLE], OTHER, [ROLE2])).toBe(false)
+    expect(f([OWNER], [ROLE], OWNER, [])).toBe(true)
+    expect(f([], [ROLE], OTHER, [])).toBe(false) // roles configured: no longer anyone
+    expect(f([], [ROLE], OTHER, [ROLE2, ROLE])).toBe(true)
+  })
+
+  it('the overlay\'s gate(), run: a role holder speaks in the channel; DMs are not touched by roles', async () => {
+    const CH = '1438000000000000700'
+    const h = (channelPolicy: Record<string, { allowRoles: string[] }>) => {
+      const gate = new Function(
+        'loadAccess', 'pruneExpired', 'saveAccess', 'ChannelType', 'isMentioned', 'inBotThread', 'randomBytes',
+        'channelSenderAllowed', 'EXT', 'memberRoleIds',
+        `${slice('async function gate(', 'async function isMentioned(')}\nreturn gate`,
+      )(() => ({ dmPolicy: 'allowlist', allowFrom: [OWNER], groups: { [CH]: { requireMention: false, allowFrom: [OWNER] } }, pending: {} }),
+        () => false, () => {}, { DM: 1 }, async () => false, () => false, () => Buffer.alloc(3),
+        ext.channelSenderAllowed, { channelPolicy }, (m: { roles?: string[] } | null | undefined) => m?.roles ?? [])
+      return gate as (m: unknown) => Promise<{ action: string }>
+    }
+    const msg = (author: string, roles: string[] | null, dm = false) => ({
+      author: { id: author }, channelId: dm ? 'dm' : CH, member: roles === null ? null : { roles },
+      channel: { type: dm ? 1 : 0, isThread: () => false, id: dm ? 'dm' : CH },
+    })
+    expect((await h({})(msg(OTHER, [ROLE]))).action).toBe('drop') // control: no policy, not in allowFrom
+    expect((await h({ [CH]: { allowRoles: [ROLE] } })(msg(OTHER, [ROLE]))).action).toBe('deliver')
+    expect((await h({ [CH]: { allowRoles: [ROLE] } })(msg(OTHER, [ROLE2]))).action).toBe('drop')
+    expect((await h({ [CH]: { allowRoles: [ROLE] } })(msg(OTHER, null))).action).toBe('drop')
+    expect((await h({ [CH]: { allowRoles: [ROLE] } })(msg(OTHER, [ROLE], true))).action).toBe('drop') // a DM: allowFrom only
+  })
+
+  // Live probe 2026-11-11: a message fetched over REST (the F4 recovery) has no member, so its roles were
+  // invisible and a role holder's recovered message was dropped. The gate now fetches the member once.
+  it('a message without a member (REST-fetched): the roles are fetched once; a failed fetch stays closed', async () => {
+    const CH = '1438000000000000700'
+    const fetches: string[] = []
+    const gate = (allowFrom: string[], fetchResult: 'ok' | 'fail') => new Function(
+      'loadAccess', 'pruneExpired', 'saveAccess', 'ChannelType', 'isMentioned', 'inBotThread', 'randomBytes',
+      'channelSenderAllowed', 'EXT', 'memberRoleIds',
+      `${slice('async function gate(', 'async function isMentioned(')}\nreturn gate`,
+    )(() => ({ dmPolicy: 'allowlist', allowFrom: [OWNER], groups: { [CH]: { requireMention: false, allowFrom } }, pending: {} }),
+      () => false, () => {}, { DM: 1 }, async () => false, () => false, () => Buffer.alloc(3),
+      ext.channelSenderAllowed, { channelPolicy: { [CH]: { allowRoles: [ROLE] } } }, (m: { roles?: string[] } | null | undefined) => m?.roles ?? [],
+    ) as (m: unknown) => Promise<{ action: string }>
+    const restMsg = (author: string, fetchResult: 'ok' | 'fail') => ({
+      author: { id: author }, channelId: CH, member: null,
+      guild: { members: { fetch: async (id: string) => { fetches.push(id); if (fetchResult === 'fail') throw new Error('Unknown Member'); return { roles: [ROLE] } } } },
+      channel: { type: 0, isThread: () => false, id: CH },
+    })
+    expect((await gate([OWNER], 'ok')(restMsg(OTHER, 'ok'))).action).toBe('deliver')
+    expect(fetches).toEqual([OTHER])
+    expect((await gate([OWNER], 'fail')(restMsg(OTHER, 'fail'))).action).toBe('drop')
+    fetches.length = 0
+    expect((await gate([OTHER], 'ok')(restMsg(OTHER, 'ok'))).action).toBe('deliver')
+    expect(fetches).toEqual([]) // already allowed by allowFrom: no REST call
+  })
+
+  it('the wiring: gate() and the click check both read the policy; memberRoleIds handles both member shapes', () => {
+    expect(SERVER).toContain('if (!channelSenderAllowed(groupAllowFrom, allowRoles, senderId, memberRoleIds(member))) {')
+    expect(SERVER).toContain('if (roles && roles.length > 0) return groupAllowFrom.includes(userId) || memberRoleIds(interaction.member).some(r => roles.includes(r))')
+    const memberRoleIds = new Function(`${slice('function memberRoleIds(', '// DCEXT1111 A3: the message')}\nreturn memberRoleIds`)()
+    expect(memberRoleIds({ roles: { cache: new Map([[ROLE, {}], [ROLE2, {}]]) } })).toEqual([ROLE, ROLE2])
+    expect(memberRoleIds({ roles: [ROLE, 5] })).toEqual([ROLE])
+    expect(memberRoleIds(null)).toEqual([])
+  })
+})
+
+describe('E1: liveness and the IDENTIFY-aware reconnect governor (#1965)', () => {
+  it('the constants are pinned: a silent change fails here', () => {
+    expect(ext.LIVENESS).toEqual({
+      probeIntervalMs: 15_000, failThreshold: 2, heartbeatMaxLatencyMs: 30_000, eventSilenceMaxMs: 4 * 3600_000,
+      notReadyMaxMs: 120_000, reconnectMinIntervalMs: 5 * 60_000, backoffMs: [5, 10, 20, 40, 60].map(m => m * 60_000),
+      backoffWindowMs: 2 * 3600_000, maxReconnectsPer24h: 20,
+    })
+  })
+
+  it('assessHealth: event silence alone is healthy (a quiet server); only with a bad heartbeat is it bad (Etelka 7021)', () => {
+    const s = (o: Partial<{ ready: boolean; notReadyForMs: number; pingMs: number; eventSilenceMs: number }>) =>
+      ext.assessHealth({ ready: true, notReadyForMs: 0, pingMs: 80, eventSilenceMs: 0, ...o })
+    expect(s({}).bad).toBe(false)
+    expect(s({ eventSilenceMs: 10 * 3600_000 }).bad).toBe(false) // 10 h of silence, fresh heartbeat
+    expect(s({ eventSilenceMs: 10 * 3600_000, pingMs: -1 }).bad).toBe(true) // silence AND no heartbeat
+    expect(s({ eventSilenceMs: 60_000, pingMs: -1 }).bad).toBe(false) // no heartbeat yet, not silent long
+    expect(s({ pingMs: 31_000 }).bad).toBe(true)
+    expect(s({ ready: false, notReadyForMs: 60_000 }).bad).toBe(false) // discord.js resuming
+    expect(s({ ready: false, notReadyForMs: 120_000 }).bad).toBe(true)
+  })
+
+  it('reconnectDecision: first at once, never sooner than 5 min, growing backoff, at most 20 in 24 h', () => {
+    const NOW = 1_800_000_000_000
+    expect(ext.reconnectDecision([], NOW).allowed).toBe(true)
+    expect(ext.reconnectDecision([NOW - 4 * 60_000], NOW).allowed).toBe(false)
+    expect(ext.reconnectDecision([NOW - 6 * 60_000], NOW).allowed).toBe(false) // 1 recent -> 10 min
+    expect(ext.reconnectDecision([NOW - 11 * 60_000], NOW).allowed).toBe(true)
+    const day = Array.from({ length: 20 }, (_, i) => NOW - (23 - i) * 3600_000)
+    expect(ext.reconnectDecision(day, NOW)).toMatchObject({ allowed: false, reason: expect.stringContaining('20 reconnects in 24 h') })
+  })
+
+  it('loop simulation: a gateway bad for 24 h straight costs at most 20 logins, at most 3 in the first hour', () => {
+    const start = 1_800_000_000_000
+    const history: number[] = []
+    let bad = 0
+    for (let t = start; t < start + 24 * 3600_000; t += ext.LIVENESS.probeIntervalMs) {
+      bad++
+      if (bad < ext.LIVENESS.failThreshold) continue
+      if (ext.reconnectDecision(history, t).allowed) { history.push(t); bad = 0 }
+    }
+    expect(history.length).toBeLessThanOrEqual(20)
+    expect(history.filter(t => t < start + 3600_000).length).toBeLessThanOrEqual(3)
+    for (let i = 1; i < history.length; i++) expect(history[i]! - history[i - 1]!).toBeGreaterThanOrEqual(5 * 60_000)
+  })
+
+  // The overlay's own readReconnects + shard listeners + livenessTick, run with a fake client, an in-memory file
+  // and a fake clock. The fake client behaves as discord.js 14.25.1 does: destroy() leaves ws.destroyed true
+  // (WebSocketManager.js:322-325), a destroy() on a destroyed manager does nothing, and isReady() is
+  // !ws.destroyed && status Ready (Client.js:242-244).
+  function tickHarness(o: { ready?: boolean; ping?: number; silenceMs?: number; file?: string | null; writeFails?: boolean } = {}) {
+    const files: Record<string, string> = {}
+    if (o.file) files['R'] = o.file
+    const calls: string[] = []
+    const clock = { now: Date.now() }
+    const on: Record<string, Array<() => void>> = {}
+    const ws = { ping: o.ping ?? -1, destroyed: false, status: o.ready ?? true }
+    const client = {
+      ws,
+      isReady: () => !ws.destroyed && ws.status,
+      on: (ev: string, fn: () => void) => { (on[ev] ??= []).push(fn) },
+      destroy: async () => { if (ws.destroyed) { calls.push('destroy-noop'); return } ws.destroyed = true; ws.status = false; calls.push('destroy') },
+      login: async () => { calls.push('login') },
+    }
+    const emit = (ev: string) => { ws.status = ev === 'shardReady' || ev === 'shardResume'; for (const fn of on[ev] ?? []) fn() }
+    const code = `let lastEventAt = ${clock.now - (o.silenceMs ?? 5 * 3600_000)}; let notReadySince = null; let gatewayReady = ${o.ready ?? true}; let badSamples = 0; let reconnecting = false; let lastHeldReason = ''; const shuttingDown = false;\n` +
+      `${slice('function readReconnects(', 'setInterval(() => { void livenessTick() }')}\nreturn livenessTick`
+    const tick = new Function('RECONNECT_FILE', 'client', 'assessHealth', 'LIVENESS', 'reconnectDecision', 'readFileSync', 'writeFileSync', 'TOKEN', 'Date', code)(
+      'R', client, ext.assessHealth, ext.LIVENESS, ext.reconnectDecision,
+      (p: string) => { if (!(p in files)) throw new Error('ENOENT'); return files[p] },
+      (p: string, d: string) => { if (o.writeFails) throw new Error('EACCES'); files[p] = d },
+      't', { now: () => clock.now }) as () => Promise<void>
+    return { tick, calls, files, clock, ws, emit }
+  }
+
+  // Review E1 (#2703): after one reconnect a healthy gateway must read as healthy, so it is not logged in again.
+  it('run: one stall, then 24 healthy hours: exactly one login, though ws.destroyed stays true', async () => {
+    const h = tickHarness()
+    await h.tick(); await h.tick()
+    expect(h.calls).toEqual(['destroy', 'login'])
+    expect(h.ws.destroyed).toBe(false) // reset after destroy(), so the next destroy() really tears down
+    h.ws.ping = 90
+    h.emit('shardReady')
+    for (let i = 0; i < 24 * 3600_000 / ext.LIVENESS.probeIntervalMs; i++) {
+      h.clock.now += ext.LIVENESS.probeIntervalMs
+      await h.tick()
+    }
+    expect(h.calls).toEqual(['destroy', 'login'])
+  })
+
+  it('run: a second stall is a real second reconnect: destroy() tears the shard down, not a no-op', async () => {
+    const h = tickHarness()
+    await h.tick(); await h.tick()
+    h.emit('shardReady')
+    h.clock.now += 3600_000 // past the backoff
+    h.emit('shardReconnecting') // the gateway drops and never comes back
+    for (let i = 0; i < 20; i++) { h.clock.now += ext.LIVENESS.probeIntervalMs; await h.tick() }
+    expect(h.calls).toEqual(['destroy', 'login', 'destroy', 'login'])
+    // a resume counts as ready again: no third login
+    h.emit('shardResume'); h.ws.ping = 90
+    for (let i = 0; i < 400; i++) { h.clock.now += ext.LIVENESS.probeIntervalMs; await h.tick() }
+    expect(h.calls).toHaveLength(4)
+  })
+
+  it('run: two bad samples -> the reconnect is recorded FIRST, then destroy + login, once', async () => {
+    const h = tickHarness()
+    await h.tick()
+    expect(h.calls).toEqual([]) // one bad sample is not enough
+    await h.tick()
+    expect(h.calls).toEqual(['destroy', 'login'])
+    expect(JSON.parse(h.files['R']!)).toHaveLength(1)
+  })
+
+  it('run: a quiet server with a live heartbeat never reconnects', async () => {
+    const h = tickHarness({ ping: 90, silenceMs: 12 * 3600_000 })
+    for (let i = 0; i < 10; i++) await h.tick()
+    expect(h.calls).toEqual([])
+  })
+
+  it('run: a recent reconnect in the history holds the next one; an unwritable history blocks it', async () => {
+    const held = tickHarness({ file: JSON.stringify([Date.now() - 60_000]) })
+    await held.tick(); await held.tick(); await held.tick()
+    expect(held.calls).toEqual([])
+    const nofile = tickHarness({ writeFails: true })
+    await nofile.tick(); await nofile.tick()
+    expect(nofile.calls).toEqual([]) // no record, no IDENTIFY
+  })
+
+  it('the wiring: raw events feed the silence clock, the probe runs on the pinned interval', () => {
+    expect(SERVER).toContain("client.on('raw', () => { lastEventAt = Date.now() })")
+    expect(SERVER).not.toMatch(/const ready = client\.isReady\(\)/)
+    expect(SERVER).toContain('setInterval(() => { void livenessTick() }, LIVENESS.probeIntervalMs).unref()')
   })
 })

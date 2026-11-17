@@ -133,6 +133,8 @@ export function parseStoreWatchExclude(raw: string | undefined): Set<string> {
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
+// A Discord id, exactly as the Discord overlay's parseChannelPolicy accepts it (marveen-ext.ts SNOWFLAKE_ID).
+const DISCORD_SNOWFLAKE_RE = /^[0-9]{15,20}$/
 
 // True for an absolute http(s) URL, e.g. "https://marveen.example.com" or "http://localhost:3420/prefix". A value with
 // no scheme ("marveen", "localhost:3420"), another scheme or any whitespace is not one: such a value, glued in front
@@ -1258,6 +1260,44 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'channels',
     secret: false,
     requiresRestart: true,
+  },
+  {
+    // DCEXT1111 B1: per-channel extras for the Discord overlay. Not in access.json: `/discord:access group add`
+    // rewrites a channel's object there. Any change can widen who may talk to the agent: owner only.
+    key: 'DISCORD_CHANNEL_POLICY',
+    type: 'string',
+    default: '',
+    description: 'Discord csatornánkénti kiegészítések (csak DISCORD_PLUGIN_EXT mellett), JSON: {"<csatorna-ID>": {"allowRoles": ["<szerep-ID>", ...]}}. Ha egy csatornához szerepek vannak megadva, ott az írhat a botnak, aki a csatorna engedélyezett felhasználói között van, VAGY rendelkezik valamelyik szereppel (üres felhasználói lista mellett csak a szerep birtokosai). Az eszköz-jóváhagyás ettől független, az mindig csak a gazdáé. A hibás JSON-t a csatorna-indítás egy sorral jelzi és figyelmen kívül hagyja. A csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+    validate: (v: string) => {
+      const t = v.trim()
+      if (t === '') return null
+      let o: unknown
+      try {
+        o = JSON.parse(t)
+      } catch {
+        return 'Érvénytelen JSON. / Invalid JSON.'
+      }
+      if (!o || typeof o !== 'object' || Array.isArray(o)) return 'JSON-objektum kell. / A JSON object is required.'
+      // The plugin drops anything that is not a Discord id, and the channel then falls back to the old rule:
+      // say so on save instead (a role NAME is the usual mistake).
+      for (const [ch, v] of Object.entries(o as Record<string, unknown>)) {
+        if (!DISCORD_SNOWFLAKE_RE.test(ch)) return `Nem Discord csatorna-ID: ${JSON.stringify(ch)}. / Not a Discord channel id: ${JSON.stringify(ch)}.`
+        if (!v || typeof v !== 'object' || Array.isArray(v)) return `${ch}: JSON-objektum kell. / ${ch}: a JSON object is required.`
+        if (!('allowRoles' in v)) continue
+        const roles = (v as { allowRoles: unknown }).allowRoles
+        if (!Array.isArray(roles)) return `${ch}.allowRoles: lista kell. / ${ch}.allowRoles: a list is required.`
+        for (const r of roles) {
+          if (typeof r !== 'string' || !DISCORD_SNOWFLAKE_RE.test(r)) {
+            return `${ch}.allowRoles: nem Discord szerep-ID (a szerep ID-ja kell, nem a neve): ${JSON.stringify(r)}. / ${ch}.allowRoles: not a Discord role id (the role's id, not its name): ${JSON.stringify(r)}.`
+          }
+        }
+      }
+      return null
+    },
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'TELEGRAM_INBOUND_REPLAY_ENABLED',

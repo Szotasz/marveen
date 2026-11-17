@@ -57,6 +57,8 @@ DCBTN_TAG = "// MARVEEN-PATCH(dcbtn1023)"
 MANIFEST = ".marveen-overlay.json"
 EXT_CONFIG = "marveen-ext.json"
 SNOWFLAKE = re.compile(r"^[1-9][0-9]{16,19}$")
+# The overlay's id shape for channels and roles (marveen-ext.ts SNOWFLAKE_ID).
+SNOWFLAKE_ID = re.compile(r"^[0-9]{15,20}\Z")
 
 
 def log(msg):
@@ -127,7 +129,44 @@ def settings(install_dir):
         log("LOUD: DISCORD_OWNER_USER_ID is set but is not a Discord user id -- NOT used")
         owner = ""
     backfill = tg.flag_setting(install_dir, "DISCORD_BACKFILL", True)
-    return ext_on, {"ownerUserId": owner, "backfill": bool(backfill)}
+    # DISCORD_CHANNEL_POLICY (overrides-only): per-channel extras, e.g. {"<channel>": {"allowRoles": ["<role>"]}}.
+    # Passed through as parsed JSON; the overlay keeps only well-formed entries (marveen-ext.ts parseChannelPolicy).
+    policy = {}
+    raw_policy = (override_value(install_dir, "DISCORD_CHANNEL_POLICY") or "").strip(tg.JS_TRIM)
+    if raw_policy:
+        try:
+            parsed = json.loads(raw_policy)
+            if not isinstance(parsed, dict):
+                raise ValueError("not an object")
+            policy = parsed
+        except ValueError:
+            log("LOUD: DISCORD_CHANNEL_POLICY is set but is not a JSON object -- NOT used (no channel extras)")
+        for line in channel_policy_drops(policy):
+            log(f"LOUD: DISCORD_CHANNEL_POLICY {line} -- dropped, that channel keeps the plain allowFrom rule")
+    return ext_on, {"ownerUserId": owner, "backfill": bool(backfill), "channelPolicy": policy}
+
+
+def channel_policy_drops(policy):
+    """What the overlay's parseChannelPolicy (marveen-ext.ts) will silently drop, one line each. The object
+    itself is passed on unchanged; this only makes the drop visible (a role NAME instead of its id, say)."""
+    out = []
+    for ch, v in policy.items():
+        if not SNOWFLAKE_ID.match(ch):
+            out.append(f"channel {ch!r} is not a Discord channel id")
+            continue
+        if not isinstance(v, dict):
+            out.append(f"channel {ch}: not an object")
+            continue
+        roles = v.get("allowRoles")
+        if roles is None:
+            continue
+        if not isinstance(roles, list):
+            out.append(f"channel {ch}: allowRoles is not a list")
+            continue
+        for r in roles:
+            if not (isinstance(r, str) and SNOWFLAKE_ID.match(r)):
+                out.append(f"channel {ch}: allowRoles entry {r!r} is not a Discord role id (the id, not the name)")
+    return out
 
 
 def identify(dirpath, text_bytes, vendor):
