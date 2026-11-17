@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { noteQuotaBlindness, quotaWorkClass, resetQuotaBlindStateForTest } from '../web/schedule-runner.js'
 import { logger } from '../logger.js'
 import { parseQuotaSnapshot } from '../quota-snapshot.js'
+import { getSettingDefinition } from '../config-registry.js'
 
 // The gate itself is covered in quota-gate.test.ts. This file covers the two
 // seams around it: how a scheduled task is classified, and how the collector's
@@ -134,15 +135,18 @@ describe('noteQuotaBlindness -- the blind gate is never silent, and never noisy'
     expect(notify).toHaveBeenCalledTimes(2)
   })
 
-  it('a restart on the same leftover snapshot does not alert again; a newer snapshot does', () => {
+  it('restarts while the same blindness lasts do not alert again, even on rewritten snapshots; another source does', () => {
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const notify = vi.fn()
     note(estimate, NOW, notify)
-    resetQuotaBlindStateForTest() // dashboard restart: in-memory state lost, store kept
-    note(estimate, NOW + 60_000, notify)
+    for (let i = 1; i <= 3; i++) {
+      resetQuotaBlindStateForTest() // dashboard restart: in-memory state lost, store kept
+      // a running collector rewrites the estimate every 15 minutes
+      note({ ...estimate, generatedAtMs: (estimate.generatedAtMs ?? NOW) + i * 15 * 60_000 }, NOW + i * 15 * 60_000, notify)
+    }
     expect(notify).toHaveBeenCalledTimes(1)
     resetQuotaBlindStateForTest()
-    note({ ...estimate, generatedAtMs: NOW }, NOW + 120_000, notify)
+    note({ ...estimate, source: 'unknown' }, NOW + 60 * 60_000, notify)
     expect(notify).toHaveBeenCalledTimes(2)
   })
 
@@ -161,5 +165,10 @@ describe('noteQuotaBlindness -- the blind gate is never silent, and never noisy'
     expect(RUNNER_SRC).toContain('hardAtPercent: quotaHardAtPercent,')
     const io = readFileSync(join(__dirname, '../web/scheduled-tasks-io.ts'), 'utf-8')
     expect(io).toContain('essential: config.essential === true,')
+  })
+
+  it('the tiers are off unless set: registry default 0, and the runner falls back to 0', () => {
+    expect(getSettingDefinition('QUOTA_GATE_HARD_AT_PERCENT')?.default).toBe(0)
+    expect(RUNNER_SRC).toContain("try { return Number(getEffectiveSettingValue('QUOTA_GATE_HARD_AT_PERCENT')) || 0 } catch { return 0 }")
   })
 })

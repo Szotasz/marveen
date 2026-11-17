@@ -1432,9 +1432,10 @@ function readQuotaHardAtPercent(): number {
 
 // The gate fails open on an untrusted or stale snapshot (quota-gate.ts); that
 // must not be silent. One log line per state change, and one owner notice when
-// the gate goes blind; quiet until it can see again. The key of the snapshot that
-// was alerted on is kept in store/, so a restart on the same leftover snapshot
-// (e.g. a disabled collector) does not notify again.
+// the gate goes blind; quiet until it can see again. The blind kind and the source
+// that were alerted on are kept in store/ (no timestamp: a running collector rewrites
+// an estimate every 15 minutes), so a restart while the same blindness lasts does
+// not notify again.
 let quotaBlindState: ReturnType<typeof quotaBlindness> = null
 
 const QUOTA_BLIND_ALERT_PATH = join(PROJECT_ROOT, 'store', 'quota-blind-alert.json')
@@ -1477,8 +1478,8 @@ export function noteQuotaBlindness(
     'Quota gate is blind: background tasks run unchecked (fail open) until a trusted, fresh snapshot arrives',
   )
   if (prev) return
-  const key = `${next}|${at ?? 'none'}`
-  if (alerted.read() === key) return // same snapshot already alerted on, before a restart
+  const key = `${next}|${snapshot?.source ?? 'none'}`
+  if (alerted.read() === key) return // same blindness already alerted on, before a restart
   alerted.write(key)
   const why = next === 'untrusted-source'
     ? `a kvóta-pillanatkép forrása "${snapshot?.source ?? 'ismeretlen'}", ami nem mért szám`
