@@ -11,7 +11,7 @@ import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT, RESERVED_AGENT_IDS } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
-  getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
+  getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards, logConfigChange } from '../../db.js'
 import { nicknameFor } from '../team-nicknames.js'
 import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
 import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
@@ -196,6 +196,8 @@ import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND, mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
+import { activeAgentLease, leaseCreateDecision, leaseDeleteDecision, mayUseLeaseCredential, recordLeaseAgent, markLeaseAgentDeleted, LEASE_PROFILE_ID, type AgentLease } from '../agent-lease.js'
+import { notifyLeaseUse, setLeaseAgentRemover, sweepAgentLease } from './agent-leases.js'
 import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 const execFileAsync = promisify(execFile)
@@ -894,6 +896,51 @@ export async function refuseIfCliCannotLaunch(model: string): Promise<Record<str
   }
 }
 
+/** Stops an agent and removes it for good: the desired run-state first, the session, the directory (on the skills
+ *  directory queue) and its team references. The DELETE /api/agents/:name route and the agent lease cleanup
+ *  (AGENTLEASE1117, routes/agent-leases.ts) both use it, so a lease agent is removed exactly like any other. */
+export async function removeAgentCompletely(name: string): Promise<void> {
+  if (isMainChannelsAgent(name)) throw new Error('The main agent cannot be deleted')
+  const dir = agentDir(name)
+  // Clear the desired run-state FIRST, before anything yields. Deleting an
+  // agent is at least as strong a statement of intent as stopping one, so it
+  // must clear the state the same way /stop does: without this the name
+  // outlives its directory in agents-desired.json, the reconciler keeps
+  // trying to start something that no longer exists (a permanent error-level
+  // line for a machine behaving correctly), and -- the sharper hazard --
+  // re-creating an agent with the same name later starts it immediately,
+  // unasked.
+  //
+  // The ordering is load-bearing, not cosmetic. stopAgentProcess() now awaits
+  // (it used to block the event loop with execSync('sleep 2')), so the ~2s it
+  // spends settling is a window in which other work runs. The agent is
+  // already dead in that window but would still be listed as desired, and
+  // channel-monitor's reconcileDesiredAgents() sweep -- which fires every 60s
+  // looking for exactly "desired but not running" -- would start it back up.
+  // The rmSync below would then delete the directory out from under a live
+  // session, producing precisely the orphan-ghost this handler exists to
+  // prevent. Clearing intent up front makes the agent invisible to the
+  // reconciler for the whole teardown.
+  removeDesiredAgent(name)
+  // Stop the running tmux session BEFORE removing the dir. Otherwise the
+  // orphaned session survives the delete, rewrites a minimal .claude-config
+  // under agents/<name>/, and the agent "returns" as an empty draft (persona
+  // gone) that still reports running=true, with the model reset to the default.
+  // stopAgentProcess() reads config from the dir (remote host, channel
+  // provider) for its orphan reap, so it must run while the dir still exists.
+  if (isAgentRunning(name)) await stopAgentProcess(name)
+  // An assign may be copying a skill into this directory: the removal waits on the skills directory queue.
+  await serializeSkillsDir(async () => {
+    // Started again while the removal waited (by hand: the reconciler no longer wants it): stop it first,
+    // for the same reason as above.
+    if (isAgentRunning(name)) await stopAgentProcess(name)
+    rmSync(dir, { recursive: true, force: true })
+  })
+  cleanupTeamReferences(name)
+}
+
+setLeaseAgentRemover(removeAgentCompletely)
+
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -1291,9 +1338,19 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // OWNERGATE2-1104: creates a whole agent (its dir, settings.json from a security profile, CLAUDE.md) and
     // announces it to the fleet. Gated before the CLI probe and the scaffold; the first-run setup keeps the token
     // (OWNERGATE4-1104, FIRST_RUN_PATHS 'agent-create').
+    // AGENTLEASE1117: without the owner, the shared token may still create a throwaway agent under an active agent
+    // lease (agent-lease.ts: tmp- name, loopback custom provider, the lease-sandbox profile, maxAgents). The lease is
+    // checked only after the owner gate refused, and only for the shared token; the expiry check runs first.
+    let lease: AgentLease | null = null
     if (!mayActAsOwnerOrFirstRun(ctx.auth, req, 'agent-create')) {
-      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Creating an agent needs the dashboard login (an owner session).' }, 403)
-      return true
+      if (mayUseLeaseCredential(ctx.auth)) {
+        await sweepAgentLease()
+        lease = activeAgentLease()
+      }
+      if (!lease) {
+        json(res, { ...OWNER_SESSION_REQUIRED, error: 'Creating an agent needs the dashboard login (an owner session).' }, 403)
+        return true
+      }
     }
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
@@ -1309,9 +1366,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // cannot run the shipped default gets the previous tier, not a 422 for a
     // model the caller never picked.
     const model = resolveModelId(rawModel || await launchableInstallDefault('agent-create', { fresh: true }))
-    const profileId = (rawProfile || 'default').trim() || 'default'
+    let profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    if (lease) {
+      const verdict = leaseCreateDecision(lease, { name, customProvider, profile: typeof rawProfile === 'string' && rawProfile.trim() ? rawProfile.trim() : null })
+      if (!verdict.ok) {
+        logger.warn({ name, code: verdict.code, lease: lease.id }, 'agent lease: create refused')
+        json(res, { ...OWNER_SESSION_REQUIRED, error: verdict.error, code: verdict.code }, 403)
+        return true
+      }
+      profileId = LEASE_PROFILE_ID
+    }
     // SECSZIVEK1007: the model id is checked BEFORE anything is created;
     // writeAgentModel used to be the first check, after scaffoldAgentDir, and a
     // malformed id left a half-created agent dir behind.
@@ -1332,6 +1398,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // send, or would be framed as something it is not.
     if (RESERVED_AGENT_IDS.includes(name)) { json(res, { error: 'Name is reserved by the system' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
+    // AGENTLEASE1117: the slot is taken synchronously, right before the scaffold: nothing awaits between this check
+    // and the write, so two concurrent creates cannot both take the last one, and a lease that ended while the CLI
+    // probe above ran grants nothing.
+    if (lease && !recordLeaseAgent(lease.id, name)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'The agent lease ended or is used up.', code: 'lease_limit' }, 403)
+      return true
+    }
 
     scaffoldAgentDir(name)
     writeAgentModel(name, model)
@@ -1347,6 +1420,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // template -- cannot leave an agent unguarded.
     seedContextGuardForNewAgent(name)
     if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
+
+    if (lease) {
+      // AGENTLEASE1117: a lease agent gets no MCP server (the scaffold copied the inherited ones), the template
+      // personality (no Claude call for a throwaway local-model agent) and no team greeting. The owner hears of it.
+      atomicWriteFileSync(join(agentDir(name), '.mcp.json'), JSON.stringify({ mcpServers: {} }, null, 2) + '\n')
+      for (const [file, content] of [['CLAUDE.md', fallbackClaudeMd(name, description, model)], ['SOUL.md', fallbackSoulMd(name, description)]] as const) {
+        const personaPath = join(agentDir(name), file)
+        writePersonaFileIfUnchanged(personaPath, snapshotPersonaFile(personaPath), content, { saveSidecarOnSkip: false })
+      }
+      logConfigChange('agent_lease.create_agent', lease.id, JSON.stringify({ name, customProvider, model }), 'token')
+      logger.warn({ name, lease: lease.id, customProvider, model }, 'agent lease: agent created')
+      notifyLeaseUse(`Új ideiglenes ügynök: ${name} (helyi szolgáltató: ${customProvider}, modell: ${model}). A bérlet lejár: ${new Date(lease.expiresAt).toLocaleString('hu-HU')}.`)
+      json(res, { ok: true, name, lease: { id: lease.id, expiresAt: lease.expiresAt, profile: LEASE_PROFILE_ID } })
+      return true
+    }
 
     logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
     // Set when the personality fell back to a template. The response is deferred
@@ -3144,45 +3232,28 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
     // OWNERGATE2-1104: stops the agent and removes its whole directory, irreversibly; owner-only, before the desired
     // run-state, the stop or the removal is touched.
-    if (!mayActAsOwner(ctx.auth, req)) {
-      refuseOwner(res, 'Deleting an agent needs the dashboard login (an owner session).')
-      return true
+    // AGENTLEASE1117: without the owner, the shared token may delete an agent created under the active agent lease.
+    const asOwner = mayActAsOwner(ctx.auth, req)
+    let viaLease = false
+    if (!asOwner) {
+      let verdict: ReturnType<typeof leaseDeleteDecision> | null = null
+      if (mayUseLeaseCredential(ctx.auth)) {
+        await sweepAgentLease()
+        verdict = leaseDeleteDecision(activeAgentLease(), name)
+      }
+      if (!verdict?.ok) {
+        refuseOwner(res, verdict && !verdict.ok && verdict.code !== 'no_active_lease' ? verdict.error : 'Deleting an agent needs the dashboard login (an owner session).', verdict && !verdict.ok ? { lease_code: verdict.code } : {})
+        return true
+      }
+      viaLease = true
     }
-    // Clear the desired run-state FIRST, before anything yields. Deleting an
-    // agent is at least as strong a statement of intent as stopping one, so it
-    // must clear the state the same way /stop does: without this the name
-    // outlives its directory in agents-desired.json, the reconciler keeps
-    // trying to start something that no longer exists (a permanent error-level
-    // line for a machine behaving correctly), and -- the sharper hazard --
-    // re-creating an agent with the same name later starts it immediately,
-    // unasked.
-    //
-    // The ordering is load-bearing, not cosmetic. stopAgentProcess() now awaits
-    // (it used to block the event loop with execSync('sleep 2')), so the ~2s it
-    // spends settling is a window in which other work runs. The agent is
-    // already dead in that window but would still be listed as desired, and
-    // channel-monitor's reconcileDesiredAgents() sweep -- which fires every 60s
-    // looking for exactly "desired but not running" -- would start it back up.
-    // The rmSync below would then delete the directory out from under a live
-    // session, producing precisely the orphan-ghost this handler exists to
-    // prevent. Clearing intent up front makes the agent invisible to the
-    // reconciler for the whole teardown.
-    removeDesiredAgent(name)
-    // Stop the running tmux session BEFORE removing the dir. Otherwise the
-    // orphaned session survives the delete, rewrites a minimal .claude-config
-    // under agents/<name>/, and the agent "returns" as an empty draft (persona
-    // gone) that still reports running=true, with the model reset to the default.
-    // stopAgentProcess() reads config from the dir (remote host, channel
-    // provider) for its orphan reap, so it must run while the dir still exists.
-    if (isAgentRunning(name)) await stopAgentProcess(name)
-    // An assign may be copying a skill into this directory: the removal waits on the skills directory queue.
-    await serializeSkillsDir(async () => {
-      // Started again while the removal waited (by hand: the reconciler no longer wants it): stop it first,
-      // for the same reason as above.
-      if (isAgentRunning(name)) await stopAgentProcess(name)
-      rmSync(dir, { recursive: true, force: true })
-    })
-    cleanupTeamReferences(name)
+    await removeAgentCompletely(name)
+    markLeaseAgentDeleted(name, viaLease ? 'lease' : 'owner')
+    if (viaLease) {
+      logConfigChange('agent_lease.delete', activeAgentLease()?.id ?? null, name, 'token')
+      logger.warn({ name }, 'agent lease: agent deleted')
+      notifyLeaseUse(`${name} törölve (a bérlettel).`)
+    }
     json(res, { ok: true })
     return true
   }

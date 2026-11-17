@@ -105,6 +105,7 @@ import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper, startApprovalReactionSweeper } from './web/routes/approvals.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleFleetFreeze } from './web/routes/fleet-freeze.js'
+import { tryHandleAgentLeases, sweepAgentLease } from './web/routes/agent-leases.js'
 import { initGromzoConsentWatch, tryHandleGromzo } from './web/routes/gromzo.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
@@ -278,6 +279,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleFleetFreeze(routeCtx)) return
+      if (await tryHandleAgentLeases(routeCtx)) return
       if (await tryHandleGromzo(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
@@ -620,7 +622,12 @@ export function startWebServer(port = 3420): http.Server {
 // Desktop-lock TTL sweeper. Independent of the schedule gate on purpose: an
 // abandoned lock must expire (and be reported) even on a day when no
 // desktop-driving round happens to be due.
-setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the loop */ } }, 60_000).unref?.()
+// AGENTLEASE1117: the same minute tick ends an expired agent lease (stops and deletes its agents); every lease-gated
+// request runs the same check first, so between two ticks an expired lease grants nothing either.
+setInterval(() => {
+  try { sweepExpiredDesktopLock() } catch { /* never kill the loop */ }
+  void sweepAgentLease().catch((err) => logger.warn({ err }, 'agent lease sweep failed'))
+}, 60_000).unref?.()
 
   // Hourly sweep of expired browser-login sessions (7d idle / 30d absolute).
   // Runs regardless of WEB_ONLY -- it is a cheap indexed delete on the shared DB

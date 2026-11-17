@@ -36,14 +36,16 @@ function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 }
 
-// The DELETE handler body: from the method match to just past its success path.
+// The removal body. AGENTLEASE1117 moved it out of the DELETE handler into removeAgentCompletely, which the handler
+// and the agent lease cleanup both call; the handler must still reach it.
 function deleteHandlerBody(code: string): string {
-  const start = code.indexOf("agentMatch && method === 'DELETE'")
-  expect(start, 'DELETE agent handler not found').toBeGreaterThan(-1)
-  const teamIdx = code.indexOf('cleanupTeamReferences(name)', start)
-  expect(teamIdx, 'cleanupTeamReferences not found in DELETE handler').toBeGreaterThan(start)
-  const end = code.indexOf('return true', teamIdx)
-  expect(end, 'DELETE handler end not found').toBeGreaterThan(teamIdx)
+  const handler = code.indexOf("agentMatch && method === 'DELETE'")
+  expect(handler, 'DELETE agent handler not found').toBeGreaterThan(-1)
+  expect(code.indexOf('await removeAgentCompletely(name)', handler), 'DELETE handler must call removeAgentCompletely').toBeGreaterThan(handler)
+  const start = code.indexOf('export async function removeAgentCompletely(')
+  expect(start, 'removeAgentCompletely not found').toBeGreaterThan(-1)
+  const end = code.indexOf('cleanupTeamReferences(name)', start)
+  expect(end, 'cleanupTeamReferences not found in removeAgentCompletely').toBeGreaterThan(start)
   return code.slice(start, end)
 }
 

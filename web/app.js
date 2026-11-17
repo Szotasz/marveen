@@ -17337,7 +17337,82 @@ document.addEventListener('DOMContentLoaded', () => {
   wireBranchDriftBanner()
   wireUpdateConflictBanner()
   wireFleetFreeze()
+  wireAgentLease()
 })
+
+// --- Temporary agent lease (AGENTLEASE1117) ---------------------------------
+// Owner only: GET /api/agent-leases answers 403 to anyone else, and the panel stays hidden.
+function renderAgentLease(data) {
+  const panel = document.getElementById('agentLeasePanel')
+  const status = document.getElementById('agentLeaseStatus')
+  const controls = document.getElementById('agentLeaseControls')
+  const revoke = document.getElementById('agentLeaseRevokeBtn')
+  if (!panel || !status || !controls || !revoke) return
+  if (!data) { panel.hidden = true; return }
+  panel.hidden = false
+  const lease = data.lease
+  const live = ((lease && lease.agents) || []).filter((a) => !a.deletedAt).map((a) => a.name)
+  if (data.active && lease) {
+    status.textContent = t('agent_lease.status.active', {
+      until: new Date(lease.expiresAt).toLocaleString(),
+      used: String((lease.agents || []).length),
+      max: String(lease.maxAgents),
+      agents: live.length ? live.join(', ') : '-',
+    })
+  } else if (lease && lease.status !== 'active') {
+    status.textContent = t('agent_lease.status.ended', { status: lease.status, at: lease.endedAt ? new Date(lease.endedAt).toLocaleString() : '' }) +
+      (live.length ? ' ' + t('agent_lease.status.leftover', { agents: live.join(', ') }) : '')
+  } else {
+    status.textContent = t('agent_lease.status.none')
+  }
+  controls.hidden = !!data.active
+  revoke.hidden = !data.active
+}
+
+async function loadAgentLease() {
+  try {
+    const res = await fetch('/api/agent-leases')
+    renderAgentLease(res.ok ? await res.json() : null)
+  } catch { renderAgentLease(null) }
+}
+
+function wireAgentLease() {
+  const createBtn = document.getElementById('agentLeaseCreateBtn')
+  const revokeBtn = document.getElementById('agentLeaseRevokeBtn')
+  if (!createBtn || !revokeBtn) return
+  createBtn.addEventListener('click', async () => {
+    const minutes = Number(document.getElementById('agentLeaseMinutes').value)
+    const maxAgents = Number(document.getElementById('agentLeaseMaxAgents').value)
+    if (!window.confirm(t('agent_lease.confirm.create', { minutes: String(minutes), max: String(maxAgents) }))) return
+    try {
+      const res = await fetch('/api/agent-leases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minutes, maxAgents }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
+      renderAgentLease(data)
+      showToast(t('agent_lease.toast.created'))
+    } catch (err) { showToast(String(err.message || err)) }
+  })
+  revokeBtn.addEventListener('click', async () => {
+    if (!window.confirm(t('agent_lease.confirm.revoke'))) return
+    try {
+      const res = await fetch('/api/agent-leases/current', { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
+      renderAgentLease(data)
+      showToast(t('agent_lease.toast.revoked'))
+      loadAgents()
+    } catch (err) { showToast(String(err.message || err)) }
+  })
+  loadAgentLease()
+  setInterval(() => {
+    const page = document.getElementById('agentsPage')
+    if (page && !page.hidden) loadAgentLease()
+  }, 30000)
+}
 
 // --- Fleet freeze, the red button (KILLSWITCH1022) ---------------------------
 // Pulling it is open to every signed-in browser; lifting it needs the owner's

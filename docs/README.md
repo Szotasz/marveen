@@ -28,6 +28,7 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Proaktív hírszerző (intel registry)](intel-registry.md) | Óránkénti gyűjtő + napi brief közös SQLite tény-registry-vel, dedup + tény-életciklus |
 | [Háttér-feladatok](background-tasks.md) | Leválasztott, hosszú feladatok futtatása + értesítés |
 | [Piros gomb: a flotta fagyasztása](fleet-freeze.md) | Egy mozdulattal leállítható flotta: eszközhívás-tiltás, álló háttér-ciklusok, feloldás csak a gazdának |
+| [Ideiglenes ügynök-bérlet](agent-lease.md) | Időkorlátos gazda-engedély: a fő ügynök tmp- nevű, helyi modellen futó, zárt teszt-ügynököket hozhat létre és törölhet; lejáratkor minden törlődik ([EN](en/agent-lease.md)) |
 | [Meta Graph olvasó](meta-graph-olvasas.md) | Csak olvasó Facebook/Instagram Graph-hívások egy paranccsal: kizárólag GET, a token a store-ból, közös hívásszám-szünet ([EN](en/meta-graph-read.md)) |
 | [Hook-metaadatok és env-kapcsolók](hook-metaadatok.md) | Oldalfájl a settings.json hookjai mellett: a CI megfogja a csendes hook-átírást, átrendezést és a hiányzó szkriptet; naplózó hook env-ből kikapcsolható, kapu soha ([EN](en/hook-metadata.md)) |
 | [Nehéz-feladat kapu](heavy-job-gate.md) | Egyszerre egy nehéz feladat (render, teljes tesztsor, build) érkezési sorrendben, memória-padló és saját cgroup-memóriakeret; opt-in, csak Linuxon |

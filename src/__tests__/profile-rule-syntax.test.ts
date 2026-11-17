@@ -16,7 +16,7 @@ import { PROJECT_ROOT } from '../config.js'
 // be added while quietly skipping the whole-fleet assertions below.
 const PROFILE_IDS = [
   'marketer', 'researcher', 'developer-junior', 'developer-senior',
-  'applier', 'sub-dev', 'default',
+  'applier', 'sub-dev', 'default', 'lease-sandbox',
 ] as const
 
 const ctx = { HOME: '/Users/testuser', AGENT_DIR: '/Users/testuser/ClaudeClaw/agents/tester' }

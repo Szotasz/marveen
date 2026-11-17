@@ -1,0 +1,33 @@
+{
+  "id": "lease-sandbox",
+  "label": "Ideiglenes teszt (bérlet, zárt)",
+  "description": "Az ügynök-bérlettel (AGENTLEASE1117) létrehozott ideiglenes tmp- ügynökök kötelező profilja, a legszűkebb. Strict mód: csak a saját mappáját olvashatja és írhatja, minden más eszközhívás engedélyt kér (és nem-interaktív ügynökben senki nem adja meg). Webes eszköz, levelező vagy hálózati parancs, store/ (a dashboard-token) és a kulcsok tiltva; .mcp.json üres. Csatornát, MCP-t, tervet a bérlet nem ad. Kézzel csak akkor válaszd, ha pontosan ezt a zártságot akarod.",
+  "permissionMode": "strict",
+  "filesystem": {
+    "allow": [
+      "Read(${AGENT_DIR}/**)",
+      "Edit(${AGENT_DIR}/**)"
+    ],
+    "deny": [
+      "Read(${PROJECT_ROOT}/store/**)",
+      "Read(${PROJECT_ROOT}/agents/*/.dashboard-token)",
+      "Read(${HOME}/.ssh/**)",
+      "Read(${HOME}/.aws/**)",
+      "Read(${HOME}/.gnupg/**)",
+      "Read(${HOME}/.claude/**)",
+      "Read(**/.env)",
+      "WebFetch",
+      "WebSearch",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(nc:*)",
+      "Bash(sudo:*)",
+      "Bash(rm:*)",
+      "Bash(sendmail:*)",
+      "Bash(mail:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}

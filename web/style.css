@@ -8577,3 +8577,23 @@ body {
   color: #dc3c3c;
   border: 1px solid rgba(220, 60, 60, 0.45);
 }
+
+/* AGENTLEASE1117: the owner's temporary agent lease panel on the agents page. */
+.agent-lease-panel {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-lease-panel[hidden] { display: none; }
+.agent-lease-controls[hidden] { display: none; }
+#agentLeaseRevokeBtn[hidden] { display: none; }
+.agent-lease-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.agent-lease-status { font-size: 13px; opacity: 0.85; }
+.agent-lease-hint { margin: 0; font-size: 12px; opacity: 0.75; }
+.agent-lease-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.agent-lease-controls input { width: 64px; }
+#agentLeaseRevokeBtn { align-self: flex-start; }
