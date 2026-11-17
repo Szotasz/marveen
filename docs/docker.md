@@ -11,6 +11,10 @@ Marveen runs as a single container with Docker Compose, with Ollama next to it f
 
 ## Start
 
+<!-- DOCKERGUIDEBUILD1108 (decided before the release, owner, with the Tuesday promote): the image is not published
+     yet (MARVEEN_PUBLISH_IMAGE is off), so "docker compose up -d" stops with "error from registry: denied" and does
+     not build by itself (measured on a Hostinger VPS, HOSTINGERDOCKER1107). Either this step says "--build" or the
+     image is published. Do not ship this step unchanged. -->
 ```bash
 git clone https://github.com/Szotasz/marveen.git
 cd marveen
@@ -76,6 +80,42 @@ docker compose up -d marveen
 ```
 
 The memory search falls back to full-text search. Set `MARVEEN_OLLAMA_URL=` (empty) so the dashboard does not look for it.
+
+## Troubleshooting
+
+### A download stops or times out on IPv6
+
+**What you see:** the start (or `docker compose pull`) stops while it downloads a large image layer, with
+`failed to copy: ... read: connection timed out`, and the address in the message is an IPv6 one (in square brackets).
+It happens on servers whose IPv6 route drops long downloads.
+
+**First:** run the same command again. The layers already downloaded are kept, and a second try often gets through.
+
+**If it keeps stopping on IPv6:** let Docker prefer IPv4 for its downloads. IPv6 stays on; only the order in which the
+addresses are tried changes. Both changes are needed: Docker does not read `/etc/gai.conf` on its own, the second file
+makes it use the system's resolver, which does.
+
+```bash
+echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf
+sudo mkdir -p /etc/systemd/system/docker.service.d
+printf '[Service]\nEnvironment=GODEBUG=netdns=cgo\n' | sudo tee /etc/systemd/system/docker.service.d/ipv4-first.conf
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+Then run the start command from [Start](#start) again. Restarting Docker restarts the Marveen containers; their data
+stays in the volumes.
+
+**Side effect:** the `/etc/gai.conf` line makes every program on this server prefer IPv4, not only Docker.
+
+**To undo:**
+
+```bash
+sudo sed -i '/^precedence ::ffff:0:0\/96  100$/d' /etc/gai.conf
+sudo rm /etc/systemd/system/docker.service.d/ipv4-first.conf
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
 
 ## Not in the container
 
