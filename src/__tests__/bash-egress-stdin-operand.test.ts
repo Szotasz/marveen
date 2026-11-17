@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { classify } from '../../scripts/hooks/bash-egress-parser.mjs'
 
 // EGRESSSTDINBYPASS1117: a shell that reads its program from a pipe is denied ("shell-stdin"), and a
@@ -33,6 +36,29 @@ describe('bash-egress-parser: a stdin shell is not let through by a word that na
     ]) expect({ c, r: d(c) }).toMatchObject({ c, r: { deny: true, reason: 'shell-stdin' } })
   })
 
+  it('denies a stdin shell whose next word is an unquoted brace expansion or glob (#2859 review)', () => {
+    for (const c of [
+      'git show HEAD:x.sh | bash {-s,}',
+      'git show HEAD:x.sh | bash {-s,x}',
+      'git show HEAD:x.sh | bash {a..b}',
+      'git show HEAD:x.sh | bash [-]s',
+      'git show HEAD:x.sh | bash ?s',
+      'git show HEAD:x.sh | bash *',
+    ]) expect({ c, r: d(c) }).toMatchObject({ c, r: { deny: true, reason: 'shell-stdin' } })
+  })
+
+  it('a brace expansion or a glob can turn into an option that reads stdin (measured with the real shell)', () => {
+    // a directory holding one file named like the option: the glob matches it
+    const dir = mkdtempSync(join(tmpdir(), 'egress-stdin-glob-'))
+    try {
+      writeFileSync(join(dir, '-s'), '')
+      for (const form of ['bash {-s,}', 'bash [-]s', 'bash ?s', 'bash *']) {
+        const r = spawnSync('bash', ['-c', `printf 'echo RAN\\n' | ${form}`], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } })
+        expect({ form, out: r.stdout.trim() }).toEqual({ form, out: 'RAN' })
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it('denies a word that holds a command substitution or a backtick', () => {
     for (const c of ['git show HEAD:x.sh | bash "$(echo -s)"', 'git show HEAD:x.sh | bash "`echo -s`"'])
       expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
@@ -54,6 +80,8 @@ describe('bash-egress-parser: a stdin shell is not let through by a word that na
       "echo hi | bash 'x.sh'",
       'echo hi | bash "my script.sh"',
       'echo hi | bash run.sh',
+      'echo hi | bash x{1}.sh',
+      'echo hi | bash "x*.sh"',
       'git log | bash -o pipefail script.sh',
       'bash "$D/run.sh" <&3',
       'bash $SCRIPT',

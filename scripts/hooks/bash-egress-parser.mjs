@@ -1600,7 +1600,8 @@ function shellInputs(masked, orig, a, b) {
 // that cannot be told: an unquoted `$` or backtick (the value may split into options or vanish:
 // `bash $OPT` with OPT empty reads stdin), or a word made of expansions only, quoted or not (`"$@"`,
 // `"$X"`). A quoted expansion next to literal text stays one non-empty word and keeps today's
-// reading (`bash "$SD/run.sh"` names a script file). A command substitution anywhere in it is null:
+// reading (`bash "$SD/run.sh"` names a script file). An unquoted brace expansion or glob is null too
+// (#2859 review). A command substitution anywhere in it is null:
 // a `$(...)` or a backtick, also as the run of 3+ `$` that liftSubstitutions leaves in its place.
 function shellWordKind(raw) {
   if (/\${3,}/.test(raw)) return null
@@ -1614,6 +1615,10 @@ function shellWordKind(raw) {
     if (q === null && (c === "'" || c === '"')) { q = c; continue }
     if (q === '"' && c === '"') { q = null; continue }
     if (c === '`' || (c === '$' && q === null)) return null
+    // Unquoted, bash expands these before the shell reads its options: a brace expansion (`{a,b}`,
+    // `{a..b}`) and a glob (`*`, `?`, `[...]`, which a file named like an option can match).
+    if (q === null && (c === '*' || c === '?' || c === '[')) return null
+    if (q === null && c === '{' && /^\{[^}]*(?:,|\.\.)[^}]*\}/.test(raw.slice(i))) return null
     if (c === '$') {
       const n = raw[i + 1] ?? ''
       if (n === '(') return null
