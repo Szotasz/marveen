@@ -1582,6 +1582,28 @@ function shellInputs(masked, orig, a, b) {
   }
   return { operand: operand && !readsStdin, stdinDup }
 }
+// A shell in span [a, b) that only PARSES its program: noexec (`-n`) with nothing in its option set
+// that can turn execution back on. `git show HEAD:x.sh | bash -n` is a syntax check, not egress, so
+// the stdin-shell deny below does not apply to it (measured 2026-11-03, a review agent's syntax check
+// was refused). The set is closed: short option clusters from {n, v, x, e, u} with an `n` among them
+// and nothing else -- no `+` option (`bash -n +n` executes), no `-o` / `+o`, no `-c`, no `-s`, no long
+// option, no operand, and a quoted option word is not read as an option. Only the shell's own execution
+// edge is exempt; every other part of the pipeline (a curl to an external host) is judged as before.
+function shellNoExec(masked, orig, a, b) {
+  const words = [...masked.slice(a, b)].map((ch, x) => (ch === ' ' && /\S/.test(orig[a + x]) ? 'q' : ch)).join('')
+  const toks = [...words.matchAll(/\S+/g)].map((m) => m[0])
+  const ci = commandIndex(toks)
+  let noexec = false
+  for (let k = 0; k < toks.length; k++) {
+    const w = toks[k]
+    const redir = /^(\d*)(<>|<<<|<<-?|<|>\||>>?|&>>?)(&?)(.*)$/.exec(w)
+    if (redir) { if (redir[4] === '') k++; continue }
+    if (k <= ci) continue
+    if (!/^-[nvxeu]+$/.test(w)) return false
+    if (w.includes('n')) noexec = true
+  }
+  return noexec
+}
 // EGRESSCURLK1020 (#1931 review 9, owner decision 2026-10-20): `-K` / `--config` passes only for the
 // dashboard's Authorization header, written where this hook reads every byte of it:
 //   printf '<FMT>' <ARGS> | curl ... -K - ...        (printf piped straight into this curl)
@@ -2012,7 +2034,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         // pipe or redirection hands it: `echo 'curl URL' | sh`. A heredoc / here-string feed is judged
         // above; any other input cannot be read here, so with curl or wget in sight it denies.
         if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null && !shellInputs(masked, orig, a, b).operand
-          && !feeds.some((f) => f.at >= a && f.at <= b) && (fetches || stdinTainted || /(?:^|[^|])\|&?\s*$/.test(masked.slice(0, a)))) {
+          && !shellNoExec(masked, orig, a, b) && !feeds.some((f) => f.at >= a && f.at <= b) && (fetches || stdinTainted || /(?:^|[^|])\|&?\s*$/.test(masked.slice(0, a)))) {
           return { deny: true, reason: 'shell-stdin', hosts: [`<${cmd} reads its commands from stdin>`] }
         }
       }
