@@ -1555,17 +1555,26 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
 // `stdinDup` is the first redirection that makes stdin a duplicate of another descriptor (`<&3`,
 // `0<& 3`), or null. A quoted word is blank in `masked`; it is read as a word (`bash "$D/run.sh"`),
 // never as a redirection.
+// EGRESSSTDINBYPASS1117: an operand is judged on its ORIGINAL text (shellWordKind). A word whose
+// run-time value cannot be told here (an unquoted expansion, which may split or vanish, or a word
+// that is nothing but an expansion) names no script file, so the shell may still read stdin; a
+// quoted option is an option.
 function shellInputs(masked, orig, a, b) {
   const words = [...masked.slice(a, b)].map((ch, x) => (ch === ' ' && /\S/.test(orig[a + x]) ? 'q' : ch)).join('')
-  const toks = [...words.matchAll(/\S+/g)].map((m) => m[0])
+  const spans = [...words.matchAll(/\S+/g)]
+  const toks = spans.map((m) => m[0])
   let operand = false
+  let undecided = false
   let readsStdin = false
   let stdinDup = null
   // Redirections are read wherever they stand, before the command word too (`<&3 bash`); operands
   // only after it.
   const ci = commandIndex(toks)
+  let wordEnd = 0   // a quoted space splits a shell word into tokens here: the rest of it is not a word
   for (let k = 0; k < toks.length; k++) {
     const w = toks[k]
+    const start = a + spans[k].index
+    if (start < wordEnd) continue
     const redir = /^(\d*)(<>|<<<|<<-?|<|>\||>>?|&>>?)(&?)(.*)$/.exec(w)
     if (redir) {
       const target = redir[4] !== '' ? redir[4] : toks[++k]
@@ -1574,13 +1583,57 @@ function shellInputs(masked, orig, a, b) {
       }
       continue
     }
-    if (k <= ci || operand) continue
-    if (w === '-o' || w === '+o' || w === '-O' || w === '+O') { k++; continue }
-    if (/^-[A-Za-z]*s[A-Za-z]*$/.test(w)) readsStdin = true
-    if (w.startsWith('-') || w.startsWith('+')) continue
+    if (k <= ci || operand || undecided) continue
+    const raw = shellWordAt(orig, start) ?? orig.slice(start, start + w.length)
+    wordEnd = start + raw.length
+    const kind = shellWordKind(raw)
+    if (kind === null) { undecided = true; continue }
+    if (kind === '-o' || kind === '+o' || kind === '-O' || kind === '+O') { k++; continue }
+    if (/^-[A-Za-z]*s[A-Za-z]*$/.test(kind)) readsStdin = true
+    if (kind.startsWith('-') || kind.startsWith('+')) continue
     operand = true
   }
   return { operand: operand && !readsStdin, stdinDup }
+}
+// EGRESSSTDINBYPASS1117: what a shell's word after the command word is at run time, from its
+// original text. The literal value with the quotes removed (`"-x"` is the option -x), or null when
+// that cannot be told: an unquoted `$` or backtick (the value may split into options or vanish:
+// `bash $OPT` with OPT empty reads stdin), or a word made of expansions only, quoted or not (`"$@"`,
+// `"$X"`). A quoted expansion next to literal text stays one non-empty word and keeps today's
+// reading (`bash "$SD/run.sh"` names a script file). A command substitution anywhere in it is null:
+// a `$(...)` or a backtick, also as the run of 3+ `$` that liftSubstitutions leaves in its place.
+function shellWordKind(raw) {
+  if (/\${3,}/.test(raw)) return null
+  let q = null
+  let literal = ''
+  let expansion = false
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]
+    if (q === "'") { if (c === "'") q = null; else literal += c; continue }
+    if (c === '\\' && i + 1 < raw.length) { literal += raw[++i]; continue }
+    if (q === null && (c === "'" || c === '"')) { q = c; continue }
+    if (q === '"' && c === '"') { q = null; continue }
+    if (c === '`' || (c === '$' && q === null)) return null
+    if (c === '$') {
+      const n = raw[i + 1] ?? ''
+      if (n === '(') return null
+      if (n === '{') {
+        const end = raw.indexOf('}', i + 2)
+        if (end === -1) return null
+        i = end
+      } else if (/[A-Za-z_]/.test(n)) {
+        while (/\w/.test(raw[i + 1] ?? '')) i++
+      } else if (/[@*#?$!0-9-]/.test(n)) {
+        i++
+      } else { literal += c; continue }   // a lone `$` is a literal dollar
+      expansion = true
+      continue
+    }
+    literal += c
+  }
+  if (q !== null) return null
+  if (expansion && literal === '') return null
+  return literal
 }
 // A shell in span [a, b) that only PARSES its program: noexec (`-n`) with nothing in its option set
 // that can turn execution back on. `git show HEAD:x.sh | bash -n` is a syntax check, not egress, so
