@@ -68,7 +68,7 @@ for um in 077 002; do
   assert_contains "$um: the mkdir argv carries -m" "$(cat "$D/mkdir.log" 2>/dev/null)" "-m"
   assert_contains "$um: the mkdir argv carries 0755" "$(cat "$D/mkdir.log" 2>/dev/null)" "0755"
   assert_contains "$um: the python writer ran on the managed file" "$(cat "$D/py.log" 2>/dev/null)" "managed-settings-write.py"
-  assert_eq "$um: the created directory's real mode is 755" "755" "$(stat -c %a "$D/target" 2>/dev/null || echo missing)"
+  assert_eq "$um: the created directory's real mode is 755" "755" "$(stat -c %a "$D/target" 2>/dev/null || stat -f %Lp "$D/target" 2>/dev/null || echo missing)"
 done
 
 echo ""

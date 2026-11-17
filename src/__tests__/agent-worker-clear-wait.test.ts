@@ -160,9 +160,12 @@ afterEach(() => {
   for (const p of [tui.state.acceptedOutPath, tui.state.acceptedDonePath]) {
     if (p) { try { rmSync(p, { force: true }) } catch { /* none */ } }
   }
+  vi.unstubAllEnvs()
 })
 
-beforeEach(() => { warnLog.length = 0 })
+// WEB_ONLY=true (a staging instance) disables the worker on purpose; a suite run with it set must not
+// paint these fully mocked tests red, so the variable is cleared for each test.
+beforeEach(() => { warnLog.length = 0; vi.stubEnv('WEB_ONLY', '') })
 
 describe('agent-worker /clear -> prompt delivery (0038ce9c: pane-state wait, not fixed sleep)', () => {
   it(
