@@ -33,7 +33,7 @@ import { homedir } from 'node:os'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { agentDir, listAgentNames } from './agent-config.js'
-import { isAgentRunning } from './agent-process.js'
+import { withTmuxBatch, isAgentRunning } from './agent-process.js'
 import { readLastIngestionTimestamp, readLastIngestionTimestampAcross, mainTranscriptDirs } from './inbound-probe.js'
 import { sendOwnerActionAlert } from './routine-alert.js'
 
@@ -325,9 +325,11 @@ async function checkAgentIntake(agentName: string, projectRoot: string): Promise
 export function startChannelIntakeMonitor(projectRoot: string): NodeJS.Timeout {
   async function check(): Promise<void> {
     const names = [MAIN_AGENT_ID, ...listAgentNames().filter(n => n !== MAIN_AGENT_ID)]
+    // Read run state once at pass start: a new start waits one pass; an agent stopped mid-pass is still probed this pass and dropped on the next.
+    const running = withTmuxBatch(() => new Map(names.filter(name => name !== MAIN_AGENT_ID).map(name => [name, isAgentRunning(name)])))
     for (const name of names) {
       // A stopped agent has no poller by design; that is not deafness.
-      if (name !== MAIN_AGENT_ID && !isAgentRunning(name)) {
+      if (name !== MAIN_AGENT_ID && !running.get(name)) {
         lastObservation.delete(name)
         continue
       }

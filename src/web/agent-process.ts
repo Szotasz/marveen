@@ -2087,6 +2087,12 @@ function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: {
 }
 
 let tmuxBatch: Map<string, { out?: string; err?: unknown }> | null = null
+let batchListSessionsFailed = false
+
+/** Whether the batched list-sessions read failed for the shared LOCAL tmux server. */
+export function tmuxBatchListSessionsFailed(): boolean {
+  return batchListSessionsFailed
+}
 
 /**
  * Run `fn` with a per-call memo for READ-ONLY tmux queries: inside it, identical `list-sessions`
@@ -2096,6 +2102,7 @@ let tmuxBatch: Map<string, { out?: string; err?: unknown }> | null = null
 export function withTmuxBatch<T>(fn: () => T): T {
   if (tmuxBatch !== null) return assertSync(fn())
   tmuxBatch = new Map()
+  batchListSessionsFailed = false
   try {
     return assertSync(fn())
   } finally {
@@ -2173,7 +2180,7 @@ export function prefetchPaneCaptures(sessions: string[]): void {
 }
 
 function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
-  const { host } = resolveTarget(target, tmuxArgs)
+  const { host, runAsUser } = resolveTarget(target, tmuxArgs)
   const inv = tmuxInvocationFor(tmuxArgs, target)
   if (tmuxBatch !== null && tmuxArgs[0] === 'capture-pane') {
     const key = JSON.stringify([inv.file, inv.args])
@@ -2198,6 +2205,7 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
       return out
     } catch (err) {
       tmuxBatch.set(key, { err })
+      if (host == null && runAsUser == null) batchListSessionsFailed = true
       throw err
     }
   }
