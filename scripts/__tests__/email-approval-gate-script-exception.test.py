@@ -72,6 +72,11 @@ def main():
         assert gate.agent_script_exception(cmd, CORPUS['agentName'], config, check_paths=False) is None
         script.write_bytes(script_body)
         assert gate.agent_script_exception(cmd, CORPUS['agentName'], config) is not None, 'restored content'
+        # NUL byte in the granted path (card f2ccb0bb R4): open() raises ValueError
+        # for it, not OSError, so an `except OSError` alone let the hook crash
+        # instead of failing closed; the check must return False like any
+        # unreadable file.
+        assert gate._script_sha256_matches('/x\x00y', '0' * 64) is False
         for bad_scripts in ([], ['runner.ext'], [{'path': str(script)}],
                             [{'path': 'runner.ext', 'sha256': script_sha}],
                             [{'path': str(script), 'sha256': '0A' * 32}],  # uppercase hex
@@ -109,6 +114,20 @@ def main():
         (store / 'agent-send-exceptions.json').unlink()
         assert gate.read_agent_send_exceptions() == {}
         print('PASS: repeatable envelope flags invalidate the entry in the py validator')
+
+        # B1 (card f2ccb0bb R4): an entry whose other four keys are valid but which
+        # has NO "scripts" key raised KeyError in the py validator, and
+        # read_agent_send_exceptions catches only (OSError, ValueError) -- so the
+        # hook crashed on every gated command while such an entry sat in the store.
+        # The mjs twin and the TS reader return false/null for the same shape; the
+        # fixed py validator must return False, and the invalid sibling must
+        # neither revoke the valid entry next to it nor crash the reader.
+        no_scripts = {k: v for k, v in entry.items() if k != 'scripts'}
+        assert gate.valid_agent_send_exception(no_scripts) is False
+        (store / 'agent-send-exceptions.json').write_text(
+            json.dumps({'agents': {'a': no_scripts, 'b': entry}}))
+        assert gate.read_agent_send_exceptions() == {'agents': {'b': entry}}
+        print('PASS: a missing scripts key invalidates only that entry, without a KeyError')
 
         body = install / 'body.txt'
         attachment = install / 'attachment.bin'
@@ -188,7 +207,9 @@ def main():
         (store / 'agent-send-exceptions.json').write_text(json.dumps({'agents': {
             CORPUS['agentName']: dict(entry, scripts=[{'path': str(script), 'sha256': 'f' * 64}])}}))
         run()
-        consumed = con.execute('SELECT consumed_at FROM approvals').fetchone()[0]
+        # A5 (card f2ccb0bb R4): the freshest approval row only -- a bare fetchone()
+        # could pick up an older aged approval that also matches the anchor.
+        consumed = con.execute('SELECT consumed_at FROM approvals ORDER BY rowid DESC LIMIT 1').fetchone()[0]
         assert consumed is None, 'a wrong granted sha256 must not reach the exception approval path'
         (store / 'agent-send-exceptions.json').write_text(json.dumps(config))
         body.unlink()

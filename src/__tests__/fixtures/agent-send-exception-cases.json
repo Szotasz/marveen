@@ -148,7 +148,7 @@
     {
       "name": "interpreter /usr/bin/nodejs",
       "command": "/usr/bin/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
-      "match": true
+      "match": false
     },
     {
       "name": "interpreter /usr/bin/env node",
@@ -158,11 +158,21 @@
     {
       "name": "interpreter /absolute/path/to/node",
       "command": "/absolute/path/to/node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
-      "match": true
+      "match": false
     },
     {
       "name": "interpreter /absolute/path/to/nodejs",
       "command": "/absolute/path/to/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "interpreter /tmp/x/node",
+      "command": "/tmp/x/node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "interpreter /usr/local/bin/node",
+      "command": "/usr/local/bin/node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
       "match": true
     },
     {

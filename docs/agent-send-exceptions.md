@@ -41,15 +41,25 @@ matches. The hash covers ONLY the entry script file -- modules it imports
 are not covered -- so a single-file script (or a self-contained bundle) is
 required.
 
-The whole command must be one literal invocation: optional `node`, `nodejs`,
-an absolute interpreter path ending in `node` or `nodejs`, or `/usr/bin/env node`,
-then the exact configured script path, mode and listed flags. Whole quoted
-arguments are accepted; expansions, escapes, quote concatenation, shell
-metacharacters, assignments, compound commands, pipes and redirections are
-not. Value flags take one value and cannot repeat; only repeatable value flags
-can repeat. Positional arguments and unlisted flags do not qualify.
-`--body-file` and every `--attach` value must be absolute paths. Other Bash
-send shapes retain the existing gate decisions.
+The whole command must be one literal invocation: an optional interpreter
+prefix (the exact allowlist below), then the exact configured script path,
+mode and listed flags. Whole quoted arguments are accepted; expansions,
+escapes, quote concatenation, shell metacharacters, assignments, compound
+commands, pipes and redirections are not. Value flags take one value and
+cannot repeat; only repeatable value flags can repeat. Positional arguments
+and unlisted flags do not qualify. `--body-file` and every `--attach` value
+must be absolute paths. Other Bash send shapes retain the existing gate
+decisions.
+
+The interpreter prefix is an exact allowlist (owner decision, 2026-11-17):
+the bare `node` or `nodejs` (as found on `PATH`), `/usr/bin/node`,
+`/usr/local/bin/node`, and the two-token `/usr/bin/env` + `node`. Every other
+absolute interpreter path -- `/usr/bin/nodejs`, `/usr/local/bin/nodejs`,
+`/tmp/x/node`, anything else -- gets no exception: the command no longer
+matches the grant and the ordinary gate decisions apply. The reason: a
+writable fake interpreter at an arbitrary path would run instead of the
+granted, hash-verified script, so the shape of the interpreter path can carry
+no trust.
 
 ## Recipients and approval
 

@@ -99,11 +99,32 @@ describe('named-script exception', () => {
     expect(decide(command.replace('verified@example.invalid', 'invalid@')))
       .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
   })
-  for (const c of cases.filter(c => !c.match && !c.name.startsWith('innocent'))) {
+  // B2 (card f2ccb0bb R4): an interpreter outside the exact allowlist leaves the
+  // command without an exception. The matcher-level deny is pinned case by case in
+  // the parser conformance block below; at the gate level the property that matters
+  // is that none of them can pass AS the exception. The interpreter cases are kept
+  // out of the deny loop: the ordinary Bash analysis denies the node-basename
+  // shapes (asserted right below), but it has never recognized a nodejs-basename
+  // interpreter at an absolute path (NODEISH has no 'nodejs') -- a pre-existing
+  // limit of the hard gate, independent of the exception machinery.
+  const interpreterRed = cases.filter(c => !c.match && c.name.startsWith('interpreter '))
+  for (const c of cases.filter(c => !c.match && !c.name.startsWith('innocent') && !c.name.startsWith('interpreter '))) {
     it(`falls through to the existing deny: ${c.name}`, () => {
       expect(decide(c.command).deny).toBe(true)
     })
   }
+  it('an interpreter outside the allowlist never passes as the exception', () => {
+    for (const c of interpreterRed) {
+      expect(decide(c.command)).not.toEqual({ deny: false, kind: 'script-exception' })
+    }
+  })
+  it('the fake-interpreter attack shapes fall back to the ordinary script-send deny', () => {
+    for (const name of ['interpreter /tmp/x/node', 'interpreter /absolute/path/to/node']) {
+      const c = cases.find(x => x.name === name)
+      expect(c).toBeDefined()
+      expect(decide(c!.command)).toMatchObject({ deny: true, kind: 'script-send' })
+    }
+  })
   it('denies an identity with no entry', () => {
     expect(decide(command, '<other-agent>')).toMatchObject({ deny: true, kind: 'script-send' })
   })
@@ -295,6 +316,11 @@ describe('the grant binds the script content (sha256, checked per invocation)', 
 
   it('scripts entries must be {path, sha256} objects: nonempty, no duplicate paths, absolute, 64 lowercase hex', () => {
     expect(validAgentSendException(entry)).toBe(true)
+    // B1 (card f2ccb0bb R4): the other four keys valid but NO scripts key -- the py
+    // twin raised KeyError on this shape (entry["scripts"]), which took the whole
+    // hook down on every gated command; here, as in the fixed py validator, the
+    // entry is simply invalid.
+    expect(validAgentSendException({ modes: entry.modes, valueArgs: entry.valueArgs, repeatableArgs: entry.repeatableArgs, booleanArgs: entry.booleanArgs })).toBe(false)
     expect(validAgentSendException(withScripts([]).agents[agentName])).toBe(false)
     expect(validAgentSendException(withScripts([{ path: scriptFile, sha256: scriptSha }, { path: scriptFile, sha256: '0'.repeat(64) }]).agents[agentName])).toBe(false)
     expect(validAgentSendException(withScripts([{ path: 'runner.ext', sha256: scriptSha }]).agents[agentName])).toBe(false)

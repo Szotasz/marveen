@@ -79,6 +79,18 @@ const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'
 // agent-scaffold.ts.
 const SCRIPT_SHA256_RX = /^[0-9a-f]{64}$/
 
+// B2 (card f2ccb0bb R4, leader decision okostodor 131617): the interpreter prefix is an
+// EXACT allowlist, not a path shape. Only the bare node/nodejs (on PATH), /usr/bin/node
+// and /usr/local/bin/node strip the interpreter (plus the two-token '/usr/bin/env' +
+// 'node' handled in the matcher); every other absolute interpreter path -- a writable
+// fake 'node' at an arbitrary path (/tmp/x/node), /usr/bin/nodejs,
+// /usr/local/bin/nodejs, ... -- leaves the command WITHOUT an exception, so the script
+// token cannot match a granted path. That is the wanted deny: a fake interpreter at an
+// arbitrary path would run instead of the granted, hash-verified script, so the path
+// shape of the interpreter can carry no trust. Keep in sync with
+// agent_script_exception in scripts/hooks/email-approval-gate.py.
+const NODE_INTERPRETERS = ['node', 'nodejs', '/usr/bin/node', '/usr/local/bin/node']
+
 function validExceptionScripts(scripts) {
   if (!Array.isArray(scripts) || scripts.length === 0) return false
   const paths = new Set()
@@ -179,7 +191,7 @@ export function agentScriptException(cmd, agentName, config) {
     offset = word.lastIndex
   }
   if (tokens[0] === '/usr/bin/env' && tokens[1] === 'node') tokens.splice(0, 2)
-  else if (['node', 'nodejs'].includes(tokens[0]) || /^\/(?:[^/]+\/)*node(?:js)?$/.test(tokens[0] ?? '')) tokens.shift()
+  else if (NODE_INTERPRETERS.includes(tokens[0] ?? '')) tokens.shift()
   const [script, mode, ...args] = tokens
   const grant = entry.scripts.find(s => s.path === script)
   // SCRIPTBIND: the path alone is not the grant -- the file's content must still

@@ -146,6 +146,18 @@ _NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
 # email-send-gate.mjs and readAgentSendExceptions in agent-scaffold.ts.
 _SCRIPT_SHA256_RX = re.compile(r"[0-9a-f]{64}")
 
+# B2 (card f2ccb0bb R4, leader decision okostodor 131617): the interpreter prefix is
+# an EXACT allowlist, not a path shape. Only the bare node/nodejs (on PATH),
+# /usr/bin/node and /usr/local/bin/node strip the interpreter (plus the two-token
+# "/usr/bin/env" + "node" handled in the matcher): every other absolute interpreter
+# path -- a writable fake "node" at an arbitrary path (/tmp/x/node), /usr/bin/nodejs,
+# /usr/local/bin/nodejs, ... -- leaves the command WITHOUT an exception, so the script
+# token cannot match a granted path. That is the wanted deny: a fake interpreter at
+# an arbitrary path would run instead of the granted, hash-verified script, so the
+# path shape of the interpreter can carry no trust. Keep in sync with
+# agentScriptException in email-send-gate.mjs.
+_NODE_INTERPRETERS = frozenset({"node", "nodejs", "/usr/bin/node", "/usr/local/bin/node"})
+
 
 def _valid_exception_scripts(scripts):
     if not isinstance(scripts, list) or not scripts:
@@ -171,7 +183,13 @@ def valid_agent_send_exception(entry):
                 or len(set(values)) != len(values)):
             return False
     flags = entry["valueArgs"] + entry["repeatableArgs"] + entry["booleanArgs"]
-    return (_valid_exception_scripts(entry["scripts"])
+    # B1 (card f2ccb0bb R4): .get, not ["scripts"] -- an entry whose other four keys
+    # are valid but which has NO "scripts" key raised KeyError here, and
+    # read_agent_send_exceptions catches only (OSError, ValueError), so the hook
+    # crashed on every gated command while such an entry sat in the store. The mjs
+    # twin and the TS reader return false/null for the same shape; _valid_exception_scripts
+    # already returns False for a non-list (None included).
+    return (_valid_exception_scripts(entry.get("scripts"))
             and bool(entry["modes"]) and all(m in ("draft", "send") for m in entry["modes"])
             and not any(f in _NON_REPEATABLE_FLAGS for f in entry["repeatableArgs"])
             and all(re.fullmatch(r"--[a-z][a-z0-9-]*", f) for f in flags)
@@ -199,7 +217,9 @@ def _script_sha256_matches(path, sha256):
     try:
         with open(path, "rb") as fh:
             return hashlib.sha256(fh.read()).hexdigest() == sha256
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError: a NUL byte in the path -- open() raises it, not OSError, and
+        # an uncaught one would crash the hook instead of failing closed (False).
         return False
 
 
@@ -228,7 +248,7 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
         offset = match.end()
     if tokens[:2] == ["/usr/bin/env", "node"]:
         tokens = tokens[2:]
-    elif tokens and (tokens[0] in ("node", "nodejs") or re.fullmatch(r"/(?:[^/]+/)*node(?:js)?", tokens[0])):
+    elif tokens and tokens[0] in _NODE_INTERPRETERS:
         tokens = tokens[1:]
     if len(tokens) < 2:
         return None
