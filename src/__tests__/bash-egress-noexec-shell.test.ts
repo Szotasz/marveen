@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -13,10 +15,21 @@ import { fileURLToPath } from 'node:url'
 // every other part of the pipeline (a curl to an external host is egress whatever reads its output).
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const PARSER = join(ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs')
+// Every denied case is logged by the hook: it writes to this test's own block log, never to the repo's
+// store/bash-egress-blocks.jsonl (bash-egress-parser.test.ts fails its run if store/ was touched).
+const DIR = mkdtempSync(join(tmpdir(), 'bash-egress-noexec-'))
+const LOG = join(DIR, 'blocks.jsonl')
+afterAll(() => rmSync(DIR, { recursive: true, force: true }))
 
 function run(command: string) {
   const input = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd: ROOT })
-  return spawnSync(process.execPath, [PARSER], { input, encoding: 'utf8', timeout: 20000 })
+  return spawnSync(process.execPath, [PARSER], {
+    input, encoding: 'utf8', timeout: 20000,
+    env: {
+      ...process.env, BASH_EGRESS_BLOCK_LOG: LOG, BASH_EGRESS_VENDOR_HOSTS: join(DIR, 'none.json'),
+      BASH_EGRESS_MEASURE_HOSTS: join(DIR, 'none-measure.json'), BASH_EGRESS_MEASURE_LOG: join(DIR, 'measure.jsonl'),
+    },
+  })
 }
 function denied(command: string): boolean {
   const r = run(command)
@@ -59,9 +72,30 @@ describe('bash-egress-parser: a noexec (-n) shell reading stdin is not egress', 
     }
   })
 
+  // No fetch anywhere in these pipelines, so only the closed option set can deny them: -i, -s and -l
+  // are outside {n, v, x, e, u}, and a cluster that holds any letter outside the set is not noexec.
+  // (A set widened to any short option letter passes every other case in this file.)
+  it('DENIES a local piped program when the shell has an option outside {n, v, x, e, u}', () => {
+    for (const cmd of [
+      'git show HEAD:x.sh | bash -n -i',
+      'git show HEAD:x.sh | bash -ni',
+      'git show HEAD:x.sh | sh -n -i',
+      'git show HEAD:x.sh | bash -s -n',
+      'git show HEAD:x.sh | bash -n -l',
+    ]) {
+      expect(denied(cmd), cmd).toBe(true)
+    }
+  })
+
   it('the hook process answers with exit 0 and no output on the allowed form', () => {
     const r = run('git show HEAD:reapply.sh | bash -n')
     expect(r.status).toBe(0)
     expect(String(r.stdout).trim()).toBe('')
+  })
+
+  it('a denied case is logged to the test block log, not to the repo store', () => {
+    expect(denied('git show HEAD:x.sh | bash')).toBe(true)
+    expect(existsSync(LOG)).toBe(true)
+    expect(readFileSync(LOG, 'utf-8')).toContain('"reason":"shell-stdin"')
   })
 })
