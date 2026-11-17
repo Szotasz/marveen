@@ -59,10 +59,10 @@ function clip(s: string, n: number): string {
 
 // ---- /status ----------------------------------------------------------------
 
-async function statusText(): Promise<string> {
+async function statusText(channel?: 'telegram' | 'discord'): Promise<string> {
   // The external lookup runs in parallel and never blocks the local rows.
   const [system, anthropic] = await Promise.all([
-    getSystemStatus(),
+    getSystemStatus({ channel }),
     fetchAnthropicStatus().catch(() => null),
   ])
   const row: StatusRow = {
@@ -748,7 +748,7 @@ export function registerBuiltinCommands(): void {
   // OLVAS
   // "/help ?" is the help itself (owner, 2026-09-24).
   registerCommand({ name: 'help', kind: 'read', description: 'ez a parancslista', help: () => renderHelp(), run: ctx => reply(ctx, renderHelp()) })
-  registerCommand({ name: 'status', kind: 'read', description: 'rendszer-állapot', run: async ctx => reply(ctx, await statusText()) })
+  registerCommand({ name: 'status', kind: 'read', description: 'rendszer-állapot', run: async ctx => reply(ctx, await statusText(ctx.channel)) })
   registerCommand({ name: 'queue', kind: 'read', description: 'mi vár rád, mi indul magától', run: ctx => reply(ctx, formatBlocks(collectQueue(ctx.now))) })
   registerCommand({
     name: 'runs', kind: 'read', usage: '/runs [<n>]', description: 'futó körök; <n>: egy kör részletei a futó hívásokkal',

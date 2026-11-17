@@ -186,6 +186,7 @@ export async function dispatchForDiscord(
     reply: async (t: string) => { replies.push(t) },
     ownerId: Number(telegramOwnerChatId ?? 0),
     now,
+    channel: 'discord',
   })
   return { handled: true, outcome, replies }
 }

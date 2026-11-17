@@ -24,6 +24,8 @@ export interface CommandContext {
   reply(text: string): Promise<void>
   ownerId: number
   now: number
+  /** The channel the command came from; unset = Telegram (every caller before Discord). /status shows its CSATORNA. */
+  channel?: 'telegram' | 'discord'
 }
 
 export interface CommandSpec {
