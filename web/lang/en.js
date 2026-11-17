@@ -1577,6 +1577,7 @@ window._i18n.en = {
   'agents.wizard.pending_title': 'Your agent is ready, but its personality came from a template',
   'agents.wizard.pending_body':  'The agent was created and works, nothing was lost. Its personality could not be generated, so what you see below is a template. You can rewrite it here now, or later in the agent\'s settings.',
   'agents.wizard.pending_detail': 'What failed: {detail}',
+  'agents.wizard.already_created': 'The agent already exists ({name}). Changes on the first step are not applied; you continue with the existing agent.',
   'agents.model.inherit':        'Inherited (default)',
   'agents.model.fable52':       'Fable 5.2 (newest Fable)',
   'agents.model.fable51':       'Fable 5.1',

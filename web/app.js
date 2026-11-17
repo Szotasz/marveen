@@ -3480,6 +3480,9 @@ let wizardStep = 1
 let generatedClaudeMd = ''
 let generatedSoulMd = ''
 let wizardCreatedName = ''
+// True once step 3's texts came from the created agent's detail. When that GET failed, the boxes start empty and an
+// empty claudeMd/soulMd in the Create PUT would overwrite the generated files (#2845).
+let wizardTextsLoaded = false
 // Set from the POST /api/agents response when the backend fell back to a template
 // because personality generation failed. It answers 200 in that case (the agent
 // EXISTS and works), so `res.ok` alone cannot tell the operator anything -- without
@@ -3767,6 +3770,7 @@ function resetWizard() {
   generatedClaudeMd = ''
   generatedSoulMd = ''
   wizardCreatedName = ''
+  wizardTextsLoaded = false
   wizardPersonalityPending = null
   renderWizardPendingBanner()
   document.getElementById('wizardClaudeMd').value = ''
@@ -3797,6 +3801,15 @@ agentModel.addEventListener('change', () => updateCustomModelIdRow(agentModel))
 
 // Step 1 -> Step 2 (generate)
 document.getElementById('wizardNextBtn').addEventListener('click', async () => {
+  // The agent already exists (Back from step 3): Next returns to its review and never POSTs again, so a second Next
+  // cannot answer 409 or, after a rename, create a second agent (#2845). The step 1 fields are not applied again,
+  // and the toast says so.
+  if (wizardCreatedName) {
+    showToast(t('agents.wizard.already_created', { name: wizardCreatedName }))
+    wizardStep = 3
+    updateWizardUI()
+    return
+  }
   const name = agentName.value.trim()
   const desc = agentDesc.value.trim()
   // A custom provider goes in its own field with the model id typed beside it, as the agent editor saves it.
@@ -3853,6 +3866,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       const detail = await detailRes.json()
       generatedClaudeMd = detail.claudeMd || detail.content || ''
       generatedSoulMd = detail.soulMd || ''
+      wizardTextsLoaded = true
     }
 
     statusEl.textContent = t('kanban.breakdown.running')
@@ -3884,7 +3898,16 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
     }, 600)
   } catch (err) {
     showToast(`${t('common.error')}: ${err.message}`)
-    wizardStep = 1
+    // Back to step 1 only when the create POST itself failed. Once the agent exists, a later error (detail fetch,
+    // avatar) goes on to its review: step 1 would only offer to create it again (#2845).
+    if (wizardCreatedName) {
+      wizardStep = 3
+      document.getElementById('wizardClaudeMd').value = generatedClaudeMd
+      document.getElementById('wizardSoulMd').value = generatedSoulMd
+      renderWizardPendingBanner()
+    } else {
+      wizardStep = 1
+    }
     updateWizardUI()
   }
 })
@@ -3909,11 +3932,15 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
   createBtn.querySelector('.btn-loading').hidden = false
 
   try {
-    // Update with edited content
+    // Update with edited content. A text that never loaded and is still empty is left out: the server keeps the
+    // generated file for an omitted field, while an empty string would overwrite it (#2845).
+    const edits = {}
+    if (wizardTextsLoaded || claudeMd) edits.claudeMd = claudeMd
+    if (wizardTextsLoaded || soulMd) edits.soulMd = soulMd
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ claudeMd, soulMd }),
+      body: JSON.stringify(edits),
     })
 
     if (!res.ok) {
