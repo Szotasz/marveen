@@ -369,6 +369,12 @@ describe('marveen-commands.py', () => {
     expect(sends()).toHaveLength(0)
   })
 
+  it('dashboard unreachable + /options on Telegram: passed to the model as before (a Discord-only command, review #2789)', async () => {
+    const r = await runHook(channel('/options'), 'http://127.0.0.1:1')
+    expect(r.code).toBe(0)
+    expect(sends()).toHaveLength(0)
+  })
+
   it('a sub-agent session: every command still dispatches, mainSession:false in the body', async () => {
     // ELSOKOR922 fix-forward (3): the hook no longer decides read/write
     // itself -- it always dispatches and tells the server which session it
@@ -526,11 +532,16 @@ describe('marveen-commands.py', () => {
     const names = new Set([...block.matchAll(/"([a-z_]+)"/g)].map(m => m[1]))
     clearCommandsForTest()
     registerBuiltinCommands()
+    // a Discord-only entry (CommandSpec.channels) is not a Telegram command: DISCORD_ONLY_NAMES carries it
+    const onTelegram = (e: { channels?: readonly string[] }) => !e.channels || e.channels.includes('telegram')
     const builtin = listCommands().filter(e => e.source !== 'custom')
-    const runnable = new Set(builtin.filter(e => !e.planned).map(e => e.name))
-    const all = new Set(builtin.map(e => e.name))
+    const runnable = new Set(builtin.filter(e => !e.planned && onTelegram(e)).map(e => e.name))
+    const all = new Set(builtin.filter(onTelegram).map(e => e.name))
     for (const n of runnable) expect(names.has(n), `/${n} missing from BUILTIN_NAMES`).toBe(true)
     for (const n of names) expect(all.has(n), `/${n} is not a registry builtin`).toBe(true)
+    const dcBlock = src.match(/DISCORD_ONLY_NAMES = frozenset\(\{([\s\S]*?)\}\)/)?.[1] ?? ''
+    const dcNames = new Set([...dcBlock.matchAll(/"([a-z_]+)"/g)].map(m => m[1]))
+    expect(dcNames).toEqual(new Set(builtin.filter(e => !onTelegram(e) && e.channels!.includes('discord')).map(e => e.name)))
   })
 
   it('one overall deadline: a hung dashboard AND a hung usage collector still end in a sent reply and a blocked turn, in time', async () => {
@@ -897,6 +908,12 @@ describe('marveen-commands.py: Discord slash commands (DCEXT1111 F1s)', () => {
     const r = await runHook(dc('/status', ' slash="1"'), 'http://127.0.0.1:9', 'marveen', [], { DISCORD_STATE_DIR: dcState, DISCORD_API_BASE: base, DISCORD_BOT_TOKEN: '' })
     expect(r.code).toBe(2)
     expect(dcSends()[0].content).toMatch(/^Nem futott: \/status, mert a dashboard nem érhető el/)
+  })
+
+  it('the dashboard down: /options on Discord is a builtin there, so it gets the error line too', async () => {
+    const r = await runHook(dc('/options', ' slash="1"'), 'http://127.0.0.1:9', 'marveen', [], { DISCORD_STATE_DIR: dcState, DISCORD_API_BASE: base, DISCORD_BOT_TOKEN: '' })
+    expect(r.code).toBe(2)
+    expect(dcSends()[0].content).toMatch(/^Nem futott: \/options, mert a dashboard nem érhető el/)
   })
 })
 

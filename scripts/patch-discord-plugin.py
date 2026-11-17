@@ -152,8 +152,8 @@ def settings(install_dir):
 
 
 def slash_commands(install_dir):
-    """DCEXT1111 F1s: the dashboard registry's command menu (GET /api/commands/menu, the list the Telegram menu is
-    built from), as the Discord slash commands the overlay registers. None when it cannot be read (no token, the
+    """DCEXT1111 F1s: the dashboard registry's command list for Discord (GET /api/commands/menu?channel=discord: the
+    Telegram menu plus the Discord-only entries), as the Discord slash commands the overlay registers. None when it cannot be read (no token, the
     dashboard down): the overlay then registers nothing and what Discord has stays. The token is never logged."""
     try:
         with open(os.path.join(install_dir, "store", ".dashboard-token"), encoding="utf-8") as f:
@@ -173,7 +173,7 @@ def slash_commands(install_dir):
             pass
     base = os.environ.get("MARVEEN_API_BASE") or f"http://127.0.0.1:{port}"
     try:
-        req = urllib.request.Request(base + "/api/commands/menu", headers={"Authorization": "Bearer " + tok})
+        req = urllib.request.Request(base + "/api/commands/menu?channel=discord", headers={"Authorization": "Bearer " + tok})
         with urllib.request.urlopen(req, timeout=5) as r:
             cmds = json.loads(r.read().decode("utf-8")).get("commands")
     except Exception as e:

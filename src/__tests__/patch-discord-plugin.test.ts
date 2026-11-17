@@ -151,7 +151,8 @@ describe('patch-discord-plugin.py', () => {
     const seen: Array<string | undefined> = []
     const srv = http.createServer((req, res) => {
       seen.push(req.headers.authorization)
-      res.writeHead(req.url === '/api/commands/menu' ? 200 : 404, { 'Content-Type': 'application/json' })
+      // the Discord list (#2789 review: /options is Discord-only, so the Telegram menu would leave it out)
+      res.writeHead(req.url === '/api/commands/menu?channel=discord' ? 200 : 404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ commands: [{ command: 'status', description: 'rendszer-állapot' }, { command: 'usage', description: 'token' }, { bad: 1 }] }))
     })
     await new Promise<void>(r => srv.listen(0, '127.0.0.1', r))
