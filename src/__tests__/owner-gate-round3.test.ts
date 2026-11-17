@@ -300,6 +300,12 @@ const CASES: Case[] = [
     ownerCheck: (r) => { expect(r.status).toBe(404) },
   },
   {
+    // #2751 review: on ?agent=<main agent> a non-owner must not learn whether a skill name exists (404 only for the owner).
+    label: 'PUT /api/skills/:name?agent=<main agent>, unknown skill', handler: tryHandleSkills as Handler, method: 'PUT', path: `/api/skills/__og3-no-such-skill?agent=${MAIN_AGENT_ID}`,
+    body: { content: 'x' },
+    ownerCheck: (r) => { expect(r.status).toBe(404); expect(r.body.error).toBe('Skill not found') },
+  },
+  {
     // An unknown key: the owner lanes stop at the field check (400) right after the gate, so store/ stays as it is.
     label: 'PUT /api/agents/:name/auto-restart', handler: tryHandleAgents, method: 'PUT', path: `/api/agents/${AGENT}/auto-restart`,
     body: { enabled: true, og3Unknown: 1 },
