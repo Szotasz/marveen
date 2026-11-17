@@ -857,10 +857,12 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     // SKILLAPPROVALOFF1101 (owner, Slack 2026-11-01 22:35): switchable, OFF by default. The scan, the hash binding and
     // an audit line run in both positions; only the hold for the owner's approval is what the switch turns on.
+    // SKILLQUARANTINEDEF1109 (owner, #döntések Rec0CGYNBMRL0 = A, 2026-11-16): the default is now ON ("Jóváhagyásra
+    // várjon"): a new shared skill proposal waits for the owner's approval unless the owner turns the switch off.
     key: 'SKILL_QUARANTINE',
     type: 'boolean',
-    default: '0',
-    description: 'Skill-karantén. Kikapcsolva (alapértelmezés) az új vagy javított skill (javaslat, generálás, import) azonnal élesedik; a scan, a hash-kötés és az auditsor ilyenkor is lefut, és ha a scan nem tudja a skillt teljesen megmutatni, az nem élesedik, hanem jóváhagyásra vár. Bekapcsolva minden új skill a gazda jóváhagyásáig karanténban vár. Kikapcsolni (lazítás) csak a dashboard-belépéssel lehet.',
+    default: '1',
+    description: 'Skill-karantén. Bekapcsolva (alapértelmezés) minden új vagy javított skill (javaslat, generálás, import) a gazda jóváhagyásáig karanténban vár. Kikapcsolva azonnal élesedik; a scan, a hash-kötés és az auditsor ilyenkor is lefut, és ha a scan nem tudja a skillt teljesen megmutatni, az nem élesedik, hanem jóváhagyásra vár. Kikapcsolni (lazítás) csak a dashboard-belépéssel lehet.',
     module: 'audit',
     secret: false,
     requiresRestart: false,
