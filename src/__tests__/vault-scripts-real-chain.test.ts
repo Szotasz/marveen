@@ -27,7 +27,9 @@ function run(args: string[], env: Record<string, string> = {}, stdin?: string): 
   return new Promise(res => {
     const child = execFile(process.execPath, ['--import', PRELOAD, ...args], {
       cwd: ROOT,
-      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: join(ROOT, 'home'), PRELOAD_PLATFORM: 'darwin', SECURITY_CALL_LOG: SEC_LOG, ...env },
+      // The scrubbed env drops VITEST, so the keychain.ts test guard needs its own signal here: a test
+      // service name plus the guard flag keep a missed preload intercept off the live Vault item (card 31a6e54d).
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: join(ROOT, 'home'), PRELOAD_PLATFORM: 'darwin', SECURITY_CALL_LOG: SEC_LOG, MARVEEN_KEYCHAIN_SERVICE: 'com.marveen.vault.test-realchain', MARVEEN_KEYCHAIN_TEST_GUARD: '1', ...env },
       timeout: 60_000,
     }, (error, stdout, stderr) => {
       const code = error && typeof (error as unknown as { code?: number }).code === 'number' ? (error as unknown as { code: number }).code : error ? 1 : 0
