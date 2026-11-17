@@ -96,7 +96,14 @@ are system errors: report them to the main agent.
    processes (or of a reused pid) are removed by whoever sees them, so a crashed
    waiter never blocks the queue.
 2. **Memory floor.** After the lock it waits for `MemAvailable >= floor`. The lock
-   wait and the memory wait share one deadline (`--wait-sec`).
+   wait and the memory wait share one deadline (`--wait-sec`). The lock stays held
+   during the memory wait, so the jobs behind it wait too, even when their own floor
+   is met (#2832). The holder's lock record says so (`phase=memory`, its floor and
+   cap), and a queued job's `wait` line names it: `holder_phase: "memory"`,
+   `holder_need_mb` (its floor), `holder_max_mb` (its cap), `holder_mem_mb: 0` (its
+   job has not started) next to `mem_avail_mb`, and on stderr "the holder's job has
+   not started, it is waiting for memory (floor X MB, available Y MB)". A holder
+   whose job runs is `holder_phase: "run"`.
 3. **Scope.** `systemd-run --user --scope --collect -p MemoryMax=<cap>M
    -p MemorySwapMax=<swap>M -p TimeoutStopSec=5s`. Before anything else the gate
    verifies that a cap really takes effect: a probe scope gets `MemoryMax=64M`, and
