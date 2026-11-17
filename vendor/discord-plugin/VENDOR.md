@@ -46,6 +46,22 @@
       an opted-in channel;
     - A5: an edit goes through the gate again (`edited="1"`); a delete is reported (`deleted="1"`) only for a
       message that reached the session (bounded memory, 1000 ids).
+  - Hermes parity, PR4:
+    - C1: per channel (`DISCORD_CHANNEL_POLICY` `"autoThread": true`, off by default, only where the bot must be
+      addressed) an addressed message opens a thread on itself and the session answers there (`auto_thread="1"`,
+      `chat_id` = the thread). A failed open sends one line to the channel and no turn;
+    - C2: a `rename_thread` tool, only for a thread the bot opened itself;
+    - C4: `reply` to an allowed forum channel opens a new post (title: the first line, max 100; files on the
+      starter message);
+    - F1s-F3s: the dashboard's command menu (written into `marveen-ext.json` by the applier) is registered as
+      slash commands, offered only in the bot's DMs, again only when the list changed
+      (`$DISCORD_STATE_DIR/slash-sync.json`). Only the owner (`DISCORD_OWNER_USER_ID`, paired, in a DM) may use
+      them; the plugin acks privately within Discord's 3 s and passes the same `/word` text with `slash="1"`, and
+      the main command hook (`scripts/hooks/marveen-commands.py`) answers it as on Telegram. Only READ commands run
+      from Discord: a write needs the Telegram inbound evidence. Without an owner setting nothing is registered
+      (commands registered earlier stay, and are refused);
+    - A6: the bot's own threads (A1 list) get a recovery cursor too; at start at most 20 of them are looked into,
+      with the same 10-minute lock and per-channel caps.
 - **How it gets in**: `scripts/patch-discord-plugin.py`, at every channel start, puts the overlay
   over a cached `server.ts` ONLY when that file is this exact upstream version (or our own earlier
   output). Any other file -- a plugin update -- is left as shipped, with one loud log line.

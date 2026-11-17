@@ -90,7 +90,7 @@ describe('patch-discord-plugin.py', () => {
     expect(r.status).toBe(0)
     expect(r.stderr).toMatch(/overlaid .*server\.ts \(Marveen's Discord plugin 0\.0\.4, from upstream\)/)
     for (const n of overlayFiles()) expect(readFileSync(join(dir, n), 'utf-8')).toBe(readFileSync(join(OVERLAY, n), 'utf-8'))
-    expect(ext()).toEqual({ backfill: true, ownerUserId: '', channelPolicy: {} })
+    expect(ext()).toEqual({ backfill: true, ownerUserId: '', channelPolicy: {}, slashCommands: null })
     const manifest = JSON.parse(readFileSync(join(dir, '.marveen-overlay.json'), 'utf-8'))
     expect(manifest.upstream).toBe(UPSTREAM_SHA)
     expect(manifest.files['server.ts']).toBe(sha(readFileSync(server)))
@@ -140,8 +140,43 @@ describe('patch-discord-plugin.py', () => {
     setOverrides({ DISCORD_OWNER_USER_ID: '290903699524550656', DISCORD_BACKFILL: '0' })
     const state = join(cache, 'state.json')
     expect(run(['--state', state]).stderr).toMatch(/upgraded/)
-    expect(ext()).toEqual({ backfill: false, ownerUserId: '290903699524550656', channelPolicy: {} })
+    expect(ext()).toEqual({ backfill: false, ownerUserId: '290903699524550656', channelPolicy: {}, slashCommands: null })
     expect(readState(state)).toMatchObject({ owner_set: true, backfill: false })
+  })
+
+  // DCEXT1111 F1s: the dashboard's command menu becomes the slash command list. Spawned async: a spawnSync'd
+  // python would block the event loop the stub dashboard answers on.
+  it('slashCommands: the dashboard menu (with the token), null without a token or with the dashboard down', async () => {
+    const http = await import('node:http')
+    const seen: Array<string | undefined> = []
+    const srv = http.createServer((req, res) => {
+      seen.push(req.headers.authorization)
+      res.writeHead(req.url === '/api/commands/menu' ? 200 : 404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ commands: [{ command: 'status', description: 'rendszer-állapot' }, { command: 'usage', description: 'token' }, { bad: 1 }] }))
+    })
+    await new Promise<void>(r => srv.listen(0, '127.0.0.1', r))
+    const apiBase = `http://127.0.0.1:${(srv.address() as { port: number }).port}`
+    const runAsync = (env: Record<string, string>) => new Promise<number | null>(resolve => {
+      const p = require('node:child_process').spawn('python3', [SCRIPT, '--install', install, cache], { env: { ...process.env, ...env } })
+      p.on('close', (c: number | null) => resolve(c))
+    })
+    try {
+      expect(await runAsync({ MARVEEN_API_BASE: apiBase })).toBe(0)
+      expect(ext().slashCommands).toBeNull() // no token in the install: not even asked
+      expect(seen).toEqual([])
+      writeFileSync(join(install, 'store', '.dashboard-token'), 'dash-tok\n')
+      expect(await runAsync({ MARVEEN_API_BASE: apiBase })).toBe(0)
+      expect(ext().slashCommands).toEqual([{ name: 'status', description: 'rendszer-állapot' }, { name: 'usage', description: 'token' }])
+      expect(seen).toEqual(['Bearer dash-tok'])
+      expect(await runAsync({ MARVEEN_API_BASE: 'http://127.0.0.1:9' })).toBe(0)
+      expect(ext().slashCommands).toBeNull()
+      setOverrides({ DISCORD_PLUGIN_EXT: '0' })
+      seen.length = 0
+      expect(await runAsync({ MARVEEN_API_BASE: apiBase })).toBe(0)
+      expect(seen).toEqual([]) // the overlay off: the menu is not read
+    } finally {
+      srv.close()
+    }
   })
 
   it('the owner and the switch are overrides-only: a .env line never names an owner or turns the overlay off', () => {

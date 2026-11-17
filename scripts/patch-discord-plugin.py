@@ -28,7 +28,8 @@ DISCORD_PLUGIN_EXT=off puts the vendored upstream file back, byte-identical,
 and removes everything else this script wrote ("restored"): the plugin is the
 official one again after the next channel start. DISCORD_OWNER_USER_ID and
 DISCORD_BACKFILL go to marveen-ext.json next to server.ts, which the overlay
-reads at start. Settings are read as the dashboard's settings store answers
+reads at start, together with the dashboard's command menu (the slash commands,
+read with the install's dashboard token; null when that is not possible). Settings are read as the dashboard's settings store answers
 them (the first two are overrides-only: the owner's override, never .env);
 a change takes effect at the next channel start.
 
@@ -46,6 +47,7 @@ import os
 import re
 import sys
 import time
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INSTALL_DIR = os.path.dirname(HERE)
@@ -60,7 +62,7 @@ SNOWFLAKE = re.compile(r"^[1-9][0-9]{16,19}$")
 # The overlay's id shape for channels and roles (marveen-ext.ts SNOWFLAKE_ID).
 SNOWFLAKE_ID = re.compile(r"^[0-9]{15,20}\Z")
 # DISCORD_CHANNEL_POLICY's on/off keys per channel, as the overlay's parseChannelPolicy reads them.
-CHANNEL_POLICY_FLAGS = ("history",)
+CHANNEL_POLICY_FLAGS = ("history", "autoThread")
 
 
 def log(msg):
@@ -145,7 +147,42 @@ def settings(install_dir):
             log("LOUD: DISCORD_CHANNEL_POLICY is set but is not a JSON object -- NOT used (no channel extras)")
         for line in channel_policy_drops(policy):
             log(f"LOUD: DISCORD_CHANNEL_POLICY {line} -- dropped, that channel keeps the plain allowFrom rule")
-    return ext_on, {"ownerUserId": owner, "backfill": bool(backfill), "channelPolicy": policy}
+    return ext_on, {"ownerUserId": owner, "backfill": bool(backfill), "channelPolicy": policy,
+                    "slashCommands": slash_commands(install_dir) if ext_on else None}
+
+
+def slash_commands(install_dir):
+    """DCEXT1111 F1s: the dashboard registry's command menu (GET /api/commands/menu, the list the Telegram menu is
+    built from), as the Discord slash commands the overlay registers. None when it cannot be read (no token, the
+    dashboard down): the overlay then registers nothing and what Discord has stays. The token is never logged."""
+    try:
+        with open(os.path.join(install_dir, "store", ".dashboard-token"), encoding="utf-8") as f:
+            tok = f.read().strip()
+    except OSError:
+        return None
+    if not tok:
+        return None
+    port = (os.environ.get("WEB_PORT") or "").strip()
+    if not port.isdigit():
+        port = "3420"
+        try:
+            for line in open(os.path.join(install_dir, ".env"), encoding="utf-8"):
+                if line.startswith("WEB_PORT=") and line.split("=", 1)[1].strip().isdigit():
+                    port = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+    base = os.environ.get("MARVEEN_API_BASE") or f"http://127.0.0.1:{port}"
+    try:
+        req = urllib.request.Request(base + "/api/commands/menu", headers={"Authorization": "Bearer " + tok})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            cmds = json.loads(r.read().decode("utf-8")).get("commands")
+    except Exception as e:
+        log(f"slash commands: the dashboard menu is not readable ({type(e).__name__}), none registered this time")
+        return None
+    if not isinstance(cmds, list):
+        return None
+    return [{"name": str(c["command"]).lstrip("/"), "description": str(c.get("description") or "")}
+            for c in cmds if isinstance(c, dict) and isinstance(c.get("command"), str)]
 
 
 def channel_policy_drops(policy):
@@ -358,7 +395,8 @@ def main(argv):
     if state_path:
         write_state(state_path, {
             "at": int(time.time()), "root": root, "mode": "on" if ext_on else "off",
-            "owner_set": bool(ext["ownerUserId"]), "backfill": ext["backfill"], "files": files,
+            "owner_set": bool(ext["ownerUserId"]), "backfill": ext["backfill"],
+            "slash_commands": None if ext.get("slashCommands") is None else len(ext["slashCommands"]), "files": files,
         })
 
 

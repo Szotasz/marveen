@@ -136,7 +136,7 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
 // A Discord id, exactly as the Discord overlay's parseChannelPolicy accepts it (marveen-ext.ts SNOWFLAKE_ID).
 const DISCORD_SNOWFLAKE_RE = /^[0-9]{15,20}$/
 // DISCORD_CHANNEL_POLICY's on/off keys per channel, as the overlay's parseChannelPolicy reads them.
-const DISCORD_CHANNEL_POLICY_FLAGS = ['history']
+const DISCORD_CHANNEL_POLICY_FLAGS = ['history', 'autoThread']
 
 // True for an absolute http(s) URL, e.g. "https://marveen.example.com" or "http://localhost:3420/prefix". A value with
 // no scheme ("marveen", "localhost:3420"), another scheme or any whitespace is not one: such a value, glued in front
@@ -1244,7 +1244,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'DISCORD_OWNER_USER_ID',
     type: 'string',
     default: '',
-    description: 'A gazda Discord-felhasználói azonosítója (17-20 jegyű szám, a bejövő üzenetek user_id mezője): csak ő kapja meg Discordon az eszköz-jóváhagyás kérését, és csak az ő gombja vagy "yes <kód>" válasza dönt. Üresen a fő bot egyetlen párosított DM-je a gazda; ha több DM van párosítva, a rendszer nem találgat: a jóváhagyás-kérés nem megy ki Discordra (a terminálban marad), amíg ezt be nem állítod. A csatorna következő indításakor lép életbe.',
+    description: 'A gazda Discord-felhasználói azonosítója (17-20 jegyű szám, a bejövő üzenetek user_id mezője): csak ő kapja meg Discordon az eszköz-jóváhagyás kérését, és csak az ő gombja vagy "yes <kód>" válasza dönt. Üresen a fő bot egyetlen párosított DM-je a gazda; ha több DM van párosítva, a rendszer nem találgat: a jóváhagyás-kérés nem megy ki Discordra (a terminálban marad), amíg ezt be nem állítod. Beállítva a dashboard parancsai (/status, /usage...) Discord slash-parancsként is elérhetők, csak a bottal folytatott DM-ben és csak neki (az egyetlen-DM tartalék itt nem számít); Discordról csak az olvasó parancsok futnak. A csatorna következő indításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
@@ -1269,7 +1269,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'DISCORD_CHANNEL_POLICY',
     type: 'string',
     default: '',
-    description: 'Discord csatornánkénti kiegészítések (csak DISCORD_PLUGIN_EXT mellett), JSON: {"<csatorna-ID>": {"allowRoles": ["<szerep-ID>", ...], "history": true}}. A "history": true (alapból ki) a botnak szóló üzenet elé teszi, amit a csatornában a bot utolsó üzenete óta írtak (legfeljebb 20, csak az írásra jogosultaktól). Ha egy csatornához szerepek vannak megadva, ott az írhat a botnak, aki a csatorna engedélyezett felhasználói között van, VAGY rendelkezik valamelyik szereppel (üres felhasználói lista mellett csak a szerep birtokosai). Az eszköz-jóváhagyás ettől független, az mindig csak a gazdáé. A hibás JSON-t a csatorna-indítás egy sorral jelzi és figyelmen kívül hagyja. A csatorna következő indításakor lép életbe.',
+    description: 'Discord csatornánkénti kiegészítések (csak DISCORD_PLUGIN_EXT mellett), JSON: {"<csatorna-ID>": {"allowRoles": ["<szerep-ID>", ...], "history": true, "autoThread": true}}. A "history": true (alapból ki) a botnak szóló üzenet elé teszi, amit a csatornában a bot utolsó üzenete óta írtak (legfeljebb 20, csak az írásra jogosultaktól). Az "autoThread": true (alapból ki) a botnak szóló üzenetre szálat nyit, és a válasz abba megy. Ha egy csatornához szerepek vannak megadva, ott az írhat a botnak, aki a csatorna engedélyezett felhasználói között van, VAGY rendelkezik valamelyik szereppel (üres felhasználói lista mellett csak a szerep birtokosai). Az eszköz-jóváhagyás ettől független, az mindig csak a gazdáé. A hibás JSON-t a csatorna-indítás egy sorral jelzi és figyelmen kívül hagyja. A csatorna következő indításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
