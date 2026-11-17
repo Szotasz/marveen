@@ -4,7 +4,7 @@
 
 // src/support-standby-cli.ts
 import { randomUUID } from "node:crypto";
-import { accessSync as accessSync2, constants as constants6, readFileSync as readFileSync4, realpathSync as realpathSync2 } from "node:fs";
+import { accessSync as accessSync2, constants as constants7, readFileSync as readFileSync4, realpathSync as realpathSync2 } from "node:fs";
 import { join as join10 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -544,6 +544,7 @@ function parseSshdEffectiveConfig(text) {
   const ports = /* @__PURE__ */ new Set();
   const addresses = /* @__PURE__ */ new Set();
   const acceptEnv = [];
+  const hostKeys = [];
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     const space = line.indexOf(" ");
@@ -562,6 +563,8 @@ function parseSshdEffectiveConfig(text) {
       if (isIP2(address) !== (m[1] === void 0 ? 4 : 6)) return null;
       ports.add(port);
       addresses.add(address);
+    } else if (key === "hostkey") {
+      hostKeys.push(value);
     } else if (key === "acceptenv") {
       if (value.length === 0) return null;
       acceptEnv.push(...value.split(/\s+/));
@@ -591,7 +594,8 @@ function parseSshdEffectiveConfig(text) {
     forceCommand: seen.get("forcecommand"),
     acceptEnv,
     listenPorts: [...ports].sort((a, b) => a - b),
-    listenAddresses: [...addresses].sort()
+    listenAddresses: [...addresses].sort(),
+    hostKeys
   };
 }
 function isArrivalAddress(address) {
@@ -715,7 +719,8 @@ function assessSshd(input) {
   }
   if (!configs.every((c) => c.forceCommand === "none")) return refuse("force_command_set");
   if (!configs.every((c) => c.acceptEnv.every(acceptEnvPatternIsHarmless))) return refuse("accept_env_too_wide");
-  return { ok: true, version, keysFiles };
+  const hostKeyFiles = configs[0].hostKeys.filter((path) => path !== input.probeHostKey);
+  return { ok: true, version, keysFiles, listenPorts: ports, hostKeyFiles };
 }
 
 // src/support-access-sshd-run.ts
@@ -764,7 +769,7 @@ async function askSshd(input, deps) {
 async function askAll(base, hostKeyArgs, deps, keyPath) {
   const localAddresses = reachableLocalAddresses(deps.interfaceAddresses());
   let nonRootProof;
-  const refused = (answers2) => assessSshd({ ...base, localAddresses, answers: answers2, nonRootProof });
+  const refused = (answers2) => assessSshd({ ...base, localAddresses, answers: answers2, nonRootProof, probeHostKey: keyPath ?? void 0 });
   const ask = async (spec, extra = []) => {
     const connection = formatSshdConnectionSpec(spec);
     if (connection === null) return { spec, text: null };
@@ -2096,6 +2101,119 @@ async function writeKit(opts) {
   });
 }
 
+// src/support-access-hostkey.ts
+import { closeSync as closeSync6, constants as constants5, fstatSync as fstatSync5, openSync as openSync6, readSync as readSync5 } from "node:fs";
+var DEFAULT_ED25519_HOST_KEY_PUB = "/etc/ssh/ssh_host_ed25519_key.pub";
+var HOST_KEY_PUB_MAX_BYTES = 4096;
+var SSH_KEYSCAN_PROGRAM = "/usr/bin/ssh-keyscan";
+var SUPPORT_HOST_KEY_SCAN_TIMEOUT_S = 5;
+var SUPPORT_HOST_KEY_SCAN_RUN_MS = 7e3;
+var SUPPORT_HOST_KEY_SCAN_ADDRESS = "127.0.0.1";
+var SUPPORT_HOST_KEY_PATH = "/support/v1/host-key";
+var SUPPORT_HOST_KEY_TIMEOUT_MS = 1e4;
+var SUPPORT_HOST_KEY_MAX_BODY_BYTES = 2048;
+var ED25519_TYPE = "ssh-ed25519";
+var ED25519_LINE = /^ssh-ed25519 ([A-Za-z0-9+/]{68})$/;
+function ed25519HostKey(text) {
+  const m = ED25519_LINE.exec(text);
+  if (m === null) return null;
+  const blob = Buffer.from(m[1], "base64");
+  if (blob.readUInt32BE(0) !== ED25519_TYPE.length || blob.subarray(4, 15).toString("latin1") !== ED25519_TYPE) return null;
+  if (blob.readUInt32BE(15) !== 32) return null;
+  return text;
+}
+function hostKeyFromKeyscan(stdout) {
+  let found = null;
+  for (const line of stdout.split("\n")) {
+    if (line === "" || line.startsWith("#")) continue;
+    const fields = line.split(" ");
+    if (fields.length !== 3 || fields[0] === "") return null;
+    const key = ed25519HostKey(fields[1] + " " + fields[2]);
+    if (key === null || found !== null) return null;
+    found = key;
+  }
+  return found;
+}
+async function scanOwnHostKey(port, run) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  try {
+    const out = await run(
+      SSH_KEYSCAN_PROGRAM,
+      ["-T", String(SUPPORT_HOST_KEY_SCAN_TIMEOUT_S), "-t", "ed25519", "-p", String(port), SUPPORT_HOST_KEY_SCAN_ADDRESS],
+      SUPPORT_HOST_KEY_SCAN_RUN_MS
+    );
+    return out.code === 0 ? hostKeyFromKeyscan(out.stdout) : null;
+  } catch {
+    return null;
+  }
+}
+function confirmsAsRootFile(st) {
+  return st.isFile && st.uid === 0 && (st.mode & 18) === 0;
+}
+function readRootOwnedPub(path) {
+  let fd;
+  try {
+    fd = openSync6(path, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
+  } catch {
+    return null;
+  }
+  try {
+    const st = fstatSync5(fd);
+    if (!confirmsAsRootFile({ uid: st.uid, mode: st.mode, isFile: st.isFile() })) return null;
+    const buf = Buffer.alloc(HOST_KEY_PUB_MAX_BYTES + 1);
+    let n = 0;
+    for (; ; ) {
+      const got = readSync5(fd, buf, n, buf.length - n, n);
+      if (got === 0) break;
+      n += got;
+      if (n > HOST_KEY_PUB_MAX_BYTES) return null;
+    }
+    return buf.subarray(0, n).toString("latin1");
+  } catch {
+    return null;
+  } finally {
+    closeSync6(fd);
+  }
+}
+function keyOfPub(text) {
+  const fields = text.replace(/\n$/, "").split(" ");
+  return fields.length < 2 ? null : ed25519HostKey(fields[0] + " " + fields[1]);
+}
+function hostKeyPubCandidates(hostKeyFiles) {
+  const out = hostKeyFiles.filter((p) => p.startsWith("/")).map((p) => p + ".pub");
+  out.push(DEFAULT_ED25519_HOST_KEY_PUB);
+  return [...new Set(out)];
+}
+async function readOwnHostKey(sshd, deps) {
+  const key = await scanOwnHostKey(sshd.listenPorts[0], deps.run);
+  if (key === null) return { kind: "missing" };
+  for (const path of hostKeyPubCandidates(sshd.hostKeyFiles)) {
+    let text;
+    try {
+      text = deps.readRootPub(path);
+    } catch {
+      text = null;
+    }
+    if (text !== null && keyOfPub(text) === key) return { kind: "ok", key };
+  }
+  return { kind: "unverified" };
+}
+async function sendSupportHostKey(input, transport) {
+  try {
+    const res = await transport({
+      origin: SUPPORT_SERVICE_ORIGIN,
+      path: SUPPORT_HOST_KEY_PATH,
+      body: JSON.stringify({ host_key: input.hostKey }),
+      timeoutMs: SUPPORT_HOST_KEY_TIMEOUT_MS,
+      maxBodyBytes: SUPPORT_HOST_KEY_MAX_BODY_BYTES,
+      bearer: input.token
+    });
+    return res.status === 200 ? "stored" : "not_stored";
+  } catch {
+    return "not_stored";
+  }
+}
+
 // src/support-kit-sources.ts
 var KIT_HASHES_FILE = "scripts/support-kit.sha256";
 var KIT_LAUNCHER_NAME = "support-access";
@@ -2137,6 +2255,9 @@ async function enableSupportStandby(input, deps) {
   if (readSupportToken(deps.supportDir).kind !== "missing" || readGroupRecord(deps.supportDir).kind !== "missing") return no("already_on");
   const sshd = await deps.probeSshd(fromCidrs);
   if (!sshd.ok) return no(sshd.problem);
+  const own = await deps.readHostKey(sshd);
+  if (own.kind !== "ok") return no(own.kind === "missing" ? "host_key_missing" : "host_key_unverified");
+  const hostKey = own.key;
   const kit = verifyKit({ supportDir: deps.supportDir });
   if (!kit.ok) return no(kit.problem);
   if (kit.manifest.files[KIT_DISPATCHER_NAME] === void 0) return no("kit_mismatch");
@@ -2164,7 +2285,6 @@ async function enableSupportStandby(input, deps) {
       pinnedBlobs,
       grant: { keys: sortedKeys, fromCidrs, grantId, consentVersion: SUPPORT_CONSENT_VERSION, dispatchPath, sshd: sshd.version }
     });
-    return { ok: true, keys: sortedKeys.map((k) => k.name), lines: sortedKeys.length };
   } catch (err) {
     try {
       await revokeSupportLines({ sshDir: deps.sshDir, pinnedBlobs });
@@ -2182,6 +2302,8 @@ async function enableSupportStandby(input, deps) {
     if (err instanceof SupportLineError) return no("support_pins_invalid");
     return no("enable_write_failed");
   }
+  const sent = await sendSupportHostKey({ token: redeemed.token, hostKey }, deps.redeemTransport);
+  return { ok: true, keys: sortedKeys.map((k) => k.name), lines: sortedKeys.length, hostKey: sent };
 }
 async function disableSupportStandby(deps) {
   const pinnedBlobs = new Set(deps.pins.keys.map((k) => k.pub));
@@ -2314,7 +2436,7 @@ function formatSupportStatus(report) {
 }
 
 // src/support-kit-install.ts
-import { accessSync, constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync6, openSync as openSync6, readSync as readSync5, statSync as statSync5 } from "node:fs";
+import { accessSync, constants as constants6, closeSync as closeSync7, fstatSync as fstatSync6, lstatSync as lstatSync6, openSync as openSync7, readSync as readSync6, statSync as statSync5 } from "node:fs";
 import { join as join9 } from "node:path";
 var SUPPORT_DIR_IN_HOME = ".marveen/support";
 var KIT_SOURCE_MAX_BYTES = KIT_FILE_MAX_BYTES;
@@ -2323,23 +2445,23 @@ var SAFE_ABSOLUTE_PATH4 = /^\/[A-Za-z0-9._/-]+$/;
 function readTreeFile(path, max) {
   let fd;
   try {
-    fd = openSync6(path, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
+    fd = openSync7(path, constants6.O_RDONLY | constants6.O_NOFOLLOW | constants6.O_NONBLOCK);
   } catch {
     return null;
   }
   try {
-    if (!fstatSync5(fd).isFile()) return null;
+    if (!fstatSync6(fd).isFile()) return null;
     const buf = Buffer.alloc(max + 1);
     let n = 0;
     for (; ; ) {
-      const got = readSync5(fd, buf, n, buf.length - n, n);
+      const got = readSync6(fd, buf, n, buf.length - n, n);
       if (got === 0) break;
       n += got;
       if (n > max) return null;
     }
     return buf.subarray(0, n);
   } finally {
-    closeSync6(fd);
+    closeSync7(fd);
   }
 }
 async function installKit(input) {
@@ -2356,7 +2478,7 @@ async function installKit(input) {
   if (!rootIsFolder) throw new KitError("kit_input_invalid", "the install root is not a folder");
   try {
     if (!statSync5(nodePath).isFile()) throw new Error("not a file");
-    accessSync(nodePath, constants5.X_OK);
+    accessSync(nodePath, constants6.X_OK);
   } catch {
     throw new KitError("kit_input_invalid", "the node path is not an executable file");
   }
@@ -2412,7 +2534,7 @@ function createStatusDeps(account = currentLoginUser()) {
     probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
     isExecutable: (path) => {
       try {
-        accessSync2(path, constants6.X_OK);
+        accessSync2(path, constants7.X_OK);
         return true;
       } catch {
         return false;
@@ -2442,6 +2564,7 @@ function createStandbyDeps(account = currentLoginUser(), moduleUrl = import.meta
     sshDir: join10(account.home, ".ssh"),
     pins: { keys: SUPPORT_KEYS, fromCidrs: SUPPORT_FROM_CIDRS },
     probeSshd: (fromCidrs) => probeSshd({ fromCidrs }, createSshdProbeDeps(account)),
+    readHostKey: (sshd) => readOwnHostKey(sshd, { run: createSshdProbeDeps(account).run, readRootPub: readRootOwnedPub }),
     redeemTransport: createHttpsRedeemTransport(),
     now: () => /* @__PURE__ */ new Date(),
     newGrantId: () => randomUUID(),
@@ -2491,7 +2614,7 @@ async function runSupportCli(argv, io, deps) {
       io.err("enable: refused: " + done.problem + "\n");
       return 1;
     }
-    io.out("standby=on\nstandby_keys=" + done.keys.join(",") + "\nsupport_lines=" + done.lines + "\nlogins=refused_by_this_release\n");
+    io.out("standby=on\nstandby_keys=" + done.keys.join(",") + "\nsupport_lines=" + done.lines + "\nhost_key=" + done.hostKey + "\nlogins=refused_by_this_release\n");
     return 0;
   }
   if (argv.length === 3 && argv[0] === "consent-text" && argv[1] === "--consent" && /^[1-9][0-9]{0,3}$/.test(argv[2])) {

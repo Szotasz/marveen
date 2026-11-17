@@ -60,6 +60,7 @@ enable_refusal() {
     tunnel_permitted) echo "A géped SSH-beállítása legalább egy esetben hálózati alagutat enged (PermitTunnel). Amíg ez így van, a support-belépés nem kapcsolható be. A beállítást a gép rendszergazdája tudja kikapcsolni." ;;
     sshd_*|root_login_disabled|authorized_keys_path_unsupported|other_key_source|force_command_set|accept_env_too_wide)
       echo "A géped SSH-beállítása miatt a support-belépés nem kapcsolható be ($1). Ezt a gép rendszergazdája tudja rendezni; küldd el nekünk ezt a kódot ($SUPPORT_MAIL)." ;;
+    host_key_missing|host_key_unverified) echo "A géped SSH-szerverének gépkulcsát nem tudtam egyértelműen megállapítani ($1), ezért a support-belépés nem kapcsolható be. A kódod nem fogyott el. Küldd el nekünk ezt a kódot ($SUPPORT_MAIL)." ;;
     kit_*) echo "A support-készlet nincs rendben ($1). Frissítsd a Marveent, utána futtasd újra ezt a sort." ;;
     already_on) echo "A távoli segítség már be van kapcsolva ezen a gépen, vagy egy korábbi bekapcsolás félbemaradt ($1). Előbb kapcsold ki így: ~/.marveen/support/kit/support-access disable, utána futtasd újra ezt a sort. A kódod ettől nem fogy el." ;;
     enable_not_from_kit) echo "A bekapcsolás nem a support-készletből indult ($1). Futtasd pontosan a Profil oldalon látható sort." ;;

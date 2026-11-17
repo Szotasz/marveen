@@ -277,6 +277,8 @@ describe('probeSshd', () => {
       ok: true,
       version: { major: 10, minor: 0 },
       keysFiles: ['authorized_keys', 'authorized_keys2'],
+      listenPorts: [22],
+      hostKeyFiles: [],
     })
     expect(SSHD_PROGRAM).toBe('/usr/sbin/sshd')
     expect(calls[0]).toEqual({ file: '/usr/sbin/sshd', args: ['-V'], timeoutMs: 5000 })
@@ -301,6 +303,8 @@ describe('probeSshd', () => {
       ok: true,
       version: { major: 10, minor: 0 },
       keysFiles: ['authorized_keys', 'authorized_keys2'],
+      listenPorts: [22],
+      hostKeyFiles: [],
     })
     expect(calls[1]).toEqual({
       file: '/usr/bin/ssh-keygen',
@@ -317,6 +321,18 @@ describe('probeSshd', () => {
     expect(queries(calls)).toHaveLength(5)
     expect(made).toEqual(['/scratch/probe-1'])
     expect(removed).toEqual(['/scratch/probe-1'])
+  })
+
+  // The host key cross-check (Dani 79778): sshd prints the -h key as a hostkey line (measured, 10.2p1, not root).
+  it('as another user: the throwaway -h key is not among the hostkey files handed over', async () => {
+    const answer = (args: readonly string[]): string => {
+      const h = args.indexOf('-h')
+      return sshdT() + (h >= 0 ? 'hostkey ' + args[h + 1] + '\n' : '') + 'hostkey /etc/ssh/custom_ed25519_key\n'
+    }
+    expect(await probeSshd({ fromCidrs: SOURCES }, fake({ isRoot: false, answer }).deps)).toMatchObject({
+      ok: true,
+      hostKeyFiles: ['/etc/ssh/custom_ed25519_key'],
+    })
   })
 
   it.each<[string, (m: Machine) => void, string]>([
