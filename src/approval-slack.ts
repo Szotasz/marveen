@@ -295,13 +295,28 @@ export async function sweepOnce(call: SlackCall, posts: ApprovalSlackPost[], dec
   return { checked, waitS: 0 }
 }
 
+/**
+ * A Slack Web API body as form fields. Slack reads a JSON body only on its write methods: measured on a live DM,
+ * conversations.replies answered `invalid_arguments` and users.info `user_not_found` to the same arguments sent as
+ * JSON, so the thread reply was never seen and the owner check would refuse every decision. The form encoding is
+ * accepted by every method. A string stays as is, any other value goes as its JSON text (`true`, `200`, an object).
+ */
+export function slackForm(body: Record<string, unknown>): URLSearchParams {
+  const form = new URLSearchParams()
+  for (const [k, v] of Object.entries(body)) {
+    if (v === undefined || v === null) continue
+    form.append(k, typeof v === 'string' ? v : JSON.stringify(v))
+  }
+  return form
+}
+
 /** The Slack Web API over fetch with a bot token; a 429 throws SlackRateLimited with its Retry-After. */
 export function slackCaller(token: string, f: typeof fetch = fetch): SlackCall {
   return async (method, body) => {
     const resp = await f(`https://slack.com/api/${method}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8', Authorization: `Bearer ${token}` },
+      body: slackForm(body).toString(),
     })
     if (resp.status === 429) throw new SlackRateLimited(Number(resp.headers.get('retry-after') ?? '30') || 30)
     if (!resp.ok) return { ok: false, error: `http_${resp.status}` }
