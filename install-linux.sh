@@ -2141,7 +2141,10 @@ if [ "$CHANNEL_PROVIDER" = "teams" ]; then
     [ "$(id -u)" -eq 0 ] || _ms_priv="sudo"
     _ms_args=()
     for _p in $TEAMS_ALLOWLIST_PLUGINS; do _ms_args+=(--add-plugin "$_p"); done
-    if $_ms_priv mkdir -p "$(dirname "$TEAMS_MANAGED_FILE")" 2>/dev/null \
+    # explicit 0755 -- never group- or other-writable AND always readable by the unprivileged
+    # session (it must traverse the dir to read the policy); a root-owned 0700 dir hid the
+    # policy from the session (maintainer finding on the OR-umask version: 077|022=077).
+    if $_ms_priv mkdir -p -m 0755 "$(dirname "$TEAMS_MANAGED_FILE")" 2>/dev/null \
       && $_ms_priv python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$TEAMS_MANAGED_FILE" --create "${_ms_args[@]}"; then
       ok "Teams engedelyezve a managed-settings allowlistben ($TEAMS_MANAGED_FILE)"
     else
