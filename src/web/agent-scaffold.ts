@@ -1664,7 +1664,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>, threadRep
 }
 
 export interface AgentSendException {
-  scripts: string[]
+  scripts: { path: string; sha256: string }[]
   modes: string[]
   valueArgs: string[]
   repeatableArgs: string[]
@@ -1672,10 +1672,14 @@ export interface AgentSendException {
 }
 
 // Same entry validation as scripts/email-send-gate.mjs; invalid siblings do not revoke valid entries.
+// CONTENTBIND (card f2ccb0bb, round 3): a grant binds the script CONTENT, not just its
+// path -- "scripts" holds {path, sha256} objects; the gates hash-check the file on every
+// invocation and fail closed, so the shape here demands 64 lowercase hex and unique paths.
 // REPEATENVELOPE (card f2ccb0bb, round 2): an envelope flag made repeatable is invalid
 // here too -- the mjs parser returns only the FIRST value of a repeatable flag, so
 // recipient verification (and the py envelope hash) would see only the first recipient.
 const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'])
+const SCRIPT_SHA256_RX = /^[0-9a-f]{64}$/
 export function readAgentSendExceptions(name: string): AgentSendException | null {
   try {
     const config = JSON.parse(readFileSync(join(STORE_DIR, 'agent-send-exceptions.json'), 'utf8'))
@@ -1685,12 +1689,20 @@ export function readAgentSendExceptions(name: string): AgentSendException | null
     const keys = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'booleanArgs']
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)
       || Object.keys(entry).some(k => !keys.includes(k))) return null
-    if (!keys.every(k => Array.isArray(entry[k])
+    if (!['modes', 'valueArgs', 'repeatableArgs', 'booleanArgs'].every(k => Array.isArray(entry[k])
       && entry[k].every((v: unknown) => typeof v === 'string' && v.length > 0)
       && new Set(entry[k]).size === entry[k].length)) return null
+    const validScript = (s: unknown): s is { path: string; sha256: string } =>
+      !!s && typeof s === 'object' && !Array.isArray(s)
+      && Object.keys(s).length === 2
+      && typeof (s as { path?: unknown }).path === 'string' && (s as { path: string }).path.length > 0
+      && isAbsolute((s as { path: string }).path)
+      && typeof (s as { sha256?: unknown }).sha256 === 'string'
+      && SCRIPT_SHA256_RX.test((s as { sha256: string }).sha256)
+    if (!Array.isArray(entry.scripts) || !entry.scripts.length || !entry.scripts.every(validScript)
+      || new Set(entry.scripts.map((s: { path: string }) => s.path)).size !== entry.scripts.length) return null
     const flags = [...entry.valueArgs, ...entry.repeatableArgs, ...entry.booleanArgs]
-    if (!entry.scripts.length || !entry.scripts.every((p: string) => isAbsolute(p))
-      || !entry.modes.length || !entry.modes.every((m: string) => ['draft', 'send'].includes(m))
+    if (!entry.modes.length || !entry.modes.every((m: string) => ['draft', 'send'].includes(m))
       || entry.repeatableArgs.some((f: string) => NON_REPEATABLE_FLAGS.has(f))
       || !flags.every(f => /^--[a-z][a-z0-9-]*$/.test(f)) || new Set(flags).size !== flags.length) return null
     return entry

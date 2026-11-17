@@ -138,17 +138,40 @@ _EXCEPTION_KEYS = ("scripts", "modes", "valueArgs", "repeatableArgs", "booleanAr
 # email-send-gate.mjs, and readAgentSendExceptions in agent-scaffold.ts.
 _NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
 
+# SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not only its
+# path. "scripts" is an array of {"path", "sha256"} objects -- at least one entry, no
+# duplicate paths, an absolute path and a sha256 of exactly 64 lowercase hex characters --
+# and the matcher verifies the hash on EVERY invocation, so anything else runnable at the
+# granted path does not qualify. Keep in sync with validAgentSendException in
+# email-send-gate.mjs and readAgentSendExceptions in agent-scaffold.ts.
+_SCRIPT_SHA256_RX = re.compile(r"[0-9a-f]{64}")
+
+
+def _valid_exception_scripts(scripts):
+    if not isinstance(scripts, list) or not scripts:
+        return False
+    paths = set()
+    for item in scripts:
+        if (not isinstance(item, dict) or set(item) != {"path", "sha256"}
+                or not isinstance(item["path"], str) or not os.path.isabs(item["path"])
+                or not isinstance(item["sha256"], str)
+                or not _SCRIPT_SHA256_RX.fullmatch(item["sha256"])
+                or item["path"] in paths):
+            return False
+        paths.add(item["path"])
+    return True
+
 
 def valid_agent_send_exception(entry):
     if not isinstance(entry, dict) or any(k not in _EXCEPTION_KEYS for k in entry):
         return False
-    for key in _EXCEPTION_KEYS:
+    for key in ("modes", "valueArgs", "repeatableArgs", "booleanArgs"):
         values = entry.get(key)
         if (not isinstance(values, list) or not all(isinstance(v, str) and v for v in values)
                 or len(set(values)) != len(values)):
             return False
     flags = entry["valueArgs"] + entry["repeatableArgs"] + entry["booleanArgs"]
-    return (bool(entry["scripts"]) and all(os.path.isabs(p) for p in entry["scripts"])
+    return (_valid_exception_scripts(entry["scripts"])
             and bool(entry["modes"]) and all(m in ("draft", "send") for m in entry["modes"])
             and not any(f in _NON_REPEATABLE_FLAGS for f in entry["repeatableArgs"])
             and all(re.fullmatch(r"--[a-z][a-z0-9-]*", f) for f in flags)
@@ -167,10 +190,24 @@ def read_agent_send_exceptions():
         return {}
 
 
+def _script_sha256_matches(path, sha256):
+    """SCRIPTBIND (card f2ccb0bb, round 3): per-call content verification -- the entry
+    script's raw bytes are hashed and compared to the granted value. A missing or
+    unreadable file, or a hash mismatch, means no exception (fail-closed: False), so
+    the call falls back to the ordinary gate decisions. Twin of scriptHashMatches in
+    email-send-gate.mjs."""
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest() == sha256
+    except OSError:
+        return False
+
+
 def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
     """Literal whole-word shell subset; twin of agentScriptException in email-send-gate.mjs.
 
     check_paths=False is used only to DENY a recognized invocation with relative files.
+    The SCRIPTBIND hash check runs on EVERY invocation, on both paths.
     """
     agents = config.get("agents", {}) if isinstance(config, dict) else {}
     if not agent_name or not isinstance(agents, dict) or agent_name not in agents:
@@ -196,7 +233,11 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
     if len(tokens) < 2:
         return None
     script, mode, *args = tokens
-    if script not in entry["scripts"] or mode not in entry["modes"]:
+    grant = next((s for s in entry["scripts"] if s["path"] == script), None)
+    # SCRIPTBIND: the path alone is not the grant -- the file's content must still hash
+    # to the granted sha256, checked on every invocation (also with check_paths=False).
+    if (grant is None or mode not in entry["modes"]
+            or not _script_sha256_matches(grant["path"], grant["sha256"])):
         return None
     values, i = {}, 0
     while i < len(args):

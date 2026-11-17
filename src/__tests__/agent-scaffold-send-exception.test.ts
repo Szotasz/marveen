@@ -99,8 +99,21 @@ describe('send exception hook wiring', () => {
     configFile.content = JSON.stringify({ agents: { [agentName]: entry, '<invalid-agent>': { ...entry, extra: true } } })
     expect(readAgentSendExceptions(agentName)).toEqual(entry)
     expect(readAgentSendExceptions('<invalid-agent>')).toBeNull()
-    configFile.content = JSON.stringify({ agents: { [agentName]: { ...entry, scripts: ['relative.ext'] } } })
-    expect(readAgentSendExceptions(agentName)).toBeNull()
+    // CONTENTBIND (card f2ccb0bb, round 3): scripts hold {path, sha256} objects --
+    // the old plain-string shape, a relative path, a bad digest or a duplicate
+    // path all fail closed here, exactly as in both gate validators.
+    const validScript = { path: '/absolute/path/to/runner.ext', sha256: 'a'.repeat(64) }
+    for (const scripts of [
+      ['/absolute/path/to/runner.ext'],              // old plain-string shape no longer grants
+      [{ ...validScript, path: 'relative.ext' }],    // relative path
+      [{ ...validScript, sha256: 'z'.repeat(64) }],  // non-hex digest
+      [{ ...validScript, sha256: 'a'.repeat(63) }],  // not 64 hex chars
+      [{ ...validScript, sha256: 'A'.repeat(64) }],  // uppercase hex
+      [validScript, { ...validScript, sha256: 'b'.repeat(64) }], // duplicate path
+    ]) {
+      configFile.content = JSON.stringify({ agents: { [agentName]: { ...entry, scripts } } })
+      expect(readAgentSendExceptions(agentName), JSON.stringify(scripts)).toBeNull()
+    }
   })
 
   // REPEATENVELOPE (card f2ccb0bb, round 2): the mjs argument parser returns

@@ -440,6 +440,8 @@ export function allowlistBashSegmentAllowed(seg, ctx) {
 //   bash-sandbox-write-paths.json  -- where a sandboxed agent may write (#2149)
 //   email-standing-recipients.json -- an address on it (once activated) takes letters with
 //                                     no per-letter approval (email-approval-gate.py)
+//   agent-send-exceptions.json     -- the named-script draft/send grants themselves, which a
+//                                     sub-agent must not write for itself (card f2ccb0bb)
 //   .approval-bot-token, .approval-bot-key -- the owner's approval bot and the key its button data is
 //                                     signed with (src/approval-bot.ts, #2160)
 // Their writers are the owner, the main agent and, for config-overrides.json, the dashboard
@@ -452,15 +454,22 @@ export const PROTECTED_STORE_FILES = new Set([
   'config-overrides.json',
   'bash-sandbox-write-paths.json',
   'email-standing-recipients.json',
+  'agent-send-exceptions.json',
   '.approval-bot-token',
   '.approval-bot-key',
 ])
 // The file, or a glob that starts on its name. The prefixes are long enough that this gate's
 // and the features' own sources (bash-sandbox.ts, config-registry.ts) stay out of it; the
 // approval-bot files need their leading dot, so a source or doc named approval-bot-key-*.md or a
-// glob over src/approval-bot* stays out too.
+// glob over src/approval-bot* stays out too. The send-exception family (card f2ccb0bb) needs the
+// plural "exceptions" in its exact name, so the gates' own sources and tests
+// (email-send-gate.mjs, email-approval-gate.py, email-send-gate-script-exception.test.ts,
+// agent-scaffold-send-exception.test.ts) and the shared corpus fixture
+// (agent-send-exception-cases.json, singular) stay out of it; its glob prefix drops only that
+// word, so a glob over the store file (store/agent-send*) is caught -- a glob over the fixture
+// (agent-send-exception-*) is then caught too, the same trade the email-standing prefix makes.
 const PROTECTED_MENTION_RX =
-  /(?:egress[-_]?vendor[-_]?hosts(?:[-_][\w.-]*)?|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
+  /(?:egress[-_]?vendor[-_]?hosts(?:[-_][\w.-]*)?|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|email[-_]?standing[-_]?recipients|agent[-_]?send[-_]?exceptions)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|email[-_]?standing|\.approval[-_]?bot|agent[-_]?send)[\w.-]*[*?[]/i
 
 // One rule for every protected store object: a segment that mentions it may only be a plain
 // READ, and no output redirect in it may point at it (or at a target built at runtime).
@@ -3982,7 +3991,7 @@ const MCP_GATE_MSG =
 const PROTECTED_STORE_GATE_MSG =
   'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
   'store/egress-vendor-hosts.json, store/egress-vendor-hosts-<agent>.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, ' +
-  'store/email-standing-recipients.json, store/.approval-bot-token es store/.approval-bot-key ' +
+  'store/email-standing-recipients.json, store/agent-send-exceptions.json, store/.approval-bot-token es store/.approval-bot-key ' +
   'fajlt: mindegyik RAD vonatkozo kapu beallitasa. ' +
   'Ha valtoztatas kell, kerd a fo agenst (inter-agent uzenet: mit es miert); o a gazda ' +
   'jovahagyasaval irja. Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'

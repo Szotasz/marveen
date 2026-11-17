@@ -32,6 +32,7 @@
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
 import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -68,14 +69,39 @@ const EXCEPTION_KEYS = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'bool
 // readAgentSendExceptions in agent-scaffold.ts.
 const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'])
 
+// SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not
+// only its path. "scripts" is an array of {"path", "sha256"} objects -- at least
+// one entry, no duplicate paths, an absolute path and a sha256 of exactly 64
+// lowercase hex characters -- and the matcher verifies the hash on EVERY
+// invocation, so anything else runnable at the granted path does not qualify.
+// Keep in sync with valid_agent_send_exception in
+// scripts/hooks/email-approval-gate.py and readAgentSendExceptions in
+// agent-scaffold.ts.
+const SCRIPT_SHA256_RX = /^[0-9a-f]{64}$/
+
+function validExceptionScripts(scripts) {
+  if (!Array.isArray(scripts) || scripts.length === 0) return false
+  const paths = new Set()
+  for (const s of scripts) {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return false
+    const keys = Object.keys(s)
+    if (keys.length !== 2 || !keys.includes('path') || !keys.includes('sha256')) return false
+    if (typeof s.path !== 'string' || !isAbsolute(s.path)) return false
+    if (typeof s.sha256 !== 'string' || !SCRIPT_SHA256_RX.test(s.sha256)) return false
+    if (paths.has(s.path)) return false
+    paths.add(s.path)
+  }
+  return true
+}
+
 export function validAgentSendException(entry) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)
     || Object.keys(entry).some(k => !EXCEPTION_KEYS.includes(k))) return false
-  if (!EXCEPTION_KEYS.every(k => Array.isArray(entry[k])
+  if (!['modes', 'valueArgs', 'repeatableArgs', 'booleanArgs'].every(k => Array.isArray(entry[k])
     && entry[k].every(v => typeof v === 'string' && v.length > 0)
     && new Set(entry[k]).size === entry[k].length)) return false
   const flags = [...entry.valueArgs, ...entry.repeatableArgs, ...entry.booleanArgs]
-  return entry.scripts.length > 0 && entry.scripts.every(p => isAbsolute(p))
+  return validExceptionScripts(entry.scripts)
     && entry.modes.length > 0 && entry.modes.every(m => ['draft', 'send'].includes(m))
     && !entry.repeatableArgs.some(f => NON_REPEATABLE_FLAGS.has(f))
     && flags.every(f => /^--[a-z][a-z0-9-]*$/.test(f)) && new Set(flags).size === flags.length
@@ -121,6 +147,18 @@ export function agentApprovalGateBound(agentName) {
   } catch { return false }
 }
 
+// SCRIPTBIND: per-call content verification -- the entry script's raw bytes are
+// hashed and compared to the granted sha256. A missing or unreadable file, or a
+// hash mismatch, means the invocation does not qualify (fail-closed: null), so
+// the call falls back to the ordinary send-gate decisions.
+function scriptHashMatches(path, sha256) {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex') === sha256
+  } catch {
+    return false
+  }
+}
+
 // Intentionally small shell subset: whole literal words, optionally wholly quoted.
 // No expansion, escapes, quote concatenation, operators or comments, even in quotes.
 // Keep in sync with agent_script_exception in scripts/hooks/email-approval-gate.py.
@@ -143,7 +181,10 @@ export function agentScriptException(cmd, agentName, config) {
   if (tokens[0] === '/usr/bin/env' && tokens[1] === 'node') tokens.splice(0, 2)
   else if (['node', 'nodejs'].includes(tokens[0]) || /^\/(?:[^/]+\/)*node(?:js)?$/.test(tokens[0] ?? '')) tokens.shift()
   const [script, mode, ...args] = tokens
-  if (!entry.scripts.includes(script) || !entry.modes.includes(mode)) return null
+  const grant = entry.scripts.find(s => s.path === script)
+  // SCRIPTBIND: the path alone is not the grant -- the file's content must still
+  // hash to the granted sha256, checked on every invocation.
+  if (!grant || !entry.modes.includes(mode) || !scriptHashMatches(grant.path, grant.sha256)) return null
   const values = new Map()
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]

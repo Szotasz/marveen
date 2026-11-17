@@ -30,11 +30,58 @@ def main():
         store.mkdir()
         gate_path = install / 'scripts/hooks/email-approval-gate.py'
         gate = load_gate(gate_path)
-        config = {'agents': {CORPUS['agentName']: CORPUS['entry']}}
+        # SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT.
+        # The corpus entry carries the SHAPE only (a placeholder path and sha256);
+        # it is bound here to a real temp script, the expected sha256 computed from
+        # the exact bytes written at setup -- never a hardcoded digest.
+        script = install / 'runner.ext'
+        script_body = b'#!/usr/bin/env node\nconsole.log("sanctioned runner")\n'
+        script.write_bytes(script_body)
+        script_sha = hashlib.sha256(script_body).hexdigest()
+        entry = json.loads(json.dumps(CORPUS['entry']))
+        entry['scripts'] = [{'path': str(script), 'sha256': script_sha}]
+        config = {'agents': {CORPUS['agentName']: entry}}
+        bind = lambda cmd: cmd.replace('/absolute/path/to/runner.ext', str(script))  # noqa: E731
         for case in CORPUS['cases']:
-            actual = gate.agent_script_exception(case['command'], CORPUS['agentName'], config)
+            actual = gate.agent_script_exception(bind(case['command']), CORPUS['agentName'], config)
             assert bool(actual) == case['match'], case['name']
         print('PASS: shared JavaScript/Python parser corpus')
+
+        # SCRIPTBIND red cases: the path alone is not the grant. After the script
+        # path matches, the matcher reads the file's raw bytes and compares the
+        # sha256 to the granted value on EVERY invocation (also on the
+        # check_paths=False pass); missing or unreadable file, or a hash mismatch,
+        # means the invocation does not qualify (fail-closed: None).
+        wrong_sha = dict(entry, scripts=[{'path': str(script), 'sha256': 'f' * 64}])
+        gone = install / 'gone.ext'
+        missing = dict(entry, scripts=[{'path': str(gone), 'sha256': script_sha}])
+        as_dir = install / 'as-a-directory'
+        as_dir.mkdir()
+        unreadable = dict(entry, scripts=[{'path': str(as_dir), 'sha256': script_sha}])
+        for bad, path, name in ((wrong_sha, script, 'wrong granted sha256'),
+                                (missing, gone, 'missing script file'),
+                                (unreadable, as_dir, 'unreadable script file')):
+            bad_config = {'agents': {CORPUS['agentName']: bad}}
+            cmd = bind(CORPUS['cases'][0]['command']).replace(str(script), str(path))
+            assert gate.valid_agent_send_exception(bad) is True, name  # the entry itself is well-formed
+            assert gate.agent_script_exception(cmd, CORPUS['agentName'], bad_config) is None, name
+            assert gate.agent_script_exception(cmd, CORPUS['agentName'], bad_config, check_paths=False) is None, name
+        script.write_bytes(b'#!/usr/bin/env node\nconsole.log("tampered runner")\n')
+        cmd = bind(CORPUS['cases'][0]['command'])
+        assert gate.agent_script_exception(cmd, CORPUS['agentName'], config) is None, 'content changed after the grant'
+        assert gate.agent_script_exception(cmd, CORPUS['agentName'], config, check_paths=False) is None
+        script.write_bytes(script_body)
+        assert gate.agent_script_exception(cmd, CORPUS['agentName'], config) is not None, 'restored content'
+        for bad_scripts in ([], ['runner.ext'], [{'path': str(script)}],
+                            [{'path': 'runner.ext', 'sha256': script_sha}],
+                            [{'path': str(script), 'sha256': '0A' * 32}],  # uppercase hex
+                            [{'path': str(script), 'sha256': 'abcd'}],
+                            [{'path': str(script), 'sha256': script_sha, 'extra': 1}],
+                            [{'path': str(script), 'sha256': script_sha},
+                             {'path': str(script), 'sha256': '0' * 64}]):
+            assert gate.valid_agent_send_exception({**entry, 'scripts': bad_scripts}) is False, bad_scripts
+        assert gate.valid_agent_send_exception(entry) is True
+        print('PASS: script content binding (sha256 verified per invocation, fail-closed)')
 
         # REPEATENVELOPE (card f2ccb0bb, round 2): the mjs argument parser
         # returns only the FIRST value of a repeatable flag, so an entry that
@@ -47,16 +94,16 @@ def main():
             # repeatableArgs (no duplicate): without the fix the entry
             # validates and the mjs parser then returns only the first value.
             for repeatable in ([flag], list(CORPUS['entry']['repeatableArgs']) + [flag]):
-                bad = dict(CORPUS['entry'])
+                bad = dict(entry)
                 bad['valueArgs'] = [f for f in bad['valueArgs'] if f != flag]
                 bad['repeatableArgs'] = repeatable
                 assert gate.valid_agent_send_exception(bad) is False, (flag, repeatable)
                 (store / 'agent-send-exceptions.json').write_text(
-                    json.dumps({'agents': {CORPUS['agentName']: bad, 'clean': CORPUS['entry']}}))
+                    json.dumps({'agents': {CORPUS['agentName']: bad, 'clean': entry}}))
                 kept = gate.read_agent_send_exceptions()
-                assert kept == {'agents': {'clean': CORPUS['entry']}}, (flag, repeatable)
-        clean = dict(CORPUS['entry'])
-        clean['repeatableArgs'] = list(CORPUS['entry']['repeatableArgs'])
+                assert kept == {'agents': {'clean': entry}}, (flag, repeatable)
+        clean = dict(entry)
+        clean['repeatableArgs'] = list(entry['repeatableArgs'])
         assert gate.valid_agent_send_exception(clean) is True
         assert gate.valid_agent_send_exception({**clean, 'repeatableArgs': []}) is True
         (store / 'agent-send-exceptions.json').unlink()
@@ -67,7 +114,7 @@ def main():
         attachment = install / 'attachment.bin'
         body.write_bytes('Example body.\r\nSecond line.\n'.encode())
         attachment.write_bytes(b'Example attachment\x00\xff')
-        command = CORPUS['cases'][0]['command'].replace('/absolute/path/to/body.txt', str(body)).replace(
+        command = bind(CORPUS['cases'][0]['command']).replace('/absolute/path/to/body.txt', str(body)).replace(
             '/absolute/path/to/attachment.bin', str(attachment))
         (store / 'agent-send-exceptions.json').write_text(json.dumps(config))
         autonomy = store / 'autonomy-config.json'
@@ -131,6 +178,19 @@ def main():
         assert run()[0] == 2, 'level 1'
         level(3)
         assert run()[0] == 0, 'level 3'
+        # SCRIPTBIND end to end: with a fresh approval that WOULD satisfy the
+        # envelope, a wrong granted sha256 in the STORE config must keep the
+        # invocation off the exception path -- whatever the ordinary Bash
+        # analysis then decides, the approval is not consumed (the exception
+        # pass at level 2/3 is the only consumer here).
+        level(2)
+        approve(anchor)
+        (store / 'agent-send-exceptions.json').write_text(json.dumps({'agents': {
+            CORPUS['agentName']: dict(entry, scripts=[{'path': str(script), 'sha256': 'f' * 64}])}}))
+        run()
+        consumed = con.execute('SELECT consumed_at FROM approvals').fetchone()[0]
+        assert consumed is None, 'a wrong granted sha256 must not reach the exception approval path'
+        (store / 'agent-send-exceptions.json').write_text(json.dumps(config))
         body.unlink()
         assert run()[0] == 2, 'unreadable body at every level'
         con.close()

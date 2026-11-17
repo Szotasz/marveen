@@ -1,7 +1,12 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { homedir } from 'node:os'
+import { describe, it, expect, vi, afterEach, afterAll } from 'vitest'
+import { createHash } from 'node:crypto'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// after node:os / node:path / node:url on purpose: importing node:fs runs the
+// vi.mock factory below, which closes over those -- an earlier position fails
+// with "Cannot access ... before initialization"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import corpus from './fixtures/agent-send-exception-cases.json' with { type: 'json' }
 
 const file = vi.hoisted(() => ({ content: '{invalid json', unreadable: false }))
@@ -42,7 +47,20 @@ import { agentScriptException, gateDecision, readAgentSendExceptions, validAgent
 // @ts-expect-error -- plain .mjs hook script, no types
 import * as sendGate from '../../scripts/email-send-gate.mjs'
 
-const { agentName, entry, cases } = corpus
+const { agentName } = corpus
+// SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT. The
+// corpus entry carries the SHAPE only (a placeholder path and sha256); the tests
+// bind it to a real temp script and compute the expected sha256 from the exact
+// bytes written at setup -- never a hardcoded digest of a nonexistent file.
+const scriptDir = mkdtempSync(join(tmpdir(), 'agent-send-exception-'))
+const scriptFile = join(scriptDir, 'runner.ext')
+const scriptBody = '#!/usr/bin/env node\nconsole.log("sanctioned runner")\n'
+writeFileSync(scriptFile, scriptBody)
+const scriptSha = createHash('sha256').update(scriptBody).digest('hex')
+afterAll(() => { rmSync(scriptDir, { recursive: true, force: true }) })
+const bind = (cmd: string) => cmd.replaceAll('/absolute/path/to/runner.ext', scriptFile)
+const entry = { ...corpus.entry, scripts: [{ path: scriptFile, sha256: scriptSha }] }
+const cases = corpus.cases.map(c => ({ ...c, command: bind(c.command) }))
 const config = { agents: { [agentName]: entry } }
 const command = cases[0].command
 const verify = (address: string) => ['verified@example.invalid', 'copy@example.invalid'].includes(address)
@@ -63,7 +81,7 @@ describe('named-script exception', () => {
   it('allows the exact send with verified recipients', () => {
     expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
     expect(agentScriptException(command, agentName, config)).toEqual({
-      script: entry.scripts[0], mode: 'send', to: 'verified@example.invalid', cc: 'copy@example.invalid',
+      script: entry.scripts[0].path, mode: 'send', to: 'verified@example.invalid', cc: 'copy@example.invalid',
       subject: 'Example subject', bodyFile: '/absolute/path/to/body.txt', attach: ['/absolute/path/to/attachment.bin'],
     })
   })
@@ -94,7 +112,7 @@ describe('named-script exception', () => {
       .toMatchObject({ deny: true, kind: 'script-send' })
   })
   it('denies an entry with a relative script path', () => {
-    expect(decide(command, agentName, { agents: { [agentName]: { ...entry, scripts: ['runner.ext'] } } }))
+    expect(decide(command, agentName, { agents: { [agentName]: { ...entry, scripts: [{ path: 'runner.ext', sha256: scriptSha }] } } }))
       .toMatchObject({ deny: true, kind: 'script-send' })
   })
   it('treats invalid JSON and unreadable config as no exceptions', () => {
@@ -220,5 +238,73 @@ describe('repeatable envelope flags invalidate the exception entry', () => {
     expect(readAgentSendExceptions()).toEqual({ agents: { '<other-agent>': entry } })
     // and the named agent falls back to the ordinary script-send deny
     expect(decide(command, agentName, readAgentSendExceptions())).toMatchObject({ deny: true, kind: 'script-send' })
+  })
+})
+
+// SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not only
+// its path. On every invocation the matcher reads the entry script's raw bytes and
+// compares the sha256 to the granted value; a missing or unreadable file, or any byte
+// change since the grant, means the invocation does not qualify (fail-closed: it
+// falls back to the ordinary script-send deny, because the addressed run names a
+// script the gate can no longer vouch for).
+describe('the grant binds the script content (sha256, checked per invocation)', () => {
+  afterEach(() => {
+    writeFileSync(scriptFile, scriptBody)
+    file.content = '{invalid json'
+  })
+  const withScripts = (scripts: unknown) => ({ agents: { [agentName]: { ...entry, scripts } } })
+  // case[0] with the granted path swapped: every red command below keeps the
+  // sanctioned shape, so only the content binding can fail it
+  const commandAt = (granted: string) => corpus.cases[0].command.replaceAll('/absolute/path/to/runner.ext', granted)
+
+  it('(a) script content changed after the grant -> no exception', () => {
+    expect(agentScriptException(command, agentName, config)).not.toBeNull()
+    writeFileSync(scriptFile, '#!/usr/bin/env node\nconsole.log("tampered runner")\n')
+    expect(agentScriptException(command, agentName, config)).toBeNull()
+    expect(decide()).toMatchObject({ deny: true, kind: 'script-send' })
+    // the check is per invocation: restoring the bytes restores the exception
+    writeFileSync(scriptFile, scriptBody)
+    expect(agentScriptException(command, agentName, config)).not.toBeNull()
+  })
+
+  it('(b) a missing script file -> no exception', () => {
+    const gone = join(scriptDir, 'gone.ext')
+    const cfg = withScripts([{ path: gone, sha256: scriptSha }])
+    expect(agentScriptException(commandAt(gone), agentName, cfg)).toBeNull()
+    expect(decide(commandAt(gone), agentName, cfg)).toMatchObject({ deny: true, kind: 'script-send' })
+  })
+
+  it('(b) an unreadable script (a directory at the granted path) -> no exception', () => {
+    const dir = join(scriptDir, 'as-a-directory')
+    mkdirSync(dir)
+    const cfg = withScripts([{ path: dir, sha256: scriptSha }])
+    expect(agentScriptException(commandAt(dir), agentName, cfg)).toBeNull()
+    expect(decide(commandAt(dir), agentName, cfg)).toMatchObject({ deny: true, kind: 'script-send' })
+  })
+
+  it('(c) a wrong granted sha256 (valid hex, wrong value) -> no exception', () => {
+    const cfg = withScripts([{ path: scriptFile, sha256: 'f'.repeat(64) }])
+    expect(agentScriptException(command, agentName, cfg)).toBeNull()
+    expect(decide(command, agentName, cfg)).toMatchObject({ deny: true, kind: 'script-send' })
+  })
+
+  it('the entry itself stays valid in every red case above: the file, not the config, fails it', () => {
+    expect(validAgentSendException(withScripts([{ path: join(scriptDir, 'gone.ext'), sha256: scriptSha }]).agents[agentName])).toBe(true)
+    expect(validAgentSendException(withScripts([{ path: scriptFile, sha256: 'f'.repeat(64) }]).agents[agentName])).toBe(true)
+  })
+
+  it('scripts entries must be {path, sha256} objects: nonempty, no duplicate paths, absolute, 64 lowercase hex', () => {
+    expect(validAgentSendException(entry)).toBe(true)
+    expect(validAgentSendException(withScripts([]).agents[agentName])).toBe(false)
+    expect(validAgentSendException(withScripts([{ path: scriptFile, sha256: scriptSha }, { path: scriptFile, sha256: '0'.repeat(64) }]).agents[agentName])).toBe(false)
+    expect(validAgentSendException(withScripts([{ path: 'runner.ext', sha256: scriptSha }]).agents[agentName])).toBe(false)
+    expect(validAgentSendException(withScripts([{ path: scriptFile, sha256: '0A'.repeat(32) }]).agents[agentName])).toBe(false) // uppercase hex
+    expect(validAgentSendException(withScripts([{ path: scriptFile, sha256: 'abcd' }]).agents[agentName])).toBe(false)
+    expect(validAgentSendException(withScripts([{ path: scriptFile, sha256: scriptSha, extra: true }]).agents[agentName])).toBe(false)
+    expect(validAgentSendException(withScripts(['runner.ext']).agents[agentName])).toBe(false) // the old shape: strings
+    expect(validAgentSendException(withScripts([{ path: scriptFile }]).agents[agentName])).toBe(false)
+    // the reader drops a shape-invalid scripts entry and keeps valid siblings
+    file.content = JSON.stringify({ agents: { [agentName]: withScripts(['runner.ext']).agents[agentName], '<other-agent>': entry } })
+    expect(readAgentSendExceptions()).toEqual({ agents: { '<other-agent>': entry } })
   })
 })

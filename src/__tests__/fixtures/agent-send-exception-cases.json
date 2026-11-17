@@ -2,7 +2,10 @@
   "agentName": "<agent-name>",
   "entry": {
     "scripts": [
-      "/absolute/path/to/runner.ext"
+      {
+        "path": "/absolute/path/to/runner.ext",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
     ],
     "modes": [
       "draft",
