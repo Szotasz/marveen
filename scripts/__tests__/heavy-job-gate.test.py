@@ -444,7 +444,93 @@ def main():
         check("uncapped holder (unit=-): holder fields None, mem_avail_mb still logged, still 73",
               p.returncode == 73 and w[-1].get("mem_avail_mb") == 4321
               and w[-1].get("holder_mem_mb") is None and "holder_mem_mb" in w[-1], w[-1])
+        # #2832: a holder whose record says it is in its memory wait (alive pid)
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, 0)
+        os.write(fd, ("token=x pid=%d unit=%s since=x label=big phase=memory need_mb=3572 "
+                      "max_mb=3072\n" % (os.getpid(), unit)).encode())
+        p = E.run(["--wait-sec", "1", "--label", "small", "--", "true"], **fake)
+        ev = E.events()
+        w = [e for e in ev if e["event"] == "wait" and e.get("reason") == "lock"]
+        r = [e for e in ev if e.get("reason") == "lock_timeout"]
+        want = {"holder_phase": "memory", "holder_need_mb": 3572, "holder_max_mb": 3072,
+                "holder_mem_mb": 0, "mem_avail_mb": 4321}
+        check("#2832 wait/lock line: the holder is in its memory wait (phase, floor, cap, mem 0)",
+              p.returncode == 73 and w and all(w[-1].get(k) == v for k, v in want.items()), w[-1:])
+        check("#2832 lock_timeout line: the same fields",
+              r and all(r[-1].get(k) == v for k, v in want.items()), r[-1:])
+        note = "the holder's job has not started, it is waiting for memory (floor 3572 MB, available 4321 MB)"
+        check("#2832 stderr names the holder's memory wait (wait and refuse lines)",
+              p.stderr.count(note) == 2, p.stderr)
+        # the same record from a holder that is gone: no memory-wait claim
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, 0)
+        os.write(fd, ("token=x pid=%d unit=- since=x label=big phase=memory need_mb=3572 "
+                      "max_mb=3072\n" % dead.pid).encode())
+        p = E.run(["--wait-sec", "1", "--", "true"], **fake)
+        w = [e for e in E.events() if e["event"] == "wait" and e.get("reason") == "lock"]
+        check("#2832 phase=memory record of a dead pid: holder_phase run, no note",
+              w[-1].get("holder_phase") == "run" and w[-1].get("holder_mem_mb") is None
+              and "holder_need_mb" not in w[-1] and "waiting for memory" not in p.stderr, (w[-1], p.stderr))
+        # a malformed floor in the record: the phase still shows, the number is None
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, 0)
+        os.write(fd, ("token=x pid=%d unit=- since=x label=big phase=memory need_mb=12x "
+                      "max_mb=3072\n" % os.getpid()).encode())
+        p = E.run(["--wait-sec", "1", "--", "true"], **fake)
+        w = [e for e in E.events() if e["event"] == "wait" and e.get("reason") == "lock"]
+        check("#2832 malformed need_mb: holder_need_mb None, floor 'unknown' on stderr",
+              w[-1].get("holder_phase") == "memory" and w[-1].get("holder_need_mb") is None
+              and "floor unknown, available 4321 MB" in p.stderr, (w[-1], p.stderr))
         os.close(fd)
+
+    # --- #2832 end to end: a real gate holder in its memory wait, a queued job
+    # names it; once the holder is admitted the record drops phase=memory
+    with tempfile.TemporaryDirectory() as td:
+        E = Env(td, avail_mb=3159)
+        holder = subprocess.Popen([WRAPPER, "--max-mem", "3G", "--wait-sec", "20", "--label", "big",
+                                   "--", "sleep", "2"], env=E.env(), stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+        hw = []
+        t_end = time.monotonic() + 10
+        while time.monotonic() < t_end and not hw:
+            hw = [e for e in E.events() if e["event"] == "wait" and e.get("reason") == "memory"]
+            time.sleep(0.05)
+        with open(E.lock) as f:
+            rec_wait = f.read()
+        need = hw[0].get("need_mb") if hw else None
+        p = E.run(["--max-mem", "2G", "--wait-sec", "1", "--label", "small", "--", "true"])
+        w = [e for e in E.events() if e["event"] == "wait" and e.get("reason") == "lock"]
+        check("#2832 e2e: the holder logs its memory wait and its record says phase=memory",
+              bool(hw) and ("phase=memory need_mb=%s max_mb=3072" % need) in rec_wait, (hw, rec_wait))
+        check("#2832 e2e: the queued job's wait line names the holder's memory wait",
+              p.returncode == 73 and w and w[-1].get("holder_phase") == "memory"
+              and w[-1].get("holder_need_mb") == need and w[-1].get("holder_mem_mb") == 0
+              and w[-1].get("holder_max_mb") == 3072 and w[-1].get("mem_avail_mb") == 3159, w[-1:])
+        check("#2832 e2e: stderr says floor and available",
+              "waiting for memory (floor %s MB, available 3159 MB)" % need in p.stderr, p.stderr)
+        write_meminfo(E.meminfo, 8000)
+        st = []
+        t_end = time.monotonic() + 10
+        while time.monotonic() < t_end and not st:
+            st = [e for e in E.events() if e["event"] == "start" and e.get("label") == "big"]
+            time.sleep(0.05)
+        with open(E.lock) as f:
+            rec_run = f.read()
+        p = E.run(["--max-mem", "2G", "--wait-sec", "1", "--label", "small2", "--", "true"])
+        w = [e for e in E.events() if e["event"] == "wait" and e.get("reason") == "lock"]
+        check("#2832 e2e: admitted holder: the record has no phase=memory",
+              bool(st) and "phase=memory" not in rec_run and "label=big" in rec_run, (st, rec_run))
+        check("#2832 e2e: a job queued behind the running holder sees holder_phase run",
+              w and w[-1].get("label") == "small2" and w[-1].get("holder_phase") == "run"
+              and "waiting for memory" not in p.stderr, (w[-1:], p.stderr))
+        try:
+            holder.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            holder.kill()
+        check("#2832 e2e: the holder's job ran (exit 0)", holder.returncode == 0, holder.returncode)
 
     # --- lock exclusivity
     with tempfile.TemporaryDirectory() as td:
@@ -1993,7 +2079,7 @@ def short_lane():
          "    return True\n", 1, lane_limit, ()),
         ("lane-no-count", '                streak = int(prev.get("short_streak", "0")) + 1\n',
          "                streak = 1\n", 1, lane_limit, ()),
-        ("lane-count-unstarted", "    write_record(carry_tail)\n", "    write_record(lane_tail)\n", 1,
+        ("lane-count-unstarted", "    wait_tail = carry_tail\n", "    wait_tail = lane_tail\n", 1,
          lane_count_started, ()),
         ("fc-record-read", "read_record(lp, strict=True)", "read_record(lp)", 1, fc_unreadable_record, ()),
     )

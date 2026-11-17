@@ -18,6 +18,11 @@ Angol változat: [en/heavy-job-gate.md](en/heavy-job-gate.md).
 - **Memória-padló:** a feladat csak akkor indul, ha a `MemAvailable` legalább
   `max(--min-mb, keret + tartalék)`, így a legrosszabb esete (a teljes kerete) mellett
   is megmarad a tartalék a gép többi részének. Erre legfeljebb `--wait-sec`-ig vár.
+  A várakozás alatt a zárat tartja, ezért a mögötte állók is várnak (#2832). A sorban
+  álló feladat `wait` sora ezt meg is mondja: `holder_phase: "memory"`, a tartó
+  padlója (`holder_need_mb`) és kerete (`holder_max_mb`), `holder_mem_mb: 0`, a
+  stderr-en pedig: "the holder's job has not started, it is waiting for memory
+  (floor X MB, available Y MB)".
 - **Saját memóriakeret:** a feladat átmeneti `systemd-run --user --scope` alatt fut,
   `MemoryMax` / `MemorySwapMax` kerettel. Az elszabadult feladatot a saját cgroupjában
   öli meg az OOM-killer (137-es kilépési kód); a gép és a többi ügynök érintetlen marad.
