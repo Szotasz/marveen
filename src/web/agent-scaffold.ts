@@ -1224,6 +1224,11 @@ export function enforceStrictPermissionMode(
   return true
 }
 
+// Rule groups that live ONLY in the root CLAUDE.md (measured in the #2797 review): an agent excluded by
+// ROOT_CLAUDEMD_EXCLUDE_AGENTS no longer gets them. The facts-vs-guesses rule is not one of them: every started agent
+// gets it from the generated block in its own CLAUDE.md (ensureEvidenceSection, run after this function on the same start).
+export const ROOT_ONLY_RULE_GROUPS = ['kanban-write rule (card tool, not raw SQL)', 'federation policy', 'mail rules (CC, signature)']
+
 // `extraHooksPath` is a test seam (the install-local extras file); production
 // callers pass nothing and get store/extra-hooks.json.
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate, extraHooksPath?: string): void {
@@ -1348,7 +1353,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // and neither is settings.local.json: a claudeMdExcludes there is the operator's manual override and applies regardless.
   if (agentExcludesRootClaudeMd(name)) {
     existing.claudeMdExcludes = [join(PROJECT_ROOT, 'CLAUDE.md')]
-    logger.info({ agent: name }, 'root CLAUDE.md excluded for this agent (ROOT_CLAUDEMD_EXCLUDE_AGENTS)')
+    logger.info({ agent: name, lost: ROOT_ONLY_RULE_GROUPS }, `root CLAUDE.md excluded for this agent (ROOT_CLAUDEMD_EXCLUDE_AGENTS); it no longer gets: ${ROOT_ONLY_RULE_GROUPS.join('; ')}`)
   } else if (name !== MAIN_AGENT_ID) delete existing.claudeMdExcludes
   // ENVRELAXGATE1104 (Samu 67797 (b)): keys that switch the gate hooks off or rewrite their environment are dropped on
   // every spawn; every other key the file carries (effortLevel, emojiCompletionEnabled, enabledPlugins: measured on the
