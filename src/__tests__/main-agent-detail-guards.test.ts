@@ -80,4 +80,13 @@ describe('main-agent detail and lifecycle guards', () => {
     expect(redirectIndex).toBeLessThan(fetchIndex)
     expect(detailBlock).toMatch(/if\s*\(agentName === mainAgentId\(\)\)/)
   })
+
+  // #2848: the main agent's voice reply section stayed blank, only the sub-agent detail loaded it.
+  it('openMarveenDetail loads the voice config for the main id, after the read-only mode is applied', () => {
+    const block = sourceBetween(appSource, 'async function openMarveenDetail()', 'function applyMarveenReadonlyMode')
+    const readonlyAt = block.indexOf('applyMarveenReadonlyMode(true)')
+    const voiceAt = block.indexOf('loadVoiceConfig(mainAgentId())')
+    expect(readonlyAt).toBeGreaterThan(-1)
+    expect(voiceAt).toBeGreaterThan(readonlyAt)
+  })
 })
