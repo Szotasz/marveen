@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+// @ts-expect-error -- plain .mjs hook script, no types
 import { classify } from '../../scripts/hooks/bash-egress-parser.mjs'
 
 // EGRESSSTDINBYPASS1117: a shell that reads its program from a pipe is denied ("shell-stdin"), and a
