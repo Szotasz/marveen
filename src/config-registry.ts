@@ -1308,6 +1308,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   // this key is the operator's off switch. Independent of
   // CLAUDE_ROTATION_ENABLED.
   {
+    key: 'CLAUDE_ROTATION_CHECK_EVERY_MIN',
+    type: 'int',
+    default: 10,
+    min: 1,
+    max: 1440,
+    description: 'Milyen sűrűn ellenőrzi a dashboard a Claude-plan rotációt (percben). Az ellenőrzés a dashboard háttérfolyamatában fut, ügynök-kör nélkül, így egy kimerült fő ügynök is leváltható. Az első ellenőrzés 2 perccel az indulás után jön. Csak bekapcsolt rotációnál (CLAUDE_ROTATION_ENABLED=1) kérdez le bármit.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'CLAUDE_PLAN_USAGE_REFRESH',
     type: 'boolean',
     default: '1',

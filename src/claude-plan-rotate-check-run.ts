@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import {
-  decideAndRecord, pendingFleetReport, activeReadingNearLimit, activeReadingFromUsageCollect, activeReadingFromProbe,
+  decideAndRecord, pendingFleetReport, activeReadingNearLimit, activeReadingFromUsageCollect, activeReadingFromProbe, exhaustedReadingFrom429,
   type ActiveReading,
 } from './claude-plan-rotate-heartbeat.js'
 import { readClaudePlans, subAgentTokenPlanIds, type ClaudePlan } from './web/claude-plans.js'
@@ -94,9 +94,18 @@ async function probeActivePlan(plan: ClaudePlan): Promise<ActiveReading | null> 
   token = null
   const nowMs = Date.now()
   const state = readClaudePlansState()
+  // Read BEFORE this probe is recorded: "the previous probe was a header-less 429 too" (P4).
+  const previousProbe = state.plans[plan.id]?.lastProbe
   writeClaudePlansState(recordPlanObservation(state, plan.id, observationFromProbe(result, state.plans[plan.id], nowMs)))
   if (!result.ok) console.error(`claude-plan-rotate-check: active probe plan=${plan.id} error=${result.error} status=${result.httpStatus ?? '-'}`)
-  return activeReadingFromProbe(usageFromProbe(result), PROBE_SOURCE)
+  const reading = activeReadingFromProbe(usageFromProbe(result), PROBE_SOURCE)
+  if (reading || result.ok || result.error !== 'rate_limited') return reading
+  // PLANROTATEDEADLOCK1115 P4: a 429 the reading above could not use (no 5h window).
+  const exhausted = exhaustedReadingFrom429({
+    usage: usageFromProbe(result), retryAfterSec: result.retryAfterSec, previous: previousProbe, nowMs, source: PROBE_SOURCE,
+  })
+  console.error(`claude-plan-rotate-check: active probe plan=${plan.id} 429 without a 5h window: ${exhausted ? 'read as exhausted' : 'no reading (a single short header-less 429)'}`)
+  return exhausted
 }
 
 /**
