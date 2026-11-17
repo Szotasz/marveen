@@ -519,6 +519,7 @@ window._i18n.hu = {
   'agents.wizard.pending_title': 'Az ügynök elkészült, a személyisége viszont sablonból jött',
   'agents.wizard.pending_body':  'Az ügynök létrejött és működik, nem veszett el semmi. A személyiségét nem sikerült legenerálni, ezért amit alább látsz, az egy sablon. Átírhatod most itt, vagy később bármikor az ügynök beállításainál.',
   'agents.wizard.pending_detail': 'Ami nem sikerült: {detail}',
+  'agents.wizard.already_created': 'Az ügynök már létrejött ({name}). Az első lépés módosításai nem lépnek életbe, a meglévő ügynökkel folytatod.',
   'agents.model.inherit':        'Öröklött (alapértelmezett)',
   'agents.model.fable52':       'Fable 5.2 (legújabb Fable)',
   'agents.model.fable51':       'Fable 5.1',

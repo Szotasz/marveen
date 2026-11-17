@@ -90,10 +90,10 @@ describe('the Agents page toasts come from the language files', () => {
       const toasts: string[] = []
       const field = { value: '' }
       const handler = new Function(
-        'wizardCreatedName', 'agentName', 'document', 'fetch', 't', 'showToast', 'closeModal', 'agentWizardOverlay',
+        'wizardCreatedName', 'wizardTextsLoaded', 'agentName', 'document', 'fetch', 't', 'showToast', 'closeModal', 'agentWizardOverlay',
         'loadAgents', 'openAgentDetail', 'switchAgentTab', `return ${WIZARD_CREATE}`,
       )(
-        'anna', field, { getElementById: (id: string) => (id === 'wizardCreateBtn' ? btn() : field) },
+        'anna', true, field, { getElementById: (id: string) => (id === 'wizardCreateBtn' ? btn() : field) },
         async () => ({ ok: res.ok, json: async () => res.data }),
         makeT(lang), (m: string) => { toasts.push(m) }, () => {}, {}, async () => {}, async () => {}, () => {},
       ) as () => Promise<void>
@@ -110,6 +110,83 @@ describe('the Agents page toasts come from the language files', () => {
       expect(await create('hu', { ok: false, data: {} })).toEqual(['Hiba: Ismeretlen'])
       expect(await create('en', { ok: false, data: {} })).toEqual(['Error: Unknown'])
       expect(await create('en', { ok: false, data: { error: 'Name taken' } })).toEqual(['Error: Name taken'])
+    })
+  })
+
+  // #2845: Back from step 3 then Next sent a second POST /api/agents (409, or a second agent after a rename), and any
+  // error after a successful create threw the operator back to step 1.
+  describe('the wizard Next after the agent exists', () => {
+    function wizard(fetchImpl: (url: string, init?: { method?: string; body?: string }) => Promise<unknown>) {
+      const els: Record<string, { value: string; textContent: string; focus(): void }> = {}
+      const el = (id: string) => (els[id] ??= { value: id === 'agentProfile' ? 'default' : '', textContent: '', focus() {} })
+      const toasts: string[] = []
+      const posts: string[] = []
+      const f = async (url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === 'POST' && url === '/api/agents') posts.push(JSON.parse(init.body!).name)
+        return fetchImpl(url, init)
+      }
+      const w = new Function(
+        'agentName', 'agentDesc', 'agentModel', 'document', 'fetch', 't', 'showToast', 'updateWizardUI',
+        'renderWizardPendingBanner', 'setTimeout', 'FormData', 'selectedAvatarFile', 'selectedAvatar',
+        `let wizardStep = 1, wizardCreatedName = '', wizardTextsLoaded = false, wizardPersonalityPending = null, generatedClaudeMd = '', generatedSoulMd = ''
+        return { next: ${WIZARD_NEXT}, back() { wizardStep = 1 }, state: () => ({ wizardStep, wizardCreatedName }) }`,
+      )(
+        el('agentName'), el('agentDesc'), { value: 'inherit' }, { getElementById: el }, f, makeT('en'),
+        (m: string) => { toasts.push(m) }, () => {}, () => {}, (fn: () => void) => fn(), class {}, null, null,
+      ) as { next(): Promise<void>; back(): void; state(): { wizardStep: number; wizardCreatedName: string } }
+      el('agentName').value = 'anna'
+      el('agentDesc').value = 'does things'
+      return { w, el, toasts, posts }
+    }
+    const created = async (url: string) => (url === '/api/agents'
+      ? { ok: true, json: async () => ({ name: 'anna' }) }
+      : { ok: true, json: async () => ({ claudeMd: '# a', soulMd: 's' }) })
+
+    it('Back then Next goes to step 3 without a second POST, also after a rename', async () => {
+      const { w, el, toasts, posts } = wizard(created)
+      await w.next()
+      expect(w.state()).toEqual({ wizardStep: 3, wizardCreatedName: 'anna' })
+      w.back()
+      el('agentName').value = 'bella'
+      await w.next()
+      expect(posts).toEqual(['anna'])
+      expect(w.state()).toEqual({ wizardStep: 3, wizardCreatedName: 'anna' })
+      expect(toasts.at(-1)).toBe('The agent already exists (anna). Changes on the first step are not applied; you continue with the existing agent.')
+    })
+
+    it('a failed POST goes back to step 1; an error after the create does not', async () => {
+      const failed = wizard(async () => ({ ok: false, json: async () => ({ error: 'boom' }) }))
+      await failed.w.next()
+      expect(failed.w.state()).toEqual({ wizardStep: 1, wizardCreatedName: '' })
+      expect(failed.toasts).toEqual(['Error: boom'])
+
+      const later = wizard(async (url) => { if (url === '/api/agents') return created(url); throw new Error('net') })
+      await later.w.next()
+      expect(later.w.state()).toEqual({ wizardStep: 3, wizardCreatedName: 'anna' })
+      expect(later.toasts).toEqual(['Error: net'])
+      expect(later.posts).toEqual(['anna'])
+    })
+
+    it('Create leaves out a text that never loaded and is still empty, so the generated file stays', async () => {
+      const bodies: string[] = []
+      const field = { value: '' }
+      const run = (loaded: boolean) => (new Function(
+        'wizardCreatedName', 'wizardTextsLoaded', 'agentName', 'document', 'fetch', 't', 'showToast', 'closeModal', 'agentWizardOverlay',
+        'loadAgents', 'openAgentDetail', 'switchAgentTab', `return ${WIZARD_CREATE}`,
+      )(
+        'anna', loaded, field, { getElementById: (id: string) => (id === 'wizardCreateBtn' ? btn() : id === 'wizardSoulMd' ? { value: 'typed' } : field) },
+        async (_u: string, init: { body: string }) => { bodies.push(init.body); return { ok: true, json: async () => ({}) } },
+        makeT('en'), () => {}, () => {}, {}, async () => {}, async () => {}, () => {},
+      ) as () => Promise<void>)()
+      await run(false)
+      await run(true)
+      expect(bodies).toEqual([JSON.stringify({ soulMd: 'typed' }), JSON.stringify({ claudeMd: '', soulMd: 'typed' })])
+    })
+
+    it('the new toast is in both language files', () => {
+      expect(makeT('hu')('agents.wizard.already_created', { name: 'anna' })).toContain('anna')
+      expect(I18N.hu['agents.wizard.already_created']).toBeTruthy()
+      expect(I18N.en['agents.wizard.already_created']).toBeTruthy()
     })
   })
 
