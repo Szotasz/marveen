@@ -1034,6 +1034,20 @@ def main():
                                  fin.get("unit", "x") + ".scope"], capture_output=True, text=True)
             check("LIVE: the scope unit is no longer active", st.stdout.strip() != "active", st.stdout)
 
+            # a ~20 MB job under a 2G cap gets the hint from the REAL memory.peak (sampled every 0.5 s)
+            kernel = tuple(int(x) for x in os.uname().release.split("-")[0].split(".")[:2])
+            if kernel < (5, 19):
+                print("  SKIP LIVE cap hint (kernel %s has no cgroup memory.peak, needs >= 5.19)"
+                      % os.uname().release)
+            else:
+                p = E.run(["--max-mem", "2G", "--min-mb", "0", "--", "python3", "-c",
+                           "import time; b = bytearray(20 * 2**20); time.sleep(2)"])
+                fin = E.events()[-1]
+                check("LIVE: a small job under a 2G cap: finish line max_mem_hint 256M and the stderr note",
+                      p.returncode == 0 and fin.get("max_mem_hint") == "256M"
+                      and isinstance(fin.get("peak_mb"), int) and "--max-mem 256M is enough next time" in p.stderr,
+                      (p.returncode, fin, p.stderr[-300:]))
+
             # a descendant that ignores SIGTERM: stop escalates to SIGKILL (TimeoutStopSec=5s)
             os.remove(pidf)
             t0 = time.monotonic()
@@ -1165,6 +1179,7 @@ def main():
     short_lane()
     file_modes_and_cmd_cut()
     side_lane()
+    cap_hint()
 
     print()
     if fails:
@@ -2370,6 +2385,130 @@ def side_lane():
             res = scenario(fn, W, *args)
             check("mutant %s: caught by %s" % (name, fn.__name__), not res[0], res)
 
+
+# Runs the gate at argv[1] with run_child replaced: exit code argv[2], stats {"peak_mb": argv[3]},
+# so the finish path sees a chosen peak without a real cgroup (the fake scope has no memory.peak).
+HINT_RUNNER = r"""
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+rc, peak = int(sys.argv[2]), int(sys.argv[3])
+g.run_child = lambda argv, env, unit=None, max_sec=None: (rc, {"peak_mb": peak})
+sys.exit(g.main(sys.argv[4:]))
+"""
+
+
+def hint_finish(td, W):
+    """The finish line of capped runs with a given exit code and peak: the hint
+    only for exit 0, in the main lane, and a hint that lowers the run's own memory
+    floor max(--min-mb, cap + reserve)."""
+    E = Env(td)
+    py = os.path.join(os.path.dirname(W), "heavy-job-gate.py")
+    seen = []
+
+    def run(rc, peak, cap, *extra, **env):
+        p = subprocess.run([sys.executable, "-c", HINT_RUNNER, py, str(rc), str(peak)] + list(extra)
+                           + ["--max-mem", cap, "--", "true"],
+                           env=E.env(**env), capture_output=True, text=True, timeout=30)
+        fin = E.events()[-1]
+        seen.append((rc, peak, cap, extra, p.returncode, fin.get("event"), fin.get("max_mem_hint")))
+        return p, fin
+
+    def no_hint(p, fin, rc=0):
+        return (p.returncode == rc and fin.get("event") == "finish" and "max_mem_hint" not in fin
+                and "is enough next time" not in p.stderr)
+
+    # default --min-mb 2500, reserve 500: a 3G cap's floor is 3572, a 1024M one lowers it to 2500
+    p, fin = run(0, 400, "3G")
+    ok = (p.returncode == 0 and fin.get("event") == "finish" and fin.get("max_mem_hint") == "1024M"
+          and "--max-mem 1024M is enough next time" in p.stderr and "floor 3572 -> 2500 MB" in p.stderr
+          and "lock" not in p.stderr)
+    p, fin = run(1, 400, "3G")  # a failed job: its peak says nothing about what it needs
+    ok = no_hint(p, fin, rc=1) and ok
+    p, fin = run(0, 1402, "3G")  # the incident: a 3G tsc that peaked at 1402 MB
+    ok = ok and fin.get("max_mem_hint") == "2816M" and "floor 3572 -> 3316 MB" in p.stderr
+    p, fin = run(0, 1500, "3G")  # twice the peak rounds up to the cap itself: not oversized
+    ok = no_hint(p, fin) and ok
+    p, fin = run(0, 51, "1536M")  # 1536 + 500 < 2500: the floor is --min-mb either way
+    ok = no_hint(p, fin) and ok
+    p, fin = run(0, 100, "1G", "--min-mb", "0")  # the run's own --min-mb: floor 1524 -> 756
+    ok = ok and fin.get("max_mem_hint") == "256M" and "floor 1524 -> 756 MB" in p.stderr
+    p, fin = run(0, 64, "256M", "--min-mb", "0")  # 64 * 4 == 256, but the hint is the cap itself
+    ok = no_hint(p, fin) and ok
+    p, fin = run(0, 400, "3G", "--allow-uncapped", HEAVY_JOB_NO_SCOPE="1")  # no cap, no cap hint
+    ok = no_hint(p, fin) and ok
+    side = hint_side_lane(os.path.join(td, "side"), py)
+    seen.append(("side", side))
+    return ok and side[0], seen
+
+
+def hint_side_lane(td, py):
+    """A 1G job (peak 100 MB, --min-mb 0) admitted to the side lane gets no hint: its
+    real floor adds the main job's headroom and the side reserve, so the main-lane
+    floor numbers would be wrong. The same call in the main lane does get 256M."""
+    d = os.path.join(td, "gate")
+    os.makedirs(d)
+    with open(py) as f:
+        src = f.read()
+    main_guard = 'if __name__ == "__main__":'
+    if src.count(main_guard) != 1:
+        return False, "main guard not found"
+    stub = 'run_child = lambda argv, env, unit=None, max_sec=None: (0, {"peak_mb": 100})\n'
+    with open(os.path.join(d, "heavy-job-gate.py"), "w") as f:
+        f.write(src.replace(main_guard, stub + main_guard))
+    shutil.copy(WRAPPER, os.path.join(d, "heavy-job-gate.sh"))
+    W = os.path.join(d, "heavy-job-gate.sh")
+    q = SL(td, W, avail_mb=5000, cur_mb=648, file_mb=200)
+    q.hold()
+    k = q.go("K", SMALL)
+    q.until(lambda: q.line("K", "finish"))
+    q.release()
+    finish([k])
+    side_st, side_fin = q.line("K", "start"), q.line("K", "finish")
+    m = q.go("M", SMALL)  # the lock is free now: the main lane
+    finish([m])
+    main_fin = q.line("M", "finish")
+    ok = (side_st.get("side_lane") is True and "max_mem_hint" not in side_fin
+          and "side_lane" not in q.line("M", "start") and main_fin.get("max_mem_hint") == "256M")
+    return ok, (side_st, side_fin, main_fin)
+
+
+def cap_hint():
+    f = gate.cap_hint_mb
+    # (peak, cap, min_mb, reserve, expected)
+    cases = [(400, 3072, 2500, 500, 1024), (300, 4096, 2500, 500, 768), (1000, 4096, 2500, 500, 2048),
+             (51, 2048, 2500, 500, None),  # floor 2548 -> 2500: 48 MB, under one 256M step
+             (51, 2000, 2500, 500, None), (51, 1536, 2500, 500, None),  # floor is min_mb either way
+             (1402, 3072, 2500, 500, 2816),  # the incident: floor 3572 -> 3316
+             (512, 2048, 0, 500, 1024), (513, 2048, 0, 500, 1280),  # no quarter rule
+             (900, 2048, 0, 500, None), (1100, 2048, 0, 500, None),  # hint == cap / above the cap
+             (64, 256, 0, 500, None),  # the hint (256M) is not below the cap
+             (129, 1024, 0, 500, 512), (100, 512, 0, 500, 256),  # rounded up, at least 256
+             (0, 2048, 0, 500, None), (-5, 2048, 0, 500, None), (None, 2048, 0, 500, None),
+             (True, 2048, 0, 500, None)]
+    got = [(c[:4], f(*c[:4])) for c in cases]
+    check("cap_hint_mb: twice the peak rounded up to 256M (at least 256M), only when the hint lowers "
+          "max(min_mb, cap + reserve) by >= 256M; None for an unknown, zero, negative or bool peak",
+          all(f(*c[:4]) == c[4] for c in cases), got)
+    with tempfile.TemporaryDirectory() as td:
+        ok, info = hint_finish(td, WRAPPER)
+    check("cap hint: finish line max_mem_hint and the floor note only for a capped exit-0 main-lane run "
+          "whose hint lowers the floor", ok, info)
+    mutants = (
+        ("hint-no-floor-rule", "max(min_mb, cap_mb + reserve) - max(min_mb, hint + reserve) >= 256", "hint < cap_mb"),
+        ("hint-any-exit", "if scoped and code == 0 and not side:", "if scoped and not side:"),
+        ("hint-side-lane", "if scoped and code == 0 and not side:", "if scoped and code == 0:"),
+    )
+    with tempfile.TemporaryDirectory() as mtd:
+        for name, old, new in mutants:
+            W = mutant_wrapper(mtd, name, old, new)
+            if W is None:
+                check("mutant %s: applies to the gate source" % name, False, "pattern not found")
+                continue
+            with tempfile.TemporaryDirectory() as td:
+                ok, info = hint_finish(td, W)
+            check("mutant %s: caught by hint_finish" % name, not ok, info)
 
 if __name__ == "__main__":
     sys.exit(main())

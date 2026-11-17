@@ -35,7 +35,10 @@ What it does, in order:
      job; one that still does is logged (finish line scope_stop=leftover) and warned.
   5. Propagates the command's exit code (signal death -> 128 + signo).
   6. Appends start / wait / refuse / finish lines (JSON, one per line) to the
-     log, store/heavy-job-log.jsonl by default.
+     log, store/heavy-job-log.jsonl by default. A capped main-lane job that exited 0
+     gets max_mem_hint (twice its peak, rounded up to 256M, at least 256M) on its
+     finish line and a stderr note, only if that hint lowers the memory floor by at
+     least 256M.
 
 Configuration (environment; a command-line flag wins over its variable):
   HEAVY_JOB_STORE       directory of the lock, the queue and the log
@@ -396,6 +399,20 @@ def log(rec):
         pass
     finally:
         os.close(fd)
+
+
+def cap_hint_mb(peak_mb, cap_mb, min_mb, reserve):
+    """Suggested --max-mem in MB: twice the job's peak, rounded up to 256M (at least 256M),
+    and only if it lowers the memory floor max(min_mb, cap + reserve) by at least 256M
+    (so it is also below the cap). None otherwise: unknown peak, a cap that was not
+    oversized, or a cap whose floor is min_mb anyway.
+    shortcut: one run's peak, sampled every 0.5 s (a spike in the job's last half second
+    can be missed); a job whose memory varies run to run needs the caller's judgement."""
+    if not isinstance(peak_mb, int) or isinstance(peak_mb, bool) or peak_mb <= 0:
+        return None
+    hint = max(256, -(-2 * peak_mb // 256) * 256)
+    # at least one 256M step of floor: a 48 MB drop (2048M cap at the 2500 MB min-mb) is noise
+    return hint if max(min_mb, cap_mb + reserve) - max(min_mb, hint + reserve) >= 256 else None
 
 
 def say(msg):
@@ -1689,6 +1706,16 @@ def main(argv=None):
         say("STOPPED: the job was still running after --max-sec %ds and was stopped by the gate "
             "(whole scope); exit %d (the killed job's own code: %s)"
             % (max_sec, EXIT_RUNTIME_LIMIT, stats.get("killed_exit")))
+    # an oversized cap raises the memory floor; a side-lane job's floor is computed differently: no hint
+    hint = None
+    if scoped and code == 0 and not side:
+        hint = cap_hint_mb(stats.get("peak_mb"), cap_mb, opts["min_mb"], reserve)
+    if hint:
+        rec["max_mem_hint"] = "%dM" % hint
+        say("note: the job peaked at %d MB of its %d MB cap; --max-mem %dM is enough next time and "
+            "lowers the memory floor %d -> %d MB"
+            % (stats["peak_mb"], cap_mb, hint, max(opts["min_mb"], cap_mb + reserve),
+               max(opts["min_mb"], hint + reserve)))
     if scoped and code in (137, 143) and not stats.get("forwarded_signals"):
         signame = "SIGKILL" if code == 137 else "SIGTERM"
         rec["stopped_by_signal"] = signame
