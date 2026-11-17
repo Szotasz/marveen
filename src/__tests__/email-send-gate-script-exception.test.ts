@@ -102,11 +102,10 @@ describe('named-script exception', () => {
   // B2 (card f2ccb0bb R4): an interpreter outside the exact allowlist leaves the
   // command without an exception. The matcher-level deny is pinned case by case in
   // the parser conformance block below; at the gate level the property that matters
-  // is that none of them can pass AS the exception. The interpreter cases are kept
-  // out of the deny loop: the ordinary Bash analysis denies the node-basename
-  // shapes (asserted right below), but it has never recognized a nodejs-basename
-  // interpreter at an absolute path (NODEISH has no 'nodejs') -- a pre-existing
-  // limit of the hard gate, independent of the exception machinery.
+  // is that none of them can pass AS the exception. R5 (okostodor 131632) closed the
+  // nodejs-basename gap: the ordinary Bash analysis recognizes `nodejs`, so EVERY red
+  // interpreter case now falls back to the ordinary script-send deny, node- and
+  // nodejs-basename alike.
   const interpreterRed = cases.filter(c => !c.match && c.name.startsWith('interpreter '))
   for (const c of cases.filter(c => !c.match && !c.name.startsWith('innocent') && !c.name.startsWith('interpreter '))) {
     it(`falls through to the existing deny: ${c.name}`, () => {
@@ -118,11 +117,9 @@ describe('named-script exception', () => {
       expect(decide(c.command)).not.toEqual({ deny: false, kind: 'script-exception' })
     }
   })
-  it('the fake-interpreter attack shapes fall back to the ordinary script-send deny', () => {
-    for (const name of ['interpreter /tmp/x/node', 'interpreter /absolute/path/to/node']) {
-      const c = cases.find(x => x.name === name)
-      expect(c).toBeDefined()
-      expect(decide(c!.command)).toMatchObject({ deny: true, kind: 'script-send' })
+  it('every interpreter outside the allowlist falls back to the ordinary script-send deny (R5)', () => {
+    for (const c of interpreterRed) {
+      expect(decide(c.command)).toMatchObject({ deny: true, kind: 'script-send' })
     }
   })
   it('denies an identity with no entry', () => {

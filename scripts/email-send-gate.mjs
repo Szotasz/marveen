@@ -294,7 +294,13 @@ const SENDPY = /^send\.py$/i
 // the free-threaded python3.13t) is the same python; the old /^python3?$/ let it
 // through as "not an interpreter".
 const PYTHON = /^python(3(\.\d+t?)?)?$/i
-const NODEISH = /^(node|tsx|ts-node|deno|bun|npx)$/i
+// F2CCB0BB R5 (leader decision okostodor 131632): 'nodejs' is node-ish. The ordinary Bash
+// analysis must recognize a nodejs-basename interpreter -- the bare `nodejs` on PATH,
+// /usr/bin/nodejs, /usr/local/bin/nodejs, any absolute path -- so a script send run that
+// way gets the script-send deny instead of passing ungated (measured R4 gap). This is the
+// ORDINARY analysis only; the exception matcher's exact interpreter allowlist
+// (NODE_INTERPRETERS, owner decision 131617) is unchanged on purpose.
+const NODEISH = /^(node|nodejs|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
 const CURLISH = /^(curl|wget|http)$/i
@@ -2423,8 +2429,9 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   if (UNDECIDABLE_PATH.test(script)) return true
   if (addressed && relativeUnderUndecidableCd(script, cwd, cmdWords)) return true
   let paths = resolveScriptPaths(script, cwd, cmdWords)
-  if (prog === 'node' && !/\.[^/]*$/.test(basename(script))) {
+  if ((prog === 'node' || prog === 'nodejs') && !/\.[^/]*$/.test(basename(script))) {
     // Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+    // nodejs is the same runtime as node, so the extensionless-load rule applies to it too.
     if (addressed && paths.some((p) => readScript(p + '.node', SHEBANG_READ_LIMIT) !== null)) return true
     paths = paths.flatMap((p) => [p, p + '.js', p + '.json'])
   }

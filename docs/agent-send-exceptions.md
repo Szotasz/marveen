@@ -56,7 +56,10 @@ the bare `node` or `nodejs` (as found on `PATH`), `/usr/bin/node`,
 `/usr/local/bin/node`, and the two-token `/usr/bin/env` + `node`. Every other
 absolute interpreter path -- `/usr/bin/nodejs`, `/usr/local/bin/nodejs`,
 `/tmp/x/node`, anything else -- gets no exception: the command no longer
-matches the grant and the ordinary gate decisions apply. The reason: a
+matches the grant and the ordinary gate decisions apply. For a command naming a
+script that decision is the script-send deny: the ordinary analysis recognizes
+the `nodejs` basename as node-ish (2026-11-17), so a nodejs-basename interpreter
+outside the allowlist is denied like any other ungated send script. The reason: a
 writable fake interpreter at an arbitrary path would run instead of the
 granted, hash-verified script, so the shape of the interpreter path can carry
 no trust.

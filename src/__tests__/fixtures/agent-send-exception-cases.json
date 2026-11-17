@@ -151,6 +151,11 @@
       "match": false
     },
     {
+      "name": "interpreter /usr/local/bin/nodejs",
+      "command": "/usr/local/bin/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
       "name": "interpreter /usr/bin/env node",
       "command": "/usr/bin/env node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
       "match": true

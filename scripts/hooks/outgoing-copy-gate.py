@@ -119,7 +119,13 @@ _PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
 # felismeres-szemantikat visel, es ezt kozos eset-lista orzi
 # (send-invocation-cases.json + konformancia-teszt): a divergencia
 # teszt-hibakent jelenjen meg, ne incidenskent (Marveen, msg 14289).
-_NODEISH = re.compile(r"^(node|tsx|ts-node|deno|bun|npx)$", re.I)
+# F2CCB0BB R5 (leader decision okostodor 131632): 'nodejs' is node-ish. The ordinary Bash
+# analysis must recognize a nodejs-basename interpreter -- the bare `nodejs` on PATH,
+# /usr/bin/nodejs, /usr/local/bin/nodejs, any absolute path -- so a script send run that
+# way gets the script-send deny instead of passing ungated (measured R4 gap). This is the
+# ORDINARY analysis only; the exception matcher's exact interpreter allowlist
+# (_NODE_INTERPRETERS, owner decision 131617) is unchanged on purpose.
+_NODEISH = re.compile(r"^(node|nodejs|tsx|ts-node|deno|bun|npx)$", re.I)
 _GRAPHMAIL = re.compile(r"^graph-mail(\.ts|\.js)?$", re.I)
 _WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
 _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
@@ -2361,8 +2367,9 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
     if addressed and _relative_under_undecidable_cd(script, cwd, cmd_words):
         return True  # MAILGATESCRIPT1027 R1: a relative script after a cd that cannot be resolved: fail-closed
     paths = _resolve_script_paths(script, cwd, cmd_words)
-    if prog == "node" and not re.search(r"\.[^/]*$", _basename(script)):
+    if prog in ("node", "nodejs") and not re.search(r"\.[^/]*$", _basename(script)):
         # Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+        # nodejs is the same runtime as node, so the extensionless-load rule applies to it too.
         if addressed and any(read_script(p + ".node", _SHEBANG_READ_LIMIT) is not None for p in paths):
             return True
         paths = [c for p in paths for c in (p, p + ".js", p + ".json")]
