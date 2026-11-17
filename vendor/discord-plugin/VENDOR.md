@@ -34,6 +34,18 @@
       `shardReconnecting`/`shardDisconnect`), not `client.isReady()`: in discord.js 14.25.1
       `Client#destroy()` leaves `ws.destroyed` true for good, and a second `destroy()` does nothing, so
       the reconnect resets it before logging in again.
+  - Hermes parity, PR3:
+    - D3: "typing" is renewed every 9 s until the reply goes to that channel, at most 10 min (never for a
+      recovered message);
+    - A4: per channel (`DISCORD_CHANNEL_POLICY` `"history": true`, off by default) an addressed message gets
+      what the allowed senders said since the bot's last message, max 20, in a marked
+      `[Recent channel messages]` block;
+    - D8: `reply` takes an `embed` and a `select` menu; a choice comes back like a button click
+      (`select="true"`), through the same access check;
+    - G1: a read-only `discord_info` tool (servers, channels, roles, pins, members), only for servers that have
+      an opted-in channel;
+    - A5: an edit goes through the gate again (`edited="1"`); a delete is reported (`deleted="1"`) only for a
+      message that reached the session (bounded memory, 1000 ids).
 - **How it gets in**: `scripts/patch-discord-plugin.py`, at every channel start, puts the overlay
   over a cached `server.ts` ONLY when that file is this exact upstream version (or our own earlier
   output). Any other file -- a plugin update -- is left as shipped, with one loud log line.

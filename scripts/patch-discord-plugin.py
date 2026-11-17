@@ -59,6 +59,8 @@ EXT_CONFIG = "marveen-ext.json"
 SNOWFLAKE = re.compile(r"^[1-9][0-9]{16,19}$")
 # The overlay's id shape for channels and roles (marveen-ext.ts SNOWFLAKE_ID).
 SNOWFLAKE_ID = re.compile(r"^[0-9]{15,20}\Z")
+# DISCORD_CHANNEL_POLICY's on/off keys per channel, as the overlay's parseChannelPolicy reads them.
+CHANNEL_POLICY_FLAGS = ("history",)
 
 
 def log(msg):
@@ -129,7 +131,7 @@ def settings(install_dir):
         log("LOUD: DISCORD_OWNER_USER_ID is set but is not a Discord user id -- NOT used")
         owner = ""
     backfill = tg.flag_setting(install_dir, "DISCORD_BACKFILL", True)
-    # DISCORD_CHANNEL_POLICY (overrides-only): per-channel extras, e.g. {"<channel>": {"allowRoles": ["<role>"]}}.
+    # DISCORD_CHANNEL_POLICY (overrides-only): per-channel extras, e.g. {"<channel>": {"allowRoles": ["<role>"], "history": true}}.
     # Passed through as parsed JSON; the overlay keeps only well-formed entries (marveen-ext.ts parseChannelPolicy).
     policy = {}
     raw_policy = (override_value(install_dir, "DISCORD_CHANNEL_POLICY") or "").strip(tg.JS_TRIM)
@@ -157,6 +159,13 @@ def channel_policy_drops(policy):
         if not isinstance(v, dict):
             out.append(f"channel {ch}: not an object")
             continue
+        for k, flag in v.items():
+            if k == "allowRoles":
+                continue
+            if k not in CHANNEL_POLICY_FLAGS:
+                out.append(f"channel {ch}: unknown key {k!r}")
+            elif flag is not True and flag is not False:
+                out.append(f"channel {ch}: {k} is {flag!r}, only a literal true turns it on")
         roles = v.get("allowRoles")
         if roles is None:
             continue

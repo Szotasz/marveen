@@ -4,7 +4,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
-export type ExtConfig = { ownerUserId: string; backfill: boolean; channelPolicy: Record<string, { allowRoles: string[] }> }
+export type ExtConfig = { ownerUserId: string; backfill: boolean; channelPolicy: ChannelPolicy }
 
 const SNOWFLAKE = /^[1-9][0-9]{16,19}$/
 
@@ -297,7 +297,7 @@ export function forwardedParts(snapshots: ReadonlyArray<{ content: string; attac
 
 // B1: per-channel extras from DISCORD_CHANNEL_POLICY (an owner-only setting; access.json's group object is
 // overwritten by `/discord:access group add`, so it cannot hold them). Junk is dropped, never widened.
-export type ChannelPolicy = Record<string, { allowRoles: string[] }>
+export type ChannelPolicy = Record<string, { allowRoles: string[]; history?: true }>
 
 export function parseChannelPolicy(raw: unknown): ChannelPolicy {
   const out: ChannelPolicy = {}
@@ -306,7 +306,8 @@ export function parseChannelPolicy(raw: unknown): ChannelPolicy {
     if (!SNOWFLAKE_ID.test(ch) || !v || typeof v !== 'object') continue
     const roles = (v as { allowRoles?: unknown }).allowRoles
     const allowRoles = Array.isArray(roles) ? roles.filter((r): r is string => typeof r === 'string' && SNOWFLAKE_ID.test(r)) : []
-    if (allowRoles.length > 0) out[ch] = { allowRoles }
+    const history = (v as { history?: unknown }).history === true // PR3 A4: only a literal true turns it on
+    if (allowRoles.length > 0 || history) out[ch] = history ? { allowRoles, history } : { allowRoles }
   }
   return out
 }
@@ -368,4 +369,216 @@ export function reconnectDecision(history: readonly number[], now: number): { al
   const last = history.length > 0 ? Math.max(...history) : -Infinity
   const waitMs = Math.max(0, last + gap - now)
   return waitMs > 0 ? { allowed: false, waitMs, reason: `backoff: ${Math.ceil(waitMs / 60_000)} min left` } : { allowed: true, waitMs: 0, reason: '' }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR3 (Hermes parity): D3 continuous typing, A4 channel history, D8 embed + select, G1 discord_info, A5 edit/delete
+// ---------------------------------------------------------------------------------------------------------------
+
+// D3: Discord shows "typing" for ~10 s per call. It is renewed until the reply goes to that channel, at most 10 min.
+export const TYPING = { intervalMs: 9_000, maxMs: 10 * 60_000 } as const
+
+export class TypingKeeper {
+  private readonly running = new Map<string, ReturnType<typeof setInterval>>()
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  start(channelId: string, send: () => Promise<unknown>): void {
+    this.stop(channelId)
+    const fire = () => { void send().catch(() => {}) }
+    fire()
+    const until = this.now() + TYPING.maxMs
+    const timer = setInterval(() => (this.now() >= until ? this.stop(channelId) : fire()), TYPING.intervalMs)
+    ;(timer as { unref?: () => void }).unref?.()
+    this.running.set(channelId, timer)
+  }
+
+  stop(channelId: string): void {
+    const timer = this.running.get(channelId)
+    if (timer === undefined) return
+    clearInterval(timer)
+    this.running.delete(channelId)
+  }
+
+  active(channelId: string): boolean {
+    return this.running.has(channelId)
+  }
+}
+
+// A4: when the bot is addressed in a channel that opted in ("history": true), what was said there since the bot's
+// own last message, so it does not answer blind. Only senders the gate would let speak; bots never.
+export const HISTORY = { fetchLimit: 50, maxMessages: 20, maxCharsPerMessage: 300 } as const
+
+export type HistoryCandidate = { id: string; authorId: string; authorBot: boolean; username: string; content: string; createdTimestamp: number }
+
+// The messages after our own last one, oldest first, no bots. The caller passes those fetched BEFORE the mention.
+export function historyWindow(candidates: readonly HistoryCandidate[], selfId: string): HistoryCandidate[] {
+  const sorted = candidates.filter(c => SNOWFLAKE_ID.test(c.id)).sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+  let start = 0
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (sorted[i]!.authorId === selfId) { start = i + 1; break }
+  }
+  return sorted.slice(start).filter(c => !c.authorBot && c.authorId !== selfId)
+}
+
+// The marked block in front of the content: only the allowed senders, the newest 20, one line per message
+// (newlines folded, as fetch_messages does), so a multi-line message cannot forge more rows.
+export function historyBlock(window: readonly HistoryCandidate[], allowed: ReadonlySet<string>): { text: string; count: number } {
+  const take = window.filter(c => allowed.has(c.authorId)).slice(-HISTORY.maxMessages)
+  if (take.length === 0) return { text: '', count: 0 }
+  const lines = take.map(c => `[${new Date(c.createdTimestamp).toISOString()}] ${oneLine(c.username, 100)}: ${oneLine(c.content, HISTORY.maxCharsPerMessage)}`)
+  return { text: `[Recent channel messages]\n${lines.join('\n')}\n[/Recent channel messages]\n\n`, count: take.length }
+}
+
+// D8: reply's embed. Discord's limits, checked before anything is sent (an over-long embed rejects the whole send).
+export const EMBED_LIMITS = { title: 256, description: 4096, fields: 25, fieldName: 256, fieldValue: 1024, total: 6000 } as const
+
+export type EmbedData = { title?: string; description?: string; color?: number; fields?: Array<{ name: string; value: string; inline?: true }> }
+
+const len = (t: string) => [...t].length
+
+export function embedSpec(raw: unknown): EmbedData | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('embed must be an object')
+  const r = raw as Record<string, unknown>
+  const str = (k: 'title' | 'description', max: number): string | undefined => {
+    const v = r[k]
+    if (v === undefined || v === null || v === '') return undefined
+    if (typeof v !== 'string') throw new Error(`embed.${k} must be a string`)
+    if (len(v) > max) throw new Error(`embed.${k} is longer than ${max} characters`)
+    return v
+  }
+  const out: EmbedData = {}
+  const title = str('title', EMBED_LIMITS.title)
+  const description = str('description', EMBED_LIMITS.description)
+  if (title !== undefined) out.title = title
+  if (description !== undefined) out.description = description
+  if (r.color !== undefined && r.color !== null) {
+    if (typeof r.color !== 'number' || !Number.isInteger(r.color) || r.color < 0 || r.color > 0xffffff) throw new Error('embed.color must be an integer 0-16777215')
+    out.color = r.color
+  }
+  if (r.fields !== undefined && r.fields !== null) {
+    if (!Array.isArray(r.fields)) throw new Error('embed.fields must be an array')
+    if (r.fields.length > EMBED_LIMITS.fields) throw new Error(`embed.fields: max ${EMBED_LIMITS.fields}`)
+    out.fields = r.fields.map((f, i) => {
+      const name = typeof f?.name === 'string' ? f.name.trim() : ''
+      const value = typeof f?.value === 'string' ? f.value.trim() : ''
+      if (!name || !value) throw new Error(`embed.fields[${i}]: name and value are required`)
+      if (len(name) > EMBED_LIMITS.fieldName) throw new Error(`embed.fields[${i}].name is longer than ${EMBED_LIMITS.fieldName}`)
+      if (len(value) > EMBED_LIMITS.fieldValue) throw new Error(`embed.fields[${i}].value is longer than ${EMBED_LIMITS.fieldValue}`)
+      return f?.inline === true ? { name, value, inline: true as const } : { name, value }
+    })
+  }
+  if (out.title === undefined && out.description === undefined && (out.fields?.length ?? 0) === 0) throw new Error('embed needs a title, a description or fields')
+  const total = [out.title ?? '', out.description ?? '', ...(out.fields ?? []).flatMap(f => [f.name, f.value])].reduce((n, t) => n + len(t), 0)
+  if (total > EMBED_LIMITS.total) throw new Error(`embed is ${total} characters in all (max ${EMBED_LIMITS.total})`)
+  return out
+}
+
+// D8: reply's select menu. The customId is fixed; an option's value is its index, and the label the session gets
+// back is looked up in the message's own component (selectedLabel), never taken from what the client sent.
+export const SELECT_CUSTOM_ID = 'select:choice'
+export const SELECT_LIMITS = { options: 25, label: 100, description: 100, placeholder: 150 } as const
+
+export type SelectData = { placeholder?: string; options: Array<{ label: string; value: string; description?: string }> }
+
+export function selectSpec(raw: unknown): SelectData | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('select must be an object')
+  const r = raw as Record<string, unknown>
+  if (!Array.isArray(r.options) || r.options.length === 0) throw new Error('select.options must be a non-empty array')
+  if (r.options.length > SELECT_LIMITS.options) throw new Error(`select: max ${SELECT_LIMITS.options} options`)
+  const seen = new Set<string>()
+  const options = r.options.map((o, i) => {
+    const label = typeof o?.label === 'string' ? o.label.trim() : ''
+    if (!label) throw new Error(`select option ${i}: label is required`)
+    if (len(label) > SELECT_LIMITS.label) throw new Error(`select option ${i}: label longer than ${SELECT_LIMITS.label} chars`)
+    if (seen.has(label)) throw new Error(`select option ${i}: duplicate label "${label}"`)
+    seen.add(label)
+    const description = typeof o?.description === 'string' && o.description.trim() ? o.description.trim() : undefined
+    if (description !== undefined && len(description) > SELECT_LIMITS.description) throw new Error(`select option ${i}: description longer than ${SELECT_LIMITS.description} chars`)
+    return description === undefined ? { label, value: String(i) } : { label, value: String(i), description }
+  })
+  const placeholder = typeof r.placeholder === 'string' && r.placeholder.trim() ? r.placeholder.trim() : undefined
+  if (placeholder !== undefined && len(placeholder) > SELECT_LIMITS.placeholder) throw new Error(`select.placeholder longer than ${SELECT_LIMITS.placeholder} chars`)
+  return placeholder === undefined ? { options } : { placeholder, options }
+}
+
+// A message has at most 5 component rows: the buttons take one per 5, the select a whole row.
+export const MAX_COMPONENT_ROWS = 5
+
+export function selectedLabel(options: ReadonlyArray<{ label: string; value: string }>, values: readonly string[]): string | null {
+  if (values.length !== 1) return null
+  return options.find(o => o.value === values[0])?.label ?? null
+}
+
+// G1: discord_info, read-only. Every action and what it needs; nothing here writes.
+export const INFO_ACTIONS = {
+  list_guilds: [],
+  server_info: ['guild_id'],
+  list_channels: ['guild_id'],
+  channel_info: ['channel_id'],
+  list_roles: ['guild_id'],
+  list_pins: ['channel_id'],
+  member_info: ['guild_id', 'user_id'],
+  search_members: ['guild_id', 'query'],
+} as const satisfies Record<string, readonly string[]>
+
+export type InfoAction = keyof typeof INFO_ACTIONS
+export type InfoRequest = { action: InfoAction; guild_id?: string; channel_id?: string; user_id?: string; query?: string }
+
+export function infoRequest(args: Record<string, unknown>): InfoRequest {
+  const action = args.action
+  if (typeof action !== 'string' || !Object.hasOwn(INFO_ACTIONS, action)) throw new Error(`action must be one of: ${Object.keys(INFO_ACTIONS).join(', ')}`)
+  const out: Record<string, string> = { action }
+  for (const k of INFO_ACTIONS[action as InfoAction] as readonly string[]) {
+    const v = args[k]
+    if (typeof v !== 'string' || !v.trim()) throw new Error(`${action} needs ${k}`)
+    if (k !== 'query' && !SNOWFLAKE_ID.test(v)) throw new Error(`${k} must be an id`)
+    out[k] = k === 'query' ? [...v.trim()].slice(0, 100).join('') : v
+  }
+  return out as InfoRequest
+}
+
+export const SEARCH_MEMBERS_LIMIT = 10
+
+// One line per item: a name or topic is user-controlled text, so newlines are folded as fetch_messages does.
+export function oneLine(text: string | null | undefined, max = 200): string {
+  const flat = (text ?? '').replace(/[\r\n]+/g, ' ⏎ ')
+  return len(flat) > max ? [...flat].slice(0, max).join('') + '…' : flat
+}
+
+// G1 is limited to the servers the bot is actually used in: those with an opted-in channel.
+export function allowedGuildIds(channelGuild: ReadonlyMap<string, string | null | undefined>): Set<string> {
+  return new Set([...channelGuild.values()].filter((g): g is string => typeof g === 'string' && SNOWFLAKE_ID.test(g)))
+}
+
+// A5: message ids that reached the session, so a delete is reported only for those. Bounded, oldest dropped first.
+export const DELIVERED_MAX = 1000
+
+export class BoundedIds {
+  private readonly ids = new Set<string>()
+
+  constructor(private readonly max: number = DELIVERED_MAX) {}
+
+  add(id: string): void {
+    this.ids.delete(id)
+    this.ids.add(id)
+    while (this.ids.size > this.max) this.ids.delete(this.ids.values().next().value!)
+  }
+
+  // Reported once: a delete takes the id out.
+  take(id: string): boolean {
+    return this.ids.delete(id)
+  }
+
+  get size(): number {
+    return this.ids.size
+  }
+}
+
+// A5: an edit goes on only when the text changed: Discord also sends an update when a link preview appears.
+// No old text (the message was not in the cache) means it is not known what changed: not passed on.
+export function editWorthDelivering(oldContent: string | null | undefined, newContent: string | null | undefined): boolean {
+  return typeof oldContent === 'string' && (newContent ?? '') !== oldContent
 }

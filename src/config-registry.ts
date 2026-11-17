@@ -135,6 +135,8 @@ export function parseStoreWatchExclude(raw: string | undefined): Set<string> {
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
 // A Discord id, exactly as the Discord overlay's parseChannelPolicy accepts it (marveen-ext.ts SNOWFLAKE_ID).
 const DISCORD_SNOWFLAKE_RE = /^[0-9]{15,20}$/
+// DISCORD_CHANNEL_POLICY's on/off keys per channel, as the overlay's parseChannelPolicy reads them.
+const DISCORD_CHANNEL_POLICY_FLAGS = ['history']
 
 // True for an absolute http(s) URL, e.g. "https://marveen.example.com" or "http://localhost:3420/prefix". A value with
 // no scheme ("marveen", "localhost:3420"), another scheme or any whitespace is not one: such a value, glued in front
@@ -1267,7 +1269,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'DISCORD_CHANNEL_POLICY',
     type: 'string',
     default: '',
-    description: 'Discord csatornánkénti kiegészítések (csak DISCORD_PLUGIN_EXT mellett), JSON: {"<csatorna-ID>": {"allowRoles": ["<szerep-ID>", ...]}}. Ha egy csatornához szerepek vannak megadva, ott az írhat a botnak, aki a csatorna engedélyezett felhasználói között van, VAGY rendelkezik valamelyik szereppel (üres felhasználói lista mellett csak a szerep birtokosai). Az eszköz-jóváhagyás ettől független, az mindig csak a gazdáé. A hibás JSON-t a csatorna-indítás egy sorral jelzi és figyelmen kívül hagyja. A csatorna következő indításakor lép életbe.',
+    description: 'Discord csatornánkénti kiegészítések (csak DISCORD_PLUGIN_EXT mellett), JSON: {"<csatorna-ID>": {"allowRoles": ["<szerep-ID>", ...], "history": true}}. A "history": true (alapból ki) a botnak szóló üzenet elé teszi, amit a csatornában a bot utolsó üzenete óta írtak (legfeljebb 20, csak az írásra jogosultaktól). Ha egy csatornához szerepek vannak megadva, ott az írhat a botnak, aki a csatorna engedélyezett felhasználói között van, VAGY rendelkezik valamelyik szereppel (üres felhasználói lista mellett csak a szerep birtokosai). Az eszköz-jóváhagyás ettől független, az mindig csak a gazdáé. A hibás JSON-t a csatorna-indítás egy sorral jelzi és figyelmen kívül hagyja. A csatorna következő indításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
@@ -1286,6 +1288,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       for (const [ch, v] of Object.entries(o as Record<string, unknown>)) {
         if (!DISCORD_SNOWFLAKE_RE.test(ch)) return `Nem Discord csatorna-ID: ${JSON.stringify(ch)}. / Not a Discord channel id: ${JSON.stringify(ch)}.`
         if (!v || typeof v !== 'object' || Array.isArray(v)) return `${ch}: JSON-objektum kell. / ${ch}: a JSON object is required.`
+        // The overlay honours only a literal true and ignores unknown keys: a typo ("histroy") or "true" would
+        // be saved and silently do nothing.
+        for (const [k, flag] of Object.entries(v as Record<string, unknown>)) {
+          if (k === 'allowRoles') continue
+          if (!DISCORD_CHANNEL_POLICY_FLAGS.includes(k)) {
+            return `${ch}: ismeretlen kulcs: ${JSON.stringify(k)} (ismert: allowRoles, ${DISCORD_CHANNEL_POLICY_FLAGS.join(', ')}). / ${ch}: unknown key ${JSON.stringify(k)} (known: allowRoles, ${DISCORD_CHANNEL_POLICY_FLAGS.join(', ')}).`
+          }
+          if (typeof flag !== 'boolean') return `${ch}.${k}: true vagy false kell (idézőjel nélkül). / ${ch}.${k}: true or false is required (no quotes).`
+        }
         if (!('allowRoles' in v)) continue
         const roles = (v as { allowRoles: unknown }).allowRoles
         if (!Array.isArray(roles)) return `${ch}.allowRoles: lista kell. / ${ch}.allowRoles: a list is required.`
