@@ -4400,6 +4400,8 @@ async function openMarveenDetail() {
     }
   } catch {}
   applyMarveenReadonlyMode(true)
+  // The main agent's voice reply section stayed blank: only the sub-agent detail loaded it (#2848).
+  loadVoiceConfig(mainAgentId())
 
   // Telegram tab -- without this the tab stays in the default "not connected"
   // view even though the bot is running and receiving messages.
