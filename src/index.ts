@@ -27,6 +27,7 @@ import { runLogRotationSweep, LOG_ROTATION_SWEEP_MS } from './web/log-rotation.j
 import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
+import { removeCredentialTmpLeftovers } from './web/agent-package/remote.js'
 import { endAllDetachedGroups } from './web/detached-groups.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
@@ -500,6 +501,15 @@ async function main(): Promise<void> {
   // Database
   initDatabase()
   logger.info('Adatbazis inicializalva')
+
+  // MIOAGENTINSTALL1114 T3: an atomic write of the agent package credential interrupted between write and rename
+  // leaves its tmp file (holding the token) in the store; nothing else ever removes it.
+  try {
+    const removed = removeCredentialTmpLeftovers()
+    if (removed > 0) logger.info({ removed }, 'agent package credential: interrupted-write leftovers removed')
+  } catch (err) {
+    logger.warn({ err }, 'agent package credential leftover cleanup did not run')
+  }
 
   // GROMZOGATECONF1030 (c): the sub-agents' sender-role gates move from their own agent-config.json (which the agent
   // can write) into the store, which only the dashboard writes. Once: an existing store file means it is done.

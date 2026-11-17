@@ -111,6 +111,8 @@ done
 # worth a place in a restore either, so they stay out of the archive.
 rm -rf "$OUT"; mkdir -p "$OUT"
 printf '%s\n' "$TMPS" | while IFS= read -r n; do printf 'half-written' > "$FAKE/store/$n"; done
+# The agent package credential (MIOAGENTINSTALL1114, plan 6.4) is a per-machine token: never in a backup.
+printf '{"schema":1}' > "$FAKE/store/agent-package-credential.json"
 set +e
 OUTPUT2="$(cd "$FAKE" && HOME="$FHOME" BACKUP_DIR="$OUT" bash scripts/backup.sh 2>&1)"
 RC2=$?
@@ -127,6 +129,12 @@ if [ -s "$TMP/leaks" ]; then
   fail "temp files were archived: $(tr '\n' ' ' < "$TMP/leaks")"
 else
   pass "none of the temp files is in the archive"
+fi
+
+if grep -qx "repo/store/agent-package-credential.json" "$LIST"; then
+  fail "the agent package credential is in the archive"
+else
+  pass "the agent package credential stays out of the archive"
 fi
 
 echo

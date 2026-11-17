@@ -114,7 +114,9 @@ add_if() {
 #     large-task fire, so a restore losing yesterday's costs nothing
 #   (measured 2026-09-16: these two were 788 MB of a 948 MB archive; excluding them
 #    leaves ~150 MB. STORE_SKIP does not delete anything -- the files stay on disk.)
-STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay scheduled-runs "
+#   agent-package-credential.json -- the agent package device token (MIOAGENTINSTALL1114, plan 6.4): one per
+#     machine, never carried; after a restore the owner connects again
+STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay scheduled-runs agent-package-credential.json "
 if [[ -d store ]]; then
   while IFS= read -r _entry; do
     _name="$(basename "${_entry}")"

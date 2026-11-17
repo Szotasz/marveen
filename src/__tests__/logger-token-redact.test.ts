@@ -144,6 +144,15 @@ describe('redactLogMessage (free-text layer)', () => {
     expect(out).toContain(REDACTED);
   });
 
+  it('masks a bare mdt_ agent package device token shape, also cut off', () => {
+    const mdt = 'mdt_' + 'Zq9_-'.repeat(8) + 'abc';
+    expect(mdt).toMatch(/^mdt_[A-Za-z0-9_-]{43}$/);
+    expect(redactLogMessage('stored ' + mdt + ' ok')).toBe(`stored ${REDACTED} ok`);
+    expect(redactLogMessage('cut ' + mdt.slice(0, 14))).toBe(`cut ${REDACTED}`);
+    // Not a token: too short, or the prefix inside a longer word.
+    expect(redactLogMessage('mdt_short and xmdt_' + 'a'.repeat(20))).toBe('mdt_short and xmdt_' + 'a'.repeat(20));
+  });
+
   it('masks a bare ghp_/gho_ GitHub token shape', () => {
     const gho = 'gho_' + 'J'.repeat(40);
     expect(redactLogMessage('push ok ' + GITHUB)).not.toContain(GITHUB);
