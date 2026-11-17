@@ -1350,6 +1350,9 @@ _NODE_LOCAL_IMPORT = re.compile(
 _NODE_EXTS = ("", ".js", ".mjs", ".cjs", ".ts", "/index.js", "/index.mjs", "/index.ts")
 _HELPER_LIMIT = 40
 _ADDRESS_FLAG = re.compile(r"^--(?:to|cc|bcc)(?:=(.*))?$", re.S)
+# COPYSUBST1116: argparse takes any unambiguous prefix of a long option, so `--bc x@y` is --bcc to the program
+_ADDRESS_FLAG_ABBREV = re.compile(r"^--(to?|cc?|b(?:cc?)?)(?:=(.*))?$", re.S)
+_FLAT_SUBST_WORD = "$__SUBST__"  # the word flatten_substitutions puts in place of a substitution
 _SCRIPT_FILE = re.compile(r"\.(?:py|mjs|cjs|js|ts)$", re.I)
 _SHELL_C_FLAG = re.compile(r"^-[a-zA-Z]*c[a-zA-Z]*$")
 _SCRIPT_READ_LIMIT = 1024 * 1024
@@ -1465,13 +1468,25 @@ def _node_script_operand(prog, rest):
     return words[0] if words else None
 
 
+def _nonliteral_value(val: str) -> bool:
+    """COPYSUBST1116 (Marveen 4114): a recipient value the gate cannot read as text -- a command or process substitution
+    (also the flattened $__SUBST__ word), a variable, an ANSI-C $'..' string, a backtick -- may be any address."""
+    return "$" in val or "`" in val
+
+
 def _address_flag_given(rest) -> bool:
+    """an address on a recipient flag. COPYSUBST1116: also an argparse prefix of --to / --cc / --bcc (--t, --c, --bc,
+    ...) with an address, and a NON-LITERAL value (_nonliteral_value) on any of them but the one-letter prefixes
+    (`--c "$CFG"` is too often no recipient): fail-closed, the address cannot be proven not to be one."""
     for i, t in enumerate(rest):
-        m = _ADDRESS_FLAG.match(t)
+        m = _ADDRESS_FLAG_ABBREV.match(t)
         if not m:
             continue
-        val = m.group(1) if m.group(1) is not None else (rest[i + 1] if i + 1 < len(rest) else "")
-        if "@" in val:
+        nxt = rest[i + 1] if i + 1 < len(rest) else ""
+        val = m.group(2) if m.group(2) is not None else nxt
+        if m.group(2) == "" and nxt == _FLAT_SUBST_WORD:
+            val = nxt  # `--to=$(..)` flattened: the substitution word is set apart from its `--to=` by a space
+        if "@" in val or (len(m.group(1)) > 1 and _nonliteral_value(val)):
             return True
     return False
 
@@ -1886,9 +1901,31 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if depth >= _SHELL_C_DEPTH:
             return False
         for i in range(len(rest) - 1):
-            if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words):
+            if not _SHELL_C_FLAG.match(rest[i]):
+                continue
+            # COPYSUBST1116 (Revizor 4111 L2): the tokenizer keeps `\$` inside double quotes, the shell does not, so
+            # the body is judged as written AND with the double-quote escapes undone (this only adds a verdict)
+            body = rest[i + 1]
+            if any(script_run_sends(b, cwd, read_script, depth + 1, cmd_words)
+                   for b in dict.fromkeys((body, _undo_dquote_escapes(body)))):
                 return True
         return False
+    if prog in ("builtin", "command"):
+        # Revizor 4123 L2, 4138 L8: `builtin eval ...`, `builtin command eval ...`, `command -p eval ...`
+        k = 0
+        while k < len(rest) and (rest[k] in ("builtin", "command", "--") or (re.match(r"^-[pvV]+$", rest[k]))):
+            k += 1
+        if k < len(rest) and _basename(rest[k]) == "eval":
+            prog, rest = "eval", rest[k + 1:]
+    if prog == "eval":
+        # COPYSUBST1116: eval runs its joined words as a command line
+        if rest and rest[0] == "--":
+            rest = rest[1:]   # Revizor 4123 L2: `eval -- ...`
+        if depth >= _SHELL_C_DEPTH or not rest:
+            return False
+        line = " ".join(rest)
+        return any(script_run_sends(b, cwd, read_script, depth + 1, cmd_words)
+                   for b in dict.fromkeys((line, _undo_dquote_escapes(line))))
     # the fail-closed branches below fire when `addressed`: on this gate always (see _FAIL_CLOSED_NEEDS_ADDRESS)
     # Samu 69648 (3a): after a command-substitution cd, what runs is out of sight even without an address
     addressed = (not _FAIL_CLOSED_NEEDS_ADDRESS) or _SUBST_MARK in cmd_words or _run_is_addressed(rest, cmd_words)
@@ -2620,6 +2657,7 @@ def _outside_bodies(cmd: str, lo: int, hi: int) -> str:
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
     if read_script is None:
         read_script = _read_script_head
+    cmd = _decode_ansi_c(cmd)   # Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'` read as the shell reads them
     cmd = _bind_literal_vars(cmd)
     written = _written_scripts(cmd, cwd)
     # Dani (review of #2586): a P that exists now may survive the write (read-only, noclobber set elsewhere): its body
@@ -2650,8 +2688,133 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
         cmd_words += ["cd", _SUBST_MARK]
     if _PY_FUNC_DEF_RAW.search(cmd):
         cmd_words.append(_PY_REBOUND_MARK)
-    return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
-               for toks in segments for h in _command_heads(toks))
+    if any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
+           for toks in segments for h in _command_heads(toks)):
+        return True
+    return _flat_addressed_run_sends(cmd, cwd, read_script, depth, cmd_words)
+
+
+_ANSI_C_SIMPLE = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+                  "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+def _ansi_c_body(body: str) -> str:
+    """the text of a bash $'...' string: its backslash escapes decoded (an unknown one keeps its backslash, as bash)"""
+    out = []
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch); i += 1; continue
+        e = body[i + 1]
+        if e in _ANSI_C_SIMPLE:
+            out.append(_ANSI_C_SIMPLE[e]); i += 2; continue
+        m = (re.match(r"[0-7]{1,3}", body[i + 1:]) or (re.match(r"x([0-9A-Fa-f]{1,2})", body[i + 1:]))
+             or re.match(r"u([0-9A-Fa-f]{1,4})", body[i + 1:]) or re.match(r"U([0-9A-Fa-f]{1,8})", body[i + 1:]))
+        if m:
+            digits = m.group(1) if m.groups() else m.group(0)
+            code = int(digits, 8 if not m.groups() else 16)
+            try:
+                out.append(chr(code))
+            except (ValueError, OverflowError):
+                out.append("�")
+            i += 1 + len(m.group(0)); continue
+        if e == "c" and i + 2 < n:
+            out.append(chr(ord(body[i + 2]) & 0x1f)); i += 3; continue
+        out.append(ch + e); i += 2
+    return "".join(out)
+
+
+def _decode_ansi_c(cmd: str) -> str:
+    """COPYSUBST1116 (Revizor 4123 L1, L3): every unquoted bash $'...' word as the single-quoted text it stands for, so a
+    flag name, an address or a -c / eval body written that way is read as the shell reads it. Twin: decodeAnsiC."""
+    if "$'" not in cmd and '$"' not in cmd:
+        return cmd
+    out = []
+    q = None
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
+            j = i + 2
+            while j < n and cmd[j] != "'":
+                j += 2 if cmd[j] == "\\" else 1
+            text = _ansi_c_body(cmd[i + 2:min(j, n)])
+            out.append("'" + text.replace("'", "'\\''") + "'")
+            i = j + 1
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == '"':
+            i += 1   # Revizor 4138 L7: a locale $"..." string is the "..." string (with no catalogue, as here)
+            continue
+        if ch in "'\"":
+            q = ch
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _undo_dquote_escapes(s: str) -> str:
+    """the shell's double-quote escapes undone: \\$ \\` \\" \\\\ -> the character, backslash-newline -> nothing"""
+    return re.sub(r'\\([$`"\\\n])', lambda m: "" if m.group(1) == "\n" else m.group(1), s)
+
+
+def _strip_shell_comments(cmd: str) -> str:
+    """an unquoted comment dropped up to (not with) its newline: the twin of stripShellComments in email-send-gate.mjs,
+    with the same word-start rule as _mask_subshell_markers"""
+    out = []
+    q = None
+    i, n = 0, len(cmd)
+    parens = []
+    subst_close_at = -1
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|(" or (cmd[i - 1] == ")" and subst_close_at != i - 1)):
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s"); out.append("$("); i += 2; continue
+        if ch == "(":
+            parens.append("p")
+        elif ch == ")" and parens and parens.pop() == "s":
+            subst_close_at = i
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _flat_addressed_run_sends(cmd: str, cwd, read_script, depth, cmd_words) -> bool:
+    """COPYSUBST1116: the tokenizer cuts an unquoted $(...), backtick or <(...) out of its word and splits the command
+    there, so a --to / --cc / --bcc AFTER it fell into a segment of its own and no run was addressed. The command is
+    judged once more with every substitution as one undecidable word -- on the same base the segmenter reads, without
+    heredoc bodies and comments (Revizor 4111 L1: an apostrophe in a comment or a heredoc body flipped the flattener
+    into quote mode) -- but ONLY the runs that carry an address: an unaddressed `python3 $(...)/x.py` keeps its verdict."""
+    base = _strip_shell_comments(_HEREDOC.sub(r"\1", cmd))
+    flat = flatten_substitutions(base)
+    if flat == base:
+        return False
+    try:
+        segments = _segments_tokens(flat)
+    except ValueError:
+        return False
+    return any(_address_flag_given(h[1:]) and _head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
+               for toks in segments for h in _command_heads(toks) if h)
 
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
