@@ -22,12 +22,12 @@ const EN = readFileSync(join(ROOT, 'i18n', 'en', 'seed-scheduled-tasks', 'kanban
 const LANGS = [
   {
     lang: 'hu', skill: HU, counted: 'számít=', ownOld: 'fő-ágens régi=', reportOnly: 'csak jelentés:',
-    examined: 'vizsgált=', over48: '48h felett=', fresh: 'új=', firstRun: 'első futás', yes: 'TELEGRAM: IGEN', no: 'TELEGRAM: nem',
+    examined: 'vizsgált=', over48: '48h felett=', fresh: 'új=', firstRun: 'első futás', yes: 'OWNER ALERT: yes', no: 'OWNER ALERT: no',
     oldStuck: /^\s*- 3\+ beakadt task van \(kritikus\)\s*$/m, oldWaiting: /^\s*- Új blokker \(waiting > 48h\)\s*$/m,
   },
   {
     lang: 'en', skill: EN, counted: 'counted=', ownOld: 'main agent old=', reportOnly: 'report only:',
-    examined: 'examined=', over48: 'over 48h=', fresh: 'new=', firstRun: 'first run', yes: 'TELEGRAM: YES', no: 'TELEGRAM: no',
+    examined: 'examined=', over48: 'over 48h=', fresh: 'new=', firstRun: 'first run', yes: 'OWNER ALERT: yes', no: 'OWNER ALERT: no',
     oldStuck: /^\s*- there are 3\+ stuck tasks \(critical\)\s*$/m, oldWaiting: /^\s*- New blocker \(waiting > 48h\)\s*$/m,
   },
 ] as const
@@ -305,3 +305,23 @@ for (const L of LANGS) {
     })
   })
 }
+
+// The verdict is read by whichever agent runs the task, on whichever channel the install
+// has: the label says WHAT follows (the owner is alerted), not WHERE it is sent.
+describe('kanban-audit step 7: the verdict label is channel-neutral and the same in both languages', () => {
+  const verdictPrints = (skill: string) => blocks(step(skill, 7)).map((b) => b.code.trimEnd().split('\n').pop() ?? '')
+
+  it('both blocks end in "OWNER ALERT: yes (...)" or "OWNER ALERT: no", in hu and en alike', () => {
+    for (const skill of [HU, EN]) {
+      const prints = verdictPrints(skill)
+      expect(prints).toHaveLength(2)
+      for (const p of prints) expect(p).toMatch(/^print\('OWNER ALERT: yes \([^']+\)' if .+ else 'OWNER ALERT: no'\)$/)
+    }
+  })
+
+  it('no block of step 7 prints or names a channel', () => {
+    for (const skill of [HU, EN]) {
+      for (const b of blocks(step(skill, 7))) expect(b.code).not.toMatch(/telegram|slack|discord|teams/i)
+    }
+  })
+})
