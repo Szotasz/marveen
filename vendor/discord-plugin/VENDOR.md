@@ -18,6 +18,14 @@
   - F4: messages that came while the plugin was down are delivered once at start (`recovered="true"`), at most
     every 10 minutes, REST only (`DISCORD_BACKFILL`, cursor in `$DISCORD_STATE_DIR/backfill-cursor.json`);
   - F5: `fetch_messages` pages with `before`/`after`; a `create_thread` tool.
+  - Hermes parity, PR1:
+    - D1: every outgoing message pings users only, never `@everyone`/`@here`/a role (client default; no call
+      site overrides it, tested);
+    - A1: a follow-up in the bot's own thread under an opted-in channel needs no @mention
+      (`$DISCORD_STATE_DIR/bot-threads.json`);
+    - A2: a reply carries `reply_to_*` (what it answers);
+    - A3: a forwarded message arrives with its text and files, `forwarded="1"`;
+    - D2: a reply needing more than 8 messages is refused before anything is sent.
 - **How it gets in**: `scripts/patch-discord-plugin.py`, at every channel start, puts the overlay
   over a cached `server.ts` ONLY when that file is this exact upstream version (or our own earlier
   output). Any other file -- a plugin update -- is left as shipped, with one loud log line.
