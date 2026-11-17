@@ -87,6 +87,33 @@ describe('bash-egress-parser: a noexec (-n) shell reading stdin is not egress', 
     }
   })
 
+  // The exemption needs -n itself: options from the set WITHOUT an n run the piped program (-x only traces it).
+  // No fetch in these pipelines, so only the noexec requirement can deny them.
+  it('DENIES a local piped program when the option set has no n (-x, -v, -e, -u alone or clustered)', () => {
+    for (const cmd of [
+      'git show HEAD:x.sh | bash -x',
+      'git show HEAD:x.sh | bash -v',
+      'git show HEAD:x.sh | bash -e -u',
+      'git show HEAD:x.sh | bash -xv',
+      'cat deploy/layer | sh -eu',
+    ]) {
+      expect(denied(cmd), cmd).toBe(true)
+    }
+  })
+
+  // -o / +o take an option NAME (+o noexec turns execution back on) and any + option is outside the closed set,
+  // even when an -n is also present. Again no fetch: only the option set can deny these.
+  it('DENIES -o / +o with a name and any + option next to -n, without a fetch', () => {
+    for (const cmd of [
+      'git show HEAD:x.sh | bash -n +o noexec',
+      'git show HEAD:x.sh | bash -n -o noexec',
+      'git show HEAD:x.sh | bash +n -n',
+      'git show HEAD:x.sh | bash -n +x',
+    ]) {
+      expect(denied(cmd), cmd).toBe(true)
+    }
+  })
+
   it('the hook process answers with exit 0 and no output on the allowed form', () => {
     const r = run('git show HEAD:reapply.sh | bash -n')
     expect(r.status).toBe(0)
