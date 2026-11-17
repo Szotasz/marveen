@@ -2044,6 +2044,7 @@ function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: {
 let tmuxBatch: Map<string, { out?: string; err?: unknown }> | null = null
 let batchListSessionsFailed = false
 
+/** Whether the batched list-sessions read failed for the shared LOCAL tmux server. */
 export function tmuxBatchListSessionsFailed(): boolean {
   return batchListSessionsFailed
 }
@@ -2074,7 +2075,7 @@ function assertSync<T>(r: T): T {
 }
 
 function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
-  const { host } = resolveTarget(target, tmuxArgs)
+  const { host, runAsUser } = resolveTarget(target, tmuxArgs)
   const inv = tmuxInvocationFor(tmuxArgs, target)
   if (tmuxBatch !== null && tmuxArgs[0] === 'list-sessions') {
     const key = JSON.stringify([inv.file, inv.args])
@@ -2089,7 +2090,7 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
       return out
     } catch (err) {
       tmuxBatch.set(key, { err })
-      batchListSessionsFailed = true
+      if (host == null && runAsUser == null) batchListSessionsFailed = true
       throw err
     }
   }

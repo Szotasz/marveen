@@ -576,8 +576,8 @@ export function startReauthHealer(): NodeJS.Timeout | null {
     // Read run state once at pass start; this synchronous loop keeps the same observation moment.
     const running = withTmuxBatch(() => new Map(names.map(name => [name, isAgentRunning(name)])))
     if (tmuxBatchListSessionsFailed()) {
-      // A shared read failure must not erase every agent's escalation cooldown.
-      logger.warn('reauth-healer: batched list-sessions failed -- skipping agent pass')
+      // A failed LOCAL batched list-sessions read must not erase every agent's escalation cooldown.
+      logger.warn('reauth-healer: LOCAL batched list-sessions failed -- skipping agent pass')
     } else for (const name of names) {
       const session = resolveAgentSession(name)
       if (!running.get(name)) {

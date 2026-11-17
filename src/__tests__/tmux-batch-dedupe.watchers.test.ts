@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { logger } from '../logger.js'
+import { tmuxBatchListSessionsFailed } from '../web/agent-process.js'
+import { controlDir } from '../web/ssh-tmux.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { MAIN_CHANNELS_SESSION } from '../web/main-agent.js'
 import { startStuckInputWatcher } from '../web/stuck-input-watcher.js'
@@ -9,6 +12,9 @@ const h = vi.hoisted(() => ({
   agents: ['dedupe-b', 'dedupe-c', 'dedupe-a'],
   sessions: 'agent-dedupe-b\nagent-dedupe-a\n',
   listError: null as unknown,
+  failNonLocalLists: false,
+  remoteHost: {} as Record<string, string | null>,
+  runAsUser: {} as Record<string, string | null>,
   spawns: [] as Array<{ file: string; args: string[] }>,
   hostReads: [] as string[],
 }))
@@ -18,8 +24,11 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   const execFileSync = (file: string, args: readonly string[] = []) => {
     h.spawns.push({ file, args: [...args] })
-    if (args[0] === 'list-sessions') {
+    const nonLocal = file === 'ssh' || file === 'sudo'
+    const isList = file === 'ssh' ? args[args.length - 1]?.includes("'list-sessions'") : args.includes('list-sessions')
+    if (isList) {
       if (h.listError !== null) throw h.listError
+      if (h.failNonLocalLists && nonLocal) throw new Error('non-local list-sessions failed')
       return h.sessions
     }
     return ''
@@ -38,8 +47,8 @@ vi.mock('../config.js', async (importOriginal) => ({
 vi.mock('../web/agent-config.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../web/agent-config.js')>(),
   listAgentNames: () => [...h.agents],
-  readAgentRemoteHost: (name: string) => { h.hostReads.push(name); return null },
-  readAgentRunAsUser: () => null,
+  readAgentRemoteHost: (name: string) => { h.hostReads.push(name); return h.remoteHost[name] ?? null },
+  readAgentRunAsUser: (name: string) => h.runAsUser[name] ?? null,
 }))
 vi.mock('../web/channel-mcp-reconnect.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../web/channel-mcp-reconnect.js')>(),
@@ -54,6 +63,8 @@ vi.mock('node:fs', async (importOriginal) => {
   const isChannelEnv = (path: unknown) => String(path).endsWith('/channels/telegram/.env')
   return {
     ...actual,
+    mkdirSync: (path: Parameters<typeof actual.mkdirSync>[0], ...args: any[]) =>
+      String(path) === controlDir() ? undefined : (actual.mkdirSync as Function)(path, ...args),
     existsSync: (path: Parameters<typeof actual.existsSync>[0]) => isChannelEnv(path) || actual.existsSync(path),
     readFileSync: (path: Parameters<typeof actual.readFileSync>[0], ...args: any[]) =>
       isChannelEnv(path) ? `TELEGRAM_BOT_TOKEN=${String(path).includes('dedupe-') ? String(path).match(/dedupe-[abc]/)![0] : 'main'}`
@@ -78,6 +89,9 @@ beforeEach(() => {
   h.agents = ['dedupe-b', 'dedupe-c', 'dedupe-a']
   h.sessions = 'agent-dedupe-b\nagent-dedupe-a\n'
   h.listError = null
+  h.failNonLocalLists = false
+  h.remoteHost = {}
+  h.runAsUser = {}
   vi.stubGlobal('fetch', vi.fn(async () => ({
     status: 200, json: async () => ({ ok: true, result: { pending_update_count: 2 } }),
   })))
@@ -146,6 +160,27 @@ describe('watcher run-state prepasses', () => {
     expect(panes()).toEqual([MAIN_CHANNELS_SESSION, ...runningOrder])
     for (const map of maps) expect(map.has('agent-dedupe-c')).toBe(false)
     expectOneListSpawn()
+  })
+
+  it.each([
+    ['remote', 'ssh'],
+    ['run-as', 'sudo'],
+  ] as const)('reauth: a %s list-sessions failure does not skip local agents', async (target, file) => {
+    h.agents.push('dedupe-nonlocal')
+    if (target === 'remote') h.remoteHost['dedupe-nonlocal'] = 'offline-laptop'
+    else h.runAsUser['dedupe-nonlocal'] = 'other-user'
+    h.failNonLocalLists = true
+    const warn = vi.spyOn(logger, 'warn')
+
+    expect(startReauthHealer()).not.toBeNull()
+    await vi.advanceTimersByTimeAsync(90_000)
+
+    expect(panes()).toEqual([MAIN_CHANNELS_SESSION, ...runningOrder])
+    expect(h.spawns.filter(s => s.file === file)).toHaveLength(1)
+    expect(h.spawns.find(s => s.file === file)!.args.join(' ')).toContain('list-sessions')
+    expectOneListSpawn()
+    expect(warn).not.toHaveBeenCalled()
+    expect(tmuxBatchListSessionsFailed()).toBe(false)
   })
 
   it('intake: excludes main from run-state reads, preserves probe order and deletes stopped history', async () => {
