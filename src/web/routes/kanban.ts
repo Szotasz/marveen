@@ -815,9 +815,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid planned_days/active_days: must be positive numbers' }, 400)
       return true
     }
+    // a SECOND threshold on the card's real age, off unless asked
+    // for. Idle time can be reset by writing to the card -- measured on
+    // one card, where three consecutive audit rounds' own rescue comments kept
+    // resetting it while the card's true age grew from 7.0 to 9.6 days.
+    const maxAgeRaw = url.searchParams.get('max_age_days')
+    const maxAgeDays = maxAgeRaw == null ? 0 : Number(maxAgeRaw)
+    if (!Number.isFinite(maxAgeDays) || maxAgeDays < 0) {
+      json(res, { error: 'invalid max_age_days: must be a non-negative number' }, 400)
+      return true
+    }
     // 600s: the measured creator-comment window (D001, ELSOKOR922 Phase 0) --
     // an immediate comment on a fresh card is a description, not a work-trace.
-    const result = getStuckKanbanCards({ plannedDays, activeDays, creatorCommentWindowSec: 600 })
+    const result = getStuckKanbanCards({ plannedDays, activeDays, creatorCommentWindowSec: 600, maxAgeDays })
     if (result.examined === 0) {
       json(res, { ...result, empty_reason: 'nincs megkezdett kártya' })
     } else {

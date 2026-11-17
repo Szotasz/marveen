@@ -19,7 +19,7 @@
 // before acting, exactly as it would after any handoff.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { listKanbanCards } from '../db.js'
@@ -45,10 +45,37 @@ export interface RecoveryFacts {
   dirtyTruncated: boolean
   /** Cards this agent had in_progress at restart time. */
   inProgress: { id: string; title: string }[]
+  /**
+   * The agent's own handoff file, when it has one. null when there is no
+   * HANDOFF.md (or it could not be stat'd), which is the only case where the
+   * brief may claim the context is gone.
+   */
+  handoff: { path: string; ageSeconds: number } | null
 }
 
 /** Longest brief we are willing to type into a fresh prompt. */
 export const RECOVERY_BRIEF_MAX_CHARS = 1200
+
+/**
+ * How old a HANDOFF.md may be and still count as written FOR this restart.
+ *
+ * Not arbitrary: the fleet's working rhythm is one round per hour, and the
+ * handoff is rewritten at the end of each round, immediately before the
+ * restart. A handoff older than a full round therefore was not written for
+ * the restart that just happened, and the brief must not point at it as if
+ * it were. The brief states the measured age either way, so the agent can
+ * judge for itself -- this threshold only chooses the wording.
+ */
+export const HANDOFF_FRESH_SECONDS = 3600
+
+/** Human-readable age for the brief. Whole minutes below an hour, then hours. */
+function minutesAgo(seconds: number): string {
+  if (seconds < 90) return 'kevesebb mint egy perce'
+  const mins = Math.round(seconds / 60)
+  if (mins < 60) return `${mins} perce`
+  const hours = Math.round(seconds / 3600)
+  return hours === 1 ? 'kb. egy oraja' : `kb. ${hours} oraja`
+}
 
 // RECOVERYBRIEFSCRUB1114. The brief is typed into a fresh prompt with no
 // envelope around it, and four of its fields are not written by this module: a
@@ -168,9 +195,25 @@ export function buildRecoveryBrief(facts: RecoveryFacts): string | null {
   // The whole point of the guard: an idle agent is not interrupted.
   if (!hasDirty && !hasCards) return null
 
+  // WHY THIS BRANCHES (measured 2026-10-04): the flat sentence
+  // "az elozo beszelgetesed nincs meg" is true of the CONVERSATION and false of
+  // the CONTEXT whenever the agent keeps a handoff file -- which, in this fleet,
+  // is every restart. An automatic message that states something false on every
+  // single run teaches its reader to skip it, and then it is not read on the one
+  // run where it is true (the handoff really is missing, because the backup
+  // failed). So: same facts, but the first line says which of the two is gone.
+  // The handoff NEVER makes the brief speak on its own -- the "no facts, no
+  // message" guard above still decides that. It only changes the wording.
+  const h = facts.handoff
+  const opening = h === null
+    ? '[recovery-brief] Ujraindultal, es ez egy FRISS session: sem az elozo beszelgetesed, sem atado fajlod nincs meg.'
+    : h.ageSeconds <= HANDOFF_FRESH_SECONDS
+      ? `[recovery-brief] Ujraindultal, es ez egy FRISS session: a BESZELGETESED nincs meg, a KONTEXTUSOD viszont igen. ${h.path}, ${minutesAgo(h.ageSeconds)} irva -- olvasd el eloszor.`
+      : `[recovery-brief] Ujraindultal, es ez egy FRISS session: az elozo beszelgetesed nincs meg. Atado fajlod van (${h.path}), de NEM friss: ${minutesAgo(h.ageSeconds)} irodott, tehat lehet, hogy nem a restart elotti allapotot irja le.`
+
   const fixed = (text: string): BriefLine => ({ text })
   const lines: BriefLine[] = [
-    fixed('[recovery-brief] Ujraindultal, es ez egy FRISS session: az elozo beszelgetesed nincs meg.'),
+    fixed(opening),
     fixed('Amit a restart pillanataban a rendszer latott rolad:'),
   ]
 
@@ -270,7 +313,18 @@ export function gatherRecoveryFacts(agent: string): RecoveryFacts {
     logger.debug({ err, agent }, 'recovery-brief: kanban facts unavailable')
   }
 
-  return { agent, branch, dirty, dirtyTruncated, inProgress }
+  let handoff: RecoveryFacts['handoff'] = null
+  try {
+    const p = join(agentDir(agent), 'HANDOFF.md')
+    const st = statSync(p)
+    handoff = { path: 'HANDOFF.md', ageSeconds: Math.max(0, (Date.now() - st.mtimeMs) / 1000) }
+  } catch (err) {
+    // No handoff, or it cannot be stat'd. Both mean the same for the brief:
+    // we must not claim the context is waiting in a file.
+    logger.debug({ err, agent }, 'recovery-brief: no handoff file')
+  }
+
+  return { agent, branch, dirty, dirtyTruncated, inProgress, handoff }
 }
 
 /** How the brief reaches the session. Injected so this module never has to

@@ -81,3 +81,34 @@ describe('deferred MCP tool hint (FLEETDEFER809)', () => {
     expect(SRC).toMatch(/Csak akkor mondd ki a hiányt/)
   })
 })
+
+describe('a sablon nem allit autonomia-szintet, odakuld a confighoz', () => {
+  const SRC = readFileSync(SCAFFOLD_PATH, 'utf-8')
+  // A scaffold minden uj agens CLAUDE.md-jebe beirta, hogy
+  // `memory_maintenance = level 3, AUTONOM`, mikozben a szintet a
+  // store/autonomy-config.json dönti el. Minden uj kollega tehat egy
+  // MEGENGEDOBB szaballyal szuletett, mint ami ervenyben volt, es 2026-09-30-an
+  // emiatt tortent egy atsorolas olyan felhatalmazassal, ami nem allt fenn.
+  // A harom meglevo agens CLAUDE.md-jet 2026-10-06-an kezzel javitottak, a
+  // GENERATOR viszont tovabb irta a regi mondatot.
+  //
+  // A szabaly, amit ez a teszt orzi: egy autonomia-szint EGY helyen el (a config),
+  // a sablon szovege nem masolja, csak odakuld.
+  it('nem eget be szamot egyetlen autonomia-kategoriahoz sem', () => {
+    const kategoriak = [
+      'memory_maintenance', 'kanban_archive_done', 'kanban_stuck_nudge',
+      'routine_trivial_fix', 'deploy_retry', 'kanban_restructure', 'skill_patch',
+      'email_send', 'publish_content', 'payment', 'data_delete',
+      'permission_change', 'external_message',
+    ]
+    for (const k of kategoriak) {
+      // "<kategoria> = level 3" es tarsai: a szint allitasa a szovegben.
+      const beegetve = new RegExp(`${k}\\s*=\\s*level\\s*\\d`, 'i')
+      expect(SRC, `a sablon beegeti a(z) ${k} szintjet`).not.toMatch(beegetve)
+    }
+  })
+
+  it('a memoria-atsorolasnal a configra kuld, nem sajat allitast tesz', () => {
+    expect(SRC).toContain('A SZINTET NE INNEN VEDD, HANEM A store/autonomy-config.json fájlból')
+  })
+})

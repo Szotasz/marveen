@@ -185,13 +185,39 @@ alive=0
 # and this probe runs on both. The character-class form is the portable
 # equivalent.
 RUNTIME_TOKEN_RX='(^|[^A-Za-z0-9_])(bun|node)([^A-Za-z0-9_]|$)'
+
+# Plugin-dir slug, the portable ERE mirror of SLUG_RX in
+# src/channel-coordinator/provider-poller-match.ts. It must stay equivalent to
+# it for the same reason RUNTIME_TOKEN_RX does: two detectors that disagree
+# about the same process is the defect, not a detail.
+#
+# PROVIDERSLUG1015: this was a plain `grep -F "/${CHANNEL_PROVIDER}/"`, which
+# assumes the plugin directory is named exactly after the provider. True for
+# telegram and discord, FALSE for slack: the marveen-marketplace plugin installs
+# under `.../cache/marveen-marketplace/slack-channel/<ver>/`. Measured on this
+# install 2026-10-15: the live poller's argv carries /slack-channel/, the filter
+# looked for /slack/, so the probe would have been a permanent no-op here --
+# the same shape as the 2026-09-25 discord no-op, one layer further in.
+# The TS side already accepts both; this is the shell catching up.
+case "$CHANNEL_PROVIDER" in
+  slack)
+    # The socket-mode branch mirrors SLACK_SOCKET_MODE_RX: a slack poller whose
+    # argv carries no /slack path segment still counts as alive.
+    PROVIDER_SLUG_RX='/slack(-channel)?(/|[[:space:]]|$)|(^|[^A-Za-z0-9_])socket-mode([^A-Za-z0-9_]|$)'
+    ;;
+  *)
+    # PROBE_PLUGIN_SEG, not the provider name: Gromzo's plugin dir is
+    # gromzo-channel (GROMZONOPROVIDER1108).
+    PROVIDER_SLUG_RX="/${PROBE_PLUGIN_SEG}(/|[[:space:]]|\$)"
+    ;;
+esac
 while read -r cand; do
   [ -z "$cand" ] && continue
   if descends_from_pane "$cand"; then
     alive=1
     break
   fi
-done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -F "/${PROBE_PLUGIN_SEG}/" | grep -v grep | awk '{print $1}')
+done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -E "$PROVIDER_SLUG_RX" | grep -v grep | awk '{print $1}')
 
 if [ "$alive" -ne 1 ]; then
   # Do NOT advance the keepalive: a dead pipe must stay visibly stale so a real

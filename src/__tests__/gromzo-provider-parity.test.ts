@@ -66,7 +66,10 @@ describe('every shell provider map has an explicit gromzo branch (never the tele
   })
 
   it('the keepalive probe greps the gromzo-channel segment, not the provider name', () => {
-    expect(src('scripts/channel-keepalive-probe.sh')).toContain('grep -F "/${PROBE_PLUGIN_SEG}/"')
+    // PROVIDERSLUG1015: the scan line now greps PROVIDER_SLUG_RX, whose default branch is built
+    // from PROBE_PLUGIN_SEG (gromzo -> gromzo-channel), so the segment still decides the match.
+    expect(src('scripts/channel-keepalive-probe.sh')).toContain('gromzo) PROBE_PLUGIN_SEG="gromzo-channel"')
+    expect(src('scripts/channel-keepalive-probe.sh')).toContain('PROVIDER_SLUG_RX="/${PROBE_PLUGIN_SEG}(/|[[:space:]]|\\$)"')
   })
 
   it('morning-briefing turns the Gromzo plugin off for its one-shot run too', () => {

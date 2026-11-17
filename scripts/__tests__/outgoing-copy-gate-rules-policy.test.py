@@ -81,7 +81,9 @@ with tempfile.TemporaryDirectory() as td:
     check("valid-empty rules: email goes OUT and the pass is loud",
           code == 0 and "URES" in out, f"exit={code} out={out[:160]!r}")
 
-    # --- invalid variants: CLOSED (the negative control) ------------------
+    # --- invalid variants: CLOSED --------------------------------------
+    # NEGATIV KONTROLL (outgoing-copy-gate.py): egy javitas, ami MINDKET agon
+    # fail-openne valik, pontosan ilyen zold eredmenyt adna a pozitiv teszten.
     invalid_cases = [
         ("not-json", "{ez nem json"),
         ("wrong-schema (patterns not a list)", json.dumps({"bad_name_patterns": "Szota"})),

@@ -242,3 +242,137 @@ export function readUserPromptsSince(
   hits.sort((a, b) => a.ts - b.ts)
   return hits.map((h) => ({ text: h.text, queued: h.queued }))
 }
+
+// --- Turn evidence (SCHEDHAMISDONE1014) ---------------------------------
+//
+// A second question about the same transcript, and the reason this lives here:
+// "did the injected prompt arrive?" and "did a turn actually RUN?" are read
+// from the same jsonl rows, by the same tail reader.
+//
+// The watchdog used to answer the second question from the transcript
+// DIRECTORY's mtime: anything newer than the injection counted as "the turn
+// started". That is true for every ordinary case and false for exactly the one
+// that matters -- a session that is out of quota answers the prompt in half a
+// second with the CLI's own canned message, which is written to the transcript
+// like any other reply. Measured on this install, 2026-10-14 07:30:06: the
+// morning round was answered with "You've hit your weekly limit", and its
+// task_runs row says status=fired, outcome=done, delivery=intact. The same
+// shape produced 2851 'done' rows between 2026-10-10 and 2026-10-14 while the
+// fleet's model was quota-blocked for three of those days.
+//
+// The canned reply is distinguishable at the source: Claude Code stamps it
+// `message.model === '<synthetic>'` (verified on the 07:30:06 row above). A
+// synthetic reply proves the session was AWAKE and did NOT do the work.
+
+/** Claude Code's marker for a reply it generated itself, with no model call. */
+export const SYNTHETIC_MODEL = '<synthetic>'
+
+export type TurnEvidence =
+  // A real (non-synthetic) assistant turn followed our prompt.
+  | 'real'
+  // The only reply after our prompt was the CLI's canned message: quota limit,
+  // API error. Awake, and refused -- the task's work never ran.
+  | 'synthetic'
+  // Our prompt was not found in any readable transcript, or nothing followed
+  // it yet. Says nothing; the caller must not read it as failure.
+  | 'none'
+
+// How much of the typed prompt is used to recognise OUR injection among every
+// session writing into the same projects directory. Short enough to survive
+// the chunked send, long enough not to match an unrelated line.
+const TURN_MARKER_CHARS = 60
+
+function squash(s: string): string {
+  return s.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * What the target session's transcript says about the turn `sentText` was
+ * supposed to start, looking only at rows at or after `sinceMs`.
+ *
+ * Anchored on the PROMPT, not on the directory: the assistant rows that count
+ * are the ones in the same file as our own prompt, after it. A sibling session
+ * writing into the same projects directory can no longer stand in as evidence
+ * that OUR task ran.
+ *
+ * Never throws: an unreadable directory, file or line is skipped, and the
+ * result degrades to 'none'.
+ */
+export function classifyTurnEvidence(
+  dirs: readonly string[],
+  sinceMs: number,
+  sentText: string | null | undefined,
+  opts: {
+    /**
+     * Upper bound of the window, default "now and anything newer". The live
+     * sweep never needs it -- rows after the current moment do not exist yet --
+     * but a BACKTEST does: replaying an old injection against today's
+     * transcript would otherwise see turns that ran hours later and call a
+     * quota-blocked round 'real'. Measured while building this: the
+     * 2026-10-14 07:30 round classifies as 'real' without a bound and
+     * 'synthetic' with one.
+     */
+    untilMs?: number
+    maxBytes?: number
+  } = {},
+): TurnEvidence {
+  const untilMs = opts.untilMs ?? Number.POSITIVE_INFINITY
+  const maxBytes = opts.maxBytes ?? TRANSCRIPT_TAIL_BYTES
+  if (sentText == null) return 'none'
+  const marker = squash(sentText).slice(0, TURN_MARKER_CHARS)
+  if (marker.length === 0) return 'none'
+  let best: TurnEvidence = 'none'
+  const seen = new Set<string>()
+  for (const dir of dirs) {
+    let files: string[]
+    try {
+      if (!existsSync(dir)) continue
+      const real = realpathSync(dir)
+      if (seen.has(real)) continue
+      seen.add(real)
+      files = readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+    } catch {
+      continue
+    }
+    for (const f of files) {
+      const path = join(dir, f)
+      let text: string
+      try {
+        if (statSync(path).mtimeMs < sinceMs) continue
+        text = readTail(path, maxBytes)
+      } catch {
+        continue
+      }
+      // Where OUR prompt sits in THIS file. Until it is found, the assistant
+      // rows in this file belong to someone else's turn.
+      let promptAt: number | null = null
+      for (const line of text.split('\n')) {
+        if (!line.includes('"user"') && !line.includes('"assistant"')) continue
+        let row: { type?: unknown; timestamp?: unknown; message?: { content?: unknown; model?: unknown } }
+        try {
+          row = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (typeof row.timestamp !== 'string') continue
+        const ts = Date.parse(row.timestamp)
+        if (!Number.isFinite(ts) || ts < sinceMs || ts > untilMs) continue
+        if (row.type === 'user') {
+          if (promptAt != null) continue
+          const t = promptText(row.message?.content)
+          if (t != null && squash(t).includes(marker)) promptAt = ts
+          continue
+        }
+        if (row.type !== 'assistant' || promptAt == null || ts < promptAt) continue
+        if (row.message?.model === SYNTHETIC_MODEL) {
+          best = 'synthetic'
+          continue
+        }
+        // One real turn is enough, and it outranks anything synthetic that
+        // came before it.
+        return 'real'
+      }
+    }
+  }
+  return best
+}

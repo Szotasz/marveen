@@ -819,7 +819,7 @@ ${helper ? `Filtering by period: ${R.dateFilter}` : 'Filtering by period: &date=
 ### Moving a memory (hot -> cold/warm) when a task is closed
 
 NONE of the dashboard memory tiers loads into your context by itself, neither at session start nor per message: only what you query yourself gets in, and only into that turn. What loads by itself is the CLAUDE.md, Claude Code's own file memory (the MEMORY.md index and the memory/*.md files) and the SessionStart hooks' own blocks. A closed row still has to be moved: hot is your "what is in progress now" list (step 1 below queries it), and a closed row there looks like a false active task.
-Moving is memory_maintenance = level 3, AUTONOMOUS: you may do it on your OWN memories by yourself.
+Moving falls under the memory_maintenance category. **DO NOT TAKE THE LEVEL FROM HERE: read it from store/autonomy-config.json, every time.** This sentence used to state level 3, while the config said otherwise, and on 2026-09-30 a reclassification happened under an authority that did not exist. A level lives in ONE place; this sentence does not copy it, it only points there.
 
 1. You need the ID -- the list and the search branch both return it:
 ${helper ? R.hotList : `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${f.dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"`}
@@ -829,7 +829,7 @@ ${helper ? R.move : `curl -s -X PATCH ${f.dashboardOrigin}/api/memories/<ID> -H 
 
 updated_by is WHO WROTE (a write trace). Do NOT send the agent_id field: that HANDS the row OVER to another agent, it does not set the tier.
 
-THERE IS NO DELETE, AND ON PURPOSE. DELETE /api/memories/:id exists, but deleting is data_delete = level 1, locked, so it is the owner's decision. Moving is enough: the problem is the closed row standing in the hot list (a false active task), not the row existing.
+THERE IS NO DELETE, AND ON PURPOSE. DELETE /api/memories/:id exists, but deleting falls under the data_delete category, and its level is also set by store/autonomy-config.json (which also shows whether the category is locked). Check it before you would delete. Moving is enough: the problem is the closed row standing in the hot list (a false active task), not the row existing.
 
 ## Scheduled tasks
 

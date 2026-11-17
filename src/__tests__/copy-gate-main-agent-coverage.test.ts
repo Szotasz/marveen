@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { TELEGRAM_COPY_GATE_MATCHER } from '../web/agent-scaffold.js'
+import { TELEGRAM_COPY_GATE_MATCHER, SLACK_COPY_GATE_MATCHER } from '../web/agent-scaffold.js'
 
 // GATECOPY906: the outgoing-copy gate is TWO measurements, and #1195 only fixed
 // one of them. The hook's own dispatch decides WHETHER a payload is audited
@@ -76,5 +76,41 @@ describe('outgoing-copy gate: the main agent routes the Discord send tools to it
     const covered = copyGateMatchers().some((m) =>
       new RegExp(m).test('mcp__plugin_discord_discord__fetch_messages'))
     expect(covered).toBe(false)
+  })
+})
+
+// GATESLACK1015: the two blocks above pin Telegram and Discord, and that is
+// exactly how this hole stayed open. The fleet's owner channel moved to Slack on
+// 2026-10-07; the matcher list did not follow, and neither did this test. From
+// that day the copy gate audited ZERO owner messages while running on every turn
+// and exiting 0. The test file had the same blind spot as the gate: it pinned
+// the roads we used to take. Measured 2026-10-15, both halves: through
+// settings.json no Slack tool was ever routed to the hook, and the hook's own
+// dispatch had no slack branch, so even a forced call audited nothing.
+const SLACK_OUTBOUND_TOOLS = [
+  'mcp__plugin_slack-channel_slack__reply',
+  'mcp__plugin_slack-channel_slack__edit_message',
+]
+
+describe('outgoing-copy gate: the main agent routes the Slack send tools to it', () => {
+  it.each(SLACK_OUTBOUND_TOOLS)(
+    'the committed main-agent settings invoke the gate for %s',
+    (tool) => {
+      const covered = copyGateMatchers().some((m) => new RegExp(m).test(tool))
+      expect(covered).toBe(true)
+    },
+  )
+
+  it('a Slack read tool is NOT routed to the gate (guards the test itself)', () => {
+    const covered = copyGateMatchers().some((m) =>
+      new RegExp(m).test('mcp__plugin_slack-channel_slack__fetch_messages'))
+    expect(covered).toBe(false)
+  })
+
+  it('the scaffold exports a Slack matcher naming BOTH send tools', () => {
+    // Without this, a sub-agent spawned tomorrow would carry the Telegram gate
+    // and no Slack gate -- the fleet-wide half of the same hole.
+    const scaffold = SLACK_COPY_GATE_MATCHER.split('|')
+    expect(scaffold).toEqual(SLACK_OUTBOUND_TOOLS)
   })
 })

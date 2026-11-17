@@ -5,7 +5,7 @@ import { join } from 'node:path'
 // Contract tests for the in-process post-respawn channel-plugin unlock helper.
 //
 // The unlock keystrokes (/mcp + Up + Enter + Enter) are only safe to deliver
-// when (a) the bun poller is provably ABSENT under the new claude pid and
+// when (a) the channel plugin is provably DOWN under the new claude pid and
 // (b) the pane is at the idle bypass-permissions footer. The 2026-06-01 18:55
 // channel-disconnect incident was caused precisely by an unlock-while-already-
 // running cycle that toggled the plugin to `◯ disabled`. These tests pin the
@@ -23,26 +23,37 @@ describe('channel-plugin-unlock helper contract', () => {
     expect(helper).toMatch(/export\s+function\s+schedulePluginUnlockAfterRespawn\b/)
   })
 
-  it('gates the keystrokes on the absence of a bun child under the claude pid', () => {
-    // The bun-child probe is the single most important safety check: if a
-    // bun poller is alive, the plugin is running and Up+Enter+Enter would
+  it('gates the keystrokes on a provably DOWN channel plugin, provider-aware', () => {
+    // The liveness probe is the single most important safety check: if the
+    // poller is alive, the plugin is running and Up+Enter+Enter would
     // navigate to "Disable", killing a healthy channel.
-    expect(helper).toMatch(/pgrep/)
-    expect(helper).toMatch(/hasBunChild/)
-    // The unlock keystrokes path must be reachable ONLY when hasBunChild is
-    // false - assert by checking the early-return branch precedes the
+    //
+    // PROVIDERPOLLER1015: the gate used to be `pgrep -P <claude_pid> bun`, the
+    // TELEGRAM poller's shape. Slack's poller is a node/tsx child, so on a slack
+    // install the gate answered "absent" after every respawn and fired /mcp into
+    // a healthy session -- which the monitor's menu pass then reported to the
+    // operator as a stuck session. The gate must ask the shared provider-aware
+    // detector, and must use the three-valued probe so 'unknown' withholds the
+    // keystrokes instead of earning them.
+    expect(helper).toMatch(/probeChannelPluginLiveness\(/)
+    expect(helper, 'the bun-only gate must not come back').not.toMatch(/hasBunChild/)
+    expect(helper).toMatch(/liveness !== 'down'/)
+    // The unlock keystrokes path must be reachable ONLY when the plugin is
+    // proven down - assert by checking the early-return branch precedes the
     // keystroke call inside runUnlockProbe.
     const probeStart = helper.indexOf('function runUnlockProbe')
     expect(probeStart, 'runUnlockProbe not found').toBeGreaterThan(0)
     const probeEnd = helper.indexOf('\n}\n', probeStart)
     const probeBody = helper.slice(probeStart, probeEnd > probeStart ? probeEnd : undefined)
-    const bunIdx = probeBody.indexOf('hasBunChild(')
+    const liveIdx = probeBody.indexOf('probeChannelPluginLiveness(')
     const sendIdx = probeBody.indexOf('sendUnlockKeystrokes(')
-    expect(bunIdx).toBeGreaterThan(0)
-    expect(sendIdx).toBeGreaterThan(bunIdx)
-    // Ensure the hasBunChild branch returns before sendUnlockKeystrokes.
-    const between = probeBody.slice(bunIdx, sendIdx)
+    expect(liveIdx).toBeGreaterThan(0)
+    expect(sendIdx).toBeGreaterThan(liveIdx)
+    // Ensure the not-down branch returns before sendUnlockKeystrokes.
+    const between = probeBody.slice(liveIdx, sendIdx)
     expect(between).toMatch(/return\b/)
+    // The probe must be asked about THIS session's provider, never a constant.
+    expect(between).toMatch(/probeChannelPluginLiveness\(claudePid, state\.provider\)/)
   })
 
   it('refuses to send keystrokes if the pane shows a modal or non-idle state', () => {
@@ -154,9 +165,10 @@ describe('absent-plugin verdict feeds the down-cascade restart budget', () => {
     const probeStart = helper.indexOf('function runUnlockProbe')
     const probeEnd = helper.indexOf('\n}\n', probeStart)
     const probeBody = helper.slice(probeStart, probeEnd > probeStart ? probeEnd : undefined)
-    const healthyIdx = probeBody.indexOf('plugin healthy')
+    const healthyIdx = probeBody.indexOf('not provably down')
+    expect(healthyIdx, 'the not-down log line not found').toBeGreaterThan(0)
     const clearIdx = probeBody.indexOf('clearPluginAbsent(')
-    expect(clearIdx, 'clearPluginAbsent not called in the healthy branch').toBeGreaterThan(0)
+    expect(clearIdx, 'clearPluginAbsent not called in the not-down branch').toBeGreaterThan(0)
     expect(clearIdx).toBeLessThan(healthyIdx)
   })
 

@@ -240,6 +240,31 @@ ok "  ...and it says the checker crashed, not that the text was refused" \
 ENVX="MARVEEN_HOMOGLYPH_BIN=$SANDBOX/nincs-ilyen.py" send "tiszta szoveg checker nelkul"
 ok "a missing checker still sends (fail-open)" "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC"
 ok "  ...but says so out loud" "$(printf '%s' "$ERR" | grep -q 'UNCHECKED' && echo 0 || echo 1)" "stderr: $ERR"
+# GATEUNCHECKED1015: stderr alone was not enough. The result line is what a
+# caller reads (and what a `$(...)` capture keeps); if the UNCHECKED mark lives
+# only on stderr, a checked and an unchecked send are indistinguishable to
+# every caller in the fleet. NEGATIVE CONTROL for this pair: with the mark
+# removed from the STDOUT branches, this assertion goes red while the stderr
+# one above stays green -- which is exactly the gap it covers.
+ok "  ...and the UNCHECKED mark is on STDOUT too, not just stderr" \
+   "$(printf '%s' "$OUT" | grep -q 'UNCHECKED' && echo 0 || echo 1)" "out: $OUT"
+ok "  ...and the id is still readable next to it" \
+   "$(printf '%s' "$OUT" | grep -q 'id=4242' && echo 0 || echo 1)" "out: $OUT"
+
+# A CHECKED send must NOT carry the mark, or the mark means nothing.
+ENVX= send "tiszta magyar szoveg, ellenorzott kuldes"
+ok "a CHECKED send carries NO UNCHECKED mark" \
+   "$(printf '%s' "$OUT" | grep -q 'UNCHECKED' && echo 1 || echo 0)" "out: $OUT"
+
+# The condition that triggers the fail-open fires on THREE causes; the warning
+# named only the missing file, which sends the operator the wrong way.
+touch "$SANDBOX/olvashatatlan.py"; chmod 000 "$SANDBOX/olvashatatlan.py"
+ENVX="MARVEEN_HOMOGLYPH_BIN=$SANDBOX/olvashatatlan.py" send "checker letezik de olvashatatlan"
+ok "an UNREADABLE checker also fails open" \
+   "$([ "$RC" = "0" ] && [ "$CALLED" = "yes" ] && echo 0 || echo 1)" "rc=$RC"
+ok "  ...and the warning says NOT READABLE, not 'not found'" \
+   "$(printf '%s' "$ERR" | grep -q 'NOT READABLE' && echo 0 || echo 1)" "stderr: $ERR"
+chmod 644 "$SANDBOX/olvashatatlan.py"
 
 echo
 echo "$((N-FAILS))/$N passed  (helper under test: $HELPER)"

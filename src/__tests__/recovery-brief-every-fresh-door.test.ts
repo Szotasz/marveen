@@ -59,6 +59,7 @@ describe('scheduleRecoveryBrief', () => {
     dirty: [{ code: ' M', path: 'src/web/thing.ts' }],
     dirtyTruncated: false,
     inProgress: [{ id: 'abc12345', title: 'Fix the thing' }],
+    handoff: null,
   })
 
   const delivery = (ready: () => boolean, sent: { session: string; text: string }[]) => ({
@@ -111,6 +112,7 @@ describe('scheduleRecoveryBrief', () => {
       dirty: [],
       dirtyTruncated: false,
       inProgress: [],
+      handoff: null,
     }))
     await vi.advanceTimersByTimeAsync(RESUME_DELIVERY_OPTIONS.firstMs + 1)
 
