@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { initDatabase, getDb, updateMemory } from '../db.js'
 
 // An edit that changes the embedded text must drop the stored vector, because
@@ -76,5 +76,56 @@ describe('updateMemory invalidates the stale embedding', () => {
     const id = seedMemory('Same keywords body', 'kw-a, kw-b')
     expect(updateMemory(id, 'Same keywords body', 'cold', undefined, 'kw-a, kw-b')).toBe(true)
     expect(readEmbedding(id)).toBe(SENTINEL_EMBEDDING)
+  })
+})
+
+// REEMBEDONUPDATE1117: the dropped vector is regenerated right after the write,
+// asynchronously, instead of waiting for the nightly backfill. The embedding
+// backend is stubbed at the fetch boundary, so no Ollama is needed.
+describe('updateMemory re-embeds the new text asynchronously', () => {
+  const FRESH = [0.9, 0.8, 0.7]
+  let calls: string[] = []
+
+  beforeEach(() => {
+    calls = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
+      calls.push(JSON.parse(init?.body ?? '{}').prompt ?? '')
+      return { json: async () => ({ embedding: FRESH }) }
+    }))
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('stores a fresh vector for the edited content', async () => {
+    const id = seedMemory('Before the edit', 'kw-x')
+    expect(updateMemory(id, 'After the edit')).toBe(true)
+    // Synchronously the stale vector is gone (the write never waits on Ollama).
+    expect(readEmbedding(id)).toBeNull()
+    await vi.waitFor(() => expect(readEmbedding(id)).toBe(JSON.stringify(FRESH)))
+    // The embedded text is the NEW content plus the kept keywords.
+    expect(calls.some(p => p.includes('After the edit') && p.includes('kw-x'))).toBe(true)
+  })
+
+  it('does not call the backend on a category-only edit', async () => {
+    const id = seedMemory('Category only body')
+    expect(updateMemory(id, 'Category only body', 'cold')).toBe(true)
+    await new Promise(r => setTimeout(r, 20))
+    expect(calls).toHaveLength(0)
+    expect(readEmbedding(id)).toBe(SENTINEL_EMBEDDING)
+  })
+
+  it('discards a late vector for text that was edited again meanwhile', async () => {
+    let release: (() => void) | undefined
+    const gate = new Promise<void>(r => { release = r })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      await gate
+      return { json: async () => ({ embedding: FRESH }) }
+    }))
+    const id = seedMemory('First text')
+    expect(updateMemory(id, 'Second text')).toBe(true)
+    // A second edit lands while the first re-embed is still in flight.
+    getDb().prepare('UPDATE memories SET content = ? WHERE id = ?').run('Third text', id)
+    release!()
+    await new Promise(r => setTimeout(r, 20))
+    expect(readEmbedding(id)).toBeNull()
   })
 })
