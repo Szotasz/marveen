@@ -111,6 +111,10 @@ A Windows telepítő automatikusan beállítja a WSL-t (Windows Subsystem for Li
 
 Marveen also runs as a container with Docker Compose, on any Linux server with Docker:
 
+<!-- DOCKERGUIDEBUILD1108 (decided before the release, owner, with the Tuesday promote): the image is not published
+     yet (MARVEEN_PUBLISH_IMAGE is off), so "docker compose up -d" stops with "error from registry: denied" and does
+     not build by itself (measured on a Hostinger VPS, HOSTINGERDOCKER1107). Either this step says "--build" or the
+     image is published. Do not ship this step unchanged. -->
 ```bash
 git clone https://github.com/Szotasz/marveen.git && cd marveen
 docker compose up -d
