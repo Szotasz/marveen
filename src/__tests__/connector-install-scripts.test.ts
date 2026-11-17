@@ -1059,7 +1059,7 @@ describe('PATCH /api/connectors/github-repos/:name', () => {
 // --- UI wiring: the real handlers from web/app.js, run against stubs ---
 // The GitHub-repo block (opt-in helper, list with the update button, install
 // wiring) is cut out of app.js by its function markers and evaluated with a
-// fake document, fetch, confirmDialog and alert, so the tests prove what each
+// fake document, fetch, confirmDialog and showToast, so the tests prove what each
 // answer of the operator actually sends.
 describe('dashboard UI wiring', () => {
   const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -1083,7 +1083,7 @@ describe('dashboard UI wiring', () => {
   type Call = { url: string, method: string, body?: any }
   function harness(opts: { confirm: boolean[], checked?: boolean, responses?: Record<string, any> }) {
     const calls: Call[] = []
-    const alerts: string[] = []
+    const toasts: string[] = []
     const confirms: string[] = []
     const dialogs: { title: string, okLabel: string, danger?: boolean }[] = []
     const answers = [...opts.confirm]
@@ -1102,14 +1102,14 @@ describe('dashboard UI wiring', () => {
       return { ok: true, json: async () => data }
     }
     const noop = () => undefined
-    const fn = new Function('document', 'fetch', 'confirmDialog', 'alert', 't', 'escapeHtml', 'loadConnectors', 'loadExternalPaths', 'loadVault', 'showEnvVarModal', 'setTimeout',
+    const fn = new Function('document', 'fetch', 'confirmDialog', 'showToast', 't', 'escapeHtml', 'loadConnectors', 'loadExternalPaths', 'loadVault', 'showEnvVarModal', 'setTimeout',
       `${SRC}\nreturn { offer: offerGitHubRepoScriptsOptIn, load: loadGitHubRepos }`)
     const confirmDialog = async (o: { title: string, message: string, okLabel: string, danger?: boolean }) => {
       confirms.push(o.message); dialogs.push({ title: o.title, okLabel: o.okLabel, danger: o.danger }); return answers.shift() ?? false
     }
-    const api = fn(document, fetch, confirmDialog, (m: string) => { alerts.push(m) },
+    const api = fn(document, fetch, confirmDialog, (m: string) => { toasts.push(m) },
       (k: string, p?: Record<string, unknown>) => `${k}${p ? ' ' + JSON.stringify(p) : ''}`, (x: string) => x, noop, noop, noop, async () => ({}), noop)
-    return { api, ids, created, calls, alerts, confirms, dialogs, clickInstall: () => ids.githubRepoAddBtn.listeners.click() }
+    return { api, ids, created, calls, toasts, confirms, dialogs, clickInstall: () => ids.githubRepoAddBtn.listeners.click() }
   }
   const POST = 'POST /api/connectors/github-repos'
   const PATCH = 'PATCH /api/connectors/github-repos/acme--tool'
@@ -1155,17 +1155,18 @@ describe('dashboard UI wiring', () => {
     expect(h.confirms[0]).toMatch(/^connectors\.install_confirm_scripts /)
     expect(h.calls[0].body).toEqual({ url: 'https://github.com/acme/tool', runScripts: true })
   })
-  it('install: installWarning is shown', async () => {
+  it('install: installWarning is shown, in red, in the install status line', async () => {
     const h = harness({ confirm: [true], responses: { [POST]: { ok: true, repo: { name: 'acme--tool' }, installWarning: 'npm install failed: boom' } } })
     await h.clickInstall()
-    expect(h.alerts.join('\n')).toContain('connectors.install_warning')
-    expect(h.alerts.join('\n')).toContain('npm install failed: boom')
+    expect(h.ids.githubRepoStatus.className).toBe('github-repo-status error')
+    expect(h.ids.githubRepoStatus.textContent).toContain('connectors.install_warning')
+    expect(h.ids.githubRepoStatus.textContent).toContain('npm install failed: boom')
   })
   it('install: no opt-in offer after an install that did not complete', async () => {
     const h = harness({ confirm: [true, true], responses: { [POST]: { ok: true, repo: { name: 'acme--tool' }, installWarning: 'npm install not run: x', scriptsSkipped: ['prepare'] } } })
     await h.clickInstall()
     expect(h.confirms).toHaveLength(1)
-    expect(h.alerts.join('\n')).toContain('npm install not run: x')
+    expect(h.ids.githubRepoStatus.textContent).toContain('npm install not run: x')
     expect(h.calls.filter(c => c.method === 'PATCH')).toEqual([])
   })
   it('install: skipped scripts, cancel on "run them now?" sends no PATCH', async () => {
@@ -1177,7 +1178,7 @@ describe('dashboard UI wiring', () => {
   it('the opt-in PATCH failing is shown', async () => {
     const h = harness({ confirm: [true], responses: { [PATCH]: { error: 'pulled, but npm install not run: x' } } })
     await h.api.offer('acme--tool', ['prepare'])
-    expect(h.alerts).toEqual(['pulled, but npm install not run: x'])
+    expect(h.toasts).toEqual(['pulled, but npm install not run: x'])
   })
   it('install: skipped scripts, OK sends a PATCH with runScripts:true', async () => {
     const h = harness({ confirm: [true, true], responses: { [POST]: { ok: true, repo: { name: 'acme--tool' }, scriptsSkipped: ['prepare'] } } })

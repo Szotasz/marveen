@@ -39,15 +39,22 @@ afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
 let n = 0
 /**
  * Run the block. `answer` is the stub's stdout bytes (null = no wsl.exe on the
- * PATH at all); `strict` adds `-u` and `pipefail`.
+ * PATH at all); `fallback` places the stub only at the fallback path;
+ * `strict` adds `-u` and `pipefail`.
  */
-function run(answer: Buffer | null, opts: { strict?: boolean; rc?: number; timeout?: 'pass' | 'expire' } = {}): { code: number; out: string } {
+function run(answer: Buffer | null, opts: { strict?: boolean; rc?: number; timeout?: 'pass' | 'expire'; fallback?: boolean } = {}): { code: number; out: string } {
   const bin = join(dir, `bin${n++}`)
   mkdirSync(bin)
+  const fallback = join(bin, 'no-such-fallback', 'wsl.exe')
+  const originalFallback = '/mnt/c/Windows/System32/wsl.exe'
+  const extracted = block(LINUX)
+  expect(extracted).toContain(originalFallback)
+  const isolated = extracted.replaceAll(originalFallback, fallback)
   if (answer !== null) {
     const payload = join(bin, 'answer.bin')
     writeFileSync(payload, answer)
-    const stub = join(bin, 'wsl.exe')
+    if (opts.fallback) mkdirSync(join(bin, 'no-such-fallback'))
+    const stub = opts.fallback ? fallback : join(bin, 'wsl.exe')
     writeFileSync(stub, `#!/bin/bash\n[ "$1" = "--version" ] || exit 9\ncat '${payload}'\nexit ${opts.rc ?? 0}\n`)
     chmodSync(stub, 0o755)
   }
@@ -68,7 +75,7 @@ function run(answer: Buffer | null, opts: { strict?: boolean; rc?: number; timeo
     "trap 'on_error $LINENO' ERR",
     "ORANGE='<O>'; DIM='<D>'; NC='</>'",
     'IS_WSL=true',
-    block(LINUX),
+    isolated,
     'echo REACHED_THE_END',
   ].join('\n')
   // Only the stub dir and the system tools: no real wsl.exe can answer.
@@ -135,6 +142,14 @@ describe('install-linux.sh warns about the WSL interop spin before 3.0.1', () =>
       expect(warned(r.out)).toBe(false)
     })
   }
+
+  it('a stub only at the fallback path warns for WSL 2.7.10 and the install goes on', () => {
+    const r = run(utf16(versionText('2.7.10.0')), { fallback: true })
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('REACHED_THE_END')
+    expect(r.out).not.toContain('TRAP_FIRED')
+    expect(warned(r.out)).toBe(true)
+  })
 
   it('a BOM before the first line and a plain UTF-8 answer (WSL_UTF8=1) are read too', () => {
     expect(warned(run(utf16(versionText('2.7.10.0'), true)).out)).toBe(true)

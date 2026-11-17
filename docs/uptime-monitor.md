@@ -24,7 +24,9 @@ What it does per run (the full contract is the script's docstring):
 
 Exit codes: `0` fine, `3` confirmed outage, `2` not measurable, `4` a send failed
 or the send path (token, chat, helper, copy gate) is unusable, `1` internal or
-config error. The unit treats `2` and `3` as success, so `1`, `4` and a timeout
+config error, or a state stamp after a successful send that could not be written
+(the notice went out; the next run may repeat it). That `1` overrides `4`, `3`
+and `2`. The unit treats `2` and `3` as success, so `1`, `4` and a timeout
 start `OnFailure=marveen-notify@%n.service` (`scripts/unit-fail-notify.sh`).
 
 ## Configuration

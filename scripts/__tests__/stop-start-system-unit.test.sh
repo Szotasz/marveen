@@ -37,7 +37,7 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 # --- throwaway install tree --------------------------------------------------
 INSTALL="$TMP/install"
 mkdir -p "$INSTALL/scripts" "$INSTALL/store" "$INSTALL/dist"
-cp "$REPO/scripts/stop.sh" "$REPO/scripts/start.sh" "$INSTALL/scripts/"
+cp "$REPO/scripts/stop.sh" "$REPO/scripts/start.sh" "$REPO/scripts/resolve-unit-id.sh" "$INSTALL/scripts/"
 cp "$REPO/install-lang.sh" "$INSTALL/"
 echo "MAIN_AGENT_ID=testslug" > "$INSTALL/.env"
 echo "hu" > "$INSTALL/.lang"
@@ -52,9 +52,15 @@ LOG="$TMP/systemctl.log"
 cat > "$BIN/systemctl" <<'SH'
 #!/bin/bash
 echo "$*" >> "$SYSTEMCTL_LOG"
+# FAKE_UNIT_IDS (space separated): when set, `cat <id>-dashboard.service` only
+# succeeds for those ids (system scope, or user scope with --user), so the
+# SERVICE_ID -> MAIN_AGENT_ID fallback can be exercised.
+_known() { case " ${FAKE_UNIT_IDS} " in *" ${1%-dashboard.service} "*) return 0 ;; esac; return 1; }
 case "$1" in
-  cat)   [ "${FAKE_SYSTEM_UNIT:-0}" = "1" ] && exit 0 || exit 1 ;;
-  --user) [ "${FAKE_USER_MANAGER:-0}" = "1" ] && exit 0 || exit 1 ;;
+  cat)   if [ -n "${FAKE_UNIT_IDS:-}" ]; then [ "${FAKE_SYSTEM_UNIT:-0}" = "1" ] && _known "$2" && exit 0; exit 1; fi
+         [ "${FAKE_SYSTEM_UNIT:-0}" = "1" ] && exit 0 || exit 1 ;;
+  --user) if [ "$2" = "cat" ] && [ -n "${FAKE_UNIT_IDS:-}" ]; then [ "${FAKE_USER_MANAGER:-0}" = "1" ] && _known "$3" && exit 0; exit 1; fi
+          [ "${FAKE_USER_MANAGER:-0}" = "1" ] && exit 0 || exit 1 ;;
   stop|start) exit "${FAKE_SYSTEMCTL_RC:-0}" ;;
 esac
 exit 0
@@ -148,6 +154,59 @@ if grep -q -- "^--user start testslug-dashboard testslug-channels$" "$LOG"; then
 else
   fail "start: user-manager installs keep the --user branch (log: $(cat "$LOG"))"
 fi
+
+# --- SERVICE_ID set apart from MAIN_AGENT_ID ---------------------------------
+# The installer names the units after SERVICE_ID. When .env sets it apart (a
+# renamed agent keeping its old units), start/stop must act on those units,
+# not on <MAIN_AGENT_ID>-*: measured on a live install, the update's restart
+# hit "Unit not found" and left the old dashboard running for days.
+printf 'MAIN_AGENT_ID=testslug\nSERVICE_ID="unitslug"\n' > "$INSTALL/.env"
+
+# 8. stop.sh acts on the SERVICE_ID units.
+FAKE_SYSTEM_UNIT=0 FAKE_USER_MANAGER=1 run_script stop.sh
+if grep -q -- "^--user stop unitslug-dashboard unitslug-channels$" "$LOG"; then
+  pass "stop: units are named after SERVICE_ID when set"
+else
+  fail "stop: units are named after SERVICE_ID when set (log: $(cat "$LOG"))"
+fi
+
+# 9. start.sh acts on the SERVICE_ID units.
+FAKE_SYSTEM_UNIT=0 FAKE_USER_MANAGER=1 run_script start.sh
+if grep -q -- "^--user start unitslug-dashboard unitslug-channels$" "$LOG"; then
+  pass "start: units are named after SERVICE_ID when set"
+else
+  fail "start: units are named after SERVICE_ID when set (log: $(cat "$LOG"))"
+fi
+# --- SERVICE_ID set, but only the MAIN_AGENT_ID units exist ----------------
+# Review of #2667: e.g. SERVICE_ID added to .env by hand, units never
+# re-installed. The scripts must fall back to the existing units, not to the
+# nohup launch (which would start a second dashboard and channel).
+
+# 10. System scope: start.sh starts the existing testslug units.
+FAKE_UNIT_IDS="testslug" FAKE_SYSTEM_UNIT=1 FAKE_USER_MANAGER=0 run_script start.sh
+rc=$?
+if grep -q "^start testslug-dashboard testslug-channels$" "$LOG" && [ "$rc" = 0 ]; then
+  pass "start: falls back to the existing MAIN_AGENT_ID units (system scope)"
+else
+  fail "start: falls back to the existing MAIN_AGENT_ID units (system scope) (rc=$rc, log: $(cat "$LOG"))"
+fi
+
+# 11. User scope: stop.sh stops the existing testslug units.
+FAKE_UNIT_IDS="testslug" FAKE_SYSTEM_UNIT=0 FAKE_USER_MANAGER=1 run_script stop.sh
+if grep -q -- "^--user stop testslug-dashboard testslug-channels$" "$LOG"; then
+  pass "stop: falls back to the existing MAIN_AGENT_ID units (user scope)"
+else
+  fail "stop: falls back to the existing MAIN_AGENT_ID units (user scope) (log: $(cat "$LOG"))"
+fi
+
+# 12. Both exist: SERVICE_ID wins, no fallback.
+FAKE_UNIT_IDS="testslug unitslug" FAKE_SYSTEM_UNIT=0 FAKE_USER_MANAGER=1 run_script start.sh
+if grep -q -- "^--user start unitslug-dashboard unitslug-channels$" "$LOG"; then
+  pass "start: SERVICE_ID units win when both exist"
+else
+  fail "start: SERVICE_ID units win when both exist (log: $(cat "$LOG"))"
+fi
+echo "MAIN_AGENT_ID=testslug" > "$INSTALL/.env"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

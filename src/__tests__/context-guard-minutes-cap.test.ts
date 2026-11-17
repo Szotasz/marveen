@@ -31,6 +31,8 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     handoffMtime: null,
     paneSaturated: false,
     dailyHandoffDue: false,
+    periodicHandoffDue: false,
+    taskCloseHandoffDue: false,
     contextTokens: null,
     idleMs: null,
     usageLimited: false,

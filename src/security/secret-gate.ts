@@ -123,7 +123,7 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
 export const TRANSCRIPT_PATTERNS: { name: string; pattern: RegExp }[] = [
   { name: 'quoted channel message', pattern: /\bmessage_id\s*[:=]?\s*\d{2,}\s*[:\-]/ },
   { name: 'telegram update dump', pattern: /"(update_id|from_user|chat_id)"\s*:\s*\d+/ },
-  { name: 'quoted agent transcript header', pattern: /^\s*\[Uzenet @[a-z0-9_-]+-tol/im },
+  { name: 'quoted agent transcript header', pattern: /^\s*\[Uzenet \\?@[a-z0-9_-]+-tol/im },
   // Same trap on the transcript side: this repo's evidence files use
   // `message_id NNN:`, but a wrapper tag is just as much channel material.
   // One form only would give a clean zero on the other.

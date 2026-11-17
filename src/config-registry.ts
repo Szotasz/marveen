@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { expandAndValidateConfigDir } from './config-dir-path.js'
+import { CLAUDE_CONFIG_DIR_ALLOWED, expandAndValidateConfigDir, hasParentTraversal } from './config-dir-path.js'
 import { alertChatFormatError, alertChatProviderOf, OWNER_ALERT_CHAT_KEY } from './alert-chat-format.js'
 import { readEnvFile } from './env.js'
 // Single source of truth for settings the dashboard's "Beallitasok" page can
@@ -121,6 +121,17 @@ export function envValueTightens(def: SettingDefinition, envValue: string): bool
   return !def.loosens(String(def.default), envValue)
 }
 
+// Pure parse rule for STORE_WATCH_EXCLUDE. Entries are trimmed; an entry is dropped (never read generously) when it is
+// empty, '.', '..', or contains '/', '\\' or a NUL character.
+export function parseStoreWatchExclude(raw: string | undefined): Set<string> {
+  return new Set(
+    (raw ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => s !== '' && s !== '.' && s !== '..' && !/[\/\\\0]/.test(s))
+  )
+}
+
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
 
 // A '' (use the default) or a number in [0, 1], e.g. a cosine-similarity threshold.
@@ -132,7 +143,8 @@ function validUnitFraction(v: string): string | null {
 }
 
 // A '' (nobody) or a comma-separated list of agent names, e.g. "pm,reviewer".
-const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$/
+// Exported for the sub-agent rotation stage (claude-plan-subagent-rotation.ts), which puts a name into a heartbeat line.
+export const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$/
 function validAgentNameList(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -146,6 +158,29 @@ function validKeepAlive(v: string): string | null {
   if (t === '') return null
   if (/^-?\d+$/.test(t)) return Number.isSafeInteger(Number(t)) ? null : 'Túl nagy szám.'
   return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? null : 'Egész szám (másodperc) vagy időtartam szükséges, pl. 30m, 1h, -1.'
+}
+
+// CLI_INVENTORY_DIRS: comma-separated folders the CLI inventory reads, each
+// holding one tool per subfolder (the Printing Press library layout). Each item
+// is an absolute or ~/ path from the config-dir character set, without a '..'
+// segment. '' (the default) is the empty list: the inventory is off, because it
+// starts the binaries it finds, so the owner turns it on by naming a folder they
+// trust. Returns the list, or null when an item is invalid. Shared by the
+// validator and the inventory route.
+const CLI_INVENTORY_MAX_DIRS = 16
+const CLI_INVENTORY_MAX_DIR_LENGTH = 512
+export function parseCliInventoryDirs(raw: string): string[] | null {
+  const dirs = raw.split(',').map((d) => d.trim()).filter((d) => d !== '')
+  if (dirs.length > CLI_INVENTORY_MAX_DIRS) return null
+  for (const d of dirs) {
+    const rooted = d.startsWith('/') || d.startsWith('~/')
+    if (!rooted || d.length > CLI_INVENTORY_MAX_DIR_LENGTH || !CLAUDE_CONFIG_DIR_ALLOWED.test(d) || hasParentTraversal(d)) return null
+  }
+  return [...new Set(dirs)]
+}
+
+function validCliInventoryDirs(v: string): string | null {
+  return parseCliInventoryDirs(v) ? null : 'Vesszővel elválasztott abszolút vagy ~/ kezdetű mappák kellenek (pl. ~/printing-press/library), legfeljebb 16, szóköz és .. nélkül.'
 }
 
 // OSS_INVENTORY_NOTES_DIRS: comma-separated folder names under each agent
@@ -194,6 +229,23 @@ function validFusionWeight(v: string): string | null {
   const n = Number(t)
   return Number.isFinite(n) && n >= 0 && n <= 10 ? null : '0 és 10 közötti szám szükséges (pl. 0.5).'
 }
+
+// The Claude models an agent / worker setting may pick. Shared by DEFAULT_AGENT_MODEL and
+// MARVEEN_WORKER_MODEL_FAST so the two pickers can never drift apart (WORKERMODELFAST1109).
+export const AGENT_MODEL_CHOICES: readonly string[] = [
+  // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23, Marveen 28541).
+  'claude-opus-5-5[1m]',
+  'claude-opus-5',
+  'claude-opus-5[1m]',
+  'claude-sonnet-5-5',
+  'claude-sonnet-5',
+  'claude-fable-5',
+  'claude-fable-5-1',
+  'claude-fable-5-2',
+  'claude-opus-4-8[1m]',
+  'claude-haiku-5-5',
+  'claude-haiku-4-5-20251001',
+]
 
 export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
@@ -463,6 +515,22 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+  },
+  {
+    key: 'CLI_INVENTORY_DIRS',
+    type: 'string',
+    default: '',
+    description: 'A CLI-nyilvántartás (Kapcsolatok > CLI oldal) ezekben a mappákban keresi az eszközöket, almappánként egyet (a Printing Press könyvtár elrendezése): vesszővel elválasztott abszolút vagy ~/ kezdetű útvonalak, pl. ~/printing-press/library. Üres (alapállapot) = a nyilvántartás ki van kapcsolva, semmi nem fut. A leltár az itt talált *-pp-cli fájlokat a dashboard jogával ELINDÍTJA (csak leíró hívás: agent-context vagy --help, időkorláttal, tisztított környezettel), ezért csak olyan mappát adj meg, amelynek a binárisaiban megbízol. A futást (frissítés, elavult leltár újragenerálása) csak a gazda dashboard-munkamenete indítja, más hívó a mentett leltárt kapja. Csak a gazda állíthatja (dashboard-belépéssel), a közös ügynök-token nem, és a .env-ben álló érték nem érvényesül: aki ezt átírja, az dönti el, mit futtat a dashboard. A következő leltár-frissítéskor érvényes, a kikapcsolás azonnal.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: validCliInventoryDirs,
+    // This key chooses which binaries the dashboard process STARTS with its own rights, outside the agent hooks'
+    // gates. Any change is treated as loosening (the OWNER_DRIVE_FOLDER form): through the Settings route only the
+    // owner may set or reset it (the shared fleet token gets 403), and the key is overrides-only, so a .env line
+    // that differs from the default never counts (ENVRELAXGATE1104). Not ownerGated: that flag keeps the .env line
+    // working, which is exactly what must not happen here.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
     key: 'OSS_INVENTORY_NOTES_DIRS',
@@ -774,6 +842,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() === 'enforce' && newValue.trim() !== 'enforce',
   },
   {
+    // VAULTSZELES826 PR-A: the observation week for sub-agent OWN tokens (AGENT_TOKENS). enforce is the code default and
+    // today's behaviour; audit is set by the owner for the week before the per-secret list exists (Samu 74555).
+    key: 'VAULT_ACL_AGENT_MODE',
+    type: 'string',
+    default: 'enforce',
+    valueSet: ['enforce', 'audit'],
+    description: 'Az al-ügynök SAJÁT tokenjének (AGENT_TOKENS) vault-olvasási szabálya. enforce (alapértelmezés) = csak a store/vault-acl.json-ban neki engedett titkot kapja meg; audit = megfigyelési hét: minden olvasás átmegy és naplózódik azzal, hogy enforce mellett tiltva lenne-e, ebből javasolható a titkonkénti lista (scripts/vault-acl-suggest.mjs). Az SSH-anyag és a vault al-erőforrásai mindkét állásban tiltottak. Az audit lazítás: csak dashboard-belépéssel állítható. Nyom és hozzáférés-szabály, nem elzárás.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== 'audit' && newValue.trim() === 'audit',
+  },
+  {
     // SKILLAPPROVALOFF1101 (owner, Slack 2026-11-01 22:35): switchable, OFF by default. The scan, the hash binding and
     // an audit line run in both positions; only the hold for the owner's approval is what the switch turns on.
     key: 'SKILL_QUARANTINE',
@@ -794,6 +875,23 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
     loosens: (oldValue: string, newValue: string) => ['1', 'true', 'yes', 'on'].includes(oldValue.trim().toLowerCase()) && !['1', 'true', 'yes', 'on'].includes(newValue.trim().toLowerCase()),
+  },
+  // STOREWATCHEXCL1111 review B1: adding a name loosens the audit, so this key is overrides-only (a loosening .env line is ignored).
+  {
+    key: 'STORE_WATCH_EXCLUDE',
+    type: 'string',
+    default: '',
+    description: 'A store/ alatti felső szintű könyvtárak, amelyeket a store-figyelő (az ügynökök által a store/-ban létrehozott fájlok naplója) induláskor nem jár be és nem figyel. Nagy, gyorsan változó futásidejű fákra való: Linuxon a figyelő minden fájlra és könyvtárra külön inotify-figyelést tesz. Csak könyvtárnevek, perjel nélkül, vesszővel elválasztva (pl. build-cache,old-runs). Üresen (alapértelmezés) minden figyelve marad. Egy név felvétele lazítás, mert a kizárt fában létrehozott fájl nem kerül a naplóba: csak dashboard-belépéssel állítható, és a .env-ben álló érték nem érvényesül. A dashboard újraindítása után lép életbe.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: true,
+    validate: (v) => v.split(',').map(s => s.trim()).filter(Boolean).some(s => s === '.' || s === '..' || /[/\\\0]/.test(s))
+      ? 'Csak felső szintű könyvtárnevek, vesszővel elválasztva; perjel, "." és ".." nem lehet.'
+      : null,
+    loosens: (oldValue, newValue) => {
+      const prev = parseStoreWatchExclude(oldValue)
+      return [...parseStoreWatchExclude(newValue)].some((n) => !prev.has(n))
+    },
   },
   // --- Token usage module ---
   {
@@ -1158,20 +1256,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'agents',
     secret: false,
     requiresRestart: true,
-    valueSet: [
-      // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23, Marveen 28541).
-      'claude-opus-5-5[1m]',
-      'claude-opus-5',
-      'claude-opus-5[1m]',
-      'claude-sonnet-5-5',
-      'claude-sonnet-5',
-      'claude-fable-5',
-      'claude-fable-5-1',
-      'claude-fable-5-2',
-      'claude-opus-4-8[1m]',
-      'claude-haiku-5-5',
-      'claude-haiku-4-5-20251001',
-    ],
+    valueSet: [...AGENT_MODEL_CHOICES],
+  },
+  {
+    key: 'MARVEEN_WORKER_MODEL_FAST',
+    type: 'string',
+    default: '',
+    description: 'A GYORS háttér-worker session modellje. Üresen ugyanaz a lánc dönt, mint a lassú workernél, tehát a beállítás nélkül semmi nem változik. A gyors session rövid, társalgási feladatokat kap, azokra elég egy kisebb modell. A CLI-indíthatósági őr erre is lefut. A módosítás a szolgáltatás újraindításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
+    valueSet: ['', ...AGENT_MODEL_CHOICES],
   },
   // --- Claude plans module (PR2b/PR2c) ---
   // Gates BOTH POST /api/claude-plans/rotate (returns 409 while off) and the

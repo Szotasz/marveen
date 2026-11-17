@@ -58,16 +58,16 @@ class TestBackgroundWork(unittest.TestCase):
     def test_background_shells_with_the_tasks_panel_visible(self):
         out = pane(
             "> kész, itt a válasz",
-            "bypass permissions on · 2 shells · ctrl+t to hide tasks · ↓ to manage",
+            "  ⏵⏵ bypass permissions on · 2 shells · ctrl+t to hide tasks · ↓ to manage",
         )
         self.assertEqual(tlp.classify_pane(out), ("background", "háttérfolyamat fut (2 shells)"))
 
     def test_background_shells_with_the_tasks_panel_hidden(self):
-        out = pane("bypass permissions on · 1 shell · ↓ to manage")
+        out = pane("  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage")
         self.assertEqual(tlp.classify_pane(out), ("background", "háttérfolyamat fut (1 shell)"))
 
     def test_monitor_and_subagents(self):
-        out = pane("bypass permissions on · 1 monitor · ← for agents · ↓ to manage")
+        out = pane("  ⏵⏵ bypass permissions on · 1 monitor · ← for agents · ↓ to manage")
         self.assertEqual(tlp.classify_pane(out), ("background", "háttérfolyamat fut (1 monitor)"))
 
     def test_the_shape_this_machine_actually_renders(self):
@@ -83,7 +83,7 @@ class TestBackgroundWork(unittest.TestCase):
         self.assertEqual(tlp.classify_pane(out), ("background", "háttérfolyamat fut (3 shells)"))
 
     def test_several_counters_are_all_reported(self):
-        out = pane("bypass permissions on · 3 shells · 1 monitor · ↓ to manage")
+        out = pane("  ⏵⏵ bypass permissions on · 3 shells · 1 monitor · ↓ to manage")
         self.assertEqual(
             tlp.classify_pane(out), ("background", "háttérfolyamat fut (3 shells, 1 monitor)"))
 
@@ -116,6 +116,41 @@ class TestIdle(unittest.TestCase):
 
     def test_empty_pane(self):
         self.assertIsNone(tlp.classify_pane(""))
+
+
+RULE = "─" * 80
+
+
+class TestLiveFooterAnchor(unittest.TestCase):
+    """PANEFOOTEROUTSIDE1114: the counters come from the LIVE footer line only.
+
+    Shapes from Claude Code 2.1.325 captures (two blanks, the mode glyph, the
+    words), with one line added in the output area that quotes a footer.
+    """
+
+    QUOTE = "  ⎿  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage"
+
+    def test_a_quoted_footer_above_a_real_plan_mode_footer_is_not_background(self):
+        out = pane("⏺ Done.", self.QUOTE, "", RULE, "❯ ", RULE, "  ⏸ plan mode on (shift+tab to cycle)")
+        self.assertIsNone(tlp.classify_pane(out))
+
+    def test_a_quoted_footer_above_an_open_dialog_is_not_background(self):
+        out = pane(
+            "⏺ Done.", self.QUOTE, "",
+            "╭" + "─" * 40, " Bash command", "   echo hi", " Do you want to proceed?",
+            " ❯ 1. Yes", "   2. No, and tell Claude what to do differently (esc)",
+        )
+        self.assertIsNone(tlp.classify_pane(out))
+
+    def test_background_work_in_a_non_bypass_mode_is_reported(self):
+        out = pane("⏺ Started the build.", "", RULE, "❯ ", RULE,
+                   "  ⏵⏵ auto mode on · 2 shells · ↓ to manage")
+        self.assertEqual(tlp.classify_pane(out), ("background", "háttérfolyamat fut (2 shells)"))
+
+    def test_the_live_footer_wins_over_a_quote_with_more_counters(self):
+        out = pane("  ⏵⏵ bypass permissions on · 5 shells · ↓ to manage", "", RULE, "❯ ", RULE,
+                   "  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage")
+        self.assertEqual(tlp.classify_pane(out), ("background", "háttérfolyamat fut (1 shell)"))
 
 
 if __name__ == "__main__":

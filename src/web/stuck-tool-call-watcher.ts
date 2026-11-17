@@ -926,6 +926,13 @@ function readLocalAgentState(agent: string): AgentStateReading | null {
   }
 }
 
+/**
+ * sweepSubAgents calls every dep inside withTmuxBatch, where identical tmux list-sessions invocations (so every
+ * isRunning answer) are memoized for the whole sweep. Read-only tmux calls such as capture-pane are fine.
+ * Each dep must be synchronous and must not start, stop, restart or send keys to any tmux session,
+ * directly or through a helper, or later isRunning answers in the same sweep are stale.
+ * The production deps (LIVE_SUB_AGENT_DEPS) are pinned by src/__tests__/tmux-batch-dedupe.stuck-tool.test.ts.
+ */
 export interface SubAgentSweepDeps {
   listAgents: () => string[]
   isRunning: (agent: string) => boolean

@@ -146,8 +146,12 @@ describe('the writers are gated too (POST/PUT model)', () => {
     const put = src.indexOf("if (data.model !== undefined) {")
     expect(put).toBeGreaterThan(-1)
     expect(src.slice(put, put + 400)).toContain('refuseIfCliCannotLaunch(String(data.model))')
-    const post = src.indexOf("const cliGate = await refuseIfCliCannotLaunch(model)")
+    // The create checks live in agent-create.ts since MIOAGENTINSTALL1114 PR-I0: the gate is consulted there, and the
+    // POST handler runs those checks.
+    const create = readFileSync(join(REPO, 'src', 'web', 'agent-create.ts'), 'utf8')
+    const post = create.indexOf("const cliGate = await refuseIfCliCannotLaunch(model)")
     expect(post).toBeGreaterThan(-1)
+    expect(src).toContain('await checkAgentCreatable(name, model, customProvider,')
   })
 })
 

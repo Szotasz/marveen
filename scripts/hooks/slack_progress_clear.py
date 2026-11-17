@@ -28,13 +28,24 @@ retries its delete -- after the delivery work, so a slow Slack cannot eat the
 budget of the part that matters, and not at all on the Stop that blocks -- and
 if that fails retryably again, leaves the entry in the file for the watchdog.
 
+A redelivered copy of a message already seen in this session never reaches
+job 2: slack_progress.py claims each inbound ts once with a
+`seen-<sid>-<ts>.marker`, and this hook keeps those markers for an hour
+instead of dropping them at every Stop (SLACKDUP1111), so the copy gets no
+placeholder and nothing to enforce.
+
 Loop safety: a per-session `enforce-<sid>.marker` guarantees we block at most
 once; `stop_hook_active` is also honored. Silent on stdout EXCEPT the single
 decision JSON when blocking. Token/state dir resolution mirrors the plugin
 (SLACK_STATE_DIR, else the install-scoped dir (#915), else the legacy shared
 default).
 """
-import sys, os, json, glob, http.client, urllib.error, urllib.request
+import sys, os, json, glob, time, http.client, urllib.error, urllib.request
+
+# How long a seen-<sid>-<ts>.marker outlives its turn (SLACKDUP1111). Longer
+# than the plugin's own redelivery dedup window (30 min, seen-events.json), and
+# the same hour as the watchdog's orphan sweep.
+SEEN_MARKER_TTL_SEC = 3600
 
 # Slack error codes that mean "try again later", not "this cannot be done".
 # Same set as slack_progress_watchdog.py.
@@ -218,10 +229,18 @@ def main():
     pdir = os.path.join(sd, "progress")
     guard = os.path.join(pdir, f"enforce-{sid}.marker")
 
-    # Clean up this session's dedup markers (created by slack_progress.py).
+    # This session's dedup markers (slack_progress.py, one per inbound ts) are
+    # KEPT past the turn (SLACKDUP1111): Slack redelivered one message six more
+    # times, minutes apart, and with the markers gone at every Stop each copy
+    # read as a new message in the next turn -- a new placeholder, and this
+    # hook asked for a new reply to a message already answered. A marker is
+    # only removed once older than SEEN_MARKER_TTL_SEC, the same hour after
+    # which slack_progress_watchdog.py sweeps orphan markers.
+    now = time.time()
     for m in glob.glob(os.path.join(pdir, f"seen-{sid}-*.marker")):
         try:
-            os.remove(m)
+            if now - os.path.getmtime(m) > SEEN_MARKER_TTL_SEC:
+                os.remove(m)
         except Exception:
             pass
 

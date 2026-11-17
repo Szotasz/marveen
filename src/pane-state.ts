@@ -118,24 +118,85 @@ const FOOTER_SHELL_TAIL_RX = new RegExp(
   String.raw`^\s*[\u23F5\u23F8]{1,2} (?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · ${FOOTER_COUNT}(?:(?: ·|,) ${FOOTER_COUNT})*\s*$`,
 )
 
+// PANEFOOTERQUOTE1114: how the LIVE footer line starts. Measured on Claude Code
+// 2.1.325 in six permission modes (manual, plan, accept edits, auto, don't ask,
+// bypass; 80 and 60 columns): two blanks, the mode glyph (one ⏸, or ⏵⏵), a blank.
+// The bare `? for shortcuts` footer of older builds starts with the hint itself.
+// A sentence that QUOTES the footer words (a message body, a log line, an echoed
+// command) does not start like this.
+const FOOTER_START_RX = /^\s*(?:[⏵⏸]{1,2} |\? for shortcuts)/
+
+function isLiveFooterLine(line: string): boolean {
+  return IDLE_FOOTER_RX.test(line) && FOOTER_START_RX.test(stripAllAnsi(line))
+}
+
 /**
- * Index of the idle footer line, or -1. The full footer may sit anywhere the
- * callers already accepted it; the tmux-clipped form and the bare background-
- * shell tail (VAGTECHIDLE1009) count ONLY as the last
- * non-empty line, which is where the live footer is drawn. A dialog replaces
- * the input box and footer, so its last line is the dialog's own hint, never
- * a clipped footer.
+ * Index of the idle footer line, or -1.
+ *
+ * PANEFOOTERQUOTE1114: the footer is looked for WHERE THE UI DRAWS IT, not on
+ * the first line of the pane that carries its words. Until this change the
+ * first matching line won, so a line that merely quoted the footer ("bypass
+ * permissions on (shift+tab to cycle)" in a message, `3 shells` in an old log
+ * line) became the footer: a parked message under it could not be read, a
+ * background-work count came from scrollback, and one such line above a real
+ * permission card made the pane read idle.
+ *   - With an input-box separator on screen (a column-0 rule): the footer is
+ *     the first line UNDER THE LAST separator that matches the footer pattern
+ *     AND starts like the live footer. Not "the line right under it": on the
+ *     quota wall a warning and a status line sit between the two.
+ *   - With no separator on screen: only the LAST non-empty line can be the
+ *     footer, under the same two tests.
+ *   - The tmux-clipped form and the bare background-shell tail
+ *     (VAGTECHIDLE1009) count ONLY as the last non-empty line, as before. A
+ *     dialog replaces the input box and footer, so its last line is the
+ *     dialog's own hint, never a clipped footer.
+ * Not solved here, and not solvable from the text: a line with the exact
+ * footer shape (same indent and glyph) inside a dialog card's body.
  */
 function idleFooterIndex(lines: string[]): number {
-  const full = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
-  if (full >= 0) return full
   let last = lines.length - 1
   while (last >= 0 && lines[last].trim() === '') last--
-  return last >= 0 && (FOOTER_TRUNCATED_RX.test(lines[last]) || FOOTER_SHELL_TAIL_RX.test(lines[last])) ? last : -1
+  if (last < 0) return -1
+  let sep = last
+  while (sep >= 0 && !BOX_SEP_RX.test(lines[sep])) sep--
+  if (sep >= 0) {
+    for (let i = sep + 1; i <= last; i++) if (isLiveFooterLine(lines[i])) return i
+  } else if (isLiveFooterLine(lines[last])) {
+    return last
+  }
+  return FOOTER_TRUNCATED_RX.test(lines[last]) || FOOTER_SHELL_TAIL_RX.test(lines[last]) ? last : -1
 }
 
 function hasIdleFooter(lines: string[]): boolean {
   return idleFooterIndex(lines) >= 0
+}
+
+/**
+ * PANEFOOTEROUTSIDE1114: the live idle footer line, or null. The ONE footer
+ * anchor for consumers outside this module: channel-plugin-unlock calls it,
+ * and the two ports (scripts/stuck-modal-guard.sh `footer-line`,
+ * scripts/telegram-live-progress.py `live_footer_line`) re-implement exactly
+ * this over plain `capture-pane -p` text; a parity test runs all three over
+ * one corpus. Same lines as idleFooterIndex: no background-agent split, so a
+ * port does not need one (the footer sits above that block and under the last
+ * separator, where the search finds it).
+ */
+export function liveFooterLine(pane: string | null): string | null {
+  if (!pane) return null
+  const lines = pane.split('\n')
+  const idx = idleFooterIndex(lines)
+  return idx < 0 ? null : lines[idx]
+}
+
+/**
+ * PANEFOOTEROUTSIDE1114: true when a line on screen carries the footer words
+ * but no live footer is where the UI draws it -- a quoted footer above an open
+ * dialog, or a footer shape this module does not know. The stuck-session
+ * report names this cause instead of a bare 'unknown'.
+ */
+export function footerWordsOffAnchor(pane: string | null): boolean {
+  if (!pane || liveFooterLine(pane) !== null) return false
+  return pane.split('\n').some((line) => IDLE_FOOTER_RX.test(stripAllAnsi(line)))
 }
 
 /**
@@ -568,7 +629,10 @@ export function stripSessionTitleBanner(coloredPane: string): string {
 // cannot push a running turn back out of the live windows. COUNTING is stricter:
 // detectBackgroundAgents reports only when every row is a measured `◯` row, and
 // says nothing (null) otherwise.
-const BG_AGENT_MAIN_RX = /^\s+⏺ main\s*$/
+// PANEGLYPH1115: the header's bullet is Claude Code's platform bullet, `macos ? "⏺" : "●"` (U+23FA / U+25CF; read
+// from the 2.1.325 binary, the same switch already in 2.1.169), so a Linux host draws `  ● main`. Exactly these two,
+// no wider class: the rows keep their own strict `◯` check.
+const BG_AGENT_MAIN_RX = /^\s+[⏺●] main\s*$/
 const BG_AGENT_ROW_RX = /^\s+◯ \S/
 // The footer's lead: the mode words + `on`, then the shift+tab hint and/or the
 // first `·` segment; or the no-mode `? for shortcuts` footer.
@@ -679,13 +743,10 @@ const ERROR_BLOCK_LINES = 4
 export function detectsThinkingBlockError(pane: string): boolean {
   if (!pane) return false
   const lines = pane.split('\n')
-  // Find the footer from the bottom: the live footer is the last line of
-  // the pane, so a footer-looking line quoted in scrollback must not win.
-  let footerIdx = -1
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (IDLE_FOOTER_RX.test(lines[i])) { footerIdx = i; break }
-  }
-  if (footerIdx < 0) footerIdx = idleFooterIndex(lines)
+  // The live footer, found where the UI draws it (idleFooterIndex): a
+  // footer-looking line quoted in scrollback, or in the error text itself,
+  // must not win.
+  const footerIdx = idleFooterIndex(lines)
   if (footerIdx < 0) return false
   const start = Math.max(0, footerIdx - ERROR_LIVE_TAIL_LINES)
   const tail = lines.slice(start, footerIdx)
@@ -1293,7 +1354,10 @@ export function detectsHeldPeerMessage(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  // PANEFOOTERQUOTE1114: only the LIVE footer vetoes. The footer words quoted
+  // anywhere on the pane used to veto too, so a held message whose text (or the
+  // scrollback above it) carried them was never reported.
+  if (hasIdleFooter(lines)) return false
   return HELD_PEER_MESSAGE_RX.test(pane)
 }
 
@@ -1539,11 +1603,21 @@ export interface DetectPaneStateOptions {
 // Code renders when no mode is switched on -- i.e. it asks about everything.
 export function detectPermissionMode(pane: string): string | null {
   if (!pane || !pane.trim()) return null
-  const m = pane.match(
-    /((?:[A-Za-z][\w-]* ){1,3})on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))/,
+  // PANEFOOTERQUOTE1114: read the mode from the LIVE footer line only. Matching
+  // the whole pane returned the mode of the first line that quoted a footer.
+  const lines = pane.split('\n')
+  const idx = idleFooterIndex(lines)
+  if (idx < 0) return null
+  const footer = lines[idx]
+  // PANEFOOTEROUTSIDE1114: measured on Claude Code 2.1.325 -- the manual footer
+  // is `⏸ manual mode on · ? for shortcuts` (its tail is the shortcuts hint, so
+  // it used to fall through to 'default'), and the apostrophe of `don't ask on`
+  // cut the phrase to 't ask'. Both now read as the words the footer shows.
+  const m = footer.match(
+    /((?:[A-Za-z][\w'-]* ){1,3})on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents|\? for shortcuts))/,
   )
   if (m) return m[1].trim()
-  return /\? for shortcuts/.test(pane) ? 'default' : null
+  return /\? for shortcuts/.test(footer) ? 'default' : null
 }
 
 export function detectPaneState(
@@ -2169,7 +2243,8 @@ const MACHINE_ORIGIN_PREFIXES = [
   /^SCHEDULED TASK NOTICE/,
   /^<scheduled-task[\s>]/,
   /^TEAM MEMBER NOTICE/,
-  /^\[Uzenet @/,
+  // `\\?`: the typed header carries a backslash before the at-sign (ENVATLEAK1114, pane-text.ts).
+  /^\[Uzenet \\?@/,
   /^<channel\s+source="plugin:/,
 ] as const
 

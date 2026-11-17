@@ -75,6 +75,11 @@ PROVENANCE_MARKERS = (
     "[Uzenet @",
     "[Uzenet a tavoli @",
     "[Üzenet @",
+    # The TYPED shape of the same prefixes (ENVATLEAK1114): the pane mapping puts a
+    # backslash before every at-sign that follows whitespace, the header's included.
+    "[Uzenet \\@",
+    "[Uzenet a tavoli \\@",
+    "[Üzenet \\@",
 )
 
 # --- the agent's own background-task result -------------------------------
@@ -218,13 +223,33 @@ DIRECTIVE_HEADER_RX = re.compile(
 DIRECTIVE_SENDER = "system"
 
 
+# JavaScript's \s, character for character (ECMAScript WhiteSpace + LineTerminator):
+# Python's \s differs (it has U+001C..U+001F and U+0085, and lacks U+FEFF), and the
+# two sides must escape exactly the same at-signs or a verified directive reads as forged.
+JS_SPACE = "\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff"
+# After review of #2743: a semicolon counts like whitespace (the chunker that types the text appends a space
+# to a chunk ending in ';'), and control characters never reach the pane (C0 without TAB, DEL, C1 become U+FFFD,
+# a lone CR becomes a space; never deleted, a deletion joins what a scrubber saw as two halves), BEFORE the at-sign
+# step, which treats U+FFFD like whitespace. Same rules, same order as src/web/pane-text.ts.
+AT_AFTER_BREAK_RX = re.compile("(^|[" + JS_SPACE + ";\ufffd])@")
+PANE_CONTROL_RX = re.compile("[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f]")
+
+
 def pane_shape(text):
     """The delivery mapping, EXACTLY as src/web/pane-text.ts applies it: every
     line break becomes one space. Not a general whitespace collapse -- that would
     be a loosening; this is the one deterministic transformation the row goes
     through on its way into the pane. 48 of 492 system rows on this host carry
-    line breaks (measured 2026-09-20), so the multi-line case is real."""
-    return re.sub(r"\r?\n", " ", text or "")
+    line breaks (measured 2026-09-20), so the multi-line case is real.
+
+    ENVATLEAK1114: the mapping has a second step, `neutralizeAtMentions` -- a
+    backslash before every at-sign at the start of the text or after whitespace
+    (JavaScript's whitespace class, spelled out in JS_SPACE above because
+    Python's own whitespace class is a different set) or after a semicolon.
+    Same order as paneTyped(): line breaks, then the control characters, then
+    the at-signs."""
+    one_line = re.sub(r"\r?\n", " ", text or "").replace("\r", " ")
+    return AT_AFTER_BREAK_RX.sub(lambda m: m.group(1) + "\\@", PANE_CONTROL_RX.sub("\ufffd", one_line))
 
 
 # The THIRD known shape (c5d83ffe, 2026-10-08): the Claude Code harness wraps a

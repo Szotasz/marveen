@@ -101,3 +101,42 @@ describe('pgrep -P scoping primitive (proves the mechanism, not just the source 
     }
   })
 })
+
+// SLACKWATCHDOGNODE1113 (2026-11-13): on a Slack main agent the plugin is a Node (tsx) child, never bun, so the
+// bun-only liveness check missed the healthy plugin and the never-started budget restarted the session three
+// times (600, 1200, 2400 s; exit 1 each, OnFailure alert each). The watchdog and the post-init unlock now look
+// for the slack-channel plugin root under this session's claude when the provider is slack.
+function extractPluginChildPid(): string {
+  const start = channelsSh.indexOf('plugin_child_pid() {')
+  expect(start, 'plugin_child_pid helper not found').toBeGreaterThan(0)
+  const end = channelsSh.indexOf('\n}\n', start)
+  return channelsSh.slice(start, end + 3)
+}
+
+describe('SLACKWATCHDOGNODE1113: the Slack plugin (Node, not bun) counts as alive', () => {
+  it('the watchdog has a slack branch that pgreps the slack-channel root under the session claude', () => {
+    const loop = extractWatchdogLoop()
+    expect(loop).toMatch(/\[ "\$CHANNEL_PROVIDER" = "slack" \]/)
+    expect(loop).toMatch(/-n "\$_watchdog_claude_pid" \] && \/usr\/bin\/pgrep -P "\$_watchdog_claude_pid" -f '\/slack-channel\/'/)
+  })
+
+  it('the post-init unlock checks (before and after) use the provider-aware helper, not a bare bun pgrep', () => {
+    expect(channelsSh).toMatch(/BUN_CHILD="\$\(plugin_child_pid "\$CLAUDE_PID"\)"/)
+    expect(channelsSh).toMatch(/BUN_AFTER="\$\(plugin_child_pid "\$CLAUDE_PID"\)"/)
+    expect(channelsSh).not.toMatch(/BUN_(CHILD|AFTER)="\$\(\/usr\/bin\/pgrep -P "\$CLAUDE_PID" bun/)
+  })
+
+  it('plugin_child_pid finds a slack-channel child under slack and ignores it under telegram (live)', async () => {
+    const fn = extractPluginChildPid()
+    const child = spawn('/bin/bash', ['-c', 'exec -a /cache/marveen-marketplace/slack-channel/0.2.5/serve /bin/sleep 30'], { stdio: 'ignore' })
+    try {
+      await new Promise(r => setTimeout(r, 300))
+      const run = (provider: string) => execFileSync('/bin/bash', ['-c', `${fn}\nCHANNEL_PROVIDER=${provider}\nplugin_child_pid ${process.pid}`], { encoding: 'utf-8' }).trim()
+      expect(run('slack')).toBe(String(child.pid))
+      expect(run('telegram')).toBe('')
+      expect(execFileSync('/bin/bash', ['-c', `${fn}\nCHANNEL_PROVIDER=slack\nplugin_child_pid ""; echo rc=$?`], { encoding: 'utf-8' }).trim()).toBe('rc=0')
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+})

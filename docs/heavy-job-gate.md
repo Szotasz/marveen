@@ -13,7 +13,8 @@ Angol változat: [en/heavy-job-gate.md](en/heavy-job-gate.md).
 ## 🎯 Mit tud / miért érdekes
 
 - **Egyszerre egy nehéz feladat**, az egész gépen, érkezési sorrendben (FIFO-sor egy
-  globális zár előtt). Aki később jött, nem előzhet.
+  globális zár előtt). Aki később jött, nem előzhet. (A külön bekapcsolandó, alapból
+  kikapcsolt mellék-sáv egy kis feladatot engedhet mellé: lásd lent, "Mellék-sáv".)
 - **Memória-padló:** a feladat csak akkor indul, ha a `MemAvailable` legalább
   `max(--min-mb, keret + tartalék)`, így a legrosszabb esete (a teljes kerete) mellett
   is megmarad a tartalék a gép többi részének. Erre legfeljebb `--wait-sec`-ig vár.
@@ -118,12 +119,25 @@ működés, a kapcsolók és a konfiguráció részletes leírása az
 - **Konfiguráció környezeti változókkal** (a kapcsoló erősebb): `HEAVY_JOB_MIN_MB`
   (2500), `HEAVY_JOB_MAX_MEM` (2G), `HEAVY_JOB_SWAP_MAX` (256M), `HEAVY_JOB_WAIT_SEC`
   (300), `HEAVY_JOB_RESERVE_MB` (500), `HEAVY_JOB_AGENT`, `HEAVY_JOB_STORE`
-  (alapból `<telepítés gyökere>/store`), `HEAVY_JOB_OLLAMA_UNLOAD=1` (memóriahiánynál
+  (alapból `<telepítés gyökere>/store`), `HEAVY_JOB_SIDE_LANE=1` (mellék-sáv, alapból
+  kikapcsolva, lásd lent), `HEAVY_JOB_OLLAMA_UNLOAD=1` (memóriahiánynál
   egyszer kiüríti a betöltött ollama-modelleket; alapból ki van kapcsolva, és maradjon
   is, ha egy ügynök helyi ollama-modellen fut).
 - **Sorrend a FIFO felett:** `--agent` (méltányosság: ugyanaz az ügynök nem veheti el
   kétszer egymás után a zárat, amíg más vár) és `--max-sec N`, N <= 300 (rövid sáv: a
   rövid feladat előzhet, de legfeljebb három egymás után egy várakozó hosszút).
+- **Mellék-sáv (`--max-mem` <= 1G), alapból kikapcsolva:** csak
+  `HEAVY_JOB_SIDE_LANE=1` mellett él (ha nincs beállítva, vagy más az értéke, a kapu
+  úgy működik, mintha nem is létezne). A mellék-sávos feladat **nem kizárólagos** a fő
+  feladattal: egyszerre futnak, és a kapu csak a memóriát méri (a CPU-t, portot,
+  profil- vagy build-könyvtárat nem). Egy kis, keretes feladat futhat a fő feladat
+  mellett, egy második záron (`store/.heavy-job.lock.side`), az ilyen hívások
+  érkezési sorrendjében, és csak ha `MemAvailable >= max(--min-mb, a saját keret + a
+  fő feladat tartaléka + 1000)`. Ami nem olvasható, az nem enged be senkit; amíg fut,
+  a fő sáv padlója a tartalékával nő. A nagyobb keretű (alapértelmezett 2G) hívások
+  nem használják. A kapcsolót a gép minden kapu-hívójának állítsd be, és csak akkor
+  kapcsold be, ha régebbi kapu-folyamat már nem vár a sorban: a kapcsoló nélküli (vagy
+  régebbi) kapu a padlójába nem számolja bele a mellék-sávos feladat tartalékát.
 - **Beágyazott hívás:** egy kapu alatt futó feladat, amely maga is a kaput hívja,
   második zár nélkül fut, de csak ha ez ellenőrizhető (a zár tényleg foglalt, a rekord
   a feladat tokenjét hordozza, és a hívó cgroupja a rögzített scope-on belül van).
@@ -135,7 +149,8 @@ A context-guard restart megöli az ügynök tmux-paneljét és minden folyamatot
 leállna vagy el sem indulna, a kimenete pedig a haldokló sessionhöz menne. Ezért a
 guard a már eldöntött restartot visszatartja, amíg az ügynöknek él kapus feladata:
 
-- **Melyik feladat az ügynöké:** a zár-rekord kapu-pidje (a futó feladat) és a sor
+- **Melyik feladat az ügynöké:** a zár-rekordok kapu-pidjei (a futó feladat, és a
+  mellette futó mellék-sávos a `<lock>.side`-ból) és a sor
   jegyeinek pidjei (a várakozók), élve és ugyanazzal a folyamat-indulási idővel, ha a
   kapu-folyamat az ügynök valamelyik tmux-paneljéből származik. A label sosem dönt a
   tulajdonról. A dashboard az utakat úgy oldja fel, mint a kapu (`HEAVY_JOB_STORE`,

@@ -124,7 +124,10 @@ echo "(f) State-dir auto-create"
 # CHANNELS_SESSION points at a non-existent session so the guard no-ops at the
 # has-session check WITHOUT touching any real pane; the mkdir runs before that.
 TMP_F1="$(mktemp -d)"; NOSTORE="$TMP_F1/sub"   # NOSTORE does not exist yet
-CHANNELS_SESSION="nonexistent-modal-guard-test-channels" STUCK_MODAL_STATE_DIR="$NOSTORE" \
+# A tmux stub that knows no session: without tmux on PATH the guard stops before
+# the mkdir (a CI runner or a container has none), so the test needs one.
+mkdir -p "$TMP_F1/bin" && printf '#!/bin/sh\nexit 1\n' > "$TMP_F1/bin/tmux" && chmod +x "$TMP_F1/bin/tmux"
+PATH="$TMP_F1/bin:$PATH" CHANNELS_SESSION="nonexistent-modal-guard-test-channels" STUCK_MODAL_STATE_DIR="$NOSTORE" \
   bash "$GUARD" >/dev/null 2>&1
 [ -d "$NOSTORE" ] && pass "F1: run_guard creates a missing state dir (lock can't defer forever)" \
   || fail "F1: missing state dir not created — exec 9> on the lock would fail and defer recovery"
@@ -187,6 +190,50 @@ rm -rf "$GBASE"
 
 # ---------------------------------------------------------------------------
 # (h) MODELCONFIRM1005 -- macOS
+# ---------------------------------------------------------------------------
+echo ""
+echo "(g2) PANEFOOTEROUTSIDE1114: the live footer, where the UI draws it, in every mode"
+
+# Footers as Claude Code 2.1.325 draws them (measured captures, empty input
+# box). Before this, only the bypass and the shortcuts footer counted, and the
+# real, empty pane of the other modes classified as stuck.
+RULE='────────────────────────────────────────────────────────────────────────────────'
+mode_pane() { printf '⏺ Done.\n\n%s\n❯ \n%s\n%s' "$RULE" "$RULE" "$1"; }
+for FOOT in '  ⏸ plan mode on (shift+tab to cycle)' \
+            '  ⏵⏵ auto mode on (shift+tab to cycle)' \
+            '  ⏵⏵ accept edits on (shift+tab to cycle)' \
+            "  ⏵⏵ don't ask on (shift+tab to cycle)" \
+            '  ⏸ manual mode on · ? for shortcuts' \
+            '  ⏵⏵ bypass permissions on (shift+tab to cycle)'; do
+  assert_eq "idle: empty pane in mode '$FOOT'" "idle" "$(classify "$(mode_pane "$FOOT")")"
+  assert_eq "footer-line: the live footer in mode '$FOOT'" "$FOOT" "$(mode_pane "$FOOT" | bash "$GUARD" footer-line)"
+done
+
+# A line in the output that QUOTES the footer, then an open permission dialog
+# instead of the input box and footer: stuck, not idle.
+QUOTE_OVER_DIALOG='⏺ Done.
+  ⎿  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage
+╭────────────────────────────────────────
+ Bash command
+   echo hi
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No, and tell Claude what to do differently (esc)'
+assert_eq "stuck: a quoted footer above an open dialog" "stuck" "$(classify "$QUOTE_OVER_DIALOG")"
+assert_eq "footer-line: none above an open dialog" "" "$(printf '%s' "$QUOTE_OVER_DIALOG" | bash "$GUARD" footer-line)"
+QUOTE_PLAIN_OVER_DIALOG='the log said: bypass permissions on and ? for shortcuts
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No'
+assert_eq "stuck: the bare footer words in prose above a dialog" "stuck" "$(classify "$QUOTE_PLAIN_OVER_DIALOG")"
+# Under the last rule, a line with the footer words that does not START like the
+# live footer is skipped; the live footer under it is the one.
+UNDER_RULE="$(printf '%s\n❯ \n%s\n  ⚠ it said: bypass permissions on (shift+tab to cycle)\n  ⏸ plan mode on (shift+tab to cycle)' "$RULE" "$RULE")"
+assert_eq "footer-line: a quote under the rule is skipped for the live footer" \
+  "  ⏸ plan mode on (shift+tab to cycle)" "$(printf '%s' "$UNDER_RULE" | bash "$GUARD" footer-line)"
+NO_START="$(printf '%s\n❯ \n%s\nbypass permissions on (shift+tab to cycle)' "$RULE" "$RULE")"
+assert_eq "stuck: the footer words under the rule without the live start" "stuck" "$(classify "$NO_START")"
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "(h) macOS: the Switch-model dialog is stuck, mtime is portable"

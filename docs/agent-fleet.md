@@ -50,6 +50,31 @@ Az indítás kezeli a Claude Code "resume summary" modal automatikus elutasítá
 
 A teljes életciklus (start/stop/status/lista) és az inter-agent üzenetküldés **távoli ügynöknél is működik**, ssh-n keresztül (lásd lentebb) -- a helyi ügynökök viselkedése változatlan.
 
+### Pluginok izolált config-mappában
+
+Minden al-ügynök (és izolált módban a fő ügynök is) saját config-mappából fut (`agents/<név>/.claude-config`, a fő ügynöknél `.channels-config`). A plugin-kód nem duplikálódik: a `plugins/cache`, `plugins/marketplaces` és `plugins/data` symlink a közös `~/.claude/plugins` alá. Saját fájlja viszont van az ügynöknek: a `plugins/installed_plugins.json` (melyik plugin van telepítve) és a `settings.json` (`enabledPlugins`: melyik van bekapcsolva).
+
+**Induláskor** (`provisionIsolatedConfigDir`, minden indításnál lefut) a saját `installed_plugins.json` a közössel **összefésül**, nem íródik felül (#2780):
+
+- ami a saját registryben már szerepel, az marad; csak a project-scope bejegyzések `projectPath`-ja áll az ügynök mappájára;
+- ami a sajátból hiányzik, vagy üres tömbként áll benne, az a közösből kerül be, az ügynök mappájára állítva;
+- a sérült vagy nem objektum saját fájl a közösből épül újra.
+
+A `settings.json` `enabledPlugins` kulcsát minden induláskor a közös `~/.claude/settings.json`-ból veszi; a saját fájl korábbi értéke ebben a kulcsban nem marad meg. A csatorna-pluginok (telegram, slack, discord stb.) értékét az indítás az ügynök csatorna-beállításából számolja, azokhoz kézzel ne nyúlj.
+
+**Egy plugin levétele a flottáról** ezért ügynökönkénti lépés, és a sorrend számít. A közös fájlok szerkesztése a fő ügynök vagy az üzemeltető dolga (al-ügynök ezeket nem írhatja):
+
+1. A közös `~/.claude/plugins/installed_plugins.json`-ból vedd ki a plugin bejegyzését. Ez az első: amíg a közösben szerepel, az ügynök saját registryjéből kivett bejegyzés a következő induláskor visszakerül.
+2. Minden izolált config-mappa `plugins/installed_plugins.json`-jából vedd ki ugyanazt (`agents/*/.claude-config/plugins/`, és ha a fő ügynök izolált, `.channels-config/plugins/`). A közösből való kivétel ezekből nem veszi ki.
+3. A közös `~/.claude/settings.json` `enabledPlugins` alatt állítsd `false`-ra (vagy töröld). Ez minden ügynök saját `settings.json`-jába a következő induláskor átkerül. Ha egy ügynök projekt-szintű `agents/<név>/.claude/settings.json`-jában is szerepel `true`-val, ott is állítsd át: a dashboard ott a nem-csatorna kulcsokat érintetlenül hagyja.
+4. Indítsd újra az érintett ügynököket; a változás a következő indulással él.
+
+Miért kell a 3. lépés is: a #2780 mérése szerint (2026-11-07) ha egy bekapcsolt plugin a registryből hiányzik, a Claude Code induláskor újratelepíti.
+
+A `claude plugin uninstall` helyett a fenti fájl-lépéseket ajánljuk. A parancs a súgója szerint (`claude plugin uninstall --help`, Claude Code 2.1.325) a `--keep-data` nélkül a plugin adat-mappáját (`plugins/data/<id>/`) is törli, ami izolált config-mappában symlink a közösre, tehát a többi ügynöké is. Ezt nem mértük; ha mégis a parancsot használod, config-mappánként (`CLAUDE_CONFIG_DIR=<mappa>`) és `--keep-data`-val.
+
+A `scripts/lib/channel-plugin-refresh.sh` (az `update.sh` hívja) pluginokat **nem** vesz le: csak `claude plugin update`-et futtat ott, ahol a registry már tartalmazza a plugint.
+
 ### Saját setup-token fájl (`oauthTokenFile`)
 
 Alapból minden helyi al-ügynök a flotta setup-tokenjével indul (`store/.claude-oauth-token`).

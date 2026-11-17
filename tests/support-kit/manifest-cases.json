@@ -1,0 +1,178 @@
+{
+  "about": "TEST ONLY manifests of the support kit. Every reader must accept \"good\" and refuse every entry of \"bad\". Shared by the routine (src/support-kit.ts) and the sh launcher.",
+  "good": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n",
+  "bad": [
+    {
+      "label": "nothing",
+      "text": ""
+    },
+    {
+      "label": "another header",
+      "text": "marveen-support-kit 2\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "no line end after the last line",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58"
+    },
+    {
+      "label": "a blank line at the end",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n\n"
+    },
+    {
+      "label": "a blank line in the middle",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "CR LF line ends",
+      "text": "marveen-support-kit 1\r\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\r\ninstall-root /opt/marveen\r\nnode /opt/homebrew/opt/node@22/bin/node\r\nnode-min 20\r\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\r\n"
+    },
+    {
+      "label": "a CR at the end of one line",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\r\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a missing install root",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a missing node path",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a missing node minimum",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a missing release",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\n"
+    },
+    {
+      "label": "no file line",
+      "text": "marveen-support-kit 1\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a second install root",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\ninstall-root /tmp/x\n"
+    },
+    {
+      "label": "a second node path",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\nnode /tmp/node\n"
+    },
+    {
+      "label": "a second node minimum",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\nnode-min 18\n"
+    },
+    {
+      "label": "the same file twice",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\nfile support-access bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "an unknown key",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\nrun /tmp/x\n"
+    },
+    {
+      "label": "two spaces after a key",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode  /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a tab instead of the space",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode\t/opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a file line with a fourth word",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa x\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a node line with a second word",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node --inspect\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "the files out of name order",
+      "text": "marveen-support-kit 1\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "the facts before the files",
+      "text": "marveen-support-kit 1\ninstall-root /opt/marveen\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "the node minimum before the node path",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode-min 20\nnode /opt/homebrew/opt/node@22/bin/node\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "the release before the node minimum",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\nnode-min 20\n"
+    },
+    {
+      "label": "a hash in upper case",
+      "text": "marveen-support-kit 1\nfile support-access AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a short hash",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a file name that climbs",
+      "text": "marveen-support-kit 1\nfile ../support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a file name with a slash",
+      "text": "marveen-support-kit 1\nfile kit/support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a file named manifest",
+      "text": "marveen-support-kit 1\nfile manifest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "an install root that is not absolute",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "an install root with an at sign",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen@1\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a node path with a dollar sign",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/$HOME/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a node path with a space",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/my node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a node path with a quote",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/\"node\"\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a node minimum with a leading zero",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 020\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a node minimum of zero",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 0\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a node minimum with a sign",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min +20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a node minimum that is not a number",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min twenty\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a node minimum with four digits",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 1000\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "a release that is not a commit id",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease v1.2.3\n"
+    },
+    {
+      "label": "more than 16 file lines",
+      "text": "marveen-support-kit 1\nfile f00 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f01 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f02 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f03 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f04 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f05 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f06 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f07 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f08 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f09 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f10 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f11 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f12 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f13 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f14 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f15 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile f16 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ninstall-root /opt/marveen\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    },
+    {
+      "label": "more than 4096 bytes",
+      "text": "marveen-support-kit 1\nfile support-access aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nfile support-dispatch.sh bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nfile support-standby.mjs cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ninstall-root /xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nnode /opt/homebrew/opt/node@22/bin/node\nnode-min 20\nrelease 1ca1f0944891436a4a8ae0643bc6b7d3c0693f58\n"
+    }
+  ]
+}

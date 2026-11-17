@@ -239,8 +239,16 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$F/bin/pidof"         # systemd fut
 cat > "$F/bin/systemctl" <<'SC'
 #!/usr/bin/env bash
 # cat -> a unit letezik; is-enabled -> igen; is-active -> a DRIFT_ACTIVE dönti el
+# FAKE_UNIT_IDS (szokozzel): ha meg van adva, a `cat <id>-dashboard.service` csak
+# ezekre az id-kra sikerul (a SERVICE_ID -> MAIN_AGENT_ID fallback mereséhez).
+# Minden hivas a SC_LOG-ba megy, ha meg van adva.
+[ -n "${SC_LOG:-}" ] && echo "$*" >> "$SC_LOG"
+[ "${1:-}" = "--user" ] && shift
 case "${1:-}" in
-  cat) exit 0 ;;
+  cat) if [ -n "${FAKE_UNIT_IDS:-}" ]; then
+         case " ${FAKE_UNIT_IDS} " in *" ${2%-dashboard.service} "*) exit 0 ;; esac; exit 1
+       fi
+       exit 0 ;;
   is-enabled) exit 0 ;;
   is-active) [ "${DRIFT_ACTIVE:-1}" = "1" ] && exit 0 || exit 3 ;;
 esac
@@ -260,6 +268,22 @@ check "7 a drift JELENT, nem buktat (exit 0 marad)" "$([ "$rc_drift" = "0" ] && 
 out="$(fin_run 1)"
 check "7 ha minden unit active, NINCS drift-uzenet (nincs hamis riasztas)" \
   "$(grep -q 'NEM active unit' <<<"$out" && echo 1 || echo 0)"
+
+# _unit_drift a SERVICE_ID szerinti unitot nezi (#2667), es ha az nincs, de a
+# MAIN_AGENT_ID szerinti igen, azt (a #2667 review-ja).
+fin_ids() {  # fin_ids <FAKE_UNIT_IDS>
+  : > "$F/store/sc.log"
+  ( cd "$F" && env PATH="$F/bin:$PATH" DRIFT_ACTIVE=0 FAKE_UNIT_IDS="$1" SC_LOG="$F/store/sc.log" \
+      bash "$F/finalize.sh" "$F" "" "" 3420 "$F/store/res.json" "$F/store/built" "" "" 0 ) >/dev/null 2>&1
+}
+printf 'MAIN_AGENT_ID=teszt\nSERVICE_ID="egyedi"\n' > "$F/.env"
+fin_ids "egyedi teszt"
+check "7 SERVICE_ID beallitva: a drift-ellenorzes az egyedi-* unitot nezi" \
+  "$(grep -q 'is-active --quiet egyedi-dashboard' "$F/store/sc.log" && echo 0 || echo 1)" "$(tr '\n' ';' < "$F/store/sc.log")"
+fin_ids "teszt"
+check "7 SERVICE_ID szerinti unit nincs: visszaesik a MAIN_AGENT_ID szerintire" \
+  "$(grep -q 'is-active --quiet teszt-dashboard' "$F/store/sc.log" && echo 0 || echo 1)" "$(tr '\n' ';' < "$F/store/sc.log")"
+printf 'MAIN_AGENT_ID=teszt\n' > "$F/.env"
 
 echo
 [ "$SKIPS" -gt 0 ] && echo "($SKIPS eset kihagyva -- lasd a SKIP sorokat)"

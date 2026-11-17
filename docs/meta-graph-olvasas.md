@@ -17,7 +17,8 @@ A `graph-read.py` az egyetlen parancs, ami egy olvasáshoz kell, és felépíté
   van), és a válasz végső URL-je is csak ez a host lehet;
 - az útvonal egyszerű (`[A-Za-z0-9_/-]` egy opcionális `vNN.N/` után): se host, se pont, se `?`, se `..`;
 - lekérdezési paraméter csak `kulcs=érték` argumentumként, és csak engedélyezett kulcs (`fields`, `limit`,
-  `after`, `before`, `since`, `until`, `metadata`, `summary`, `date_preset`, `period`, `metric`, `breakdowns`);
+  `after`, `before`, `since`, `until`, `metadata`, `summary`, `date_preset`, `period`, `metric`, `breakdowns`,
+  és az `ig_audio` miatt felvett `audio_type`, `user_id`, `search_query`, ami bármely olvasó útvonalon elfogadott);
   az író jelzőket (`message=`, `method=`, `batch=`, `published=` ...) hálózati hívás előtt elutasítja, és azt a
   `fields=` értéket is, ami `access_token`-t kér vagy `.as()` aliast használ;
 - a token a `store/.meta-token` fájlból jön (`--page <id>` esetén az oldal-tokent abból származtatja a

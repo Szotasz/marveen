@@ -92,11 +92,18 @@ main_rename_wait_prompt() {
 # main_rename_send <tmux> <target> <name>
 # Exit 0 when the box no longer holds the command (or cannot be read), 1 when
 # it is still parked after every retry (logged), 2 when the first send failed,
-# 3 when nothing was typed because the input prompt never showed (logged).
+# 3 when nothing was typed because the input prompt never showed (logged),
+# 4 when nothing was typed because the name contains an at-sign (logged).
 main_rename_send() {
   local tmux="$1" target="$2" name="$3"
   local max="${MAIN_RENAME_MAX_ENTERS:-3}" wait_s="${MAIN_RENAME_RETRY_S:-1}"
   local cmd="/rename ${name}" i=0 w=0 pane box
+  # ENVATLEAK1114: the name is typed after a space, and Claude Code expands an
+  # at-sign there into a file attachment. A name with one is never typed.
+  case "$name" in
+    *@*) echo "$(date '+%F %T') channels.sh: boot /rename -- the name contains an at-sign, NOT typing (ENVATLEAK1114)" >&2
+         return 4 ;;
+  esac
   main_rename_wait_prompt "$tmux" "$target" || return 3
   "$tmux" send-keys -t "$target" -l "$cmd" || return 2
   sleep "${MAIN_RENAME_TYPE_S:-0.3}"

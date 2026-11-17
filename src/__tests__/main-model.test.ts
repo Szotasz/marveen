@@ -643,6 +643,42 @@ describe('/model back and /model effort', () => {
     expect(r.text).toBe('Már az alapmodell fut: claude-sonnet-5.')
   })
 
+  // TYPINGPATHS1114: with no hold the base is the configured model, and it was typed unchecked.
+  it('back with no hold and an invalid configured model: refused, nothing typed, no state touched', async () => {
+    const at = String.fromCharCode(64)
+    for (const bad of [`claude-sonnet-5 ${at}x`, 'x; /clear', 'a\nb', "x'y", '', 'm'.repeat(129)]) {
+      const d = deps({ configured: () => bad, measured: () => 'claude-opus-5' })
+      const r = await modelBack(d)
+      expect(r.ok, JSON.stringify(bad)).toBe(false)
+      expect(r.busy, JSON.stringify(bad)).toBeUndefined()
+      expect(r.text, JSON.stringify(bad)).toBe(`Nem váltottam: érvénytelen modell-azonosító a konfigurációban: ${JSON.stringify(bad.slice(0, 60))}`)
+      expect(d.sent, JSON.stringify(bad)).toEqual([])
+      expect(d.keys, JSON.stringify(bad)).toEqual([])
+      expect(d.expiries, JSON.stringify(bad)).toEqual([])
+    }
+  })
+
+  it('...the refusal does not echo a line break or more than 60 characters of the value', async () => {
+    const r = await modelBack(deps({ configured: () => `bad\nvalue ${'z'.repeat(200)}`, measured: () => 'claude-opus-5' }))
+    expect(r.text).not.toContain('\n')
+    expect(r.text.length).toBeLessThan(140)
+  })
+
+  it('back with no hold and a VALID configured model that differs from the measured one still sends it', async () => {
+    const d = deps({ measured: () => 'claude-opus-5' })
+    const r = await modelBack(d)
+    expect(r.ok).toBe(true)
+    expect(d.sent).toEqual([`/model ${BASE}`])
+  })
+
+  it('an effort-only hold with an invalid configured model: the effort still goes back, no /model is typed', async () => {
+    const d = deps({ configured: () => 'not a model' })
+    writeHold(d.holdFile, { model: null, name: 'low', revert_to: null, until: T0 + 3600_000, set_at: T0, effort: 'low', revert_effort: 'medium', verify_pending: false, blocked_since: null, block_alert_at: null })
+    const r = await modelBack(d)
+    expect(r.ok).toBe(true)
+    expect(d.sent).toEqual(['/effort medium'])
+  })
+
   it('effort: valid level sent as /effort, invalid refused', async () => {
     const d = deps()
     expect((await setEffort('high', d)).ok).toBe(true)

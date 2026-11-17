@@ -12,6 +12,8 @@ import { createAgentTokenResolver } from './web/agent-tokens.js'
 import { operatorGateDecision } from './web/operator-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
+import { tryHandleSupportAccess } from './web/routes/support-access.js'
+import { startSupportReconcile } from './web/support-standby-runtime.js'
 import { tryHandleOperator } from './web/routes/operator.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
@@ -21,7 +23,7 @@ import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
 import { forEachAgentIsolated } from './web/agent-seed-loop.js'
 import { ensureRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
-import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -76,6 +78,7 @@ import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandlePrLedger } from './web/routes/pr-ledger.js'
 import { tryHandleOpensourceInventory } from './web/routes/opensource-inventory.js'
+import { tryHandleCliInventory } from './web/routes/cli-inventory.js'
 import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
 import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
@@ -237,6 +240,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleAuth(routeCtx)) return
       if (await tryHandleOperatorAccess(routeCtx)) return
       if (await tryHandleOperator(routeCtx, WEB_DIR)) return
+      if (await tryHandleSupportAccess(routeCtx)) return
       if (await tryHandleSecurity(routeCtx)) return
       if (await tryHandleBridgeServicePorts(routeCtx)) return
       if (await tryHandleProfiles(routeCtx)) return
@@ -245,6 +249,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandlePrLedger(routeCtx)) return
       if (await tryHandleOpensourceInventory(routeCtx)) return
+      if (await tryHandleCliInventory(routeCtx)) return
       if (await tryHandleHomoglyphs(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
@@ -521,6 +526,8 @@ export function startWebServer(port = 3420): http.Server {
   }
 
   const pluginMonitorInterval = servicesOff ? undefined : startChannelPluginMonitor()
+  // SUPPORTKULCS1109 (terv-v7 3.8): the support reconcile, shortly after the start and then daily.
+  if (!servicesOff) startSupportReconcile()
   if (!servicesOff) logger.info('Channel plugin health monitor started (60s poll)')
 
   // Userbot inbound-probe (gold-standard deafness detector). Safe no-op until
@@ -686,6 +693,8 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     // VOICETOKENLEAK1101 PR-A2 (Samu 65192, Marveen 65196): the helper recipes as a marker block only; the body is untouched.
     ensureApiHelperSection(MAIN_AGENT_ID)
     ensureBackgroundCheckpointSection(MAIN_AGENT_ID)
+    // ENVATLEAK1114: the backslash the delivery layer puts before an at-sign, explained to the reader.
+    ensurePaneAtEscapeSection(MAIN_AGENT_ID)
   }
 
   // Owner slash commands (CMD920, spec D-4): the registry the main session's
@@ -830,6 +839,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     try {
       const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })
       if (seeded === 'created') logger.info('Claude rotation heartbeat task created')
+      if (seeded === 'upgraded') logger.info('Claude rotation heartbeat prompt upgraded (sub-agent lines)')
     } catch (err) {
       logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
     }

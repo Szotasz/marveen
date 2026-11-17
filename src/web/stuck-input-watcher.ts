@@ -1,7 +1,7 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
-import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePane } from './agent-process.js'
+import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePaneAsync } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
@@ -263,7 +263,7 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
       // a wedge -- three false owner alerts in one afternoon came from
       // exactly this (the agent's own outbound messages bracketed every
       // alert). Recovery attempts above are untouched; only the alert gates.
-      const pane = capturePane(session)
+      const pane = await capturePaneAsync(session)
       const paneState = pane != null ? detectPaneState(pane) : null
       if (shouldAlertParkedGiveUp({
         attempts: next.attempts,

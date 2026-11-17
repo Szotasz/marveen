@@ -47,6 +47,16 @@ export const RUN_DIRS = Object.freeze([
 
 export const MXD_ENV_NAMES = Object.freeze(['MXD_AGENT', 'MXD_AGENT_TOKEN_FILE'])
 
+// SUPPORTKULCS1109 (Dani's review of #2788 (2), Samu 78723): the narrow support token, one FILE (the rest of its folder
+// stays readable). Alone it opens nothing, but with it the machine's access check can be called in its name, and its
+// per-token rate limit spent, so that the owner's real support logins get rate_limited. The same rules as for a run
+// dir, with the file itself as the protected path, and one more: its FILE NAME anywhere in the call, whatever
+// spelling of the folder leads to it (a `cd` to an ancestor and a relative path, a variable, a glob of the folder).
+export const SUPPORT_TOKEN_NAME = 'support-access.token'
+export function supportTokenPaths() {
+  return [join(homedir(), '.marveen', 'support', SUPPORT_TOKEN_NAME)]
+}
+
 // Caps: a command is read at most this deep and this wide; past them the narrowed raw rule decides (budgetRule).
 const MAX_DEPTH = 8
 const MAX_TEXTS = 400
@@ -618,10 +628,34 @@ function mcpVerdict(input, table, ctx) {
 
 // ---------------------------------------------------------------- the decision
 
-// -> { deny: boolean, reason?: 'run-dir'|'ancestor'|'env'|'entry'|'cwd'|'budget' }
-// opts.cwd: the hook payload's cwd. opts.runDirs: tests only.
+// The support token's file name in a text, in any reading (quotes and backslashes removed, every case fold).
+function namesSupportToken(text) {
+  return rawReadings(text).some((r) => r.includes(SUPPORT_TOKEN_NAME))
+}
+
+// -> { deny: boolean, reason?: 'run-dir'|'ancestor'|'env'|'entry'|'cwd'|'budget'|'support-token'|'support-ancestor' }
+// opts.cwd: the hook payload's cwd. opts.runDirs, opts.supportTokenPaths: tests only.
 export function gateDecision(toolName, toolInput, opts = {}) {
-  const table = runDirTable(opts.runDirs ?? RUN_DIRS)
+  const mxd = decideFor(toolName, toolInput, opts, opts.runDirs ?? RUN_DIRS, BUDGET_RX)
+  if (mxd.deny) return mxd
+  const input = toolInput && typeof toolInput === 'object' ? toolInput : {}
+  let texts
+  try {
+    texts = String(toolName ?? '') === 'Bash' ? [String(input.command ?? '')] : leaves(input)
+  } catch (err) {
+    if (!(err instanceof BudgetExceeded)) throw err
+    return SUPPORT_BUDGET_RX.test(JSON.stringify(input)) ? { deny: true, reason: 'budget' } : { deny: false }
+  }
+  if (texts.some((t) => namesSupportToken(t))) return { deny: true, reason: 'support-token' }
+  const token = decideFor(toolName, toolInput, opts, opts.supportTokenPaths ?? supportTokenPaths(), SUPPORT_BUDGET_RX)
+  if (!token.deny) return token
+  return { deny: true, reason: token.reason === 'ancestor' ? 'support-ancestor' : token.reason === 'budget' ? 'budget' : 'support-token' }
+}
+
+const SUPPORT_BUDGET_RX = /\.marveen|support-access/i
+
+function decideFor(toolName, toolInput, opts, protectedPaths, budgetRx) {
+  const table = runDirTable(protectedPaths)
   const cwd = typeof opts.cwd === 'string' && isAbsolute(opts.cwd) ? opts.cwd : null
   const cdpaths = new Set(String(process.env.CDPATH ?? '').split(':').filter((d) => isAbsolute(d)))
   const ctx = { cwds: new Set(cwd ? [cwd] : []), budget: { n: 0 }, assigns: new Map(), arrays: new Map(), cdpaths }
@@ -637,7 +671,7 @@ export function gateDecision(toolName, toolInput, opts = {}) {
   } catch (err) {
     if (!(err instanceof BudgetExceeded)) throw err
     const text = name === 'Bash' ? String(input.command ?? '') : JSON.stringify(input)
-    return budgetRule(text) ? { deny: true, reason: 'budget' } : { deny: false }
+    return rawReadings(text).some((r) => budgetRx.test(r)) ? { deny: true, reason: 'budget' } : { deny: false }
   }
 }
 
@@ -656,8 +690,15 @@ export const DENY_MSG = {
   entry: 'mxd-kapu: a hivas a gromzo-channel belepesi pontjat inditana (dist/server.js, server.ts, e2e-probe). ' +
     'A plugint a Claude Code inditja, sub-agens kezzel nem.' + LIMIT,
   cwd: 'mxd-kapu: a munkamappa az mxd futasi mappajan belul van.' + LIMIT,
-  budget: 'mxd-kapu: a parancs tul hosszu vagy tul mely a vizsgalathoz, es mxd- vagy gromzo-nevet tartalmaz. ' +
+  budget: 'mxd-kapu: a parancs tul hosszu vagy tul mely a vizsgalathoz, es mxd-, gromzo- vagy support-nevet tartalmaz. ' +
     'Bontsd kisebb hivasokra.' + LIMIT,
+  'support-token': 'support-kapu: a hivas a support-token fajlt (~/.marveen/support/support-access.token) olvasna, ' +
+    'nevezne vagy mintaval erne el. Sub-agensnek ehhez nincs ut: a tokennel a gep neveben lehetne a marveen.io-t ' +
+    'hivni, es a valodi belepesek korlatjat elfogyasztani. A mappa tobbi resze (kit, spool, rekord) olvashato; a ' +
+    'support allapotat a rutin status-ja mondja meg (support-standby.mjs status). Ha a forraskodban keresel, a ' +
+    'fajlnev helyett az allando nevere keress (SUPPORT_TOKEN_FILE).' + LIMIT,
+  'support-ancestor': 'support-kapu: rekurziv olvasas (grep -r, rg, find, tar, cp -r, Grep eszkoz) a support-token ' +
+    'egy szulo-mappajan: igy a token is beolvasodna. Szukitsd a keresest egy konkret mappara.' + LIMIT,
 }
 const FAIL_CLOSED_MSG = (why) => `mxd-kapu: belso hiba a vizsgalat kozben (${String(why).slice(0, 200)}). ` +
   'Fail-closed: TILTVA.' + LIMIT

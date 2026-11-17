@@ -2,14 +2,22 @@
 
 `scripts/hooks/db-write-gate.mjs` is a PreToolUse gate for every agent, the main agent included. It denies:
 
-1. an SQL write on the dashboard database's security tables (`approvals`, `approval_events`, `auth_sessions`,
-   `dashboard_users`, `device_keys`, `vault_ssh_keys`), `PRAGMA writable_schema`, and any write on `sqlite_master` /
+1. an SQL write on the dashboard database's security tables (`approvals`, `approval_events`, `approval_slack_posts`,
+   `auth_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
+   `support_consents` and `support_password_state`), `PRAGMA writable_schema`, and any write on `sqlite_master` /
    `sqlite_schema`;
 2. a file-level write of `store/claudeclaw.db` (and its `-wal`, `-shm`, `-journal`);
 3. a write of this install's gate wiring and autonomy levels: `.claude/settings.json`, `.claude/settings.local.json`,
    `scripts/hooks/`, `scripts/self-pace-gate.mjs`, `store/extra-hooks.json`, `store/autonomy-config.json`, the main
    checkout's `.git/config`, `.git/packed-refs`, `.git/refs/remotes/`, `.git/hooks/`, and the user's `~/.gitconfig` and
    `~/.config/git/config`;
+   and the owner-gated agent settings the dashboard keeps in `store/` (GATEFILES1110): `store/custom-providers.json`
+   (each provider's `baseUrl`) and `store/context-guard.json`. Their API routes are owner-gated; only the dashboard
+   writes them;
+   and the support state of this machine, one folder outside the install tree: `~/.marveen/support` (SUPPORTKULCS1109,
+   D5: the narrow token, the group record, the kit with the dispatcher every support line binds, the spool and the run
+   folder). Only the support routine writes it (install-kit from the installer and the updater; enable, disable and
+   the reconcile from the dashboard), never a tool call;
 4. in the install's main checkout, every git subcommand that changes the tree or the refs except
    `git fetch [origin]`, exactly `git pull --ff-only origin <branch>`, and `git checkout -- <paths>` /
    `git restore <paths>` with no ref; everywhere, a write of `refs/remotes/*` and of the config keys that redirect a
@@ -22,6 +30,14 @@ For a sub-agent only, it also denies a write of the files listed in `SUBAGENT_PR
 (ENVRELAXGATE1104 and its follow-ups), among them every agent's Telegram inbound-evidence log
 (`agents/<name>/.claude/channels/telegram/inbound-evidence.jsonl` and its rotated `.1`, plus the `telegram/` and
 `channels/` directories above it as a command's target, TGINREPLAYGATE1104): the inbound replay (`TELEGRAM_INBOUND_REPLAY_ENABLED`, off by default) re-delivers its lines framed as channel messages.
+The same list holds every agent's `agents/<name>/agent-config.json` (GATEFILES1110: `customProvider`, `model`,
+`oauthTokenFile`), any agent's, not only the caller's own. The main agent's skills write it directly, so it stays free
+for the main agent. Renaming a whole `agents/<name>` directory is not judged by this entry (stated limit).
+A bare `*` in a sub-agent's own directory reaches that file, so an UNQUOTED glob there is denied (`cp x *`). A QUOTED
+argument of a python/node script file is data, its glob no pattern (GATESCRIPTARG1111):
+`python3 scripts/supabase-logs.py <ref> "select count(*) ..."` passes, like `sqlite3 x.db "select count(*) ..."`.
+Inline code (`-c`, `-e`, `-m`, stdin), a heredoc a script reads, bun/deno and the shell family stay strict, and a
+protected path handed to a script is still denied.
 
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. The

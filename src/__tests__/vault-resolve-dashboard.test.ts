@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, existsSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, existsSync, chmodSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { parseEnvContent } from '../env-parse.js'
@@ -98,6 +98,44 @@ describe('vault-resolve via the dashboard', () => {
     expect(requests[0].headers['x-agent-id']).toBe('zz-agent')
     expect(requests[0].body).toEqual({ ids: ['A'] })
     expect(existsSync(IMPORT_LOG)).toBe(false)
+  })
+
+  it("S1b the claimed agent's own token is sent in that agent's own session; a symlink is not one", async () => {
+    answer = { values: { A: 'dash-A' }, missing: [], refused: [] }
+    const dir = join(ROOT, 'agents', 'zz-agent')
+    mkdirSync(dir, { recursive: true })
+    const own = join(dir, '.dashboard-token')
+    const session = { CLAUDE_CONFIG_DIR: join(dir, '.claude-config') }   // the agent's auto-provisioned config root
+    const linkRoot = ROOT + '-link'
+    try {
+      writeFileSync(own, 'tok-agent')
+      // the config root must exist: a session path that does not resolve is not the session
+      expect((await resolveRun('X=A\n', session)).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-x')
+      mkdirSync(session.CLAUDE_CONFIG_DIR)
+      expect((await resolveRun('X=A\n', session)).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-agent')
+      // the same session through a linked path (macOS /var -> /private/var, a linked install root) is still the session
+      symlinkSync(ROOT, linkRoot)
+      expect((await resolveRun('X=A\n', { CLAUDE_CONFIG_DIR: join(linkRoot, 'agents', 'zz-agent', '.claude-config') + '/' })).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-agent')
+      // claimed (env or cwd) but NOT this agent's session, e.g. another agent working in zz-agent's folder: shared token
+      expect((await resolveRun('X=A\n')).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-x')
+      expect((await resolveRun('X=A\n', { CLAUDE_CONFIG_DIR: join(ROOT, 'agents', 'other-agent', '.claude-config') })).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-x')
+      rmSync(own)
+      writeFileSync(join(ROOT, 'elsewhere-token'), 'tok-sym')
+      symlinkSync(join(ROOT, 'elsewhere-token'), own)
+      expect((await resolveRun('X=A\n', session)).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-x')
+      // another agent's claim does not pick zz-agent's file; an explicit VAULT_RESOLVE_TOKEN_FILE still wins
+      rmSync(own); writeFileSync(own, 'tok-agent')
+      expect((await resolveRun('X=A\n', { ...session, MARVEEN_AGENT_ID: 'other-agent' })).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-x')
+      expect((await resolveRun('X=A\n', { ...session, VAULT_RESOLVE_TOKEN_FILE: TOKEN_FILE })).code).toBe(0)
+      expect(requests.at(-1)!.headers.authorization).toBe('Bearer tok-x')
+    } finally { rmSync(dir, { recursive: true, force: true }); rmSync(linkRoot, { force: true }) }
   })
 
   it('S2 an acl refusal exits 4', async () => {

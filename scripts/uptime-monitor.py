@@ -11,7 +11,10 @@ INVARIANTS (each with its test case and mutant control in scripts/__tests__/upti
       success (OnFailure) (T6, T9f, T11b, T15, T15b, T15c, T21, T22c; M-send-code, M-blind-code, M-preflight,
       M-gate-error, M-recovery-code, M-recovery-retry).
   I3  One event, one alert: the "alerted" stamp is written only AFTER a successful send, and a lasting outage over
-      several runs gives one alert (T4, T6; M-dedup, M-stamp).
+      several runs gives one alert (T4, T6; M-dedup, M-stamp). The stamp is written at once after every successful
+      send, so a crash later in the run does not repeat the notice (T23, T23b, T23c, T23d; M-stamp-now,
+      M-stamp-recovery, M-stamp-blind-now, M-stamp-blind-over); that immediate write is best-effort: if it fails, the
+      run goes on and exits 1 (T25, T25b, T25c, T25d; M-stamp-besteffort, M-stamp-code, M-stamp-blind-code).
   I4  The whole run stays within the unit's budget, computed: for N targets (2N+1) requests x UPTIME_TIMEOUT +
       wait_seconds + (N+1) sends x SEND_TIMEOUT <= UNIT_BUDGET (410 s; the unit's TimeoutStartSec=420, 10 s margin).
       Checked when the config is loaded, exit 1 otherwise (T19; M-budget, M-wait-env, M-budget-timeout, M-budget-n).
@@ -86,7 +89,9 @@ EXIT CODE:
       refuses its fixed probe text (T15b); it takes precedence over 0/2/3. The measurement still runs. A lasting 4 (or 1) starts
       OnFailure on every timer run, so it reports every 5 minutes while the fault lasts (no thinning);
   1 = internal error, or a missing/invalid config (T12, T13, T13b, T13c, T13d), or a target name with which, next to a
-      working gate, not even the fallback notice would pass (T11).
+      working gate, not even the fallback notice would pass (T11), or an immediate state stamp after a successful send
+      that could not be written (the notices went out, the next run may repeat them; T25c, T25d); this 1 takes
+      precedence over 4/3/2, also on the NOT MEASURABLE branch.
 The unit (scripts/systemd/uptime-monitor.service) has SuccessExitStatus=2 3, so exit 1 and 4, and a stop past
 TimeoutStartSec, start OnFailure.
 
@@ -429,11 +434,35 @@ def read_state():
 
 
 def write_state(a):
+    """Atomic: a temp file in the state directory, then os.replace. If writing fails (ENOSPC, an unserialisable value),
+    the temp file is removed and the error goes on to the caller: a failed write leaves the old state and no stray
+    .uptime-state-* file (review s4-k1 (1))."""
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(STATE), prefix=".uptime-state-")
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(a, fh, ensure_ascii=False, indent=1)
-    os.replace(tmp, STATE)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(a, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, STATE)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def stamp(a):
+    """The immediate stamp right after a successful send (review s4-k1 (1)): BEST-EFFORT, like log_event. A failed write
+    (ENOSPC, an unwritable store) must not stop the run in the middle: every later alert of the run still goes out
+    (review uptime-pecset k1). The failure is printed to stderr and logged ('state-write-failed'); main() then exits 1
+    (OnFailure), and the next run may repeat the notice, as before the fix. Returns True if the state was written."""
+    try:
+        write_state(a)
+        return True
+    except Exception as e:  # noqa: BLE001 -- best-effort, reported and turned into a non-zero exit by main()
+        print("the state could not be written after a send: %r" % e, file=sys.stderr)
+        log_event(event="state-write-failed", error=repr(e)[:200])
+        return False
 
 
 _gate = None
@@ -575,6 +604,7 @@ def main():
     now = time.time()
     threshold = int(k.get("blind_notice_runs", 6))
     send_failed = False
+    stamp_failed = False
     missing = preflight_error()
     ge = gate_error()
     if ge:
@@ -615,6 +645,11 @@ def main():
             if v["runs"] >= threshold and not v.get("notified"):
                 ok = send(*blind_now_text(minutes_text(now - v["since"])))
                 v["notified"] = ok
+                if ok:
+                    # stamp at once: an exception later in this run must not make the next run repeat the notice. The
+                    # branch writes the state again a few lines below; this write only covers the log_event between.
+                    state["_blind"] = v
+                    stamp_failed = not stamp(state) or stamp_failed
                 send_failed = send_failed or not ok
                 log_event(event="blind-now-notice", sent=ok)
             state["_blind"] = v
@@ -622,7 +657,7 @@ def main():
             log_event(verdict="not-measurable", reason="no target and not the reference gave an HTTP answer",
                       first=first)
             print("NOT MEASURABLE: no target and not the reference gave an HTTP answer")
-            return 4 if send_failed else 2
+            return 1 if stamp_failed else (4 if send_failed else 2)
     blind = state.pop("_blind", None)
     if blind and blind.get("runs", 0) >= threshold:
         # the streak CLOSES here (a later new streak must not merge into it); the "measuring again" notice is a
@@ -632,9 +667,12 @@ def main():
     pending = state.get("_blind_pending")
     if pending:
         ok = send(*blind_over_text(TEXTS["minutes"] % pending.get("minutes", 1)))
+        # the log line first: if the stamp write fails, the log still shows that the notice went out
         log_event(event="blind-notice", sent=ok)
         if ok:
+            # stamp at once (see the in-streak notice above)
             state.pop("_blind_pending", None)
+            stamp_failed = not stamp(state) or stamp_failed
         else:
             send_failed = True
     code = 0
@@ -649,6 +687,11 @@ def main():
             if not a.get("alerted"):
                 ok = send(*alert_text(name, url, err, wait))
                 a["alerted"] = ok
+                if ok:
+                    # stamp at once: an exception later in this run (ENOSPC, a crash in log_event or in a later
+                    # target's send) must not lose the stamp, or the next run would send the same alert again
+                    state[name] = a
+                    stamp_failed = not stamp(state) or stamp_failed
                 send_failed = send_failed or not ok
                 log_event(target=name, event="alert", sent=ok, error=err)
         else:
@@ -657,6 +700,10 @@ def main():
             if a.get("down"):
                 if a.get("alerted"):
                     ok = send(*recovery_text(name, url, minutes_text(now - a.get("down_since", now))))
+                    if ok:
+                        # stamp at once (see the outage alert above)
+                        state[name] = {"down": False}
+                        stamp_failed = not stamp(state) or stamp_failed
                     log_event(target=name, event="recovery", sent=ok)
                     if not ok:
                         send_failed = True
@@ -669,7 +716,9 @@ def main():
     write_state(state)
     print("verdict: %s" % ", ".join("%s=%s" % (c["name"], "down (%s)" % final[c["name"]] if final[c["name"]] else "ok")
                                     for c in targets))
-    return 4 if send_failed else code
+    # a failed immediate stamp is the monitor's own failure (1, OnFailure): the notices went out, but the next run may
+    # repeat them
+    return 1 if stamp_failed else (4 if send_failed else code)
 
 
 if __name__ == "__main__":

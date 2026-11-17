@@ -1112,6 +1112,19 @@ def main():
                   and u and u[-1].get("reason") == "not_in_scope", (tok, p.returncode, u[-1:]))
             check("LIVE: refusal names the live holder pid as alive",
                   ("holder pid %d (alive)" % outer.pid) in p.stderr, p.stderr)
+            # side lane switch unset (the default): a 200M call waits for the live holder as before
+            p = E.run(small + ["--wait-sec", "1", "--label", "side-off", "--", "true"])
+            check("LIVE: side lane off by default: a 200M call beside the live holder is refused 73, "
+                  "no side lock file", p.returncode == 73 and not os.path.exists(E.lock + ".side")
+                  and outer.poll() is None, (p.returncode, outer.poll()))
+            # side lane against a REAL scope: memory.current/max/stat of the live holder are read
+            p = E.run(small + ["--wait-sec", "2", "--label", "side-live", "--", "true"],
+                      HEAVY_JOB_SIDE_LANE="1")
+            st = [e for e in E.events() if e["event"] == "start" and e.get("label") == "side-live"]
+            check("LIVE: a 200M call runs beside the live holder (side lane, real cgroup headroom read)",
+                  p.returncode == 0 and st and st[-1].get("side_lane") is True
+                  and 0 < st[-1].get("beside_headroom_mb", 0) <= 200 and outer.poll() is None,
+                  (p.returncode, st[-1:], outer.poll()))
             outer.wait(timeout=30)
 
     # a gate running INSIDE another heavy-job gate scope must never read stats
@@ -1151,6 +1164,7 @@ def main():
     max_sec_and_fairness()
     short_lane()
     file_modes_and_cmd_cut()
+    side_lane()
 
     print()
     if fails:
@@ -2087,6 +2101,274 @@ def file_modes_and_cmd_cut():
         check("FIFO at the lock path -> refused 74 (not a regular file), job not run",
               p.returncode == 74 and not os.path.exists(marker) and "regular file" in p.stderr,
               (p.returncode, p.stderr))
+
+
+MB = 1024 * 1024
+
+
+class SL(Q):
+    """A side-lane scenario: Q plus a fake cgroup fs, and a fake MAIN holder
+    (the lock held by the test, its record naming a fake scope with a 2048 MB
+    cap and the given usage: headroom = 2048 - (cur - file))."""
+
+    def __init__(self, td, W, avail_mb, cur_mb=448, file_mb=0, stat=True, switch="1"):
+        cgfs = os.path.join(td, "cg")
+        Q.__init__(self, td, W, avail_mb=avail_mb, FAKE_CGFS=cgfs, HEAVY_JOB_CGROUP_FS=cgfs,
+                   HEAVY_JOB_SIDE_LANE=switch)  # switch=None: unset
+        self.unit = "heavy-job-1-1"
+        self.scope = os.path.join(cgfs, "fake", self.unit + ".scope")
+        os.makedirs(self.scope)
+        for name, body in (("memory.current", "%d\n" % (cur_mb * MB)), ("memory.max", "%d\n" % (2048 * MB)),
+                           ("memory.stat", "anon %d\nfile %d\n" % ((cur_mb - file_mb) * MB, file_mb * MB))):
+            if name != "memory.stat" or stat:
+                with open(os.path.join(self.scope, name), "w") as f:
+                    f.write(body)
+
+    def hold(self):
+        self.fd = os.open(self.E.lock, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        os.ftruncate(self.fd, 0)
+        os.write(self.fd, ("token=t pid=1 unit=%s since=x label=holder\n" % self.unit).encode())
+
+    def go(self, name, args=(), sec=0.3, wait_sec=30):
+        """Start a gate call without waiting for its wait line (a side-lane job has none)."""
+        return subprocess.Popen(self.argv(name, wait_sec, args, sec=sec), env=self.env(),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+    def until(self, cond, bound=8.0):
+        end = time.monotonic() + bound
+        while time.monotonic() < end and not cond():
+            time.sleep(0.05)
+        return cond()
+
+    def release_at(self, after=1.5):
+        """Release the main lock after `after` s; returns the wall-clock release time."""
+        time.sleep(after)
+        t = time.time()
+        self.release()
+        return t
+
+    def ran_before(self, name, t):
+        return any(n == name and s < t for n, s, _ in self.runs())
+
+
+SMALL = ["--max-mem", "1G", "--min-mb", "0"]
+
+
+def sl_admit(td, W):
+    """Holder headroom 2048 - (648 - 200) = 1600; K (1G) needs 1024 + 1600 + 1000 = 3624 <= 5000: K
+    runs beside the holder; D (default flags, queued FIRST) still waits for the
+    main lock and runs only after the release."""
+    q = SL(td, W, avail_mb=5000, cur_mb=648, file_mb=200)  # 200 MB of it page cache
+    q.hold()
+    d = q.go("D")
+    q.wait_line("D")
+    k = q.go("K", SMALL)
+    done = q.until(lambda: q.line("K", "finish"))
+    t = q.release_at(0.2)
+    finish([d, k])
+    st = q.line("K", "start")
+    ok = (bool(done) and q.ran_before("K", t) and not q.ran_before("D", t)
+          and [d.returncode, k.returncode] == [0, 0]
+          and st.get("side_lane") is True and st.get("need_mb") == 3624 and st.get("beside") == "holder"
+          and st.get("beside_headroom_mb") == 1600 and "side_lane" not in q.line("D", "start"))
+    return ok, (q.runs(), t, st, [d.returncode, k.returncode])
+
+
+def sl_switch_off(td, W, switch=None):
+    """The switch unset (or not "1"), everything else as in sl_admit: a 200M call
+    beside the live holder waits for the main lock exactly as on develop (a
+    "lock" wait line, its ticket without "side", started only after the
+    release, no side_lane in its start line), and no <lock>.side file is created."""
+    q = SL(td, W, avail_mb=5000, cur_mb=648, file_mb=200, switch=switch)
+    q.hold()
+    k = q.go("K", ["--max-mem", "200M", "--min-mb", "0"])
+    wl = q.wait_line("K")
+    qd = os.path.join(td, ".heavy-job-queue")
+    tickets = []
+    for n in os.listdir(qd) if os.path.isdir(qd) else []:
+        try:
+            with open(os.path.join(qd, n)) as f:
+                tickets.append(json.load(f))
+        except (OSError, ValueError):
+            pass
+    t = q.release_at(1.0)
+    finish([k])
+    st = q.line("K", "start")
+    ok = (k.returncode == 0 and bool(wl) and not q.ran_before("K", t) and bool(st)
+          and "side_lane" not in st and len(tickets) == 1 and "side" not in tickets[0]
+          and not os.path.exists(q.E.lock + ".side"))
+    return ok, (q.runs(), t, wl, tickets, st, os.path.exists(q.E.lock + ".side"), k.returncode)
+
+
+def sl_off_main_floor(td, W):
+    """Switch unset: the main floor does not read the side lock. The test holds
+    <lock>.side with a record whose scope cannot be measured (on: +1024);
+    D (2G, --min-mb 0) needs 2048 + 500 = 2548 <= 3000 and starts at once."""
+    q = SL(td, W, avail_mb=3000, switch=None)
+    sfd = os.open(q.E.lock + ".side", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(sfd, fcntl.LOCK_EX)
+    os.write(sfd, b"token=t pid=1 unit=heavy-job-2-2 since=x label=side\n")
+    try:
+        d = q.go("D", ["--min-mb", "0"])
+        finish([d])
+    finally:
+        os.close(sfd)
+    ok = d.returncode == 0 and q.line("D", "start") and not q.line("D", "wait", "memory")
+    return ok, (d.returncode, q.line("D", "wait", "memory"))
+
+
+def sl_short(td, W):
+    """The same, but MemAvailable 3000 < 3624: K must NOT start beside the
+    holder; it runs in its main-lane turn after the release (no side_lane)."""
+    q = SL(td, W, avail_mb=3000)
+    q.hold()
+    k = q.go("K", SMALL)
+    q.wait_line("K")
+    t = q.release_at(1.5)
+    finish([k])
+    st = q.line("K", "start")
+    ok = k.returncode == 0 and not q.ran_before("K", t) and st and "side_lane" not in st
+    return ok, (q.runs(), t, st, k.returncode)
+
+
+def sl_unreadable(td, W, what):
+    """Plenty of memory, but `what` is unreadable while the holder runs: the
+    holder's memory.stat ("stat"), or MemAvailable ("meminfo", restored before
+    the release). K must not start beside the holder."""
+    q = SL(td, W, avail_mb=6000, stat=(what != "stat"))
+    if what == "meminfo":
+        os.rename(q.E.meminfo, q.E.meminfo + ".off")
+    q.hold()
+    k = q.go("K", SMALL)
+    q.wait_line("K")
+    time.sleep(1.5)
+    if what == "meminfo":
+        os.rename(q.E.meminfo + ".off", q.E.meminfo)
+    t = q.release_at(0)
+    finish([k])
+    ok = k.returncode == 0 and not q.ran_before("K", t) and "side_lane" not in q.line("K", "start")
+    return ok, (q.runs(), t, k.returncode)
+
+
+def sl_fifo(td, W):
+    """FIFO inside the side lane: K1 (1G, needs 3624) is queued first and does
+    not fit into 3000 MB; K2 (256M, needs 2856) would fit, but must not pass K1.
+    Neither starts beside the holder; after the release K1 then K2, one at a time."""
+    q = SL(td, W, avail_mb=3000)
+    q.hold()
+    k1 = q.go("K1", SMALL)
+    q.wait_line("K1")
+    k2 = q.go("K2", ["--max-mem", "256M", "--min-mb", "0"])
+    q.wait_line("K2")
+    t = q.release_at(1.5)
+    finish([k1, k2])
+    ok = ([k1.returncode, k2.returncode] == [0, 0] and q.order() == ["K1", "K2"]
+          and not q.ran_before("K1", t) and not q.ran_before("K2", t) and q.serial())
+    return ok, (q.runs(), t, [k1.returncode, k2.returncode])
+
+
+def sl_one_extra(td, W):
+    """At most ONE side job: K1 and K2 both fit, K1 runs 1 s beside the holder;
+    K2 waits for the side lock (not two side jobs at once), then runs beside the holder too."""
+    q = SL(td, W, avail_mb=6000)
+    q.hold()
+    k1 = q.go("K1", SMALL, sec=1.0)
+    q.until(lambda: q.line("K1", "start"))
+    k2 = q.go("K2", SMALL)
+    q.until(lambda: q.line("K2", "finish"))
+    t = q.release_at(0.1)
+    finish([k1, k2])
+    ok = ([k1.returncode, k2.returncode] == [0, 0] and q.order() == ["K1", "K2"] and q.serial()
+          and q.ran_before("K2", t) and q.line("K2", "start").get("side_lane") is True)
+    return ok, (q.runs(), t, [k1.returncode, k2.returncode])
+
+
+def sl_main_counts_side(td, W):
+    """The main lane counts the side job: K (256M) runs 2.5 s beside the holder
+    (its fake scope has no memory files: its headroom counts as SIDE_MAX_MB =
+    1024). The holder releases; D (2G, --min-mb 0) needs 2048 + 500 + 1024 =
+    3572 > 3000, so it starts only after K ended (then 2548 is enough)."""
+    q = SL(td, W, avail_mb=3000)
+    q.hold()
+    k = q.go("K", ["--max-mem", "256M", "--min-mb", "0"], sec=2.5)
+    q.until(lambda: q.line("K", "start"))
+    d = q.go("D", ["--min-mb", "0"])
+    q.wait_line("D")
+    q.release_at(0.2)
+    finish([k, d])
+    r = {n: (s, e) for n, s, e in q.runs()}
+    ok = ([k.returncode, d.returncode] == [0, 0] and "K" in r and "D" in r and r["D"][0] >= r["K"][1]
+          and q.line("K", "start").get("side_lane") is True
+          and q.line("D", "wait", "memory").get("need_mb") == 3572)
+    return ok, (q.runs(), q.line("D", "wait", "memory"), [k.returncode, d.returncode])
+
+
+def side_lane():
+    def scenario(fn, *args):
+        with tempfile.TemporaryDirectory() as td:
+            return fn(td, *args)
+
+    # --- the default path does not touch the side lane (switch on: the cap decides)
+    with tempfile.TemporaryDirectory() as td:
+        E = Env(td)
+        p = E.run(["--", "true"], HEAVY_JOB_SIDE_LANE="1")
+        check("side lane: a default call (2G) creates no side lock and runs as before",
+              p.returncode == 0 and not os.path.exists(E.lock + ".side")
+              and "side_lane" not in [e for e in E.events() if e["event"] == "start"][-1], p.returncode)
+    # --- headroom arithmetic: page cache is not counted as usage
+    with tempfile.TemporaryDirectory() as td:
+        q = SL(td, WRAPPER, avail_mb=1, cur_mb=700, file_mb=200)
+        saved = os.environ.copy()
+        os.environ.update(q.env())
+        try:
+            hr = gate.scope_headroom_mb(q.unit)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        check("side lane: headroom = max - (current - file) = 2048 - 500 = 1548", hr == 1548, hr)
+
+    checks = (
+        ("side lane: switch unset: a 200M call beside the live holder waits for the main lock "
+         "as before, no 'side' ticket field, no side lock file", sl_switch_off, ()),
+        ("side lane: HEAVY_JOB_SIDE_LANE=yes is not 1: off as well", sl_switch_off, ("yes",)),
+        ("side lane: switch unset: the main floor does not read a held side lock", sl_off_main_floor, ()),
+        ("side lane: a 1G job runs BESIDE the holder (need 1024+1600+1000=3624 <= 5000); "
+         "an older default job still waits for the main lock", sl_admit, ()),
+        ("side lane: headroom short (3000 < 3624): not beside, runs in its main-lane turn", sl_short, ()),
+        ("side lane: holder memory.stat unreadable -> not admitted beside", sl_unreadable, ("stat",)),
+        ("side lane: MemAvailable unreadable -> not admitted beside", sl_unreadable, ("meminfo",)),
+        ("side lane: FIFO: a younger small job that fits does not pass an older one", sl_fifo, ()),
+        ("side lane: at most one side job at a time", sl_one_extra, ()),
+        ("side lane: the main lane counts the side job's headroom (D waits for K)", sl_main_counts_side, ()),
+    )
+    for name, fn, args in checks:
+        ok, info = scenario(fn, WRAPPER, *args)
+        check(name, ok, info)
+
+    mutants = (
+        ("sl-no-headroom", "cap_mb + hr + max(SIDE_RESERVE_MB, reserve)", "cap_mb + max(SIDE_RESERVE_MB, reserve)",
+         sl_short, ()),
+        ("sl-unreadable-usage-as-0", "    if cur is None or mx is None or file_b is None:\n        return None\n",
+         "    if cur is None or mx is None or file_b is None:\n        return 0\n", sl_unreadable, ("stat",)),
+        ("sl-unreadable-meminfo", "    if avail is None or need is None or avail < need:\n",
+         "    if need is None or (avail is not None and avail < need):\n", sl_unreadable, ("meminfo",)),
+        ("sl-no-fifo", '        if side and not scan.get("side_ahead"):\n', "        if side:\n", sl_fifo, ()),
+        ("sl-main-ignores-side", 'cap_mb + reserve + side_hr["mb"])', "cap_mb + reserve)",
+         sl_main_counts_side, ()),
+        ("sl-boundary", "cap_mb <= SIDE_MAX_MB", "cap_mb < SIDE_MAX_MB", sl_admit, ()),
+        ("sl-switch-ignored", 'return os.environ.get("HEAVY_JOB_SIDE_LANE") == "1"', "return True",
+         sl_switch_off, ()),
+        ("sl-cache-as-usage", "max(0, mx - max(0, cur - file_b))", "max(0, mx - cur)", sl_admit, ()),
+    )
+    with tempfile.TemporaryDirectory() as mtd:
+        for name, old, new, fn, args in mutants:
+            W = mutant_wrapper(mtd, name, old, new)
+            if W is None:
+                check("mutant %s: applies to the gate source" % name, False, "pattern not found")
+                continue
+            res = scenario(fn, W, *args)
+            check("mutant %s: caught by %s" % (name, fn.__name__), not res[0], res)
 
 
 if __name__ == "__main__":

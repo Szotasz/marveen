@@ -48,6 +48,7 @@ Configuration (environment; a command-line flag wins over its variable):
   HEAVY_JOB_AGENT       default --agent (fairness tag, see below)
   HEAVY_JOB_OLLAMA_UNLOAD=1  unload idle ollama models once when memory is
                         short at admission (off by default, see below)
+  HEAVY_JOB_SIDE_LANE=1 turn the side lane on (off by default, see below)
 An invalid value is a usage error (64), like the same value as a flag.
 
 The lock fd is NOT inherited by the job: only the gate process holds the lock,
@@ -140,6 +141,32 @@ after N seconds is stopped (76). Short lines carry "short": true; a start line
 that passed long tickets carries "passed" (their labels) and "short_streak".
 The queue reads the lock record strictly: one that exists but cannot be read
 is a queue_io_error (74); a malformed counter closes the lane (plain order).
+
+Side lane (OFF unless HEAVY_JOB_SIDE_LANE=1; unset or any other value: no
+candidate, no side lock opened, no "side" ticket field, and the main floor does
+not read the side lock): ONE extra job may run beside the main one, so it is
+NOT exclusive with it. Only a capped call with --max-mem <= SIDE_MAX_MB (1024)
+is a candidate (its ticket carries "side": 1); every other call, including the
+default 2G, is exactly as before. A candidate waits in the same FIFO queue and
+still takes the main lock in its turn; in every round in which it cannot, and
+no OLDER candidate is queued (the side lane is plain arrival order), it tries
+the side lock (<lock>.side, LOCK_NB) and keeps it only if
+  MemAvailable >= max(--min-mb, its cap + the main job's headroom + side reserve)
+where the main job is the scope the lock record names, its headroom is
+memory.max - (memory.current - memory.stat file) (page cache is already in
+MemAvailable and is reclaimed at the cap), and the side reserve is
+max(SIDE_RESERVE_MB (1000), the reserve): what is left for the host with BOTH
+jobs at their caps. Fail closed: an unreadable MemAvailable, a main job
+without a live scope (uncapped, not started yet, still in its memory wait, or
+ended) or an unreadable usage admits nothing to the side lane. The side job
+writes its own record (same format) into the side lock file, leaves the
+short-lane counter alone, and a nested call inside it is verified against that
+record. In return the MAIN lane's floor becomes
+max(--min-mb, cap + reserve + the side job's headroom), the headroom counting
+as SIDE_MAX_MB while the side lock is held but its scope cannot be measured.
+Start lines of side jobs carry "side_lane": true, "beside" (the main job's
+label) and "beside_headroom_mb" (its headroom). Exit codes do not change: a
+candidate that never gets in times out with 73 as before.
 
 Exit codes of the gate itself (the command's own code is passed through):
   64  usage error
@@ -251,6 +278,9 @@ SHORT_MAX_SEC = 300               # --max-sec <= this is a short job
 SHORT_OVERTAKE_MAX = 3            # at most this many short jobs in a row pass a waiting long one
 _POS_RE = re.compile(r"^\d{20}-\d{10}$")
 
+SIDE_MAX_MB = 1024      # side lane: only a job with --max-mem <= this may run beside the main one
+SIDE_RESERVE_MB = 1000  # side lane: left for the host with BOTH jobs at their caps
+
 # Lock, tickets and log are the invoking user's own: created 0600 (queue dir
 # 0700), the lock and the log opened without following a symlink.
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -274,6 +304,29 @@ def meminfo_path():
 
 def lock_path():
     return env_path("HEAVY_JOB_LOCK", os.path.join(store_dir(), ".heavy-job.lock"))
+
+
+def open_lock_file(path):
+    """Open (create) a lock file 0600, never through a symlink; it must be a
+    regular file owned by the caller (an older, wider one is narrowed, as
+    _open_log does). Raises OSError otherwise."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | O_NOFOLLOW, 0o600)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+        os.close(fd)
+        raise OSError("not a regular file owned by uid %d" % os.geteuid())
+    if st.st_mode & 0o077:
+        os.fchmod(fd, 0o600)
+    return fd
+
+
+def side_lock_path():
+    return lock_path() + ".side"
+
+
+def side_lane_on():
+    """The side lane is opt-in: HEAVY_JOB_SIDE_LANE=1, nothing else."""
+    return os.environ.get("HEAVY_JOB_SIDE_LANE") == "1"
 
 
 def log_path():
@@ -549,11 +602,11 @@ def queue_pos(name):
     return name.split(".", 1)[0]
 
 
-def queue_enter(label, agent=None, max_sec=None):
+def queue_enter(label, agent=None, max_sec=None, side=False):
     """Create this process's ticket atomically (write a temp file, then rename).
     The name sorts by arrival: <time_ns, 20 digits>-<pid, 10 digits>.ticket.
     "fair": 1 says this gate knows the deferral and the short-lane rules;
-    "agent" and "max_sec" are written only when given."""
+    "agent", "max_sec" and "side" (side-lane candidate) are written only when given."""
     d = queue_dir()
     os.makedirs(d, mode=0o700, exist_ok=True)
     pid = os.getpid()
@@ -567,6 +620,8 @@ def queue_enter(label, agent=None, max_sec=None):
         info["agent"] = agent
     if max_sec is not None:
         info["max_sec"] = max_sec
+    if side:
+        info["side"] = 1
     body = json.dumps(info, ensure_ascii=False)
     write_ticket(path, body)
     return path, body
@@ -709,7 +764,7 @@ def queue_ahead(ticket, my_agent=None, last_agent=None, my_short=False, rec=None
     # our own place counts as waiting too: every waiter must see the same lane
     lane = lane_open(rec or {}, set(entries) | {my_pos})
     my_key = (me_deferred, not (lane and my_short), my_pos)
-    ahead, younger, passed = [], [], []
+    ahead, younger, passed, side = [], [], [], []
     for pos in sorted(entries):
         info = entries[pos]
         if info is None:
@@ -717,7 +772,10 @@ def queue_ahead(ticket, my_agent=None, last_agent=None, my_short=False, rec=None
             # to know the rules: not ahead
             if pos < my_pos:
                 ahead.append("?unreadable")
+                side.append("?unreadable")  # it may be a side-lane candidate too
             continue
+        if pos < my_pos and info.get("side") == 1:
+            side.append(sanitize_label(info.get("label", "?")))
         deferred = is_deferred(info, last_agent)
         label = sanitize_label(info.get("label", "?"))
         if (deferred, not (lane and is_short(info)), pos) < my_key:
@@ -729,11 +787,12 @@ def queue_ahead(ticket, my_agent=None, last_agent=None, my_short=False, rec=None
             passed.append((pos, label))  # an older long ticket we pass in the short lane
     if scan is not None:
         scan["passed"] = passed
+        scan["side_ahead"] = side  # older side-lane candidates: the side lane is FIFO
     return ahead + younger
 
 
 def acquire_in_turn(fd, ticket, ticket_body, deadline, on_first_wait, lp=None, my_agent=None,
-                    my_short=False, scan=None):
+                    my_short=False, scan=None, side=None):
     """FIFO admission: try the non-blocking flock ONLY while no live ticket is
     ahead of ours (this holds for the very first attempt too, so nobody barges
     in when the lock happens to be free). Returns (acquired, labels still ahead).
@@ -741,7 +800,10 @@ def acquire_in_turn(fd, ticket, ticket_body, deadline, on_first_wait, lp=None, m
     fairness rule) and the short-lane counter (see queue_ahead); scan gets the
     last round's record ("rec") and passed tickets ("passed"). Raises
     QueueIOError if the queue or the lock record cannot be used any more (fail
-    closed)."""
+    closed). side = (side lock fd, cap_mb, min_mb, reserve_mb) for a side-lane
+    candidate: while it cannot take the main lock, and no older candidate waits,
+    it tries side_admit every round; scan["side"] is set only on admission (the
+    admission fields), and then the side lock (not the main one) is held."""
     scan = {} if scan is None else scan
     waited = False
     ahead = []
@@ -763,6 +825,11 @@ def acquire_in_turn(fd, ticket, ticket_body, deadline, on_first_wait, lp=None, m
                 return True, []
             except BlockingIOError:
                 pass
+        if side and not scan.get("side_ahead"):
+            admitted = side_admit(side[0], rec, *side[1:])
+            if admitted:
+                scan["side"] = admitted
+                return True, []
         if not waited:
             on_first_wait(ahead)
             waited = True
@@ -835,17 +902,82 @@ def wait_mem_fields(rec):
     mem_avail_mb is read only AFTER the lock is released). Never decides
     anything; every unreadable value is None."""
     out = {"mem_avail_mb": mem_available_mb(), "holder_mem_mb": None, "holder_max_mb": None}
-    unit = rec.get("unit", "")
-    if not re.fullmatch(r"[A-Za-z0-9_.@-]+", unit or "") or unit == "-":
-        return out
-    _, rel = systemctl("show", "-p", "ControlGroup", "--value", unit + ".scope")
-    cg = own_scope_dir((cgroup_fs().rstrip("/") + rel) if rel.startswith("/") else None, unit)
+    cg = scope_cgroup(rec.get("unit", ""))
     if cg:
         cur = read_int(os.path.join(cg, "memory.current"))
         mx = read_int(os.path.join(cg, "memory.max"))   # "max" (no cap) reads as None
         out["holder_mem_mb"] = cur // (1024 * 1024) if cur is not None else None
         out["holder_max_mb"] = mx // (1024 * 1024) if mx is not None else None
     return out
+
+
+def scope_cgroup(unit):
+    """The live cgroup dir of the gate scope named in a lock record, or None
+    (no unit, uncapped "-", not created yet, or already collected)."""
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]+", unit or "") or not unit.startswith(SCOPE_PREFIX):
+        return None
+    _, rel = systemctl("show", "-p", "ControlGroup", "--value", unit + ".scope")
+    return own_scope_dir((cgroup_fs().rstrip("/") + rel) if rel.startswith("/") else None, unit)
+
+
+def scope_headroom_mb(unit):
+    """How much more the scope may still take before its cap, in MB: memory.max
+    minus its non-file usage (memory.current - file of memory.stat; page cache
+    is already counted in MemAvailable and is reclaimed at the cap). None when
+    anything is unreadable or the scope has no cap: the caller must not admit."""
+    cg = scope_cgroup(unit)
+    if not cg:
+        return None
+    cur = read_int(os.path.join(cg, "memory.current"))
+    mx = read_int(os.path.join(cg, "memory.max"))   # "max" (no cap) reads as None
+    file_b = read_key(os.path.join(cg, "memory.stat"), "file")
+    if cur is None or mx is None or file_b is None:
+        return None
+    return max(0, mx - max(0, cur - file_b)) // (1024 * 1024)
+
+
+def side_admit(fd, rec, cap_mb, min_mb, reserve):
+    """Side lane: take the side lock (non-blocking) and keep it only if
+    MemAvailable >= max(min_mb, cap_mb + the main job's headroom + side reserve),
+    the main job being the scope the lock record names. Fail closed: anything
+    unreadable (memory, the main job's scope or its usage) releases the side
+    lock and admits nothing. Returns the log fields on admission, else None."""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return None
+    avail = mem_available_mb()
+    hr = scope_headroom_mb(rec.get("unit", ""))
+    need = None if hr is None else max(min_mb, cap_mb + hr + max(SIDE_RESERVE_MB, reserve))
+    if avail is None or need is None or avail < need:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return None
+    return {"side_lane": True, "mem_avail_mb": avail, "need_mb": need, "beside_headroom_mb": hr,
+            "beside": sanitize_label(rec.get("label", "?"))}
+
+
+def side_headroom_mb():
+    """For the MAIN lane's memory floor: the headroom of a job running in the
+    side lane, 0 when the side lock is free (or was never created). A held side
+    lock whose scope cannot be measured counts as SIDE_MAX_MB, the largest cap
+    the side lane admits (fail closed: wait longer, never admit on a guess)."""
+    try:
+        sfd = os.open(side_lock_path(), os.O_RDONLY | O_NOFOLLOW)
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        return SIDE_MAX_MB
+    try:
+        try:
+            fcntl.flock(sfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(sfd, fcntl.LOCK_UN)
+            return 0
+        except BlockingIOError:
+            pass
+        hr = scope_headroom_mb(read_record(side_lock_path()).get("unit", ""))
+        return SIDE_MAX_MB if hr is None else min(hr, SIDE_MAX_MB)
+    finally:
+        os.close(sfd)
 
 
 def self_cgroup_parts():
@@ -1001,16 +1133,22 @@ def read_int(path):
         return None
 
 
-def read_oom_kills(cg):
+def read_key(path, key):
+    """The integer value of `key` in a flat-keyed cgroup file (memory.events,
+    memory.stat), None if unreadable or absent."""
     try:
-        with open(os.path.join(cg, "memory.events")) as f:
+        with open(path) as f:
             for line in f:
                 k, _, v = line.partition(" ")
-                if k == "oom_kill":
+                if k == key:
                     return int(v)
     except (OSError, ValueError):
         return None
     return None
+
+
+def read_oom_kills(cg):
+    return read_key(os.path.join(cg, "memory.events"), "oom_kill")
 
 
 def cgroup_fs():
@@ -1189,10 +1327,13 @@ def run_child(argv, env, unit=None, max_sec=None):
     return code, stats
 
 
-def wait_memory(floor_mb, deadline, label):
-    """Wait until MemAvailable >= floor_mb or the deadline. Returns the last
-    reading (None = unreadable). Unloads idle ollama models once when opted in."""
-    avail = mem_available_mb()
+def wait_memory(floor_now, deadline, label, avail=None):
+    """Wait until MemAvailable >= floor_now() or the deadline (the floor is
+    re-read every round: a side-lane job may start or end meanwhile). Returns
+    (the last reading, None = unreadable; the floor it was compared with).
+    avail: a reading already taken. Unloads idle ollama models once when opted in."""
+    floor_mb = floor_now()
+    avail = mem_available_mb() if avail is None else avail
     if avail is not None and avail < floor_mb:
         say("MemAvailable %d MB < required %d MB; waiting up to %ds"
             % (avail, floor_mb, max(0, round(deadline - time.monotonic()))))
@@ -1207,7 +1348,8 @@ def wait_memory(floor_mb, deadline, label):
         while avail is not None and avail < floor_mb and time.monotonic() < deadline:
             time.sleep(min(poll_sec(), max(0.01, deadline - time.monotonic())))
             avail = mem_available_mb()
-    return avail
+            floor_mb = floor_now()
+    return avail, floor_mb
 
 
 def main(argv=None):
@@ -1243,6 +1385,8 @@ def main(argv=None):
     # descendants): the lock must be held and carry our token.
     if os.environ.get("HEAVY_JOB_ACTIVE") == "1":
         ok, why = nested_check(lock_path())
+        if not ok and side_lane_on() and nested_check(side_lock_path())[0]:
+            ok = True  # the outer job runs in the side lane
         if ok:
             log({"event": "nested", "label": label, "cmd": cmd_text})
             try:
@@ -1278,7 +1422,6 @@ def main(argv=None):
             % why_text)
         log(dict({"event": "uncapped", "label": label, "cmd": cmd_text}, **probe_fields))
 
-    floor_mb = max(opts["min_mb"], cap_mb + reserve)
     wait_sec = opts["wait_sec"]
     deadline = time.monotonic() + wait_sec
     t0 = time.monotonic()
@@ -1286,18 +1429,18 @@ def main(argv=None):
     lp = lock_path()
     try:
         os.makedirs(os.path.dirname(lp), exist_ok=True)
-        fd = os.open(lp, os.O_RDWR | os.O_CREAT | O_NOFOLLOW, 0o600)
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
-            os.close(fd)
-            raise OSError("not a regular file owned by uid %d" % os.geteuid())
-        if st.st_mode & 0o077:
-            os.fchmod(fd, 0o600)   # an older, wider lock is narrowed (as _open_log does)
+        fd = open_lock_file(lp)
     except OSError as e:
         say("REFUSED: cannot open the lock file %s: %s. Not started." % (lp, e))
         log({"event": "refuse", "reason": "lock_io_error", "label": label, "cmd": cmd_text,
              "error": str(e)[:200], "exit": EXIT_LOCK_IO})
         return EXIT_LOCK_IO
+    side_fd = None  # side lane: only an explicitly small, capped job is a candidate
+    if side_lane_on() and scoped and cap_mb <= SIDE_MAX_MB:
+        try:
+            side_fd = open_lock_file(side_lock_path())
+        except OSError:
+            side_fd = None  # no side lock: the main lane only, as before
 
     # 1. global lock, taken in arrival order (FIFO ticket queue in front of it)
     def on_first_wait(ahead):
@@ -1338,11 +1481,12 @@ def main(argv=None):
             old_handlers[s] = signal.signal(s, on_signal)
     try:
         try:
-            ticket, ticket_body = queue_enter(label, agent, max_sec)
+            ticket, ticket_body = queue_enter(label, agent, max_sec, side=side_fd is not None)
         except OSError as e:
             raise QueueIOError("cannot create a ticket in %s: %s" % (queue_dir(), e))
+        side = (side_fd, cap_mb, opts["min_mb"], reserve) if side_fd is not None else None
         got, ahead = acquire_in_turn(fd, ticket, ticket_body, deadline, on_first_wait,
-                                     lp=lp, my_agent=agent, my_short=my_short, scan=scan)
+                                     lp=lp, my_agent=agent, my_short=my_short, scan=scan, side=side)
     except QueueSignal as e:
         caught = e.signo
     except QueueIOError as e:
@@ -1353,6 +1497,9 @@ def main(argv=None):
         queue_leave(ticket)
         for s, h in old_handlers.items():
             signal.signal(s, h)
+    side = scan.get("side") if got else None  # admitted to the side lane: side_fd holds its lock
+    if side_fd is not None and not side:
+        os.close(side_fd)
     caught = caught or state["pending"]
     if caught:
         # killed while queued (e.g. a supervisor's SIGTERM): leave no ticket
@@ -1387,8 +1534,9 @@ def main(argv=None):
     unit = "%s%d-%d" % (SCOPE_PREFIX, int(time.time()), os.getpid())
     # short-lane counter: the previous holder's, carried while this job is
     # not yet admitted; changed only once it passes the memory floor (below)
-    passed, streak = scan.get("passed") or [], None
-    prev = scan.get("rec") or {}
+    # (a side-lane job never holds the main lock: it leaves the counter alone)
+    passed, streak = ([] if side else scan.get("passed") or []), None
+    prev = {} if side else (scan.get("rec") or {})
     carry_tail = ""
     if _POS_RE.match(prev.get("short_passed", "")) and re.fullmatch(r"\d+", prev.get("short_streak", "")):
         carry_tail = " short_streak=%s short_passed=%s" % (prev["short_streak"], prev["short_passed"])
@@ -1405,12 +1553,13 @@ def main(argv=None):
     elif my_short:
         lane_tail = carry_tail  # a short job that passed nobody keeps the count
     since = now_iso()
+    hold_fd = side_fd if side else fd  # the lock this job holds, and its record
 
     def write_record(tail):
         try:
-            os.ftruncate(fd, 0)
+            os.ftruncate(hold_fd, 0)
             # token FIRST, so a reader that stops early can never lose it
-            os.pwrite(fd, ("token=%s pid=%d unit=%s since=%s label=%s%s%s\n"
+            os.pwrite(hold_fd, ("token=%s pid=%d unit=%s since=%s label=%s%s%s\n"
                            % (token, os.getpid(), unit if scoped else "-", since,
                               sanitize_label(label),
                               (" agent=" + agent) if agent else "", tail)).encode(), 0)
@@ -1420,7 +1569,17 @@ def main(argv=None):
 
     write_record(carry_tail)
 
-    # 2. memory floor (SIGTERM/SIGINT/SIGHUP during this wait: refuse line, 128 + signo)
+    # 2. memory floor (SIGTERM/SIGINT/SIGHUP during this wait: refuse line, 128 + signo).
+    # Main lane: also the unused cap of a job in the side lane. Side lane:
+    # side_admit already checked its floor while holding the side lock.
+    side_hr = {"mb": 0}  # the side job's headroom in the last main-lane floor
+
+    def floor_now():
+        if side:
+            return side["need_mb"]
+        side_hr["mb"] = side_headroom_mb() if side_lane_on() else 0
+        return max(opts["min_mb"], cap_mb + reserve + side_hr["mb"])
+
     mstate = {"done": False, "pending": None}
 
     def on_mem_signal(signo, _frame):
@@ -1435,7 +1594,8 @@ def main(argv=None):
             mem_handlers[s] = signal.signal(s, on_mem_signal)
     mem_caught = None
     try:
-        avail = wait_memory(floor_mb, deadline, label)
+        avail, floor_mb = wait_memory(floor_now, deadline, label,
+                                      avail=side["mem_avail_mb"] if side else None)
     except QueueSignal as e:
         mem_caught, avail = e.signo, None
     finally:
@@ -1461,8 +1621,9 @@ def main(argv=None):
         return EXIT_MEM_TIMEOUT
     if avail < floor_mb:
         say("REFUSED: MemAvailable %d MB stayed below the required %d MB for %ds "
-            "(cap %d MB + %d MB reserve, or --min-mb). Not started. Free memory or retry later."
-            % (avail, floor_mb, wait_sec, cap_mb, reserve))
+            "(cap %d MB + %d MB reserve%s, or --min-mb). Not started. Free memory or retry later."
+            % (avail, floor_mb, wait_sec, cap_mb, reserve,
+               (" + %d MB side-lane headroom" % side_hr["mb"]) if side_hr["mb"] else ""))
         log({"event": "refuse", "reason": "memory_timeout", "label": label, "cmd": cmd_text,
              "mem_avail_mb": avail, "need_mb": floor_mb,
              "waited_sec": round(time.monotonic() - t0, 1), "exit": EXIT_MEM_TIMEOUT})
@@ -1499,6 +1660,8 @@ def main(argv=None):
         start_rec["agent"] = agent
     if my_short:
         start_rec["short"] = True
+    if side:
+        start_rec.update(side)  # side_lane, need_mb, beside, beside_headroom_mb
     if streak:
         start_rec["passed"] = [lbl for _, lbl in passed]
         start_rec["short_streak"] = streak
@@ -1533,6 +1696,8 @@ def main(argv=None):
             "see journalctl --user -u %s.scope" % (signame, unit))
     log(rec)
     os.close(fd)  # releases the flock
+    if side:
+        os.close(side_fd)  # releases the side lock
     return code
 
 

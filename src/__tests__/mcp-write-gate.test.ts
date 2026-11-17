@@ -226,6 +226,8 @@ describe('a channel plugin\'s download_attachment passes both gates; the Gmail o
     ['mcp__plugin_telegram_telegram__download_attachment', { file_id: 'AgACAgIAAxkBAAIB' }],
     ['mcp__plugin_discord_discord__download_attachment', { chat_id: '123456789012345678', message_id: '123456789012345679' }],
     ['mcp__plugin_gromzo-channel_gromzo__download_attachment', { attachment_id: 'att-1' }],
+    // PELENKAGCHAT1113: the Google Chat plugin, with an opaque file_id (no slash)
+    ['mcp__plugin_googlechat_googlechat__download_attachment', { file_id: 'ClxzcGFjZXMvQUFBQTEvbWVzc2FnZXMvTU1NMS5NTU0x' }],
   ]
   it.each(channel)('%s: a sub-agent and the main agent', (tool, input) => {
     expect(db(tool, input)).toEqual({ deny: false })
@@ -233,13 +235,29 @@ describe('a channel plugin\'s download_attachment passes both gates; the Gmail o
     expect(db(tool, input, { subAgent: false, cwd: root, projectDir: root })).toEqual({ deny: false })
     expect(pace(tool, input, { subAgent: false, cwd: root, projectDir: root })).toEqual({ deny: false })
   })
+  // PELENKAGCHAT1113: a file_id that carries slashes (the real shape is not measured) is judged as a relative path,
+  // against the cwd and the project dir, like any other path leaf. From an agent's own directory it names nothing
+  // protected; from inside a guarded directory it does, and that stays a deny.
+  describe('a Google Chat file_id with slashes is judged as a relative path', () => {
+    const tool = 'mcp__plugin_googlechat_googlechat__download_attachment'
+    const input = { file_id: 'spaces/AAAA1/messages/MMM1.MMM1/attachments/ATT1' }
+    it('from the agent directory and from the install root: passes both gates', () => {
+      expect(db(tool, input)).toEqual({ deny: false })
+      expect(pace(tool, input)).toEqual({ deny: false })
+      expect(db(tool, input, { subAgent: false, cwd: root, projectDir: root })).toEqual({ deny: false })
+      expect(pace(tool, input, { subAgent: false, cwd: root, projectDir: root })).toEqual({ deny: false })
+    })
+    it('with the cwd inside scripts/hooks: db-write-gate denies, the id would name a file under a guarded directory', () => {
+      expect(db(tool, input, { cwd: join(root, 'scripts', 'hooks') })).toEqual({ deny: true, reason: 'mcp-install-file' })
+    })
+  })
   it('a protected path handed to it is still judged', () => {
     const tool = 'mcp__plugin_slack-channel_slack__download_attachment'
     expect(denied(db(tool, { chat_id: 'D1', message_id: '1.2', savePath: store }))).toBe(true)
     expect(denied(pace(tool, { chat_id: 'D1', message_id: '1.2', savePath: store }))).toBe(true)
   })
   it.each(['mcp__server-gmail-autoauth-mcp__download_attachment', 'mcp__gmail__download_attachment', 'mcp__slack__download_attachment', 'mcp__evil__download_attachment',
-    'mcp__plugin_slack-channel_slackx__download_attachment'])(
+    'mcp__plugin_slack-channel_slackx__download_attachment', 'mcp__googlechat__download_attachment', 'mcp__plugin_googlechat_googlechatx__download_attachment'])(
     '%s without savePath: still denied by both gates', (tool) => {
       expect(db(tool, { messageId: '1', attachmentId: '2' })).toEqual({ deny: true, reason: 'mcp-path' })
       expect(pace(tool, { messageId: '1', attachmentId: '2' })).toEqual({ deny: true, reason: 'mcp-path' })

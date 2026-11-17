@@ -45,9 +45,12 @@ import { registerScheduledTask, verifyScheduledTask } from '../web/schedule-regi
 import { rewriteRegisteredTask } from '../web/schedule-registry-rewrite.js'
 import {
   ROTATION_HEARTBEAT_TASK,
+  buildRotationHeartbeatPromptV1,
+  ROTATION_HEARTBEAT_DESCRIPTION,
   ensureRotationHeartbeatTask,
   syncRotationHeartbeatTask,
 } from '../web/claude-rotation-heartbeat.js'
+import { CHANNEL_CHAT_ID, PROJECT_ROOT, WEB_PORT } from '../config.js'
 
 function verdict(name: string) {
   const t = readScheduledTask(name)
@@ -131,6 +134,30 @@ describe('rotation heartbeat is registered', () => {
   it('an existing, unregistered task of that name is not laundered by the toggle', () => {
     writeScheduledTask(ROTATION_HEARTBEAT_TASK, { prompt: 'idegen', schedule: '* * * * *', agent: 'marveen', enabled: false })
     expect(syncRotationHeartbeatTask()).toBe('enabled')
+    expect(verdict(ROTATION_HEARTBEAT_TASK)).toMatchObject({ ok: false, reason: 'unregistered' })
+  })
+})
+
+// SUBPLANTOKEN1110 2nd PR: the upgrade of an unedited V1 prompt goes through the same trust-keeping rewrite.
+describe('rotation heartbeat prompt upgrade keeps the registry honest', () => {
+  const opts = { projectRoot: PROJECT_ROOT, webPort: WEB_PORT, chatId: CHANNEL_CHAT_ID }
+  const v1Task = () => writeScheduledTask(ROTATION_HEARTBEAT_TASK, {
+    description: ROTATION_HEARTBEAT_DESCRIPTION, prompt: buildRotationHeartbeatPromptV1(opts), schedule: '*/10 * * * *',
+    agent: 'marveen', enabled: true, type: 'heartbeat', skipIfBusy: true,
+  })
+
+  it('a registered, unedited V1 task is upgraded and stays trusted', () => {
+    v1Task()
+    registerScheduledTask(ROTATION_HEARTBEAT_TASK, 'server:rotation-heartbeat')
+    expect(verdict(ROTATION_HEARTBEAT_TASK)).toEqual({ ok: true })
+    expect(ensureRotationHeartbeatTask()).toBe('upgraded')
+    expect(readScheduledTask(ROTATION_HEARTBEAT_TASK)?.prompt).toContain('SUBAGENT_ROTATE')
+    expect(verdict(ROTATION_HEARTBEAT_TASK)).toEqual({ ok: true })
+  })
+
+  it('an UNREGISTERED task with the V1 text is upgraded but not laundered into trust', () => {
+    v1Task()
+    expect(ensureRotationHeartbeatTask()).toBe('upgraded')
     expect(verdict(ROTATION_HEARTBEAT_TASK)).toMatchObject({ ok: false, reason: 'unregistered' })
   })
 })

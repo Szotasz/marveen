@@ -54,7 +54,7 @@ describe('channels.sh: the gromzo primary or a gromzo-pending session (start blo
   it('resolve_plugin_ids knows gromzo; no state dir export for it; no post-init Bun unlock', () => {
     expect(CHANNELS).toMatch(/gromzo\)\s+PLUGIN_ID="gromzo-channel@gromzo-local";\s+PLUGIN_PANE_ID="plugin:gromzo-channel:gromzo"/)
     expect(CHANNELS).toContain('[ "$CHANNEL_PROVIDER" = "gromzo" ] && STATE_DIR_ENV=""')
-    expect(CHANNELS).toMatch(/\(\n  # GROMZONOPROVIDER1108[^\n]*\n  \[ "\$CHANNEL_PROVIDER" = "gromzo" \] && exit 0\n  sleep 15/)
+    expect(CHANNELS).toMatch(/\(\n  # GROMZONOPROVIDER1108[^\n]*\n  \[ "\$CHANNEL_PROVIDER" = "gromzo" \] && exit 0\n  # CHANNELUNCONF1110[^\n]*\n  \[ "\$CHANNEL_UNCONFIGURED" = "1" \] && exit 0\n  sleep 15/)
   })
 })
 
@@ -176,7 +176,8 @@ describe('mainGromzoPrimaryReady (the TS twin of main_gromzo_primary_ready)', ()
   })
   it('the dashboard sweep leaves a gromzo-pending main session alone (no down spell, no restart); only a live one flushes the kept alerts', () => {
     const cm = readFileSync(join(ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf8')
-    expect(cm).toMatch(/if \(t\.isMarveen && t\.provider === 'gromzo' && !mainGromzoPrimaryReady\(readMainAgentIdRaw\(\)\)\) \{\n[^\n]*\n\s+setGromzoMainLive\(false\)\n\s+continue\n\s+\}\n\s+const liveness = await probeChannelPluginLivenessAsync/)
+    expect(cm).toMatch(/if \(t\.isMarveen && t\.provider === 'gromzo' && !mainGromzoPrimaryReady\(readMainAgentIdRaw\(\)\)\) \{\n[^\n]*\n\s+setGromzoMainLive\(false\)\n\s+continue\n\s+\}\n\s+\/\/ CHANNELUNCONF1110/)
+    // CHANNELUNCONF1110: the unconfigured skip sits between it and the probe (ordering: channel-unconfigured.test.ts).
   })
 })
 

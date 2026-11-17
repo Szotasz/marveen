@@ -206,9 +206,13 @@ if [ -n "$src" ] && [ -n "$call" ] && [ -n "$ready" ] && [ -n "$keep" ] && [ "$r
 else
   fail "channels.sh wiring" "ready < source < call < keepalive" "ready=$ready source=$src call=$call keepalive=$keep"
 fi
-eq "the one-shot send is left only as the fallback"  "1" "$oneshot"
-fallback="$(sed -n "${call},\$p" "$CHANNELS" | grep -n '"/rename ${_bot_name}" Enter' | head -1 | cut -d: -f1)"
-if [ -n "$fallback" ] && [ "$fallback" -le 6 ]; then pass "...inside the else branch right after the call"; else fail "...inside the else branch" "within 6 lines after the call" "$fallback"; fi
+# TYPINGPATHS1114: the one-shot send is gone. Without the library nothing is
+# typed, and the else branch is one log line that says so.
+eq "the one-shot send is gone"                        "0" "$oneshot"
+eq "channels.sh types a /rename nowhere"              "0" "$(grep -v '^[[:space:]]*#' "$CHANNELS" | grep -c 'send-keys.*/rename')"
+else_branch="$(sed -n "$((call + 1)),$((call + 3))p" "$CHANNELS")"
+want_else="$(printf '%s\n%s\n%s' 'else' '  echo "$(date '"'"'+%F %T'"'"') channels.sh: scripts/lib/main-rename.sh could not be loaded -- boot /rename NOT typed, the session keeps its default name (TYPINGPATHS1114)" >&2' 'fi')"
+eq "the else branch only logs"                        "$want_else" "$else_branch"
 
 # #2389: the startup guard's window. The two parsing lines are taken from
 # channels.sh itself and run here, so the test follows the real code.

@@ -1,0 +1,386 @@
+#!/bin/sh
+# GENERATED FILE, DO NOT EDIT. Source: scripts/support-access.in and src/support-access-launcher.ts. Rebuild: node scripts/build-support-standby.mjs
+#
+# Marveen support access: the LAUNCHER (SUPPORTMENTOUT1114). The customer runs
+#   ~/.marveen/support/kit/support-access [enable | disable]
+# when the Marveen service is down and support needs to get in. With no
+# argument it only LOOKS: it writes nothing and asks for no code.
+#
+# What it guarantees (plan v1.5, 3.2-3.5; Samu 32015, 32025, 32050; Dani 32034, 32045):
+# - It reads the kit's manifest ONCE, at the start, into memory, and decides
+#   from that one read: which node, which install root, and the hash the
+#   routine's bytes must have. A manifest that is not exactly the one canonical
+#   text is refused (the same rule as the routine's reader; a shared case file
+#   tests both).
+# - It runs ONLY the kit's copy of the routine, through the loader below: node
+#   reads the file once, measures those bytes against the manifest's hash and
+#   runs those bytes. The loader text is fixed (generated from
+#   KIT_LOADER_SOURCE, word for word); everything that varies goes after `--`.
+#   The node is started with env -i and two keys only: no NODE_OPTIONS, no
+#   NODE_PATH, nothing of the caller's environment.
+# - `disable` runs the INSTALL TREE's routine, whatever the kit's hash says
+#   (closing must not depend on the kit; N14/a).
+# - The owner's one-time code goes to the routine on standard input, never in
+#   an argument and never into typed text.
+# - Every read and every run is checked; a failure stops it. Exit 0 with no
+#   output is a failure (the routine always answers).
+
+# The caller's PATH is kept for ONE use: the last place to look for a node (3.2, N19).
+CALLER_PATH=${PATH:-}
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+LC_ALL=C
+export LC_ALL
+umask 077
+
+stop() {
+  printf '%s\n' "$1" >&2
+  printf '%s\n' "A kódot most még ne írd be. Küldd el nekünk ($SUPPORT_MAIL), amit a parancs kiírt, és megmondjuk a következő lépést." >&2
+  exit "${2:-1}"
+}
+# After the code was typed: the hint above would be wrong.
+halt() {
+  printf '%s\n' "$1" >&2
+  exit "${2:-1}"
+}
+# Where the customer writes to us (the owner, 78568: the marveen.io address, never another domain).
+SUPPORT_MAIL=hello@marveen.io
+# Where the customer can always close: the Profile page (Mira 78449, final names).
+PROFILE_CLOSE="Lépj be a marveen.io Profil oldalára, és ott zárd le a hozzáférést a „Support-hozzáférés lezárása” gombbal (vagy véglegesen a „Gép eltávolítása a supportból” gombbal)."
+
+# The routine's refusal code (the last word of `enable: refused: <code>`) as a sentence (Bence 78442).
+enable_refusal() {
+  case "$1" in
+    code_required|code_shape|code_rejected|license_key_not_accepted)
+      echo "A kód nem érvényes vagy lejárt. Kérj újat a Profil oldalon a „Kód kérése” gombbal, és futtasd újra ezt a sort." ;;
+    rate_limited) echo "Túl sok próbálkozás volt. Várj néhány percet, utána futtasd újra." ;;
+    service_unavailable|answer_unreadable) echo "A marveen.io most nem érhető el innen. Próbáld újra később; ha továbbra sem megy, írj nekünk ($SUPPORT_MAIL), és küldd el ezt a kódot: $1." ;;
+    consent_invalid) echo "A hozzájárulás verziója nem az, amit ez a Marveen ismer ($1). Frissítsd a Marveent, vagy írj nekünk ($SUPPORT_MAIL)." ;;
+    support_keys_unset|support_from_unset|support_pins_invalid) echo "Ez a Marveen-kiadás még nem tartalmazza a távoli segítség beállításait ($1). Frissítsd a Marveent." ;;
+    tunnel_permitted) echo "A géped SSH-beállítása legalább egy esetben hálózati alagutat enged (PermitTunnel). Amíg ez így van, a support-belépés nem kapcsolható be. A beállítást a gép rendszergazdája tudja kikapcsolni." ;;
+    sshd_*|root_login_disabled|authorized_keys_path_unsupported|other_key_source|force_command_set|accept_env_too_wide)
+      echo "A géped SSH-beállítása miatt a support-belépés nem kapcsolható be ($1). Ezt a gép rendszergazdája tudja rendezni; küldd el nekünk ezt a kódot ($SUPPORT_MAIL)." ;;
+    kit_*) echo "A support-készlet nincs rendben ($1). Frissítsd a Marveent, utána futtasd újra ezt a sort." ;;
+    already_on) echo "A távoli segítség már be van kapcsolva ezen a gépen, vagy egy korábbi bekapcsolás félbemaradt ($1). Előbb kapcsold ki így: ~/.marveen/support/kit/support-access disable, utána futtasd újra ezt a sort. A kódod ettől nem fogy el." ;;
+    enable_not_from_kit) echo "A bekapcsolás nem a support-készletből indult ($1). Futtasd pontosan a Profil oldalon látható sort." ;;
+    keys_file_layout|enable_write_failed) echo "A géped kulcsfájlja nem írható a várt módon ($1). Küldd el nekünk ezt a kódot ($SUPPORT_MAIL)." ;;
+    *) echo "A bekapcsolás nem sikerült ($1). Küldd el nekünk ezt a kódot ($SUPPORT_MAIL)." ;;
+  esac
+}
+
+MODE=
+case "$#" in
+  0) MODE=status ;;
+  1)
+    case "$1" in
+      enable) MODE=enable ;;
+      disable) MODE=disable ;;
+    esac
+    ;;
+esac
+[ -n "$MODE" ] || { printf '%s\n' "Használat: support-access [enable | disable]" >&2; exit 2; }
+
+# --- the login user's home, from the user database (no variable moves it) ---
+ME=$(id -un 2>/dev/null) || stop "Nem tudom megállapítani, melyik felhasználóval futsz."
+case "$(uname -s 2>/dev/null)" in
+  Darwin) HOMEDIR=$(dscl . -read "/Users/$ME" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p') ;;
+  *) HOMEDIR=$(getent passwd "$ME" 2>/dev/null | cut -d: -f6) ;;
+esac
+case "$HOMEDIR" in
+  /*) ;;
+  *) stop "Ennél a felhasználónál nem találok Marveent. Azzal a felhasználóval futtasd, amelyik alatt fut." ;;
+esac
+case "$HOMEDIR" in
+  *[!A-Za-z0-9._/-]*) stop "A felhasználó mappájának útja szokatlan karaktert tartalmaz; a mentő-út itt nem használható (kit_input_invalid)." ;;
+esac
+
+SUPPORT="$HOMEDIR/.marveen/support"
+KIT="$SUPPORT/kit"
+MANIFEST="$KIT/manifest"
+
+# --- K6: the two folders are real folders of this user (the routine checks more, below) ---
+for d in "$SUPPORT" "$KIT"; do
+  if [ -L "$d" ]; then stop "A support-készlet mappája link; így nem futtatom (kit_link)."; fi
+  if [ ! -d "$d" ]; then stop "Ez a telepítés régebbi, mint a support-készenlét, vagy a készlet hiányzik (kit_missing). Frissítsd a Marveent, utána futtasd újra ezt a sort."; fi
+  if [ ! -O "$d" ]; then stop "A support-készlet mappája nem a te felhasználódé; így nem futtatom (kit_foreign_owner)."; fi
+done
+
+# --- the manifest, read ONCE ---
+if [ -L "$MANIFEST" ] || [ ! -f "$MANIFEST" ]; then
+  stop "A készlet jegyzéke hiányzik vagy nem rendes fájl (kit_manifest_unreadable). Frissítsd a Marveent."
+fi
+MAN=$(head -c 4097 "$MANIFEST" 2>/dev/null; rc=$?; printf 'x'; exit "$rc") || stop "A készlet jegyzéke nem olvasható (kit_manifest_unreadable)."
+MAN=${MAN%x}
+[ "${#MAN}" -le 4096 ] || stop "A készlet jegyzéke nagyobb a megengedettnél (kit_manifest_unreadable)."
+CR=$(printf '\r')
+case "$MAN" in
+  *"$CR"*) stop "A készlet jegyzéke nem a várt alakú (kit_manifest_unreadable)." ;;
+esac
+case "$MAN" in
+  *'
+') ;;
+  *) stop "A készlet jegyzéke nem a várt alakú (kit_manifest_unreadable)." ;;
+esac
+
+# The one canonical text: header; `file <name> <sha256>` lines in name order;
+# then install-root, node, node-min, release, each once, in this order.
+PARSED=$(printf '%s' "$MAN" | awk -v maxfiles=16 -v want_l="support-access" -v want_d="support-dispatch.sh" -v want_r="support-standby.mjs" '
+function bad() { failed = 1; exit 3 }
+function hex(s, n) { return length(s) == n && s ~ /^[0-9a-f]+$/ }
+{ line[NR] = $0 }
+END {
+  if (failed) exit 3
+  if (NR < 6 || line[1] != "marveen-support-kit 1") bad()
+  i = 2; nfiles = 0; prev = ""
+  while (i <= NR && substr(line[i], 1, 5) == "file ") {
+    if (split(line[i], p, / /) != 3) bad()
+    name = p[2]; h = p[3]
+    if (length(name) < 1 || length(name) > 64 || name !~ /^[a-z0-9][a-z0-9._-]*$/ || name == "manifest") bad()
+    if (!hex(h, 64)) bad()
+    if (nfiles > 0 && !(prev < name)) bad()
+    prev = name; nfiles++; files[name] = h; i++
+  }
+  if (nfiles < 1 || nfiles > maxfiles) bad()
+  if (NR != i + 3) bad()
+  if (split(line[i], p, / /) != 2 || p[1] != "install-root" || p[2] !~ /^\/[A-Za-z0-9._\/-]+$/) bad()
+  root = p[2]
+  if (split(line[i + 1], p, / /) != 2 || p[1] != "node" || p[2] !~ /^\/[A-Za-z0-9._@\/-]+$/) bad()
+  node = p[2]
+  if (split(line[i + 2], p, / /) != 2 || p[1] != "node-min" || p[2] !~ /^[1-9][0-9]*$/ || length(p[2]) > 3) bad()
+  nodemin = p[2]
+  if (split(line[i + 3], p, / /) != 2 || p[1] != "release" || length(p[2]) < 7 || length(p[2]) > 40 || p[2] !~ /^[0-9a-f]+$/) bad()
+  if (!(want_l in files) || !(want_d in files) || !(want_r in files)) exit 4
+  print root; print node; print nodemin; print files[want_r]
+}') || stop "A készlet jegyzéke nem a várt alakú, vagy hiányzik belőle egy fájl (kit_manifest_unreadable). Frissítsd a Marveent."
+{
+  IFS= read -r ROOT
+  IFS= read -r MNODE
+  IFS= read -r NODEMIN
+  IFS= read -r RHASH
+} <<EOF_PARSED
+$PARSED
+EOF_PARSED
+[ -n "$ROOT" ] && [ -n "$MNODE" ] && [ -n "$NODEMIN" ] && [ -n "$RHASH" ] || stop "A készlet jegyzéke nem a várt alakú (kit_manifest_unreadable)."
+
+# --- the node (3.2; N19): the manifest's first, then fixed places, the caller's PATH last ---
+NODE=
+for c in "$MNODE" /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+  if [ -f "$c" ] && [ -x "$c" ]; then NODE=$c; break; fi
+done
+if [ -z "$NODE" ]; then
+  c=$(PATH=$CALLER_PATH command -v node 2>/dev/null) || c=
+  if [ -n "$c" ] && [ -f "$c" ] && [ -x "$c" ]; then NODE=$c; fi
+fi
+[ -n "$NODE" ] || stop "A Marveen futtatókörnyezete (Node.js) ezen a gépen nem található. Így a távoli segítség most nem kapcsolható be. Két lehetőséged van: (1) futtasd újra a Marveen telepítőjét; (2) írj nekünk ($SUPPORT_MAIL), és lépésenként megmondjuk, mit tegyél."
+if [ "$NODE" != "$MNODE" ]; then
+  # Resolved ONCE to its absolute path (links too), then only that path is used.
+  ABS=$(env -i PATH=/usr/bin:/bin LC_ALL=C "$NODE" -e 'process.stdout.write(process.execPath)' 2>/dev/null) || ABS=
+  case "$ABS" in
+    /*) case "$ABS" in *[!A-Za-z0-9._@/-]*) ABS= ;; esac ;;
+    *) ABS= ;;
+  esac
+  [ -n "$ABS" ] || stop "A talált Node.js útja nem olvasható ki; így nem futtatom (node_unusable)."
+  NODE=$ABS
+  NOTE_NODE=1
+fi
+VER=$(env -i PATH=/usr/bin:/bin LC_ALL=C "$NODE" --version 2>/dev/null) || VER=
+MAJOR=${VER#v}
+MAJOR=${MAJOR%%.*}
+case "$MAJOR" in
+  ''|*[!0-9]*) stop "A Marveen futtatókörnyezete (Node.js) ezen a gépen nem indul (talált: ${VER:-nincs}, kell: legalább $NODEMIN). Futtasd újra a Marveen telepítőjét, vagy írj nekünk ($SUPPORT_MAIL)." ;;
+esac
+[ "$MAJOR" -ge "$NODEMIN" ] || stop "A Marveen futtatókörnyezete (Node.js) túl régi (talált: $VER, kell: legalább $NODEMIN). Futtasd újra a Marveen telepítőjét, vagy írj nekünk ($SUPPORT_MAIL)."
+[ -z "${NOTE_NODE:-}" ] || printf '%s\n' "A Marveen saját Node.js-e nem található; ezt használom: $NODE ($VER)."
+
+# --- one run of the KIT's routine through the loader (stdin: the caller's) ---
+run_kit() {
+  env -i PATH=/usr/bin:/bin LC_ALL=C "$NODE" --input-type=module -e 'import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { createHash } from "node:crypto";
+const stop = (code) => {
+  try { process.stderr.write("support-kit-loader: stopped (" + code + ")\n"); } catch {}
+  process.exit(code);
+};
+process.on("uncaughtException", () => stop(70));
+process.on("unhandledRejection", () => stop(70));
+const [expected, path, ...args] = process.argv.slice(1);
+if (!/^[0-9a-f]{64}$/.test(expected ?? "") || !/^\/[A-Za-z0-9._\/-]+$/.test(path ?? "")) stop(64);
+const MAX = 4194304;
+let bytes = null;
+try {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    if (fstatSync(fd).isFile()) {
+      const buf = Buffer.alloc(MAX + 1);
+      let n = 0;
+      for (;;) {
+        const got = readSync(fd, buf, n, buf.length - n, n);
+        if (got === 0) break;
+        n += got;
+        if (n > MAX) break;
+      }
+      if (n <= MAX) bytes = buf.subarray(0, n);
+    }
+  } finally {
+    closeSync(fd);
+  }
+} catch {}
+if (bytes === null) stop(66);
+if (createHash("sha256").update(bytes).digest("hex") !== expected) stop(65);
+let main = null;
+try {
+  main = (await import("data:text/javascript;base64," + bytes.toString("base64"))).main;
+} catch {}
+if (typeof main !== "function") stop(70);
+let code = null;
+try {
+  code = await main(args);
+} catch {}
+if (!Number.isInteger(code) || code < 0 || code > 63) stop(70);
+process.exitCode = code;
+' -- "$RHASH" "$KIT/support-standby.mjs" "$@"
+}
+
+# --- one run of the INSTALL TREE's routine (disable only; N14/a) ---
+run_tree() {
+  env -i PATH=/usr/bin:/bin LC_ALL=C "$NODE" "$ROOT/scripts/support-standby.mjs" "$@"
+}
+
+# The answer of a run: exit 0 with no output is a failure; the loader's own codes are failures.
+judge() {
+  rc=$1; out=$2; what=$3
+  case "$rc" in
+    0) [ -n "$out" ] || stop "$what: a rutin nem válaszolt (kit_no_output)." ;;
+    65) stop "$what: a készlet rutinja nem az a fájl, amit a jegyzék megnevez (kit_mismatch). Frissítsd a Marveent." ;;
+    64|66|70) stop "$what: a rutin nem indult el (kit_run_failed, $rc)." ;;
+  esac
+}
+
+if [ "$MODE" = disable ]; then
+  if [ -L "$ROOT/scripts/support-standby.mjs" ] || [ ! -f "$ROOT/scripts/support-standby.mjs" ]; then
+    halt "A Marveen telepítésében a support-rutin hiányzik; a levétel így nem megy. $PROFILE_CLOSE"
+  fi
+  ERRF=$(mktemp 2>/dev/null) || halt "Ideiglenes fájl nem hozható létre; a levétel nem indult. $PROFILE_CLOSE"
+  OUT=$(run_tree disable </dev/null 2>"$ERRF"); rc=$?
+  ERR=$(head -c 512 "$ERRF" 2>/dev/null); rm -f "$ERRF"
+  case "$rc" in
+    0) [ -n "$OUT" ] || halt "A levétel nem válaszolt; nem tudom, sikerült-e. $PROFILE_CLOSE" ;;
+    2) halt "Ez a Marveen-kiadás még nem tudja helyben levenni a support-hozzáférést. $PROFILE_CLOSE" ;;
+    *)
+      [ -z "$OUT" ] || printf '%s\n' "$OUT"
+      case "$ERR" in
+        "disable: incomplete: "*) halt "A levétel nem fejeződött be teljesen (${ERR#disable: incomplete: }). A belépést ettől függetlenül le tudod zárni: $PROFILE_CLOSE" ;;
+        *) halt "A levétel nem sikerült ($rc). $PROFILE_CLOSE" ;;
+      esac
+      ;;
+  esac
+  printf '%s\n' "$OUT"
+  # Dani 78558 via Bence 78639: the machine stays listed on the account until the Profile page removes it.
+  printf '%s\n' "A levétel kész ezen a gépen. A gép a marveen.io fiókodban addig látszik, amíg a Profil oldalon a „Gép eltávolítása a supportból” gombbal el nem távolítod."
+  exit 0
+fi
+
+# --- status (always; writes nothing) ---
+KV=$(run_kit verify-kit </dev/null); rc=$?
+judge "$rc" "$KV" "A készlet ellenőrzése"
+case "$rc" in
+  0) ;;
+  2) stop "Ez a Marveen-kiadás még nem tudja ellenőrizni a support-készletet. Frissítsd a Marveent." ;;
+  *) stop "A készlet ellenőrzése nem sikerült ($rc)." ;;
+esac
+[ "$KV" = "kit=ok" ] || stop "A support-készlet nem az, amit a jegyzéke mond ($KV). Frissítsd a Marveent, utána futtasd újra ezt a sort."
+
+ST=$(run_kit status </dev/null); rc=$?
+judge "$rc" "$ST" "Az állapot lekérdezése"
+[ "$rc" -eq 0 ] || stop "Az állapot lekérdezése nem sikerült ($rc)."
+printf '%s\n' "$ST"
+
+READY=yes
+for want in node=ok pins=ok sshd=ok curl=present; do
+  case "
+$ST
+" in
+    *"
+$want
+"*) ;;
+    *) READY=no ;;
+  esac
+done
+if [ "$READY" != yes ]; then
+  stop "A gép most nem áll készen a távoli segítségre (a fenti sorok közül valamelyik nem rendben)."
+fi
+
+if [ "$MODE" = status ]; then
+  printf '%s\n' "Minden rendben: a távoli segítség bekapcsolható. A kódot a következő lépésben kérem: futtasd így: ~/.marveen/support/kit/support-access enable"
+  exit 0
+fi
+
+# --- enable: the consent version from the routine's status (Samu 78474: ONE constant in the routine,
+# printed as consent_version=<n>; no number in the launcher), then the consent text of exactly that
+# version, then the one-time code to the routine on standard input ---
+CV=
+while IFS= read -r line; do
+  case "$line" in
+    consent_version=*) CV=${line#consent_version=} ;;
+  esac
+done <<EOF_STATUS
+$ST
+EOF_STATUS
+case "$CV" in
+  ''|*[!0-9]*) stop "Ez a Marveen-kiadás még nem tudja bekapcsolni a távoli segítséget (a hozzájárulás verzióját nem adja meg). Frissítsd a Marveent." ;;
+esac
+ERRF=$(mktemp 2>/dev/null) || stop "Ideiglenes fájl nem hozható létre; a hozzájárulás szövege nem kérhető le."
+CT=$(run_kit consent-text --consent "$CV" </dev/null 2>"$ERRF"); rc=$?
+ERR=$(head -c 512 "$ERRF" 2>/dev/null); rm -f "$ERRF"
+judge "$rc" "$CT" "A hozzájárulás szövegének lekérdezése"
+case "$rc" in
+  0) ;;
+  2) stop "Ez a Marveen-kiadás még nem tudja megmutatni a hozzájárulás szövegét. Frissítsd a Marveent." ;;
+  1)
+    case "$ERR" in
+      "consent-text: refused: consent_text_unset") stop "Ez a Marveen-kiadás még nem tartalmazza a jóváhagyott hozzájárulás-szöveget, ezért a távoli segítség még nem kapcsolható be. Frissítsd a Marveent, vagy írj nekünk ($SUPPORT_MAIL)." ;;
+      "consent-text: refused: consent_invalid") stop "A hozzájárulás verziója nem az, amit ez a Marveen ismer (consent_invalid). Frissítsd a Marveent, vagy írj nekünk ($SUPPORT_MAIL)." ;;
+      *) stop "A hozzájárulás szövege nem olvasható ki (1)." ;;
+    esac
+    ;;
+  *) stop "A hozzájárulás szövege nem olvasható ki ($rc)." ;;
+esac
+printf '%s\n' "$CT"
+printf '%s' "Írd be a marveen.io Profil oldalán a „Kód kérése” gombbal kapott egyszeri kódot, és nyomj Entert: "
+# Dani S1 (78485): the code is not shown while it is typed. On a terminal the echo goes off, and a
+# trap puts the terminal back whatever way the launcher ends (Enter, Ctrl+C, a signal).
+SAVED_TTY=
+if [ -t 0 ]; then
+  SAVED_TTY=$(stty -g 2>/dev/null) || SAVED_TTY=
+  if [ -n "$SAVED_TTY" ]; then
+    trap 'stty "$SAVED_TTY" 2>/dev/null' EXIT
+    trap 'stty "$SAVED_TTY" 2>/dev/null; exit 130' INT TERM HUP
+    stty -echo 2>/dev/null
+  fi
+fi
+IFS= read -r CODE || stop "Nem kaptam kódot."
+if [ -n "$SAVED_TTY" ]; then
+  stty "$SAVED_TTY" 2>/dev/null
+  printf '\n'
+fi
+case "$CODE" in
+  msc_[A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-][A-Za-z0-9_-]) ;;
+  *) stop "Ez nem a várt alakú kód. Másold be pontosan, ahogy a Profil oldal mutatja." ;;
+esac
+ERRF=$(mktemp 2>/dev/null) || halt "Ideiglenes fájl nem hozható létre; a bekapcsolás nem indult."
+OUT=$(printf '%s\n' "$CODE" | run_kit enable --consent "$CV" 2>"$ERRF"); rc=$?
+CODE=
+ERR=$(head -c 512 "$ERRF" 2>/dev/null); rm -f "$ERRF"
+case "$rc" in
+  0) [ -n "$OUT" ] || halt "A bekapcsolás nem válaszolt (kit_no_output)." ;;
+  2) halt "Ez a Marveen-kiadás még nem tudja bekapcsolni a távoli segítséget. Frissítsd a Marveent." ;;
+  1)
+    case "$ERR" in
+      "enable: refused: "*) halt "$(enable_refusal "${ERR#enable: refused: }")" ;;
+      *) halt "A bekapcsolás nem sikerült. Küldd el nekünk ($SUPPORT_MAIL), amit a parancs kiírt." ;;
+    esac
+    ;;
+  *) judge "$rc" "$OUT" "A bekapcsolás"; halt "A bekapcsolás nem sikerült ($rc)." ;;
+esac
+printf '%s\n' "$OUT"
+printf '%s\n' "A távoli segítség bekapcsolva. A belépést a Profil oldalon a „Support-hozzáférés élesítése” gombbal engeded; lezárni bármikor a „Support-hozzáférés lezárása” gombbal tudod."
+exit 0

@@ -18,6 +18,7 @@ Entry point: scripts/marveen-api.sh (the allow-listed command), which runs this 
 Exit codes: 0 = HTTP 2xx; 1 = the server answered with a non-2xx status (the body is printed to
 stderr); 2 = usage error or no token, nothing was sent; 3 = the dashboard could not be reached or did not answer.
 """
+import datetime
 import json
 import os
 import posixpath
@@ -41,6 +42,7 @@ CARD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # the status set belongs to the server; this only keeps the value one plain token
 STATUS_RE = re.compile(r'^[a-z][a-z_]{1,31}$')
 PRIORITIES = ('low', 'normal', 'high', 'urgent')
+DATE_RE = re.compile(r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
 # a card's assignee: an agent name, or the owner's name as the board holds it ("Szabolcs"); letters (any script),
 # digits, space, '.', '-', '_'; a JSON value in the body, never a path or a shell word
 ASSIGNEE_RE = re.compile(r'^[^\W_][\w .-]{0,63}$')
@@ -70,6 +72,12 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-comment <card-id> <author> <content-file>
   kanban-assign <card-id> <assignee> [--actor <name>]
   agents-list
+  agent-restart <agent> [--fresh]
+                (sub-agents only: the main agent is refused; no force)
+  federation-directory
+  daily-log-read <agent> [--date YYYY-MM-DD]
+                (without --date: today on this machine's clock; the server's own default is the UTC day)
+  memory-backfill
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
 
@@ -138,12 +146,25 @@ def check_env():
     return None
 
 
+def main_agent_ids():
+    """The main agent's id(s): the install's .env MAIN_AGENT_ID (default 'marveen', as src/config.ts), plus the
+    process environment's value if it names another one. Both are refused by agent-restart."""
+    ids = {env_file_values('MAIN_AGENT_ID').get('MAIN_AGENT_ID') or 'marveen'}
+    if os.environ.get('MAIN_AGENT_ID'):
+        ids.add(os.environ['MAIN_AGENT_ID'].strip())
+    return ids
+
+
 def api_base():
     base = os.environ.get('MARVEEN_API_BASE')
     if base:
         return base.strip().rstrip('/')
     port = os.environ.get('MARVEEN_WEB_PORT') or os.environ.get('WEB_PORT') or env_file_values('WEB_PORT').get('WEB_PORT')
-    return f'http://localhost:{port or 3420}'
+    # A literal loopback address, not "localhost": where localhost resolves to ::1 first and the dashboard
+    # listens on IPv4 only (WEB_HOST defaults to 127.0.0.1, src/config.ts), urllib has no fallback to the next
+    # address in time and every call waits for its 30 s timeout. Only an install that binds ::1 gets [::1].
+    host = '[::1]' if env_file_values('WEB_HOST').get('WEB_HOST') == '::1' else '127.0.0.1'
+    return f'http://{host}:{port or 3420}'
 
 
 def read_token():
@@ -418,6 +439,38 @@ def build_request(verb, args):
     if verb == 'agents-list':
         positional(args, 0, verb)
         return 'GET', '/api/agents', None, headers, {}
+    if verb == 'agent-restart':
+        # The main agent's restart of a sub-agent (e.g. after an update). There is deliberately no --force: the
+        # route's pane gate for a busy main agent stays in place, and a forced restart remains a dashboard action.
+        fresh = take_flag(args, '--fresh')
+        (agent,) = positional(args, 1, verb)
+        check(agent, NAME_RE, 'agent name')
+        # The verb is for restarting a SUB-agent. The main agent's restart restarts the owner's chat channel session,
+        # so a sub-agent must not get a ready-made one-word way to do it (review of #2720). The raw API route is unchanged.
+        if agent in main_agent_ids():
+            fail_usage(f'agent-restart: {agent!r} is the main agent; this verb only restarts sub-agents '
+                       '(restart the main agent from the dashboard)')
+        # A JSON body always goes, {} when there is no option: the route refuses a body that did not arrive in full.
+        return 'POST', f'/api/agents/{agent}/restart', {'fresh': True} if fresh else {}, headers, {}
+    if verb == 'federation-directory':
+        # The catalog the federation block tells the agent to read before any substantive request.
+        positional(args, 0, verb)
+        return 'GET', '/api/federation/directory', None, headers, {}
+    if verb == 'daily-log-read':
+        date = take_opt(args, '--date')
+        (agent,) = positional(args, 1, verb)
+        check(agent, NAME_RE, 'agent name')
+        if date is None:
+            # The route defaults to the UTC day, which between local midnight and the UTC offset is the wrong day
+            # (a 22:00-24:00 run in Europe/Budapest would read tomorrow). The helper sends the local day instead.
+            date = datetime.date.today().isoformat()
+        check(date, DATE_RE, 'date (YYYY-MM-DD)')
+        return 'GET', '/api/daily-log?' + urllib.parse.urlencode({'agent': agent, 'date': date}), None, headers, {}
+    if verb == 'memory-backfill':
+        # Embeds the memories that have no vector yet. The route answers 502 when rows were pending and none could be
+        # embedded (the embedding backend is down), so that case exits 1 here instead of looking like an empty backlog.
+        positional(args, 0, verb)
+        return 'POST', '/api/memories/backfill', {}, headers, {}
     if verb == 'kanban-create':
         assignee, priority, title_file = positional(args, 3, verb)
         check(assignee, NAME_RE, 'agent name')
@@ -473,6 +526,30 @@ def build_request(verb, args):
     fail_usage(f'unknown verb: {verb!r}')
 
 
+# The server's own prefix for the receipt a close sends back (src/db.ts COMPLETION_REPORT_PREFIX).
+COMPLETION_REPORT_PREFIX = '[Eredmény]'
+
+
+def completion_close_refused(path, token):
+    """A reason to refuse a --result-file close of a receipt, else None. Closing an `[Eredmény]` receipt sends
+    nothing back (the server's ping-pong guard), so a result written there never reaches anyone: a task answered
+    inside a receipt was lost this way twice on 2026-11-10. An unreadable row is not refused: the close then fails
+    or succeeds on its own."""
+    req = urllib.request.Request(api_base() + path, method='GET')
+    req.add_header('Authorization', f'Bearer {token}')
+    try:
+        with OPENER.open(req, timeout=30) as resp:
+            row = json.loads(resp.read().decode('utf-8', 'replace'))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    content = row.get('content') if isinstance(row, dict) else None
+    if isinstance(content, str) and content.startswith(COMPLETION_REPORT_PREFIX):
+        return ('this message is an [Eredmény] receipt: closing it sends nothing back, so the result would reach '
+                'no one. Send the result as a new message to the sender (message verb), then close this one with '
+                '--no-notify. Nothing was sent.')
+    return None
+
+
 def main(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
@@ -502,6 +579,18 @@ def main(argv):
         print(f'FAIL: {refused}', file=sys.stderr)
         return 2
     token = read_token()
+    if verb == 'message-close' and body is not None and 'result' in body:
+        refused = completion_close_refused(path, token)
+        if refused and body.get('notify') is False:
+            # --no-notify is the close the refusal itself asks for: it wins, and the unread result is dropped,
+            # but its file is kept (not emptied) so the result can still go out as a new message.
+            del body['result']
+            SENT_PAYLOADS.clear()
+            print('NOTE: this message is an [Eredmény] receipt: with --no-notify the --result-file is '
+                  'ignored (a receipt close sends nothing back). Send the result as a new message.', file=sys.stderr)
+        elif refused:
+            print(f'FAIL: {refused}', file=sys.stderr)
+            return 2
     data = json.dumps(body).encode('utf-8') if body is not None else None
     req = urllib.request.Request(api_base() + path, data=data, method=method)
     req.add_header('Authorization', f'Bearer {token}')

@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { PROJECT_ROOT } from '../config.js'
-import { FIXED_RESERVED_AGENT_IDS } from '../web/sanitize.js'
+import { MESSAGE_LAYER_RESERVED_AGENT_IDS } from '../web/sanitize.js'
 
 const savedDir = process.env.CLAUDECLAW_ENV_DIR
 afterAll(() => {
@@ -33,8 +33,9 @@ const resolverPath = join(work, 'resolver.py')
 writeFileSync(resolverPath, RESOLVER)
 
 function scriptResolves(envDir: string): string | null {
-  // The same arguments the script passes: the .env path, its fixed list, the agents dir.
-  const out = execFileSync('python3', ['-I', resolverPath, join(envDir, '.env'), FIXED_RESERVED_AGENT_IDS.join(' '), join(PROJECT_ROOT, 'agents')], { encoding: 'utf-8' })
+  // The same arguments the script passes: the .env path, its message layer list (reserved-agent-ids.test.ts pins
+  // which list both calls pass), the agents dir.
+  const out = execFileSync('python3', ['-I', resolverPath, join(envDir, '.env'), MESSAGE_LAYER_RESERVED_AGENT_IDS.join(' '), join(PROJECT_ROOT, 'agents')], { encoding: 'utf-8' })
   return out === '' ? null : out
 }
 
@@ -73,6 +74,7 @@ const CASES: [string, string, string | null][] = [
   ['an empty value', 'VOICE_CHANNEL_ID=\n', 'hanna'],
   ['not canonical', 'VOICE_CHANNEL_ID=Voice_Relay\n', 'hanna'],
   ['a fixed reserved id', 'VOICE_CHANNEL_ID=system\n', 'hanna'],
+  ['a fixed route name of the agents API is not a sender, it stays valid (AGENTROUTERESERVED1114)', 'VOICE_CHANNEL_ID=status\n', 'status'],
   ['the main agent id', 'MAIN_AGENT_ID=voice-relay\nVOICE_CHANNEL_ID=voice-relay\n', 'hanna'],
   ['an empty main agent id', 'MAIN_AGENT_ID=\nVOICE_CHANNEL_ID=voice-relay\n', 'voice-relay'],
   ["the owner's name", 'OWNER_NAME=voice-relay\nVOICE_CHANNEL_ID=voice-relay\n', 'hanna'],

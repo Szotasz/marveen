@@ -47,6 +47,12 @@ const EXPECTED: Record<string, string[]> = {
     'provenance-gate.py', 'staleness-guard.py', 'memory-lookup-nudge.py', 'channel-inbox-drain.py',
     'voice-reply-directive.py', 'telegram_progress.py', 'slack_progress.py',
     'marveen-commands.py',
+    // PELENKAGCHAT1113 (Google Chat thread guard, the recording half), a reviewed
+    // decision: it only reads the prompt and writes its own state file under the
+    // Google Chat plugin's state dir (ids only), no network call, no subprocess;
+    // every path exits 0, so it cannot block a prompt. A no-op on a prompt with
+    // no Google Chat envelope.
+    'googlechat-thread-guard.py',
     // #946 (taskstate stub writer), a reviewed decision: every exit path is
     // sys.exit(0), the only cross-module import is guarded, there is no network
     // call or subprocess, and the write is atomic (os.replace). It cannot block
@@ -65,7 +71,7 @@ const EXPECTED: Record<string, string[]> = {
     'persona-change-notify.py',
     // MARVEENGAPS1020 (c): WebSearch and WebFetch results reach the main agent
     // framed as untrusted content (an allowlisted host's text is still external).
-    'browser-content-notice.py @ WebSearch|WebFetch',
+    'browser-content-notice.py @ WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright|stripe)__.*',
   ],
   // A failed tool call fires PostToolUseFailure, never PostToolUse
   // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.
@@ -76,6 +82,9 @@ const EXPECTED: Record<string, string[]> = {
     'outgoing-copy-gate.py @ Bash',
     'outgoing-copy-gate.py @ .*send_email.*',
     'outgoing-copy-gate.py @ .*manage_email.*',
+    // EMAILMESSAGESMUX1108: the `email` server's `messages` multiplexer, whose
+    // operation key is `action` and whose send op is `new`.
+    'outgoing-copy-gate.py @ .*email__messages.*',
     'outgoing-copy-gate.py @ .*[Gg]mail.*__.*',
     'outgoing-copy-gate.py @ .*draft_email.*',
     'outgoing-copy-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*',
@@ -84,6 +93,7 @@ const EXPECTED: Record<string, string[]> = {
     'email-approval-gate.py @ Bash',
     'email-approval-gate.py @ .*send_email.*',
     'email-approval-gate.py @ .*manage_email.*',
+    'email-approval-gate.py @ .*email__messages.*',
     'email-approval-gate.py @ .*[Gg]mail.*__.*',
     'email-approval-gate.py @ .*draft_email.*',
     'email-approval-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*',
@@ -95,6 +105,11 @@ const EXPECTED: Record<string, string[]> = {
     // in double quotes, $( ) in an inline interpreter payload, ...). Fail-open on
     // any internal error, so it cannot wedge a session.
     'shell-rescan-guard.py @ Bash',
+    // PELENKAGCHAT1113 (the judging half): stops a Google Chat reply whose
+    // reply_to is not a thread that space was heard in. Fail-open on any
+    // internal error and bounded (two stops in a row, then the call passes),
+    // so it cannot silence the channel or trap a session.
+    'googlechat-thread-guard.py @ mcp__plugin_googlechat_googlechat__reply',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
   StopFailure: ['ledger-turn-failure.py'],

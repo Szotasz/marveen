@@ -10,6 +10,17 @@
 // row's own sender; a cut wrapper hides what it would have enclosed. So a body
 // that quotes another message's header, tool output and assistant text never
 // mark anything seen; every message of a batch injection is recognised.
+//
+// Two kinds of row never get a mark, by construction (measured 2026-11-14,
+// SEENGAP1114: every unmarked closed row of a day fell into one of them):
+//   - a row the recipient closed while it was still pending. The recipient read
+//     it from the queue, nothing was ever typed, and the close backfills
+//     delivered_at, so the row looks delivered and stays a candidate here;
+//   - a system directive. It is typed with the directive header, not with the
+//     router's header, which is the only one the pattern below knows.
+// Nothing decides anything on seen_at today. Whatever does so later has to
+// handle these two first: for them a missing mark is not "the agent did not
+// see it".
 
 import { readTranscriptTailFromProjectDir } from './active-model.js'
 import { configDirFor } from './main-transcript-root.js'
@@ -18,11 +29,14 @@ import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { listDeliveredUnseen, markMessagesSeen } from '../db.js'
 import { logger } from '../logger.js'
 import { whileNotFrozen } from './fleet-freeze.js'
+import { sanitizeAgentIdent } from '../prompt-safety.js'
 
 export const SEEN_WINDOW_SEC = 24 * 60 * 60
 export const SEEN_SWEEP_INTERVAL_MS = 60_000
 
-const HEADER_RE = /(?:^|\s)\[Uzenet (?:@([^\s\]]+)-tol|a tavoli @([^\s\]]+) ugynoktol)\b[^\]\n]*?msg_id:(\d+)[,\]]/g
+// `\\?` before each at-sign: the transcript holds the TYPED header, and the pane mapping puts a backslash
+// there (ENVATLEAK1114, pane-text.ts). Without it no delivered message would ever be marked seen.
+const HEADER_RE = /(?:^|\s)\[Uzenet (?:\\?@([^\s\]]+)-tol|a tavoli \\?@([^\s\]]+) ugynoktol)\b[^\]\n]*?msg_id:(\d+)[,\]]/g
 
 export function findSeenMsgIds(transcriptTail: string, candidates: ReadonlyMap<number, string>): Set<number> {
   const found = new Set<number>()
@@ -71,9 +85,12 @@ export function sweepSeenMessages(nowSec: number, readTail: TailReader = default
   if (!rows.length) return 0
   const byAgent = new Map<string, Map<number, string>>()
   for (const r of rows) {
+    // The header carries the SANITIZED sender (ENVATLEAK1114), so the map must hold the same form: with the raw
+    // name a sender whose id the sanitizer changes would never be matched, and its message never marked seen.
+    const sender = sanitizeAgentIdent(r.from_agent)
     const ids = byAgent.get(r.to_agent)
-    if (ids) ids.set(r.id, r.from_agent)
-    else byAgent.set(r.to_agent, new Map([[r.id, r.from_agent]]))
+    if (ids) ids.set(r.id, sender)
+    else byAgent.set(r.to_agent, new Map([[r.id, sender]]))
   }
   let n = 0
   for (const [agent, ids] of byAgent) {

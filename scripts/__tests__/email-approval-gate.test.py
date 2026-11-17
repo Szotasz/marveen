@@ -1513,6 +1513,100 @@ with tempfile.TemporaryDirectory() as td:
     code, _, _ = run_gate(open_store, mcp_send(), extra_env={"EMAIL_APPROVAL_GATE_STORE": own})
     check("ENVRELAXGATE1104 control: the level-3 install itself lets the send through", code == 0, f"exit={code}")
 
+# --- EMAILMESSAGESMUX1108: the `email` MCP server's `messages` multiplexer -------
+# Measured on the live install 2026-11-08: a real letter went out through
+# mcp__email__messages (action=new) with NO approval and NO copy audit, because
+# the tool was in neither gate's matcher list and the classifier did not know the
+# name. The matcher-drift test could not catch it: it checks settings.json
+# AGAINST the canonical constant, so a gap in the constant passes green.
+# Its operation key is `action` (not `operation`) and its send op is `new`.
+with tempfile.TemporaryDirectory() as td:
+    store1 = make_store(os.path.join(td, "mux1"), level=1)
+
+    def mux(action=None, to="a@b.hu", subject="Teszt tárgy", body="Kedves Ügyfelünk! Törzs.", **extra):
+        ti = {"account": "x@y.hu", "to": to, "subject": subject, "body": body}
+        if action is not None:
+            ti["action"] = action
+        ti.update(extra)
+        return {"tool_name": "mcp__email__messages", "tool_input": ti}
+
+    # The read/manage half of the multiplexer is not a send: it must pass even at level 1.
+    for action in ("search", "read", "mark_read", "mark_unread", "flag", "unflag",
+                   "move", "archive", "trash"):
+        code, _, _ = run_gate(store1, mux(action))
+        check(f"email__messages action={action} passes at level 1 (not a send)", code == 0, f"exit={code}")
+    # The send half is a send: denied at level 1, whatever the casing.
+    for action in ("new", "reply", "forward", "NEW", "Reply"):
+        code, _, _ = run_gate(store1, mux(action))
+        check(f"email__messages action={action} is DENIED at level 1 (it is a send)", code == 2, f"exit={code}")
+    # Fail-closed on doubt: no action, or one we cannot read, counts as a send.
+    code, _, _ = run_gate(store1, mux(None))
+    check("email__messages without an action is DENIED (fail-closed)", code == 2, f"exit={code}")
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__email__messages", "tool_input": {"action": 42}})
+    check("email__messages with a non-string action is DENIED (fail-closed)", code == 2, f"exit={code}")
+
+    # level 2: denied without an approval, and the deny hands over the anchor;
+    # the SAME call then passes against that approval, and only once.
+    store2 = make_store(os.path.join(td, "mux2"), level=2)
+    code, _, err = run_gate(store2, mux("new"))
+    check("email__messages action=new at level 2 is DENIED without an approval", code == 2, f"exit={code}")
+    anchor = anchor_from_stderr(err)
+    check("the deny hands over a usable content anchor", bool(anchor), f"err={err[:200]!r}")
+    if anchor:
+        approve(store2, anchor)
+        code, _, err = run_gate(store2, mux("new"))
+        check("the same send passes against its approval", code == 0, f"exit={code} err={err[:200]!r}")
+        code, _, err = run_gate(store2, mux("new"))
+        check("the same send a second time is DENIED (one-shot consumption)", code == 2, f"exit={code}")
+
+    # The four-field anchor still binds the recipient: an approval for this
+    # letter must not release the same text to somebody else.
+    store3 = make_store(os.path.join(td, "mux3"), level=2)
+    _, _, err = run_gate(store3, mux("new", to="a@b.hu"))
+    anchor3 = anchor_from_stderr(err)
+    if anchor3:
+        approve(store3, anchor3)
+        code, _, _ = run_gate(store3, mux("new", to="idegen@masik.hu"))
+        check("an approval for one recipient does NOT release the same text to another",
+              code == 2, f"exit={code}")
+
+    # EMAILMUXFOLLOWUP1111 (Dani's #2635 review, Samu 75811), measured on the
+    # #2635 head before this fix: each row below passed at level 1.
+    # F1: a decoy `operation` must not hide the `action` the server reads, in
+    # either order, on both multiplexers.
+    for ti_extra, label in (
+        ({"operation": "search"}, "operation=search + action=new"),
+        ({"operation": "read"}, "operation=read + action=new"),
+    ):
+        code, _, _ = run_gate(store1, mux("new", **ti_extra))
+        check(f"email__messages {label} is DENIED (any op key names a send)", code == 2, f"exit={code}")
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__email__messages", "tool_input": {
+        "action": "search", "operation": "reply", "to": "a@b.hu", "subject": "T", "body": "B."}})
+    check("email__messages action=search + operation=reply is DENIED (the other order)", code == 2, f"exit={code}")
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__google-workspace__manage_email", "tool_input": {
+        "operation": "read", "action": "send", "to": ["a@b.hu"], "subject": "T", "body": "B."}})
+    check("manage_email operation=read + action=send is DENIED (any op key)", code == 2, f"exit={code}")
+    # F2: draft:true is no exemption on this tool (measured for manage_email only).
+    code, _, _ = run_gate(store1, mux("new", draft=True))
+    check("email__messages action=new + draft:true is DENIED (no draft exemption here)", code == 2, f"exit={code}")
+    # F3: an allow list of the measured reads -- any other operation is a send.
+    for action in ("send_draft", "compose", "send", "reply_all", "reply-all", "Forward"):
+        code, _, _ = run_gate(store1, mux(action))
+        check(f"email__messages unknown/send action={action} is DENIED (allow list)", code == 2, f"exit={code}")
+    code, _, _ = run_gate(store1, mux("read", operation="search"))
+    check("email__messages two read ops still pass", code == 0, f"exit={code}")
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__email__messages", "tool_input": {
+        "operation": "search", "action": ["new"], "to": "a@b.hu", "subject": "T", "body": "B."}})
+    check("email__messages a non-string action next to a read operation is DENIED (closed)", code == 2, f"exit={code}")
+
+    # Control, so the narrow name test is proven narrow: a CHAT server's
+    # `messages` tool is not a mail tool and must stay untouched, even at level 1.
+    code, _, _ = run_gate(store1, {"tool_name": "mcp__slack__messages",
+                                   "tool_input": {"action": "new", "channel": "#x", "text": "szia"}})
+    check("a chat server's messages tool is NOT gated as mail (mcp__slack__messages)",
+          code == 0, f"exit={code}")
+
+
 print()
 if failed:
     print(f"{len(failed)} FAILED: {failed}", file=sys.stderr)

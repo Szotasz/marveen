@@ -11,8 +11,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 
-const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe']
-const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe']
+// CHANNELUNCONF1110 (Dani #2691 K1): channels.sh's .channel-unconfigured marker joins them (only channels.sh writes it).
+// PLANSFILEGATE1111 (Samu 75712): claude-plans.json too (only the owner-gated /api/claude-plans writes it).
+const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured', 'claude-plans.json']
+const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe', '.channel-unconfigured']
 
 let base: string
 let root: string
@@ -59,7 +61,11 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
         'delivered-dms.json', 'delivered-dms.json.tmp.*',
         'progress', 'approved'].map((f) => `${b}/*/${f}`)),
       // TGINREPLAYGATE1104: the Telegram state directories above the evidence log, as targets only
-      'agents/*/.claude/channels/telegram', 'agents/*/.claude/channels'])
+      'agents/*/.claude/channels/telegram', 'agents/*/.claude/channels',
+      // GATEFILES1110: any agent's agent-config.json
+      'agents/*/agent-config.json',
+      // SUBPLANTOKEN1110 follow-up: the token-plan launch outcomes the rotate endpoint reads back
+      'store/plan-token-launch'])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {
@@ -117,6 +123,33 @@ describe('the five store files, as a sub-agent: create, write and delete denied'
       expect(subFile('Write', join(root, 'store', f))).toEqual(SUB)
     })
   }
+})
+
+// PLANSFILEGATE1111 (Samu 75712): store/claude-plans.json decides which Claude subscription each agent runs on, and the
+// owner-gated POST /api/claude-plans (OWNERGATE2-1104) writes it. A sub-agent writing it directly went around that gate
+// (measured on develop 6a268b71: Write and `echo >` both passed). The main agent and every read stay free.
+describe('store/claude-plans.json: a sub-agent cannot write it, the main agent and a read can', () => {
+  const plans = () => join(root, 'store', 'claude-plans.json')
+  beforeEach(() => { writeFileSync(plans(), '[]\n') })
+  it('a sub-agent: Write, Edit, sed -i, a redirect from the store dir, cp over it, rm from its parent', () => {
+    expect(subFile('Write', plans(), agentDir)).toEqual(SUB)
+    expect(subFile('Edit', plans(), agentDir)).toEqual(SUB)
+    expect(sub(`sed -i '' 's/a/b/' @ROOT@/store/claude-plans.json`, agentDir)).toEqual(SUB)
+    expect(sub(`cd @ROOT@/store && echo '[{"id":"x","label":"$(id)"}]' > claude-plans.json`, agentDir)).toEqual(SUB)
+    expect(sub(`cp /tmp/p.json @ROOT@/store/claude-plans.json`, agentDir)).toEqual(SUB)
+    expect(sub('rm -f claude-plans.json', join(root, 'store'))).toEqual(SUB)
+  })
+  it('a sub-agent may read it (the measuring probes do)', () => {
+    expect(sub('cat @ROOT@/store/claude-plans.json', agentDir).deny).toBe(false)
+    expect(sub(`jq '.[].id' @ROOT@/store/claude-plans.json`, agentDir).deny).toBe(false)
+  })
+  it('the main agent stays free (nothing of it writes the file with a tool call today, but it may)', () => {
+    expect(mainFile('Write', plans()).deny).toBe(false)
+    expect(main(`echo '[]' > @ROOT@/store/claude-plans.json`).deny).toBe(false)
+  })
+  it("a worktree's own copy is another root: free", () => {
+    expect(subFile('Write', join(wt, 'store', 'claude-plans.json'), agentDir).deny).toBe(false)
+  })
 })
 
 // TGINREPLAYGATE1104 (#2512 review, provenance): the inbound replay re-delivers a line of this log to the agent framed as
@@ -256,5 +289,51 @@ describe('the hook end to end (the caller from CLAUDE_PROJECT_DIR)', () => {
     const r = run(join(INSTALL_ROOT, 'agents', 'samu'), { tool_name: 'Bash', tool_input: { command: "sed -n 's/^WEB_PORT=//p' .env" }, cwd: INSTALL_ROOT })
     expect(r.stdout).toBe('')
     expect(r.status).toBe(0)
+  })
+})
+
+// SUBPLANTOKEN1110 follow-up (Dani 75495 (2)): the token-plan launch outcomes the rotate endpoint reads back.
+describe('store/plan-token-launch, as a sub-agent: a write is denied, a read and the main agent pass', () => {
+  beforeEach(() => {
+    for (const d of [root, wt]) {
+      mkdirSync(join(d, 'store', 'plan-token-launch'), { recursive: true })
+      writeFileSync(join(d, 'store', 'plan-token-launch', 'iris.json'), '{"state":"failed","secretId":"s","at":1}')
+    }
+  })
+  it.each(['Write', 'Edit'])('%s of another agent\'s status, and of a new one', (tool) => {
+    expect(subFile(tool, join(root, 'store', 'plan-token-launch', 'iris.json'))).toEqual(SUB)
+    expect(subFile(tool, join(root, 'store', 'plan-token-launch', 'zara.json'))).toEqual(SUB)
+  })
+  it.each([
+    'echo \'{"state":"plan-token","secretId":"s","at":9999999999999}\' > @ROOT@/store/plan-token-launch/iris.json',
+    'cp /tmp/fake.json @ROOT@/store/plan-token-launch/iris.json',
+    'rm @ROOT@/store/plan-token-launch/iris.json',
+  ])('Bash: %s', (command) => {
+    expect(sub(command)).toEqual(SUB)
+  })
+  it('a read passes, the main agent passes, and a worktree\'s own copy is free', () => {
+    expect(sub('cat @ROOT@/store/plan-token-launch/iris.json').deny).toBe(false)
+    expect(mainFile('Write', join(root, 'store', 'plan-token-launch', 'iris.json')).deny).toBe(false)
+    expect(sub('echo x > @WT@/store/plan-token-launch/iris.json').deny).toBe(false)
+  })
+})
+
+// SUBPLANTOKEN1110 (Dani 75621): the bare directory name from its parent, with no path-like word in the command.
+describe('store/plan-token-launch by its bare name, from store/ (TARGET_SEGMENT_NAMES)', () => {
+  beforeEach(() => {
+    mkdirSync(join(root, 'store', 'plan-token-launch'), { recursive: true })
+    writeFileSync(join(root, 'store', 'plan-token-launch', 'iris.json'), '{"state":"failed","secretId":"s","at":1}')
+  })
+  it.each([
+    'cd @ROOT@/store && rm -rf plan-token-launch',
+    'rm -rf plan-token-launch',
+    'mv plan-token-launch x',
+  ])('%s, as a sub-agent in store/: denied', (command) => {
+    expect(sub(command, join(root, 'store'))).toEqual(SUB)
+  })
+  it('the same from a worktree\'s own store is free, and a read passes', () => {
+    mkdirSync(join(wt, 'store', 'plan-token-launch'), { recursive: true })
+    expect(sub('rm -rf plan-token-launch', join(wt, 'store')).deny).toBe(false)
+    expect(sub('ls plan-token-launch', join(root, 'store')).deny).toBe(false)
   })
 })

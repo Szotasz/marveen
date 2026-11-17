@@ -21,14 +21,16 @@ import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readClaudePlans, writeClaudePlans, validatePlan, PLAN_ID_ALLOWED, tokenSecretIdFor } from '../claude-plans.js'
+import { breaksLine } from '../../heartbeat-line.js'
 import { setSecret, deleteSecret, getSecret } from '../vault.js'
 import { readClaudePlansState, writeClaudePlansState, applyRotation, recordPlanObservation } from '../claude-plans-state.js'
 import { probePlanUsage, observationFromProbe, usageFromProbe } from '../../claude-plan-usage-probe.js'
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
 import {
-  restartAgentProcess, resolveMainAgentConfigDir, resolveMainAgentRotatedConfigDir, resolveMainAgentRotatedTokenSecretId,
+  restartAgentProcess, planTokenPreflight, resolveMainAgentConfigDir, resolveMainAgentRotatedConfigDir, resolveMainAgentRotatedTokenSecretId,
   hasFleetOauthToken, mainAgentSharedConfigDir,
 } from '../agent-process.js'
+import { waitPlanTokenOutcome } from '../plan-token-launch.js'
 import { hardRestartMarveenChannels, restartMainForRotationContinue } from '../channel-monitor.js'
 import { rotationReadiness } from '../claude-rotation-heartbeat.js'
 import { mainRotationContinueVerdict, type ContinueRestartResult } from '../main-rotation-continue.js'
@@ -148,6 +150,12 @@ export function commitNewPlan(rawBody: Record<string, unknown>): { status: numbe
   if (hasAmbiguousTokenField(rawBody)) {
     return { status: 400, payload: { error: 'Invalid plan: token cannot be combined with configDir or tokenSecretId' } }
   }
+  // K1 (ROTSLACK1111, Dani 75718): a label goes into the heartbeat's line-by-line output; a line break or a control
+  // character is refused here (the value is never echoed). A label already on disk is not dropped by the reader:
+  // the heartbeat flattens it when it prints (heartbeat-line.ts).
+  if (typeof rawBody.label === 'string' && breaksLine(rawBody.label)) {
+    return { status: 400, payload: { error: 'Invalid plan: the label must be a single line, without control characters' } }
+  }
   const rawId = typeof rawBody.id === 'string' ? rawBody.id.trim() : ''
   const { candidate, pendingToken } = prepareTokenCandidate(rawBody, rawId)
 
@@ -176,6 +184,147 @@ export function commitNewPlan(rawBody: Record<string, unknown>): { status: numbe
   writeClaudePlans([...current, plan])
   logger.info({ id: plan.id, mode: plan.tokenSecretId ? 'token' : 'configDir' }, 'Claude plan created')
   return { status: 201, payload: plan }
+}
+
+// PLANROTATEDEADLOCK1115 P2: the rotation itself, for both callers: the route below (after its request-shape checks)
+// and, next, the backend timer. Same guardrails and the same restart as the route always had; the answer is the
+// status and body the route sends.
+export async function rotatePlan(input: { agentId: string; targetPlanId: string; continue: boolean }): Promise<{ status: number; payload: Record<string, unknown> }> {
+  const { agentId, targetPlanId } = input
+  const wantContinue = input.continue
+
+  if (!isRotationEnabled()) {
+    return { status: 409, payload: { error: 'Rotation is disabled (CLAUDE_ROTATION_ENABLED=0)' } }
+  }
+
+  const plans = readClaudePlans()
+  const target = plans.find((p) => p.id === targetPlanId)
+  if (!target) {
+    return { status: 400, payload: { error: `Unknown target plan id: ${targetPlanId}` } }
+  }
+  // Guardrail from design decision #5: a plan not marked channelsAllowed is
+  // not a rotation candidate, whatever the caller asks for.
+  if (!target.channelsAllowed) {
+    return { status: 400, payload: { error: `Plan ${targetPlanId} does not allow channels use (channelsAllowed=false)` } }
+  }
+
+  if (agentId === MAIN_AGENT_ID) {
+    // Design 6.2: rotation is only meaningful on the isolated-config path,
+    // and only once 2+ plans exist -- otherwise there is nothing to
+    // resolve a "rotated" configDir against (agent-process.js:
+    // resolveMainAgentRotatedConfigDir has the same gate, so a stale state
+    // entry can never silently take effect if the operator turns isolation
+    // back off or drops to one plan).
+    if (!isMainAgentIsolated() || plans.length < 2) {
+      return { status: 409, payload: {
+        error: 'Rotation not applicable: main agent needs MAIN_AGENT_ISOLATED_CONFIG=1 and at least 2 registered plans',
+      } }
+    }
+
+    // 8c338dc4: decided BEFORE anything is written, so a refused continue leaves the plan and the
+    // session untouched and the caller can still ask for the plain (fresh) rotation.
+    if (wantContinue) {
+      const verdict = mainRotationContinueVerdict({
+        explicitDir: resolveMainAgentConfigDir(),
+        activeRotatedDir: resolveMainAgentRotatedConfigDir(),
+        activeIsTokenPlan: resolveMainAgentRotatedTokenSecretId() !== null,
+        fleetToken: hasFleetOauthToken(),
+        targetConfigDir: target.configDir ?? null,
+        sharedDir: mainAgentSharedConfigDir(),
+        projectRoot: PROJECT_ROOT,
+      })
+      if (!verdict.ok) {
+        return { status: 409, payload: { error: `continue is not possible: ${verdict.reason}` } }
+      }
+    }
+
+    // Record the decision BEFORE restarting: the next launch resolves its
+    // CLAUDE_CONFIG_DIR by reading this file back
+    // (main-agent-isolated-config.mjs -> resolveMainAgentRotatedConfigDir),
+    // so the state has to be on disk before the process that will read it
+    // comes up.
+    writeClaudePlansState(applyRotation(readClaudePlansState(), MAIN_AGENT_ID, targetPlanId))
+
+    // The default stays the fresh restart; only "continue": true takes the --continue path, and only
+    // that path adds "mode" to the response (continue, or fresh-fallback when the resume failed).
+    let mode: ContinueRestartResult['mode'] | null = null
+    if (wantContinue) {
+      const restarted = await restartMainForRotationContinue()
+      if (!restarted.ok) {
+        return { status: 500, payload: { error: restarted.error } }
+      }
+      mode = restarted.mode
+    } else {
+      const result = hardRestartMarveenChannels()
+      if (!result.ok) {
+        return { status: 500, payload: { error: result.error || 'Main agent restart failed' } }
+      }
+    }
+    logger.info({ agentId, targetPlanId, ...(mode ? { mode } : {}) }, 'Claude plan rotation: main agent restarted')
+
+    // Fleet leg (opt-in, CLAUDE_ROTATION_FLEET): the shared fleet token and
+    // the sub-agents on it follow the main agent. Deliberately NOT awaited:
+    // the restarts are sequential with a gap (a minute or more on a big
+    // fleet), and the usual caller -- the main agent's own heartbeat turn --
+    // is being restarted by this very request. runFleetLeg never throws; it
+    // records its outcome in the state side-car (fleet), and the next
+    // heartbeat tick prints that once for the Telegram report.
+    // Imported lazily: the wiring pulls in the agent registry/launcher
+    // helpers, which installs with the opt-in off never need to load here.
+    const fleetOn = isFleetRotationEnabled()
+    if (fleetOn) {
+      void import('../claude-plan-fleet-wiring.js')
+        .then(({ runFleetLeg }) => runFleetLeg(target))
+        .catch((err) => logger.error({ err: err instanceof Error ? err.name : 'error' }, 'Claude plan rotation: fleet leg failed to load'))
+    }
+    return { status: 200, payload: { ok: true, agentId, activePlanId: targetPlanId, fleet: fleetOn ? 'started' : 'off', ...(mode ? { mode } : {}) } }
+  }
+
+  // 8c338dc4: a sub-agent's restart keeps its own --continue rule (restartAgentProcess); a
+  // "continue" asked for here could not be honoured as asked, so it is refused, not ignored.
+  if (wantContinue) {
+    return { status: 400, payload: { error: 'continue applies to the main agent only' } }
+  }
+
+  // Sub-agent path: point its claudePlan field at the target and restart it
+  // through the same primitive the dashboard's own restart button uses --
+  // no separate sub-agent rotation mechanism to keep in sync.
+  if (!existsSync(agentDir(agentId))) {
+    return { status: 404, payload: { error: `Agent not found: ${agentId}` } }
+  }
+  // SUBPLANTOKEN1110: a token plan is checked BEFORE anything is written --
+  // the agent can take a plan token at all, and the secret is in the vault.
+  // A refusal is a 4xx and the agent's claudePlan field stays as it was.
+  if (target.tokenSecretId) {
+    const pre = planTokenPreflight(agentId, target.tokenSecretId)
+    if (pre.kind === 'refuse') {
+      return { status: 409, payload: { error: `Plan ${targetPlanId} cannot be used by ${agentId}: ${pre.reason}` } }
+    }
+  }
+  // Agent config first: if it refuses (corrupt file, JSONCLOBBER926) the
+  // rotation side-car must not already claim the switch happened.
+  writeAgentClaudePlan(agentId, targetPlanId)
+  writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
+  // RESTARTWAKE927: the plan switch restarts a pane that may be mid-turn.
+  const restartAt = Date.now()
+  const result = await restartAgentProcess(agentId, { wake: { reason: 'plan-switch' } })
+  if (!result.ok) {
+    return { status: 500, payload: { error: result.error || `Restart failed for agent ${agentId}` } }
+  }
+  logger.info({ agentId, targetPlanId }, 'Claude plan rotation: agent restarted')
+  if (target.tokenSecretId) {
+    // The answer is what the restarted launch actually did, read back from the
+    // helper's status file -- not the field just written. Only 'plan-token'
+    // means the plan's own token reached the launch env.
+    const launch = await waitPlanTokenOutcome(agentId, restartAt)
+    const launchAuth = launch && launch.at >= restartAt ? launch.state : 'unknown'
+    if (launchAuth !== 'plan-token') {
+      logger.error({ agentId, targetPlanId, launchAuth, reason: launch?.reason }, 'Claude plan rotation: the restarted agent is NOT on the plan token')
+      return { status: 502, payload: { error: `Agent ${agentId} restarted, but not on the plan token (${launchAuth})`, agentId, activePlanId: targetPlanId, launchAuth, ...(launch?.reason ? { reason: launch.reason } : {}) } }
+    }
+    return { status: 200, payload: { ok: true, agentId, activePlanId: targetPlanId, launchAuth } }
+  }
+  return { status: 200, payload: { ok: true, agentId, activePlanId: targetPlanId } }
 }
 
 export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> {
@@ -264,127 +413,8 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     }
     const wantContinue = b.continue === true
 
-    if (!isRotationEnabled()) {
-      json(res, { error: 'Rotation is disabled (CLAUDE_ROTATION_ENABLED=0)' }, 409)
-      return true
-    }
-
-    const plans = readClaudePlans()
-    const target = plans.find((p) => p.id === targetPlanId)
-    if (!target) {
-      json(res, { error: `Unknown target plan id: ${targetPlanId}` }, 400)
-      return true
-    }
-    // Guardrail from design decision #5: a plan not marked channelsAllowed is
-    // not a rotation candidate, whatever the caller asks for.
-    if (!target.channelsAllowed) {
-      json(res, { error: `Plan ${targetPlanId} does not allow channels use (channelsAllowed=false)` }, 400)
-      return true
-    }
-
-    if (agentId === MAIN_AGENT_ID) {
-      // Design 6.2: rotation is only meaningful on the isolated-config path,
-      // and only once 2+ plans exist -- otherwise there is nothing to
-      // resolve a "rotated" configDir against (agent-process.js:
-      // resolveMainAgentRotatedConfigDir has the same gate, so a stale state
-      // entry can never silently take effect if the operator turns isolation
-      // back off or drops to one plan).
-      if (!isMainAgentIsolated() || plans.length < 2) {
-        json(res, {
-          error: 'Rotation not applicable: main agent needs MAIN_AGENT_ISOLATED_CONFIG=1 and at least 2 registered plans',
-        }, 409)
-        return true
-      }
-
-      // 8c338dc4: decided BEFORE anything is written, so a refused continue leaves the plan and the
-      // session untouched and the caller can still ask for the plain (fresh) rotation.
-      if (wantContinue) {
-        const verdict = mainRotationContinueVerdict({
-          explicitDir: resolveMainAgentConfigDir(),
-          activeRotatedDir: resolveMainAgentRotatedConfigDir(),
-          activeIsTokenPlan: resolveMainAgentRotatedTokenSecretId() !== null,
-          fleetToken: hasFleetOauthToken(),
-          targetConfigDir: target.configDir ?? null,
-          sharedDir: mainAgentSharedConfigDir(),
-          projectRoot: PROJECT_ROOT,
-        })
-        if (!verdict.ok) {
-          json(res, { error: `continue is not possible: ${verdict.reason}` }, 409)
-          return true
-        }
-      }
-
-      // Record the decision BEFORE restarting: the next launch resolves its
-      // CLAUDE_CONFIG_DIR by reading this file back
-      // (main-agent-isolated-config.mjs -> resolveMainAgentRotatedConfigDir),
-      // so the state has to be on disk before the process that will read it
-      // comes up.
-      writeClaudePlansState(applyRotation(readClaudePlansState(), MAIN_AGENT_ID, targetPlanId))
-
-      // The default stays the fresh restart; only "continue": true takes the --continue path, and only
-      // that path adds "mode" to the response (continue, or fresh-fallback when the resume failed).
-      let mode: ContinueRestartResult['mode'] | null = null
-      if (wantContinue) {
-        const restarted = await restartMainForRotationContinue()
-        if (!restarted.ok) {
-          json(res, { error: restarted.error }, 500)
-          return true
-        }
-        mode = restarted.mode
-      } else {
-        const result = hardRestartMarveenChannels()
-        if (!result.ok) {
-          json(res, { error: result.error || 'Main agent restart failed' }, 500)
-          return true
-        }
-      }
-      logger.info({ agentId, targetPlanId, ...(mode ? { mode } : {}) }, 'Claude plan rotation: main agent restarted')
-
-      // Fleet leg (opt-in, CLAUDE_ROTATION_FLEET): the shared fleet token and
-      // the sub-agents on it follow the main agent. Deliberately NOT awaited:
-      // the restarts are sequential with a gap (a minute or more on a big
-      // fleet), and the usual caller -- the main agent's own heartbeat turn --
-      // is being restarted by this very request. runFleetLeg never throws; it
-      // records its outcome in the state side-car (fleet), and the next
-      // heartbeat tick prints that once for the Telegram report.
-      // Imported lazily: the wiring pulls in the agent registry/launcher
-      // helpers, which installs with the opt-in off never need to load here.
-      const fleetOn = isFleetRotationEnabled()
-      if (fleetOn) {
-        void import('../claude-plan-fleet-wiring.js')
-          .then(({ runFleetLeg }) => runFleetLeg(target))
-          .catch((err) => logger.error({ err: err instanceof Error ? err.name : 'error' }, 'Claude plan rotation: fleet leg failed to load'))
-      }
-      json(res, { ok: true, agentId, activePlanId: targetPlanId, fleet: fleetOn ? 'started' : 'off', ...(mode ? { mode } : {}) })
-      return true
-    }
-
-    // 8c338dc4: a sub-agent's restart keeps its own --continue rule (restartAgentProcess); a
-    // "continue" asked for here could not be honoured as asked, so it is refused, not ignored.
-    if (wantContinue) {
-      json(res, { error: 'continue applies to the main agent only' }, 400)
-      return true
-    }
-
-    // Sub-agent path: point its claudePlan field at the target and restart it
-    // through the same primitive the dashboard's own restart button uses --
-    // no separate sub-agent rotation mechanism to keep in sync.
-    if (!existsSync(agentDir(agentId))) {
-      json(res, { error: `Agent not found: ${agentId}` }, 404)
-      return true
-    }
-    // Agent config first: if it refuses (corrupt file, JSONCLOBBER926) the
-    // rotation side-car must not already claim the switch happened.
-    writeAgentClaudePlan(agentId, targetPlanId)
-    writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
-    // RESTARTWAKE927: the plan switch restarts a pane that may be mid-turn.
-    const result = await restartAgentProcess(agentId, { wake: { reason: 'plan-switch' } })
-    if (!result.ok) {
-      json(res, { error: result.error || `Restart failed for agent ${agentId}` }, 500)
-      return true
-    }
-    logger.info({ agentId, targetPlanId }, 'Claude plan rotation: agent restarted')
-    json(res, { ok: true, agentId, activePlanId: targetPlanId })
+    const r = await rotatePlan({ agentId, targetPlanId, continue: wantContinue })
+    json(res, r.payload, r.status)
     return true
   }
 
@@ -502,6 +532,11 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     const rawBody = { ...(body && typeof body === 'object' ? body : {}), id: idMatch[1] } as Record<string, unknown>
     if (hasAmbiguousTokenField(rawBody)) {
       json(res, { error: 'Invalid plan: token cannot be combined with configDir or tokenSecretId' }, 400)
+      return true
+    }
+    // K1: the same single-line rule as a new plan (commitNewPlan).
+    if (typeof rawBody.label === 'string' && breaksLine(rawBody.label)) {
+      json(res, { error: 'Invalid plan: the label must be a single line, without control characters' }, 400)
       return true
     }
     const { candidate, pendingToken } = prepareTokenCandidate(rawBody, idMatch[1])

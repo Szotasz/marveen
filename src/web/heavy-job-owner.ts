@@ -15,7 +15,8 @@
 //   - the lock record (<store>/.heavy-job.lock, "token=.. pid=<gate pid>
 //     unit=.. since=.. label=<label> ..."): the RUNNING job. The record
 //     outlives the job, so the pid must be alive and still a heavy-job-gate
-//     process (pid reuse);
+//     process (pid reuse). The side-lane lock (<lock>.side, same record
+//     format) holds the job running beside it, read the same way;
 //   - the FIFO queue (<store>/.heavy-job-queue/*.ticket, JSON {pid, start,
 //     label, ...}): the QUEUED jobs, judged exactly like the gate judges a
 //     ticket (alive, not a zombie, same start time).
@@ -163,15 +164,18 @@ function cleanLabel(v: unknown): string {
   return String(v ?? '?').replace(/[^A-Za-z0-9._:-]+/g, '_').slice(0, 100) || '?'
 }
 
-/** Every live gated job on the host: the lock holder and the queued waiters. */
+/** Every live gated job on the host: the lock holders (main and side lane)
+ *  and the queued waiters. */
 export function liveGatedJobs(deps: HeavyJobDeps, paths: HeavyJobPaths): GatedJob[] {
   const jobs: GatedJob[] = []
   const seen = new Set<number>()
-  const lockText = deps.readFile(paths.lock)
-  if (lockText) {
+  // the gate's side_lock_path(): lock_path() + ".side"
+  for (const lock of [paths.lock, `${paths.lock}.side`]) {
+    const lockText = deps.readFile(lock)
+    if (!lockText) continue
     const rec = parseLockRecord(lockText)
     const pid = parseInt(rec.pid ?? '', 10)
-    const info = Number.isInteger(pid) && pid > 1 ? deps.proc(pid) : null
+    const info = Number.isInteger(pid) && pid > 1 && !seen.has(pid) ? deps.proc(pid) : null
     if (isLiveGate(info)) {
       jobs.push({ pid, label: cleanLabel(rec.label), state: 'running', start: info.start })
       seen.add(pid)

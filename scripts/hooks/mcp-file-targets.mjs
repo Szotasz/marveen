@@ -54,8 +54,10 @@ const KNOWN = new Map([
 // A channel plugin's download_attachment (MCPWRITEGATE1104 regression, Iris 70079) shares the Gmail tool's name but
 // takes no path at all: it writes into the plugin's own inbox under a name the plugin builds (Slack:
 // <ts>_<sanitised name>, Telegram: <time>-<unique id>.<ext>, Discord the same shape, Gromzo: a file per
-// attachment_id), measured on the installed plugin sources 2026-11-05. Its missing path is not a default we cannot
-// see, so `required` does not apply to it. Only the REQUIRED rule is lifted, and only for these server + tool pairs:
+// attachment_id), measured on the installed plugin sources 2026-11-05. Google Chat (PELENKAGCHAT1113): file_id only,
+// written to <state dir>/inbox/<time>-<sanitised tail of the id>, read from the plugin source (not installed here)
+// at buglime/claude-channel-googlechat 3421b382a, src/tools.ts handleDownload, 2026-11-13. Its missing path is not a
+// default we cannot see, so `required` does not apply to it. Only the REQUIRED rule is lifted, and only for these server + tool pairs:
 // the class stays the tool name's (a writer), every path-looking leaf is still judged, and the same tool on any other
 // server (the Gmail server under any name, an unknown server) still needs its path.
 const INBOX_DOWNLOADERS = new Set([
@@ -63,6 +65,7 @@ const INBOX_DOWNLOADERS = new Set([
   'plugin_telegram_telegram__download_attachment',
   'plugin_discord_discord__download_attachment',
   'plugin_gromzo-channel_gromzo__download_attachment',
+  'plugin_googlechat_googlechat__download_attachment',
 ])
 const writesOwnInbox = (server, tool) => INBOX_DOWNLOADERS.has(`${server}__${tool}`.toLowerCase())
 

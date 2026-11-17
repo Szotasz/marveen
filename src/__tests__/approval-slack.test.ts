@@ -2,7 +2,7 @@
 // check is shown on its own: only the snapshot owner's ✅/❌ counts, a bot or app user never does, an edited or changed
 // message or both reactions are a refusal, a rate limit stops the round with its Retry-After.
 import { describe, it, expect } from 'vitest'
-import { postApprovalPrompt, checkPost, sweepOnce, slackEscape, sha256, SlackRateLimited, SWEEP_MAX_PER_ROUND, type SlackCall, type ApprovalSlackPost } from '../approval-slack.js'
+import { postApprovalPrompt, checkPost, sweepOnce, slackEscape, sha256, unwrapSlackLinks, SlackRateLimited, SWEEP_MAX_PER_ROUND, type SlackCall, type ApprovalSlackPost } from '../approval-slack.js'
 
 const OWNER = 'U0OWNER01'
 const BOT = 'U0BOTUSR1'
@@ -14,6 +14,8 @@ interface World {
   owner?: Record<string, unknown>
   calls: string[]
   rateLimitOn?: string
+  /** The text Slack reports it stored (chat.postMessage message.text), when it differs from what was sent. */
+  storedAs?: string
 }
 
 function fake(w: World): SlackCall {
@@ -23,7 +25,7 @@ function fake(w: World): SlackCall {
     switch (method) {
       case 'auth.test': return { ok: true, user_id: BOT }
       case 'conversations.open': return { ok: true, channel: { id: 'D0DMCHAN1' } }
-      case 'chat.postMessage': return { ok: true, ts: '1700000000.000100', channel: body.channel }
+      case 'chat.postMessage': return { ok: true, ts: '1700000000.000100', channel: body.channel, ...(w.storedAs !== undefined ? { message: { text: w.storedAs } } : {}) }
       case 'conversations.history': return { ok: true, messages: w.message ? [w.message] : [] }
       case 'users.info': return { ok: true, user: w.owner ?? { id: OWNER, is_bot: false, is_app_user: false, deleted: false } }
       default: return { ok: false, error: 'unknown_method' }
@@ -43,6 +45,45 @@ describe('postApprovalPrompt', () => {
     const r = await postApprovalPrompt(fake(w), OWNER, TEXT)
     expect(r).toEqual({ ok: true, post: { channel: 'D0DMCHAN1', ts: '1700000000.000100', textSha256: sha256('Címzett: a@example.com\nSzöveg:\n&lt;b&gt;x&lt;/b&gt; &amp; y'), ownerUserId: OWNER, botUserId: BOT } })
     expect(w.calls).toEqual(['auth.test', 'conversations.open', 'chat.postMessage'])
+  })
+
+  it('records the sha256 of the text Slack stored, so an auto-linked URL is not a changed message (live 11-13)', async () => {
+    const stored = 'Vagy a dashboardon: <http://localhost:3420/#approvals> (id: x)'
+    const w: World = { calls: [], storedAs: stored }
+    const r = await postApprovalPrompt(fake(w), OWNER, 'Vagy a dashboardon: http://localhost:3420/#approvals (id: x)')
+    expect(r.ok && r.post.textSha256).toBe(sha256(stored))
+  })
+
+  it('a stored text with other content (not only link wrappers) keeps the posted hash, so the gate fails closed', async () => {
+    const sent = 'Összeg: 1 000 Ft, link: http://x.example/a'
+    for (const storedAs of ['Összeg: 9 000 Ft, link: <http://x.example/a>', 'Összeg: 1 000 Ft, link: <http://evil.example|http://x.example/a> és több']) {
+      const r = await postApprovalPrompt(fake({ calls: [], storedAs }), OWNER, sent)
+      expect(r.ok && r.post.textSha256, storedAs).toBe(sha256(slackEscape(sent)))
+    }
+  })
+
+  it('no stored text, or an empty one, falls back to the posted hash', async () => {
+    for (const storedAs of [undefined, '']) {
+      const r = await postApprovalPrompt(fake({ calls: [], storedAs }), OWNER, TEXT)
+      expect(r.ok && r.post.textSha256, String(storedAs)).toBe(sha256(slackEscape(TEXT)))
+    }
+  })
+
+  it('end to end: a wrapped stored form approves when unchanged, and refuses when the text changed later', async () => {
+    const sent = 'Kattintás: ads.example.com/aw (mailto:a@b.example)'
+    const storedAs = 'Kattintás: <http://ads.example.com/aw|ads.example.com/aw> (<mailto:a@b.example|mailto:a@b.example>)'
+    const r = await postApprovalPrompt(fake({ calls: [], storedAs }), OWNER, sent)
+    if (!r.ok) throw new Error(r.error)
+    const p: ApprovalSlackPost = { ...r.post, approvalId: 'e2e' }
+    const yes = reacted('white_check_mark', [OWNER])
+    const at = (text: string) => ({ message: { ts: p.ts, user: BOT, text, ...yes }, calls: [] as string[] })
+    expect(await checkPost(fake(at(storedAs)), p)).toEqual({ kind: 'approved', userId: OWNER })
+    expect(await checkPost(fake(at(storedAs.replace('aw|', 'aw2|'))), p)).toEqual({ kind: 'refused', reason: 'message_changed' })
+  })
+
+  it('unwrapSlackLinks: <target> and <target|label> back to the shown text', () => {
+    expect(unwrapSlackLinks('a <http://x> b <http://y|y.hu> c <mailto:m@n|m@n>')).toBe('a http://x b y.hu c m@n')
+    expect(unwrapSlackLinks('nincs &lt;b&gt; csomagolás')).toBe('nincs &lt;b&gt; csomagolás')
   })
 
   it('a malformed owner id is refused before any call', async () => {

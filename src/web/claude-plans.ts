@@ -27,13 +27,14 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import {
   expandAndValidateConfigDir,
   readAgentClaudeConfigDir,
   readAgentClaudePlan,
+  listAgentNames,
 } from './agent-config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 
 export const CLAUDE_PLANS_PATH = join(PROJECT_ROOT, 'store', 'claude-plans.json')
 
@@ -232,20 +233,56 @@ export function getClaudePlan(id: string | null | undefined): ClaudePlan | null 
 // when the agent has a claudePlan set that no longer resolves (registry entry
 // removed/renamed) -- callers that launch should surface it rather than
 // silently fall back to the host login.
+//
+// SUBPLANTOKEN1110: a TOKEN-mode plan resolves too. Its config dir is the
+// agent's own isolated dir (agents/<name>/.claude-config) -- the dir the
+// launcher provisions anyway -- and `tokenSecretId` names the vault secret the
+// launcher exports as CLAUDE_CODE_OAUTH_TOKEN. A plan switch therefore changes
+// only the token, never the dir (memory, transcripts, settings stay). Before
+// this, a token plan read as unresolved and the agent silently ran on the
+// fleet token while the rotate endpoint answered 200.
 export function resolveAgentConfigDir(
   name: string,
-): { configDir: string | null; planUnresolved: boolean } {
+  projectRootOverride?: string,
+): { configDir: string | null; planUnresolved: boolean; tokenSecretId: string | null } {
   const planId = readAgentClaudePlan(name)
   if (planId) {
     const plan = getClaudePlan(planId)
-    if (plan?.configDir) return { configDir: plan.configDir, planUnresolved: false }
-    // Token-mode plans (ClaudePlan.tokenSecretId) are main-agent-only for now
-    // -- there is no per-agent configDir to hand back for one, same shape as a
-    // removed/renamed plan, so this reads as unresolved rather than silently
-    // returning an undefined dir.
-    return { configDir: readAgentClaudeConfigDir(name), planUnresolved: true }
+    if (plan?.configDir) return { configDir: plan.configDir, planUnresolved: false, tokenSecretId: null }
+    if (plan?.tokenSecretId) {
+      return { configDir: agentIsolatedConfigDir(name, projectRootOverride), planUnresolved: false, tokenSecretId: plan.tokenSecretId }
+    }
+    // A removed/renamed plan id: unresolved, and the launcher refuses it.
+    return { configDir: readAgentClaudeConfigDir(name), planUnresolved: true, tokenSecretId: null }
   }
-  return { configDir: readAgentClaudeConfigDir(name), planUnresolved: false }
+  return { configDir: readAgentClaudeConfigDir(name), planUnresolved: false, tokenSecretId: null }
+}
+
+/**
+ * SUBPLANTOKEN1110: the token plans some SUB-agent runs on (its claudePlan field names a token-mode plan). The
+ * main agent's rotation never targets one and the idle-plan probe never spends one (claude-plan-rotate-check-run.ts).
+ * Pure over its inputs; the production call reads the agent list and each agent's config.
+ */
+export function subAgentTokenPlanIds(
+  plans: ClaudePlan[],
+  agentNames: string[] = listAgentNames(),
+  planOf: (name: string) => string | null = readAgentClaudePlan,
+  mainAgentId: string = MAIN_AGENT_ID,
+): Set<string> {
+  const tokenPlans = new Set(plans.filter((p) => p.tokenSecretId).map((p) => p.id))
+  const out = new Set<string>()
+  for (const name of agentNames) {
+    if (name === mainAgentId) continue
+    let id: string | null = null
+    try { id = planOf(name) } catch { id = null }
+    if (id && tokenPlans.has(id)) out.add(id)
+  }
+  return out
+}
+
+/** A sub-agent's isolated Claude config dir (agent-process.ts ensureIsolatedChannelConfigDir provisions it). */
+export function agentIsolatedConfigDir(name: string, projectRootOverride?: string): string {
+  return join(projectRootOverride ?? PROJECT_ROOT, 'agents', name, '.claude-config')
 }
 
 // The config root a READER must look in to find an agent's transcripts.
@@ -280,9 +317,9 @@ export function resolveAgentConfigDir(
 // probing the filesystem, so the probe root has to be redirectable to a
 // fixture. Production callers pass nothing.
 export function resolveAgentConfigDirForRead(name: string, projectRootOverride?: string): string | null {
-  const configured = resolveAgentConfigDir(name).configDir
+  const configured = resolveAgentConfigDir(name, projectRootOverride).configDir
   if (configured) return configured
-  const isolated = join(projectRootOverride ?? PROJECT_ROOT, 'agents', name, '.claude-config')
+  const isolated = agentIsolatedConfigDir(name, projectRootOverride)
   // `projects` is what a transcript reader is after. Requiring it (rather than
   // just the directory) keeps a half-provisioned dir from shadowing the shared
   // root that the agent may genuinely still be using.

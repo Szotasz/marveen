@@ -25,23 +25,40 @@ beforeEach(() => {
 })
 
 describe('getModelSourceBreakdown', () => {
-  it('breaks a single model down by agent / session_id / task_title', () => {
+  it('breaks a single model down by agent / session_id; the stored task_title is not read (DBSIZE1111)', () => {
     const db = getDb()
     insertRow(db, { agent: 'marveen', sessionId: 's1', timestamp: 1000, model: 'claude-sonnet-4-6', taskTitle: null })
-    insertRow(db, { agent: 'marveen', sessionId: 's1', timestamp: 1010, model: 'claude-sonnet-4-6', taskTitle: null })
+    insertRow(db, { agent: 'marveen', sessionId: 's1', timestamp: 1010, model: 'claude-sonnet-4-6', taskTitle: 'stale-a' })
     insertRow(db, { agent: 'marveen', sessionId: 's2', timestamp: 1020, model: 'claude-sonnet-4-6', taskTitle: 'kanban-audit' })
     insertRow(db, { agent: 'samu', sessionId: 's3', timestamp: 1030, model: 'claude-sonnet-5', taskTitle: null })
 
     const rows = getModelSourceBreakdown('claude-sonnet-4-6')
     expect(rows).toHaveLength(2)
     const bySession = new Map(rows.map((r) => [r.sessionId, r]))
+    // Two stored titles in one session used to split it into two groups; now one group per session.
     expect(bySession.get('s1')?.count).toBe(2)
     expect(bySession.get('s1')?.agent).toBe('marveen')
-    expect(bySession.get('s1')?.taskTitle).toBeNull()
     expect(bySession.get('s2')?.count).toBe(1)
-    expect(bySession.get('s2')?.taskTitle).toBe('kanban-audit')
+    // No card was in_progress: the stored title does not come back.
+    expect(bySession.get('s2')?.cards).toEqual([])
+    expect(rows.every((r) => !('taskTitle' in r))).toBe(true)
     // claude-sonnet-5 row must not leak in
     expect(rows.every((r) => r.sessionId !== 's3')).toBe(true)
+  })
+
+  it('names the cards in_progress during the session, from kanban_card_events (DBSIZE1111)', () => {
+    const db = getDb()
+    db.prepare(`INSERT INTO kanban_cards (id, title, status, priority, assignee, created_at, updated_at, sort_order)
+      VALUES ('c-audit', 'Kanban audit', 'done', 'normal', 'marveen', 900, 99999, 0)`).run()
+    const ev = db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)')
+    ev.run('c-audit', 'planned', 'in_progress', 'x', 1005)
+    ev.run('c-audit', 'in_progress', 'done', 'x', 1015)
+    insertRow(db, { agent: 'marveen', sessionId: 's1', timestamp: 1000, model: 'claude-sonnet-4-6' })
+    insertRow(db, { agent: 'marveen', sessionId: 's1', timestamp: 1010, model: 'claude-sonnet-4-6' })
+    insertRow(db, { agent: 'marveen', sessionId: 's2', timestamp: 1020, model: 'claude-sonnet-4-6' })
+    const bySession = new Map(getModelSourceBreakdown('claude-sonnet-4-6', undefined, undefined, { botName: 'Marveen', mainAgentId: 'marveen', now: 5000 }).map((r) => [r.sessionId, r]))
+    expect(bySession.get('s1')?.cards).toEqual([{ id: 'c-audit', title: 'Kanban audit' }])
+    expect(bySession.get('s2')?.cards).toEqual([])
   })
 
   it('an unknown model yields an empty breakdown, not an error', () => {

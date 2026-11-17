@@ -4,7 +4,9 @@
 //   1. the helper itself (src/web/gromzo-needs-auth.ts), on real files;
 //   2. the CLI (scripts/gromzo-needs-auth-clear.mjs) against a stub dist, as main-auth-helper.test.ts does;
 //   3. channels.sh's REAL block, sliced and run with a recording `node` stub;
-//   4. the dashboard respawn (channel-monitor.ts clearGromzoNeedsAuthBeforeRespawn) and its three call sites.
+//   4. the respawns (GROMZONEEDSAUTHGUARDS1109): the step IN the pane command, right before claude, in the dashboard's
+//      built command (gromzoNeedsAuthPaneStep) and in channel-watchdog.sh / stuck-modal-guard.sh
+//      (scripts/gromzo-needs-auth-pane.sh); the two builders give the same group.
 import { describe, it, expect } from 'vitest'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -13,7 +15,7 @@ import { spawnSync } from 'node:child_process'
 import {
   GROMZO_NEEDS_AUTH_KEY, NEEDS_AUTH_CACHE_FILE, clearGromzoNeedsAuth, describeNeedsAuthClear, launchLoadsGromzo, mainNeedsAuthConfigDir,
 } from '../web/gromzo-needs-auth.js'
-import { buildMainSessionRespawnCmd, clearGromzoNeedsAuthBeforeRespawn, respawnCmdConfigDir } from '../web/channel-monitor.js'
+import { buildMainSessionRespawnCmd, gromzoNeedsAuthPaneStep } from '../web/channel-monitor.js'
 
 const REPO = join(__dirname, '..', '..')
 // The entry exactly as Claude Code 2.1.319 wrote it on the VPS (V31), next to another server's entry.
@@ -215,34 +217,126 @@ describe('channels.sh: the REAL cleanup block before the launch', () => {
   })
 })
 
-describe('the dashboard respawn: clearGromzoNeedsAuthBeforeRespawn', () => {
+describe('the respawn step: runs in the pane, on the dir the new claude reads', () => {
+  // A project root as the step sees it: the REAL helper script (unless left out) and a stub dist that records the dir.
+  function root(name = 'gz root', withHelper = true) {
+    const r = join(dir(), name)
+    mkdirSync(join(r, 'scripts'), { recursive: true })
+    mkdirSync(join(r, 'store'))
+    mkdirSync(join(r, 'dist', 'web'), { recursive: true })
+    if (withHelper) copyFileSync(join(REPO, 'scripts', 'gromzo-needs-auth-clear.mjs'), join(r, 'scripts', 'gromzo-needs-auth-clear.mjs'))
+    writeFileSync(join(r, 'dist', 'web', 'gromzo-needs-auth.js'), `export function clearGromzoNeedsAuth(d) { return { outcome: 'removed', file: d } }
+export function describeNeedsAuthClear(r) { return 'CLEARED ' + r.file }`)
+    return r
+  }
+  function runStep(step: string, env: Record<string, string>) {
+    const r = spawnSync('bash', ['-c', `${step} && echo "CLAUDE starts"`], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env } })
+    return { out: r.stdout, err: r.stderr, status: r.status }
+  }
+  const log = (r: string) => (existsSync(join(r, 'store', 'channels-failures.log')) ? readFileSync(join(r, 'store', 'channels-failures.log'), 'utf8') : '')
+
+  it("the pane's CLAUDE_CONFIG_DIR, else $HOME/.claude; the line goes to channels-failures.log; claude starts after it", () => {
+    const r = root("it's a root") // an apostrophe and a space in the install path
+    const step = gromzoNeedsAuthPaneStep(r)
+    expect(runStep(step, { CLAUDE_CONFIG_DIR: "/cfg/o'neil dir", HOME: '/home/o' })).toEqual({ out: 'CLAUDE starts\n', err: '', status: 0 })
+    expect(runStep(step, { HOME: '/home/o' }).out).toBe('CLAUDE starts\n')
+    expect(log(r)).toBe("CLEARED /cfg/o'neil dir\nCLEARED /home/o/.claude\n")
+  })
+  it('the helper missing, or node failing: claude still starts, nothing on the pane', () => {
+    const r = root('no helper', false)
+    expect(runStep(gromzoNeedsAuthPaneStep(r), { HOME: '/h' })).toEqual({ out: 'CLAUDE starts\n', err: '', status: 0 })
+    expect(log(r)).toBe('')
+    const r2 = root()
+    const bin = join(dir(), 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'node'), '#!/bin/bash\necho boom >&2\nexit 7\n')
+    chmodSync(join(bin, 'node'), 0o755)
+    const res = spawnSync('bash', ['-c', `${gromzoNeedsAuthPaneStep(r2)} && echo "CLAUDE starts"`], { encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin`, HOME: '/h' } })
+    expect(res.stdout).toBe('CLAUDE starts\n')
+    expect(res.stderr).toBe('')
+    expect(log(r2)).toBe('boom\n')
+  })
+  it('the bash builder (channel-watchdog.sh, stuck-modal-guard.sh) gives the same group as the dashboard', () => {
+    for (const r of ['/opt/marveen', "/Users/o'neil/my marveen"]) {
+      const sh = spawnSync('bash', ['-c', `. '${join(REPO, 'scripts', 'gromzo-needs-auth-pane.sh')}'; gromzo_needs_auth_pane_step "$1" "$2"`, 'x', r, '--channels plugin:slack-channel@x plugin:gromzo-channel@gromzo-local'], { encoding: 'utf8' })
+      expect(sh.stdout).toBe(`${gromzoNeedsAuthPaneStep(r)} && `)
+    }
+  })
+  it('the bash builder prints nothing without the exact Gromzo channel word', () => {
+    for (const arg of ['', '--channels plugin:slack-channel@x', '--channels plugin:gromzo-channel@gromzo-localx']) {
+      const sh = spawnSync('bash', ['-c', `. '${join(REPO, 'scripts', 'gromzo-needs-auth-pane.sh')}'; gromzo_needs_auth_pane_step /opt/m "$1"; echo "rc=$?"`, 'x', arg], { encoding: 'utf8' })
+      expect(sh.stdout).toBe('rc=0\n')
+    }
+  })
+})
+
+describe('the dashboard respawn: the step sits in the built command, after the exports, right before claude', () => {
   const base = { claudePath: '/x/claude', channelStateEnv: { name: 'GROMZO_STATE_DIR', dir: '/s' }, mainAgentId: 'marveen', gromzoTokenFile: null }
-  it('a REAL built respawn with the Gromzo channel clears the isolated dir that command exports', () => {
-    const d = dir()
-    const f = put(d, `{${OTHER},${GZ}}`)
-    const cmd = buildMainSessionRespawnCmd({ ...base, pluginId: 'gromzo-channel@gromzo-local', gromzoPrimaryReady: true, config: { isolatedConfigDir: d, fleetToken: true } } as never)
-    expect(respawnCmdConfigDir(cmd)).toBe(d)
-    clearGromzoNeedsAuthBeforeRespawn(cmd)
-    expect(readFileSync(f, 'utf8')).toBe(`{${OTHER}}`)
+  const STEP = `&& ${gromzoNeedsAuthPaneStep()} && /x/claude `
+  it('a REAL built respawn with the Gromzo channel (primary or extra): the step, once, right before claude, after the config exports', () => {
+    for (const o of [
+      { pluginId: 'gromzo-channel@gromzo-local', gromzoPrimaryReady: true },
+      { pluginId: 'slack-channel@x', extraPluginIds: ['gromzo-channel@gromzo-local'] },
+    ]) {
+      const cmd = buildMainSessionRespawnCmd({ ...base, ...o, config: { isolatedConfigDir: '/iso', fleetToken: true } } as never)
+      expect(cmd.split(gromzoNeedsAuthPaneStep()).length - 1).toBe(1)
+      expect(cmd).toContain(STEP)
+      expect(cmd.indexOf("export CLAUDE_CONFIG_DIR='/iso'")).toBeLessThan(cmd.indexOf(STEP))
+      expect(cmd.indexOf('.channels-pane-auth-post')).toBeLessThan(cmd.indexOf(STEP))
+    }
   })
-  it('a pending respawn (no Gromzo channel) or another provider leaves the file alone', () => {
-    const d = dir()
-    const f = put(d, `{${GZ}}`)
-    const pending = buildMainSessionRespawnCmd({ ...base, pluginId: 'gromzo-channel@gromzo-local', gromzoPrimaryReady: false, config: { isolatedConfigDir: d, fleetToken: true } } as never)
-    const slack = buildMainSessionRespawnCmd({ ...base, pluginId: 'slack-channel@x', config: { isolatedConfigDir: d, fleetToken: true } } as never)
-    clearGromzoNeedsAuthBeforeRespawn(pending)
-    clearGromzoNeedsAuthBeforeRespawn(slack)
-    expect(readFileSync(f, 'utf8')).toBe(`{${GZ}}`)
+  it('a pending respawn (no Gromzo channel) or another provider: no step', () => {
+    const pending = buildMainSessionRespawnCmd({ ...base, pluginId: 'gromzo-channel@gromzo-local', gromzoPrimaryReady: false, config: { isolatedConfigDir: '/iso', fleetToken: true } } as never)
+    const slack = buildMainSessionRespawnCmd({ ...base, pluginId: 'slack-channel@x', config: { isolatedConfigDir: '/iso', fleetToken: true } } as never)
+    for (const c of [pending, slack]) expect(c).not.toContain('gromzo-needs-auth-clear.mjs')
   })
-  it('a command without CLAUDE_CONFIG_DIR (the shared root): no dir from the command', () => {
-    const cmd = buildMainSessionRespawnCmd({ ...base, pluginId: 'gromzo-channel@gromzo-local', gromzoPrimaryReady: true, config: { isolatedConfigDir: null, fleetToken: true } } as never)
-    expect(respawnCmdConfigDir(cmd)).toBe(null)
+  it('an isolated config dir with an apostrophe is ONE shell word (it broke the command before; Dani 74108 (2))', () => {
+    for (const config of [
+      { isolatedConfigDir: "/Users/o'neil/cfg", ownCredentials: true },
+      { isolatedConfigDir: "/Users/o'neil/cfg", tokenSecretId: 'T' },
+      { isolatedConfigDir: "/Users/o'neil/cfg", fleetToken: true },
+    ]) {
+      const cmd = buildMainSessionRespawnCmd({ ...base, pluginId: 'gromzo-channel@gromzo-local', gromzoPrimaryReady: true, config } as never)
+      expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/Users/o'\\''neil/cfg' && ")
+      const m = /export CLAUDE_CONFIG_DIR=('(?:[^']|'\\'')*') /.exec(cmd)
+      const r = spawnSync('bash', ['-c', `printf '%s' ${m![1]}`], { encoding: 'utf8' })
+      expect(r.stdout).toBe("/Users/o'neil/cfg")
+    }
   })
-  it('all three respawn-pane sites call it right after the command is built, with that command', () => {
+  it('the three respawn-pane sites use the built command as is; the old before-respawn clear is gone', () => {
     const src = readFileSync(join(REPO, 'src', 'web', 'channel-monitor.ts'), 'utf8')
-    const respawns = src.split("execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd]").length - 1
-    expect(respawns).toBe(3)
-    expect(src.match(/const claudeCmd = buildMainSessionRespawnCmd\(\{\n(?:.*\n)*?\s*\}\)\n\s*clearGromzoNeedsAuthBeforeRespawn\(claudeCmd\)\n/g)?.length).toBe(3)
+    expect(src.split("execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd]").length - 1).toBe(3)
     expect(src.match(/const claudeCmd = buildMainSessionRespawnCmd\(\{/g)?.length).toBe(3)
+    expect(src).not.toContain('clearGromzoNeedsAuthBeforeRespawn')
   })
+})
+
+describe('channel-watchdog.sh and stuck-modal-guard.sh: the step in their respawn command', () => {
+  for (const [file, chanVar, claudeVar] of [
+    ['channel-watchdog.sh', 'CHANNELS_ARG', '$CLAUDE --dangerously-skip-permissions'],
+    ['stuck-modal-guard.sh', 'CHAN_ARG', '$CLAUDE_Q --dangerously-skip-permissions'],
+  ] as const) {
+    const src = readFileSync(join(REPO, 'scripts', file), 'utf8')
+    it(`${file}: the step from its own channels arg, a no-op fallback, and right before claude in RESPAWN_CMD`, () => {
+      expect(src).toContain('. "$INSTALL_DIR/scripts/gromzo-needs-auth-pane.sh" 2>/dev/null || gromzo_needs_auth_pane_step() { :; }')
+      expect(src).toMatch(new RegExp(`GROMZO_NA_STEP="\\$\\(gromzo_needs_auth_pane_step "\\$INSTALL_DIR" "\\$${chanVar}"\\)"`))
+      const cmd = src.split('\n').filter((l) => /RESPAWN_CMD="export PATH=/.test(l))
+      expect(cmd.length).toBe(1)
+      expect(cmd[0]).toContain(`\${PANE_AUTH_POST}\${GROMZO_ENV}\${GROMZO_NA_STEP}${claudeVar}`)
+      // the step is computed after the channels arg is final and before the respawn command is built
+      const at = src.indexOf('GROMZO_NA_STEP="$(')
+      expect(at).toBeGreaterThan(src.lastIndexOf(`${chanVar}=`))
+      expect(at).toBeLessThan(src.indexOf(cmd[0]))
+    })
+    it(`${file}: the sliced step block, run: the Gromzo arg gives the group, a pending arg gives nothing, no helper gives nothing`, () => {
+      const a = src.indexOf('. "$INSTALL_DIR/scripts/gromzo-needs-auth-pane.sh"')
+      const b = src.indexOf('\n', src.indexOf('GROMZO_NA_STEP="$(')) + 1
+      const block = src.slice(a, b).replace(/^\s*local /gm, '')
+      const run = (installDir: string, arg: string) =>
+        spawnSync('bash', ['-c', `INSTALL_DIR='${installDir}' ${chanVar}='${arg}'\n${block}\nprintf '%s' "$GROMZO_NA_STEP"`], { encoding: 'utf8' }).stdout
+      expect(run(REPO, '--channels plugin:gromzo-channel@gromzo-local')).toBe(`${gromzoNeedsAuthPaneStep(REPO)} && `)
+      expect(run(REPO, '')).toBe('')
+      expect(run(dir(), '--channels plugin:gromzo-channel@gromzo-local')).toBe('')
+    })
+  }
 })

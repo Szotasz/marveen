@@ -464,7 +464,7 @@ The defence against that is framing, not filtering: content the agent knows is
 content cannot impersonate an instruction. `WebFetch` gets that framing from
 the wrapper. A browser payload gets none.
 
-## The envelope hook (default on WebSearch and WebFetch, opt-in for browser MCP servers)
+## The envelope hook (default on WebSearch, WebFetch and the catalog's mail, calendar, Drive and browser MCP servers)
 
 `scripts/hooks/browser-content-notice.py` is a `PostToolUse` hook that wraps
 browser / search results in an `<untrusted source="..." fetch-nonce="...">`
@@ -472,8 +472,15 @@ envelope before the model sees them -- the same framing `wrapUntrustedFetch()`
 gives the `WebFetch` path -- scrubs forged security tags out of the payload,
 names any injection patterns it matched (forged `<untrusted>` /
 `<system-reminder>` envelopes, a pre-injected scrub sentinel, instruction
-overrides, credential targets, exfil shapes) and appends the full payload to
-`store/browser-content.log` for reading outside the model's context. The log is
+overrides, credential targets, exfil shapes) and appends a record to
+`store/browser-content.log` for reading outside the model's context. The record
+holds the tool, source, byte count, pattern counts and nonce, plus the payload
+itself, except for the catalog mail, calendar, Drive, playwright and Stripe servers below,
+whose record keeps no payload, a source without query string or fragment, and,
+when a forged frame matched, only 200 characters either side of each of the first
+five matches with their character offsets, never past the content block or
+dict string field that holds the match; the log sits in the shared
+`store/`, so every agent running as the same OS user can read it. The log is
 capped: past `BROWSER_CONTENT_LOG_MAX_BYTES` (default 10 MiB) it moves to
 `browser-content.log.1`, replacing an older one, so at most about twice the cap
 is kept; both files are mode 0600, a symlinked log path or lock file
@@ -487,7 +494,7 @@ repo-shipped `.claude/settings.json` for the main agent, and by the scaffold
 (`injectWebSearchEnvelope`, with a startup migration for existing agents) for
 every sub-agent. Every agent can call WebSearch: three profiles allow it by
 name, and the permissive ones run with the permission bypass. The hook does
-nothing until WebSearch or WebFetch is called. Its label tells the agent to read and use
+nothing until a tool its matcher names is called. Its label tells the agent to read and use
 the content's facts and to refuse only its imperatives, so an agent does not
 stop on a round whose content was its job (BORITOOLVASAT921).
 
@@ -501,19 +508,31 @@ content's say-so, and that its facts are usable.
 
 There is no per-agent opt-out: the startup migration re-adds a removed WebSearch
 group on the next dashboard start, as it does for the gates. An operator who
-wires the envelope under their own matcher that also covers WebSearch (the
-browser pattern below) keeps theirs, and no second copy is added.
+wires the envelope under their own matcher that also covers WebSearch or
+WebFetch keeps theirs, and no second copy is added; the managed group then adds
+only the built-in tool that group misses, so that group should name the MCP
+servers below itself.
 
-A browser MCP server is still **not wired by default**, because an install with
-no browser gains nothing from it. Operators who run one add its matcher
-themselves, in the project `settings.json` or `settings.local.json`:
+Since MCPUNTRUSTED1114 the same default group also covers the catalog's
+`gmail`, `gmail-v2`, `google-calendar`, `google-drive` and `playwright` MCP
+servers, and a `stripe` server (payment descriptions and metadata are written by
+customers and third parties) (matcher `WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright|stripe)__.*`):
+an email, a calendar invite, a shared document or a page is text anyone can
+author, and before this it reached the agent with no envelope and no label. A
+server installed under another name (another browser MCP, `mcp__chrome*`) is
+**not wired by default**. Three cases an operator should recognise: the same
+service from another MCP package (another Gmail or Calendar server), a
+plugin-provided server (named `mcp__plugin_<plugin>_<server>__...`), and a hosted
+connector. Operators who run one add its matcher themselves, in
+the project `settings.json` or `settings.local.json`. Such a server is not in the
+hook's private list, so its records keep the full payload and URL, like a web page:
 
 ```json
 {
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "mcp__playwright__browser_.*|mcp__chrome.*|WebSearch",
+        "matcher": "mcp__chrome.*",
         "hooks": [
           {
             "type": "command",
@@ -526,6 +545,12 @@ themselves, in the project `settings.json` or `settings.local.json`:
   }
 }
 ```
+
+Behaviour change for release notes: mail, invites and Drive documents now arrive
+labelled as external content whose imperatives are data, so an install that
+drives agents from a Drive brief or a forwarded mail will see those instructions
+marked that way. The matcher covers every tool of the five servers, write tools
+(send, draft, create-event) included; for those the label is a token cost only.
 
 ### The shape rule, and the silent fallback behind it
 
@@ -558,7 +583,7 @@ first as sufficient:
 
 The label quotes nothing back. Its own text is trusted framing, so echoing a
 matched line there would reopen the channel the hook exists to close. Pattern
-names and counts only; the payload itself goes to the log.
+names and counts only; the payload itself goes to the log (for the private servers above, only excerpts around a forged frame).
 
 `envelope_attempted` in the log records which shape the hook tried. It says
 "attempted", never "succeeded": the hook cannot observe the harness's decision,
@@ -823,6 +848,19 @@ next read, without a restart:
   dashboard is down does not start. This fail-closed is deliberate; know it
   before you switch `enforce` on.
 
+A sub-agent's OWN token (`AGENT_TOKENS`, `docs/agens-azonositas-api.md`) is not governed by `VAULT_ACL_MODE`: the
+claim it decides about is self-asserted, the own token is authenticated. It has its own switch,
+`VAULT_ACL_AGENT_MODE` (VAULTSZELES826):
+
+- `enforce` (the default): the token reads only the secrets the allowlist lists for that agent. An empty or missing
+  file means no secret value at all.
+- `audit`: the observation week before the list exists. Every read passes and leaves the same log row, with the
+  allowlist's verdict (`acl`) and `agent_mode: "audit"`; `scripts/vault-acl-suggest.mjs` turns the week's rows into a
+  proposed `store/vault-acl.json` (printed, never written: the owner approves the list). Setting `audit` loosens, so
+  it is overrides-only and needs the owner login, like `VAULT_ACL_MODE`.
+
+In both positions SSH material and the vault's own sub-resources are refused to a sub-agent token.
+
 What it is not: isolation. Every agent runs as the same OS user and can read
 the master-key file, the agent name is claimed, not authenticated, a caller
 that claims no name is treated as the owner, and in `audit` mode the local
@@ -869,7 +907,10 @@ What happens now:
   when the target already holds a token for that channel (the import carries
   none), or when it is the target's own provider; otherwise that key alone is
   left out, with a warning.
-- `MAIN_AGENT_ID` must also not be an id the message layer owns
+- `MAIN_AGENT_ID` must also not be an id the message layer owns, or a fixed
+  route name of the agents API (`activity`, `status`, `model-suggest`,
+  `export-all`, `import`: `GET /api/agents/status` is matched before
+  `/api/agents/<id>`, AGENTROUTERESERVED1114)
   (FLEETRESERVEDNAME1021, `RESERVED_AGENT_IDS` in `src/config.ts`, the fixed
   part in `src/web/sanitize.ts`): `system` is refused on every POST, so a main
   agent with that id could not send, and the voice channel id

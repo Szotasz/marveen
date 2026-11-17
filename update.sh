@@ -38,14 +38,25 @@ FINALIZE_LAUNCHED=0
 
 _json_escape() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 
+# AUTOUPDATEDIVERG1110 plan, point 7: the rebase in the result file -- the approval, the three SHAs, the recovery ref, the
+# outcome, and whether a later rollback undid it (the finalizer gets the same object as its 11th argument).
+# Empty when no rebase was attempted. Every value is JSON-escaped.
+rebase_json() {
+  [ -n "${REBASE_OUTCOME:-}" ] || return 0
+  printf '{"approval":%s,"head":%s,"target":%s,"rebased_head":%s,"backup_ref":%s,"outcome":%s,"reason":%s,"rollback":%s}' \
+    "$(_json_escape "${UPDATE_REBASE_APPROVAL:-}")" "$(_json_escape "${REBASE_HEAD:-}")" "$(_json_escape "${REBASE_TARGET:-}")" \
+    "$(_json_escape "${REBASE_NEW:-}")" "$(_json_escape "${REBASE_BACKUP:-}")" "$(_json_escape "${REBASE_OUTCOME:-}")" \
+    "$(_json_escape "${REBASE_WHY:-}")" "$([ "${RESULT_STATUS:-}" = "rolled-back" ] && echo true || echo false)"
+}
 write_result() {
-  local code="${1:-$?}"
+  local code="${1:-$?}" rj
   [ "$FINALIZE_LAUNCHED" = "1" ] && return 0
   mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
-  printf '{"status":%s,"phase":%s,"code":%s,"old":%s,"new":%s,"message":%s,"ts":%s}\n' \
+  rj="$(rebase_json)"
+  printf '{"status":%s,"phase":%s,"code":%s,"old":%s,"new":%s,"message":%s,"ts":%s%s}\n' \
     "$(_json_escape "$RESULT_STATUS")" "$(_json_escape "$RESULT_PHASE")" "$code" \
     "$(_json_escape "${OLD_VERSION:-unknown}")" "$(_json_escape "${NEW_VERSION:-unknown}")" \
-    "$(_json_escape "$RESULT_MSG")" "$(date +%s)" > "$RESULT_FILE" 2>/dev/null || true
+    "$(_json_escape "$RESULT_MSG")" "$(date +%s)" "${rj:+,\"rebase\":$rj}" > "$RESULT_FILE" 2>/dev/null || true
 }
 
 retry() {
@@ -614,9 +625,18 @@ npm_ci_failed() {
   fi
   local cause="a függőségek telepítése elbukott (kilépési kód: ${rc})"
   [ "$rc" -eq 137 ] && cause="a függőségek telepítését a rendszer leállította (137, valószínűleg memóriahiány)"
+  # Finding (a) of AUTOUPDATEDIVERG1110, measured on a toy install: npm (10.9.8) stops an out-of-sync `npm ci`
+  # BEFORE it removes node_modules, so a failed rollback ci can leave the working tree intact. The old text
+  # said "node_modules may be incomplete" and the verdict was "failed" on an install that ran fine. A load
+  # probe decides now: the tree is listed complete (npm ls) and the native module loads.
+  local deps_intact=0
+  if [ "$deps_ok" != "1" ] && npm ls --depth=0 --silent >/dev/null 2>&1 && native_module_loads; then deps_intact=1; fi
   if [ "$deps_ok" = "1" ]; then
     RESULT_STATUS="rolled-back"
     RESULT_MSG="A frissítés közben ${cause}; a rendszer visszaállt a korábbi működő verzióra (${OLD_VERSION}). A frissítés nem ment ki."
+  elif [ "$deps_intact" = "1" ]; then
+    RESULT_STATUS="rolled-back"
+    RESULT_MSG="A frissítés közben ${cause}; a rendszer visszaállt a korábbi verzióra (${OLD_VERSION}). A visszaállítás függőség-telepítése is elbukott, de a meglévő függőségek épek (npm ls rendben, a natív modul betölt), a korábbi verzió fut. A frissítés nem ment ki."
   else
     RESULT_STATUS="failed"
     RESULT_MSG="A frissítés közben ${cause}, és a visszaállítás függőség-telepítése sem sikerült: a kód a korábbi verzión (${OLD_VERSION}) áll, de a node_modules hiányos lehet. Kézi beavatkozás kell: npm ci --include=dev, majd npm run build."
@@ -673,8 +693,21 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
   # button does nothing" is the dominant report). Rewriting someone else's
   # history without their say-so is not a default we are willing to ship, so the
   # switch is off unless UPDATE_AUTO_REBASE=1 is set.
-  if [ "${UPDATE_AUTO_REBASE:-0}" = "1" ]; then
-    echo -e "  ${ORANGE}↻${NC} A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; UPDATE_AUTO_REBASE=1, auto-rebase origin/${CURRENT_BRANCH}-re..."
+  #
+  # AUTOUPDATEDIVERG1110: the switch alone is no longer enough. Rewriting the
+  # install's history is the OWNER's call, and an environment variable is
+  # something any caller sets (an agent could, and the db-write-gate, which
+  # denies `git rebase` in the install, does not see a script that rebases).
+  # The replay now runs only after the owner's approval for exactly this rebase
+  # (category update_rebase, bound to branch + HEAD + upstream target) has been
+  # consumed, once, right before it. Everything else -- no approval id, a used,
+  # expired, unapproved or differently bound one, no dashboard -- is the same
+  # refusal as without the switch: exit 5, HEAD unchanged. The why and the flow:
+  # scripts/lib/update-rebase-go.sh; what to ask for: scripts/update-rebase-request.sh.
+  # AUTOUPDATEDIVERG1110 2nd PR (AUTOUPDATEDIVERG1110 plan, point 3): the switch is the approval id alone. UPDATE_AUTO_REBASE
+  # is gone (#2676 had already made it insufficient); a run that only sets it takes the refusal below.
+  if [ -n "${UPDATE_REBASE_APPROVAL:-}" ]; then
+    echo -e "  ${ORANGE}↻${NC} A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; auto-rebase kerve, a tulaj jovahagyasat ellenorzom..."
     # A FAILED fetch must NOT fall through to the rebase: rebasing onto a stale
     # origin ref does not error, it just quietly does something other than what
     # the operator asked for. Bail out to the same loud refusal as a conflict.
@@ -685,19 +718,76 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
       restore_stash_before_exit
       exit 5
     fi
-    if git -c core.editor=true rebase "origin/${CURRENT_BRANCH}" >>"$INSTALL_DIR/store/update.log" 2>&1; then
-      echo -e "  ${GREEN}✓${NC} Auto-rebase sikeres (${AHEAD} helyi commit ujrajatszva a friss upstreamre)."
-      RESULT_MSG="Auto-rebase: ${AHEAD} helyi commit ujrajatszva origin/${CURRENT_BRANCH}-re."
-    else
-      git rebase --abort 2>/dev/null || true
-      RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van, es az auto-rebase KONFLIKTUSBA utkozott -- kezi (szemantikus) rebase kell. Nezd: git log @{u}..HEAD"
-      echo -e "${RED}HIBA:${NC} auto-rebase konfliktus, kezi feloldas kell (git log @{u}..HEAD)."
-      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: ${AHEAD} helyi commit ütközik az upstreammel, az auto-rebase konfliktusba futott. Kézi szemantikus rebase kell. Részletek: store/update.log" >/dev/null 2>&1 || true
-      restore_stash_before_exit
-      exit 5
-    fi
+    # The GO check AND the rebase run in a CLEAN process (scripts/lib/update-rebase-go.sh says why: the
+    # caller controls this script's environment, PATH and exported functions, which measurably decided an
+    # in-process check). env -i drops every inherited variable and function; the PATH is fixed system
+    # directories. The program reads HEAD and FETCH_HEAD (the fetch above) itself, consumes the owner's
+    # approval for exactly that pair, and only then rebases onto that exact commit. The verdict comes
+    # back as an exit code, branched on with `case` (a keyword, which no function can replace).
+    REBASE_RC=0
+    # GIT_CONFIG_NOSYSTEM / GIT_CONFIG_GLOBAL (#2676 review note): the fixed HOME sits under store/, which
+    # the caller can write; git must not read a .gitconfig placed there (or the system one), only the repo's.
+    REBASE_OUT="$(/usr/bin/env -i PATH='/usr/bin:/bin:/usr/sbin:/sbin' HOME="$INSTALL_DIR/store/.update-rebase-home-unused" LANG=C \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      /bin/bash --noprofile --norc "$INSTALL_DIR/scripts/lib/update-rebase-go.sh" rebase \
+      "$INSTALL_DIR" "${UPDATE_REBASE_APPROVAL:-}" "$CURRENT_BRANCH" 2>>"$INSTALL_DIR/store/update.log")" || REBASE_RC=$?
+    echo "update_rebase: rc=${REBASE_RC} ${REBASE_OUT} branch=${CURRENT_BRANCH}" >>"$INSTALL_DIR/store/update.log"
+    # key=value fields of the helper's one line; the free-text subject is last and may hold spaces.
+    # Pure bash: the caller's PATH tools (tr, sed, head) must not reword the outcome (measured: a fake sed on
+    # the PATH turned the reason into a port number). The decision itself was made in the clean process.
+    rebase_field() { local line=" ${REBASE_OUT%% subject=*}" v; case "$line" in *" $1="*) v="${line#* $1=}"; printf '%s' "${v%% *}" ;; esac; }
+    REBASE_HEAD="$(rebase_field head)"; REBASE_TARGET="$(rebase_field target)"; REBASE_NEW="$(rebase_field rebased)"
+    REBASE_BACKUP="$(rebase_field backup)"; REBASE_WHY="$(rebase_field reason)"
+    REBASE_COMMIT="$(rebase_field commit)"; REBASE_FILES="$(rebase_field files)"
+    REBASE_SUBJECT="${REBASE_OUT#*subject=}"; [ "$REBASE_SUBJECT" = "$REBASE_OUT" ] && REBASE_SUBJECT=''
+    case "$REBASE_RC" in 0) REBASE_OUTCOME=rebased ;; 3) REBASE_OUTCOME=conflict ;; *) REBASE_OUTCOME=refused ;; esac
+    case "$REBASE_RC" in
+      0)
+        if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+          echo -e "  ${GREEN}✓${NC} Rebase done: ${AHEAD} local commit(s) replayed onto the new upstream, with the owner's approval."
+          RESULT_MSG="${AHEAD} local commit(s) replayed onto origin/${CURRENT_BRANCH} with the owner's approval. Recovery ref: ${REBASE_BACKUP}."
+        else
+          echo -e "  ${GREEN}✓${NC} Rebase kesz: ${AHEAD} helyi modositas atrakva a friss upstreamre, a tulajdonos jovahagyasaval."
+          RESULT_MSG="${AHEAD} helyi módosítás átrakva az origin/${CURRENT_BRANCH}-re, a tulajdonos jóváhagyásával. Mentés: ${REBASE_BACKUP}."
+        fi
+        ;;
+      3)
+        # AUTOUPDATEDIVERG1110 plan, point 6: which local commit and which files, what to do, in the install's language. The
+        # subject and the file names come from the local commit (free text): they only ever travel as data
+        # (the result file is JSON-escaped, the dashboard shows it with textContent). notify.sh is not plain text: Telegram
+        # parses HTML (a '<' in the subject fails the send, lost behind || true) and Slack mrkdwn turns <url|text> into a
+        # link, so the alert gets & < > escaped once (Dani 74994 N5); the result file keeps the raw text.
+        if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+          RESULT_MSG="The update did not run, nothing changed. Your local change ${REBASE_COMMIT} \"${REBASE_SUBJECT}\" conflicts with the new version in: ${REBASE_FILES}. To do: adapt that local change to the new version by hand (a developer or support), then ask for the update again. Recovery ref: ${REBASE_BACKUP}."
+          echo -e "${RED}ERROR:${NC} rebase conflict in ${REBASE_FILES} (local change ${REBASE_COMMIT}); nothing changed."
+        else
+          RESULT_MSG="A frissítés nem futott le, semmi nem változott. A(z) ${REBASE_COMMIT} \"${REBASE_SUBJECT}\" helyi módosítás ütközik az új verzióval ezekben a fájlokban: ${REBASE_FILES}. Teendő: a helyi módosítást kézzel kell az új verzióhoz igazítani (fejlesztő vagy a support), utána a frissítést újra lehet kérni. Mentés: ${REBASE_BACKUP}."
+          echo -e "${RED}HIBA:${NC} rebase-utkozes: ${REBASE_FILES} (helyi modositas ${REBASE_COMMIT}); semmi nem valtozott."
+        fi
+        REBASE_ALERT="$(printf '%s' "$RESULT_MSG" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
+        bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Frissítés: helyi módosítás ütközik. ${REBASE_ALERT}" >/dev/null 2>&1 || true
+        restore_stash_before_exit
+        exit 5
+        ;;
+      *)
+        if [ "$REBASE_WHY" = "local-dependency-without-lock" ]; then
+          if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+            RESULT_MSG="The update did not run and the approval was not used: a local change edits package.json without package-lock.json, so installing the dependencies would fail on any version. That change needs fixing first (npm install, then commit both files)."
+          else
+            RESULT_MSG="A frissítés nem futott le, és a jóváhagyás nem fogyott el: egy helyi módosítás a package.json-t a package-lock.json nélkül írja át, ezért a függőségek telepítése bármelyik verzión elbukna. Előbb ezt kell rendbe tenni (npm install, majd mindkét fájl commit)."
+          fi
+        elif [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+          RESULT_MSG="The update did not run, nothing changed: replaying the ${AHEAD} local change(s) needs the owner's approval for exactly this update (${REBASE_WHY:-unknown}). Ask for it on the dashboard's update dialog or through your agent."
+        else
+          RESULT_MSG="A frissítés nem futott le, semmi nem változott: a(z) ${AHEAD} helyi módosítás átrakásához a tulajdonos jóváhagyása kell, pontosan erre a frissítésre (${REBASE_WHY:-unknown}). A dashboard frissítés-ablakában vagy az ügynököd útján kérhető."
+        fi
+        echo -e "${RED}HIBA:${NC} az auto-rebase nem indult (${REBASE_WHY:-unknown}); a checkout valtozatlan."
+        restore_stash_before_exit
+        exit 5
+        ;;
+    esac
   else
-    RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD (vagy UPDATE_AUTO_REBASE=1 az automatikus ujrajatszashoz)"
+    RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. A helyi modositasok atrakasahoz tulaj-jovahagyas kell: a dashboard frissites-ablaka, vagy bash scripts/update-rebase-request.sh."
     echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
     restore_stash_before_exit
     exit 5
@@ -1288,6 +1378,32 @@ run_unit_maintenance() {
 run_unit_maintenance
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AUTONOMY CONFIG MERGE (EMAILMAX3-1115) -- above the up-to-date exit, for the
+# reason UNIT MAINTENANCE gives: a merge placed only after that exit runs only on
+# an update that pulls something, and the update that pulls a new merge still
+# runs the old copy of this file. Here it runs on every update.sh run, the
+# dashboard button and the seeded auto-update task included, and it is
+# idempotent (a second run writes nothing). What it does is in the script:
+# categories the install lacks are added, and a raised ceiling (email_send
+# maxLevel 2 -> 3) is applied only while the install still holds the factory 2;
+# a level is never touched. The script runs here, on the update path: an agent
+# session may not write store/autonomy-config.json (db-write-gate).
+autonomy_config_merge() {
+  local seed="$INSTALL_DIR/seed-config/autonomy-config.json" target="$INSTALL_DIR/store/autonomy-config.json" out
+  [ -f "$seed" ] && [ -f "$target" ] && [ -f "$INSTALL_DIR/scripts/lib/autonomy-config-merge.mjs" ] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  out=$(node "$INSTALL_DIR/scripts/lib/autonomy-config-merge.mjs" "$seed" "$target" 2>/dev/null) || out=""
+  case "$out" in
+    "added=0 raised=-") ;;
+    added=*) echo -e "  ${GREEN}✓${NC} autonomy-config.json: ${out}" ;;
+    # Never silent: a run that printed nothing did not merge (an unreadable file, or the script did not run).
+    *) echo -e "  ${ORANGE}⚠${NC} autonomy-config.json: a seed-merge nem futott le, a fajl valtozatlan" ;;
+  esac
+  return 0
+}
+autonomy_config_merge
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SEED REFRESH -- update a shipped skill/task copy ONLY while it is provably
 # untouched, and sits here (above the up-to-date exit) for the same reason the
 # unit maintenance does.
@@ -1827,24 +1943,9 @@ if [ -d "$SEED_CONFIG_DIR" ]; then
     if [ ! -f "$target" ]; then
       cp "$cfg" "$target"
       echo -e "  ${GREEN}✓${NC} Seed config: $cfg_name"
-    elif [ "$cfg_name" = "autonomy-config.json" ] && command -v node >/dev/null 2>&1; then
-      MERGED=$(node -e "
-        const seed = JSON.parse(require('fs').readFileSync('$cfg','utf8'));
-        const live = JSON.parse(require('fs').readFileSync('$target','utf8'));
-        const existing = new Set(live.categories.map(c => c.key));
-        let added = 0;
-        for (const c of seed.categories) {
-          if (!existing.has(c.key)) { live.categories.push(c); added++; }
-        }
-        if (added) {
-          live.updated_at = Math.floor(Date.now()/1000);
-          require('fs').writeFileSync('$target', JSON.stringify(live,null,2)+'\n');
-        }
-        console.log(added);
-      " 2>/dev/null || echo "0")
-      if [ "$MERGED" != "0" ] && [ -n "$MERGED" ]; then
-        echo -e "  ${GREEN}✓${NC} autonomy-config.json: ${MERGED} uj kategoria merge-elve"
-      fi
+    elif [ "$cfg_name" = "autonomy-config.json" ]; then
+      # The same merge as above the up-to-date exit (idempotent: there it has usually run already).
+      autonomy_config_merge
     fi
   done
 fi
@@ -1971,6 +2072,9 @@ cat > "$FINALIZE_SCRIPT" <<'FINALIZE_EOF'
 #             human -- stash conflict or settings.json gate; verdict "warning")
 INSTALL_DIR="$1"; OLD_FULL="$2"; OLD_SHORT="$3"; PORT="$4"
 RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"; WARN="${10:-}"
+# $11 REBASE: the rebase object update.sh wrote (JSON, already escaped), or empty. A rollback below flips its
+# "rollback" field, so the result says the replayed commits were undone with the update (AUTOUPDATEDIVERG1110 plan, point 7).
+REBASE="${11:-}"
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
 
@@ -1992,9 +2096,11 @@ trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' T
 
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 _write() { # status phase code message
-  printf '{"status":%s,"phase":%s,"code":%s,"old":%s,"new":%s,"message":%s,"ts":%s}\n' \
+  local rb="$REBASE"
+  [ -n "$rb" ] && [ "$1" = "rolled-back" ] && rb="${rb/\"rollback\":false/\"rollback\":true}"
+  printf '{"status":%s,"phase":%s,"code":%s,"old":%s,"new":%s,"message":%s,"ts":%s%s}\n' \
     "$(_esc "$1")" "$(_esc "$2")" "$3" "$(_esc "$OLD_SHORT")" "$(_esc "$NEW_SHORT")" \
-    "$(_esc "$4")" "$(date +%s)" > "$RESULT_FILE" 2>/dev/null || true
+    "$(_esc "$4")" "$(date +%s)" "${rb:+,\"rebase\":$rb}" > "$RESULT_FILE" 2>/dev/null || true
 }
 # Channel report for the unattended auto-update. Plugin-independent (Bot API via
 # notify.sh), because at 4am the Telegram plugin may be down and the finalizer
@@ -2025,17 +2131,25 @@ _restart() { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
 # -- it only asks the port. This check asks systemd instead, and it reports
 # rather than fails: a unit drift is not fixed by a rollback, so turning it into
 # a failed update would swap a silent problem for a destructive one.
-# The SLUG is derived the same way start.sh/stop.sh derive it.
+# The unit id is derived the same way start.sh/stop.sh derive it (SERVICE_ID, else MAIN_AGENT_ID).
 _unit_drift() {
   command -v systemctl >/dev/null 2>&1 || return 0
   pidof systemd >/dev/null 2>&1 || return 0
-  local slug drift="" u scope=""
-  slug="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-  slug="${slug:-marveen}"
-  if systemctl cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope=""
-  elif systemctl --user cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope="--user"
-  else return 0
-  fi
+  local slug drift="" u scope="" try
+  slug="$(grep -E '^[[:space:]]*SERVICE_ID[[:space:]]*=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 \
+    | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/')"
+  local main_id
+  main_id="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  main_id="${main_id:-marveen}"
+  slug="${slug:-$main_id}"
+  # Same fallback as scripts/resolve-unit-id.sh: no unit under SERVICE_ID but one
+  # under MAIN_AGENT_ID -> check the one that exists.
+  for try in "$slug" "$main_id"; do
+    if systemctl cat "${try}-dashboard.service" >/dev/null 2>&1; then scope=""; slug="$try"; break
+    elif systemctl --user cat "${try}-dashboard.service" >/dev/null 2>&1; then scope="--user"; slug="$try"; break
+    fi
+    [ "$try" = "$main_id" ] && return 0
+  done
   for u in "${slug}-dashboard" "${slug}-channels"; do
     # Only enabled units are a promise; a deliberately disabled one is not drift.
     systemctl $scope is-enabled --quiet "$u" 2>/dev/null || continue
@@ -2102,6 +2216,8 @@ FINALIZE_LAUNCHED=1
 # finalizer send a channel report after the restart+health outcome. A manual
 # dashboard-triggered run leaves it unset -> silent (the UI polls the status).
 FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}" "$UPDATE_WARN")
+# AUTOUPDATEDIVERG1110: the rebase object rides as the 11th argument (empty when no rebase ran).
+FINALIZE_ARGS+=("$(rebase_json)")
 XDG_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}"
 # ZAKARFELUGY921 (external report, 2026-09-21): the finalizer used to leave no
 # trace at all, so a run that died mid-restart looked identical to one that
@@ -2138,6 +2254,29 @@ elif command -v setsid >/dev/null 2>&1; then
   # background so a parent signal during restart cannot abort the health/
   # rollback sequence and update.sh returns promptly.
   setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
+elif command -v python3 >/dev/null 2>&1; then
+  # FINDETACHMAC1113: macOS has no setsid(1) (measured), and a plain `&` job
+  # stays in the CALLER's process group (measured: same PGID as the launching
+  # shell). Measured 2026-11-10 12:28 on a Mac install: update.sh ran as a
+  # background Bash task of the main agent's own Claude Code session; stop.sh's
+  # `tmux kill-session` ended that session, a TERM reached the finalizer's group
+  # right after stop.sh returned (start.sh never printed its header), and the
+  # finalizer was gone after stage=health with no verdict and no rollback: the
+  # services stayed down for ~33 minutes until a manual start.sh.
+  # setsid(2) through python3 after a double fork: the finalizer leads its own
+  # session and process group and is re-parented to launchd, so neither a group
+  # kill nor a process-tree kill aimed at the caller can reach it. The parent
+  # exits 0 right after the first fork, so the fallback below runs only when
+  # python3 could not fork at all (no double launch).
+  if ! python3 -I -c 'import os, sys
+if os.fork():
+    sys.exit(0)
+os.setsid()
+if os.fork():
+    os._exit(0)
+os.execvp(sys.argv[1], sys.argv[1:])' bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1; then
+    bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
+  fi
 else
   bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 fi

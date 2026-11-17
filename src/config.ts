@@ -7,7 +7,7 @@ import { readEnvFile } from './env.js'
 import { parseLabelPalette } from './css-color.js'
 import { resolveFleetVenvDir } from './fleet-venv.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL, getSettingDefinition, isOverridesOnly } from './config-registry.js'
-import { FIXED_RESERVED_AGENT_IDS } from './web/sanitize.js'
+import { FIXED_RESERVED_AGENT_IDS, MESSAGE_LAYER_RESERVED_AGENT_IDS } from './web/sanitize.js'
 import { getProviderType, getMainChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -154,6 +154,12 @@ export const DEFAULT_AGENT_MODEL =
 // the previous tier on a CLI that cannot run it (default-model-guard.ts); a
 // configured value is the operator's choice and is never replaced.
 export const DEFAULT_AGENT_MODEL_IS_DISTRIBUTION = !cfg('DEFAULT_AGENT_MODEL')
+
+// WORKERMODELFAST1109: the FAST worker session's model. Empty means the same chain
+// as the slow worker, so nothing changes until it is set. A separate key because the
+// fast session only gets short conversational jobs (under 300 characters, no
+// analysis keyword -- classifyPriority), for which the strongest model is overkill.
+export const WORKER_MODEL_FAST = cfg('MARVEEN_WORKER_MODEL_FAST') || ''
 
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
@@ -344,7 +350,10 @@ export function resolveVoiceChannelId(raw: string | undefined, taken: VoiceChann
   const ident = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '')
   const systemSenders = parseSystemSenderIds(taken.systemSenderIds, ident)
   const collision = (id: string): string | undefined => {
-    if (FIXED_RESERVED_AGENT_IDS.includes(id)) return 'a system id'
+    // The message layer's ids only, NOT the route names (AGENTROUTERESERVED1114): the voice channel id names a
+    // sender and has no /api/agents/<id> address, and widening this check would switch an install that already
+    // runs its voice lane under such an id back to the default on upgrade.
+    if (MESSAGE_LAYER_RESERVED_AGENT_IDS.includes(id)) return 'a system id'
     if (systemSenders.has(id)) return 'a SYSTEM_SENDER_IDS entry'
     if (id === taken.mainAgentId) return 'the main agent id'
     if (id === ident(taken.ownerName)) return "the owner's name"
@@ -375,8 +384,9 @@ export const VOICE_CHANNEL_ID_INVALID = voiceChannel.invalid
 export const VOICE_CHANNEL_DISABLED_BY = voiceChannel.disabledBy
 
 // The full reserved-id list (FLEETRESERVEDNAME1021): the fixed ids from
-// web/sanitize.ts plus the voice channel id in effect (none when the lane is
-// off). No main agent or sub-agent may take one of these.
+// web/sanitize.ts (the message layer's ids and the agents API's fixed route
+// names, AGENTROUTERESERVED1114) plus the voice channel id in effect (none when
+// the lane is off). No main agent or sub-agent may take one of these.
 export const RESERVED_AGENT_IDS: readonly string[] =
   VOICE_CHANNEL_ID === null ? FIXED_RESERVED_AGENT_IDS : [...FIXED_RESERVED_AGENT_IDS, VOICE_CHANNEL_ID]
 

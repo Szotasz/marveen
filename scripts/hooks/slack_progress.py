@@ -106,7 +106,10 @@ def api(tok, method, payload):
 def claim(progress_dir, sid, src_ts):
     """Atomic per-inbound-message guard, mirrors telegram_progress.py. Returns
     True if THIS invocation claimed the message (proceed), False if another
-    already did (skip). O_EXCL makes the claim race-safe."""
+    already did (skip). O_EXCL makes the claim race-safe. The marker outlives
+    the turn by an hour (slack_progress_clear.py, SLACKDUP1111), so a copy
+    Slack redelivers minutes later is skipped too, not only a sibling
+    invocation of the same turn."""
     if not src_ts:
         return True
     try:

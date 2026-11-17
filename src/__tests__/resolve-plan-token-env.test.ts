@@ -15,7 +15,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { execFile } from 'node:child_process'
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -123,5 +123,56 @@ describe('resolve-plan-token-env: the plan secret, the fleet fallback, and the l
     const r = await run(['KNOWN-PLAN-ID', FLEET_TOKEN_PATH, FAILURES_LOG_PATH])
     expect(r.code).toBe(0)
     expect(existsSync(FAILURES_LOG_PATH)).toBe(false)
+  })
+})
+
+// SUBPLANTOKEN1110: a sub-agent's launch passes --strict (no fleet fallback) and
+// --status <path> (the launch outcome the dashboard and the rotate endpoint read).
+describe('resolve-plan-token-env --strict / --status (sub-agents, SUBPLANTOKEN1110)', () => {
+  const STATUS = join(ROOT, 'store', 'plan-token-launch-devy.json')
+  const status = () => JSON.parse(readFileSync(STATUS, 'utf-8')) as Record<string, unknown>
+  beforeEach(() => { try { rmSync(STATUS) } catch { /* may not exist */ } })
+
+  it('--strict with a missing secret and a fleet token PRESENT: exit 1, nothing on stdout -- no fleet fallback', async () => {
+    writeFileSync(FLEET_TOKEN_PATH, FLEET_TOKEN_VALUE)
+    const r = await run(['MISSING-PLAN-ID', FLEET_TOKEN_PATH, FAILURES_LOG_PATH, '--strict', '--status', STATUS])
+    expect(r.code).toBe(1)
+    expect(r.stdout).toBe('')
+    expect(failuresLog()).toContain('FATAL')
+    expect(failuresLog()).toContain('MISSING-PLAN-ID')
+    expect(failuresLog()).not.toContain(FLEET_TOKEN_VALUE)
+    expect(status()).toMatchObject({ state: 'failed', secretId: 'MISSING-PLAN-ID', reason: 'vault-secret-unresolved' })
+  })
+
+  it('--strict with the secret present: the plan token on stdout, status plan-token, the value nowhere but stdout', async () => {
+    const r = await run(['KNOWN-PLAN-ID', FLEET_TOKEN_PATH, FAILURES_LOG_PATH, '--strict', '--status', STATUS])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe(PLAN_TOKEN_VALUE)
+    expect(status()).toMatchObject({ state: 'plan-token', secretId: 'KNOWN-PLAN-ID' })
+    expect(typeof status().at).toBe('number')
+    expect(readFileSync(STATUS, 'utf-8')).not.toContain(PLAN_TOKEN_VALUE)
+    expect(existsSync(FAILURES_LOG_PATH)).toBe(false)
+  })
+
+  it('the status file is written 0600', async () => {
+    await run(['KNOWN-PLAN-ID', FLEET_TOKEN_PATH, FAILURES_LOG_PATH, '--strict', '--status', STATUS])
+    expect(statSync(STATUS).mode & 0o777).toBe(0o600)
+  })
+
+  it('without --strict, --status records the fleet fallback (the main agent\'s contract stays)', async () => {
+    writeFileSync(FLEET_TOKEN_PATH, FLEET_TOKEN_VALUE)
+    const r = await run(['MISSING-PLAN-ID', FLEET_TOKEN_PATH, FAILURES_LOG_PATH, '--status', STATUS])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe(FLEET_TOKEN_VALUE)
+    expect(status()).toMatchObject({ state: 'fleet-fallback', reason: 'vault-secret-unresolved' })
+    expect(readFileSync(STATUS, 'utf-8')).not.toContain(FLEET_TOKEN_VALUE)
+  })
+
+  it('an unknown flag or a --status without a path is a usage error: exit 1, nothing on stdout', async () => {
+    for (const extra of [['--lenient'], ['--status'], ['--strict', '--status']]) {
+      const r = await run(['KNOWN-PLAN-ID', FLEET_TOKEN_PATH, FAILURES_LOG_PATH, ...extra])
+      expect(r.code).toBe(1)
+      expect(r.stdout).toBe('')
+    }
   })
 })

@@ -6,7 +6,6 @@ import {
   getModelDistribution,
   getModelSourceBreakdown,
   getToolStats,
-  correlateWithKanban,
 } from '../token-usage.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
 import { logger } from '../../logger.js'
@@ -18,7 +17,10 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/token-usage/collect' && method === 'POST') {
     try {
       const result = await collectTokenUsage()
-      correlateWithKanban()
+      // DBSIZE1111: no card correlation here. The overview page calls this route every 5 minutes, and the
+      // correlation (one UPDATE per card window over every NULL-titled row) grew the DB from 704 to 1364 MB
+      // and held the event loop for 6.8 s on 2026-11-11 15:34. The card is worked out when the rows are read
+      // (getTokenDetails / getModelSourceBreakdown, from kanban_card_events); nothing is stored.
       json(res, { ok: true, ...result })
     } catch (err) {
       logger.error({ err }, 'Token usage collection failed')

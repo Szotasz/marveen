@@ -19,7 +19,7 @@ import {
   agentHasChannel,
   agentSessionName,
   capturePane, capturePaneWithHistory,
-  captureParkedInputView,
+  captureParkedInputView, captureParkedInputViewAsync,
   clearInputBuffer,
   dismissResumeSummaryModalIfPresent,
   dismissModelConsentDialogIfPresent,
@@ -41,6 +41,7 @@ import {
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
+import { cancelRestartWake } from './restart-wake.js'
 import { paneRunsClaude, scheduleHardRestartVerify } from './hard-restart-verify.js'
 import { freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors, supervisorWaitDecision, type SupervisorWait } from './channels-supervisor.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
@@ -89,7 +90,7 @@ import { exactTmuxTarget } from '../tmux-target.js'
 import { beginMainRespawn } from './main-respawn-hold.js'
 import { whileNotFrozen } from './fleet-freeze.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, mainGromzoSlug, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
-import { clearGromzoNeedsAuth, describeNeedsAuthClear, launchLoadsGromzo, mainNeedsAuthConfigDir } from './gromzo-needs-auth.js'
+import { mainChannelUnconfigured, mainSessionRunsUnconfigured } from './main-channel-configured.js'
 import { flushGromzoPendingOwnerAlerts, setGromzoMainLive } from '../notify.js'
 import { gromzoTokenExport, gromzoTokenFile } from './agent-extra-channels.js'
 
@@ -119,29 +120,17 @@ export const PANE_AUTH_PATH = join(PROJECT_ROOT, 'store', '.channels-pane-auth')
 // CFG_ENV nor the tmux global env can add the other credential back. Written by main-auth.ts for every launch.
 export const PANE_AUTH_POST_PATH = join(PROJECT_ROOT, 'store', '.channels-pane-auth-post')
 
-/** GROMZONEEDSAUTH1109: the CLAUDE_CONFIG_DIR a built respawn command exports (buildMainSessionRespawnCmd writes it as
- *  `export CLAUDE_CONFIG_DIR='<dir>'`), or null when it exports none (the shared root). */
-export function respawnCmdConfigDir(claudeCmd: string): string | null {
-  const m = /export CLAUDE_CONFIG_DIR='([^']*)'/.exec(claudeCmd)
-  return m ? m[1] : null
-}
-
-/** GROMZONEEDSAUTH1109 (Samu 74033): before a respawn whose command carries the Gromzo channel, Claude Code's cached
- *  needs-auth entry for the Gromzo server goes out of the config dir THAT command launches with (read from the command
- *  itself, so it is the pane's dir by construction; the same helper as channels.sh; why and what it never touches:
- *  gromzo-needs-auth.ts). Never throws: the respawn goes ahead either way. */
-export function clearGromzoNeedsAuthBeforeRespawn(claudeCmd: string): void {
-  if (!launchLoadsGromzo(claudeCmd)) return
-  try {
-    const r = clearGromzoNeedsAuth(mainNeedsAuthConfigDir(respawnCmdConfigDir(claudeCmd)))
-    if (r.outcome === 'error' || r.outcome === 'not_json' || r.outcome === 'unknown_shape' || r.outcome === 'unknown_format') {
-      logger.warn({ outcome: r.outcome }, describeNeedsAuthClear(r))
-    } else {
-      logger.info({ outcome: r.outcome }, describeNeedsAuthClear(r))
-    }
-  } catch (err) {
-    logger.warn({ err }, 'gromzo-needs-auth: no-op: failed')
-  }
+/** GROMZONEEDSAUTH1109 (Samu 74033, 74110; Dani 74108): the step of a respawn command that takes Claude Code's cached
+ *  needs-auth entry for the Gromzo server out of the config dir the respawned claude will read, with the same helper as
+ *  channels.sh (why, and what it never touches: gromzo-needs-auth.ts). It runs IN the pane, right before claude: after
+ *  respawn-pane -k killed the old claude (so that one cannot write the entry back) and after the command's own exports,
+ *  so "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" is exactly the dir this claude reads. The line goes to channels-failures.log;
+ *  a missing helper or a failure never stops the respawn. The same group as gromzo_needs_auth_pane_step in
+ *  scripts/gromzo-needs-auth-pane.sh (a test keeps the two equal). */
+export function gromzoNeedsAuthPaneStep(projectRoot: string = PROJECT_ROOT): string {
+  const helper = shSingleQuote(join(projectRoot, 'scripts', 'gromzo-needs-auth-clear.mjs'))
+  const log = shSingleQuote(join(projectRoot, 'store', 'channels-failures.log'))
+  return `{ [ ! -f ${helper} ] || node ${helper} "\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}" 2>>${log} || true; }`
 }
 
 /** MAINAUTH1107: the config decision of a dashboard respawn, with the main agent's credential decided and written for
@@ -230,6 +219,8 @@ export function isWithinRestartGrace(name: string, nowMs: number = Date.now()): 
 // and drowned the log). First detection warns; repeats drop to debug. Cleared
 // when a token appears so a later un-bind is announced again.
 const agentNoTokenWarned: Set<string> = new Set()
+// CHANNELUNCONF1110: the main session's "no channel configured" spell was logged (reset when it ends).
+let mainUnconfiguredNoted = false
 // Sessions whose busy-deferral cap has already been reported to the operator, so
 // the alert fires once per down-spell instead of every sweep. Cleared when the
 // plugin recovers (or when the agent is restarted after it goes idle).
@@ -675,7 +666,12 @@ export async function recoverStuckInputForSession(
   // Ghost-stripped capture: a dim autocomplete hint in an empty box must NOT
   // read as parked input, or the recovery below would re-type + submit it
   // (phantom prompt-injection). See captureParkedInputView / stripGhostSuggestion.
-  const pane = captureParkedInputView(session)
+  const pre = await captureParkedInputViewAsync(session)
+  // Something looks parked: read the pane again synchronously, so the read that drives the
+  // decision and the lane acquisition in performStuckInputAction run in one synchronous
+  // stretch (no other writer can take and release the lane in between). The common case,
+  // nothing parked, stays off the event loop.
+  const pane = pre != null && stuckInputSignature(pre) != null ? captureParkedInputView(session) : pre
   const sig = pane != null ? stuckInputSignature(pane) : null
   const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
   if (decision.recover && pane != null) {
@@ -1135,6 +1131,16 @@ export function readMainAgentIdRaw(projectRoot: string = PROJECT_ROOT): string {
 // NOTE: inbound from `--channels` also goes through the allowlist at
 // /etc/claude-code/managed-settings.json (allowedChannelPlugins); a plugin not
 // listed there has its MCP notifications silently dropped. See channels.sh.
+/** CHANNELUNCONF1110: the respawns launch the primary channel only when it is configured
+ *  (main-channel-configured.ts, the twin of the launchers' shell rule). */
+function mainPrimaryConfigured(providerType: string): boolean {
+  return !mainChannelUnconfigured(providerType)
+}
+/** The ids the respawn's --settings file enables: the primary only when configured, then the extras. */
+function mainLaunchPluginIds(provider: { type: string; pluginId: string }): string[] {
+  return [...(mainPrimaryConfigured(provider.type) ? [provider.pluginId] : []), ...readExtraChannelPluginIds()]
+}
+
 export function buildMainSessionRespawnCmd(opts: {
   claudePath: string
   pluginId: string
@@ -1195,6 +1201,12 @@ export function buildMainSessionRespawnCmd(opts: {
   gromzoTokenFile?: string | null
   /** GROMZONOPROVIDER1108: test seam for mainGromzoPrimaryReady when the primary is the Gromzo plugin. */
   gromzoPrimaryReady?: boolean
+  /**
+   * CHANNELUNCONF1110: false when the primary is a token provider with no token (mainPrimaryConfigured): the respawn
+   * then comes back WITHOUT the primary channel, exactly as channels.sh, channel-watchdog.sh and stuck-modal-guard.sh
+   * launch it. Absent: configured (the launch as before).
+   */
+  channelConfigured?: boolean
 }): string {
   // GROMZONOPROVIDER1108: on a gromzo install the Gromzo plugin is the PRIMARY (never also an extra). It comes back only
   // when the main agent can take it (mainGromzoPrimaryReady); otherwise this respawn is a gromzo-pending session with
@@ -1203,7 +1215,7 @@ export function buildMainSessionRespawnCmd(opts: {
   const extras = (opts.extraPluginIds ?? []).filter((p) => !(primaryIsGromzo && p === MAIN_GROMZO_PLUGIN_ID))
   const primaryReady = primaryIsGromzo
     ? (opts.gromzoPrimaryReady ?? mainGromzoPrimaryReady(opts.mainAgentId ?? MAIN_AGENT_ID))
-    : true
+    : (opts.channelConfigured ?? true)
   const primary = primaryReady ? opts.pluginId : null
   const gromzoSlug = (primaryIsGromzo && primaryReady) || extras.includes(MAIN_GROMZO_PLUGIN_ID)
     ? mainGromzoSlug(opts.mainAgentId ?? MAIN_AGENT_ID)
@@ -1259,10 +1271,10 @@ export function buildMainSessionRespawnCmd(opts: {
           // (and, on a key-only install, the tmux global env) carries ANTHROPIC_API_KEY, and that
           // outranks a /login credential as well (Claude Code docs, "Authentication
           // precedence"): this dir authenticates with its own login only.
-          ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY`]
+          ? [`&& export CLAUDE_CONFIG_DIR=${shSingleQuote(opts.config.isolatedConfigDir)} && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY`]
           : opts.config.tokenSecretId
-            ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && _plan_token="$(node '${RESOLVE_PLAN_TOKEN_PATH}' '${opts.config.tokenSecretId}' '${FLEET_OAUTH_TOKEN_PATH}' '${CHANNELS_FAILURES_LOG_PATH}')" && export CLAUDE_CODE_OAUTH_TOKEN="$_plan_token"`]
-            : [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])
+            ? [`&& export CLAUDE_CONFIG_DIR=${shSingleQuote(opts.config.isolatedConfigDir)} && _plan_token="$(node '${RESOLVE_PLAN_TOKEN_PATH}' '${opts.config.tokenSecretId}' '${FLEET_OAUTH_TOKEN_PATH}' '${CHANNELS_FAILURES_LOG_PATH}')" && export CLAUDE_CODE_OAUTH_TOKEN="$_plan_token"`]
+            : [`&& export CLAUDE_CONFIG_DIR=${shSingleQuote(opts.config.isolatedConfigDir)} && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])
       : opts.config.fleetToken
         ? [`&& export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
         : []),
@@ -1272,6 +1284,8 @@ export function buildMainSessionRespawnCmd(opts: {
     // MXDAGENTSOCKID1106: and its token file, so a protected main agent's hello is not refused.
     ...(gromzoSlug ? [`&& export MXD_AGENT="${gromzoSlug}" MXD_SCOPE="both"`] : []),
     ...(gromzoToken ? [`&& ${gromzoToken.replace(/ && $/, '')}`] : []),
+    // GROMZONEEDSAUTH1109: in the pane, after the kill and the exports, right before claude (gromzoNeedsAuthPaneStep).
+    ...(channelsList.includes(`plugin:${MAIN_GROMZO_PLUGIN_ID}`) ? [`&& ${gromzoNeedsAuthPaneStep()}`] : []),
     '&&', opts.claudePath,
     ...(opts.continueSession ? ['--continue'] : []),
     '--dangerously-skip-permissions',
@@ -1357,7 +1371,8 @@ export function respawnMainSessionFresh(): void {
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
       mainAgentId: readMainAgentIdRaw(),
-      extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
+      channelConfigured: mainPrimaryConfigured(provider.type),
+      extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, mainLaunchPluginIds(provider)),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       // The main session always starts a new conversation -- this is the whole
@@ -1365,7 +1380,6 @@ export function respawnMainSessionFresh(): void {
       continueSession: false,
       config: mainRespawnConfigWithAuth(),
     })
-    clearGromzoNeedsAuthBeforeRespawn(claudeCmd)
     // c5296a52: the two reaps above kill the pane's claude, and channels.sh starts the session
     // WITHOUT remain-on-exit -- so the pane and the session can already be gone by the time we get
     // here. `respawn-pane -k` then throws "can't find pane", the caller only logs it, lastRestart
@@ -1466,7 +1480,8 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
       mainAgentId: readMainAgentIdRaw(),
-    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
+    channelConfigured: mainPrimaryConfigured(provider.type),
+    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, mainLaunchPluginIds(provider)),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: true,
@@ -1476,7 +1491,6 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       // preserving the prior shared-root behaviour.
       config: mainRespawnConfigWithAuth(),
     })
-    clearGromzoNeedsAuthBeforeRespawn(claudeCmd)
     if (opts.byMonitor) monitorMainRespawnAt = Date.now()
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
@@ -1777,7 +1791,8 @@ function respawnMarveenSessionFresh(): boolean {
       pluginId: provider.pluginId,
       extraPluginIds: readExtraChannelPluginIds(),
       mainAgentId: readMainAgentIdRaw(),
-    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, [provider.pluginId, ...readExtraChannelPluginIds()]),
+    channelConfigured: mainPrimaryConfigured(provider.type),
+    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, mainLaunchPluginIds(provider)),
       channelStateEnv: mainChannelStateEnv(provider.type),
       model: readConfiguredMainModel(),
       continueSession: false,
@@ -1786,7 +1801,6 @@ function respawnMarveenSessionFresh(): boolean {
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
       config: mainRespawnConfigWithAuth(),
     })
-    clearGromzoNeedsAuthBeforeRespawn(claudeCmd)
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
     scheduleGromzoOrphanReap('main-respawn', tmuxBin())
@@ -1947,6 +1961,10 @@ function verifyHardRestartLater(): void {
 }
 
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
+  // MAINRESTARTWAKE1115 (review C3): a manual restart may have left a wake pending for the main
+  // session. Any restart of that session drops it here; the two manual routes schedule their own
+  // AFTER this call, so a guard or recovery restart inside the grace gets its own directive only.
+  cancelRestartWake(MAIN_AGENT_ID)
   // FABLEFALL1: the restarted session boots from the main/worker shared config
   // roots, which the per-agent spawn-time stamp never covers -- stamp them now
   // so the model consent dialog cannot render on the fresh boot (change-only,
@@ -3127,6 +3145,18 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         setGromzoMainLive(false)
         continue
       }
+      // CHANNELUNCONF1110: channels.sh launched the main session WITHOUT its primary channel (a token provider with no
+      // token: store/.channel-unconfigured), and the rule still says so (a false marker alone does nothing, Dani K1).
+      // An absent plugin is the expected state, not a dead one: no liveness action, no down ladder, nothing typed into
+      // the session; channels.sh restarts it once the token is set. Said once per unconfigured spell.
+      if (t.isMarveen && mainSessionRunsUnconfigured(t.provider)) {
+        if (!mainUnconfiguredNoted) {
+          mainUnconfiguredNoted = true
+          logger.info({ session: t.session, provider: t.provider }, 'Main session runs without its channel: no token configured -- no liveness action until one is set')
+        }
+        continue
+      }
+      if (t.isMarveen) mainUnconfiguredNoted = false
       const liveness = await probeChannelPluginLivenessAsync(claudePid, t.provider, t.agentName, { confirmAlive: openDownSpell }, sweepSnapshot ?? undefined)
       if (liveness === 'unknown') {
         // The PROBE failed (ps timed out, state dir unreadable) -- that is not

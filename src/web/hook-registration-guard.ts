@@ -45,6 +45,10 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'slack_progress_clear.py',
   'slack_progress_reply_clear.py',
   'slack_progress_watchdog.py',
+  // PELENKAGCHAT1113: one script on two events (UserPromptSubmit records the
+  // inbound's thread, PreToolUse judges the Google Chat reply), in both the
+  // project settings and the sub-agent template.
+  'googlechat-thread-guard.py',
   'inbox-drain.py',
   'channel-inbox-drain.py',
   'ledger-capture.py',

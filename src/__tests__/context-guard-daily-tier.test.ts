@@ -64,6 +64,8 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     contextTokens: null,
     idleMs: null,
     dailyHandoffDue: false,
+    periodicHandoffDue: false,
+    taskCloseHandoffDue: false,
     usageLimited: false,
     pendingResumeExpiresAtMs: null,
     ...overrides,
@@ -406,7 +408,7 @@ describe('runner wiring', () => {
   it('the runner does not treat a daily-only agent as fully disarmed', () => {
     const code = src('src/web/context-guard-runner.ts')
     expect(code).toContain(
-      'if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {',
+      'if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled && !cfg.periodicHandoffEnabled && !cfg.taskCloseHandoffEnabled) {',
     )
   })
 })

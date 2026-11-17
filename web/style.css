@@ -793,6 +793,22 @@ main {
 .overview-card-head h3 { font-size: 16px; font-weight: 600; }
 .overview-card-meta { font-size: 12px; color: var(--text-muted); }
 
+/* Overview token card: one row per agent, bar = share of the busiest agent. */
+.overview-token-card { margin-top: 14px; }
+.overview-token-more { text-decoration: none; }
+.overview-token-more:hover { color: var(--accent); }
+.overview-tokens { display: flex; flex-direction: column; gap: 10px; }
+.overview-token-row { display: grid; grid-template-columns: 120px 1fr auto; gap: 4px 12px; align-items: center; }
+.overview-token-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-token-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.overview-token-bar-fill { height: 100%; border-radius: 4px; background: var(--accent); }
+.overview-token-value { min-width: 64px; font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
+.overview-token-sub { grid-column: 2 / 4; font-size: 11px; color: var(--text-muted); }
+.overview-token-total { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+@media (max-width: 600px) {
+  .overview-token-row { grid-template-columns: 90px 1fr auto; }
+}
+
 .overview-team-graph {
   padding: 12px 0;
   gap: 14px;
@@ -4665,6 +4681,8 @@ a.oss-inv-name:hover { text-decoration: underline; }
   padding: 6px 10px;
   border-radius: var(--radius-sm);
   font-size: 13px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 .github-repo-status.loading { background: var(--bg-card); color: var(--accent); border: 1px solid var(--accent); }
 .github-repo-status.error { background: var(--bg-card); color: var(--danger); border: 1px solid var(--danger); }
@@ -6696,6 +6714,18 @@ a.oss-inv-name:hover { text-decoration: underline; }
   line-height: 1.5;
   white-space: pre-line;
 }
+.confirm-dialog-token {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 18px;
+  padding: 8px 10px;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
 .settings-reset-confirm-keys {
   list-style: none;
   margin: 0 0 20px;
@@ -6725,6 +6755,16 @@ a.oss-inv-name:hover { text-decoration: underline; }
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
+.confirm-dialog-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+.confirm-dialog-check input { margin-top: 2px; flex: none; }
 .confirm-dialog-actions {
   display: flex;
   justify-content: flex-end;

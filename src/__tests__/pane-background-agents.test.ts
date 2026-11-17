@@ -81,6 +81,36 @@ const BUSY_WITH_FIVE_AGENTS = [
   row('Task five                     ', '6m 19s', '40.1k'),
 ].join('\n')
 
+// PANEGLYPH1115: Claude Code draws the header with its platform bullet, `macos ? "\u23FA" : "\u25CF"` (read from the
+// 2.1.325 binary; the switch is there in 2.1.169 too), so on Linux the same block reads `  ● main`. A customer's
+// Linux install kept the block in the pane, read 'unknown', and the scheduler did not type for hours.
+const linux = (pane: string) => pane.replace('  ⏺ main', '  ● main')
+
+describe('the header glyph on Linux (PANEGLYPH1115)', () => {
+  it('each measured shape reads the same with `● main` as with `⏺ main`', () => {
+    for (const pane of [IDLE_WITH_AGENTS, TURN_START_WITH_AGENTS, BUSY_WITH_FIVE_AGENTS]) {
+      expect(linux(pane)).toContain('  ● main')
+      expect(detectPaneState(linux(pane))).toBe(detectPaneState(pane))
+      expect(isReadyForPrompt(linux(pane))).toBe(isReadyForPrompt(pane))
+      expect(detectBackgroundAgents(linux(pane))).toEqual(detectBackgroundAgents(pane))
+    }
+    expect(detectBackgroundAgents(linux(IDLE_WITH_AGENTS))).toEqual({ total: 2, running: 2, queued: 0 })
+    expect(detectPaneState(linux(TURN_START_WITH_AGENTS))).toBe('busy')
+  })
+
+  it('no other header is a block: another glyph, no indent, or more text after `main`', () => {
+    for (const header of ['  ◉ main', '  ○ main', '  * main', '  • main', '● main', '⏺ main', '  ● main thread', '  ● mainline', '  ●  main']) {
+      const pane = IDLE_WITH_AGENTS.replace('  ⏺ main', header)
+      expect(detectBackgroundAgents(pane), header).toBeNull()
+    }
+  })
+
+  it('the rows stay strict: a `●` row under a `● main` header is not counted', () => {
+    const pane = linux(IDLE_WITH_AGENTS) + '\n  ● general-purpose  Some task 3m 2s · ↓ 1.0k tokens'
+    expect(detectBackgroundAgents(pane)).toBeNull()
+  })
+})
+
 describe('background-agent block below the footer', () => {
   it('idle main thread with running agents reads idle, and the agents are counted', () => {
     expect(detectPaneState(IDLE_WITH_AGENTS)).toBe('idle')

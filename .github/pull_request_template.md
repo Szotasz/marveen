@@ -29,24 +29,24 @@ Closes #
 
 ## Titok-kapu / Secret gate
 
-A `secret-gate` CI-job a valodi kapu. A lokalis pre-commit hook csak gyors
-elorejelzes, es `--no-verify`-jal megkerulheto -- ne tekintsd elegnek.
+A `secret-gate` CI-job a valódi kapu. A lokális pre-commit hook csak gyors
+előrejelzés, és `--no-verify`-jal megkerülhető -- ne tekintsd elégnek.
 The `secret-gate` CI job is the real gate; the local pre-commit hook is a fast
 preview and can be skipped with `--no-verify`, so it is not sufficient on its own.
 
-- [ ] Nincs a valtoztatasban bizonyitek-/artefaktum-mappa, titok-alaku string vagy idezett csatorna-uzenet.
+- [ ] Nincs a változtatásban bizonyíték-/artefaktum-mappa, titok-alakú string vagy idézett csatorna-üzenet.
       / No evidence or artifact directory, secret-shaped string, or quoted channel message in this change.
 
 ## Review-nyom / Review trace
 
-Kulso szerzo PR-jet a szokasos modon hagyjuk jova (zold "Approved"). A flotta SAJAT PR-jen ez az
-allapot technikai okbol nem elerheto -- minden agens ugyanazzal a GitHub-fiokkal ir --, ezert ott a
-verdikt egy `COMMENTED` review-komment, aminek az elso sora a harom allapot egyike:
+Külső szerző PR-jét a szokásos módon hagyjuk jóvá (zöld "Approved"). A flotta SAJÁT PR-jén ez az
+állapot technikai okból nem elérhető -- minden ágens ugyanazzal a GitHub-fiókkal ír --, ezért ott a
+verdikt egy `COMMENTED` review-komment, aminek az első sora a három állapot egyike:
 `FLEET REVIEW -- GO`, `FLEET REVIEW -- FIX-THEN-GO` vagy `FLEET REVIEW -- NO-GO`.
-A `FIX-THEN-GO` azt jelenti, hogy erdemben nincs blokkolo: a kommentben MEGNEVEZETT javitasoknak be
-kell menniuk, a szerzo pedig a PR-en olvassa vissza oket -- uj review-kor nem kell, de a merge megvarja
-azt a visszaolvasast.
-Reszletek: [CONTRIBUTING.md](https://github.com/Szotasz/marveen/blob/develop/CONTRIBUTING.md).
+A `FIX-THEN-GO` azt jelenti, hogy érdemben nincs blokkoló: a kommentben MEGNEVEZETT javításoknak be
+kell menniük, a szerző pedig a PR-en olvassa vissza őket -- új review-kör nem kell, de a merge megvárja
+azt a visszaolvasást.
+Részletek: [CONTRIBUTING.md](https://github.com/Szotasz/marveen/blob/develop/CONTRIBUTING.md).
 
 An outside contributor's PR is approved the normal way (green "Approved"). A PR written by the fleet
 cannot carry that state, because every agent writes through the same GitHub account, so the verdict

@@ -74,6 +74,10 @@ describe('parseStatTotalLine (first line of /proc/stat)', () => {
   it('rejects fewer than 5 numeric fields', () => {
     expect(parseStatTotalLine('cpu  1 2 3 4')).toBeNull()
   })
+  it('accepts exactly 5 or 7 numeric fields', () => {
+    expect(parseStatTotalLine('cpu  1 2 3 4 5')).toEqual({ total: 15, idleAll: 9 })
+    expect(parseStatTotalLine('cpu  1 2 3 4 5 6 7')).toEqual({ total: 28, idleAll: 9 })
+  })
 })
 
 describe('computeBusyFrac (delta between two cpu snapshots)', () => {
@@ -126,6 +130,14 @@ describe('parseMeminfo (kB -> MB)', () => {
   it('only SwapFree missing (SwapTotal present) -> swapUsedMB null, not full swap', () => {
     const noFree = FIXTURE.split('\n').filter((l) => !l.startsWith('SwapFree')).join('\n')
     expect(parseMeminfo(noFree)).toEqual({ memAvailableMB: 1024, swapUsedMB: null })
+  })
+  it('SwapFree above SwapTotal -> swapUsedMB null, memory still available', () => {
+    const aboveTotal = FIXTURE.split('\n').map((l) => l.startsWith('SwapFree:') ? 'SwapFree:        3145728 kB' : l).join('\n')
+    expect(parseMeminfo(aboveTotal)).toEqual({ memAvailableMB: 1024, swapUsedMB: null })
+  })
+  it('SwapFree equal to SwapTotal -> swapUsedMB 0', () => {
+    const equalTotal = FIXTURE.split('\n').map((l) => l.startsWith('SwapFree:') ? 'SwapFree:        2097152 kB' : l).join('\n')
+    expect(parseMeminfo(equalTotal)).toEqual({ memAvailableMB: 1024, swapUsedMB: 0 })
   })
 })
 

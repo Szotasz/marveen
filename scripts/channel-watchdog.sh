@@ -156,6 +156,16 @@ if [ "$CHANNEL_PROVIDER" = "gromzo" ]; then
     PRIMARY_PLUGIN_ID=""
   fi
 fi
+# CHANNELUNCONF1110: a token provider with no token runs WITHOUT its primary channel, exactly as channels.sh launches
+# it (scripts/main-channel-configured.sh). Then the keepalive has no producer (no poller, no inbound), so STALE below
+# is not a wedge and does not respawn; a dead Claude token (AUTHDEAD) still does, without the primary.
+CHANNEL_UNCONFIGURED=0
+# shellcheck source=scripts/main-channel-configured.sh
+if . "$INSTALL_DIR/scripts/main-channel-configured.sh" 2>/dev/null \
+   && main_channel_unconfigured "$CHANNEL_PROVIDER" "$INSTALL_DIR" "${HOME:-}"; then
+  CHANNEL_UNCONFIGURED=1
+  PRIMARY_PLUGIN_ID=""
+fi
 EXTRA_CHANNELS=""
 for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
@@ -205,6 +215,8 @@ else
   age=$(( now - ka_mtime ))
   [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
 fi
+# CHANNELUNCONF1110: no channel configured, so nothing keeps the keepalive fresh: not a wedge.
+[ "$CHANNEL_UNCONFIGURED" = "1" ] && STALE=false
 
 # --- signal 2: AUTHDEAD (pane auth-marker scan via channels-auth-probe.mjs) ---
 AUTHDEAD=false
@@ -359,7 +371,11 @@ PANE_AUTH_SRC="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-aut
 # MAINAUTH1107: the post-file right AFTER CFG_ENV (api: the token unset; subscription: the key unset), so neither the
 # config branch nor the tmux global env can add the other credential back.
 PANE_AUTH_POST="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post") ] || . $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-auth-post"); } && "
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
+# GROMZONEEDSAUTH1109: the Gromzo needs-auth cleanup in the pane, after the kill and the exports, right before claude
+# (scripts/gromzo-needs-auth-pane.sh). No helper (a half-updated tree): no step, the respawn as before.
+. "$INSTALL_DIR/scripts/gromzo-needs-auth-pane.sh" 2>/dev/null || gromzo_needs_auth_pane_step() { :; }
+GROMZO_NA_STEP="$(gromzo_needs_auth_pane_step "$INSTALL_DIR" "$CHANNELS_ARG")"
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}${GROMZO_NA_STEP}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

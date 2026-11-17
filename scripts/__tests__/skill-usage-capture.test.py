@@ -231,6 +231,42 @@ class TestBashSkillRead(unittest.TestCase):
         self.assertEqual(self._b("echo hi"), [])
         self.assertEqual(self._b(""), [])
 
+    # SKILLREADERONLY1109: the review of #2644 measured these as counted reads.
+    def test_a_mention_is_not_a_read(self):
+        for cmd in [
+            'echo "see .claude/skills/gamma/SKILL.md for details"',
+            "git diff -- .claude/skills/zeta/SKILL.md",
+            "ls -la .claude/skills/eta/SKILL.md",
+            "printf '%s\\n' /s/.claude/skills/a/SKILL.md",
+            "grep -l foo /s/.claude/skills/a/SKILL.md",
+            "grep -rl foo /s/.claude/skills/a/SKILL.md",
+            "rg --files-with-matches foo /s/.claude/skills/a/SKILL.md",
+            "grep -c foo /s/.claude/skills/a/SKILL.md",
+        ]:
+            self.assertEqual(self._b(cmd), [], cmd)
+
+    def test_heredoc_body_is_not_a_read(self):
+        cmd = "cat > /tmp/notes.md <<'EOF'\nread .claude/skills/delta/SKILL.md first\ncat /s/.claude/skills/omega/SKILL.md\nEOF"
+        self.assertEqual(self._b(cmd), [])
+        # ...but a real read after the heredoc still counts
+        cmd2 = "python3 - <<EOF\nprint('.claude/skills/delta/SKILL.md')\nEOF\ncat /s/.claude/skills/real/SKILL.md"
+        self.assertEqual(self._b(cmd2), ["real"])
+
+    def test_readers_count(self):
+        self.assertEqual(self._b("tail -n 20 /s/.claude/skills/a/SKILL.md"), ["a"])
+        self.assertEqual(self._b("awk 'NR<10' /s/.claude/skills/a/SKILL.md"), ["a"])
+        self.assertEqual(self._b("grep -n Buktato /s/.claude/skills/a/SKILL.md"), ["a"])
+        self.assertEqual(self._b('cat "$HOME/.claude/skills/eps/SKILL.md"'), ["eps"])
+        self.assertEqual(self._b("LC_ALL=C /usr/bin/head -5 /s/.claude/skills/a/SKILL.md"), ["a"])
+        self.assertEqual(self._b("cd /s && cat .claude/skills/a/SKILL.md 2>/dev/null"), ["a"])
+
+    def test_mention_next_to_a_read_counts_only_the_read(self):
+        cmd = "echo /s/.claude/skills/x/SKILL.md; cat /s/.claude/skills/y/SKILL.md"
+        self.assertEqual(self._b(cmd), ["y"])
+
+    def test_unparseable_line_is_skipped_not_raised(self):
+        self.assertEqual(self._b("cat '/s/.claude/skills/a/SKILL.md"), [])
+
     def test_read_tool_sees_isolated_root(self):
         self.assertEqual(
             hook._classify("Read", {"file_path": "/srv/m/.channels-config/skills/b/SKILL.md"}),

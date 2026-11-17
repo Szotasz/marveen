@@ -44,7 +44,7 @@ import type { AgentTokenResolver } from './agent-tokens.js'
 import { logger } from '../logger.js'
 import { getAgentMessage, getApproval, getDb } from '../db.js'
 import { readBody, stashPreReadBody, RequestBodyTooLargeError } from './http-helpers.js'
-import { readVaultAcl, type VaultAcl } from './vault-acl.js'
+import { agentVaultMode, isAgentReadableVaultId, readVaultAcl, type AgentVaultMode, type VaultAcl } from './vault-acl.js'
 
 export type AuthResult =
   | { kind: 'token'; agent?: string; tokenAgent?: string }
@@ -278,33 +278,25 @@ export interface AgentAllowEntry {
 //
 // Which secret a sub-agent token may read is NOT a new table: it is the
 // existing per-secret reader allowlist, store/vault-acl.json (vault-acl.ts,
-// shape { "<secret-id>": ["agent", ...] }). For a sub-agent TOKEN it always
-// binds, whatever VAULT_ACL_MODE says: that switch decides how far a
-// self-asserted X-Agent-Id is trusted, and an authenticated principal has
-// nothing to switch off. An empty or missing file therefore means "a sub-agent
-// token reads no secret value" (the listing, names only, stays open). The main
-// token is not affected.
+// shape { "<secret-id>": ["agent", ...] }). For a sub-agent TOKEN it binds
+// whatever VAULT_ACL_MODE says (that switch decides how far a self-asserted
+// X-Agent-Id is trusted); the own token has its own switch,
+// VAULT_ACL_AGENT_MODE, 'enforce' by default. In 'enforce' an empty or missing
+// file means "a sub-agent token reads no secret value" (the listing, names
+// only, stays open). 'audit' is the observation week before the list exists:
+// the floor below still holds, every other read passes and is logged with the
+// allowlist's verdict. The main token is not affected.
 
-// Vault ids a sub-agent may never read through GET /api/vault/<id>: the vault's
-// own sub-resources (bindings, scan, sync, import, resolve) and every SSH id --
-// ssh-servers, ssh-keys and the ssh-key-<id> PRIVATE keys the SSH-key manager
-// stores as plain vault secrets. Judged on the DECODED, lower-cased id, the
-// same string the route hands to getSecret(). A floor under the ACL, should the
-// file ever list such an id.
-export function isAgentReadableVaultId(rawId: string): boolean {
-  let id: string
-  try { id = decodeURIComponent(rawId) } catch { return false }
-  const lc = id.trim().toLowerCase()
-  if (!lc || lc.includes('/')) return false
-  if (['bindings', 'scan', 'sync', 'import', 'resolve'].includes(lc)) return false
-  if (lc.startsWith('ssh')) return false
-  return true
-}
+// The floor (SSH material, the vault's own sub-resources) lives in vault-acl.ts next to the agent mode; re-exported
+// here for the callers and tests that import it from the gate.
+export { isAgentReadableVaultId }
 
-/** Both must hold: the id lists the caller in the vault ACL, AND it is not SSH
- *  material or a sub-resource. */
-export function isAgentVaultReadAllowed(agent: string, rawId: string, acl: VaultAcl): boolean {
+/** Both must hold: the id is not SSH material or a sub-resource, AND (in VAULT_ACL_AGENT_MODE=enforce, the default)
+ *  the vault ACL lists the caller. In 'audit' (the observation week) the floor alone decides; the route logs the
+ *  allowlist's verdict for every such read. */
+export function isAgentVaultReadAllowed(agent: string, rawId: string, acl: VaultAcl, agentMode: AgentVaultMode = agentVaultMode()): boolean {
   if (!isAgentReadableVaultId(rawId)) return false
+  if (agentMode === 'audit') return true
   let id: string
   try { id = decodeURIComponent(rawId) } catch { return false }
   // Own keys only: `acl[id]` on a plain object also finds the prototype, so an
@@ -339,6 +331,13 @@ export const AGENT_TOKEN_ALLOWLIST: readonly AgentAllowEntry[] = [
   { methods: ['POST'], pattern: /^\/api\/skill-usage$/, why: 'skill-usage-capture hook' },
   { methods: ['POST'], pattern: /^\/api\/tool-log$/, why: 'tool-log-capture hook' },
   { methods: ['GET'], pattern: /^\/api\/voice\/directive$/, why: 'voice-reply-directive hook' },
+  // VAULTSZELES826 (0) replay, Samu 74563: what sub-agents call today and must keep after AGENT_TOKENS.
+  // The proposer is the authenticated token (routes/skills.ts proposedBy = auth.agent); approval stays the owner's.
+  { methods: ['POST'], pattern: /^\/api\/skills\/propose$/, why: 'skill proposal (marveen-api.sh skill-propose, every agent CLAUDE.md)' },
+  { methods: ['GET'], pattern: /^\/api\/updates$/, why: 'update status (read): version, conflict guard, deployment kind' },
+  // AUTOUPDATEDIVERG1110 (Dani F3): read-only, no fetch; an agent reads the hash it files its update_rebase request with.
+  { methods: ['GET'], pattern: /^\/api\/updates\/rebase-plan$/, why: 'update rebase plan (read): local commits, upstream, the hash an approval binds' },
+  { methods: ['GET'], pattern: /^\/api\/claude-plans\/(?:state|readiness)$/, why: 'plan rotation telemetry and readiness (read); rotation and plan writes stay the main agent\'s' },
 ]
 
 export function isAgentAllowed(path: string, method: string, agent = '', vaultAcl: () => VaultAcl = readVaultAcl): boolean {

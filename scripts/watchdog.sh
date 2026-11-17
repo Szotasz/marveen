@@ -122,57 +122,51 @@ if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
 fi
 # VOICETOKENLEAK1101 round 3: never in a child's environment (an exported TOKEN the caller had keeps its export
-# attribute through the assignment), and never on curl's argv (the replay below passes it by process substitution).
+# attribute through the assignment), and never on curl's argv (the redelivery request below passes it by process
+# substitution).
 export -n TOKEN
 
-# Replays delivered-but-not-completed messages from the last 2 hours into
-# a freshly restarted agent session. Called after a confirmed restart.
-replay_unfinished_messages() {
+# REPLAYNOENVELOPE1114: after a confirmed restart, ask the dashboard to put this agent's delivered, not closed
+# messages back in its queue (POST /api/agents/<id>/redeliver-open). The message router then delivers them again
+# through its normal path: envelope with sender and msg_id, a note that it is a redelivery, the pane mapping, the
+# chunker, the delivery trace, the seen sweep. This script types NOTHING into the pane any more (the Python replay
+# it used to call typed raw content with no envelope), and the call carries only the agent name: the server
+# chooses the rows (never a system directive, each row at most once). No token, no dashboard or a non-200 answer
+# means no redelivery, and each of those is a line in $LOG, never silent.
+request_open_redelivery() {
   local AGENT_ID="$1"
-  local SESSION_NAME="$2"
+  local RESPONSE HTTP_CODE BODY COUNT
 
-  [ -z "$TOKEN" ] && return
-
-  local NOW CUTOFF RESPONSE TMPDATA
-  NOW=$(date +%s)
-  CUTOFF=$(( NOW - 7200 ))
-
-  # ⛔ `agent`, nem `to`: a `to` SOSEM volt ismert parameter ezen a vegponton (KNOWN_PARAMS:
-  # agent, status, limit, before), es 2026-08-18 ota HANGOS 400-at kap.
-  # ⛔ A hiba NEM a `|| return` agan bukott ki: a curl `-f` nelkul 400-nal is 0-val ter vissza, es
-  # a hiba-JSON se nem ures, se nem "[]" -- tehat ADATKENT ment tovabb a replay-nek, ahol a
-  # json.load egy dict-et ad es a "for m in msgs" a KULCSOKON iteral. Ezert kell a HTTP-kod is.
-  # ⛔ A kommentek SZANDEKOSAN a parancs ELOTT allnak: egy `\`-folytatasorok koze tett komment
-  # elnyeli a sor hatralevo reszet (merve: az URL is a kommentbe kerult, a `bash -n` megis zold
-  # maradt -- a szintaxis-ellenorzes a JELENTEST nem meri).
-  RESPONSE=$(curl -s -m 5 \
-    -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
-    -w '\n%{http_code}' \
-    "http://localhost:${WEB_PORT}/api/messages?agent=${AGENT_ID}&limit=200" 2>/dev/null) || return
-  HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
-  RESPONSE=$(printf '%s' "$RESPONSE" | sed '$d')
-  if [ "$HTTP_CODE" != "200" ]; then
-    echo "$(timestamp) [watchdog] $AGENT_ID: /api/messages HTTP $HTTP_CODE, replay kihagyva" >> "$LOG"
+  if [ -z "$TOKEN" ]; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: nincs dashboard token, ujrakezbesites kihagyva" >> "$LOG"
     return
   fi
 
-  [ -z "$RESPONSE" ] || [ "$RESPONSE" = "[]" ] && return
-
-  TMPDATA=$(mktemp)
-  echo "$RESPONSE" > "$TMPDATA"
-
-  # Replay logic extracted to its own file (testable) + MSGSZIVARGAS826: every
-  # injected message writes a dated marker into the dashboard log -- this used
-  # to be a fully record-less injection path, invisible to every detector.
-  # stderr goes to the watchdog log, NOT /dev/null (NOTIFYVAKSWEEP826 zaro
-  # kor, Marveen msg 16091): the replay python is honest about a failed
-  # marker write, but the old 2>/dev/null buried exactly that line -- the
-  # instrument built against silence would have gone blind silently.
-  python3 "$INSTALL_DIR/scripts/watchdog-replay.py" \
-    "$SESSION_NAME" "$AGENT_ID" "$CUTOFF" "$TMPDATA" \
-    "$INSTALL_DIR/store/dashboard.log" 2>>"$LOG"
-
-  rm -f "$TMPDATA"
+  # The token goes in a header read from a process substitution (printf is a builtin): never on curl's argv, never
+  # exported. -w appends the HTTP code on its own last line; without -f curl exits 0 on a 4xx/5xx too, so the code
+  # is what tells success. An empty -X POST sends no body, which is the only body the endpoint accepts.
+  if ! RESPONSE=$(curl -s -m 5 -X POST \
+    -H @<(printf 'Authorization: Bearer %s\n' "$TOKEN") \
+    -w '\n%{http_code}' \
+    "http://localhost:${WEB_PORT}/api/agents/${AGENT_ID}/redeliver-open" 2>/dev/null); then
+    echo "$(timestamp) [watchdog] $AGENT_ID: dashboard nem erheto el, ujrakezbesites kihagyva" >> "$LOG"
+    return
+  fi
+  HTTP_CODE=$(printf '%s' "$RESPONSE" | tail -n1)
+  BODY=$(printf '%s' "$RESPONSE" | sed '$d')
+  if [ "$HTTP_CODE" != "200" ]; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: redeliver-open HTTP $HTTP_CODE, ujrakezbesites kihagyva" >> "$LOG"
+    return
+  fi
+  COUNT=$(printf '%s' "$BODY" | sed -n 's/.*"requeued":\([0-9][0-9]*\).*/\1/p' | head -n1)
+  if [ -z "$COUNT" ]; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: redeliver-open HTTP 200, de a valaszban nincs requeued szam" >> "$LOG"
+    return
+  fi
+  # Quiet on zero: a restart with nothing to put back is the normal case.
+  if [ "$COUNT" -gt 0 ]; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: $COUNT uzenet visszateve ujrakezbesitesre (redeliver-open)" >> "$LOG"
+  fi
 }
 
 # ── Dashboard ──────────────────────────────────────────────────────────────
@@ -264,8 +258,7 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
 
   if tmux has-session -t "=$SESSION_NAME:" 2>/dev/null; then
     echo "$(timestamp) [watchdog] $AGENT_ID restarted OK" >> "$LOG"
-    REPLAY_OUT=$(replay_unfinished_messages "$AGENT_ID" "$SESSION_NAME" 2>&1)
-    [ -n "$REPLAY_OUT" ] && echo "$(timestamp) $REPLAY_OUT" >> "$LOG"
+    request_open_redelivery "$AGENT_ID"
   else
     echo "$(timestamp) [watchdog] $AGENT_ID restart FAILED" >> "$LOG"
   fi

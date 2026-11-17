@@ -112,6 +112,8 @@ describe('decideGuard -- idle-flush veto on background work', () => {
     handoffMtime: null,
     paneSaturated: false,
     dailyHandoffDue: false,
+    periodicHandoffDue: false,
+    taskCloseHandoffDue: false,
     contextTokens: 600_000,
     idleMs: 21 * 60_000,
     usageLimited: false,

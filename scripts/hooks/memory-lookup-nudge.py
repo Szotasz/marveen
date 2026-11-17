@@ -31,6 +31,10 @@ MACHINE_MARKERS = (
     "[Uzenet @",
     "[Uzenet a tavoli @",
     "[Üzenet @",
+    # the typed shape of the same headers (ENVATLEAK1114: the pane mapping escapes the at-sign)
+    "[Uzenet \\@",
+    "[Uzenet a tavoli \\@",
+    "[Üzenet \\@",
     "<command-name>",
     "<local-command-",
     "<system-reminder>",

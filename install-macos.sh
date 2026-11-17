@@ -1169,7 +1169,11 @@ ok "$(_t macos.npm_done)"
 # Build TypeScript
 INSTALL_STEP="typescript-build"
 echo -e "$(_t macos.building)"
-if ! npm run build --loglevel warn; then
+# Same PATH pin as npm ci/install above: a bare `npm run build` resolves the
+# generic Homebrew `node`, which may be a different major -- or broken outright
+# (a node bottle linked against a simdjson dylib that a later brew upgrade
+# removed aborts in dyld, and the install died here with node@22 present).
+if ! PATH="$NODE_BIN_DIR:$PATH" npm run build --loglevel warn; then
   fail "TypeScript forditas sikertelen. Ellenorizd a hibauzeneteket fentebb."
 fi
 ok "$(_t macos.ts_built)"

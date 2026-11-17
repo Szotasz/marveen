@@ -47,10 +47,10 @@ FROM ${NODE_IMAGE} AS runtime
 ENV npm_config_fund=false npm_config_audit=false npm_config_update_notifier=false
 
 # Runtime tools (see the installer inventory): tmux runs the agents, git/curl/lsof/python3 are called by the scripts and
-# hooks, ffmpeg serves the voice features, sqlite3 the maintenance scripts; tini is PID 1, supervisor replaces the
-# systemd user units of the Linux install.
+# hooks, ffmpeg serves the voice features, sqlite3 the maintenance scripts, zip/unzip the skills export and import;
+# tini is PID 1, supervisor replaces the systemd user units of the Linux install.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      tini supervisor tmux git curl lsof python3 ffmpeg sqlite3 ca-certificates procps tzdata \
+      tini supervisor tmux git curl lsof python3 ffmpeg sqlite3 zip unzip ca-certificates procps tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Pinned agent runtime: the claude CLI (npm-global, /usr/local/bin/claude) and bun (the Telegram/Discord channel

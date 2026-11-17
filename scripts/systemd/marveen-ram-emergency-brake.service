@@ -1,0 +1,55 @@
+# NOTE: replace /path/to/marveen (install dir) and /home/USER (home) with your values.
+#
+# RAM emergency brake (scripts/ram-emergency-brake.py), Linux only, opt-in:
+# polls /proc/meminfo every 3 s; under 600 MB MemAvailable for 2 samples it
+# stops the largest allowlisted heavy job (a heavy-job-*.scope of
+# scripts/heavy-job-gate.sh first, then ffmpeg, headless browser, node test
+# runner / build / render, and python scripts listed in
+# store/ram-emergency-brake.json). Unloading ollama models first is opt-in
+# ("ollama_unload": true in that file, optionally "ollama_models"), off by
+# default: see scripts/systemd/README-host-stability.md for its cost.
+# Never touches agent sessions, tmux, dashboard, channels, bun, sshd. One owner
+# alert per incident through scripts/notify.sh (Slack first when configured,
+# Telegram as the fallback), so it reaches the owner on any channel.
+# Install:
+#   cp scripts/systemd/marveen-ram-emergency-brake.service ~/.config/systemd/user/
+#   (edit the placeholders)
+#   systemctl --user daemon-reload && systemctl --user enable --now marveen-ram-emergency-brake
+# Check what it would do, without acting:
+#   python3 scripts/ram-emergency-brake.py --dry-run --cycles 3 --simulate-avail-mb 300
+[Unit]
+Description=Marveen RAM emergency brake (unload ollama, stop the heaviest allowlisted job)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /path/to/marveen/scripts/ram-emergency-brake.py
+Restart=always
+RestartSec=2
+# The brake must outlive the jobs it stops. An unprivileged user manager cannot
+# set a value below its own oom_score_adj (a lower one, e.g. -900, is clamped);
+# agent sessions and the dashboard typically run at 200, so 100 still puts the
+# brake behind them for the kernel OOM killer.
+OOMScoreAdjust=100
+# Non-swappable: the script is ~15 MB and mlockall()s itself, so it stays
+# responsive while the rest of the host is thrashing. Its alert child runs
+# inside this cap too: scripts/notify.sh, which may start node (the Slack
+# helper, and the access.json read of the owner-chat lib) besides bash + curl,
+# hence the headroom above the brake's own size. If that child still overruns
+# the cap, the kernel kills the child (the larger process), not the brake, and
+# OOMPolicy=continue keeps systemd from stopping the brake over it.
+MemoryMax=256M
+OOMPolicy=continue
+MemorySwapMax=0
+LimitMEMLOCK=96M
+CPUWeight=1000
+# No channel token and no chat id here: scripts/notify.sh resolves the channel,
+# the owner and the token from the install's own .env and settings at send time.
+Environment=PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

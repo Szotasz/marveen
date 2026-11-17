@@ -80,7 +80,8 @@ printf '%s\n' "$OUT" | grep -q 'Nothing to migrate' && pass 'no BOT_NAME anywher
 # --- FLEETRESERVEDNAME1021: a reserved id or a sub-agent's name is refused ----------
 # Refused before anything is stopped: exit 1, no "Migrating" line, .env untouched.
 refused() { [ "$RC" -eq 1 ] && ! printf '%s\n' "$OUT" | grep -q '^Migrating' && ! grep -q '^MAIN_AGENT_ID=' "$TMP/$1/.env"; }
-for name in System Heartbeat Telegram-Coordinator 'Channel Coordinator' Hanna; do
+# AGENTROUTERESERVED1114: the agents API's fixed route names are refused the same way.
+for name in System Heartbeat Telegram-Coordinator 'Channel Coordinator' Hanna Activity Status 'Model Suggest' Export-All Import; do
   label="reserved-$(printf '%s' "$name" | tr ' A-Z' '-a-z')"
   run_case "$label" "BOT_NAME=\"$name\""
   refused "$label" && printf '%s\n' "$OUT" | grep -q 'reserved by the system' \

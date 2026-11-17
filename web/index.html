@@ -203,6 +203,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg>
             <span class="sb-label">MCP</span>
           </a>
+          <a href="#" class="sb-link" data-page="clitools">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            <span class="sb-label">CLI</span>
+          </a>
           <a href="#" class="sb-link" data-page="federation">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><path d="M8 12h8"/><path d="M12 9v-3"/><path d="M12 15v3"/></svg>
             <span class="sb-label">Föderáció</span>
@@ -271,6 +275,16 @@
       </span>
     </div>
 
+    <!-- CHANNELUNCONF1110: the main agent's channel provider has no token, so the session runs without its channel.
+         Not dismissible: it is the install's real state until a token is set. Populated by
+         updateMainChannelUnconfBanner() from /api/marveen. -->
+    <div id="mainChannelUnconfBanner" class="auth-setup-banner branch-drift-banner" role="status" hidden>
+      <span id="mainChannelUnconfBannerText"></span>
+      <span class="auth-setup-banner-actions">
+        <button class="btn-primary btn-compact" id="mainChannelUnconfSetup" data-i18n="main_channel.unconfigured.action">Csatorna beállítása</button>
+      </span>
+    </div>
+
     <div id="setupResumeBanner" class="auth-setup-banner" hidden>
       <span data-i18n="onboarding.resume.text">The setup is not finished yet.</span>
       <span id="setupResumeMsg" role="status" hidden></span>
@@ -334,6 +348,13 @@
           </div>
           <div class="overview-activity" id="overviewActivity"></div>
         </div>
+      </div>
+      <div class="overview-card overview-token-card">
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.card.tokens">Token-fogyasztás</h3>
+          <a href="#" class="overview-card-meta overview-token-more" id="overviewTokensMore" data-i18n="overview.tokens.more">elmúlt 24 óra · részletek</a>
+        </div>
+        <div class="overview-tokens" id="overviewTokens"></div>
       </div>
     </div>
 
@@ -561,8 +582,8 @@
               </button>
             </div>
             <span class="header-divider" aria-hidden="true"></span>
-            <button class="btn-secondary btn-compact" id="exportAllAgentsBtn">Összes exportálása</button>
-            <button class="btn-secondary btn-compact" id="importAgentBtn">Ügynök importálása</button>
+            <button class="btn-secondary btn-compact" id="exportAllAgentsBtn" data-i18n="agents.page.export_all_btn">Összes exportálása</button>
+            <button class="btn-secondary btn-compact" id="importAgentBtn" data-i18n="agents.page.import_btn">Ügynök importálása</button>
             <input type="file" id="importAgentFile" accept=".gz,.tgz,application/gzip" hidden>
             <button class="btn-secondary btn-compact" id="analyzeAllModelsBtn" data-i18n="agents.page.analyze_btn">Modell elemzés</button>
           </div>
@@ -1088,6 +1109,32 @@
         <div class="catalog-grid" id="catalogGrid"></div>
       </div>
     </div>
+    <!-- === CLI tools page: read-only view of scripts/cli-inventory.py's output,
+         laid out like the connectors (MCP) page === -->
+    <div class="page" id="clitoolsPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>CLI-eszközök</h1>
+            <p class="subtitle" data-i18n="clitools.page_subtitle">A flotta által futtatható parancssori eszközök</p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="oss-inv-meta" id="cliToolMeta"></span>
+            <button class="btn-secondary btn-compact" id="cliToolRefreshBtn" data-i18n="clitools.btn.refresh">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              Frissítés
+            </button>
+          </div>
+        </div>
+        <div class="info-box" data-i18n="clitools.note">A lista a CLI_INVENTORY_DIRS beállításban megadott mappák Printing Press CLI-jeit mutatja; a beállítás alapból üres, ilyenkor a nyilvántartás ki van kapcsolva. A leltár minden ott talált *-pp-cli fájlt elindít egy leíró hívással (agent-context vagy --help), időkorláttal és tisztított környezettel, ezért csak megbízható mappát adj meg. A futást csak a gazda dashboard-belépése indítja.</div>
+      </div>
+      <div class="github-repo-status error" id="cliToolError" hidden></div>
+      <div class="connector-stats" id="cliToolStats"></div>
+      <div class="connector-grid" id="cliToolGrid"></div>
+    </div>
+
     <!-- === Migration Page === -->
     <div class="page" id="migratePage" hidden>
       <div class="page-header">
@@ -2193,7 +2240,7 @@
             <h1 data-i18n="federation.page_title">Föderáció</h1>
             <p class="subtitle" data-i18n="federation.page_subtitle">Társrendszerek összekötése: távoli ügynökök címzése rendszer/ügynök alakban</p>
           </div>
-          <button class="btn-primary btn-compact" id="federationApplyBtn" data-i18n="federation.btn.apply"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Beállítások életbe léptetése</button>
+          <button class="btn-primary btn-compact" id="federationApplyBtn" data-i18n="federation.btn.apply"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Beállítások alkalmazása</button>
         </div>
       </div>
       <div id="federationStats" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"></div>
@@ -2979,7 +3026,7 @@
               <button class="btn-secondary btn-compact agent-save-section" id="saveVoiceConfigBtn" style="margin-top:10px">Mentés</button>
             </div>
           </div>
-          <div class="form-group">
+          <div class="form-group" id="securityProfileGroup">
             <label for="editAgentProfile" data-i18n="agents.wizard.profile_label">Biztonsági profil</label>
             <select id="editAgentProfile"></select>
             <small id="editAgentProfileDesc" style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4"></small>
@@ -3052,7 +3099,7 @@
             </div>
             <button class="btn-primary" id="chConnectBtn">
               <span class="btn-text" data-i18n="channel.connect_btn">Összekapcsolás</span>
-              <span class="btn-loading" hidden><span class="spinner"></span> Csatlakozas...</span>
+              <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="channel.connecting">Csatlakozás...</span></span>
             </button>
           </div>
           <div id="chConnected" hidden>
@@ -3140,8 +3187,8 @@
             </div>
             <div class="tg-connected-actions">
               <button class="btn-secondary" id="chTestBtn" data-i18n="channel.test_btn">Kapcsolat tesztelése</button>
-              <button class="btn-secondary" id="chReconnectBtn" hidden>Channel-MCP reconnect</button>
-              <button class="btn-secondary" id="chSmokeTestBtn" hidden>Slack csatorna smoke-test</button>
+              <button class="btn-secondary" id="chReconnectBtn" hidden data-i18n="channel.reconnect_btn">Channel-MCP újracsatlakoztatása</button>
+              <button class="btn-secondary" id="chSmokeTestBtn" hidden data-i18n="channel.smoke_test_btn">Slack-csatorna smoke-test</button>
               <button class="btn-danger" id="chDisconnectBtn" data-i18n="channel.disconnect_btn">Leválasztás</button>
             </div>
           </div>
@@ -3204,7 +3251,7 @@
 
         <!-- Bottom actions -->
         <div class="detail-actions agent-detail-bottom" id="agentDetailActions">
-          <button class="btn-secondary" id="exportAgentBtn">Exportálás</button>
+          <button class="btn-secondary" id="exportAgentBtn" data-i18n="agents.export.confirm_ok">Exportálás</button>
           <button class="btn-danger" id="deleteAgentBtn" data-i18n="common.btn.delete">Törlés</button>
         </div>
       </div>
@@ -3591,6 +3638,31 @@
       <div class="modal-body">
         <p id="builtinDetailDesc" style="color:var(--text-muted);font-size:13px;margin-bottom:12px"></p>
         <div id="builtinDetailBody"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: CLI tool detail (read-only, like the built-in detail modal) -->
+  <div class="modal-overlay" id="cliToolDetailOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="cliToolDetailTitle" data-i18n="clitools.modal.title">CLI részletek</h2>
+        <button class="modal-close" id="cliToolDetailClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="connector-detail-info" id="cliToolDetailInfo"></div>
+        <div class="form-group" style="margin-top:20px">
+          <label data-i18n="clitools.field.skills">Skillek, amelyek hivatkoznak rá</label>
+          <div class="connector-agent-list" id="cliToolDetailSkills"></div>
+        </div>
+        <div class="form-group" style="margin-top:20px">
+          <label data-i18n="clitools.field.reference">Parancs-referencia</label>
+          <div class="connector-detail-info" id="cliToolDetailCommands"></div>
+        </div>
+        <div class="form-group" style="margin-top:20px" id="cliToolDetailReadmeGroup" hidden>
+          <label data-i18n="clitools.field.readme">README (részlet)</label>
+          <pre id="cliToolDetailReadme" style="white-space:pre-wrap;font-family:monospace;font-size:12px;margin:0;max-height:240px;overflow:auto"></pre>
+        </div>
       </div>
     </div>
   </div>

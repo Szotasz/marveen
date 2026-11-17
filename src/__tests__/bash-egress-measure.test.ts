@@ -12,6 +12,9 @@ import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { measureOnly, loadMeasureHosts, classify } from '../../scripts/hooks/bash-egress-parser.mjs'
 
+// AGENTEGRESS1111: spawned hooks must not inherit the running agent's vendor exceptions.
+delete process.env.BASH_EGRESS_AGENT_VENDOR_HOSTS
+
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'hooks', 'bash-egress-parser.mjs')
 const HOSTS = new Set(['app.marveen.io'])
 const dirs: string[] = []

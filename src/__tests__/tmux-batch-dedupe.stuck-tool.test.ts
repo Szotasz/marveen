@@ -277,6 +277,46 @@ describe('source pins: the sub-agent sweep runs inside withTmuxBatch', () => {
     expect(containsForbiddenCall(cb)).toBe(false)
   })
 
+  it('the live deps called inside the batch stay within an allowlist of functions and calls', () => {
+    let liveDeps: ts.VariableDeclaration | undefined
+    walk(sf, (n) => {
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === 'LIVE_SUB_AGENT_DEPS') liveDeps = n
+    })
+    expect(liveDeps).toBeDefined()
+    const initializer = liveDeps!.initializer
+    expect(initializer && ts.isObjectLiteralExpression(initializer)).toBe(true)
+    if (!initializer || !ts.isObjectLiteralExpression(initializer)) return
+
+    // A new dep must be reviewed against the contract.
+    expect(initializer.properties.map((p) => p.name?.getText(sf)).sort()).toEqual([
+      'alertWait', 'capture', 'hasChannel', 'isRunning', 'listAgents', 'now', 'readState',
+    ])
+    const ALLOWED_FUNCTIONS = ['listAgentNames', 'isAgentRunning', 'agentHasChannel', 'readLocalAgentState']
+    const ALLOWED_CALLS = ['capturePane', 'readAgentRemoteHost', 'Date.now', 'sendOwnerActionAlert', 'formatAgentWaitAlert']
+
+    for (const property of initializer.properties) {
+      const prop = property.name?.getText(sf)
+      expect(ts.isPropertyAssignment(property), `${prop}: expected a property assignment`).toBe(true)
+      if (!ts.isPropertyAssignment(property)) continue
+      const value = property.initializer
+      if (ts.isIdentifier(value)) {
+        expect(ALLOWED_FUNCTIONS, `${prop}: ${value.text}`).toContain(value.text)
+        continue
+      }
+      expect(ts.isArrowFunction(value) || ts.isFunctionExpression(value), `${prop}: expected a function`).toBe(true)
+      if (!ts.isArrowFunction(value) && !ts.isFunctionExpression(value)) continue
+      expect(containsAwait(value), `${prop}: contains await`).toBe(false)
+      expect(containsForbiddenCall(value), `${prop}: contains a forbidden call`).toBe(false)
+      const calls: string[] = []
+      walk(value, (n) => {
+        if (ts.isCallExpression(n)) calls.push(n.expression.getText(sf))
+      })
+      for (const call of calls) {
+        expect(ALLOWED_CALLS, `${prop}: ${call}`).toContain(call)
+      }
+    }
+  })
+
   it('the wrap sits inside sweepSubAgents; the stop-state cleanup stays outside', () => {
     const cb = callbacks[0]
     let sweep: ts.FunctionDeclaration | undefined

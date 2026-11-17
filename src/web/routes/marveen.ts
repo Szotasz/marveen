@@ -8,7 +8,9 @@ import {
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, readMarveenGooglechatConfig, readMarveenTeamsConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { mainChannelUnconfigured } from '../main-channel-configured.js'
 import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
+import { scheduleMainRestartWake, wantsMainRestartWake } from '../restart-wake.js'
 import { readFileOr } from '../agent-config.js'
 import { nicknameFor } from '../team-nicknames.js'
 import { parseMultipart } from '../multipart.js'
@@ -123,6 +125,9 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // CHANNEL_PROVIDER env-jébe pinneljük, hogy a UI ne hardcode-olt
       // 'telegram'-mal induljon.
       channelProvider: CHANNEL_PROVIDER,
+      // CHANNELUNCONF1110: the provider whose token is missing (the session then runs without its channel), or null.
+      // The launch rule itself (main-channel-configured.ts), so the banner goes the moment a token is saved.
+      mainChannelUnconfigured: mainChannelUnconfigured(CHANNEL_PROVIDER) ? CHANNEL_PROVIDER : null,
       // Resolved through the settings overrides layer so the UI hot-reloads.
       kanbanAging: {
         warnH: getEffectiveSettingValue('KANBAN_AGING_WARN_H'),
@@ -172,7 +177,8 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
 
   if (path === '/api/marveen/restart' && method === 'POST') {
     // A kezi restart nem vagja el a futo turnt. Beragadt fo-agensnel csak explicit {"force": true} atlepi a kaput.
-    const force = wantsForceRestart(await readBody(req))
+    const restartBody = await readBody(req)
+    const force = wantsForceRestart(restartBody)
     if (force) logger.warn({ route: '/api/marveen/restart' }, 'manual main restart forced past the pane gate')
     if (!force) {
       const gate = await gateManualRestart(MAIN_CHANNELS_SESSION)
@@ -180,6 +186,10 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     }
     const result = hardRestartMarveenChannels()
     if (!result.ok) { json(res, { error: result.error || 'Restart failed' }, 500); return true }
+    // MAINRESTARTWAKE1115: the fresh session gets no prompt from anyone, so a restart that took
+    // owes it one wake ({"wake": false} switches it off). Only here, after ok: a refused or failed
+    // restart left the old session as it was. See restart-wake.ts.
+    if (wantsMainRestartWake(restartBody)) scheduleMainRestartWake(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, join(PROJECT_ROOT, 'HANDOFF.md'))
     json(res, { ok: true })
     return true
   }

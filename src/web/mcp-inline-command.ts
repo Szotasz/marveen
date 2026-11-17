@@ -146,9 +146,13 @@ function escapeForRegex(s: string): string {
  * newlines -- is refused by the caller before anything is typed. Plugin pane
  * ids are `plugin:<plugin>:<server>` and pass today; this is the fence that
  * says a future exotic name has to be measured, not assumed.
+ *
+ * No at-sign (ENVATLEAK1114): the name is typed right after a space, and Claude
+ * Code expands an at-sign there into a file attachment. Measured 2026-11-14 on
+ * this fleet's .mcp.json files: no server name carries one.
  */
 export function isSafeMcpServerName(name: string): boolean {
-  return /^[A-Za-z0-9:._@-]+$/.test(name)
+  return /^[A-Za-z0-9:._-]+$/.test(name)
 }
 
 /**

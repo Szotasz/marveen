@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { serveFile, MIME } from '../http-helpers.js'
 import { PROJECT_ROOT, BRAND_NAME } from '../../config.js'
 import type { RouteContext } from './types.js'
@@ -88,6 +88,14 @@ function escapeAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// Allowlist for the /avatars/ and /icons/ single-segment filename (mirrors the
+// NAME_RE + basename() guard in routes/docs.ts). Combined with the basename()
+// check below this blocks path traversal (../, absolute paths, nested
+// segments). Extensions cover every file shipped under web/avatars (png +
+// gallery.html) and web/icons (png); defense-in-depth, the pathname is already
+// WHATWG-normalized upstream.
+const STATIC_NAME_RE = /^[A-Za-z0-9._-]+\.(png|jpg|jpeg|webp|svg|ico|html)$/
+
 export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path } = ctx
 
@@ -139,6 +147,10 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
 
   if (path.startsWith('/avatars/')) {
     const avatarFile = path.replace('/avatars/', '')
+    if (!STATIC_NAME_RE.test(avatarFile) || basename(avatarFile) !== avatarFile) {
+      res.writeHead(404); res.end()
+      return true
+    }
     const avatarPath = join(webDir, 'avatars', avatarFile)
     if (existsSync(avatarPath)) { serveFile(req, res, avatarPath, { cacheSeconds: 3600 }); return true }
     res.writeHead(404); res.end()
@@ -147,6 +159,10 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
 
   if (path.startsWith('/icons/')) {
     const iconFile = path.replace('/icons/', '')
+    if (!STATIC_NAME_RE.test(iconFile) || basename(iconFile) !== iconFile) {
+      res.writeHead(404); res.end()
+      return true
+    }
     const iconPath = join(webDir, 'icons', iconFile)
     if (existsSync(iconPath)) { serveFile(req, res, iconPath, { cacheSeconds: 3600 }); return true }
     res.writeHead(404); res.end()

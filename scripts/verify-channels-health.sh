@@ -82,6 +82,14 @@ if [ "$_vch_provider" = "gromzo" ]; then
   if [ "$fail" -eq 0 ]; then echo "verify-channels-health: HEALTHY"; else echo "verify-channels-health: UNHEALTHY"; fi
   exit "$fail"
 fi
+# CHANNELUNCONF1110: a token provider with no token runs WITHOUT its primary channel by design (channels.sh, see
+# scripts/main-channel-configured.sh): no Bun bridge and no bot.pid to check. Said as such, not as a failure.
+if [ -f "$INSTALL_DIR/scripts/main-channel-configured.sh" ] && . "$INSTALL_DIR/scripts/main-channel-configured.sh" \
+   && main_channel_unconfigured "${_vch_provider:-telegram}" "$INSTALL_DIR" "${HOME:-}"; then
+  note "(channel) NOT CONFIGURED: no ${_vch_provider:-telegram} token ($(main_channel_token_key "${_vch_provider:-telegram}")) -- the session runs without its channel until one is set"
+  echo "verify-channels-health: HEALTHY (no channel configured)"
+  exit 0
+fi
 unset _vch_provider
 
 # (a) bun bridge descendant under the ${MAIN_AGENT_ID}-channels tmux pane

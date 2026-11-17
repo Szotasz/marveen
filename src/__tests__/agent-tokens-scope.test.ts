@@ -1002,6 +1002,8 @@ const ALLOWLIST_SAMPLES: Array<[string, string]> = [
   ['GET', '/api/vault'], ['GET', '/api/vault/teszt-sajat'], ['POST', '/api/vault/resolve'],
   ['POST', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa/replay'], ['POST', '/api/agent-taskstate/alfa/consume'],
   ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'],
+  ['POST', '/api/skills/propose'], ['GET', '/api/updates'],
+  ['GET', '/api/updates/rebase-plan'], ['GET', '/api/claude-plans/state'], ['GET', '/api/claude-plans/readiness'],
 ]
 
 // MEASURED on one production fleet: every dashboard call five sub-agents issued
@@ -1048,6 +1050,7 @@ const INDIRECT_SUBAGENT_CALLS: Array<[string, string]> = [
   ['POST', '/api/memories'], ['POST', '/api/daily-log'], ['POST', '/api/agent-taskstate/alfa'],
   ['GET', '/api/agent-taskstate/alfa/replay'], ['POST', '/api/agent-taskstate/alfa/consume'],
   ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'],
+  ['POST', '/api/skills/propose'], ['GET', '/api/updates'], ['GET', '/api/claude-plans/state'], ['GET', '/api/claude-plans/readiness'],
 ]
 
 describe('allowlist coverage and the measured replay', () => {
@@ -1124,6 +1127,12 @@ describe('allowlist coverage and the measured replay', () => {
       ['GET', '/api/vault/ssh-keys/abc'], ['GET', '/api/vault/ssh-servers/1'],
       // and an id the ACL does not list for the caller (the default: an empty file)
       ['GET', '/api/vault/teszt-sajat'],
+      // VAULTSZELES826 (0) replay, Samu 74563: these stay the main agent's. settings: the non-secret rows still carry
+      // the owner's ids (calendar, Slack/Telegram user, Drive folder); invites: live invite tokens; the rest are writes.
+      ['GET', '/api/settings'], ['GET', '/api/agents/samu/channels/slack/invites'], ['GET', '/api/gromzo/agents'],
+      ['POST', '/api/claude-plans'], ['POST', '/api/claude-plans/rotate'], ['GET', '/api/claude-plans/plan-a'],
+      ['POST', '/api/agents/marveen/restart'], ['POST', '/api/skills'], ['POST', '/api/skills/propose/x'], ['POST', '/api/updates'],
+      ['GET', '/api/updates/status'], ['GET', '/api/claude-plans/state/x'],
     ]
     for (const [m, p] of outside) {
       const r = await gateStatus(m, p, agentTok, resolver, undefined, {})

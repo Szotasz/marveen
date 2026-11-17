@@ -82,7 +82,21 @@ const SELF_PACE_BASH_PATTERNS = [
 // `PATH=/bin crontab -` are all caught. Trailing \b(?!-) so it never fires on
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
-const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
+// The path-prefix branch must not START with an assignment (SELFPACEASSIGN1109). As
+// `(?:\S*/)?` it swallowed a VARIABLE ASSIGNMENT too, because an assignment to an
+// absolute path ends in a slash-separated word: in `SP=/tmp/.../scratchpad/batch;
+// ls "$SP"` the prefix ate `SP=/tmp/.../scratchpad/` and left `batch` sitting at
+// what looked like a command position -- AT_INVOCATION's end-of-segment branch then
+// read it as a real batch(1) submit. Measured: the same `ls` was denied with the
+// variable and allowed with the literal path, so an agent's choice of shell style
+// had become a security decision. Same bug class as the at/batch, launchctl and
+// /loop fixes above -- a keyword inside a PATH collided with a call pattern. An
+// assignment prefix is already handled by the `[A-Za-z_]\w*=\S*\s+` alternative,
+// which correctly demands the whitespace bash needs before the binary. Only a
+// LEADING `NAME=` is refused: a directory name may contain `=` anywhere else, and
+// `/tmp/d=1/at now` or `./a=b/crontab -` is a real scheduler call that must stay
+// denied (excluding every `=` from the path, as a first draft did, let those through).
+const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:(?![A-Za-z_]\w*=)\S*/)?`
 // The command-boundary anchor includes `(` so a $(...) command substitution
 // (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
 // (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
@@ -420,6 +434,7 @@ export function allowlistBashSegmentAllowed(seg, ctx) {
 
 // MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
 // treatment as the allowlist above:
+//   egress-vendor-hosts-<agent>.json -- per-agent additions to the global list (AGENTEGRESS1111)
 //   egress-vendor-hosts.json       -- the hosts bash-egress-parser lets curl/wget reach
 //   config-overrides.json          -- dashboard settings; BASH_SANDBOX_AGENTS is one of them
 //   bash-sandbox-write-paths.json  -- where a sandboxed agent may write (#2149)
@@ -431,6 +446,7 @@ export function allowlistBashSegmentAllowed(seg, ctx) {
 // process; none of them runs this gate. Unlike the allowlist, these have no hash baseline yet,
 // so what this gate cannot see (a path built at runtime) is not reported after the fact.
 const DEFAULT_STORE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'store')
+export const AGENT_VENDOR_HOSTS_RX = /^egress[-_]?vendor[-_]?hosts[-_][\w.-]+\.json$/i
 export const PROTECTED_STORE_FILES = new Set([
   'egress-vendor-hosts.json',
   'config-overrides.json',
@@ -444,7 +460,7 @@ export const PROTECTED_STORE_FILES = new Set([
 // approval-bot files need their leading dot, so a source or doc named approval-bot-key-*.md or a
 // glob over src/approval-bot* stays out too.
 const PROTECTED_MENTION_RX =
-  /(?:egress[-_]?vendor[-_]?hosts|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
+  /(?:egress[-_]?vendor[-_]?hosts(?:[-_][\w.-]*)?|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
 
 // One rule for every protected store object: a segment that mentions it may only be a plain
 // READ, and no output redirect in it may point at it (or at a target built at runtime).
@@ -651,8 +667,10 @@ function substituteDefinite(text, definite) {
 export function fileToolTargetsProtectedStoreFile(toolInput, storeDir = DEFAULT_STORE_DIR, cwd = process.cwd()) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return false
-  if (PROTECTED_STORE_FILES.has(basename(raw).toLowerCase())) return true
+  if (PROTECTED_STORE_FILES.has(basename(raw).toLowerCase()) || AGENT_VENDOR_HOSTS_RX.test(basename(raw))) return true
   const real = realOrSelf(resolve(cwd, expandHome(raw)))
+  // AGENTEGRESS1111: a renamed symlink must not bypass the per-agent list protection.
+  if (dirname(real) === realOrSelf(storeDir) && AGENT_VENDOR_HOSTS_RX.test(basename(real))) return true
   return [...PROTECTED_STORE_FILES].some((f) => real === realOrSelf(join(storeDir, f)))
 }
 
@@ -700,7 +718,15 @@ export function cwdAfterSegment(seg, ctx) {
   const name = words[0].value
   if (name !== 'cd' && name !== 'pushd' && name !== 'popd') return
   const arg = words.slice(1).find((w) => !/^-[LPe@]+$/.test(w.value))
-  if (name === 'popd' || !arg || arg.dollar || /[$`*?[]/.test(arg.value) || arg.value === '-') { ctx.cwd = null; return }
+  // WRITEGATERELPATH1115: a bare `cd`, and `cd` or `pushd` to `~`, `$HOME` or `${HOME}`, go to the home, unless the command
+  // gives HOME a value of its own (then the home is not known here). A bare `pushd` swaps the stack: unknown, below.
+  const homeArg = !!arg && (arg.value === '~' || /^\$(?:HOME|\{HOME\})$/.test(arg.value))
+  if ((name === 'cd' && !arg) || ((name === 'cd' || name === 'pushd') && homeArg)) {
+    ctx.cwd = ctx.homeTouched ? null : homedir()
+    return
+  }
+  // a substitution the parser replaced with its NUL-fenced marker (run-time output) is no known directory either
+  if (name === 'popd' || !arg || arg.dollar || /[$`*?[\u0000]/.test(arg.value) || arg.value === '-') { ctx.cwd = null; return }
   // a ~ under a HOME the command set itself is not the real home (EGRESSHOME1106); ~+ / ~- / ~N are the cwd, the
   // previous cwd and the dir stack (Dani 71720), never the home: unknown here
   if ((ctx.homeTouched && arg.value.startsWith('~')) || DIR_TILDE_WORD_RX.test(arg.value)) { ctx.cwd = null; return }
@@ -1213,6 +1239,14 @@ function heredocOwnerRunsBody(before) {
   return false
 }
 
+// The same body reaches an interpreter when the heredoc's OUTPUT is piped into
+// one on the operator line: `cat <<'EOF' | bash` runs it like `bash <<'EOF'`.
+// `lineRest` is the text after the marker up to the end of that line.
+function heredocPipedIntoRunner(lineRest) {
+  const pipeline = lineRest.replace(/\|&/g, '|').split(/;|&&|\|\||&/)[0]
+  return pipeline.split('|').slice(1).some((stage) => heredocOwnerRunsBody(stage))
+}
+
 export function stripHeredocBodies(command) {
   const cmd = String(command ?? '')
   if (!/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/.test(cmd)) return cmd
@@ -1224,6 +1258,7 @@ export function stripHeredocBodies(command) {
       // A quoted body the shell will not expand is still executed when an
       // interpreter/remote-executor owns the redirect -- keep it visible then.
       if (heredocOwnerRunsBody(string.slice(0, offset))) return full
+      if (heredocPipedIntoRunner(body.split('\n', 1)[0])) return full
       return `${open}\n${close}`
     },
   )
@@ -1391,7 +1426,10 @@ const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into
 // `surface: 'security'` mode, for every agent including the main one.
 // approval_slack_posts (APPROVALSLACK1030 (2)): the posted Slack request the server checks the owner's reaction
 // against; an agent that could write it could point a request at a message it controls.
-export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys']
+// support_consents and support_password_state (SUPPORTKULCS1109, D5): the owner's consent to support access, with
+// how and why it ended, and the support password bucket. An agent that could write them could forge or erase the
+// trail of an enabling, or lift the lock that stands in front of enabling.
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']
 // An SQL write on one of them. The table name is read wherever the statement
 // names its target: after a schema prefix (`main.approvals`, an ATTACHed
 // `x.approvals`), in [brackets], with SQL comments or line breaks between the
@@ -3535,7 +3573,7 @@ function scanShellCode(command) {
     codes.push(c)
   }
   let bad = false
-  for (const seg of segs) {
+  for (const [k, seg] of segs.entries()) {
     const words = splitCodeWords(seg.own)
     const names = /\b(?:sh|bash|dash|zsh|ksh|ash|fish|csh|tcsh|mksh|rbash|yash|eval|trap|tmux|systemctl)\b/
     if (words == null) {
@@ -3551,7 +3589,9 @@ function scanShellCode(command) {
     let stdinBodies = null
     const stdinCodes = () => {
       if (stdinBodies == null) {
-        stdinBodies = (seg.bodies ?? []).map((b) => ({ value: b, ansi: false }))
+        // a heredoc of the command piped into this one reaches its stdin too (`cat <<'EOF' | bash`)
+        const piped = k > 0 && /^\|&?$/.test(segs[k - 1].sep ?? '') ? segs[k - 1].bodies ?? [] : []
+        stdinBodies = [...(seg.bodies ?? []), ...piped].map((b) => ({ value: b, ansi: false }))
         for (let j = 0; j < words.length; j++) {
           if (words[j].redirect && /^\d*<<<$/.test(words[j].value) && words[j + 1]?.target) stdinBodies.push(words[j + 1])
         }
@@ -3888,7 +3928,7 @@ const MCP_GATE_MSG =
 
 const PROTECTED_STORE_GATE_MSG =
   'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
-  'store/egress-vendor-hosts.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, ' +
+  'store/egress-vendor-hosts.json, store/egress-vendor-hosts-<agent>.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, ' +
   'store/email-standing-recipients.json, store/.approval-bot-token es store/.approval-bot-key ' +
   'fajlt: mindegyik RAD vonatkozo kapu beallitasa. ' +
   'Ha valtoztatas kell, kerd a fo agenst (inter-agent uzenet: mit es miert); o a gazda ' +

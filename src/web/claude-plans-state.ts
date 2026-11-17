@@ -87,6 +87,16 @@ export interface ClaudePlansState {
   plans: Record<string, ObservedPlanState>
   /** Last fleet leg (opt-in). Absent on installs that never ran one. */
   fleet?: FleetRotationRecord
+  /** SUBPLANTOKEN1110 2nd PR: per sub-agent rotation bookkeeping (claude-plan-subagent-rotation.ts). Absent = none. */
+  subAgents?: Record<string, SubAgentRotationRecord>
+}
+
+/** A sub-agent's rotation bookkeeping between heartbeat ticks. */
+export interface SubAgentRotationRecord {
+  /** Ticks a due switch was deferred because the agent's pane was busy (at most SUBAGENT_MAX_DEFERRALS). */
+  deferrals: number
+  /** The NO_ALTERNATIVE notice already printed for this window (trigger + reset time), so it is sent once. */
+  notice?: string
 }
 
 const EMPTY_STATE: ClaudePlansState = { activePlanByAgent: {}, plans: {} }
@@ -100,6 +110,17 @@ function isStringRecord(v: unknown): v is Record<string, string> {
   return Object.values(v).every((x) => typeof x === 'string')
 }
 
+function readSubAgents(v: unknown): Record<string, SubAgentRotationRecord> | undefined {
+  if (!isPlainObject(v)) return undefined
+  const out: Record<string, SubAgentRotationRecord> = {}
+  for (const [name, r] of Object.entries(v)) {
+    if (!isPlainObject(r)) continue
+    const deferrals = typeof r.deferrals === 'number' && Number.isInteger(r.deferrals) && r.deferrals >= 0 ? r.deferrals : 0
+    out[name] = { deferrals, ...(typeof r.notice === 'string' ? { notice: r.notice } : {}) }
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 export function readClaudePlansState(): ClaudePlansState {
   if (!existsSync(CLAUDE_PLANS_STATE_PATH)) return EMPTY_STATE
   try {
@@ -110,7 +131,12 @@ export function readClaudePlansState(): ClaudePlansState {
     const fleet = isPlainObject(raw.fleet) && typeof raw.fleet.fleetPlanId === 'string'
       ? (raw.fleet as unknown as FleetRotationRecord)
       : undefined
-    return fleet ? { activePlanByAgent, plans, fleet } : { activePlanByAgent, plans }
+    const subAgents = readSubAgents(raw.subAgents)
+    return {
+      activePlanByAgent, plans,
+      ...(fleet ? { fleet } : {}),
+      ...(subAgents ? { subAgents } : {}),
+    }
   } catch {
     return EMPTY_STATE
   }
@@ -175,4 +201,13 @@ export function recordFleetRotation(state: ClaudePlansState, record: FleetRotati
 export function markFleetReported(state: ClaudePlansState, nowMs: number): ClaudePlansState {
   if (!state.fleet) return state
   return { ...state, fleet: { ...state.fleet, reportedAt: nowMs } }
+}
+
+// Pure state transition (SUBPLANTOKEN1110 2nd PR): set a sub-agent's rotation bookkeeping; null clears it.
+export function setSubAgentRecord(state: ClaudePlansState, name: string, record: SubAgentRotationRecord | null): ClaudePlansState {
+  const subAgents = { ...(state.subAgents ?? {}) }
+  if (record && (record.deferrals > 0 || record.notice)) subAgents[name] = record
+  else delete subAgents[name]
+  const { subAgents: _old, ...rest } = state
+  return Object.keys(subAgents).length ? { ...rest, subAgents } : rest
 }

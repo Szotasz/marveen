@@ -307,7 +307,9 @@ describe('fleet bundle export/import', () => {
   it('skips an agent named like a reserved id (the voice channel id included), imports the rest', () => {
     // FLEETRESERVEDNAME1021 + VOICECHANNELID1022: a sub-agent under an id the
     // message layer owns could not send, or would be framed as the owner.
-    const reserved = ['system', ...(VOICE_CHANNEL_ID === null ? [] : [VOICE_CHANNEL_ID])]
+    // AGENTROUTERESERVED1114: and a fixed route name of the agents API, whose
+    // /api/agents/<name> address the fixed handler would answer.
+    const reserved = ['system', 'status', ...(VOICE_CHANNEL_ID === null ? [] : [VOICE_CHANNEL_ID])]
     const bundle = packFleetBundle(join(tmp, 'f'), {
       ...Object.fromEntries(reserved.map((n) => [n, { 'CLAUDE.md': 'impostor' }])),
       beta: { 'CLAUDE.md': 'fresh' },

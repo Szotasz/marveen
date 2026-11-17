@@ -238,9 +238,57 @@ for c in json.load(sys.stdin):
    (bármely kártya címébe ideiglenesen írt jövőbeli idő), különben a minta-hiba nullának látszik.
 
 
-7. **Telegram csak akkor írj ha**:
-   - 3+ beakadt task van (kritikus)
-   - Új blokker (waiting > 48h)
+7. **Telegram csak akkor írj ha** (az első két feltételt a saját blokkja SZÁMOLJA, ne fejben döntsd el; mindkettő az
+   előző `last_audit_at`-hoz mér, ezért az 5. lépés state-írása ELŐTT futtasd őket):
+   - **3+ SZÁMÍTÓ beakadt task van (kritikus).** Nem minden beakadt kártya számít. A fő-ágens ({{MAIN_AGENT_ID}})
+     saját beakadt kártyáját a 4. lépés eleve nem pingeli, és az jellemzően a tulajdonosra vár: ha beleszámítana,
+     a feltétel minden körben ugyanarra a listára tüzelne, és a riasztást senki nem olvasná el. A számlálásba az a
+     beakadt kártya megy, amelyik NEM a fő-ágensé, VAGY az előző audit óta vált beakadttá (új). A fő-ágens régi
+     beakadt kártyái csak a jelentésbe kerülnek; róluk a fő-ágens maga dönt még ebben a körben (lásd a Buktatókat).
+     ```bash
+     curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban/stuck?planned_days=7&active_days=3" | python3 -c "
+import json,sys
+PLANNED_DAYS,ACTIVE_DAYS=7,3  # ugyanaz a ket szam, mint az URL-ben (es a 3. lepesben)
+GRACE=900  # a state a futas VEGEN irodik, a meres elobb fut: a ketto koze eso valtas kulonben sosem lenne uj
+MAIN='{{MAIN_AGENT_ID}}'.strip().lower()
+try: last=int(json.load(open('{{INSTALL_DIR}}/store/kanban-audit-state.json')).get('last_audit_at') or 0)
+except Exception: last=0
+d=json.load(sys.stdin)
+counted=[]; own_old=[]
+for c in d['stuck']:
+    limit=(ACTIVE_DAYS if c['status'] in ('in_progress','testing') else PLANNED_DAYS)*86400
+    new=last>0 and c['last_activity']+limit>=last-GRACE  # az elozo auditkor meg nem volt beakadt
+    own=(c.get('assignee') or '').strip().lower()==MAIN
+    (own_old if own and not new else counted).append(c)
+print(f\"Beakadt-riasztás: vizsgált={d['examined']}, beakadt={len(d['stuck'])}, számít={len(counted)}, fő-ágens régi={len(own_old)}\" + ('' if d['examined'] else ' (nem tudott mérni)') + ('' if last else ' (első futás: nincs előző audit, az új nem mérhető)'))
+for c in own_old:
+    print('  csak jelentés:', c['id'], '|', c['status'], '|', c['idle_days'], 'nap |', c['title'])
+print('TELEGRAM: IGEN (3+ számító beakadt)' if len(counted)>=3 else 'TELEGRAM: nem')
+"
+     ```
+   - **ÚJ blokker (waiting > 48h).** Az "új" a lényeg, nem a 48 óra: a `waiting` kártyák hosszan állnak (a
+     tulajdonosra, külső emberre, hardverre várnak), tehát a puszta "48 óránál régebbi waiting" feltétel minden
+     körben ugyanazokat jelentené. Csak az a kártya számít, amelyik az ELŐZŐ audit óta LÉPTE ÁT a 48 órát; így
+     minden kártya egyszer szól, a többi körben csak a szám megy a jelentésbe. A kort a `last_status_at`-ből
+     mérd (mióta áll ebben az oszlopban), ne az `updated_at`-ből: azt egy komment is frissíti (lásd a Buktatókat).
+     ```bash
+     curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban?status=waiting" | python3 -c "
+import json,sys,time
+H48=48*3600
+GRACE=900  # mint fent: a meres es a state-iras koze eso atlepes ne vesszen el (inkabb ketszer, mint soha)
+try: last=int(json.load(open('{{INSTALL_DIR}}/store/kanban-audit-state.json')).get('last_audit_at') or 0)
+except Exception: last=0
+now=int(time.time())
+w=[c for c in json.load(sys.stdin) if c.get('status')=='waiting' and not c.get('archived_at')]
+since=lambda c: c.get('last_status_at') or c.get('updated_at') or 0
+old=[c for c in w if now-since(c)>H48]
+new=[c for c in old if last>0 and since(c)+H48>=last-GRACE]  # az elozo auditkor meg 48 oran belul volt
+print(f'Waiting > 48h: vizsgált={len(w)}, 48h felett={len(old)}, új={len(new)}' + ('' if w else ' (nem tudott mérni)') + ('' if last else ' (első futás: nincs előző audit, az új nem mérhető)'))
+for c in new:
+    print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', round((now-since(c))/3600.0,1), 'h |', c['title'])
+print('TELEGRAM: IGEN (új blokker)' if new else 'TELEGRAM: nem')
+"
+     ```
    - Detektorral nem fedett státuszú kártya (6a): ugyanarról a kártyáról naponta legfeljebb egyszer, a többi körben csak a jelentésben
    - **TULAJDONOSRA VÁRÓ KEMÉNY BLOKKOLÓ, státusztól és kortól függetlenül.**
      A fenti két küszöb szűk, mert mindkettő ÁLLAPOTOT vagy KORT néz, a

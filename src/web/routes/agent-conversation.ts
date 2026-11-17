@@ -2,9 +2,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { json } from '../http-helpers.js'
 import { agentDir } from '../agent-config.js'
-import { resolveAgentConfigDir } from '../claude-plans.js'
 import { projectsDirFor } from '../active-model.js'
 import { isMainChannelsAgent } from '../main-agent.js'
+import { configDirFor } from '../main-transcript-root.js'
 import { PROJECT_ROOT } from '../../config.js'
 import type { RouteContext } from './types.js'
 
@@ -35,7 +35,13 @@ function workingDirFor(name: string): string {
 }
 
 function newestTranscript(name: string): string | null {
-  const configDir = isMainChannelsAgent(name) ? undefined : (resolveAgentConfigDir(name).configDir ?? undefined)
+  // configDirFor, not a hard-coded undefined / resolveAgentConfigDir: the main
+  // agent may run under its own CLAUDE_CONFIG_DIR (<root>/.channels-config or
+  // MAIN_AGENT_CONFIG_DIR), and a sub-agent under an auto-provisioned
+  // agents/<name>/.claude-config. Reading the host default then shows a stale
+  // transcript as if it were live (#2716). Same reason as routes/agents.ts
+  // (resolveTranscriptLocation and the transcript tail).
+  const configDir = configDirFor(name)
   const dir = projectsDirFor(workingDirFor(name), configDir)
   try {
     if (!existsSync(dir)) return null

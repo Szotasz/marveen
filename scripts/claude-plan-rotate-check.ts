@@ -36,17 +36,25 @@
 //      rotation, printed once): relay it via `reply` -- restarted= / failed=
 //      name the sub-agents, and a non-empty failed= needs the operator;
 //   5. if it printed nothing: stay silent.
+// The owner signal's route (ROTSLACK1111): with an owner Slack target set
+// in Settings, the prompt sends every signal through scripts/notify.sh,
+// the owner route of the other scheduled tasks; without one, the channel reply
+// to the owner's chat id as above (claude-rotation-heartbeat.ts).
 // This mirrors the fleet's existing OPEN_QUESTION heartbeat pattern
 // (scripts/hooks/ledger-live-drain.py) rather than inventing a new one.
 //
-// Scope note (flagged in the PR description): this wires the MAIN channels
-// agent only. Design decision #1 (2026-09-12) says sub-agents should
-// eventually rotate too and sized the state schema for it
-// (activePlanByAgent, already keyed per agent) -- but looping this script
-// over every sub-agent, each with its own restart semantics
-// (writeAgentClaudePlan + restartAgentProcess instead of
-// hardRestartMarveenChannels), is deferred as a fast follow-up rather than
-// bundled into the riskiest PR in this series.
+// Sub-agents (SUBPLANTOKEN1110 2nd PR, src/claude-plan-subagent-rotation.ts):
+// a local, running sub-agent on a TOKEN plan is measured and decided per agent
+// with the same thresholds, BEFORE the main agent's part, and its lines are
+// printed first:
+//   SUBAGENT_ROTATE agent=<name> target=<PLAN_ID> ... -- the prompt POSTs
+//     /api/claude-plans/rotate {agentId, targetPlanId} FIRST (a sub-agent
+//     restart does not end the main session), THEN signals with the answer's
+//     launchAuth;
+//   SUBAGENT_NO_ALTERNATIVE agent=<name> ... -- a signal only, once a window.
+// They are never named ROTATE: an older, unedited prompt runs every ROTATE line
+// against the MAIN agent, and it ignores these (claude-rotation-heartbeat.ts
+// upgrades an unedited one; an edited one keeps ignoring them).
 import { runRotateCheck } from '../src/claude-plan-rotate-check-run.js'
 
 await runRotateCheck()

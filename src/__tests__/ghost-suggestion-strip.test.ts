@@ -175,7 +175,7 @@ describe('isSessionReadyForPrompt wiring (dim-ghost tolerant idle)', () => {
     // typing-vs-idle-box is decided through the dim-ghost-tolerant path, which
     // scrapes the GHOST-STRIPPED captureParkedInputView (so the dim
     // example-suggestion never reads as parked):
-    expect(fn).toContain('captureParkedInputView(session, host)')
+    expect(fn).toContain('captureParkedInputViewAsync(session, host)')
     expect(fn).toMatch(/idleOrGhost\((?:first|second)\)/)
     // context-saturation is scanned on the PLAIN capture (a dim banner cannot be
     // masked -> the refusal stays robust), and BOTH samples go through the one
@@ -183,7 +183,7 @@ describe('isSessionReadyForPrompt wiring (dim-ghost tolerant idle)', () => {
     // it on either side would silence a working agent whose mis-tagged model id
     // made the CLI print "100% context used" at ~179k of a ~1M window, while
     // bypassing it would re-open the gate to a genuinely wedged pane.
-    expect(fn).toContain('capturePane(session, host)')
+    expect(fn).toContain('capturePaneAsync(session, host)')
     expect(fn).toMatch(/saturationRefusesDispatch\(first, session\)/)
     expect(fn).toMatch(/saturationRefusesDispatch\(second, session\)/)
     // The raw scan must NOT be reachable here any more: it is the shape that

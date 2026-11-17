@@ -69,6 +69,10 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   // done_evidence is written only by a move to done (see the /move route);
   // a whole-card PUT carries it back and must not 400 on it.
   'done_evidence',
+  // active_seconds is computed (sumInProgressSeconds) and embedded by GET /api/kanban,
+  // never a column: the dashboard's whole-card PUT (assignee editor) carried it back
+  // and every assignee change failed with 400 (measured 2026-11-03).
+  'active_seconds',
 ])
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same

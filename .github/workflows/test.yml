@@ -18,6 +18,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # CIFFMPEG1111: a stuck step used to burn the 6-hour default. A normal run takes about 25 minutes.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -38,8 +40,22 @@ jobs:
       # runner must have it too -- a missing binary is a real failure there,
       # not a reason to skip. ubuntu-latest does not ship it (measured: run
       # 36302092314, spawnSync ffmpeg ENOENT).
+      # CIFFMPEG1111: on 2026-11-11 the ubuntu-26.04 runners could not resolve the Ubuntu archive hosts
+      # ("Temporary failure resolving 'security.ubuntu.com'", 372 times, 20 s each), so apt-get update and
+      # install hung for about an hour per run (run 43037450476) while github.com resolved fine. The binary
+      # therefore comes from a fixed GitHub release with a pinned sha256 (ffmpeg-static release b6.1.1, asset
+      # ffmpeg-linux-x64.gz; the binary reports "ffmpeg version 7.0.2-static"), not from apt. A changed or missing
+      # asset fails the step loudly; there is no unchecked fallback. It goes to /usr/bin/ffmpeg, where apt put it:
+      # scripts/yt-ingest/yt-ingest.sh and its test call /usr/bin/ffmpeg by that path inside bwrap.
       - name: Install ffmpeg for the resize hook's tests
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          url=https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64.gz
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 -o "$RUNNER_TEMP/ffmpeg.gz" "$url"
+          echo "bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa  $RUNNER_TEMP/ffmpeg.gz" | sha256sum -c -
+          gunzip -c "$RUNNER_TEMP/ffmpeg.gz" | sudo install -m 755 /dev/stdin /usr/bin/ffmpeg
+          ffmpeg -hide_banner -version | sed -n 1p
       # The suite resolves the `claude` binary at module load (resolveFromPath
       # throws when it is absent) -- without this stub 17 suites fail at
       # COLLECTION, before a single test runs (measured on the first ubuntu
@@ -79,6 +95,10 @@ jobs:
       # A turn that died on an API error while a channel message waited must leave
       # a trace (StopFailure hook); hermetic, isolated ledger DB.
       - run: python3 scripts/__tests__/ledger-turn-failure.test.py
+      # PELENKAGCHAT1113: a Google Chat reply must land in the thread of the
+      # question (the guard blocks one that would open a new thread); hermetic,
+      # the state dir is a tmp directory.
+      - run: python3 scripts/__tests__/googlechat-thread-guard.test.py
       # ORSICTX912: the sentinel preCheck's SKIP is "no model turn" -- an
       # error path that said SKIP would silence the community sentinel for
       # good, so its fail-direction cases are gate instruments (hermetic:
@@ -151,6 +171,13 @@ jobs:
       # block runs against a throwaway HOME with npm and claude stubbed on PATH.
       - run: bash scripts/__tests__/channels-native-install-no-npm.test.sh
       - run: bash scripts/__tests__/channels-native-autoupdate.test.sh
+      # PANEFOOTEROUTSIDE1114: the stuck-modal guard and the live-progress mirror
+      # carry ports of the footer anchor; their own suites had no CI wiring. Both
+      # hermetic (piped pane text, a tmux stub for the state-dir case, no store
+      # writes). The parity test in the vitest run compares the ports to the
+      # TypeScript rule.
+      - run: bash scripts/__tests__/stuck-modal-guard.test.sh
+      - run: python3 -I scripts/__tests__/telegram-live-progress.test.py
       # INSTSTDERRTMP1104: the installers' stderr copy leaves with the process, the
       # raw error tail is masked, and the token URL is printed only to a terminal.
       # Hermetic: throwaway TMPDIR, the blocks are cut from the real scripts.
@@ -209,6 +236,11 @@ jobs:
       # queue and log, stand-in systemd-run/systemctl on PATH; the LIVE scope section prints
       # SKIP where the runner has no systemd user manager or its MemoryMax is not in effect.
       - run: python3 scripts/__tests__/heavy-job-gate.test.py
+      # The RAM emergency brake decides what gets killed when memory runs out
+      # anyway; its never-kill cases are gate instruments. Hermetic: a fake
+      # /proc tree, fake meminfo and cgroup fs, a recording killer and a fake
+      # send helper.
+      - run: python3 scripts/__tests__/ram-emergency-brake.test.py
 
   # EMAILGATEPY39-1104: the hooks run under the PATH's python3, which is 3.9 on a Mac without Homebrew python
   # (/usr/bin/python3 from the command line tools). A 3.10-only form in a hook dependency broke the approval and
@@ -218,6 +250,7 @@ jobs:
     # Pinned: setup-python has no 3.9 build for the newest ubuntu-latest image (measured: "The version '3.9' with
     # architecture 'x64' was not found for Ubuntu 26.04"); 22.04 has one.
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -237,3 +270,25 @@ jobs:
             echo "== $t"
             python3 "$t"
           done
+
+  # SUPPORTKULCS1109: the support routine ships as ONE self-contained file
+  # (scripts/support-standby.mjs) and states its lowest node in one place
+  # (SUPPORT_ROUTINE_MIN_NODE_MAJOR, 20: the installer accepts 20 and newer, so
+  # machines we installed run it). The main job runs on .nvmrc only, so without
+  # this job "20" would be a number nobody measured. NO `npm ci` on purpose: the
+  # rescue path meets this file on a machine whose node_modules may be broken,
+  # and the check uses nothing but node itself. It gets no secret and touches
+  # no other job.
+  support-standby-node20:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: The support routine's self-contained file on node 20
+        run: |
+          set -e
+          node --version | grep -q '^v20\.'
+          node --test tests/support-standby/standalone-check.mjs

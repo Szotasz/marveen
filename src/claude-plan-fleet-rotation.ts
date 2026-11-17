@@ -19,6 +19,7 @@
 // a log line, an error string or argv.
 import { copyFileSync, chmodSync, existsSync, readFileSync } from 'node:fs'
 import { atomicWriteFileSync } from './web/atomic-write.js'
+import { oneLineField } from './heartbeat-line.js'
 import type { ClaudePlan } from './web/claude-plans.js'
 import type { FleetRotationRecord } from './web/claude-plans-state.js'
 
@@ -124,6 +125,8 @@ export interface FleetRotationDeps {
 
 /** The one structured stdout line describing a fleet leg. */
 export function formatFleetLine(r: Omit<FleetRotationRecord, 'line' | 'reportedAt'>, label: string): string {
+  // K1 (Dani 75718): the label is free text; a line break in it must not split or forge a heartbeat line.
+  label = oneLineField(label)
   if (r.outcome === 'skipped') return `FLEET_SKIPPED plan=${r.fleetPlanId} label=${label} reason=${r.reason ?? 'unknown'}`
   if (r.outcome === 'failed') return `FLEET_FAILED plan=${r.fleetPlanId} label=${label} reason=${r.reason ?? 'unknown'}`
   const list = (xs: string[]) => (xs.length ? xs.join(',') : '-')

@@ -292,6 +292,9 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       ? `special:${parsed.special}`
       : maskKeysPreview(literalKeys ?? '')
     logger.info({ name, remote, xff, ua, preview }, 'agent-terminal: KEYS INJECTION ACCEPTED')
+    // ENVATLEAK1114: typed AS IS, deliberately WITHOUT the pane mapping (pane-text.ts paneTyped). This is
+    // the owner's own keyboard into the pane: an at-sign file reference typed here is what the owner meant,
+    // and escaping it would change their keystrokes. Every other path that types outside text is mapped.
     try {
       await tmux(args)
       json(res, { ok: true })

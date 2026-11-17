@@ -5,6 +5,7 @@
 // entry point) so it unit-tests under tsc's rootDir=src, the same reason
 // quota-gate.ts's decision logic lives under src/ instead of inside a script.
 import { parseQuotaSnapshot } from './quota-snapshot.js'
+import { oneLineField } from './heartbeat-line.js'
 import { decideRotationAction, candidateFromObservation, effectiveUsedPct, IDLE_PROBE_GATE, type RotationCandidate, type ObservedWindow } from './claude-plan-rotation.js'
 import type { ClaudePlan } from './web/claude-plans.js'
 import {
@@ -118,8 +119,13 @@ export function decideAndRecord(input: {
    *  is present -- even as null -- usageCollectRaw is not looked at at all. */
   activeReading?: ActiveReading | null
   nowMs: number
+  /** SUBPLANTOKEN1110: plan ids a SUB-agent is running on (a token plan in its claudePlan field). Never a
+   *  rotation target for `agentId`: rotating onto one would share that sub-agent's quota, and the fleet leg
+   *  would make its token the fleet token. Absent = none reserved. */
+  reservedPlanIds?: ReadonlySet<string>
 }): RotateCheckResult {
   const { agentId, plans, state, usageCollectRaw, nowMs } = input
+  const reserved = input.reservedPlanIds ?? new Set<string>()
 
   // Design 6.2 precondition: rotation only means anything with 2+ registered
   // plans. Below that, strict no-op -- existing single-plan installs must see
@@ -168,7 +174,7 @@ export function decideAndRecord(input: {
   // week is spent, or whose token was last rejected as invalid, is not a
   // landing spot however fresh its 5h window looks.
   const candidates: RotationCandidate[] = plans
-    .filter((p) => p.id !== activePlanId && p.channelsAllowed)
+    .filter((p) => p.id !== activePlanId && p.channelsAllowed && !reserved.has(p.id))
     .map((p) => candidateFromObservation(p.id, stateWithObservation.plans[p.id], nowMs))
     .filter((c): c is RotationCandidate => c !== null)
 
@@ -193,13 +199,13 @@ export function decideAndRecord(input: {
   if (decision.action === 'rotate') {
     const target = plans.find((p) => p.id === decision.targetPlanId)
     return {
-      printLine: `ROTATE agent=${agentId} target=${decision.targetPlanId} targetLabel=${target?.label ?? decision.targetPlanId} currentLabel=${activePlan.label} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
+      printLine: `ROTATE agent=${agentId} target=${decision.targetPlanId} targetLabel=${oneLineField(target?.label ?? decision.targetPlanId)} currentLabel=${oneLineField(activePlan.label)} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
       nextState: stateWithObservation,
     }
   }
   if (decision.action === 'no-alternative') {
     return {
-      printLine: `NO_ALTERNATIVE agent=${agentId} currentLabel=${activePlan.label} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
+      printLine: `NO_ALTERNATIVE agent=${agentId} currentLabel=${oneLineField(activePlan.label)} currentPct=${pct} resetsInMin=${resetsInMin} trigger=${decision.trigger}${weekly}`,
       nextState: stateWithObservation,
     }
   }

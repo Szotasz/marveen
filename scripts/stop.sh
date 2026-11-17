@@ -8,6 +8,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
 SLUG="${SLUG:-marveen}"
+# Unit name: SERVICE_ID, else MAIN_AGENT_ID, with a fallback to existing units (see the helper).
+# The tmux session name stays on SLUG.
+# shellcheck source=resolve-unit-id.sh
+if [ -f "$INSTALL_DIR/scripts/resolve-unit-id.sh" ]; then
+  source "$INSTALL_DIR/scripts/resolve-unit-id.sh"
+else
+  UNIT_ID="$SLUG"  # helper missing (partial copy): the pre-SERVICE_ID behaviour
+fi
 
 MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
 # shellcheck source=../install-lang.sh
@@ -16,8 +24,8 @@ source "${INSTALL_DIR}/install-lang.sh"
 echo "${BOT_NAME:-Marveen} $(_t stop.stopping)"
 OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
-  launchctl unload "$HOME/Library/LaunchAgents/com.${SLUG}.dashboard.plist" 2>/dev/null
-  launchctl unload "$HOME/Library/LaunchAgents/com.${SLUG}.channels.plist" 2>/dev/null
+  launchctl unload "$HOME/Library/LaunchAgents/com.${UNIT_ID}.dashboard.plist" 2>/dev/null
+  launchctl unload "$HOME/Library/LaunchAgents/com.${UNIT_ID}.channels.plist" 2>/dev/null
 elif [ "$OS" = "Linux" ]; then
   # A root-style install runs the services as SYSTEM units, and as root
   # `systemctl --user` fails -- so this script used to fall through to the
@@ -25,13 +33,13 @@ elif [ "$OS" = "Linux" ]; then
   # leave the system-unit services running. Check the system scope FIRST
   # (`systemctl cat` sees system units from any uid), and if stopping them
   # fails, say so instead of claiming success over still-running services.
-  if pidof systemd >/dev/null 2>&1 && systemctl cat "${SLUG}-dashboard.service" >/dev/null 2>&1; then
-    if ! systemctl stop "${SLUG}-dashboard" "${SLUG}-channels" 2>/dev/null; then
-      echo "ERROR: system units ${SLUG}-dashboard/${SLUG}-channels exist but could not be stopped (run as root?)" >&2
+  if pidof systemd >/dev/null 2>&1 && systemctl cat "${UNIT_ID}-dashboard.service" >/dev/null 2>&1; then
+    if ! systemctl stop "${UNIT_ID}-dashboard" "${UNIT_ID}-channels" 2>/dev/null; then
+      echo "ERROR: system units ${UNIT_ID}-dashboard/${UNIT_ID}-channels exist but could not be stopped (run as root?)" >&2
       exit 1
     fi
   elif pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
-    systemctl --user stop "${SLUG}-dashboard" "${SLUG}-channels" 2>/dev/null || true
+    systemctl --user stop "${UNIT_ID}-dashboard" "${UNIT_ID}-channels" 2>/dev/null || true
   else
     # Signal, then WAIT for the process to actually be gone. `kill` only queues
     # a SIGTERM; returning immediately means this script reports "stopped" while

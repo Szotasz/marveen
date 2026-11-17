@@ -34,6 +34,7 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock('node:child_process', async (importOriginal) => {
+  const { execFileFromSync } = await import('./helpers/exec-file-from-sync.js')
   const actual = await importOriginal<typeof import('node:child_process')>()
   const execFileSync = (file: string, args?: readonly string[]): string => {
     const a = Array.isArray(args) ? [...args] : []
@@ -42,7 +43,7 @@ vi.mock('node:child_process', async (importOriginal) => {
     if (a[0] === 'list-panes') return 'agent-dedupe-a\t1\tclaude\nagent-dedupe-b\t1\tclaude\n'
     return ''
   }
-  return { ...actual, execFileSync: execFileSync as unknown as typeof actual.execFileSync }
+  return { ...actual, execFile: execFileFromSync(execFileSync), execFileSync: execFileSync as unknown as typeof actual.execFileSync }
 })
 
 const listSessionsSpawns = () => h.spawns.filter((s) => s.args[0] === 'list-sessions')

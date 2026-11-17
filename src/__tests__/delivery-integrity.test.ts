@@ -334,7 +334,7 @@ describe('the sweep is wired to it (source-level: the sweep needs live tmux)', (
     const emitIdx = AP.indexOf("const emitToPane = async (): Promise<'sent' | 'aborted-guard-typed'> => {")
     expect(emitIdx).toBeGreaterThan(0)
     expect(AP.slice(emitIdx, emitIdx + 500)).toContain('opts.onEmitStart?.()')
-    expect(RUNNER).toMatch(/host == null \? \{ sentText: paneOneLine\(fullPrompt\), typedAt \} : \{\}/)
+    expect(RUNNER).toMatch(/host == null \? \{ sentText: paneTyped\(fullPrompt\), typedAt \} : \{\}/)
   })
 
   it('the sweep checks BEFORE a closing decision deletes the entry, and persists the verdict', () => {

@@ -179,11 +179,37 @@ function mainAgentId() {
     if (isStandalone) {
       showStandaloneTokenPrompt(TOKEN_KEY)
     } else {
-      alert(
-        'Dashboard authentication failed. Check the server log for the access URL ' +
-        '(look for "Dashboard access URL" with ?token=...), then reopen it in your browser.'
-      )
+      showAuthFailedNotice()
     }
+  }
+
+  // No password login and no PWA: the only way in is the startup URL with ?token=. A closable notice in the page's
+  // language instead of the hard-coded English alert().
+  function showAuthFailedNotice() {
+    if (document.getElementById('mv-auth-failed-overlay')) return
+    const tr = (k, fallback) => (typeof window.t === 'function' ? window.t(k) : fallback) || fallback
+    const overlay = document.createElement('div')
+    overlay.id = 'mv-auth-failed-overlay'
+    overlay.setAttribute('role', 'alertdialog')
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#1a1917;color:#faf9f5;' +
+      'display:flex;align-items:center;justify-content:center;padding:24px;' +
+      'font-family:system-ui,-apple-system,sans-serif'
+    const box = document.createElement('div')
+    box.style.cssText = 'max-width:420px;width:100%;display:flex;flex-direction:column;gap:14px'
+    const title = document.createElement('h2')
+    title.style.cssText = 'margin:0;font-size:18px;text-align:center'
+    title.textContent = tr('auth.failed.title', 'The dashboard did not accept the access')
+    const desc = document.createElement('p')
+    desc.style.cssText = 'margin:0;font-size:14px;opacity:0.8;line-height:1.5;text-align:center'
+    desc.textContent = tr('auth.failed.desc', 'The access token stored in this browser is missing, wrong or revoked. Find the "Dashboard access URL" line in the server log and open its link, with the ?token= part, again.')
+    const close = document.createElement('button')
+    close.style.cssText = 'padding:12px;border:0;border-radius:8px;background:#3a3936;color:#faf9f5;font-size:15px;font-weight:600'
+    close.textContent = tr('auth.failed.close', 'Close')
+    close.addEventListener('click', () => overlay.remove())
+    box.append(title, desc, close)
+    overlay.appendChild(box)
+    document.body.appendChild(overlay)
+    setTimeout(() => close.focus(), 50)
   }
 
   // Full-screen username+password login overlay. Posts to /api/auth/login; on
@@ -437,11 +463,12 @@ function switchPage(pageId) {
   // Kanban needs full-width layout (overrides main's max-width: 1200px)
   document.querySelector('main').classList.toggle('kanban-active', pageId === 'kanban')
   // Agents page tints each Terminal button green while that agent is working;
-  // same 3s poll + source as Activity. Stop it when we leave the page.
-  if (pageId !== 'agents') stopAgentsBusyPoll()
+  // same 3s poll + source as Activity. The overview's team graph uses the same
+  // poll for its green "working" border. Stop it when we leave both pages.
+  if (pageId !== 'agents' && pageId !== 'overview') stopAgentsBusyPoll()
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
-  if (pageId === 'overview') loadOverview()
+  if (pageId === 'overview') { loadOverview(); startAgentsBusyPoll() }
   if (pageId === 'projects') loadProjects()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()
@@ -449,6 +476,7 @@ function switchPage(pageId) {
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
   if (pageId === 'skills') loadGlobalSkills()
   if (pageId === 'connectors') loadConnectors()
+  if (pageId === 'clitools') loadCliTools()
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'docs') loadDocs()
   if (pageId === 'research') loadResearch()
@@ -512,7 +540,7 @@ const SIDEBAR_GROUPS = [
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
   { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
-  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate'] },
+  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'clitools', 'federation', 'migrate'] },
 ]
 const sidebarGroupEls = document.querySelectorAll('.sb-group[data-group]')
 // data-page -> group key, derived from the map (not the DOM) so the map wins.
@@ -585,7 +613,7 @@ const NAV_I18N = {
   agents: 'nav.agents', activity: 'nav.activity', team: 'nav.team',
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
-  skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
+  skills: 'nav.skills', connectors: 'nav.connectors', clitools: 'nav.clitools', migrate: 'nav.migrate',
   approvals: 'nav.approvals',
   docs: 'nav.docs', research: 'nav.research', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
@@ -632,6 +660,7 @@ const PAGE_HEADER_I18N = {
   updatesPage:    { title: 'updates.page_title',     sub: null },
   naploPage:      { title: 'naplo.page_title',       sub: 'naplo.page_subtitle' },
   costsPage:      { title: 'costs.page_title',       sub: 'costs.page_subtitle' },
+  clitoolsPage:   { title: 'clitools.page_title',    sub: 'clitools.page_subtitle' },
   federationPage: { title: 'federation.page_title',  sub: 'federation.page_subtitle' },
   approvalsPage:  { title: 'approvals.page_title',   sub: 'approvals.page_subtitle' },
 }
@@ -2499,7 +2528,7 @@ function openNewCardModal(status) {
 
 function populateAssigneeSelect(selectId, selected) {
   const sel = document.getElementById(selectId)
-  sel.innerHTML = '<option value="">-- Nincs --</option>'
+  sel.innerHTML = `<option value="">${escapeHtml(t('kanban.meta.none'))}</option>`
   for (const a of kanbanAssignees) {
     const opt = document.createElement('option')
     opt.value = a.name
@@ -2603,7 +2632,8 @@ async function renderCardLabelsSection(card) {
   }
 
   const attachedIds = new Set(attached.map((l) => l.id))
-  addSelect.innerHTML = `<option value="">-- ${t('kanban.label.add_placeholder')} --</option>`
+  // The key already carries its dashes (index.html shows it as is), so none are added here.
+  addSelect.innerHTML = `<option value="">${escapeHtml(t('kanban.label.add_placeholder'))}</option>`
   for (const label of kanbanAllLabels) {
     if (attachedIds.has(label.id)) continue
     const opt = document.createElement('option')
@@ -2861,7 +2891,7 @@ async function showCardDetail(card) {
   const assignee = rawDetailAssignee
     ? kanbanAssignees.find((a) => a.name.toLowerCase() === rawDetailAssignee.toLowerCase())
     : null
-  const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || '-- nincs --')
+  const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || t('kanban.meta.none'))
   const priorityLabels = { low: t('kanban.priority.low'), normal: t('kanban.priority.normal'), high: t('kanban.priority.high'), urgent: t('kanban.priority.urgent') }
   const statusLabels = { planned: t('kanban.status.planned'), in_progress: t('kanban.status.in_progress'), testing: t('kanban.status.testing'), waiting: t('kanban.status.waiting'), done: t('kanban.status.done') }
 
@@ -2958,7 +2988,7 @@ async function showCardDetail(card) {
     const current = card.assignee || ''
     const sel = document.createElement('select')
     sel.style.cssText = 'padding:2px 6px; border-radius:4px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:inherit'
-    sel.innerHTML = '<option value="">-- Nincs --</option>'
+    sel.innerHTML = `<option value="">${escapeHtml(t('kanban.meta.none'))}</option>`
     for (const a of kanbanAssignees) {
       const opt = document.createElement('option')
       opt.value = a.name
@@ -2972,7 +3002,7 @@ async function showCardDetail(card) {
     const save = async () => {
       const newVal = sel.value || null
       if (newVal === current || (newVal === null && !current)) {
-        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
         return
       }
       try {
@@ -2986,7 +3016,7 @@ async function showCardDetail(card) {
         if (r.status === 409) {
           const e = await r.json().catch(() => ({}))
           if (e.conflict === 'stale_version') {
-            assigneeValueEl.textContent = current ? current : '-- nincs --'
+            assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
             showToast(t('kanban.toast.stale_version'), 6000)
             loadKanban && loadKanban()
             return
@@ -2998,18 +3028,18 @@ async function showCardDetail(card) {
         const saved = await r.json().catch(() => ({}))
         if (Number.isInteger(saved.version)) card.version = saved.version
         card.assignee = newVal
-        assigneeValueEl.textContent = newVal ? newVal : '-- nincs --'
+        assigneeValueEl.textContent = newVal ? newVal : t('kanban.meta.none')
         showToast(t('kanban.toast.assignee_updated'))
         loadKanban && loadKanban()
       } catch {
-        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
         showToast(t('kanban.toast.save_error'))
       }
     }
     sel.addEventListener('change', save)
     sel.addEventListener('blur', () => {
       if (assigneeValueEl.querySelector('select')) {
-        assigneeValueEl.textContent = card.assignee ? card.assignee : '-- nincs --'
+        assigneeValueEl.textContent = card.assignee ? card.assignee : t('kanban.meta.none')
       }
     })
   })
@@ -3099,7 +3129,7 @@ async function showCardDetail(card) {
   // Author select for new comment. Default to the bot assignee resolved by
   // type (never a hard-coded display name -- BOT_NAME differs per deployment),
   // falling back to the first assignee. The old literal 'Marveen' never matched
-  // on non-Marveen installs, so the select stayed on "-- Nincs --" and the
+  // on non-Marveen installs, so the select stayed on "-- nincs --" and the
   // comment submit silently no-opped (addCommentBtn returns when !author).
   // (Resolution of the #254/#241 overlap: keep #241's type-resolved default
   // over #254's hard-coded "Gábor" -- same deployment-agnostic reasoning.)
@@ -3275,12 +3305,15 @@ async function showCardDetail(card) {
   // Breakdown button
   document.getElementById('cardBreakdownBtn').onclick = async () => {
     const btn = document.getElementById('cardBreakdownBtn')
+    // The label is "⚡ <span data-i18n>…</span>"; put its own nodes back afterwards, so it keeps its
+    // icon and follows a language switch (it used to be overwritten with a hardcoded "Breakdown").
+    const label = [...btn.childNodes]
     btn.disabled = true
     btn.textContent = t('kanban.breakdown.generating')
     try {
       const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Hiba'); btn.disabled = false; btn.textContent = 'Breakdown'; return }
+      if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed')); return }
       breakdownMode = 'kanban'
       breakdownCardId = card.id
       breakdownSubtasks = data.subtasks
@@ -3288,10 +3321,10 @@ async function showCardDetail(card) {
       const dodSec = document.getElementById('breakdownDoDSection')
       if (dodSec) dodSec.style.display = 'none'
     } catch (err) {
-      showToast('Breakdown hiba')
+      showToast(t('kanban.breakdown.failed'))
     } finally {
       btn.disabled = false
-      btn.textContent = 'Breakdown'
+      btn.replaceChildren(...label)
     }
   }
 
@@ -3304,13 +3337,13 @@ async function triggerBreakdown(card) {
   try {
     const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || 'Breakdown hiba'); return }
+    if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed')); return }
     breakdownMode = 'kanban'
     breakdownCardId = card.id
     breakdownSubtasks = data.subtasks
     showBreakdownModal(data.subtasks, card)
   } catch {
-    showToast('Breakdown hiba')
+    showToast(t('kanban.breakdown.failed'))
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '⚡' }
   }
@@ -3337,12 +3370,12 @@ function showBreakdownModal(subtasks, parentCard) {
         <input type="text" class="breakdown-title-input" value="${escapeHtml(st.title)}"
           style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:0.9em">
         <label style="font-size:0.8em; white-space:nowrap">
-          <input type="checkbox" class="breakdown-check" data-idx="${i}" checked> Bele
+          <input type="checkbox" class="breakdown-check" data-idx="${i}" checked> ${escapeHtml(t('kanban.breakdown.include'))}
         </label>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
         <select class="breakdown-assignee-select" style="padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:0.85em">
-          <option value="">-- nincs --</option>
+          <option value="">${escapeHtml(t('kanban.unassigned'))}</option>
           ${assigneeOptions}
         </select>
         <span class="priority-badge priority-${escapeHtml(st.priority)}">${escapeHtml(priorityLabels[st.priority] || st.priority)}</span>
@@ -3379,7 +3412,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
         body: JSON.stringify({ subtasks: accepted, success_criteria: successCriteria }),
       })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || 'Hiba'); return }
+      if (!res.ok) { showToast(data.error || t('common.error_save')); return }
       closeModal(breakdownOverlay)
       showToast(t('kanban.breakdown.promoted', { count: data.child_count }))
       loadIdeasPage()
@@ -3391,7 +3424,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
       body: JSON.stringify({ subtasks: accepted }),
     })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || 'Hiba'); return }
+    if (!res.ok) { showToast(data.error || t('common.error_save')); return }
     closeModal(breakdownOverlay)
     closeModal(cardDetailOverlay)
     showToast(t('kanban.breakdown.created_count', { count: data.created.length }))
@@ -3457,6 +3490,9 @@ let wizardPersonalityPending = null
 function openModal(overlay) {
   overlay.classList.add('active')
   document.body.style.overflow = 'hidden'
+  // What the fields held when the modal opened (an edit modal is filled before this), so closing it
+  // asks only about real changes, not about text it was opened with.
+  overlay._openValues = new Map(unsavedInputFields(overlay).map(f => [f, f.value]))
 }
 function closeModal(overlay) {
   overlay.classList.remove('active')
@@ -3468,18 +3504,33 @@ function closeModal(overlay) {
   if (overlay && overlay.id === 'skillModalOverlay') skillModalScope = null
 }
 
-// True if any visible text/textarea field inside the overlay has typed
-// content. Used to gate backdrop-click close so a stray click can't
-// silently discard unsaved input (data loss reported 2026-08-19: a full
-// card description was lost by clicking outside the "Új kártya" modal).
+// True if any visible text/textarea field inside the overlay has content that was not there when the
+// modal opened. Used to gate the close so a stray click can't silently discard unsaved input (data loss
+// reported 2026-08-19: a full card description was lost by clicking outside the "Új kártya" modal).
+// An edit modal (a card, a memory, a schedule) opens filled; it used to ask "unsaved text" on every
+// close, also when nothing had been changed.
 function overlayHasUnsavedInput(overlay) {
-  const fields = overlay.querySelectorAll(
-    'input[type="text"]:not([list]), input[type="date"], input[type="email"], input[type="url"], textarea',
-  )
-  for (const f of fields) {
-    if (f.offsetParent !== null && f.value && f.value.trim()) return true
+  const opened = overlay._openValues
+  for (const f of unsavedInputFields(overlay)) {
+    if (f.offsetParent === null || f.readOnly || f.disabled || !f.value || !f.value.trim()) continue
+    if (opened && opened.get(f) === f.value) continue
+    return true
   }
   return false
+}
+
+// The text fields whose content a close could lose.
+function unsavedInputFields(overlay) {
+  return [...overlay.querySelectorAll(
+    'input[type="text"]:not([list]), input[type="date"], input[type="email"], input[type="url"], textarea',
+  )]
+}
+
+// A save that keeps its modal open (the agent's settings): the saved text is what the field now holds
+// "as opened", so closing afterwards does not ask about changes that are already saved.
+function markFieldSaved(el) {
+  const overlay = el && el.closest ? el.closest('.modal-overlay') : null
+  if (overlay && overlay._openValues) overlay._openValues.set(el, el.value)
 }
 
 // The default question before a guarded modal closes: none for an empty form; with typed input, a
@@ -3779,7 +3830,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
 
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Ismeretlen hiba')
+      throw new Error(err.error || t('common.unknown'))
     }
 
     const result = await res.json()
@@ -3832,7 +3883,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       updateWizardUI()
     }, 600)
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
     wizardStep = 1
     updateWizardUI()
   }
@@ -3867,11 +3918,11 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
 
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Ismeretlen hiba')
+      throw new Error(err.error || t('common.unknown'))
     }
 
     closeModal(agentWizardOverlay)
-    showToast('Ugynok letrehozva. Kosd be a csatornat a parosatashoz.')
+    showToast(t('agents.wizard.created'))
     await loadAgents()
     // Drop the operator straight into the Telegram tab of the new agent so
     // the pairing step is in front of them -- easy to miss otherwise.
@@ -3880,7 +3931,7 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
       switchAgentTab('channel')
     } catch { /* detail open failed, list refresh already happened */ }
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     createBtn.disabled = false
     createBtn.querySelector('.btn-text').hidden = false
@@ -3979,6 +4030,7 @@ async function loadAgents() {
     }
     if (marveenRes.ok) {
       window._marveen = await marveenRes.json()
+      updateMainChannelUnconfBanner(window._marveen)
       // A backend CHANNEL_PROVIDER-éhez igazitsuk a kliens-default-ot,
       // hogy ne 'telegram' jelenjen meg amikor a backend discord-on van.
       if (window._marveen?.channelProvider) {
@@ -4288,7 +4340,10 @@ async function openMarveenDetail() {
   document.getElementById('agentDetailName').textContent = displayName
   document.getElementById('agentDetailDesc').textContent = m.description || ''
   document.getElementById('agentDetailModel').textContent = m.model || '-'
-  document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot connected"></span>${t('agents.channel.connected')}</span>`
+  // CHANNELUNCONF1110: it said "connected" unconditionally, also on an install whose channel has no token.
+  document.getElementById('agentDetailChStatus').innerHTML = m.mainChannelUnconfigured
+    ? `<span class="tg-status"><span class="tg-dot"></span>${t('agents.channel.not_configured')}</span>`
+    : `<span class="tg-status"><span class="tg-dot connected"></span>${t('agents.channel.connected')}</span>`
   // Populate the Skills tab for the main agent too: the endpoint returns the
   // global ~/.claude/skills under its real id (agentId), which every agent
   // inherits. Previously this was hard-set to '-' and loadSkills was never
@@ -4410,6 +4465,14 @@ function applyMarveenReadonlyMode(readOnly) {
   if (authModeGroup) authModeGroup.hidden = readOnly
   const memoryIsolationGroup = document.getElementById('memoryIsolationGroup')
   if (memoryIsolationGroup) memoryIsolationGroup.hidden = readOnly
+  // #2727: the security profile and the Claude plan are per SUB-agent settings. openMarveenDetail never fills
+  // their selects, so for the main agent they showed whatever the last opened sub-agent left there (or an empty
+  // select on a fresh load), above a Save button that returns early for role 'main'. Hidden here, the one hook
+  // both open paths run; openAgentDetail used to hide the plan group itself, which the main agent never reached.
+  for (const id of ['securityProfileGroup', 'claudePlanGroup']) {
+    const group = document.getElementById(id)
+    if (group) group.hidden = readOnly
+  }
   // MAINAUTHSWITCH1107: the main agent's own authentication switch, on the main agent card only
   const mainAuthGroup = document.getElementById('mainAuthGroup')
   if (mainAuthGroup) {
@@ -4642,6 +4705,21 @@ function startAgentsBusyPoll() {
 function stopAgentsBusyPoll() {
   if (agentsBusyTimer) { clearInterval(agentsBusyTimer); agentsBusyTimer = null }
 }
+// The poll only serves the Overview and Agents pages, and a hidden tab needs
+// neither: stop it while the tab is hidden, and when the tab is shown again on
+// one of those pages, restart it (startAgentsBusyPoll refreshes at once).
+// Same rule as the kanban auto-refresh.
+function agentsBusyPollPageOpen() {
+  return ['overviewPage', 'agentsPage'].some((id) => {
+    const page = document.getElementById(id)
+    return !!page && !page.hidden
+  })
+}
+function onAgentsBusyPollVisibility() {
+  if (document.hidden) stopAgentsBusyPoll()
+  else if (agentsBusyPollPageOpen()) startAgentsBusyPoll()
+}
+document.addEventListener('visibilitychange', onAgentsBusyPollVisibility)
 async function refreshAgentTerminalBusy() {
   let entries
   try {
@@ -4675,11 +4753,12 @@ async function refreshAgentTerminalBusy() {
   }
   // Org-chart view: same signal, painted as the node's border. Toggled in place
   // rather than re-rendering, so an in-progress drag survives the tick.
-  // Scoped to #teamGraph on purpose -- the overview's mini graph is a snapshot
-  // and has no poll keeping it honest.
-  const treeGraph = document.getElementById('teamGraph')
-  if (treeGraph) {
-    treeGraph.querySelectorAll('.team-node[data-agent-id]').forEach((el) => {
+  // The overview's mini graph is kept live by the same poll while the overview
+  // page is open (switchPage starts it there too).
+  for (const graphId of ['teamGraph', 'overviewTeamGrid']) {
+    const graph = document.getElementById(graphId)
+    if (!graph) continue
+    graph.querySelectorAll('.team-node[data-agent-id]').forEach((el) => {
       el.classList.toggle('team-node-active', _workingAgentIds.has(el.dataset.agentId))
     })
   }
@@ -4831,10 +4910,7 @@ async function openAgentDetail(agentName) {
     document.getElementById('editAgentProfileDesc'),
     currentAgent.securityProfile || 'default',
   )
-  // The main agent's Claude login is managed via channels.sh, not the per-agent
-  // config path, so plan selection does not apply to it. Hide the whole group.
-  const planGroup = document.getElementById('claudePlanGroup')
-  if (planGroup) planGroup.hidden = currentAgent.role === 'main'
+  // (the main agent has no plan to pick here: applyMarveenReadonlyMode hides the group for it)
   populatePlanSelect(
     document.getElementById('editAgentPlan'),
     document.getElementById('editAgentPlanDesc'),
@@ -4897,18 +4973,21 @@ async function openAgentDetail(agentName) {
   // Authorization header and the API would 401 it.
   document.getElementById('exportAgentBtn').onclick = async () => {
     if (!currentAgent) return
-    const withSecrets = confirm(
-      'Belevegyük a titkokat (channel bot token, párosítási állapot)?\n\n' +
-      'OK = igen, csak saját gépek közötti átvitelhez.\n' +
-      'Mégse = nem, biztonságosan megosztható (csak identitás + viselkedés).'
-    )
+    const choice = await askAgentExport({
+      title: t('agents.export.confirm_title'),
+      message: t('agents.export.confirm', { name: currentAgent.name }),
+      okLabel: t('agents.export.confirm_ok'),
+      secretsLabel: t('agents.export.with_secrets'),
+    })
+    if (!choice) return
+    const withSecrets = choice.withSecrets
     const name = currentAgent.name
     const url = `/api/agents/${encodeURIComponent(name)}/export${withSecrets ? '?secrets=1' : ''}`
     try {
       const res = await fetch(url)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        showToast(data.error || 'Hiba az exportálás során')
+        showToast(data.error || t('agents.export.error'))
         return
       }
       const blob = await res.blob()
@@ -4920,9 +4999,9 @@ async function openAgentDetail(agentName) {
       a.click()
       a.remove()
       URL.revokeObjectURL(objectUrl)
-      showToast(`Ügynök exportálva${withSecrets ? ' (titkokkal)' : ''}`)
+      showToast(t(withSecrets ? 'agents.export.done_secrets' : 'agents.export.done'))
     } catch {
-      showToast('Hiba az exportálás során')
+      showToast(t('agents.export.error'))
     }
   }
 
@@ -5285,7 +5364,7 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
   try {
     if (await restartMainAgentGated()) showToast(t('agents.toast.marveen_restarted'))
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
   }
@@ -5313,7 +5392,7 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
     }
     loadAgents()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -5345,7 +5424,7 @@ document.getElementById('agentStopBtn').addEventListener('click', async () => {
     }
     loadAgents()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 })
 
@@ -5365,6 +5444,8 @@ let currentChannelProvider = 'telegram'
     const res = await fetch('/api/marveen')
     if (!res.ok) return
     const data = await res.json()
+    // CHANNELUNCONF1110: the "no channel configured" banner, from the same payload, on every page load.
+    updateMainChannelUnconfBanner(data)
     if (!data.channelProvider || data.channelProvider === currentChannelProvider) return
     currentChannelProvider = data.channelProvider
     const sel = document.getElementById('chProviderSelect')
@@ -5863,6 +5944,7 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     })
     if (!res.ok) throw new Error()
     currentAgent.model = newModel
+    markFieldSaved(customModelInput)
     const triggeredAt = Math.floor(Date.now() / 1000)
     document.getElementById('agentDetailModelRestarting').hidden = false
     document.getElementById('processLabel').textContent = t('agents.process_label')
@@ -5938,7 +6020,12 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
     const createBtn = document.getElementById('createModelChangeCardsBtn')
     if (createBtn) {
       createBtn.addEventListener('click', async () => {
-        if (!confirm(t('agents.model.cards_confirm', { n: changes.length }))) return
+        const confirmed = await confirmDialog({
+          title: t('agents.model.cards_confirm_title'),
+          message: t('agents.model.cards_confirm', { n: changes.length }),
+          okLabel: t('agents.model.cards_confirm_ok'),
+        })
+        if (!confirmed) return
         createBtn.disabled = true
         createBtn.textContent = t('agents.model.creating_cards')
         let created = 0
@@ -5965,21 +6052,38 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
   } catch { panel.innerHTML = '<p style="color:var(--error);font-size:13px">' + t('agents.model.error') + '</p>' }
 })
 
+// The export question: export or not, and whether the channel secrets go too. The box starts unticked,
+// and Cancel exports nothing (the native confirm() made Cancel the export without secrets).
+async function askAgentExport({ title, message, okLabel, secretsLabel }) {
+  const label = document.createElement('label')
+  label.className = 'confirm-dialog-check'
+  const box = document.createElement('input')
+  box.type = 'checkbox'
+  const text = document.createElement('span')
+  text.textContent = secretsLabel
+  label.append(box, text)
+  const ok = await confirmDialog({ title, message, okLabel, content: label })
+  return ok ? { withSecrets: box.checked } : null
+}
+
 // === Export ALL agents (whole fleet) into one .tar.gz bundle ===
 const exportAllAgentsBtn = document.getElementById('exportAllAgentsBtn')
 if (exportAllAgentsBtn) {
   exportAllAgentsBtn.addEventListener('click', async () => {
-    const withSecrets = confirm(
-      'Belevegyük a titkokat (channel bot tokenek, párosítási állapot) MINDEN ügynöknél?\n\n' +
-      'OK = igen, csak saját gépek közötti átvitelhez.\n' +
-      'Mégse = nem, biztonságosan megosztható (csak identitás + viselkedés).'
-    )
+    const choice = await askAgentExport({
+      title: t('agents.export_all.confirm_title'),
+      message: t('agents.export_all.confirm'),
+      okLabel: t('agents.export.confirm_ok'),
+      secretsLabel: t('agents.export_all.with_secrets'),
+    })
+    if (!choice) return
+    const withSecrets = choice.withSecrets
     const url = `/api/agents/export-all${withSecrets ? '?secrets=1' : ''}`
     try {
       const res = await fetch(url)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        showToast(data.error || 'Hiba az exportálás során')
+        showToast(data.error || t('agents.export.error'))
         return
       }
       const blob = await res.blob()
@@ -5991,9 +6095,9 @@ if (exportAllAgentsBtn) {
       a.click()
       a.remove()
       URL.revokeObjectURL(objectUrl)
-      showToast(`Flotta exportálva${withSecrets ? ' (titkokkal)' : ''}`)
+      showToast(t(withSecrets ? 'agents.export_all.done_secrets' : 'agents.export_all.done'))
     } catch {
-      showToast('Hiba az exportálás során')
+      showToast(t('agents.export.error'))
     }
   })
 }
@@ -6020,27 +6124,52 @@ if (importAgentBtn && importAgentFile) {
     try {
       let { res, data } = await upload(false)
       if (res.status === 409) {
-        const prompt = data.kind === 'fleet'
-          ? 'Néhány ügynök már létezik ezen a gépen. Felülírjuk az ütközőket?'
-          : `Már létezik "${data.name || ''}" nevű ügynök. Felülírjuk?`
-        if (confirm(prompt)) {
-          ;({ res, data } = await upload(true))
+        // Overwriting deletes the existing agent's folder and puts the bundle's content in its place.
+        let message
+        if (data.kind === 'fleet') {
+          const existing = (data.skipped || []).filter((s) => s.reason === 'already exists').map((s) => s.name)
+          const done = (data.imported || []).length
+          message = t('agents.import.fleet_overwrite_confirm', { list: existing.join(', ') }) + '\n\n' +
+            t('agents.import.fleet_overwrite_effect') +
+            (done ? '\n\n' + t('agents.import.fleet_already_imported', { n: done }) : '')
         } else {
+          // The single-agent 409 carries the name in its error only (importAgentBundle).
+          const m = /^Agent "([^"]+)" already exists/.exec(data.error || '')
+          message = (m ? t('agents.import.overwrite_confirm', { name: m[1] }) : t('agents.import.overwrite_confirm_no_name')) +
+            '\n\n' + t('agents.import.overwrite_effect')
+        }
+        const confirmed = await confirmDialog({
+          title: t('agents.import.overwrite_confirm_title'),
+          message,
+          okLabel: t('agents.import.overwrite_confirm_ok'),
+          danger: true,
+        })
+        if (!confirmed) {
+          // A fleet bundle's new agents are already in: show them, and say the existing ones were left alone.
+          if (data.kind === 'fleet' && (data.imported || []).length) {
+            showToast(t('agents.import.fleet_kept', { n: data.imported.length }))
+            loadAgents()
+          }
           return
         }
+        ;({ res, data } = await upload(true))
       }
-      if (!res.ok) { showToast(data.error || 'Hiba az importálás során'); return }
-      const note = data.includedSecrets ? ' (titkokkal)' : ''
+      if (!res.ok) { showToast(data.error || t('agents.import.error')); return }
+      const parts = []
       if (data.kind === 'fleet') {
-        const n = (data.imported || []).length
         const skipped = (data.skipped || []).length
-        showToast(`Flotta importálva: ${n} ügynök${note}${skipped ? ` (${skipped} kihagyva)` : ''}`)
+        parts.push(t('agents.import.fleet_done', { n: (data.imported || []).length }))
+        if (data.includedSecrets) parts.push(t('agents.import.note_secrets'))
+        if (skipped) parts.push(t('agents.import.note_skipped', { n: skipped }))
       } else {
-        showToast(`Ügynök importálva: ${data.name}${note}${data.overwritten ? ' (felülírva)' : ''}`)
+        parts.push(t('agents.import.done', { name: data.name }))
+        if (data.includedSecrets) parts.push(t('agents.import.note_secrets'))
+        if (data.overwritten) parts.push(t('agents.import.note_overwritten'))
       }
+      showToast(parts.join(' '))
       loadAgents()
     } catch {
-      showToast('Hiba az importálás során')
+      showToast(t('agents.import.error'))
     } finally {
       importAgentFile.value = ''
     }
@@ -6212,7 +6341,7 @@ document.getElementById('voiceInstallBtn').addEventListener('click', async () =>
   } catch {
     btn.disabled = false
     btn.textContent = 'Telepítés'
-    showToast('Hiba a telepítés során')
+    showToast(t('agents.voice.install_error'))
   }
 })
 
@@ -6230,8 +6359,8 @@ document.getElementById('saveVoiceConfigBtn').addEventListener('click', async ()
     // OWNERGATE3-1104: the server may refuse (403 owner_session_required); show why instead of a generic error.
     const reply = await readActionReply(r)
     if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(r, reply.body) })); return }
-    showToast('Hangbeállítás mentve')
-  } catch { showToast('Hiba a mentés során') }
+    showToast(t('agents.voice.saved'))
+  } catch { showToast(t('common.error_save')) }
 })
 
 document.getElementById('saveProfileBtn').addEventListener('click', async () => {
@@ -6391,7 +6520,7 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
 
 document.getElementById('authFlowCopyBtn').addEventListener('click', () => {
   const url = document.getElementById('authFlowUrl').textContent
-  navigator.clipboard.writeText(url).then(() => showToast('URL masolva'))
+  navigator.clipboard.writeText(url).then(() => showToast(t('common.toast.copied')))
 })
 
 document.getElementById('memoryIsolationToggle').addEventListener('change', async (e) => {
@@ -6447,6 +6576,7 @@ document.getElementById('saveClaudeMdBtn').addEventListener('click', async () =>
       body: JSON.stringify({ claudeMd: document.getElementById('editClaudeMd').value }),
     })
     if (!res.ok) throw new Error()
+    markFieldSaved(document.getElementById('editClaudeMd'))
     showToast(t('agents.claude_md_saved'))
   } catch { showToast(t('common.error_save')) }
 })
@@ -6460,6 +6590,7 @@ document.getElementById('saveSoulMdBtn').addEventListener('click', async () => {
       body: JSON.stringify({ soulMd: document.getElementById('editSoulMd').value }),
     })
     if (!res.ok) throw new Error()
+    markFieldSaved(document.getElementById('editSoulMd'))
     showToast(t('agents.soul_md_saved'))
   } catch { showToast(t('common.error_save')) }
 })
@@ -6473,7 +6604,8 @@ document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => 
       body: JSON.stringify({ mcpJson: document.getElementById('editMcpJson').value }),
     })
     if (!res.ok) throw new Error()
-    showToast('.mcp.json mentve')
+    markFieldSaved(document.getElementById('editMcpJson'))
+    showToast(t('agents.mcp_json_saved'))
   } catch { showToast(t('common.error_save')) }
 })
 
@@ -6687,18 +6819,20 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Kapcsolodasi hiba')
+      throw new Error(err.error || t('channel.toast.connect_error'))
     }
     const result = await res.json()
     // #1878 (6): on the main agent the save restarts the channels session; a failed
     // restart must not read as "connected".
     if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), 12000)
-    else showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
+    else showToast(t('channel.toast.connected', { provider: getProviderLabel() }))
     // Refresh detail
+    // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
+    if (currentAgent.name === mainAgentId()) await refreshMainChannelUnconfBanner()
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -6731,7 +6865,7 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
         : exp.state === 'soon' ? ' ' + t('channel.toast.teams_secret_expiry_soon', { date: exp.date, days: exp.daysLeft })
         : exp.state === 'expired' ? ' ' + t('channel.toast.teams_secret_expiry_expired', { date: exp.date })
         : ''
-      showToast('Kapcsolat rendben!' + suffix, suffix ? 8000 : undefined)
+      showToast(t('channel.toast.test_ok') + suffix, suffix ? 8000 : undefined)
     }
   } catch {
     showToast(t('channel.toast.smoke_failed'))
@@ -6748,13 +6882,13 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel/reconnect`, { method: 'POST' })
     const data = await res.json()
     if (data.ok) {
-      showToast('Channel-MCP reconnect sikeres')
+      showToast(t('channel.toast.reconnect_ok'))
       document.getElementById('chDisconnectedNotice').hidden = true
     } else {
-      showToast(data.message || 'Reconnect sikertelen', 8000)
+      showToast(data.message || t('channel.toast.reconnect_failed'), 8000)
     }
   } catch {
-    showToast('Reconnect hiba', 8000)
+    showToast(t('channel.toast.reconnect_error'), 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -6768,15 +6902,15 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
   btn.disabled = true
   btn.textContent = t('agents.btn.running')
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || 'Smoke-test sikertelen', 8000)
+      showToast(data.error || t('channel.smoke_test.failed'), 8000)
       return
     }
     showSmokeTestResult(data.output || 'OK')
   } catch {
-    showToast('Smoke-test hiba', 8000)
+    showToast(t('channel.smoke_test.error'), 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -6847,7 +6981,7 @@ async function approvePairing(code) {
     refreshPendingPairings()
     refreshAllowedList()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 }
 
@@ -6915,7 +7049,7 @@ async function removeAllowed(kind, id) {
     showToast(t('common.toast.removed'))
     refreshAllowedList()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 }
 
@@ -6979,7 +7113,7 @@ async function generateInvite() {
     const res = await fetch(`${channelApiBase()}/invites`, { method: 'POST' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Sikertelen')
+      throw new Error(err.error || t('common.failed'))
     }
     const data = await res.json()
     if (data.deepLink) {
@@ -6990,7 +7124,7 @@ async function generateInvite() {
     }
     refreshInvites()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.textContent = t('channel.btn.invite_new')
@@ -7010,12 +7144,12 @@ async function revokeInviteToken(token) {
     const res = await fetch(`${channelApiBase()}/invites/${encodeURIComponent(token)}`, { method: 'DELETE' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Sikertelen')
+      throw new Error(err.error || t('common.failed'))
     }
     showToast(t('channel.toast.invite_revoked'))
     refreshInvites()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 }
 
@@ -7097,14 +7231,14 @@ async function submitApproveModal() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requireMention, allowFromAll }),
     })
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Hiba')
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || t('common.failed'))
     document.getElementById('chApproveModalOverlay').hidden = true
     const item = document.querySelector(`[data-req-id="${CSS.escape(String(id))}"]`)
     if (item) item.remove()
     showToast(t('channel.toast.approved'))
     refreshChannelRequests()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     confirmBtn.querySelector('.btn-text').hidden = false
     confirmBtn.querySelector('.btn-loading').hidden = true
@@ -7118,11 +7252,11 @@ async function denyChannelRequest(id, itemEl) {
   if (itemEl) itemEl.remove()
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests/${id}/deny`, { method: 'POST' })
-    if (!res.ok) throw new Error('Hiba')
+    if (!res.ok) throw new Error(t('common.failed'))
     showToast(t('channel.toast.denied'))
     refreshChannelRequests()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
     refreshChannelRequests()
   }
 }
@@ -7164,6 +7298,8 @@ document.getElementById('chDisconnectBtn').addEventListener('click', async () =>
     const reply = await readActionReply(res)
     if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) })); return }
     showToast(t('channel.toast.disconnected', { provider: provLabel }))
+    // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
+    if (currentAgent.name === mainAgentId()) await refreshMainChannelUnconfBanner()
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch {
@@ -7353,7 +7489,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Import hiba')
+      throw new Error(err.error || t('common.failed'))
     }
     const result = await res.json()
     closeModal(skillModalOverlay)
@@ -7367,7 +7503,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
       loadSkills(agentApiName())
     }
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -8326,7 +8462,7 @@ saveScheduleBtn.addEventListener('click', async () => {
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.error || 'Hiba')
+        throw new Error(err.error || t('common.failed'))
       }
       showToast(t('tasks.toast.updated'))
     } else {
@@ -8338,14 +8474,14 @@ saveScheduleBtn.addEventListener('click', async () => {
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.error || 'Ismeretlen hiba')
+        throw new Error(err.error || t('common.failed'))
       }
       showToast(t('tasks.toast.created'))
     }
     closeModal(scheduleModalOverlay)
     loadSchedules()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     saveScheduleBtn.disabled = false
     saveScheduleBtn.querySelector('.btn-text').hidden = false
@@ -9904,7 +10040,7 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
     loadCatalog()
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -9930,7 +10066,7 @@ async function catalogUninstall(item) {
     loadCatalog()
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   }
 }
 
@@ -10283,7 +10419,7 @@ async function offerGitHubRepoScriptsOptIn(name, skipped) {
     body: JSON.stringify({ runScripts: true }),
   })
   const data = await res.json()
-  if (data.error) alert(data.error)
+  if (data.error) showToast(data.error)
 }
 
 async function loadGitHubRepos() {
@@ -10306,7 +10442,7 @@ async function loadGitHubRepos() {
         try {
           const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
           const data = await res.json()
-          if (data.error) { alert(data.error); return }
+          if (data.error) { showToast(data.error); return }
           await offerGitHubRepoScriptsOptIn(r.name, data.scriptsSkipped)
           loadConnectors()
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
@@ -10515,8 +10651,8 @@ function renderOssRow(e) {
       }
       // Installed, but npm install failed: keep it visible instead of reporting success.
       // The opt-in is only offered after an install that completed.
-      if (data.installWarning) alert(t('connectors.install_warning', { msg: data.installWarning }))
-      else await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
+      const warning = data.installWarning ? t('connectors.install_warning', { msg: data.installWarning }) : ''
+      if (!warning) await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
         status.className = 'github-repo-status loading'
         status.textContent = t('connectors.api_keys_needed')
@@ -10551,7 +10687,13 @@ function renderOssRow(e) {
       loadGitHubRepos()
       loadExternalPaths()
       loadConnectors()
-      setTimeout(() => { status.hidden = true }, 4000)
+      if (warning) {
+        // The failed npm install stays in the status line, in red, in place of the success text (the MCP
+        // servers may not start). A key-save failure is kept below it.
+        const keyError = status.className === 'github-repo-status error' ? '\n\n' + status.textContent : ''
+        status.className = 'github-repo-status error'
+        status.textContent = warning + keyError
+      } else setTimeout(() => { status.hidden = true }, 4000)
     } catch (err) {
       status.className = 'github-repo-status error'
       status.textContent = 'Hiba: ' + err.message
@@ -11782,13 +11924,194 @@ async function loadExternalPaths() {
       body: JSON.stringify({ path: val }),
     })
     const data = await res.json()
-    if (data.error) { alert(data.error); return }
+    if (data.error) { showToast(data.error); return }
     input.value = ''
     loadExternalPaths()
     loadConnectors()
   })
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
 })()
+
+// --- CLI inventory page ---
+// Read-only view of scripts/cli-inventory.py's output, built like the MCP page:
+// stat cards, one heading per configured folder, a card per tool, and a
+// detail modal. Every field comes from a CLI's own manifest, help text or
+// README, so each one is escaped before it reaches innerHTML.
+let cliInventory = null
+
+const CLI_PROBE_DOT = { ok: 'connected', no_binary: 'unknown', timeout: 'failed', failed: 'failed', unparsed: 'failed' }
+
+async function loadCliTools(refresh = false) {
+  const grid = document.getElementById('cliToolGrid')
+  const stats = document.getElementById('cliToolStats')
+  const errEl = document.getElementById('cliToolError')
+  if (!grid || !stats || !errEl) return
+  grid.innerHTML = `<div class="connector-loading"><span class="spinner"></span> ${escapeHtml(t('clitools.loading'))}</div>`
+  stats.innerHTML = ''
+  try {
+    const res = await fetch('/api/cli-inventory' + (refresh ? '?refresh=1' : ''))
+    const data = await res.json().catch(() => ({}))
+    // Off (no folder configured) or no inventory yet for a caller that may not
+    // start the generator: a plain empty state, not an error.
+    if (res.ok && (data.enabled === false || data.pending === true)) {
+      cliInventory = null
+      errEl.hidden = true
+      errEl.textContent = ''
+      const meta = document.getElementById('cliToolMeta')
+      if (meta) meta.textContent = ''
+      grid.innerHTML = `<div class="connector-loading">${escapeHtml(t(data.enabled === false ? 'clitools.disabled' : 'clitools.pending'))}</div>`
+      return
+    }
+    // A refresh only the owner may start: the refusal is said, and the inventory already shown stays.
+    const refusal = ownerSessionText(data)
+    if (refusal) {
+      if (cliInventory) renderCliTools()
+      else grid.innerHTML = ''
+      errEl.hidden = false
+      errEl.textContent = refusal
+      return
+    }
+    if (!res.ok || !Array.isArray(data.tools)) {
+      throw new Error(data.detail || data.error || ('HTTP ' + res.status))
+    }
+    cliInventory = data
+    const regenError = data.cache && data.cache.regen_error
+    const regenSkipped = data.cache && data.cache.regen_skipped
+    errEl.hidden = !regenError && !regenSkipped
+    errEl.textContent = regenError ? t('clitools.regen_error', { msg: regenError })
+      : regenSkipped ? t('clitools.regen_skipped') : ''
+    renderCliTools()
+  } catch (err) {
+    cliInventory = null
+    grid.innerHTML = ''
+    errEl.hidden = false
+    errEl.textContent = t('clitools.load_error', { msg: err && err.message ? err.message : String(err) })
+  }
+}
+
+function renderCliTools() {
+  const grid = document.getElementById('cliToolGrid')
+  const stats = document.getElementById('cliToolStats')
+  const meta = document.getElementById('cliToolMeta')
+  if (!grid || !stats || !cliInventory) return
+  const tools = cliInventory.tools
+  const summary = cliInventory.summary || {}
+  const working = tools.filter((x) => x.probe && x.probe.status === 'ok').length
+  const noBinary = tools.filter((x) => x.probe && x.probe.status === 'no_binary').length
+  const failed = Number(summary.probe_failures) || 0
+  stats.innerHTML = `
+    <div class="stat-card"><div class="stat-value">${Number(tools.length)}</div><div class="stat-label">${escapeHtml(t('clitools.stat.total'))}</div></div>
+    <div class="stat-card"><div class="stat-value" style="color:var(--success)">${working}</div><div class="stat-label">${escapeHtml(t('clitools.stat.working'))}</div></div>
+    ${failed ? `<div class="stat-card"><div class="stat-value" style="color:var(--danger)">${failed}</div><div class="stat-label">${escapeHtml(t('clitools.stat.failed'))}</div></div>` : ''}
+    ${noBinary ? `<div class="stat-card"><div class="stat-value" style="color:var(--text-muted)">${noBinary}</div><div class="stat-label">${escapeHtml(t('clitools.stat.no_binary'))}</div></div>` : ''}
+  `
+  if (meta) {
+    const age = cliInventory.cache && cliInventory.cache.age_seconds
+    meta.textContent = age == null ? '' : t('clitools.meta_age', { min: Math.round(age / 60) })
+  }
+
+  grid.innerHTML = ''
+  const dirs = Array.isArray(summary.dirs) ? summary.dirs : []
+  if (tools.length === 0) {
+    grid.innerHTML = `<div class="connector-loading">${escapeHtml(t('clitools.empty', { dirs: dirs.map((d) => d.dir).join(', ') }))}</div>`
+    return
+  }
+  for (const d of dirs) {
+    const heading = document.createElement('div')
+    heading.className = 'connector-group-heading'
+    heading.textContent = d.found ? d.dir : t('clitools.dir_missing', { dir: d.dir })
+    grid.appendChild(heading)
+    const scopeGrid = document.createElement('div')
+    scopeGrid.className = 'connector-scope-grid'
+    for (const tool of tools.filter((x) => x.root === d.dir)) {
+      scopeGrid.appendChild(renderCliToolCard(tool))
+    }
+    if (scopeGrid.children.length > 0) grid.appendChild(scopeGrid)
+  }
+}
+
+function renderCliToolCard(tool) {
+  const card = document.createElement('div')
+  card.className = 'connector-card'
+  const status = (tool.probe && tool.probe.status) || 'failed'
+  const dotClass = CLI_PROBE_DOT[status] || 'failed'
+  const name = tool.display_name || tool.name
+  const version = tool.version ? `<span class="connector-source-badge">${escapeHtml(tool.version)}</span>` : ''
+  card.innerHTML = `
+    <div class="connector-status-dot ${escapeHtml(dotClass)}" title="${escapeHtml(t('clitools.probe.' + status))}"></div>
+    <div class="connector-info">
+      <div class="connector-name">${escapeHtml(name)} ${version}</div>
+      <div class="connector-endpoint">${escapeHtml(tool.description || tool.name)}</div>
+    </div>
+    <span class="connector-type-badge local">CLI</span>
+  `
+  card.addEventListener('click', () => openCliToolDetail(tool))
+  return card
+}
+
+// Both label and value are plain text; the row escapes them itself.
+function cliDetailRow(label, value, isMono = false) {
+  const style = isMono ? ' style="font-family:monospace;font-size:12px"' : ''
+  return `<div class="connector-detail-row"><span class="meta-label">${escapeHtml(label)}</span><span class="meta-value"${style}>${escapeHtml(value)}</span></div>`
+}
+
+function openCliToolDetail(tool) {
+  const overlay = document.getElementById('cliToolDetailOverlay')
+  if (!overlay) return
+  document.getElementById('cliToolDetailTitle').textContent = tool.display_name || tool.name
+  const mono = (s) => `<span style="font-family:monospace;font-size:12px">${escapeHtml(s)}</span>`
+  const status = (tool.probe && tool.probe.status) || 'failed'
+  const auth = tool.auth
+  const commands = Array.isArray(tool.commands) ? tool.commands : []
+  const rows = [
+    tool.binary ? cliDetailRow(t('clitools.field.binary'), tool.binary, true) : cliDetailRow(t('clitools.field.binary'), t('clitools.no_binary')),
+    cliDetailRow(t('clitools.field.status'), t('clitools.probe.' + status)),
+    tool.version ? cliDetailRow(t('clitools.field.version'), tool.version) : '',
+    tool.license ? cliDetailRow(t('clitools.field.license'), tool.license) : '',
+    cliDetailRow(t('clitools.field.dir'), tool.dir, true),
+    auth ? cliDetailRow(t('clitools.field.auth'), [auth.mode || '-', ...(auth.env_vars || [])].join(' · '), true) : '',
+    commands.length ? cliDetailRow(t('clitools.field.commands'), t('clitools.commands_count', {
+      n: commands.length, source: (tool.probe && tool.probe.command_source) || '-' })) : '',
+    tool.docs && tool.docs.length ? cliDetailRow(t('clitools.field.docs'), tool.docs.join(', '), true) : '',
+  ]
+  document.getElementById('cliToolDetailInfo').innerHTML = rows.join('')
+
+  const skills = Array.isArray(tool.skills) ? tool.skills : []
+  document.getElementById('cliToolDetailSkills').innerHTML = skills.length
+    ? skills.map((s) => `<div class="connector-agent-item"><label>${escapeHtml(s.scope === 'global' ? t('clitools.skill_global') : s.agent)}</label> ${mono(s.skill)}</div>`).join('')
+    : `<p style="color:var(--text-muted);font-size:13px;margin:0">${escapeHtml(t('clitools.no_skills'))}</p>`
+
+  document.getElementById('cliToolDetailCommands').innerHTML = commands.length
+    ? commands.map((c) => `<div class="connector-detail-row"><span class="meta-label">${mono(c.name)}</span><span class="meta-value">`
+      + escapeHtml(c.description || '')
+      + (c.subcommands && c.subcommands.length ? `<br>${mono(c.subcommands.join(' · '))}` : '')
+      + '</span></div>').join('')
+    : `<p style="color:var(--text-muted);font-size:13px;margin:0">${escapeHtml(t('clitools.no_commands'))}</p>`
+
+  const readme = document.getElementById('cliToolDetailReadme')
+  readme.textContent = tool.readme_excerpt || ''
+  document.getElementById('cliToolDetailReadmeGroup').hidden = !tool.readme_excerpt
+  openModal(overlay)
+  const closeBtn = document.getElementById('cliToolDetailClose')
+  if (closeBtn) setTimeout(() => closeBtn.focus(), 50)
+}
+
+function wireCliToolsPage() {
+  const overlay = document.getElementById('cliToolDetailOverlay')
+  const closeBtn = document.getElementById('cliToolDetailClose')
+  const refreshBtn = document.getElementById('cliToolRefreshBtn')
+  if (!overlay || !closeBtn || !refreshBtn) return
+  closeBtn.addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal(overlay)
+  })
+  refreshBtn.addEventListener('click', () => loadCliTools(true))
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', wireCliToolsPage)
+} else {
+  wireCliToolsPage()
+}
 
 async function openConnectorDetail(connector) {
   document.getElementById('connectorDetailTitle').textContent = connector.name
@@ -11978,7 +12301,7 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Hiba')
+      throw new Error(err.error || t('common.failed'))
     }
     const result = await res.json()
     const savedName = result.name || name
@@ -12001,7 +12324,7 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     }
     loadConnectors()
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -12566,7 +12889,7 @@ memImportSaveBtn.addEventListener('click', async () => {
       loadMemories()
       loadMemStats()
     } else {
-      showToast('Hiba: ' + (data.error || 'Ismeretlen'))
+      showToast(`${t('common.error')}: ${data.error || t('common.unknown')}`)
     }
   } catch (err) {
     memImportProgress.hidden = true
@@ -12616,7 +12939,7 @@ document.getElementById('migrateScanBtn').addEventListener('click', async () => 
       body: JSON.stringify({ sourcePath: path }),
     })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    if (!res.ok) throw new Error(data.error || t('common.failed'))
 
     migrateFindings = data.findings
     renderMigrateFindings(data)
@@ -12624,7 +12947,7 @@ document.getElementById('migrateScanBtn').addEventListener('click', async () => 
     document.getElementById('migrateStep1').hidden = true
     document.getElementById('migrateStep2').hidden = false
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -12711,7 +13034,7 @@ document.getElementById('migrateRunBtn').addEventListener('click', async () => {
       body: JSON.stringify({ findings: migrateFindings, agentId }),
     })
     const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Hiba')
+    if (!res.ok) throw new Error(data.error || t('common.failed'))
 
     // Show results
     document.getElementById('migrateStep2').hidden = true
@@ -12730,7 +13053,7 @@ document.getElementById('migrateRunBtn').addEventListener('click', async () => {
       ${data.details ? '<div class="migrate-result-details">' + data.details.map(d => escapeHtml(d)).join('<br>') + '</div>' : ''}
     `
   } catch (err) {
-    showToast(`Hiba: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`)
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -12890,7 +13213,13 @@ document.getElementById('fleetDryRunBtn').addEventListener('click', async () => 
 document.getElementById('fleetApplyBtn').addEventListener('click', async () => {
   if (!fleetLastBody) return
 
-  if (!confirm(t('fleet.import.apply_confirm'))) return
+  const confirmed = await confirmDialog({
+    title: t('fleet.import.apply_confirm_title'),
+    message: t('fleet.import.apply_confirm'),
+    okLabel: t('fleet.import.apply_confirm_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
 
   const btn = document.getElementById('fleetApplyBtn')
   btn.disabled = true
@@ -13691,9 +14020,10 @@ function renderTeamGraph(container, data, opts = {}) {
       <div class="team-node-meta${tagline ? ' team-node-tagline' : ''}">${escapeHtml(tagline || roleLabel)}</div>
       <div class="team-node-meta team-node-status"><span class="process-dot ${runDotClass}"></span>${escapeHtml(runLabel)}</div>
     `
-    if (node.id !== mainAgentId) {
-      div.addEventListener('click', () => openAgentDetail(node.id))
-    }
+    // The main agent opens too: openAgentDetail() hands it to openMarveenDetail(). It used to be
+    // left without a click (from before the main agent had a detail view), so its card on the
+    // overview and in the org chart looked clickable but did nothing.
+    div.addEventListener('click', () => openAgentDetail(node.id))
     // Drag-and-drop reporting edit (Team page only). Any agent except the main
     // one can be dragged; any node can be a drop target (dropping onto the main
     // agent makes the report a direct report of it).
@@ -14454,6 +14784,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
       }),
     })
     if (!res.ok) throw new Error()
+    markFieldSaved(document.getElementById('editTeamTagline'))
     // The server sanitizes the team config (strips self-references and
     // unknown agent ids) and reports what it dropped in `warnings`. Surface
     // that to the operator so a mistyped name isn't silently lost.
@@ -14900,6 +15231,75 @@ function renderQuotaStrip(q, fable) {
   }
 }
 
+// === Overview: token usage card (last 24h, per agent) ===
+// Reads the same /api/token-usage/summary the Token Monitor page uses. The
+// server only auto-collects hourly, so the overview triggers the incremental
+// collect itself (cursor-based, cheap), at most every 5 minutes, before reading.
+let _overviewTokensCollectedAt = 0
+async function loadOverviewTokens() {
+  const box = document.getElementById('overviewTokens')
+  if (!box) return
+  try {
+    if (Date.now() - _overviewTokensCollectedAt > 5 * 60_000) {
+      _overviewTokensCollectedAt = Date.now()
+      await fetch('/api/token-usage/collect', { method: 'POST' }).catch(() => {})
+    }
+    const now = Math.floor(Date.now() / 1000)
+    const [res, agentsRes] = await Promise.all([
+      fetch(`/api/token-usage/summary?from=${now - 86400}&to=${now}`),
+      fetch('/api/agents').catch(() => null),
+    ])
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const rows = await res.json()
+    // Rows are keyed by agent id; show the display name instead (the id stays
+    // in the tooltip). The main agent is not in /api/agents, so it goes through
+    // mainAgentDisplayName() like the Messages view. A failed /api/agents only
+    // costs the names, not the card.
+    const names = new Map()
+    try {
+      const agents = agentsRes && agentsRes.ok ? await agentsRes.json() : []
+      for (const a of Array.isArray(agents) ? agents : []) {
+        if (a && a.name) names.set(a.name, a.displayName || a.name)
+      }
+    } catch {}
+    const label = (id) => (id === mainAgentId() ? mainAgentDisplayName() : names.get(id) || id)
+    const list = (Array.isArray(rows) ? rows : []).map((r) => {
+      const read = r.totalCacheRead || 0
+      const ctxIn = (r.totalInput || 0) + read + (r.totalCacheCreation || 0)
+      return { agent: r.agent, name: label(r.agent), calls: r.totalCalls || 0, read, out: r.totalOutput || 0, ctxIn, total: ctxIn + (r.totalOutput || 0) }
+    }).filter((r) => r.total > 0).sort((a, b) => b.total - a.total)
+    if (list.length === 0) {
+      box.innerHTML = `<div class="overview-token-total">${escapeHtml(t('overview.tokens.empty'))}</div>`
+      return
+    }
+    const max = list[0].total
+    let sum = 0, sumRead = 0
+    box.innerHTML = list.map((r) => {
+      sum += r.total; sumRead += r.read
+      const pct = Math.max(2, Math.round((r.total / max) * 100))
+      const sub = t('overview.tokens.row_sub', {
+        calls: r.calls,
+        ctx: tuFormatTokens(r.calls ? Math.round(r.ctxIn / r.calls) : 0),
+        out: tuFormatTokens(r.out),
+      })
+      return `<div class="overview-token-row">
+        <div class="overview-token-name" title="${escapeHtml(r.agent)}">${escapeHtml(r.name)}</div>
+        <div class="overview-token-bar"><div class="overview-token-bar-fill" style="width:${pct}%"></div></div>
+        <div class="overview-token-value">${escapeHtml(tuFormatTokens(r.total))}</div>
+        <div class="overview-token-sub">${escapeHtml(sub)}</div>
+      </div>`
+    }).join('') + `<div class="overview-token-total">${escapeHtml(t('overview.tokens.total', {
+      total: tuFormatTokens(sum), pct: sum ? Math.round((sumRead / sum) * 100) : 0,
+    }))}</div>`
+  } catch {
+    box.innerHTML = `<div class="overview-token-total">${escapeHtml(t('overview.tokens.error'))}</div>`
+  }
+}
+{
+  const more = document.getElementById('overviewTokensMore')
+  if (more) more.addEventListener('click', (e) => { e.preventDefault(); switchPage('tokenUsage') })
+}
+
 async function loadOverview() {
   try {
     const res = await fetch('/api/overview')
@@ -14916,13 +15316,16 @@ async function loadOverview() {
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
     renderQuotaStrip(d.quota, d.quotaFable)
+    loadOverviewTokens()
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
       const tg = await fetch('/api/team/graph')
       if (tg.ok) {
         const graph = await tg.json()
-        renderTeamGraph(document.getElementById('overviewTeamGrid'), graph)
+        // Seed the working border from the last poll; the 3s poll keeps it current.
+        renderTeamGraph(document.getElementById('overviewTeamGrid'), graph, { activeIds: _workingAgentIds })
+        if (agentsBusyTimer) refreshAgentTerminalBusy()
       }
     } catch {}
     // Activity
@@ -15076,6 +15479,43 @@ function wireBranchDriftBanner() {
     const branch = (window._updatesStatus && window._updatesStatus.branch) || ''
     try { if (branch) localStorage.setItem(BRANCH_DRIFT_DISMISS_PREFIX + branch, '1') } catch { /* storage blocked */ }
     if (banner) banner.hidden = true
+  })
+}
+
+// === Main channel not configured (CHANNELUNCONF1110) ===
+// /api/marveen carries `mainChannelUnconfigured`: the provider whose token is missing, or null. The main session then
+// runs WITHOUT its channel (channels.sh), so nobody can message the main agent; the dashboard, the scheduled tasks and
+// the other agents keep working. One sentence plus the way to the main agent's Channel tab. Not dismissible.
+const MAIN_CHANNEL_PROVIDER_LABELS = { telegram: 'Telegram', discord: 'Discord', slack: 'Slack', teams: 'Microsoft Teams' }
+function updateMainChannelUnconfBanner(m) {
+  const banner = document.getElementById('mainChannelUnconfBanner')
+  if (!banner) return
+  const provider = m && typeof m.mainChannelUnconfigured === 'string' ? m.mainChannelUnconfigured : null
+  if (!provider) { banner.hidden = true; return }
+  const textEl = document.getElementById('mainChannelUnconfBannerText')
+  if (textEl) textEl.textContent = t('main_channel.unconfigured.banner', { provider: MAIN_CHANNEL_PROVIDER_LABELS[provider] || provider })
+  banner.hidden = false
+}
+async function refreshMainChannelUnconfBanner() {
+  try {
+    const r = await fetch('/api/marveen')
+    if (!r.ok) return
+    const m = await r.json()
+    window._marveen = { ...(window._marveen || {}), ...m }
+    updateMainChannelUnconfBanner(m)
+  } catch { /* the banner keeps its last state */ }
+}
+function wireMainChannelUnconfBanner() {
+  const btn = document.getElementById('mainChannelUnconfSetup')
+  if (!btn) return
+  btn.addEventListener('click', async () => {
+    // openMarveenDetail draws from window._marveen and returns silently while it is empty, and only the Agents page
+    // fills it: on a fresh install the owner lands on the overview, so the click opened nothing (live acceptance,
+    // measured in a browser). Fetch it first.
+    await refreshMainChannelUnconfBanner()
+    if (!window._marveen) return
+    await openAgentDetail(mainAgentId())
+    switchAgentTab('channel')
   })
 }
 
@@ -15299,7 +15739,12 @@ async function renderCliUpdateOffer(fresh) {
 
 async function applyCliUpdate(target) {
   if (!target) return
-  if (!confirm(t('updates.cli.confirm', { v: target }))) return
+  const confirmed = await confirmDialog({
+    title: t('updates.cli.confirm_title'),
+    message: t('updates.cli.confirm', { v: target }),
+    okLabel: t('updates.cli.confirm_ok'),
+  })
+  if (!confirmed) return
   const btn = document.getElementById('updatesCliBtn')
   if (btn) btn.disabled = true
   try {
@@ -15344,7 +15789,14 @@ async function renderDiagnoseOffer() {
 }
 
 async function runDiagnose() {
-  if (!confirm(t('updates.diagnose.consent'))) return
+  // The post-rollback-diagnose task runs on the main agent: it reads the update log, fixes what it safely can, never
+  // drops local changes and never restarts the services (seed-scheduled-tasks/post-rollback-diagnose/SKILL.md).
+  const confirmed = await confirmDialog({
+    title: t('updates.diagnose.consent_title'),
+    message: t('updates.diagnose.consent'),
+    okLabel: t('updates.diagnose.consent_ok'),
+  })
+  if (!confirmed) return
   const btn = document.getElementById('updatesDiagnoseBtn')
   if (btn) btn.disabled = true
   try {
@@ -15371,7 +15823,80 @@ document.getElementById('updatesCheckBtn').addEventListener('click', async () =>
   btn.disabled = false
 })
 
-async function runUpdate(autoStash) {
+// AUTOUPDATEDIVERG1110: a diverged install (local commits AND a newer upstream) used to end in a "not started"
+// toast. Now the dialog shows the plan (GET /api/updates/rebase-plan, read-only): the local commits that would be
+// replayed and the upstream commit. The owner approves exactly that plan: its hash goes back, and the server
+// refuses when the plan changed meanwhile. Then the update runs with that approval. Every text goes in through
+// textContent (commit subjects are free text from the install).
+async function offerRebaseUpdate() {
+  let plan
+  try {
+    const r = await fetch('/api/updates/rebase-plan')
+    plan = await r.json().catch(() => ({}))
+    if (!r.ok || !plan || typeof plan.hash !== 'string') {
+      showToast(t('updates.rebase.plan_error', { msg: (plan && plan.error) || ('HTTP ' + r.status) }), 12000)
+      return
+    }
+  } catch (err) {
+    showToast(t('updates.rebase.plan_error', { msg: err.message || String(err) }), 12000)
+    return
+  }
+  if (plan.willFail) {
+    showToast(plan.willFail === 'local-dependency-without-lock'
+      ? t('updates.rebase.will_fail_lock')
+      : t('updates.rebase.will_fail', { reason: plan.willFail }), 20000)
+    return
+  }
+  const content = document.createElement('div')
+  const list = document.createElement('ul')
+  list.className = 'settings-reset-confirm-keys update-rebase-commits'
+  list.dataset.testid = 'update-rebase-commits'
+  for (const c of plan.commits || []) {
+    const li = document.createElement('li')
+    const sha = document.createElement('span')
+    sha.className = 'settings-reset-confirm-key'
+    sha.textContent = String(c.sha || '').slice(0, 7)
+    const subject = document.createElement('span')
+    subject.textContent = String(c.subject || '')
+    li.append(sha, subject)
+    list.appendChild(li)
+  }
+  if ((plan.commits || []).length < plan.ahead) {
+    const li = document.createElement('li')
+    li.textContent = t('updates.rebase.more', { n: plan.ahead - plan.commits.length })
+    list.appendChild(li)
+  }
+  const target = document.createElement('p')
+  target.textContent = plan.targetSource === 'ls-remote'
+    ? t('updates.rebase.target_now', { target: String(plan.target).slice(0, 12) })
+    : t('updates.rebase.target_fetch', { target: String(plan.target).slice(0, 12), age: Math.round((plan.localRefAgeS || 0) / 60) })
+  const windowNote = document.createElement('p')
+  windowNote.textContent = t('updates.rebase.window')
+  const agentNote = document.createElement('p')
+  agentNote.textContent = t('updates.rebase.agent_path')
+  content.append(list, target, windowNote, agentNote)
+  const ok = await confirmDialog({
+    title: t('updates.rebase.title'),
+    message: t('updates.rebase.message', { n: plan.ahead }),
+    okLabel: t('updates.rebase.ok'),
+    content,
+    wide: true,
+  })
+  if (!ok) return
+  const a = await fetch('/api/updates/rebase-approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hash: plan.hash }),
+  })
+  const approval = await a.json().catch(() => ({}))
+  if (!a.ok || typeof approval.id !== 'string') {
+    showToast(t('updates.rebase.approve_failed', { msg: approval.error || ('HTTP ' + a.status) }), 12000)
+    return
+  }
+  await runUpdate(false, approval.id)
+}
+
+async function runUpdate(autoStash, rebaseApproval) {
   const btn = document.getElementById('updatesApplyBtn')
   btn.disabled = true
   btn.querySelector('.btn-text').hidden = true
@@ -15385,7 +15910,9 @@ async function runUpdate(autoStash) {
     const res = await fetch('/api/updates/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ autoStash: autoStash === true }),
+      body: JSON.stringify(typeof rebaseApproval === 'string'
+        ? { autoStash: autoStash === true, rebaseApproval }
+        : { autoStash: autoStash === true }),
     })
     // Parse the body regardless of status so preflight reasons
     // (not-on-main / dirty-tree / detached-head returned as 409 by
@@ -15395,9 +15922,20 @@ async function runUpdate(autoStash) {
       resetBtn()
       // dirty-tree without autoStash: offer the auto-stash retry inline.
       if (data.reason === 'dirty-tree' && !autoStash) {
-        if (confirm(t('updates.confirm.stash'))) {
-          await runUpdate(true)
-        }
+        // update.sh stashes, updates and pops; a path whose pop conflicts stays on the updated version and the
+        // local change is left in the stash only (ANETTUPDATESTASH1102), hence the danger dialog.
+        const stash = await confirmDialog({
+          title: t('updates.confirm.stash_title'),
+          message: t('updates.confirm.stash'),
+          okLabel: t('updates.confirm.stash_ok'),
+          danger: true,
+        })
+        if (stash) await runUpdate(true)
+        return
+      }
+      // A diverged install: not a dead end, the approval dialog opens (AUTOUPDATEDIVERG1110).
+      if (data.reason === 'local-commits' && typeof rebaseApproval !== 'string') {
+        await offerRebaseUpdate()
         return
       }
       showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))
@@ -15464,8 +16002,15 @@ async function pollUpdateOutcome(resetBtn) {
   showToast(t('updates.toast.status_timeout'))
 }
 
+// update.sh stops and starts the dashboard and the channels unit (scripts/stop.sh, start.sh), and channels.sh
+// always starts a fresh conversation; a dashboard that does not come up is rolled back to the previous version.
 document.getElementById('updatesApplyBtn').addEventListener('click', async () => {
-  if (!confirm(t('updates.confirm.apply'))) return
+  const confirmed = await confirmDialog({
+    title: t('updates.confirm.apply_title'),
+    message: t('updates.confirm.apply'),
+    okLabel: t('updates.confirm.apply_ok'),
+  })
+  if (!confirmed) return
   await runUpdate(false)
 })
 
@@ -15823,7 +16368,9 @@ function onbStep3Html(s) {
     : `<p class="onb-hint">${escapeHtml(t('onboarding.step3.svc_starting'))}</p>`
   return `<p>${escapeHtml(t('onboarding.step3.desc'))}</p>`
     + svcLine
-    + `<ol class="onb-list"><li>${escapeHtml(t('onboarding.step3.li1'))}</li><li>${escapeHtml(t('onboarding.step3.li2'))}</li></ol>`
+    + (onboardingChannelProvider === 'teams'
+      ? `<ol class="onb-list"><li>${escapeHtml(t('onboarding.step3.li1_teams'))}</li><li>${escapeHtml(t('onboarding.step3.li2_teams'))}</li></ol>`
+      : `<ol class="onb-list"><li>${escapeHtml(t('onboarding.step3.li1'))}</li><li>${escapeHtml(t('onboarding.step3.li2'))}</li></ol>`)
     + `<div id="onbPending" class="onb-pending"></div>`
     + `<button class="btn-secondary btn-compact" id="onbRefreshBtn">${escapeHtml(t('onboarding.step3.refresh_btn'))}</button>`
     + `<div id="onbMsg" class="onb-msg"></div>`
@@ -16017,6 +16564,10 @@ function wireOnboarding(step) {
 populateAvatarGrid()
 loadMemAgents()
 loadOverview()
+// The overview is the landing page without going through switchPage(), so its
+// live team-graph border needs the busy poll started here too. A tab opened in
+// the background starts it on its first visibilitychange instead.
+if (!document.hidden && !document.getElementById('overviewPage').hidden) startAgentsBusyPoll()
 loadAvailableModels()
 loadOllamaModels()
 {
@@ -16560,7 +17111,7 @@ async function setAutonomyLevel(key, level) {
     })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      showToast(data.error || 'Hiba')
+      showToast(data.error || t('common.error_save'))
       return
     }
     // Refresh the settings tab autonomy grid if it is visible
@@ -16923,8 +17474,14 @@ async function bridgeEnrollFromUi() {
   msg.textContent = ''
   out.hidden = true
   if (!keyLine || !name) { msg.classList.add('err'); msg.textContent = t('auth.bridge.err_empty'); return }
-  // The confirm step: pairing grants the device SSH-tunnel + dashboard access.
-  if (!confirm(t('auth.bridge.confirm', { name }))) return
+  // The confirm step: pairing writes a restricted authorized_keys line (a tunnel to the dashboard port only) and mints
+  // a device key; a Bridge paired before (the same install id) loses its old key (mintBridgeDeviceKey).
+  const confirmed = await confirmDialog({
+    title: t('auth.bridge.confirm_title'),
+    message: t('auth.bridge.confirm', { name }),
+    okLabel: t('auth.bridge.confirm_ok'),
+  })
+  if (!confirmed) return
   msg.textContent = t('auth.bridge.working')
   try {
     const r = await fetch('/api/security/bridge-enroll', {
@@ -17003,7 +17560,17 @@ async function refreshDeviceKeyList() {
     }).join('')
     el.querySelectorAll('.auth-device-revoke').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        if (!confirm(t('auth.devices.revoke_confirm'))) return
+        // Name the device; a Bridge-paired one loses its SSH tunnel line too (the server removes both halves).
+        const key = keys.find((x) => String(x.id) === btn.dataset.keyId)
+        let message = t('auth.devices.revoke_confirm', { name: (key && key.name) || btn.dataset.keyId })
+        if (key && key.installId) message += ' ' + t('auth.devices.revoke_confirm_bridge')
+        const confirmed = await confirmDialog({
+          title: t('auth.devices.revoke_confirm_title'),
+          message,
+          okLabel: t('auth.devices.revoke_confirm_ok'),
+          danger: true,
+        })
+        if (!confirmed) return
         // A Bridge-paired revoke means BOTH halves (dashboard key + ssh line).
         // The key is dead either way, but ssh_removed:false means the
         // authorized_keys line survived (fs error) and the device can still
@@ -17118,9 +17685,18 @@ async function saveOperatorAccess(ev) {
   const msg = document.getElementById('opAccMsg')
   msg.className = 'auth-form-msg'
   // Turning on the pane view shows the operator the conversation itself: ask first.
-  if (ev && ev.target && ev.target.dataset.opCap === 'paneView' && ev.target.checked && !confirm(t('auth.operator.pane_warning'))) {
-    ev.target.checked = false
-    return
+  if (ev && ev.target && ev.target.dataset.opCap === 'paneView' && ev.target.checked) {
+    // The box stays unticked while the dialog is open: a save from another switch
+    // behind the dialog reads the boxes, and must not carry paneView=true unconfirmed.
+    const box = ev.target
+    box.checked = false
+    const confirmed = await confirmDialog({
+      title: t('auth.operator.pane_warning_title'),
+      message: t('auth.operator.pane_warning', { cmds: OPERATOR_CMDS.map((c) => '/' + c).join(', ') }),
+      okLabel: t('auth.operator.pane_warning_ok'),
+    })
+    if (!confirmed) return
+    box.checked = true
   }
   const next = {
     enabled: document.getElementById('opAccEnabled').checked,
@@ -17336,6 +17912,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initAuthBanner()
   wireBranchDriftBanner()
   wireUpdateConflictBanner()
+  wireMainChannelUnconfBanner()
   wireFleetFreeze()
 })
 
@@ -17968,6 +18545,7 @@ const CLAUDE_PLAN_LOGIN_ERROR_KEYS = {
   'busy': 'settings.claude_plans.login.error_busy',
   'id-taken': 'settings.claude_plans.login.error_id_taken',
   'invalid-plan': 'settings.claude_plans.login.error_invalid',
+  'invalid-label': 'settings.claude_plans.login.error_invalid_label',
   'claude-not-found': 'settings.claude_plans.login.error_claude_missing',
   'url-timeout': 'settings.claude_plans.login.error_no_link',
   'code-timeout': 'settings.claude_plans.login.error_expired',
@@ -18853,8 +19431,10 @@ function formatSettingValue(value) {
 // nothing. `danger` styles the confirm button for an action that cannot be
 // undone or cuts running work. Every text goes in through textContent; extra
 // markup (`content`) is built by the caller from elements, never from HTML.
-function confirmDialog({ title, message, okLabel, danger = false, content = null, wide = false, bodyClass = '' }) {
+function confirmDialog({ title, message, okLabel, danger = false, content = null, wide = false, bodyClass = '', cancelLabel = '' }) {
   return new Promise((resolve) => {
+    // Where the focus was (the button that asked, usually), so it goes back there afterwards.
+    const previous = document.activeElement
     const overlay = document.createElement('div')
     overlay.className = 'modal-overlay active'
     overlay.setAttribute('role', 'dialog')
@@ -18884,7 +19464,7 @@ function confirmDialog({ title, message, okLabel, danger = false, content = null
     const cancelBtn = document.createElement('button')
     cancelBtn.type = 'button'
     cancelBtn.className = 'btn-secondary'
-    cancelBtn.textContent = t('common.cancel')
+    cancelBtn.textContent = cancelLabel || t('common.cancel')
     const okBtn = document.createElement('button')
     okBtn.type = 'button'
     okBtn.className = danger ? 'btn-danger' : 'btn-primary'
@@ -18898,9 +19478,25 @@ function confirmDialog({ title, message, okLabel, danger = false, content = null
     const finish = (answer) => {
       document.removeEventListener('keydown', onKey)
       overlay.remove()
+      if (previous && previous.isConnected && typeof previous.focus === 'function') previous.focus()
       resolve(answer)
     }
-    const onKey = (e) => { if (e.key === 'Escape') finish(false) }
+    // Tab stays inside the dialog: from its last focusable element on to the first, and Shift+Tab
+    // back, so the focus cannot wander to the page behind the backdrop.
+    const focusables = () => [...modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => !el.disabled && el.offsetParent !== null)
+    const onKey = (e) => {
+      if (e.key === 'Escape') { finish(false); return }
+      if (e.key !== 'Tab') return
+      const items = focusables()
+      if (!items.length) return
+      const first = items[0]
+      const last = items[items.length - 1]
+      const active = document.activeElement
+      const outside = !modal.contains(active)
+      if (e.shiftKey && (active === first || outside)) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && (active === last || outside)) { e.preventDefault(); first.focus() }
+    }
     document.addEventListener('keydown', onKey)
     overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false) })
     closeBtn.addEventListener('click', () => finish(false))
@@ -19901,7 +20497,12 @@ function renderTuDetailsTable() {
     const totalIn = (d.input_tokens || 0) + (d.cache_read_tokens || 0) + (d.cache_creation_tokens || 0)
     const timeStr = tuFormatLocalDate(d.timestamp)
     const preview = d.content_preview ? d.content_preview.slice(0, 80) + (d.content_preview.length > 80 ? '...' : '') : ''
-    const taskInfo = d.task_title ? `<span style="color:var(--text-secondary);font-size:11px"> [${escapeHtml(d.task_title)}]</span>` : ''
+    // DBSIZE1111: the card comes from the agent's in_progress windows at read time (taskCards). Two or more
+    // overlapping cards are all shown, none is picked: the call itself does not say which one it was for.
+    const cards = Array.isArray(d.taskCards) ? d.taskCards : []
+    const taskInfo = cards.length
+      ? `<span style="color:var(--text-secondary);font-size:11px"${cards.length > 1 ? ` title="${escapeHtml(t('tokenUsage.cards_overlap', { n: cards.length }))}"` : ''}> [${cards.map(c => escapeHtml(c.title)).join(' / ')}]</span>`
+      : ''
     return `<tr>
       <td style="white-space:nowrap">${timeStr}</td>
       <td><span style="color:${tuGetColor(d.agent)};font-weight:600">${escapeHtml(d.agent)}</span>${taskInfo}</td>
@@ -20801,14 +21402,14 @@ async function openIdeaBreakdown(id) {
   // populated by loadKanban(). If the user lands here without visiting the board,
   // fetch it so the AI-suggested assignees are selectable.
   if (!kanbanAssignees.length) {
-    try { kanbanAssignees = await (await fetch('/api/kanban/assignees')).json() } catch { /* dropdown falls back to "nincs" */ }
+    try { kanbanAssignees = await (await fetch('/api/kanban/assignees')).json() } catch { /* dropdown falls back to "unassigned" */ }
   }
   showToast(t('ideas.toast.ai_elaborating'))
   try {
     const res = await fetch(`/api/ideas/${id}/breakdown`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || 'Breakdown hiba'); return }
-    if (!data.subtasks || !data.subtasks.length) { showToast('Az AI nem adott vissza részfeladatot'); return }
+    if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed')); return }
+    if (!data.subtasks || !data.subtasks.length) { showToast(t('ideas.toast.no_subtasks')); return }
     breakdownMode = 'idea'
     breakdownIdeaId = id
     breakdownSubtasks = data.subtasks
@@ -20817,7 +21418,7 @@ async function openIdeaBreakdown(id) {
     const dodSection = document.getElementById('breakdownDoDSection')
     if (dodSection) { dodSection.style.display = ''; document.getElementById('breakdownSuccessCriteria').value = '' }
   } catch {
-    showToast('Breakdown hiba')
+    showToast(t('kanban.breakdown.failed'))
   }
 }
 
@@ -20865,7 +21466,7 @@ async function handleAgentLogin(agentName, btn) {
       setTimeout(() => loadAgents(), 1500)
     }
   } catch (e) {
-    showToast('Hiba: ' + (e.message || e))
+    showToast(`${t('common.error')}: ${e.message || e}`)
     btn.textContent = origText
     btn.dataset.phase = 'start'
     btn.disabled = false
@@ -20991,7 +21592,7 @@ function openTerminalModal(agentName) {
     if (!terminalInputEnabled) {
       // Read-only mode: input gate is OFF. Drop the keystroke locally (server
       // would 403 it anyway) and nudge the user to the toggle.
-      showToast('Terminal input is off. Enable it with the header toggle first.')
+      showToast(t('terminal.input_off'))
       return
     }
     const special = ESC_TO_SPECIAL[data]
@@ -21050,12 +21651,12 @@ document.getElementById('terminalInputToggle')?.addEventListener('change', (e) =
       }
       terminalInputEnabled = reply.body.enabled === true
       syncTerminalInputToggleUI()
-      showToast(terminalInputEnabled ? 'Terminal input enabled (audit-logged)' : 'Terminal input disabled')
+      showToast(t(terminalInputEnabled ? 'terminal.input_enabled' : 'terminal.input_disabled'))
     })
     .catch(() => {
       terminalInputEnabled = false
       syncTerminalInputToggleUI()
-      showToast('Could not change terminal input state')
+      showToast(t('terminal.input_toggle_failed'))
     })
 })
 
@@ -21265,7 +21866,14 @@ function renderFederationPage() {
     </div>`
   document.getElementById('fedEnabledToggle').addEventListener('change', async (e) => {
     const enabled = e.target.checked
-    if (!enabled && !confirm(t('federation.confirm.disable'))) { e.target.checked = true; return }
+    if (!enabled) {
+      const confirmed = await confirmDialog({
+        title: t('federation.confirm.disable_title'),
+        message: t('federation.confirm.disable'),
+        okLabel: t('federation.confirm.disable_ok'),
+      })
+      if (!confirmed) { e.target.checked = true; return }
+    }
     try {
       const res = await fetch('/api/federation/enabled', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
       const data = await res.json().catch(() => ({}))
@@ -21346,14 +21954,45 @@ async function fedRevealToken(peerId, card) {
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
 }
 
+// A peer's inbound token in the app's own dialog (the pairing showed it in a native prompt()): selectable,
+// and "Copy" puts it on the clipboard. The Inbound token button shows it again later.
+async function fedShowInboundTokenDialog(peerId, token, messageKey) {
+  const box = document.createElement('input')
+  box.type = 'text'
+  box.readOnly = true
+  box.className = 'confirm-dialog-token'
+  box.value = token
+  box.addEventListener('focus', () => box.select())
+  const copy = await confirmDialog({
+    title: t('federation.token_dialog.title', { peer: peerId }),
+    message: t(messageKey),
+    okLabel: t('federation.token_dialog.copy'),
+    cancelLabel: t('federation.token_dialog.close'),
+    content: box,
+  })
+  if (!copy) return
+  try {
+    await navigator.clipboard.writeText(token)
+    showToast(t('federation.toast.token_copied'))
+  } catch { showToast(t('federation.token_dialog.copy_failed')) }
+}
+
 async function fedRotateToken(peerId) {
-  if (!confirm(t('federation.confirm.rotate', { peer: peerId }))) return
+  const confirmed = await confirmDialog({
+    title: t('federation.confirm.rotate_title'),
+    message: t('federation.confirm.rotate', { peer: peerId }),
+    okLabel: t('federation.confirm.rotate_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/rotate-inbound-token`, { method: 'POST' })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
     showToast(t('federation.toast.rotated'))
     loadFederationPage()
+    // The answer carries the new token: shown right away, like at pairing.
+    if (data.inboundToken) await fedShowInboundTokenDialog(peerId, data.inboundToken, 'federation.token_dialog.rotated_hint')
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
 }
 
@@ -21370,7 +22009,13 @@ async function fedToggleShareCap(peerId, share) {
 }
 
 async function fedDeletePeer(peerId) {
-  if (!confirm(t('federation.confirm.delete_peer', { peer: peerId }))) return
+  const confirmed = await confirmDialog({
+    title: t('federation.confirm.delete_peer_title'),
+    message: t('federation.confirm.delete_peer', { peer: peerId }),
+    okLabel: t('federation.confirm.delete_peer_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}`, { method: 'DELETE' })
     const data = await res.json().catch(() => ({}))
@@ -21391,7 +22036,12 @@ async function fedDeletePeer(peerId) {
 // directive). Reuses the existing main-agent restart endpoint -- no new
 // backend, no terminal command for the operator.
 async function fedApplyToMainAgent() {
-  if (!confirm(t('federation.confirm.apply'))) return
+  const confirmed = await confirmDialog({
+    title: t('federation.confirm.apply_title'),
+    message: t('federation.confirm.apply'),
+    okLabel: t('federation.confirm.apply_ok'),
+  })
+  if (!confirmed) return
   try {
     // Server-side apply: restarts the main channels agent by MAIN_AGENT_ID,
     // so the client does not depend on window._marveen being loaded (the
@@ -21406,7 +22056,14 @@ async function fedApplyToMainAgent() {
     let data = await res.json().catch(() => ({}))
     if (res.status === 409 && data.error === 'restart-blocked') {
       const key = data.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
-      if (!confirm(t(key))) { showToast(t('agents.toast.restart_not_forced')); return }
+      // The same question as the main restart button (restartMainAgentGated).
+      const forced = await confirmDialog({
+        title: t('agents.confirm.hard_restart_title'),
+        message: t(key),
+        okLabel: t('agents.confirm.force_restart_ok'),
+        danger: true,
+      })
+      if (!forced) { showToast(t('agents.toast.restart_not_forced')); return }
       res = await apply(true)
       data = await res.json().catch(() => ({}))
     }
@@ -21464,7 +22121,7 @@ async function fedSavePeerModal() {
       if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
       // The minted inbound token is shown ONCE right away: the owner hands it
       // to the peer's operator during pairing.
-      prompt(t('federation.modal.minted_token_hint'), data.inboundToken)
+      await fedShowInboundTokenDialog(id, data.inboundToken, 'federation.modal.minted_token_hint')
       showToast(t('federation.toast.peer_added'))
     }
     closeModal(document.getElementById('fedPeerModalOverlay'))
@@ -21473,7 +22130,13 @@ async function fedSavePeerModal() {
 }
 
 async function fedRemoveAll() {
-  if (!confirm(t('federation.confirm.remove'))) return
+  const confirmed = await confirmDialog({
+    title: t('federation.confirm.remove_title'),
+    message: t('federation.confirm.remove'),
+    okLabel: t('federation.confirm.remove_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   try {
     const res = await fetch('/api/federation/remove', { method: 'POST' })
     const data = await res.json().catch(() => ({}))
@@ -22144,7 +22807,16 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   }
 
   async function switchOn(row) {
-    if (row.main && !confirm(t('gromzo.agents.main.confirm_on'))) return
+    // The main agent's switch restarts the main conversation fresh (hardRestartMarveenChannels) after the approval,
+    // through the manual-restart pane gate: a busy pane is not cut off, the row offers "Restart now" instead.
+    if (row.main) {
+      const confirmed = await confirmDialog({
+        title: t('gromzo.agents.main.confirm_on_title'),
+        message: t('gromzo.agents.main.confirm_on'),
+        okLabel: t('gromzo.agents.main.confirm_on_ok'),
+      })
+      if (!confirmed) return
+    }
     const withName = nameFieldShown(row, false)
     const name = withName ? nameFor(row).trim() : ''
     local.set(row.slug, { kind: 'busy' }); render()
@@ -22167,7 +22839,21 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   }
 
   async function switchOff(row) {
-    if (!confirm(t(row.main ? 'gromzo.agents.main.confirm_off' : 'gromzo.agents.confirm_off', { name: row.name || row.slug }))) return
+    // A sub-agent's switch-off removes it from mxd (agent_remove), so switching it on again asks for a new approval;
+    // the main agent stays listed in mxd, only its launch side goes, with the same fresh restart as the switch-on.
+    const confirmed = await confirmDialog(row.main
+      ? {
+        title: t('gromzo.agents.main.confirm_off_title'),
+        message: t('gromzo.agents.main.confirm_off'),
+        okLabel: t('gromzo.agents.main.confirm_off_ok'),
+      }
+      : {
+        title: t('gromzo.agents.confirm_off_title'),
+        message: t('gromzo.agents.confirm_off', { name: row.name || row.slug }),
+        okLabel: t('gromzo.agents.confirm_off_ok'),
+        danger: true,
+      })
+    if (!confirmed) return
     local.set(row.slug, { kind: 'busy' }); render()
     try {
       const r = await post(row.slug, 'disable')
@@ -22183,7 +22869,12 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   // GROMZOMAINAGENT1106: the main conversation's restart, when the pane was busy at the switch. The server
   // asks the pane gate again; a busy pane keeps the row on "waiting", never forced.
   async function restartMain(row) {
-    if (!confirm(t('gromzo.agents.main.confirm_restart'))) return
+    const confirmed = await confirmDialog({
+      title: t('gromzo.agents.main.confirm_restart_title'),
+      message: t('gromzo.agents.main.confirm_restart'),
+      okLabel: t('gromzo.agents.main.confirm_restart_ok'),
+    })
+    if (!confirmed) return
     local.set(row.slug, { kind: 'busy' }); render()
     try {
       const r = await post(row.slug, 'restart')

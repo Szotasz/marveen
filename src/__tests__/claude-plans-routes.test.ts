@@ -5,8 +5,8 @@
 // atomic-write path. hardRestartMarveenChannels/restartAgentProcess are
 // mocked -- this test must NEVER touch a real tmux session or process.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
@@ -57,7 +57,11 @@ vi.mock('../web/agent-process.js', () => ({
   resolveMainAgentRotatedTokenSecretId: () => activeRotatedTokenId,
   hasFleetOauthToken: () => fleetTokenPresent,
   mainAgentSharedConfigDir: () => join(tmpRoot, '.channels-config'),
+  planTokenPreflight: (name: string, secretId: string) => planTokenPreflight(name, secretId),
 }))
+// SUBPLANTOKEN1110: the launcher's own decision is tested in plan-token-launch.test.ts; here only how the route
+// acts on it. Default: the agent may take the token.
+const planTokenPreflight = vi.fn((_name: string, secretId: string): { kind: 'plan-token'; secretId: string } | { kind: 'refuse'; reason: string } => ({ kind: 'plan-token', secretId }))
 
 // Fake vault: a plain in-memory Map, never touches the real encrypted store or
 // macOS Keychain (see vault-master-key.test.ts for that machinery's own
@@ -78,8 +82,8 @@ vi.mock('../web/claude-plan-fleet-wiring.js', () => ({
   runFleetLeg: (p: { id: string }) => runFleetLeg(p),
 }))
 
-const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
-const { CLAUDE_PLANS_PATH } = await import('../web/claude-plans.js')
+const { tryHandleClaudePlans, rotatePlan } = await import('../web/routes/claude-plans.js')
+const { CLAUDE_PLANS_PATH, readClaudePlans } = await import('../web/claude-plans.js')
 const { CLAUDE_PLANS_STATE_PATH } = await import('../web/claude-plans-state.js')
 
 function fakeCtx(method: string, path: string, body?: unknown): { ctx: any; out: { status: number; body: any } } {
@@ -580,6 +584,51 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
   })
 })
 
+// PLANROTATEDEADLOCK1115 PR1 (P2): the route's body is rotatePlan(); called directly it answers what the route sends.
+describe('rotatePlan(): the route body as a function (PLANROTATEDEADLOCK1115 P2)', () => {
+  const agentsDir = join(tmpRoot, 'agents')
+  beforeEach(() => {
+    if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+    if (existsSync(CLAUDE_PLANS_STATE_PATH)) rmSync(CLAUDE_PLANS_STATE_PATH)
+    if (existsSync(agentsDir)) rmSync(agentsDir, { recursive: true, force: true })
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    hardRestartMarveenChannels.mockClear().mockReturnValue({ ok: true })
+    fleetEnabled = false
+  })
+  const seed = async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'pro', label: 'Personal PRO' })).ctx)
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat' })).ctx)
+  }
+
+  it('the happy path: the same 200 body as the route, the same one restart', async () => {
+    await seed()
+    const r = await rotatePlan({ agentId: 'agent-a', targetPlanId: 'team', continue: false })
+    expect(r).toEqual({ status: 200, payload: { ok: true, agentId: 'agent-a', activePlanId: 'team', fleet: 'off' } })
+    expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+  })
+
+  it('each refusal: the same status as the route, nothing restarted', async () => {
+    await seed()
+    for (const [label, setupFn, input, status] of [
+      ['rotation off', () => { rotationEnabled = '0' }, { targetPlanId: 'team' }, 409],
+      ['unknown target', () => {}, { targetPlanId: 'nope' }, 400],
+      ['main not isolated', () => { mainIsolated = '0' }, { targetPlanId: 'team' }, 409],
+    ] as const) {
+      rotationEnabled = '1'
+      mainIsolated = '1'
+      ;(setupFn as () => void)()
+      const direct = await rotatePlan({ agentId: 'agent-a', targetPlanId: input.targetPlanId, continue: false })
+      const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', input)
+      await tryHandleClaudePlans(ctx)
+      expect([label, direct.status], label).toEqual([label, status])
+      expect(out.status, label).toBe(direct.status)
+      expect(out.body, label).toEqual(direct.payload)
+    }
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+  })
+})
+
 describe('POST /api/claude-plans/rotate with "continue" (8c338dc4)', () => {
   const shared = join(tmpRoot, '.channels-config')
   const transcripts = join(shared, 'projects', encodeClaudeProjectDir(tmpRoot))
@@ -732,5 +781,128 @@ describe('POST /api/claude-plans/rotate with "continue" (8c338dc4)', () => {
     expect(out.body.error).toContain('main agent only')
     expect(stateOnDisk()).toBeNull()
     expect(restartAgentProcess).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('POST /api/claude-plans/rotate, sub-agent onto a TOKEN plan (SUBPLANTOKEN1110)', () => {
+  const agentsDir = join(tmpRoot, 'agents')
+  const statusDir = join(tmpRoot, 'store', 'plan-token-launch')
+  const agentPlan = () => {
+    const f = join(agentsDir, 'devy', 'agent-config.json')
+    return existsSync(f) ? (JSON.parse(readFileSync(f, 'utf-8')) as { claudePlan?: string }).claudePlan : undefined
+  }
+  // What the launched shell's helper (resolve-plan-token-env.mjs --status) writes; the restart mock plays it.
+  const helperWrites = (state: string, reason?: string) => {
+    mkdirSync(statusDir, { recursive: true })
+    writeFileSync(join(statusDir, 'devy.json'), JSON.stringify({ state, secretId: 'claude-plan-token-tok-b', at: Date.now(), ...(reason ? { reason } : {}) }))
+  }
+
+  beforeEach(async () => {
+    if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+    if (existsSync(CLAUDE_PLANS_STATE_PATH)) rmSync(CLAUDE_PLANS_STATE_PATH)
+    if (existsSync(agentsDir)) rmSync(agentsDir, { recursive: true, force: true })
+    if (existsSync(statusDir)) rmSync(statusDir, { recursive: true, force: true })
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    fleetEnabled = false
+    vaultSecrets.clear()
+    planTokenPreflight.mockClear().mockImplementation((_n: string, secretId: string) => ({ kind: 'plan-token', secretId }))
+    restartAgentProcess.mockClear().mockImplementation(async () => { helperWrites('plan-token'); return { ok: true, pid: 123 } })
+    for (const id of ['tok-a', 'tok-b']) {
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', {
+        id, label: `Token ${id}`, token: `test-fixture-not-a-real-token-${id}`, planType: 'personal', channelsAllowed: true,
+      }).ctx)
+    }
+    mkdirSync(join(agentsDir, 'devy'), { recursive: true })
+  })
+
+  it('refused by the preflight (e.g. the secret is gone): 409, nothing written, no restart', async () => {
+    planTokenPreflight.mockImplementation(() => ({ kind: 'refuse', reason: 'plan-token-missing-from-vault' }))
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'tok-b' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(409)
+    expect(String(out.body.error)).toContain('plan-token-missing-from-vault')
+    expect(agentPlan()).toBeUndefined()
+    expect(existsSync(CLAUDE_PLANS_STATE_PATH) ? JSON.parse(readFileSync(CLAUDE_PLANS_STATE_PATH, 'utf-8')).activePlanByAgent?.devy : undefined).toBeUndefined()
+    expect(restartAgentProcess).not.toHaveBeenCalled()
+  })
+
+  it('the preflight is asked with the plan\'s vault reference id, never a token', async () => {
+    const { ctx } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'tok-b' })
+    await tryHandleClaudePlans(ctx)
+    expect(planTokenPreflight).toHaveBeenCalledWith('devy', 'claude-plan-token-tok-b')
+  })
+
+  it('success answers with what the restarted launch did: launchAuth plan-token, read back after the restart', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'tok-b' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, agentId: 'devy', activePlanId: 'tok-b', launchAuth: 'plan-token' })
+    expect(agentPlan()).toBe('tok-b')
+    expect(JSON.stringify(out.body)).not.toContain('test-fixture-not-a-real-token')
+  })
+
+  it('the restarted launch did NOT get the token (helper failed): 502 with the read-back state, not ok', async () => {
+    restartAgentProcess.mockImplementation(async () => { helperWrites('failed', 'vault-secret-unresolved'); return { ok: true, pid: 123 } })
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'tok-b' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(502)
+    expect(out.body.ok).toBeUndefined()
+    expect(out.body.launchAuth).toBe('failed')
+    expect(out.body.reason).toBe('vault-secret-unresolved')
+  })
+
+  it('a configDir plan keeps the old answer shape (no preflight, no launchAuth)', async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat' })).ctx)
+    restartAgentProcess.mockImplementation(async () => ({ ok: true, pid: 123 }))
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'team' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, agentId: 'devy', activePlanId: 'team' })
+    expect(planTokenPreflight).not.toHaveBeenCalled()
+  })
+})
+
+// K1 (ROTSLACK1111, Dani 75718, Samu 75723): a label with a line break or a control character is refused on both write
+// paths (the value never echoed); one already on disk is still read, the heartbeat flattens it when it prints.
+describe('a plan label must be one line (K1)', () => {
+  const NL = String.fromCharCode(10)
+  const bad = `Team${NL}MSG${NL}touch PWNED`
+  beforeEach(() => {
+    if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+  })
+
+  it('POST: 400, nothing written, the label not echoed', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: bad }))
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(400)
+    expect(String(out.body.error)).toContain('single line')
+    expect(JSON.stringify(out.body)).not.toContain('PWNED')
+    expect(existsSync(CLAUDE_PLANS_PATH)).toBe(false)
+  })
+  it.each([String.fromCharCode(13), String.fromCharCode(9), String.fromCharCode(27), String.fromCharCode(0x2028)])('POST: refuses a label with %j', async (c) => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: `a${c}b` }))
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(400)
+  })
+  it('PUT: 400, the stored plan unchanged', async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team' })).ctx)
+    const before = readFileSync(CLAUDE_PLANS_PATH, 'utf-8')
+    const { ctx, out } = fakeCtx('PUT', '/api/claude-plans/team', plan({ id: 'team', label: bad }))
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(400)
+    expect(JSON.stringify(out.body)).not.toContain('PWNED')
+    expect(readFileSync(CLAUDE_PLANS_PATH, 'utf-8')).toBe(before)
+  })
+  it('an ordinary label (accents, dash, emoji) is accepted', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Céges csomag — 2 🚀' }))
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(201)
+  })
+  it('a label already on disk with a line break is still read (not dropped); only the print flattens it', () => {
+    mkdirSync(dirname(CLAUDE_PLANS_PATH), { recursive: true })
+    writeFileSync(CLAUDE_PLANS_PATH, JSON.stringify([{ id: 'team', label: bad, configDir: '/opt/claude-team', planType: 'team', channelsAllowed: true }]))
+    expect(readClaudePlans().map((p) => p.label)).toEqual([bad])
   })
 })

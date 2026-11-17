@@ -52,14 +52,14 @@ A legtöbb szintet az ágens promptja olvassa. Kettőt a szerver vagy egy hook i
   "version": 1,
   "categories": [
     { "key": "kanban_archive_done", "label": "...", "level": 3, "locked": false, "maxLevel": 3 },
-    { "key": "email_send",          "label": "...", "level": 1, "locked": false, "maxLevel": 2 },
+    { "key": "email_send",          "label": "...", "level": 1, "locked": false, "maxLevel": 3 },
     { "key": "payment",             "label": "...", "level": 1, "locked": true,  "maxLevel": 1 }
   ]
 }
 ```
 
 - `locked: true` + `maxLevel: 1` → hard-safety kategória, nem emelhető (publikálás, pénz, törlés, jogosultság, külső üzenet).
-- `email_send` speciális: állítható, de `maxLevel: 2` (vázlat + jóváhagyás, sosem teljesen autonóm küldés).
+- `email_send` speciális: a kiinduló szint 1, a felső határ `maxLevel: 3` (a gazda döntése, 2026-11-15). A 2 vázlat + jóváhagyás; a 3-on a levélkapu jóváhagyás nélkül enged küldeni. A szintet emelni a dashboardon csak a gazda tudja (tulajdonosi bejelentkezés; a közös tokennel 403). A frissítés a meglévő telepítés `maxLevel`-jét csak akkor emeli 2-ről 3-ra, ha még a gyári 2 áll ott; a szinthez nem nyúl.
 
 ### Telepítés / frissítés
 
@@ -67,4 +67,4 @@ A default config a `seed-config/` mappában van; az install kimásolja `store/`-
 
 ### Bővítés
 
-Új autonómia-kategória: vedd fel a `seed-config/autonomy-config.json`-ba (`key`, `label`, `level`, `locked`, `maxLevel`), és a releváns heartbeat-prompt olvassa be a szintet a cselekvés előtt. A hard-safety határt mindig tartsd: kifelé menő / visszafordíthatatlan művelet sosem kap `maxLevel > 1`-et (az email a kivétel, `maxLevel: 2`).
+Új autonómia-kategória: vedd fel a `seed-config/autonomy-config.json`-ba (`key`, `label`, `level`, `locked`, `maxLevel`), és a releváns heartbeat-prompt olvassa be a szintet a cselekvés előtt. A hard-safety határt mindig tartsd: kifelé menő / visszafordíthatatlan művelet sosem kap `maxLevel > 1`-et (az email a kivétel, `maxLevel: 3`, a szint emelése a gazdáé).

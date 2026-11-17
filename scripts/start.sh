@@ -15,6 +15,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
 SLUG="${SLUG:-marveen}"
+# Unit name: SERVICE_ID, else MAIN_AGENT_ID, with a fallback to existing units (see the helper).
+# The tmux session name stays on SLUG.
+# shellcheck source=resolve-unit-id.sh
+if [ -f "$INSTALL_DIR/scripts/resolve-unit-id.sh" ]; then
+  source "$INSTALL_DIR/scripts/resolve-unit-id.sh"
+else
+  UNIT_ID="$SLUG"  # helper missing (partial copy): the pre-SERVICE_ID behaviour
+fi
 
 MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
 # shellcheck source=../install-lang.sh
@@ -48,7 +56,7 @@ if [ "$OS" = "Darwin" ]; then
   # verify.
   . "${INSTALL_DIR}/scripts/launchd-unit.sh"
   for _svc in dashboard channels; do
-    if [ -z "$(start_launchd_unit "com.${SLUG}.${_svc}")" ]; then
+    if [ -z "$(start_launchd_unit "com.${UNIT_ID}.${_svc}")" ]; then
       LAUNCHD_FAILED="${LAUNCHD_FAILED}${_svc} "
     fi
   done
@@ -58,13 +66,13 @@ elif [ "$OS" = "Linux" ]; then
   # fails, so this script used to fall through to the direct nohup launch and
   # start a SECOND dashboard instance next to the system-unit one
   # (EADDRINUSE crash loop). Mirrors the same branch in stop.sh.
-  if pidof systemd >/dev/null 2>&1 && systemctl cat "${SLUG}-dashboard.service" >/dev/null 2>&1; then
-    if ! systemctl start "${SLUG}-dashboard" "${SLUG}-channels"; then
-      echo "ERROR: system units ${SLUG}-dashboard/${SLUG}-channels exist but could not be started (run as root?)" >&2
+  if pidof systemd >/dev/null 2>&1 && systemctl cat "${UNIT_ID}-dashboard.service" >/dev/null 2>&1; then
+    if ! systemctl start "${UNIT_ID}-dashboard" "${UNIT_ID}-channels"; then
+      echo "ERROR: system units ${UNIT_ID}-dashboard/${UNIT_ID}-channels exist but could not be started (run as root?)" >&2
       exit 1
     fi
   elif pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
-    systemctl --user start "${SLUG}-dashboard" "${SLUG}-channels"
+    systemctl --user start "${UNIT_ID}-dashboard" "${UNIT_ID}-channels"
   else
     echo "systemd not available (WSL or container), using direct launch..."
     mkdir -p "$INSTALL_DIR/store"
@@ -175,8 +183,8 @@ if [ -n "$LAUNCHD_FAILED" ]; then
   # the bot: this reports what the verification established, nothing beyond it.
   echo "✗ A szolgaltatas indulasa nem igazolt: ${LAUNCHD_FAILED}" >&2
   for _svc in $LAUNCHD_FAILED; do
-    echo "  Ujraprobalas: launchctl kickstart -p gui/$(id -u)/com.${SLUG}.${_svc}" >&2
-    echo "  Ellenorzes:   launchctl print gui/$(id -u)/com.${SLUG}.${_svc} | grep -E 'state|pid'" >&2
+    echo "  Ujraprobalas: launchctl kickstart -p gui/$(id -u)/com.${UNIT_ID}.${_svc}" >&2
+    echo "  Ellenorzes:   launchctl print gui/$(id -u)/com.${UNIT_ID}.${_svc} | grep -E 'state|pid'" >&2
   done
   unset _svc
   exit 1

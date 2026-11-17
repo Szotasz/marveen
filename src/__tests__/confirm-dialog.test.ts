@@ -608,6 +608,142 @@ describe('the Claude plan delete uses it', () => {
   })
 })
 
+describe('the update questions use it', () => {
+  const fn = (name: string) => {
+    const m = new RegExp(`async function ${name}\\(`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    for (let j = APP.indexOf('{', m.index); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const CLI = fn('applyCliUpdate')
+  const DIAG = fn('runDiagnose')
+  const RUN = fn('runUpdate')
+  const APPLY = (() => {
+    const i = APP.indexOf("document.getElementById('updatesApplyBtn').addEventListener('click'")
+    const j = i < 0 ? -1 : APP.indexOf('\n})\n', i)
+    return i < 0 || j < 0 ? '' : APP.slice(i, j)
+  })()
+
+  // A button stub that runUpdate and the others can disable, hide and query.
+  const button = () => {
+    const part = { hidden: false }
+    return { disabled: false, hidden: false, querySelector: () => part }
+  }
+  function load(body: string, name: string, answer: boolean, responses: Array<{ ok: boolean; body: unknown }>) {
+    const dialogs: Array<Record<string, unknown>> = []
+    const calls: Array<{ url: string; body?: string }> = []
+    const toasts: string[] = []
+    const queue = [...responses]
+    const run = new Function(
+      'confirmDialog', 't', 'fetch', 'showToast', 'document', 'renderCliUpdateOffer', 'pollUpdateOutcome',
+      `${body}\nreturn ${name}`,
+    )(
+      async (o: Record<string, unknown>) => { dialogs.push(o); return answer },
+      (key: string, vars?: Record<string, string>) => (vars ? `${key} ${JSON.stringify(vars)}` : key),
+      async (url: string, init: { body?: string } = {}) => {
+        calls.push({ url, body: init.body })
+        const r = queue.shift() ?? { ok: true, body: {} }
+        return { ok: r.ok, status: r.ok ? 200 : 409, json: async () => r.body }
+      },
+      (m: string) => { toasts.push(m) },
+      { getElementById: () => button() },
+      () => {}, async () => {},
+    ) as (arg?: unknown) => Promise<void>
+    return { run, dialogs, calls, toasts }
+  }
+
+  it('the handlers were found, with no native confirm() left', () => {
+    for (const part of [CLI, DIAG, RUN, APPLY]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    }
+  })
+
+  it('the CLI update asks in its own dialog naming the version; a "no" sends nothing, a "yes" the apply', async () => {
+    const no = load(CLI, 'applyCliUpdate', false, [])
+    await no.run('2.1.320')
+    expect(no.dialogs).toEqual([{
+      title: 'updates.cli.confirm_title',
+      message: 'updates.cli.confirm {"v":"2.1.320"}',
+      okLabel: 'updates.cli.confirm_ok',
+    }])
+    expect(no.calls).toEqual([])
+    const yes = load(CLI, 'applyCliUpdate', true, [{ ok: true, body: {} }])
+    await yes.run('2.1.320')
+    expect(yes.calls).toEqual([{ url: '/api/updates/cli/apply', body: '{"target":"2.1.320"}' }])
+  })
+
+  it('the diagnosis asks in its own dialog; a "no" starts nothing, a "yes" the diagnosis', async () => {
+    const no = load(DIAG, 'runDiagnose', false, [])
+    await no.run()
+    expect(no.dialogs).toEqual([{
+      title: 'updates.diagnose.consent_title',
+      message: 'updates.diagnose.consent',
+      okLabel: 'updates.diagnose.consent_ok',
+    }])
+    expect(no.calls).toEqual([])
+    const yes = load(DIAG, 'runDiagnose', true, [{ ok: true, body: {} }])
+    await yes.run()
+    expect(yes.calls.map(c => c.url)).toEqual(['/api/updates/diagnose'])
+  })
+
+  it('a dirty tree offers the stash in a danger dialog; a "no" stops, a "yes" retries with autoStash', async () => {
+    const dirty = { ok: false, body: { reason: 'dirty-tree', error: 'Working tree has uncommitted changes' } }
+    const no = load(RUN, 'runUpdate', false, [dirty])
+    await no.run(false)
+    expect(no.dialogs).toEqual([{
+      title: 'updates.confirm.stash_title',
+      message: 'updates.confirm.stash',
+      okLabel: 'updates.confirm.stash_ok',
+      danger: true,
+    }])
+    expect(no.calls.map(c => c.body)).toEqual(['{"autoStash":false}'])
+    const yes = load(RUN, 'runUpdate', true, [dirty, { ok: true, body: {} }])
+    await yes.run(false)
+    expect(yes.calls.map(c => c.body)).toEqual(['{"autoStash":false}', '{"autoStash":true}'])
+    // Already with autoStash: no second question.
+    const again = load(RUN, 'runUpdate', true, [dirty])
+    await again.run(true)
+    expect(again.dialogs).toEqual([])
+  })
+
+  it('the update button asks in its own dialog before runUpdate', () => {
+    expect(APPLY).toContain("title: t('updates.confirm.apply_title')")
+    expect(APPLY).toContain("message: t('updates.confirm.apply')")
+    expect(APPLY).toContain("okLabel: t('updates.confirm.apply_ok')")
+    const ask = APPLY.indexOf('await confirmDialog({')
+    const guard = APPLY.indexOf('if (!confirmed) return')
+    expect(ask).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(ask)
+    expect(APPLY.indexOf('await runUpdate(false)')).toBeGreaterThan(guard)
+  })
+
+  it('the keys are in both languages; the texts say what the update does', () => {
+    const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+    for (const lang of [HU, EN]) {
+      for (const key of ['updates.confirm.apply', 'updates.confirm.stash', 'updates.cli.confirm', 'updates.diagnose.consent']) {
+        for (const suffix of ['', '_title', '_ok']) expect(line(lang, key + suffix), key + suffix).not.toBe('')
+      }
+      expect(line(lang, 'updates.cli.confirm')).toContain('{v}')
+    }
+    // update.sh restarts the channels unit too (a fresh conversation) and rolls a dashboard that does not come up back.
+    expect(line(HU, 'updates.confirm.apply')).toContain('új beszélgetéssel')
+    expect(line(HU, 'updates.confirm.apply')).toContain('visszaáll az előző verzióra')
+    // A conflicting restore leaves the local change in the stash only.
+    expect(line(HU, 'updates.confirm.stash')).toContain('csak a stash-ben')
+    // The diagnosis is a task on the main agent, not a new agent; it never restarts the services.
+    expect(line(HU, 'updates.diagnose.consent')).toContain('A fő ügynök feladatot kap')
+    expect(line(HU, 'updates.diagnose.consent')).toContain('nem indítja újra')
+    for (const key of ['updates.cli.confirm', 'updates.diagnose.consent', 'updates.confirm.stash']) {
+      expect(line(HU, key)).not.toMatch(/session|agenst|working tree/)
+    }
+  })
+})
+
 describe('the Vault deletes use it', () => {
   const SITES = [
     ['delete a secret from the Connectors list', "<span class=\"github-repo-date\">${escapeHtml(s.id)} &middot; ${date}</span>", 'vault.confirm.delete', "{ method: 'DELETE' })"],
@@ -797,6 +933,178 @@ describe('the pending retry cancel and the background task stop use it', () => {
   })
 })
 
+describe('the auth and device questions use it', () => {
+  const fn = (name: string) => {
+    const m = new RegExp(`(?:async )?function ${name}\\(`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    for (let j = APP.indexOf('{', m.index); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const BRIDGE = fn('bridgeEnrollFromUi')
+  const DEVICES = fn('refreshDeviceKeyList')
+  const OPERATOR = fn('saveOperatorAccess')
+  const FAILURE = fn('handleAuthFailure')
+  const NOTICE = fn('showAuthFailedNotice')
+  const tr = (key: string, vars?: Record<string, string>) => (vars ? `${key} ${JSON.stringify(vars)}` : key)
+
+  it('the handlers were found, with no native confirm() or alert() left', () => {
+    for (const part of [BRIDGE, DEVICES, OPERATOR, FAILURE, NOTICE]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    }
+  })
+
+  it('the Bridge pairing asks in its own dialog naming the device; a "no" sends nothing', async () => {
+    const dialogs: Array<Record<string, unknown>> = []
+    const calls: string[] = []
+    const fields: Record<string, { value: string; className?: string; textContent?: string; hidden?: boolean; classList?: { add: () => void } }> = {
+      authBridgeKeyLine: { value: 'ssh-ed25519 AAAA bridge-x' },
+      authBridgeName: { value: 'Laptop' },
+      authBridgeHost: { value: '' },
+      authBridgeMsg: { value: '', classList: { add: () => {} } },
+      authBridgeBundle: { value: '' },
+    }
+    const run = new Function('confirmDialog', 't', 'fetch', 'document', `${BRIDGE}\nreturn bridgeEnrollFromUi`)(
+      async (o: Record<string, unknown>) => { dialogs.push(o); return false },
+      tr,
+      async (url: string) => { calls.push(url); return { ok: true, json: async () => ({}) } },
+      { getElementById: (id: string) => fields[id] },
+    ) as () => Promise<void>
+    await run()
+    expect(dialogs).toEqual([{
+      title: 'auth.bridge.confirm_title',
+      message: 'auth.bridge.confirm {"name":"Laptop"}',
+      okLabel: 'auth.bridge.confirm_ok',
+    }])
+    expect(calls).toEqual([])
+  })
+
+  it('the device key revoke names the device in a danger dialog, says a Bridge loses its tunnel too, and a "no" sends nothing', async () => {
+    async function revoke(key: Record<string, unknown>, answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const calls: Array<{ url: string; method: string }> = []
+      let onClick: (() => Promise<void>) | null = null
+      const btn = { dataset: { keyId: String(key.id) }, addEventListener: (_: string, f: () => Promise<void>) => { onClick = f } }
+      const list = { innerHTML: '', querySelectorAll: () => [btn] }
+      const run = new Function('confirmDialog', 't', 'fetch', 'document', 'escapeHtml', `${DEVICES}\nreturn refreshDeviceKeyList`)(
+        async (o: Record<string, unknown>) => { dialogs.push(o); return answer },
+        tr,
+        async (url: string, init: { method?: string } = {}) => {
+          calls.push({ url, method: init.method || 'GET' })
+          return { ok: true, json: async () => (url === '/api/auth/device-keys' ? { keys: [{ createdAt: 1, ...key }] } : {}) }
+        },
+        { getElementById: (id: string) => (id === 'authDeviceKeyList' ? list : null) },
+        (x: string) => x,
+      ) as () => Promise<void>
+      await run()
+      await onClick!()
+      return { dialogs, deletes: calls.filter(c => c.method === 'DELETE') }
+    }
+    const plain = await revoke({ id: 7, name: 'Telefon' }, false)
+    expect(plain.dialogs).toEqual([{
+      title: 'auth.devices.revoke_confirm_title',
+      message: 'auth.devices.revoke_confirm {"name":"Telefon"}',
+      okLabel: 'auth.devices.revoke_confirm_ok',
+      danger: true,
+    }])
+    expect(plain.deletes).toEqual([])
+    const bridge = await revoke({ id: 8, name: 'Laptop', installId: 'abc' }, false)
+    expect(bridge.dialogs[0].message).toBe('auth.devices.revoke_confirm {"name":"Laptop"} auth.devices.revoke_confirm_bridge')
+    const yes = await revoke({ id: 7, name: 'Telefon' }, true)
+    expect(yes.deletes).toEqual([{ url: '/api/auth/device-keys/7', method: 'DELETE' }])
+  })
+
+  it('turning on the pane view asks in its own dialog, naming the allowed commands; a "no" leaves it unticked and saves nothing', async () => {
+    async function turnOn(answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const puts: Array<Record<string, any>> = []
+      const boxes: Record<string, { dataset: Record<string, string>; checked: boolean }> = {
+        paneView: { dataset: { opCap: 'paneView' }, checked: true },
+        update: { dataset: { opCap: 'update' }, checked: false },
+      }
+      let duringDialog: boolean | null = null
+      let save: (ev: unknown) => Promise<void> = async () => {}
+      save = new Function('confirmDialog', 't', 'fetch', 'document', 'OPERATOR_CAPS', 'OPERATOR_CMDS', 'CSS', 'applyOperatorAccess', `${OPERATOR}\nreturn saveOperatorAccess`)(
+        async (o: Record<string, unknown>) => {
+          dialogs.push(o)
+          duringDialog = boxes.paneView.checked
+          // Behind the open dialog, another switch is toggled from the keyboard and saves.
+          boxes.update.checked = true
+          await save({ target: boxes.update })
+          return answer
+        },
+        tr,
+        async (_url: string, init: { body?: string } = {}) => { if (init.body) puts.push(JSON.parse(init.body)); return { ok: true, json: async () => ({}) } },
+        {
+          getElementById: () => ({ className: '', checked: true, classList: { add: () => {} } }),
+          querySelector: (sel: string) => {
+            const m = /data-op-cap="([^"]+)"/.exec(sel)
+            return (m && boxes[m[1]]) || { checked: false }
+          },
+        },
+        ['paneView', 'update'], ['login', 'mcp'], { escape: (x: string) => x }, () => {},
+      ) as (ev: unknown) => Promise<void>
+      await save({ target: boxes.paneView })
+      return { dialogs, puts, duringDialog, box: boxes.paneView }
+    }
+    const no = await turnOn(false)
+    expect(no.dialogs).toEqual([{
+      title: 'auth.operator.pane_warning_title',
+      message: 'auth.operator.pane_warning {"cmds":"/login, /mcp"}',
+      okLabel: 'auth.operator.pane_warning_ok',
+    }])
+    // While the dialog is open the box is unticked, so the save behind it does not carry paneView=true.
+    expect(no.duringDialog).toBe(false)
+    expect(no.puts.map(b => b.capabilities.paneView)).toEqual([false])
+    expect(no.box.checked).toBe(false)
+    const yes = await turnOn(true)
+    expect(yes.box.checked).toBe(true)
+    expect(yes.puts.map(b => b.capabilities.paneView)).toEqual([false, true])
+  })
+
+  it('a failed token login without a password login shows a translated notice instead of the English alert', () => {
+    expect(FAILURE).toContain('showAuthFailedNotice()')
+    expect(APP).not.toContain('Dashboard authentication failed.')
+    for (const key of ['auth.failed.title', 'auth.failed.desc', 'auth.failed.close']) expect(NOTICE).toContain(`tr('${key}', `)
+    expect(NOTICE).toContain("close.addEventListener('click', () => overlay.remove())")
+    expect(NOTICE).not.toContain('innerHTML')
+  })
+
+  it('the keys are in both languages; the texts say what the server does', () => {
+    const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+    for (const lang of [HU, EN]) {
+      for (const key of ['auth.bridge.confirm', 'auth.devices.revoke_confirm', 'auth.operator.pane_warning']) {
+        for (const suffix of ['', '_title', '_ok']) expect(line(lang, key + suffix), key + suffix).not.toBe('')
+      }
+      for (const key of ['auth.devices.revoke_confirm_bridge', 'auth.failed.title', 'auth.failed.desc', 'auth.failed.close']) expect(line(lang, key), key).not.toBe('')
+      expect(line(lang, 'auth.bridge.confirm')).toContain('"{name}"')
+      expect(line(lang, 'auth.devices.revoke_confirm')).toContain('"{name}"')
+      expect(line(lang, 'auth.failed.desc')).toContain('?token=')
+    }
+    // At pairing the tunnel opens to the dashboard port only (permitopen); later the Bridge may ask for further
+    // local ports with its own key, with a notification (bridge-service-ports.ts). A re-paired Bridge loses its old key.
+    expect(line(HU, 'auth.bridge.confirm')).toContain('párosításkor csak a dashboardhoz')
+    expect(line(HU, 'auth.bridge.confirm')).toContain('további helyi portokat kérhet, ezekről értesítést kapsz')
+    expect(line(EN, 'auth.bridge.confirm')).toContain('at pairing opens to the dashboard only')
+    expect(line(EN, 'auth.bridge.confirm')).toContain('further local ports')
+    expect(line(HU, 'auth.bridge.confirm')).toContain('a régi kulcsa megszűnik')
+    expect(line(HU, 'auth.devices.revoke_confirm_bridge')).toContain('SSH-alagútja is megszűnik')
+    expect(line(HU, 'auth.operator.pane_warning')).toContain('Írni nem tud bele')
+    // Even the commands right sends only the fixed commands (OPERATOR_COMMANDS); the list comes from the code.
+    // The list is fixed; the owner allows some of it, not all of it (Szotasz on #2669).
+    expect(line(HU, 'auth.operator.pane_warning')).toContain('a parancsküldés jogával is csak a fix listából ({cmds}) küldheti az általad engedélyezetteket')
+    expect(line(EN, 'auth.operator.pane_warning')).toContain('they can only send the ones you allowed from the fixed list ({cmds})')
+    for (const lang of [HU, EN]) {
+      expect(line(lang, 'auth.operator.pane_warning')).toContain('({cmds})')
+      expect(line(lang, 'auth.operator.pane_warning')).not.toContain('/login')
+    }
+  })
+})
+
 describe('the custom provider delete uses it', () => {
   const anchor = "tbody.querySelectorAll('[data-provider-delete]').forEach"
   const handler = (() => {
@@ -912,5 +1220,552 @@ describe('the idea and idea attachment deletes use it', () => {
       expect(lang.split('\n').find(l => l.includes("'ideas.confirm.delete':"))).toContain('{title}')
       expect(lang.split('\n').find(l => l.includes("'ideas.detail.attach.confirm_delete':"))).toContain('{name}')
     }
+  })
+})
+
+describe('the Gromzo agent switches use it', () => {
+  // The bodies sit inside the Gromzo page's closure: cut each by its braces and run it with that closure's names handed in.
+  const fn = (name: string) => {
+    const m = new RegExp(`async function ${name}\\(row\\) \\{`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    for (let j = APP.indexOf('{', m.index); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const ON = fn('switchOn')
+  const OFF = fn('switchOff')
+  const RESTART = fn('restartMain')
+
+  function load(body: string, name: string, answer: boolean) {
+    const dialogs: Array<Record<string, unknown>> = []
+    const posts: string[] = []
+    const run = new Function(
+      'confirmDialog', 't', 'post', 'local', 'render', 'loadAgents', 'codeOf', 'agentErr', 'nameFieldShown', 'nameFor', 'nameAsk', 'NAME_CODES', 'nameRefused', 'setTimeout',
+      `${body}\nreturn ${name}`,
+    )(
+      async (o: Record<string, unknown>) => { dialogs.push(o); return answer },
+      (key: string, vars?: Record<string, string>) => (vars ? `${key} ${JSON.stringify(vars)}` : key),
+      async (slug: string, action: string) => { posts.push(`${slug}/${action}`); return { ok: true, json: async () => ({ state: 'removed' }) } },
+      new Map(), () => {}, async () => {}, async () => 'x', (c: string) => c,
+      () => false, () => '', new Set(), [], () => {}, () => 0,
+    ) as (row: Record<string, unknown>) => Promise<void>
+    return { run, dialogs, posts }
+  }
+
+  it('the handlers were found, with no native confirm() left', () => {
+    for (const part of [ON, OFF, RESTART]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(/(^|[^.\w])(confirm|alert)\(/)
+    }
+  })
+
+  it('the main agent switch-on asks in its own dialog; a "no" sends nothing, a "yes" the enable', async () => {
+    const no = load(ON, 'switchOn', false)
+    await no.run({ slug: 'main', main: true })
+    expect(no.dialogs).toEqual([{
+      title: 'gromzo.agents.main.confirm_on_title',
+      message: 'gromzo.agents.main.confirm_on',
+      okLabel: 'gromzo.agents.main.confirm_on_ok',
+    }])
+    expect(no.posts).toEqual([])
+    const yes = load(ON, 'switchOn', true)
+    await yes.run({ slug: 'main', main: true })
+    expect(yes.posts).toEqual(['main/enable'])
+  })
+
+  it('a sub-agent switch-on asks nothing (the approval on Gromzo is the question)', async () => {
+    const h = load(ON, 'switchOn', false)
+    await h.run({ slug: 'kutato', name: 'Kutató' })
+    expect(h.dialogs).toEqual([])
+    expect(h.posts).toEqual(['kutato/enable'])
+  })
+
+  it('the switch-off: the main agent in its own dialog, a sub-agent in a danger one naming it; a "no" sends nothing', async () => {
+    const main = load(OFF, 'switchOff', false)
+    await main.run({ slug: 'main', main: true, name: 'Fő' })
+    expect(main.dialogs).toEqual([{
+      title: 'gromzo.agents.main.confirm_off_title',
+      message: 'gromzo.agents.main.confirm_off',
+      okLabel: 'gromzo.agents.main.confirm_off_ok',
+    }])
+    const sub = load(OFF, 'switchOff', false)
+    await sub.run({ slug: 'kutato', name: 'Kutató' })
+    expect(sub.dialogs).toEqual([{
+      title: 'gromzo.agents.confirm_off_title',
+      message: 'gromzo.agents.confirm_off {"name":"Kutató"}',
+      okLabel: 'gromzo.agents.confirm_off_ok',
+      danger: true,
+    }])
+    const unnamed = load(OFF, 'switchOff', false)
+    await unnamed.run({ slug: 'kutato' })
+    expect(unnamed.dialogs[0].message).toBe('gromzo.agents.confirm_off {"name":"kutato"}')
+    expect([...main.posts, ...sub.posts, ...unnamed.posts]).toEqual([])
+    const yes = load(OFF, 'switchOff', true)
+    await yes.run({ slug: 'kutato', name: 'Kutató' })
+    expect(yes.posts).toEqual(['kutato/disable'])
+  })
+
+  it('the main restart asks in its own dialog; a "no" sends nothing, a "yes" the restart', async () => {
+    const no = load(RESTART, 'restartMain', false)
+    await no.run({ slug: 'main', main: true })
+    expect(no.dialogs).toEqual([{
+      title: 'gromzo.agents.main.confirm_restart_title',
+      message: 'gromzo.agents.main.confirm_restart',
+      okLabel: 'gromzo.agents.main.confirm_restart_ok',
+    }])
+    expect(no.posts).toEqual([])
+    const yes = load(RESTART, 'restartMain', true)
+    await yes.run({ slug: 'main', main: true })
+    expect(yes.posts).toEqual(['main/restart'])
+  })
+
+  it('the keys are in both languages; the texts say what the server does', () => {
+    const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+    for (const lang of [HU, EN]) {
+      for (const key of ['main.confirm_on', 'main.confirm_off', 'main.confirm_restart', 'confirm_off']) {
+        for (const suffix of ['', '_title', '_ok']) expect(line(lang, `gromzo.agents.${key}${suffix}`), key + suffix).not.toBe('')
+      }
+      expect(line(lang, 'gromzo.agents.confirm_off')).toContain('"{name}"')
+    }
+    // The main agent's restart is a fresh one (hardRestartMarveenChannels), and a busy pane is not cut off.
+    for (const key of ['main.confirm_on', 'main.confirm_off', 'main.confirm_restart']) {
+      expect(line(HU, `gromzo.agents.${key}`)).toMatch(/új beszélgetés/iu)
+      expect(line(HU, `gromzo.agents.${key}`)).toMatch(/[ns]em szakítjuk meg/u)
+    }
+    // A sub-agent's switch-off removes it from mxd: on again only with a new approval. The old text said "chat service".
+    expect(line(HU, 'gromzo.agents.confirm_off')).toContain('új jóváhagyással')
+    expect(line(HU, 'gromzo.agents.confirm_off')).not.toContain('chat-szolgáltatás')
+    expect(line(HU, 'gromzo.agents.main.confirm_off')).toContain('új jóváhagyás nélkül')
+    // The main agent's switch-on asks for no approval when mxd already lists it (gromzo-agents.ts), so its text names none.
+    expect(line(HU, 'gromzo.agents.main.confirm_on')).not.toMatch(/jóváhagy/u)
+    expect(line(EN, 'gromzo.agents.main.confirm_on')).not.toMatch(/approv/iu)
+  })
+})
+
+describe('the agent and fleet questions use it', () => {
+  // The handler (an async arrow) that follows `anchor`, up to its matching closing brace.
+  const arrowAfter = (anchor: string) => {
+    const i = APP.indexOf(anchor)
+    if (i < 0) return ''
+    const start = APP.indexOf('async () => {', i)
+    let depth = 0
+    for (let j = APP.indexOf('{', start); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(start, j + 1)
+    }
+    return ''
+  }
+  const fnBlock = (name: string) => {
+    const m = new RegExp(`(?:async )?function ${name}\\(`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    // The body starts after the parameter list, which may hold a destructuring brace of its own.
+    for (let j = APP.indexOf(') {', m.index) + 2; j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const ASK = fnBlock('askAgentExport')
+  const EXPORT_ONE = arrowAfter("document.getElementById('exportAgentBtn').onclick = ")
+  const EXPORT_ALL = arrowAfter("exportAllAgentsBtn.addEventListener('click', ")
+  const CARDS = arrowAfter("createBtn.addEventListener('click', ")
+  const IMPORT = arrowAfter("importAgentFile.addEventListener('change', ")
+  const APPLY = arrowAfter("document.getElementById('fleetApplyBtn').addEventListener('click', ")
+  const tr = (key: string, vars?: Record<string, unknown>) => (vars ? `${key} ${JSON.stringify(vars)}` : key)
+  const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+
+  it('the handlers were found, with no native confirm() left', () => {
+    for (const part of [ASK, EXPORT_ONE, EXPORT_ALL, CARDS, IMPORT, APPLY]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(/(^|[^.\w])confirm\(/)
+    }
+  })
+
+  it('the export question has an unticked secrets box; Cancel exports nothing, the box decides the secrets', async () => {
+    async function ask(answer: boolean, tick: boolean) {
+      const dialogs: Array<Record<string, any>> = []
+      const make = (tag: string) => ({ tag, type: '', checked: false, className: '', textContent: '', children: [] as unknown[], append(...c: unknown[]) { this.children.push(...c) } })
+      const run = new Function('confirmDialog', 'document', `${ASK}\nreturn askAgentExport`)(
+        async (o: Record<string, any>) => {
+          dialogs.push(o)
+          expect(o.content.children[0].checked).toBe(false)
+          if (tick) o.content.children[0].checked = true
+          return answer
+        },
+        { createElement: make },
+      ) as (o: Record<string, string>) => Promise<{ withSecrets: boolean } | null>
+      const out = await run({ title: 'T', message: 'M', okLabel: 'O', secretsLabel: 'S' })
+      return { out, dialog: dialogs[0] }
+    }
+    const no = await ask(false, true)
+    expect(no.out).toBeNull()
+    expect(no.dialog).toMatchObject({ title: 'T', message: 'M', okLabel: 'O' })
+    expect(no.dialog.danger).toBeUndefined()
+    expect(no.dialog.content.tag).toBe('label')
+    expect(no.dialog.content.children[0]).toMatchObject({ tag: 'input', type: 'checkbox' })
+    expect(no.dialog.content.children[1]).toMatchObject({ tag: 'span', textContent: 'S' })
+    expect((await ask(true, false)).out).toEqual({ withSecrets: false })
+    expect((await ask(true, true)).out).toEqual({ withSecrets: true })
+  })
+
+  it('both exports ask first: Cancel sends nothing, the answer picks the URL', async () => {
+    async function run(src: string, answer: { withSecrets: boolean } | null) {
+      const asked: Array<Record<string, string>> = []
+      const urls: string[] = []
+      const fake = { href: '', download: '', click() {}, remove() {} }
+      const handler = new Function('askAgentExport', 't', 'currentAgent', 'fetch', 'showToast', 'URL', 'document', `return ${src}`)(
+        async (o: Record<string, string>) => { asked.push(o); return answer },
+        tr, { name: 'anna' },
+        async (url: string) => { urls.push(url); return { ok: true, blob: async () => ({}) } },
+        () => {}, { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} },
+        { createElement: () => fake, body: { appendChild: () => {} } },
+      ) as () => Promise<void>
+      await handler()
+      return { asked, urls }
+    }
+    const one = await run(EXPORT_ONE, null)
+    expect(one.asked).toEqual([{
+      title: 'agents.export.confirm_title',
+      message: 'agents.export.confirm {"name":"anna"}',
+      okLabel: 'agents.export.confirm_ok',
+      secretsLabel: 'agents.export.with_secrets',
+    }])
+    expect(one.urls).toEqual([])
+    expect((await run(EXPORT_ONE, { withSecrets: false })).urls).toEqual(['/api/agents/anna/export'])
+    expect((await run(EXPORT_ONE, { withSecrets: true })).urls).toEqual(['/api/agents/anna/export?secrets=1'])
+    const all = await run(EXPORT_ALL, null)
+    expect(all.asked).toEqual([{
+      title: 'agents.export_all.confirm_title',
+      message: 'agents.export_all.confirm',
+      okLabel: 'agents.export.confirm_ok',
+      secretsLabel: 'agents.export_all.with_secrets',
+    }])
+    expect(all.urls).toEqual([])
+    expect((await run(EXPORT_ALL, { withSecrets: false })).urls).toEqual(['/api/agents/export-all'])
+    expect((await run(EXPORT_ALL, { withSecrets: true })).urls).toEqual(['/api/agents/export-all?secrets=1'])
+  })
+
+  it('the model-change cards ask in their own dialog; a "no" creates none', async () => {
+    async function run(answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const posts: string[] = []
+      const btn = { disabled: false, textContent: '' }
+      const handler = new Function('confirmDialog', 't', 'fetch', 'showToast', 'createBtn', 'changes', `return ${CARDS}`)(
+        async (o: Record<string, unknown>) => { dialogs.push(o); return answer },
+        tr, async (url: string) => { posts.push(url); return { ok: true } }, () => {}, btn,
+        [{ agent: 'a', currentModel: 'x', suggestedModel: 'y', reason: 'r' }, { agent: 'b', currentModel: 'x', suggestedModel: 'y', reason: 'r' }],
+      ) as () => Promise<void>
+      await handler()
+      return { dialogs, posts }
+    }
+    const no = await run(false)
+    expect(no.dialogs).toEqual([{
+      title: 'agents.model.cards_confirm_title',
+      message: 'agents.model.cards_confirm {"n":2}',
+      okLabel: 'agents.model.cards_confirm_ok',
+    }])
+    expect(no.posts).toEqual([])
+    expect((await run(true)).posts).toEqual(['/api/kanban', '/api/kanban'])
+  })
+
+  describe('an import that hits an existing agent asks in a danger dialog', () => {
+    async function run(first: { status: number; data: Record<string, unknown> }, answer: boolean) {
+      const dialogs: Array<Record<string, any>> = []
+      const uploads: Array<string | null> = []
+      const toasts: string[] = []
+      let reloads = 0
+      class FakeForm { fields: Record<string, string> = {}; append(k: string, v: unknown) { if (typeof v === 'string') this.fields[k] = v } }
+      const file = { files: [{ name: 'b.tar.gz' }], value: 'b.tar.gz' }
+      const handler = new Function('importAgentFile', 'FormData', 'fetch', 'confirmDialog', 't', 'showToast', 'loadAgents', `return ${IMPORT}`)(
+        file, FakeForm,
+        async (_url: string, init: { body: FakeForm }) => {
+          uploads.push(init.body.fields.overwrite ?? null)
+          const r = uploads.length === 1 ? first : { status: 200, data: { ok: true, kind: first.data.kind || 'agent', name: 'anna', imported: [] } }
+          return { status: r.status, ok: r.status < 300, json: async () => r.data }
+        },
+        async (o: Record<string, any>) => { dialogs.push(o); return answer },
+        tr, (m: string) => { toasts.push(m) }, () => { reloads++ },
+      ) as () => Promise<void>
+      await handler()
+      return { dialogs, uploads, toasts, reloads }
+    }
+    const single = { status: 409, data: { error: 'Agent "anna" already exists on this machine' } }
+    const fleet = { status: 409, data: { ok: true, kind: 'fleet', imported: [{ name: 'new1', overwritten: false }], skipped: [{ name: 'anna', reason: 'already exists' }, { name: 'bob', reason: 'already exists' }, { name: 'x!', reason: 'invalid name' }] } }
+
+    it('a single agent: named from the error, the folder deletion said; "no" uploads once, "yes" again with overwrite', async () => {
+      const no = await run(single, false)
+      expect(no.dialogs).toEqual([{
+        title: 'agents.import.overwrite_confirm_title',
+        message: 'agents.import.overwrite_confirm {"name":"anna"}\n\nagents.import.overwrite_effect',
+        okLabel: 'agents.import.overwrite_confirm_ok',
+        danger: true,
+      }])
+      expect(no.uploads).toEqual([null])
+      expect((await run(single, true)).uploads).toEqual([null, '1'])
+      const unnamed = await run({ status: 409, data: { error: 'something else' } }, false)
+      expect(unnamed.dialogs[0].message).toBe('agents.import.overwrite_confirm_no_name\n\nagents.import.overwrite_effect')
+    })
+
+    it('a fleet: names only the existing agents and says the new ones are already in; "no" shows them and keeps the rest', async () => {
+      const no = await run(fleet, false)
+      expect(no.dialogs[0].message).toBe(
+        'agents.import.fleet_overwrite_confirm {"list":"anna, bob"}\n\nagents.import.fleet_overwrite_effect\n\nagents.import.fleet_already_imported {"n":1}')
+      expect(no.dialogs[0].danger).toBe(true)
+      expect(no.uploads).toEqual([null])
+      expect(no.toasts).toEqual(['agents.import.fleet_kept {"n":1}'])
+      expect(no.reloads).toBe(1)
+      expect((await run(fleet, true)).uploads).toEqual([null, '1'])
+    })
+
+    it('the server words its single-agent collision the way the dialog reads the name', () => {
+      const bundle = readFileSync(new URL('../../src/web/agent-bundle.ts', import.meta.url), 'utf-8')
+      expect(bundle).toContain('throw new Error(`Agent "${name}" already exists on this machine`)')
+    })
+  })
+
+  it('applying a fleet import asks in a danger dialog; a "no" sends nothing', async () => {
+    async function run(answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const urls: string[] = []
+      const el = { disabled: false, hidden: false, className: '', innerHTML: '', value: '', querySelector: () => ({ hidden: false }) }
+      const handler = new Function('fleetLastBody', 'confirmDialog', 't', 'fetch', 'document', 'showToast', 'escapeHtml', `return ${APPLY}`)(
+        '{}', async (o: Record<string, unknown>) => { dialogs.push(o); return answer }, tr,
+        async (url: string) => { urls.push(url); return { ok: true, json: async () => ({ imported: {} }) } },
+        { getElementById: () => el }, () => {}, (x: string) => x,
+      ) as () => Promise<void>
+      await handler()
+      return { dialogs, urls }
+    }
+    const no = await run(false)
+    expect(no.dialogs).toEqual([{
+      title: 'fleet.import.apply_confirm_title',
+      message: 'fleet.import.apply_confirm',
+      okLabel: 'fleet.import.apply_confirm_ok',
+      danger: true,
+    }])
+    expect(no.urls).toEqual([])
+    expect((await run(true)).urls).toEqual(['/api/fleet/import?apply=true'])
+  })
+
+  it('the keys are in both languages; the texts say what the server does', () => {
+    const keys = [
+      'agents.model.cards_confirm', 'agents.export.confirm', 'agents.export_all.confirm', 'fleet.import.apply_confirm',
+    ]
+    for (const lang of [HU, EN]) {
+      for (const key of keys) for (const suffix of ['', '_title', '_ok']) {
+        if (key === 'agents.export_all.confirm' && suffix === '_ok') continue // shares agents.export.confirm_ok
+        expect(line(lang, key + suffix), key + suffix).not.toBe('')
+      }
+      for (const key of ['agents.export.with_secrets', 'agents.export_all.with_secrets', 'agents.import.overwrite_confirm_title',
+        'agents.import.overwrite_confirm_ok', 'agents.import.overwrite_confirm', 'agents.import.overwrite_confirm_no_name',
+        'agents.import.overwrite_effect', 'agents.import.fleet_overwrite_confirm', 'agents.import.fleet_overwrite_effect',
+        'agents.import.fleet_already_imported', 'agents.import.fleet_kept']) expect(line(lang, key), key).not.toBe('')
+      expect(line(lang, 'agents.export.confirm')).toContain('"{name}"')
+      expect(line(lang, 'agents.import.overwrite_confirm')).toContain('"{name}"')
+      expect(line(lang, 'agents.import.fleet_overwrite_confirm')).toContain('{list}')
+    }
+    // The fleet bundle holds the sub-agents only (agent-bundle.ts); an overwrite removes the folder first (rmSync).
+    expect(line(HU, 'agents.export_all.confirm')).toContain('A fő ügynök nincs benne')
+    expect(line(HU, 'agents.import.overwrite_effect')).toContain('A mappája törlődik')
+    expect(line(HU, 'agents.import.fleet_overwrite_effect')).toContain('A mappájuk törlődik')
+    // The cards only plan the change; the fleet apply pauses the tasks and takes over the source identity.
+    expect(line(HU, 'agents.model.cards_confirm')).toContain('nem állítja át')
+    expect(line(HU, 'fleet.import.apply_confirm')).toContain('szüneteltetve')
+    expect(line(HU, 'fleet.import.apply_confirm')).toContain('átveszi a forrás identitását')
+    // The old hard-coded Hungarian prompts are gone from app.js.
+    expect(APP).not.toContain('OK = igen, csak saját gépek közötti átvitelhez.')
+    expect(APP).not.toContain('Felülírjuk az ütközőket?')
+  })
+
+  it('the secrets box has its own style in the dialog', () => {
+    const css = readFileSync(new URL('../../web/style.css', import.meta.url), 'utf-8')
+    expect(css).toMatch(/\.confirm-dialog-check \{[^}]*display: flex/)
+  })
+})
+
+describe('the federation questions use it, and the pairing token is no prompt() any more', () => {
+  const fnBlock = (name: string) => {
+    const m = new RegExp(`(?:async )?function ${name}\\(`).exec(APP)
+    if (!m) return ''
+    let depth = 0
+    for (let j = APP.indexOf(') {', m.index) + 2; j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(m.index, j + 1)
+    }
+    return ''
+  }
+  const TOGGLE = (() => {
+    const i = APP.indexOf("document.getElementById('fedEnabledToggle').addEventListener('change', ")
+    if (i < 0) return ''
+    const start = APP.indexOf('async (e) => {', i)
+    let depth = 0
+    for (let j = APP.indexOf('{', start); j < APP.length; j++) {
+      if (APP[j] === '{') depth++
+      else if (APP[j] === '}' && --depth === 0) return APP.slice(start, j + 1)
+    }
+    return ''
+  })()
+  const TOKEN = fnBlock('fedShowInboundTokenDialog')
+  const ROTATE = fnBlock('fedRotateToken')
+  const DELETE = fnBlock('fedDeletePeer')
+  const REMOVE = fnBlock('fedRemoveAll')
+  const SAVE = fnBlock('fedSavePeerModal')
+  const APPLY = fnBlock('fedApplyToMainAgent')
+  const tr = (key: string, vars?: Record<string, unknown>) => (vars ? `${key} ${JSON.stringify(vars)}` : key)
+  const line = (lang: string, key: string) => lang.split('\n').find(l => l.includes(`'${key}':`)) ?? ''
+  const NATIVE = /(^|[^.\w])(confirm|alert|prompt)\(/
+
+  it('the handlers were found, with no native confirm() or prompt() left', () => {
+    for (const part of [TOGGLE, TOKEN, ROTATE, DELETE, REMOVE, SAVE, APPLY]) {
+      expect(part).not.toBe('')
+      expect(part).not.toMatch(NATIVE)
+    }
+    const code = APP.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    expect(code).not.toMatch(/(^|[^.\w])prompt\(/)
+  })
+
+  it('confirmDialog takes an optional cancel label; without one it stays "Cancel"', () => {
+    expect(APP).toMatch(/function confirmDialog\(\{[^)]*cancelLabel = ''[^)]*\}\)/)
+    expect(APP).toContain("cancelBtn.textContent = cancelLabel || t('common.cancel')")
+  })
+
+  it('switching federation off asks first; a "no" ticks the box back and sends nothing; switching on asks nothing', async () => {
+    async function run(enabled: boolean, answer: boolean) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const bodies: string[] = []
+      const handler = new Function('confirmDialog', 't', 'fetch', 'showToast', 'refusalReason', 'fedRefreshAndReload', `return ${TOGGLE}`)(
+        async (o: Record<string, unknown>) => { dialogs.push(o); return answer }, tr,
+        async (_url: string, init: { body: string }) => { bodies.push(init.body); return { ok: true, json: async () => ({}) } },
+        () => {}, () => '', () => {},
+      ) as (e: unknown) => Promise<void>
+      const target = { checked: enabled }
+      await handler({ target })
+      return { dialogs, bodies, target }
+    }
+    const no = await run(false, false)
+    expect(no.dialogs).toEqual([{ title: 'federation.confirm.disable_title', message: 'federation.confirm.disable', okLabel: 'federation.confirm.disable_ok' }])
+    expect(no.bodies).toEqual([])
+    expect(no.target.checked).toBe(true)
+    expect((await run(false, true)).bodies).toEqual([JSON.stringify({ enabled: false })])
+    const on = await run(true, false)
+    expect(on.dialogs).toEqual([])
+    expect(on.bodies).toEqual([JSON.stringify({ enabled: true })])
+  })
+
+  it('rotating, deleting a peer and removing it all ask in danger dialogs; a "no" sends nothing', async () => {
+    async function run(src: string, name: string, answer: boolean, reply: Record<string, unknown> = {}) {
+      const dialogs: Array<Record<string, unknown>> = []
+      const calls: Array<{ url: string; method: string }> = []
+      const shown: unknown[][] = []
+      const store = { length: 0, key: () => null, removeItem: () => {} }
+      const fn = new Function('confirmDialog', 't', 'fetch', 'showToast', 'refusalReason', 'loadFederationPage', 'fedShowInboundTokenDialog', 'localStorage', 'chatSelectedAgent', 'federatedPeerStatus', 'fedRefreshAndReload', `${src}\nreturn ${name}`)(
+        async (o: Record<string, unknown>) => { dialogs.push(o); return answer }, tr,
+        async (url: string, init: { method?: string } = {}) => { calls.push({ url, method: init.method || 'GET' }); return { ok: true, json: async () => reply } },
+        () => {}, () => '', () => {}, async (...a: unknown[]) => { shown.push(a) }, store, null, [], () => {},
+      ) as (id?: string) => Promise<void>
+      await fn('peer-a')
+      return { dialogs, calls, shown }
+    }
+    const rotate = await run(ROTATE, 'fedRotateToken', false)
+    expect(rotate.dialogs).toEqual([{ title: 'federation.confirm.rotate_title', message: 'federation.confirm.rotate {"peer":"peer-a"}', okLabel: 'federation.confirm.rotate_ok', danger: true }])
+    expect(rotate.calls).toEqual([])
+    // The answer carries the new token: it is shown right away.
+    const rotated = await run(ROTATE, 'fedRotateToken', true, { inboundToken: 'tok-new' })
+    expect(rotated.calls).toEqual([{ url: '/api/federation/peers/peer-a/rotate-inbound-token', method: 'POST' }])
+    expect(rotated.shown).toEqual([['peer-a', 'tok-new', 'federation.token_dialog.rotated_hint']])
+
+    const del = await run(DELETE, 'fedDeletePeer', false)
+    expect(del.dialogs).toEqual([{ title: 'federation.confirm.delete_peer_title', message: 'federation.confirm.delete_peer {"peer":"peer-a"}', okLabel: 'federation.confirm.delete_peer_ok', danger: true }])
+    expect(del.calls).toEqual([])
+    expect((await run(DELETE, 'fedDeletePeer', true)).calls).toEqual([{ url: '/api/federation/peers/peer-a', method: 'DELETE' }])
+
+    const rem = await run(REMOVE, 'fedRemoveAll', false)
+    expect(rem.dialogs).toEqual([{ title: 'federation.confirm.remove_title', message: 'federation.confirm.remove', okLabel: 'federation.confirm.remove_ok', danger: true }])
+    expect(rem.calls).toEqual([])
+    expect((await run(REMOVE, 'fedRemoveAll', true)).calls).toEqual([{ url: '/api/federation/remove', method: 'POST' }])
+  })
+
+  it('the token dialog shows the token read-only, "Copy" copies it, "Close" does nothing, a failed copy says so', async () => {
+    async function run(answer: boolean, clipboardFails = false) {
+      const dialogs: Array<Record<string, any>> = []
+      const copied: string[] = []
+      const toasts: string[] = []
+      const fn = new Function('confirmDialog', 't', 'document', 'navigator', 'showToast', `${TOKEN}\nreturn fedShowInboundTokenDialog`)(
+        async (o: Record<string, any>) => { dialogs.push(o); return answer }, tr,
+        { createElement: () => ({ type: '', readOnly: false, className: '', value: '', addEventListener: () => {} }) },
+        { clipboard: { writeText: async (x: string) => { if (clipboardFails) throw new Error('denied'); copied.push(x) } } },
+        (m: string) => { toasts.push(m) },
+      ) as (peer: string, token: string, key: string) => Promise<void>
+      await fn('peer-a', 'tok-1', 'federation.modal.minted_token_hint')
+      return { dialog: dialogs[0], copied, toasts }
+    }
+    const close = await run(false)
+    expect(close.dialog).toMatchObject({
+      title: 'federation.token_dialog.title {"peer":"peer-a"}',
+      message: 'federation.modal.minted_token_hint',
+      okLabel: 'federation.token_dialog.copy',
+      cancelLabel: 'federation.token_dialog.close',
+    })
+    expect(close.dialog.danger).toBeUndefined()
+    expect(close.dialog.content).toMatchObject({ type: 'text', readOnly: true, value: 'tok-1', className: 'confirm-dialog-token' })
+    expect(close.copied).toEqual([])
+    expect(close.toasts).toEqual([])
+    const copy = await run(true)
+    expect(copy.copied).toEqual(['tok-1'])
+    expect(copy.toasts).toEqual(['federation.toast.token_copied'])
+    expect((await run(true, true)).toasts).toEqual(['federation.token_dialog.copy_failed'])
+  })
+
+  it('pairing a new peer shows its minted token in that dialog', () => {
+    expect(SAVE).toContain("await fedShowInboundTokenDialog(id, data.inboundToken, 'federation.modal.minted_token_hint')")
+  })
+
+  it('the keys are in both languages; the texts say what the server does', () => {
+    for (const lang of [HU, EN]) {
+      for (const key of ['disable', 'rotate', 'delete_peer', 'apply', 'remove']) {
+        for (const suffix of ['', '_title', '_ok']) expect(line(lang, `federation.confirm.${key}${suffix}`), key + suffix).not.toBe('')
+      }
+      for (const key of ['title', 'copy', 'close', 'copy_failed', 'rotated_hint']) expect(line(lang, `federation.token_dialog.${key}`), key).not.toBe('')
+      expect(line(lang, 'federation.confirm.rotate')).toContain('"{peer}"')
+      expect(line(lang, 'federation.confirm.delete_peer')).toContain('"{peer}"')
+      expect(line(lang, 'federation.token_dialog.title')).toContain('"{peer}"')
+      // The hint is a dialog text now, not a prompt() label ending in a colon.
+      expect(line(lang, 'federation.modal.minted_token_hint')).not.toMatch(/:',$/)
+    }
+    // The apply is a gated hard restart (hardRestartMarveenChannels behind gateManualRestart).
+    expect(line(HU, 'federation.confirm.apply')).toContain('Új beszélgetéssel indul')
+    expect(line(HU, 'federation.confirm.apply')).toContain('nem szakítjuk meg')
+    // A rotation answers with the new token; a deleted peer takes its token along; removal deletes the store.
+    expect(line(HU, 'federation.confirm.rotate')).toContain('rögtön megmutatjuk')
+    expect(line(HU, 'federation.confirm.delete_peer')).toContain('A tokenje is törlődik')
+    expect(line(HU, 'federation.confirm.remove')).toContain('nem vonható vissza')
+    expect(line(HU, 'federation.confirm.remove')).not.toContain('TELJES')
+  })
+
+  it('the apply button, its dialog and the notes that point at it use one name', () => {
+    const html = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf-8')
+    const value = (lang: string, key: string) => /:\s*'((?:[^'\\]|\\.)*)'/.exec(line(lang, key))?.[1] ?? ''
+    for (const lang of [HU, EN]) {
+      expect(value(lang, 'federation.btn.apply')).toBe(value(lang, 'federation.confirm.apply_title'))
+      expect(value(lang, 'federation.routing.apply_note')).toContain(value(lang, 'federation.btn.apply'))
+    }
+    expect(value(HU, 'federation.routing.toast_set')).toContain(value(HU, 'federation.btn.apply'))
+    expect(html).toContain(`${value(HU, 'federation.btn.apply')}</button>`)
+    expect(HU).not.toContain('életbe léptet')
+  })
+
+  it('the hint under the switch reads as a condition, not as the current state', () => {
+    // It sits under a ticked box too: "Kikapcsolva ..." read as "it is off now".
+    expect(line(HU, 'federation.master_hint')).toMatch(/:\s*'Ha kikapcsolod,/)
+    expect(line(EN, 'federation.master_hint')).toMatch(/:\s*'While off,/)
+  })
+
+  it('the token box has its own style in the dialog', () => {
+    const css = readFileSync(new URL('../../web/style.css', import.meta.url), 'utf-8')
+    expect(css).toMatch(/\.confirm-dialog-token \{[^}]*font-family: var\(--font-mono/)
   })
 })
