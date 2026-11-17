@@ -8,6 +8,7 @@ import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { isAbsoluteHttpUrl } from '../config-registry.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
@@ -49,8 +50,32 @@ import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHoo
 // other distributed installs that rely on the public URL are unaffected: this
 // only gives the operator a way to say the agent-side answer out loud when it
 // differs. Exported so heartbeat-agent-scaffold and tests share one resolver.
+//
+// Each of the two configured values counts only when it is an absolute http(s) URL. Measured 2026-11-16 on a live
+// install: DASHBOARD_PUBLIC_URL was "marveen" (a name, no scheme), the resolver returned it as it was, and every
+// generated recipe read `curl ... marveen/api/messages`: a relative path, so each call failed with nothing the agent
+// could report. Such a value is skipped (the next candidate is used, localhost last) and named in the log once. A
+// valid value is returned byte for byte as before.
 export function resolveDashboardOrigin(publicUrl: string, port: number | string, agentApiOrigin = ''): string {
-  return (agentApiOrigin || publicUrl || `http://localhost:${port}`).replace(/\/$/, '')
+  return (
+    usableOrigin('AGENT_API_ORIGIN', agentApiOrigin)
+    || usableOrigin('DASHBOARD_PUBLIC_URL', publicUrl)
+    || `http://localhost:${port}`
+  ).replace(/\/$/, '')
+}
+
+const unusableOriginWarned = new Set<string>()
+
+// The value when it can stand in front of "/api/...", else ''. Blank is the documented "not set" and stays silent.
+function usableOrigin(key: 'AGENT_API_ORIGIN' | 'DASHBOARD_PUBLIC_URL', value: string): string {
+  if (value.trim() === '') return ''
+  if (isAbsoluteHttpUrl(value)) return value
+  const seen = `${key}\u0000${value}`
+  if (!unusableOriginWarned.has(seen)) {
+    unusableOriginWarned.add(seen)
+    logger.warn({ key, value: value.slice(0, 200) }, 'dashboard origin: the configured value is not an absolute http(s) URL, so it is not used for the agents\' API recipes; the next candidate applies (AGENT_API_ORIGIN, then DASHBOARD_PUBLIC_URL, then http://localhost:<port>)')
+  }
+  return ''
 }
 
 // Resolved once at module load; both keys are `requiresRestart` in

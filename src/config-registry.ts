@@ -134,6 +134,27 @@ export function parseStoreWatchExclude(raw: string | undefined): Set<string> {
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
 
+// True for an absolute http(s) URL, e.g. "https://marveen.example.com" or "http://localhost:3420/prefix". A value with
+// no scheme ("marveen", "localhost:3420"), another scheme or any whitespace is not one: such a value, glued in front
+// of "/api/...", gives a relative path or a split word instead of an address. Exported for resolveDashboardOrigin
+// (agent-scaffold.ts), so the check on save and the check on use are the same one.
+export function isAbsoluteHttpUrl(v: string): boolean {
+  // The host must follow "//" at once: new URL() alone reads "https:///api" as the host "api".
+  if (!/^https?:\/\/[^/?#]/i.test(v) || /\s/.test(v)) return false
+  try {
+    return new URL(v).hostname !== ''
+  } catch {
+    return false
+  }
+}
+
+// A '' (unset) or an absolute http(s) URL: the two keys the agents' dashboard origin is resolved from.
+function validAbsoluteHttpUrlOrEmpty(v: string): string | null {
+  return v.trim() === '' || isAbsoluteHttpUrl(v)
+    ? null
+    : 'Üres érték vagy teljes http(s) URL szükséges, sémával együtt (pl. https://marveen.example.com vagy http://localhost:3420).'
+}
+
 // A '' (use the default) or a number in [0, 1], e.g. a cosine-similarity threshold.
 function validUnitFraction(v: string): string | null {
   const t = v.trim()
@@ -484,6 +505,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    validate: validAbsoluteHttpUrlOrEmpty,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
   },
@@ -495,6 +517,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    validate: validAbsoluteHttpUrlOrEmpty,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
   },
