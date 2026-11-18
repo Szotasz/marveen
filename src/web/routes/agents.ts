@@ -21,6 +21,8 @@ import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
+import { hasLaunchTrace, hasPackageManifestFile, startsWithPackageShell } from '../agent-package/marker.js'
+import { packageDescription, packageSummaryField } from '../agent-package/install.js'
 import { launchableInstallDefault } from '../default-model-guard.js'
 import { claudeSupportForCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
@@ -113,6 +115,7 @@ import {
 } from '../../channel-provider.js'
 import {
   writeAgentSettingsFromProfile,
+  ensureFleetRosterSection,
   generateClaudeMd,
   generateSoulMd,
 } from '../agent-scaffold.js'
@@ -178,6 +181,7 @@ import { readBody, readBodyOrRefuse, json, jsonMaybeGzip, serveFile } from '../h
 import { serializeSkillsDir } from '../skills-dir-queue.js'
 import {
   exportAgentBundle,
+  PackageAgentExportError,
   importAgentBundle,
   exportAllAgentsBundle,
   importAllAgentsBundle,
@@ -610,6 +614,8 @@ export interface AgentSummary {
    *  reports the existing resolution, it does not change it. */
   modelProfile: string | null
   modelSource: 'explicit_model' | 'model_profile' | 'default'
+  /** MIOAGENTINSTALL1114 (plan 4.2): the installed agent package, from its readable record; null for any other agent. */
+  package: { slug: string; version: string } | null
   modelProfileError: string | null
   activeModel: string | null
   runningSince: number | null
@@ -776,7 +782,10 @@ function getAgentSummary(name: string): AgentSummary {
     name,
     displayName: readAgentDisplayName(name),
     tagline: readAgentTagline(name),
-    description: extractDescriptionFromClaudeMd(claudeMd),
+    // MIOAGENTINSTALL1114 (plan 4.2, M13): a package agent's CLAUDE.md starts with the import lines, so its
+    // description comes from the package record (an unreadable record keeps the old path).
+    description: packageDescription(dir) ?? extractDescriptionFromClaudeMd(claudeMd),
+    package: packageSummaryField(dir),
     model: modelResolution.model,
     modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
     modelSource: modelResolution.source,
@@ -2812,21 +2821,23 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         // Listed on the queue: the bundle holds the agents the operations queued before it left.
         const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
         if (names.length === 0) return null
-        exportAllAgentsBundle(outPath, names, {
+        const m = exportAllAgentsBundle(outPath, names, {
           includeSecrets,
           exportedBy: MAIN_AGENT_ID,
           exportedAt: new Date().toISOString(),
         })
-        return readFileSync(outPath)
+        return { bytes: readFileSync(outPath), skipped: m?.skippedPackageAgents ?? [] }
       })
       if (!data) { json(res, { error: 'No agents to export' }, 404); return true }
       res.writeHead(200, {
+        // MIOAGENTINSTALL1114 (plan 4.2): package agents are left out; the bundle manifest and this header name them.
+        ...(data.skipped.length > 0 ? { 'X-Skipped-Package-Agents': data.skipped.join(',') } : {}),
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${fleetBundleFilename()}"`,
-        'Content-Length': String(data.length),
+        'Content-Length': String(data.bytes.length),
         'Cache-Control': 'private, no-store',
       })
-      res.end(data)
+      res.end(data.bytes)
     } catch (err) {
       logger.error({ err }, 'Fleet export failed')
       json(res, { error: 'Export failed', detail: err instanceof Error ? err.message : String(err) }, 500)
@@ -2868,6 +2879,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       })
       res.end(data)
     } catch (err) {
+      // MIOAGENTINSTALL1114 (plan 4.2): a package agent is not exported; the answer says what to do instead.
+      if (err instanceof PackageAgentExportError) { json(res, { error: 'package_agent_not_exportable', message: err.message }, 409); return true }
       logger.error({ err, name }, 'Agent export failed')
       json(res, { error: 'Export failed', detail: err instanceof Error ? err.message : String(err) }, 500)
     } finally {
@@ -3053,6 +3066,20 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
 
+    // MIOAGENTINSTALL1114 (plan 4.2, 7.5; Dani B1, B2): a package agent's CLAUDE.md must keep starting with the
+    // shell prefix, or its next start is refused (the guard's third condition, same test: the manifest file exists
+    // and is not empty). The check runs on the very bytes the save writes (UTF-8, no BOM added, no line-end change),
+    // and before the first write of this request.
+    const claudeMdBytes = typeof data.claudeMd === 'string' ? Buffer.from(data.claudeMd, 'utf8') : null
+    const packageAgent = name !== MAIN_AGENT_ID && hasPackageManifestFile(agentDir(name))
+    if (claudeMdBytes !== null && packageAgent && !startsWithPackageShell(claudeMdBytes)) {
+      json(res, {
+        error: 'package_shell_required',
+        message: 'This agent comes from a package: its CLAUDE.md must start with the two import lines (PACKAGE.md, an empty line, LOCAL.md), with nothing before them. Put them back at the very top, then save again.',
+      }, 409)
+      return true
+    }
+
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
       // root: a memory boundary there is meaningless, and exposing the knob
@@ -3064,7 +3091,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       writeAgentMemoryIsolation(name, data.memoryIsolation === true)
     }
     if (data.claudeMd !== undefined) {
-      atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
+      atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), claudeMdBytes ?? data.claudeMd)
+      // MIOAGENTINSTALL1114 (plan 7.2, Dani A3): a saved shell without the fleet-roster block would look like an
+      // unfinished install; the roster writer puts the block back at once. The text is the owner's, so the save is
+      // not refused when that fails: it is logged loudly instead.
+      if (packageAgent) {
+        ensureFleetRosterSection(name)
+        if (!hasLaunchTrace(readFileOr(join(configRoot, 'CLAUDE.md'), ''))) {
+          logger.error({ name }, 'package agent CLAUDE.md saved, but the fleet-roster block could not be written back')
+        }
+      }
       // A stale dashboard-editor buffer can carry a pre-federation snapshot
       // (or a block from a since-disabled state): reconcile the managed
       // federation section right after the write, not just at boot -- the

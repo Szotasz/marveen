@@ -89,7 +89,7 @@ PYEOF
 # The resolver gets the message layer ids ONLY, as resolveVoiceChannelId does: a
 # route name is not a sender, so it stays a valid voice channel id.
 MESSAGE_LAYER_RESERVED_AGENT_IDS="system heartbeat telegram-coordinator channel-coordinator"
-AGENT_ROUTE_RESERVED_IDS="activity status model-suggest export-all import"
+AGENT_ROUTE_RESERVED_IDS="activity status model-suggest export-all import install-package"
 RESERVED_AGENT_IDS="$MESSAGE_LAYER_RESERVED_AGENT_IDS $AGENT_ROUTE_RESERVED_IDS"
 resolve_voice_channel_id() {
   python3 - "$@" <<'PYEOF'

@@ -48,6 +48,11 @@
 //     boundary;
 //   - the fleet import, the agent-bundle import and the `skill` CLI, which
 //     have their own paths;
+//   - an agent package install (POST /api/agents/install-package,
+//     MIOAGENTINSTALL1114 N10): its skills go straight into the agent's own
+//     .claude/skills/, in the owner's session; the scanner runs on them in
+//     REPORTING mode only (an audit line with event package_install_scanned
+//     and the counts in the install answer), the switch does not apply;
 //   - editing a LIVE skill's SKILL.md through PUT /api/skills/:name;
 //   - who approves: since kanban 2c72e07c the approve and reject routes take
 //     the owner's session (mayActAsOwner, the #2163 predicate), not the
@@ -948,10 +953,10 @@ export function quarantineOn(read: () => unknown = () => getEffectiveSettingValu
 
 export type SkillAuditLine = {
   at: string
-  event: 'live_unquarantined' | 'held_unquarantined' | 'superseded_unquarantined'
+  event: 'live_unquarantined' | 'held_unquarantined' | 'superseded_unquarantined' | 'package_install_scanned'
   id: string
   name: string
-  source: PendingSource
+  source: PendingSource | 'agent-package'
   target: SkillTarget
   proposedBy: string | null
   hash: string | null

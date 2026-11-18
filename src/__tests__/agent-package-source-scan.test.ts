@@ -102,7 +102,7 @@ describe('the released build and the credential (PR-I2)', () => {
     const m = await import('../web/agent-package/remote.js')
     expect(Object.keys(m).sort()).toEqual([
       'CATALOG_MAX_BYTES', 'ERROR_BODY_MAX_BYTES', 'PACKAGE_ORIGIN', 'REDEEM_TIMEOUT_MS', 'REQUEST_TIMEOUT_MS',
-      'deleteCredential', 'makeRemote', 'readCredentialView', 'refusalFor', 'removeCredentialTmpLeftovers', 'transportRefusal',
+      'deleteCredential', 'hasCredential', 'makeRemote', 'readCredentialView', 'refusalFor', 'removeCredentialTmpLeftovers', 'transportRefusal',
     ])
   })
 
@@ -116,5 +116,47 @@ describe('the released build and the credential (PR-I2)', () => {
     const at = index.indexOf('removeCredentialTmpLeftovers()')
     expect(at).toBeGreaterThan(index.indexOf('initDatabase()'))
     expect(at).toBeLessThan(index.indexOf('startWebServer(WEB_PORT)'))
+  })
+})
+
+describe('the installer wiring (PR-I3)', () => {
+  const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const PROCESS = strip(readFileSync(join(SRC, 'web', 'agent-process.ts'), 'utf8'))
+
+  it('(plan 4.1, mutant 55) unverifiedPayloadBytes has exactly one caller under agent-package/: the record writer', () => {
+    const calls = sources.filter(([f]) => f !== 'verify.ts').flatMap(([f, t]) => [...strip(t).matchAll(/\.unverifiedPayloadBytes\(/g)].map(() => f))
+    expect(calls).toEqual(['install.ts'])
+    const others = srcFiles().filter(([f]) => !f.startsWith('web/agent-package/') && /unverifiedPayloadBytes\(/.test(strip(f === '' ? '' : readFileSync(join(SRC, f), 'utf8'))))
+    expect(others).toEqual([])
+  })
+
+  it('(22) startAgentProcess runs the package guard right after the folder check, and returns its text', () => {
+    const at = PROCESS.indexOf('export async function startAgentProcess(')
+    const body = PROCESS.slice(at, at + 800)
+    expect(body).toMatch(/if \(!existsSync\(dir\)\) return \{ ok: false, error: 'Agent not found' \}\s*const packageRefusal = packageStartRefusal\(name, dir\)\s*if \(packageRefusal !== null\) \{/)
+    expect(body).toContain('return { ok: false, error: packageRefusal }')
+  })
+
+  it('(33) the EPERM fallback hands the CLAUDE.md to prepareFallbackClaudeMd and does not link it itself', () => {
+    const at = PROCESS.indexOf('const fallbackCwd = mkdtempSync(')
+    const branch = PROCESS.slice(at, PROCESS.indexOf('relaunched from /tmp fallback', at))
+    expect(branch).toContain("if (prepareFallbackClaudeMd(name, dir, fallbackCwd) === 'refused') return")
+    expect(branch).not.toContain('symlinkSync(')
+  })
+
+  it('(23) index.ts reaps interrupted installs after the database and before the first agent start; notices after the web server', () => {
+    const index = strip(readFileSync(join(SRC, 'index.ts'), 'utf8'))
+    const at = index.indexOf('reapInterruptedPackageInstalls()')
+    expect(at).toBeGreaterThan(index.indexOf('initDatabase()'))
+    expect(at).toBeLessThan(index.indexOf('startAgentProcess('))
+    expect(index.indexOf('flushPendingPackageNotices(notifyOwner)')).toBeGreaterThan(index.indexOf('startWebServer(WEB_PORT)'))
+  })
+
+  it('the install route verifies before the disk phase, and the disk phase takes the verified package', () => {
+    const route = strip(readFileSync(ROUTE_FILE, 'utf8'))
+    const v = route.indexOf('verifyDelivery(dl.bytes, slug, deps.keys)')
+    expect(v).toBeGreaterThan(route.indexOf('deps.remote.download('))
+    expect(route.indexOf('runInstallBlock(')).toBeGreaterThan(v)
+    expect(route).toContain('const pkg = v.pkg')
   })
 })
