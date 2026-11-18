@@ -6272,9 +6272,14 @@ document.getElementById('saveIdleFlushBtn').addEventListener('click', async () =
 
 // ---- voice config UI -------------------------------------------------------
 
+// Only the latest call may write the voice fields: opening one agent and then
+// another quickly must not let the first agent's late answer fill the second's form.
+let _voiceConfigSeq = 0
+
 async function loadVoiceConfig(agentName) {
   const voiceModelSel = document.getElementById('editAgentVoiceModel')
   if (!voiceModelSel) return
+  const seq = ++_voiceConfigSeq
   const banner = document.getElementById('voiceNotInstalledBanner')
   const controls = document.getElementById('voiceInstalledControls')
   try {
@@ -6282,6 +6287,7 @@ async function loadVoiceConfig(agentName) {
     const statusR = await fetch('/api/voice/status')
     if (!statusR.ok) return
     const status = await statusR.json()
+    if (seq !== _voiceConfigSeq) return
 
     if (!status.installed) {
       if (banner) banner.hidden = false
@@ -6294,6 +6300,7 @@ async function loadVoiceConfig(agentName) {
     const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/voice-config`)
     if (!r.ok) return
     const cfg = await r.json()
+    if (seq !== _voiceConfigSeq) return
     voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
       `<option value="${escapeHtml(v)}"${v === cfg.voiceModel ? ' selected' : ''}>${escapeHtml(v)}</option>`
     ).join('')
