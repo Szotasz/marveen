@@ -23,7 +23,8 @@ Telegramtól, TLS-en, közvetlenül a szerver folyamatába jön, és a nyomó az
 5. Párosítás (bejelentkezve, a dashboardon): `POST /api/approvals/bot/pairing-code` egy egyszer használható
    kódot ad, 10 percig érvényes. Küldd el az új botnak a saját Telegramodról, privát chatben:
    `/start <kód>`. Utána a dashboard (Jóváhagyások, bejelentkezve) megmutatja, MELYIK fiók küldte a kódot
-   (név és Telegram-azonosító): ha a tiéd, erősítsd meg. Csak ekkor tárolja a szerver a SAJÁT
+   (név és Telegram-azonosító): ha az AZONOSÍTÓ a tiéd, erősítsd meg. A nevet ne nézd, azt bárki bármire
+   beállíthatja. Csak ekkor tárolja a szerver a SAJÁT
    adatbázisában a fiókot és a chatet, és ezután csak ezt fogadja el. Ha nem a te fiókod áll ott, ne
    erősítsd meg: valaki más küldte el előbb a kódot (például a bot tokenjével). Új kóddal újrapárosítható.
    Párosítás nélkül a kérés a megszokott módon, a fő boton megy ki, gomb nélkül.
