@@ -2273,6 +2273,96 @@
       "name": "CURLMAILAPI1118: Graph read: list messages",
       "cmd": "curl -s https://graph.microsoft.com/v1.0/me/messages",
       "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: port in the host",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com:443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: user info in the host",
+      "cmd": "curl -s -X POST https://x@gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: trailing dot on the host",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com./gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: dot segment in the path",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/x/../send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: curl glob {..} in the path",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/{messages}/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: curl glob [..] in the path",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/sen[d-d]' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: percent-encoded path",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/sen%64 -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: shell brace expansion",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/sen{d,} -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: httpie https binary",
+      "cmd": "https POST gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: xh client",
+      "cmd": "xh POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: SendGrid regional host",
+      "cmd": "curl -s -X POST https://api.eu.sendgrid.com/v3/mail/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: Graph namespaced sendMail action",
+      "cmd": "curl -s -X POST https://graph.microsoft.com/v1.0/me/microsoft.graph.sendMail -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: -XPOST cluster (the URL is the next token)",
+      "cmd": "curl -sXPOST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d@/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: double slash in the path",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com//gmail/v1/users/me/messages//send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: send URL only in a header value",
+      "cmd": "curl -s -X POST https://example.test/hook -H 'X-Note: https://gmail.googleapis.com/gmail/v1/users/me/messages/send' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: host only in the -o output file name",
+      "cmd": "curl -s -X POST https://example.test/hook -d @/tmp/x.json -o gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: send URL only in a query parameter",
+      "cmd": "curl -s -X POST 'https://example.test/p?u=https://gmail.googleapis.com/gmail/v1/users/me/messages/send' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: Resend with a port in the host",
+      "cmd": "curl -s https://api.resend.com:443/emails -d @/tmp/m.json",
+      "expected": true
     }
   ]
 }

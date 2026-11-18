@@ -122,7 +122,7 @@ _PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
 _NODEISH = re.compile(r"^(node|tsx|ts-node|deno|bun|npx)$", re.I)
 _GRAPHMAIL = re.compile(r"^graph-mail(\.ts|\.js)?$", re.I)
 _WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
-_CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
+_CURLISH = re.compile(r"^(curl|wget|http|https|xh|xhs)$", re.I)
 # Interpreter kod-string argumentum (python -c / node -e): az interpreternek
 # atadott kod MUVELET, nem tartalom -- a kod-szintu kuldes-hivasokra szurunk.
 #
@@ -335,22 +335,104 @@ def _code_string_sends(code: str, lang=None) -> bool:
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
 _RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
-# CURLMAILAPI1118: a curl/wget URL token on another HTTP mail API host is a send only when the SAME token also
-# carries that provider's send shape (_web_mail_sends: Gmail messages/drafts send, Graph sendMail, SendGrid
-# mail/send, Mailgun messages, Postmark email). Before this, only api.resend.com was known on the command line,
-# and `curl -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send` passed the approval gate at
-# level 2 with no approval, while the same call from a script file was stopped. A read (messages list, drafts.get,
-# drafts.create) keeps passing, and the method verdict below still decides send vs read. A URL assembled from a
-# variable ($BASE/messages/send) is not seen here: the same stated limit as for interpreter code.
-_MAIL_API_URL = re.compile(
-    r"^(?:--url=)?(https?://)?([^/@\s]*\.)?"
-    r"(?:googleapis\.com|graph\.microsoft\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com)(/|$)",
-    re.I,
-)
+# CURLMAILAPI1118: a curl/wget/httpie URL on an HTTP mail API host is a send target when its path carries that
+# provider's send shape (_web_mail_sends: Gmail messages/drafts send, Graph sendMail, SendGrid mail/send, Mailgun
+# messages, Postmark email). Before this, only api.resend.com was known on the command line, and
+# `curl -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send` passed the approval gate at level 2 with
+# no approval, while the same call from a script file was stopped. The method verdict still decides send vs read: a
+# read (messages list, drafts.get) and drafts.create keep passing.
+# The URL is read the way the client sends it, not as written (review round 1): user info, port and a trailing dot
+# leave the host, %XX is decoded, dot segments and empty segments are resolved, Graph's namespaced action
+# (microsoft.graph.sendMail) is its short name, and a regional SendGrid host is SendGrid. A curl glob ({..}, [..]) on
+# a mail API host is a target as it stands: curl expands it, the gate cannot. Only URL positions are read: the value
+# of an option that takes one (-o file, -H header, ...) is skipped, so a file name or a header that merely names a
+# send URL is no target. Stated limits: a URL from a variable, a substitution or a config file (-K, wget -i), a send
+# inside a batch body, and a Host header or --connect-to that points another address at the API are not seen.
+# Written as a pattern, not as host literals: a gate file must not carry a provider's evidence as plain text.
+_MAIL_API_HOST = re.compile(
+    r"(?:^|\.)(?:googleapis\.com|graph\.microsoft\.com|sendgrid\.com|mailgun\.net|postmarkapp\.com|api\.resend\.com)$")
+_RESEND_HOST = re.compile(r"(?:^|\.)api\.resend\.com$")
+_SENDGRID_HOST = re.compile(r"(?:^|\.)sendgrid\.com$")
+# Options that take a value, per client (a short cluster: see _curl_url_candidates).
+_CURL_VALUE_LONG = {
+    "--output", "--header", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii", "--json",
+    "--form", "--form-string", "--user", "--user-agent", "--referer", "--proxy", "--upload-file", "--config",
+    "--cookie", "--cookie-jar", "--write-out", "--output-dir", "--dump-header", "--connect-to", "--resolve",
+    "--max-time", "--connect-timeout", "--retry", "--cert", "--key", "--cacert", "--request", "--range",
+    "--continue-at", "--quote", "--oauth2-bearer", "--trace", "--trace-ascii", "--stderr", "--interface",
+    "--unix-socket", "--abstract-unix-socket", "--proxy-user", "--limit-rate", "--max-filesize", "--method",
+    # wget
+    "--output-document", "--output-file", "--append-output", "--post-data", "--post-file", "--body-data",
+    "--body-file", "--input-file", "--directory-prefix", "--tries", "--timeout", "--wait", "--execute", "--base",
+}
+_CURL_VALUE_SHORT = {"curl": set("oHdFuAexTKbcwDmrCEXQ"), "wget": set("OoaHUeiBPtTwQ")}
+
+
+def _curl_url_candidates(prog: str, rest):
+    """The tokens of a curl/wget/httpie call that can be a URL: option values are skipped."""
+    shorts = _CURL_VALUE_SHORT.get(prog.lower(), set())
+    out, i, n = [], 0, len(rest)
+    while i < n:
+        t = rest[i]
+        if t.startswith("--url="):
+            out.append(t[len("--url="):])
+        elif t.startswith("--"):
+            if t in _CURL_VALUE_LONG:
+                i += 1
+        elif t.startswith("-") and len(t) > 1:
+            # the first letter that takes a value ends the cluster: the rest of the token is its value (-XPOST,
+            # -ofile); only when it is the last letter does the value come in the next token
+            for k, ch in enumerate(t[1:], 1):
+                if ch in shorts:
+                    if k == len(t) - 1:
+                        i += 1
+                    break
+        else:
+            out.append(t)
+        i += 1
+    return out
+
+
+_HEX_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+
+
+def _canon_mail_url(tok: str):
+    """(host, path, has_glob) of a URL token on a mail API host, or None."""
+    t = tok.replace("\\/", "/")
+    m = re.match(r"^(?:[A-Za-z][A-Za-z0-9+.-]*://)?([^/?#]*)([^?#]*)", t)
+    if not m:
+        return None
+    host = m.group(1).rsplit("@", 1)[-1]
+    host = re.sub(r":[0-9]*$", "", host).rstrip(".").lower()
+    if not _MAIL_API_HOST.search(host):
+        return None
+    path = _HEX_ESCAPE.sub(lambda x: chr(int(x.group(1), 16)), m.group(2))
+    segs = []
+    for seg in path.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if segs:
+                segs.pop()
+            continue
+        segs.append(seg)
+    path = "/" + "/".join(segs)
+    path = re.sub(r"/microsoft\.graph\.", "/", path, flags=re.I)
+    if _SENDGRID_HOST.search(host):
+        host = "api." + "sendgrid.com"
+    return host, path, bool(re.search(r"[{}\[\]]", t))
 
 
 def _curl_mail_api_target(tok: str) -> bool:
-    return bool(_MAIL_API_URL.match(tok)) and _web_mail_sends(tok)
+    c = _canon_mail_url(tok)
+    if c is None:
+        return False
+    host, path, has_glob = c
+    if _RESEND_HOST.search(host):
+        return True
+    if has_glob:
+        return True
+    return _web_mail_sends("https://" + host + path)
 
 # RESENDGATE826: a resend-celu curl/wget csak akkor KULDES, ha a METODUS az.
 # A korabbi minta metodus-vak volt, es egy read-only GET /domains (nincs torzs,
@@ -374,7 +456,7 @@ _SAFE_METHODS = {"GET", "HEAD"}
 # a torzse `kulcs=ertek` / `kulcs:=json` elem -- egyiket sem ismeri az alabbi
 # curl/wget flag-olvaso, ezert a `http POST .../emails to=...` "read" lett, es a
 # kapu atengedte. A httpie-re a metodus itt nem dontheto: fail-closed.
-_HTTPIE = re.compile(r"^http$", re.I)
+_HTTPIE = re.compile(r"^(http|https|xh|xhs)$", re.I)  # CURLMAILAPI1118: httpie's https binary, xh
 
 
 def _curl_resend_verdict(prog, rest):
@@ -1174,7 +1256,8 @@ def _head_is_send(toks, depth: int) -> bool:
     # RESENDGATE826: csak a TENYLEGES kuldes (POST/PUT/... vagy torzs) akad
     # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
     # tovabbra is fail-closed.
-    if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) or _curl_mail_api_target(t) for t in rest):
+    if _CURLISH.match(prog) and (any(_RESEND_TARGET.match(t) for t in rest)
+                                 or any(_curl_mail_api_target(t) for t in _curl_url_candidates(prog, rest))):
         return _curl_resend_verdict(prog, rest) != "read"
     return False
 

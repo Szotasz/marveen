@@ -138,7 +138,7 @@ const PYTHON = /^python(3(\.\d+t?)?)?$/i
 const NODEISH = /^(node|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
-const CURLISH = /^(curl|wget|http)$/i
+const CURLISH = /^(curl|wget|http|https|xh|xhs)$/i
 const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
 // RESENDGETTWIN1010: port of the python twin's method verdict (RESENDGATE826,
 // outgoing-copy-gate.py :: _curl_resend_verdict). Until now this copy was
@@ -148,7 +148,7 @@ const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
 // (variable, truncated flag, config file) stays a send. httpie (`http`) takes
 // its method positionally and its body as `key=value` items, none of which this
 // flag scan reads, so it is undecidable too and stays a send in both twins.
-const HTTPIE = /^http$/i
+const HTTPIE = /^(http|https|xh|xhs)$/i // CURLMAILAPI1118: httpie's https binary, xh
 const CURL_BODY_OPTS = new Set([
   '-d', '--data', '--data-raw', '--data-binary', '--data-urlencode',
   '--data-ascii', '-F', '--form', '--form-string', '--json',
@@ -278,11 +278,64 @@ const mailApiSends = (text) => {
 }
 // A Microsoft Graph send or an HTTP mail API send in a code string or a script file.
 const webMailSends = (text) => graphSends(text) || mailApiSends(text)
-// CURLMAILAPI1118: twin of _curl_mail_api_target in hooks/outgoing-copy-gate.py. A curl/wget URL token on another
-// HTTP mail API host is a send only when the same token carries that provider's send shape; until now only
-// api.resend.com was known on the command line, so a bare curl to Gmail's messages/send passed both gates.
-const MAIL_API_URL = /^(?:--url=)?(https?:\/\/)?([^/@\s]*\.)?(?:googleapis\.com|graph\.microsoft\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com)(\/|$)/i
-const curlMailApiTarget = (tok) => MAIL_API_URL.test(tok) && webMailSends(tok)
+// CURLMAILAPI1118: twin of _curl_mail_api_target / _curl_url_candidates in hooks/outgoing-copy-gate.py (the reasons
+// and the stated limits are written there). A curl/wget/httpie URL on an HTTP mail API host is a send target when its
+// path, read the way the client sends it, carries that provider's send shape; option values are skipped.
+// A pattern, not host literals: a gate file must not carry a provider's evidence as plain text.
+const MAIL_API_HOST = /(?:^|\.)(?:googleapis\.com|graph\.microsoft\.com|sendgrid\.com|mailgun\.net|postmarkapp\.com|api\.resend\.com)$/
+const RESEND_HOST = /(?:^|\.)api\.resend\.com$/
+const SENDGRID_HOST = /(?:^|\.)sendgrid\.com$/
+const CURL_VALUE_LONG = new Set([
+  '--output', '--header', '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii', '--json',
+  '--form', '--form-string', '--user', '--user-agent', '--referer', '--proxy', '--upload-file', '--config',
+  '--cookie', '--cookie-jar', '--write-out', '--output-dir', '--dump-header', '--connect-to', '--resolve',
+  '--max-time', '--connect-timeout', '--retry', '--cert', '--key', '--cacert', '--request', '--range',
+  '--continue-at', '--quote', '--oauth2-bearer', '--trace', '--trace-ascii', '--stderr', '--interface',
+  '--unix-socket', '--abstract-unix-socket', '--proxy-user', '--limit-rate', '--max-filesize', '--method',
+  '--output-document', '--output-file', '--append-output', '--post-data', '--post-file', '--body-data',
+  '--body-file', '--input-file', '--directory-prefix', '--tries', '--timeout', '--wait', '--execute', '--base',
+])
+const CURL_VALUE_SHORT = { curl: new Set('oHdFuAexTKbcwDmrCEXQ'), wget: new Set('OoaHUeiBPtTwQ') }
+function curlUrlCandidates(prog, rest) {
+  const shorts = CURL_VALUE_SHORT[prog.toLowerCase()] ?? new Set()
+  const out = []
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]
+    if (t.startsWith('--url=')) out.push(t.slice('--url='.length))
+    else if (t.startsWith('--')) { if (CURL_VALUE_LONG.has(t)) i++ }
+    else if (t.startsWith('-') && t.length > 1) {
+      // the first value-taking letter ends the cluster; only as the last letter does its value come next
+      const k = [...t.slice(1)].findIndex((ch) => shorts.has(ch))
+      if (k >= 0 && k + 1 === t.length - 1) i++
+    }
+    else out.push(t)
+  }
+  return out
+}
+function canonMailUrl(tok) {
+  const t = tok.replaceAll('\\/', '/')
+  const m = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/)?([^/?#]*)([^?#]*)/.exec(t)
+  if (!m) return null
+  let host = m[1].split('@').pop().replace(/:[0-9]*$/, '').replace(/\.+$/, '').toLowerCase()
+  if (!MAIL_API_HOST.test(host)) return null
+  const path0 = m[2].replace(/%([0-9A-Fa-f]{2})/g, (_x, h) => String.fromCharCode(parseInt(h, 16)))
+  const segs = []
+  for (const seg of path0.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') { segs.pop(); continue }
+    segs.push(seg)
+  }
+  const path = ('/' + segs.join('/')).replace(/\/microsoft\.graph\./gi, '/')
+  if (SENDGRID_HOST.test(host)) host = 'api.' + 'sendgrid.com'
+  return { host, path, hasGlob: /[{}[\]]/.test(t) }
+}
+function curlMailApiTarget(tok) {
+  const c = canonMailUrl(tok)
+  if (!c) return false
+  if (RESEND_HOST.test(c.host)) return true
+  if (c.hasGlob) return true
+  return webMailSends('https://' + c.host + c.path)
+}
 // MAILGATEHEREDOCFP1027: a send marker that only sits in DATA is no send. The interpreter's code is read with its
 // prose blanked: a string literal whose text holds whitespace and every comment become spaces (length and line
 // breaks kept); a literal without whitespace (a URL, a package name, a 'sendmail' argv item) stays, and so do the
@@ -848,7 +901,7 @@ function headIsSend(toks, depth) {
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
   // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
   // read-only GET/HEAD passes; an undecidable method stays fail-closed.
-  if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t) || curlMailApiTarget(t))) {
+  if (CURLISH.test(prog) && (rest.some((t) => RESEND_TARGET.test(t)) || curlUrlCandidates(prog, rest).some(curlMailApiTarget))) {
     return curlResendVerdict(prog, rest) !== 'read'
   }
   return false

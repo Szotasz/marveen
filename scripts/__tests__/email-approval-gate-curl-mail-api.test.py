@@ -19,7 +19,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(os.path.dirname(HERE), "hooks")
-TAG = "CURLMAILAPI1118: "
+TAG = "CURLMAILAPI1118"
 
 failed = []
 
