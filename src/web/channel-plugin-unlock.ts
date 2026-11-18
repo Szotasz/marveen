@@ -19,8 +19,9 @@
 //
 // This module is the in-process equivalent of the channels.sh probe.
 // schedulePluginUnlockAfterRespawn() is fire-and-forget from the JS respawn
-// paths; it waits past the cold-start window, gates on `pgrep -P <claude_pid>
-// bun` (no bun = plugin is not running), and if it needs to act, sends the
+// paths; it waits past the cold-start window, gates on the shared
+// provider-aware liveness probe (no live poller = plugin is not running),
+// and if it needs to act, sends the
 // same /mcp + Up + Enter + Enter sequence. The Up wraps to the bottom of the
 // MCP server list (where plugin:<provider>:<provider> lives), the first Enter
 // opens its action menu, and the second Enter selects whichever first action
@@ -40,6 +41,7 @@ import type { ChannelProviderType } from '../channel-provider.js'
 import { tryAcquireSessionSendLane } from './session-send-lock.js'
 import { exactTmuxTarget } from '../tmux-target.js'
 import { stripAllAnsi, stripGhostSuggestion, idleConsideringDimGhost, liveFooterLine } from '../pane-state.js'
+import { probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -120,23 +122,20 @@ function getSessionClaudePid(session: string): number | null {
   }
 }
 
-// True iff at least one `bun` child is reparented under the claude pid -
-// the plugin spawns its poller as a direct subprocess of the claude main
-// loop, so bun's presence under the claude pid is the most reliable
-// liveness signal we have. Matches the channels.sh `pgrep -P <claude_pid>
-// bun` check so the two paths agree on what "plugin running" means.
-function hasBunChild(claudePid: number): boolean {
-  try {
-    const out = execFileSync('/usr/bin/pgrep', ['-P', String(claudePid), 'bun'], {
-      timeout: 3000,
-      encoding: 'utf-8',
-    }).trim()
-    return out.length > 0
-  } catch {
-    // pgrep exits 1 when there are no matches; treat as "no bun child"
-    return false
-  }
-}
+// Is the channel plugin running under this claude pid?
+//
+// PROVIDERPOLLER1015: this used to be `pgrep -P <claude_pid> bun`, which is the
+// TELEGRAM plugin's shape. The Slack plugin's poller is a `node`/tsx child under
+// .../slack-channel/<ver>/, so on a slack install the gate answered "absent"
+// after EVERY respawn and fired the /mcp unlock sequence into a perfectly
+// healthy session. Measured here 2026-10-15: respawn 11:15:34 -> unlock
+// keystrokes 11:16:20 -> at 11:17:34 the monitor's menu pass found the pane in a
+// blocking menu and alerted the operator about a modal THIS probe had opened.
+// Use the shared provider-aware detector (the one channel-monitor's keepalive
+// shortcut already uses) so the two paths agree on what "plugin running" means.
+// probeChannelPluginLiveness, not hasChannelPluginAlive: the keystrokes are
+// disruptive, so only a DEFINITE 'down' earns them -- 'unknown' (probe failed)
+// must not.
 
 // Captured pane lines we use to refuse the keystrokes. Two safety gates:
 // (a) the session must be at the bypass-permissions footer (the TUI's idle
@@ -307,13 +306,15 @@ function runUnlockProbe(state: UnlockProbeState): void {
     return
   }
 
-  if (hasBunChild(claudePid)) {
+  const liveness = probeChannelPluginLiveness(claudePid, state.provider)
+  if (liveness !== 'down') {
     // Plugin is up again -- retire any stale absent verdict so a future
-    // down-spell starts from a clean restart budget.
-    clearPluginAbsent(state.session)
+    // down-spell starts from a clean restart budget. An 'unknown' verdict is
+    // not proof of health, so it clears nothing; it only withholds the keystrokes.
+    if (liveness === 'alive') clearPluginAbsent(state.session)
     logger.info(
-      { session: state.session, claudePid, provider: state.provider },
-      'channel-plugin-unlock: bun child present, plugin healthy - no unlock needed',
+      { session: state.session, claudePid, provider: state.provider, liveness },
+      'channel-plugin-unlock: channel plugin not provably down - no unlock needed',
     )
     return
   }
@@ -351,7 +352,7 @@ function runUnlockProbe(state: UnlockProbeState): void {
 
   logger.warn(
     { session: state.session, claudePid, provider: state.provider },
-    'channel-plugin-unlock: bun child absent after cold-start window, firing /mcp unlock sequence',
+    'channel-plugin-unlock: channel plugin provably down after cold-start window, firing /mcp unlock sequence',
   )
   try {
     sendUnlockKeystrokes(state.session, state.provider)
@@ -365,18 +366,19 @@ function runUnlockProbe(state: UnlockProbeState): void {
  *
  * Call this fire-and-forget right after `tmux respawn-pane` in any in-process
  * recovery path (resumeMarveenSession, respawnMarveenSessionFresh, etc.).
- * The probe waits for the new claude session to finish cold-starting, then
- * checks `pgrep -P <claude_pid> bun`:
- *   - bun child present: plugin healthy, do nothing.
- *   - bun child absent + idle pane: send /mcp + Up + Enter + Enter to
+ * The probe waits for the new claude session to finish cold-starting, then asks
+ * probeChannelPluginLiveness for THIS provider:
+ *   - 'alive' or 'unknown': no keystrokes. Only a proven-down plugin is worth
+ *     the disruption, and a failed probe is not proof.
+ *   - 'down' + idle pane: send /mcp + Up + Enter + Enter to
  *     enable or reconnect whichever channel plugin is at the bottom of
  *     the MCP list.
- *   - bun child absent + non-idle pane: retry up to UNLOCK_PROBE_MAX_RETRIES
+ *   - 'down' + non-idle pane: retry up to UNLOCK_PROBE_MAX_RETRIES
  *     times every UNLOCK_PROBE_RETRY_DELAY_MS before giving up.
  *
  * Idempotent across multiple respawns - each call schedules its own setTimeout
- * and the unlock-keystrokes path is itself gated on bun absence, so a stale
- * probe from a previous respawn cannot toggle a healthy plugin to Disable.
+ * and the unlock-keystrokes path is itself gated on a proven-down plugin, so a
+ * stale probe from a previous respawn cannot toggle a healthy plugin to Disable.
  */
 export function schedulePluginUnlockAfterRespawn(session: string, provider: ChannelProviderType): void {
   setTimeout(

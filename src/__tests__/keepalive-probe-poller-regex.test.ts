@@ -43,23 +43,69 @@ describe('the probe matches the CONFIGURED provider, not a hardcoded telegram', 
     expect(src).toContain('CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"')
   })
 
-  it('filters candidate pollers by the resolved provider dir', () => {
+  it('filters candidate pollers by the resolved provider slug', () => {
     const pollerScan = src.split('\n').find((l) => l.includes('ps -axo pid,command'))
     expect(pollerScan, 'poller scan line not found').toBeDefined()
-    expect(pollerScan).toContain('"/${PROBE_PLUGIN_SEG}/"')
+    expect(pollerScan).toContain('grep -E "$PROVIDER_SLUG_RX"')
+    expect(src).toContain('PROVIDER_SLUG_RX="/${PROBE_PLUGIN_SEG}')
     expect(pollerScan).not.toContain("'/telegram/'")
+  })
+
+  // PROVIDERSLUG1015: the filter used to be `grep -F "/${CHANNEL_PROVIDER}/"`,
+  // which assumes the plugin directory is named exactly after the provider.
+  // True for telegram and discord, FALSE for slack: the marveen-marketplace
+  // plugin installs under `.../cache/marveen-marketplace/slack-channel/<ver>/`,
+  // so the probe would have been a permanent no-op on every slack install --
+  // the 2026-09-25 discord no-op one layer further in. Measured on this host
+  // 2026-10-15: the live poller's argv carries /slack-channel/.
+  it('accepts the slack-channel plugin dir, not just /slack/', () => {
+    expect(src).toContain('/slack(-channel)?')
+    // Scoped to the scan LINE on purpose: the old filter is quoted in the
+    // comment above the fix, and a file-wide assertion would read that as the
+    // defect coming back.
+    const pollerScan = src.split('\n').find((l) => l.includes('ps -axo pid,command'))
+    expect(pollerScan, 'the -F literal provider dir must not come back')
+      .not.toContain('grep -F')
   })
 })
 
-function shellAccepts(cmd: string): boolean {
+// The slack slug ERE the probe actually runs, read from the script rather than
+// duplicated here -- a copy would drift exactly the way this test exists to stop.
+function probeSlackSlugRegex(): string {
+  const src = readFileSync(PROBE, 'utf-8')
+  const m = src.match(/^\s*PROVIDER_SLUG_RX='([^']+)'$/m)
+  expect(m, "the slack PROVIDER_SLUG_RX literal not found in the probe script").not.toBeNull()
+  return m![1]
+}
+
+// Run the real greps the probe runs, for the given provider: the runtime-token
+// filter and then the provider slug filter, exactly as the pipeline chains them.
+function shellAccepts(cmd: string, provider: 'telegram' | 'slack' = 'telegram'): boolean {
   const runtime = probeRuntimeRegex()
+  const slug = provider === 'slack'
+    ? probeSlackSlugRegex()
+    : `/${provider}(/|[[:space:]]|$)` // the script's default branch, spelled out
   try {
-    const out = execFileSync('/bin/sh', ['-c', `printf '%s\\n' "$1" | grep -E "$2" | grep -E '/telegram/' | grep -v grep`, 'sh', cmd, runtime], { encoding: 'utf-8' })
+    const out = execFileSync('/bin/sh', ['-c', `printf '%s\\n' "$1" | grep -E "$2" | grep -E "$3" | grep -v grep`, 'sh', cmd, runtime, slug], { encoding: 'utf-8' })
     return out.trim().length > 0
   } catch {
     return false // grep exits non-zero when nothing matches
   }
 }
+
+// The shapes measured on this host 2026-10-15 (ps -axo pid,command rows).
+const SLACK_POLLERS = [
+  '83835 node /Users/u/.claude/plugins/cache/marveen-marketplace/slack-channel/0.1.0/node_modules/.bin/tsx /Users/u/.claude/plugins/cache/marveen-marketplace/slack-channel/0.1.0/server.ts',
+  // a hypothetical upstream plugin installed under a plain /slack dir
+  '123 /home/u/.bun/bin/bun run --cwd /home/u/.claude/plugins/cache/claude-plugins-official/slack/0.0.1 start',
+]
+
+const SLACK_NON_POLLERS = [
+  // right runtime, a different provider's plugin dir
+  '222 /home/u/.bun/bin/bun run --cwd /home/u/.claude/plugins/cache/x/telegram/0.0.6 start',
+  // right plugin dir, wrong runtime
+  '111 python3 /home/u/.claude/plugins/cache/marveen-marketplace/slack-channel/0.1.0/bot.py',
+]
 
 const TELEGRAM_POLLERS = [
   // The exact argv from the report: bun from the official installer's path.
@@ -116,6 +162,20 @@ describe('the shell probe and the TypeScript detector agree', () => {
     for (const cmd of NOT_POLLERS) {
       expect(matchesProviderPollerCmd(cmd, 'telegram'), `TS: ${cmd}`).toBe(false)
       expect(shellAccepts(cmd), `shell: ${cmd}`).toBe(false)
+    }
+  })
+
+  it('agrees on the slack poller shapes, including the slack-channel plugin dir', () => {
+    for (const cmd of SLACK_POLLERS) {
+      expect(matchesProviderPollerCmd(cmd, 'slack'), `TS: ${cmd}`).toBe(true)
+      expect(shellAccepts(cmd, 'slack'), `shell: ${cmd}`).toBe(true)
+    }
+  })
+
+  it('agrees on what is NOT a slack poller', () => {
+    for (const cmd of SLACK_NON_POLLERS) {
+      expect(matchesProviderPollerCmd(cmd, 'slack'), `TS: ${cmd}`).toBe(false)
+      expect(shellAccepts(cmd, 'slack'), `shell: ${cmd}`).toBe(false)
     }
   })
 })

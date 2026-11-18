@@ -259,8 +259,9 @@ describe('the real security gates on a disposable copy', () => {
       .flatMap((e) => e.hooks.map((h) => ({ matcher: e.matcher, command: h.command })))
     const security = entries.filter((e) => /outgoing-copy-gate\.py|email-approval-gate\.py|egress-gate\.mjs/.test(e.command))
     // 17 since EMAILMESSAGESMUX1108: both email gates gained a `.*email__messages.*`
-    // entry for the `email` server's send multiplexer.
-    expect(security.length).toBe(17)
+    // entry for the `email` server's send multiplexer. 18 since GATESLACK1015:
+    // the copy gate on the Slack send tools.
+    expect(security.length).toBe(18)
     for (const e of security) {
       expect(e.command, e.matcher).toContain(GATE_FAIL_CLOSED_TAG)
       const rel = e.command.match(/scripts\/(hooks\/[a-z-]+\.(?:py|mjs))/)![1]

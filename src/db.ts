@@ -1758,6 +1758,17 @@ export function initDatabase(dbPathOverride?: string): void {
   // authorize two sends.
   try { db.exec('ALTER TABLE approvals ADD COLUMN content_hash TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
+  // a PROVIDER-INDEPENDENT delivery marker. Until this column
+  // existed the only record that an approval request had actually reached the
+  // owner was a log line ('approval owner notification sent'), and the
+  // telegram_message_id that used to stand in for it carried a value on
+  // exactly two rows in this install's whole history -- both from the Telegram
+  // era. Measured 2026-10-07 on ten rows: from 13:16 onward every row was
+  // NULL, so a DELIVERED request, a FAILED one and an EXPIRED one were
+  // externally indistinguishable, and a sub-agent had already built a rule on
+  // that coincidence. notified_at is written by whichever channel layer
+  // succeeded, so it stays true across providers.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN notified_at INTEGER') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
   // f2c5edb0: the gate only sees a send it can read in the command text, so a
   // letter sent by a script (ssh + a mailer run on another host) never flipped
@@ -2372,7 +2383,9 @@ export function searchMemories(
 
 export function recentMemories(chatId: string, limit = 5): Memory[] {
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? AND retracted_at IS NULL ORDER BY accessed_at DESC LIMIT ?')
+    // Same tie-break as every other list path: without it a
+    // LIMIT over accessed_at ties is not a total order.
+    .prepare('SELECT * FROM memories WHERE chat_id = ? AND retracted_at IS NULL ORDER BY accessed_at DESC, id DESC LIMIT ?')
     .all(chatId, limit) as Memory[]
 }
 
@@ -2643,7 +2656,7 @@ export function searchAgentMemories(
     const pattern = `%${escapeLike(query)}%`
     const ld = tsClause('created_at', range)
     return db.prepare(
-      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${ld.sql} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?`
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${ld.sql} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC, id DESC LIMIT ?`
     ).all(agentId, ...(category ? [category] : []), ...ld.params, pattern, pattern, limit) as Memory[]
   }
 }
@@ -2914,16 +2927,31 @@ export function dailyLogMirrorText(date: string, createdAt: number, text: string
  * rolls BOTH rows back and throws. Content-filter decisions are the caller's:
  * a refused entry is simply appended with `mirror: false`.
  */
+/**
+ * The CALENDAR DAY the daily log is keyed by: Budapest, not UTC. en-CA formats
+ * as YYYY-MM-DD.
+ *
+ * Exported because the WRITE and the READ must agree on it (DAILYLOGUTC1014).
+ * The write side has been Budapest-correct since the start -- an entry written
+ * 00:00-02:00 local time would otherwise land on the previous day and the "ma"
+ * recall query would miss it -- but the GET route defaulted to the UTC day, so
+ * for one to two hours after midnight a `date`-less read asked for YESTERDAY
+ * while the rows written at that very moment were filed under today. Measured
+ * on this install: 68 of 853 daily_logs rows sit on a date where the Budapest
+ * and the UTC day differ. One shared helper is the fix; two call sites each
+ * computing "today" is what produced the drift.
+ */
+export function appDayToday(now: Date = new Date()): string {
+  return now.toLocaleDateString('en-CA', { timeZone: APP_TZ })
+}
+
 export function appendDailyLog(
   agentId: string,
   content: string,
   opts: { mirror?: boolean } = {},
 ): { id: number; memoryId: number | null } {
   const now = Math.floor(Date.now() / 1000)
-  // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
-  // local time lands on the previous day and the "ma" recall query misses it.
-  // en-CA formats as YYYY-MM-DD.
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
+  const today = appDayToday()
   const mirror = opts.mirror === true ? dailyLogMirrorText(today, now, content) : null
   const result = db.transaction((): { id: number; memoryId: number | null } => {
     const info = db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
@@ -3066,8 +3094,15 @@ export function dryRunDailyLogBackfill(
   return result
 }
 
-export function getDailyLog(agentId: string, date: string): { id: number; content: string; created_at: number }[] {
-  return db.prepare('SELECT id, content, created_at FROM daily_logs WHERE agent_id = ? AND date = ? ORDER BY created_at ASC').all(agentId, date) as { id: number; content: string; created_at: number }[]
+/**
+ * The `date` column is echoed back on every row even though it is the query
+ * key: without it a client cannot tell WHICH day it is holding, so any
+ * client-side date filter silently matches nothing (measured 2026-10-10: a
+ * morning round reported zero log rows for the previous day when there were
+ * 74).
+ */
+export function getDailyLog(agentId: string, date: string): { id: number; date: string; content: string; created_at: number }[] {
+  return db.prepare('SELECT id, date, content, created_at FROM daily_logs WHERE agent_id = ? AND date = ? ORDER BY created_at ASC').all(agentId, date) as { id: number; date: string; content: string; created_at: number }[]
 }
 
 export function getDailyLogDates(agentId: string, limit: number = 14): string[] {
@@ -4904,6 +4939,16 @@ export interface StuckKanbanCard {
   assignee: string | null
   last_activity: number
   idle_days: number
+  /** The card's REAL age in days, from created_at. Idle time
+   *  alone hid cards whose only movement was the audit's own rescue comment:
+   *  measured on one card, three audit rounds in a row reset the idle
+   *  clock while the card's true age went from 7.0 to 9.6 days. Age is the
+   *  number that cannot be reset by writing. */
+  age_days: number
+  /** Which threshold put the card on the list. 'idle' is the historical path;
+   *  'age' only appears when an age threshold is configured and fired on a
+   *  card whose idle time alone would not have. */
+  stuck_reason: 'idle' | 'age'
 }
 
 export interface OverdueWaitingCard {
@@ -4930,8 +4975,14 @@ export function getStuckKanbanCards(opts: {
   plannedDays: number
   activeDays: number
   creatorCommentWindowSec: number
+  /** Second threshold, in days, on the card's REAL age. 0 or
+   *  undefined leaves it off, which is the shipped default: turning it on
+   *  changes how many cards the audit pings, so it is a measured decision per
+   *  board, not a silent behaviour change. */
+  maxAgeDays?: number
 }): StuckKanbanCardsResult {
   const { plannedDays, activeDays, creatorCommentWindowSec } = opts
+  const maxAgeDays = opts.maxAgeDays && opts.maxAgeDays > 0 ? opts.maxAgeDays : 0
   const nowSec = Math.floor(Date.now() / 1000)
   const rows = db
     .prepare(
@@ -4997,7 +5048,10 @@ export function getStuckKanbanCards(opts: {
     const thresholdDays = r.status === 'in_progress' || r.status === 'testing' ? activeDays : plannedDays
     const idleSec = nowSec - r.last_activity
     const idleDays = idleSec / 86400
-    if (idleDays >= thresholdDays) {
+    const ageDays = (nowSec - r.created_at) / 86400
+    const idleStuck = idleDays >= thresholdDays
+    const ageStuck = maxAgeDays > 0 && ageDays >= maxAgeDays
+    if (idleStuck || ageStuck) {
       bucket.stuck++
       stuck.push({
         id: r.id,
@@ -5007,6 +5061,8 @@ export function getStuckKanbanCards(opts: {
         assignee: r.assignee,
         last_activity: r.last_activity,
         idle_days: Math.floor(idleDays),
+        age_days: Math.floor(ageDays),
+        stuck_reason: idleStuck ? 'idle' : 'age',
       })
     }
     byStatus[r.status] = bucket
@@ -6091,7 +6147,12 @@ export function appendTaskRun(name: string, agent: string, status = 'fired'): nu
 }
 
 /** How a run ENDED. Distinct from `status`, which is how it was dispatched. */
-export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted'
+// 'blocked' (SCHEDHAMISDONE1014): the injection reached an awake session that
+// answered with the CLI's own canned message (quota limit, API error) instead
+// of running the task. Kept apart from 'done' because it is the opposite, and
+// apart from 'lost' because the prompt was NOT lost -- it arrived and was
+// refused, so no redelivery is owed.
+export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted' | 'blocked'
 
 /**
  * Close a run. Idempotent by design: the WHERE clause refuses to overwrite an
@@ -7930,6 +7991,10 @@ export interface Approval {
   // The sub-agent allowed to consume this row with its own token; NULL = none.
   // Optional in the type only, like consumed_by above.
   for_agent?: string | null
+  /** Unix seconds when the owner notification actually left for the channel,
+   *  or null when it never did (suppressed, failed, or not yet sent).
+   *  Optional in the type only, like consumed_by above. */
+  notified_at?: number | null
 }
 
 export function createApproval(params: {
@@ -7974,6 +8039,7 @@ export function createApproval(params: {
     content_hash: params.content_hash ?? null,
     consumed_at: null,
     for_agent: params.for_agent ?? null,
+    notified_at: null,
   }
 }
 
@@ -8087,6 +8153,18 @@ export function decideApprovalFromSlack(p: {
 // The CREATE path stamps the owner-notification message id onto the row
 // (APPROVALVAK821): until this existed, telegram_message_id was only writable
 // through resolveApproval, so a pending request could never carry it.
+/**
+ * Stamp the moment the owner notification left for the channel.
+ * Write-once: a later retry must not overwrite the first successful delivery,
+ * and a row that was never delivered must stay NULL rather than acquire a
+ * timestamp from some adjacent event.
+ */
+export function markApprovalNotified(id: string, at?: number): boolean {
+  const ts = at ?? Math.floor(Date.now() / 1000)
+  return db.prepare('UPDATE approvals SET notified_at = ? WHERE id = ? AND notified_at IS NULL')
+    .run(ts, id).changes > 0
+}
+
 export function setApprovalTelegramMessageId(id: string, telegramMessageId: number): boolean {
   return db.prepare('UPDATE approvals SET telegram_message_id = ? WHERE id = ?')
     .run(telegramMessageId, id).changes > 0

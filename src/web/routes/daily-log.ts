@@ -1,4 +1,4 @@
-import { appendDailyLog, getDailyLog, getDailyLogDates } from '../../db.js'
+import { appendDailyLog, appDayToday, getDailyLog, getDailyLogDates } from '../../db.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -37,7 +37,12 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/daily-log' && method === 'GET') {
     const agent = url.searchParams.get('agent') || MAIN_AGENT_ID
-    const date = url.searchParams.get('date') || new Date().toISOString().split('T')[0]
+    // Budapest day, the same helper the write side uses (DAILYLOGUTC1014).
+    // toISOString() here asked for the UTC day, so between 00:00 and 02:00
+    // local time a `date`-less GET read YESTERDAY while appendDailyLog was
+    // filing that minute's rows under today -- an empty list, HTTP 200,
+    // indistinguishable from a genuinely empty day.
+    const date = url.searchParams.get('date') || appDayToday()
     json(res, getDailyLog(agent, date))
     return true
   }

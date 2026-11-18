@@ -9,6 +9,7 @@ import {
   RECOVERY_BRIEF_MAX_CHARS,
   RECOVERY_BRIEF_MAX_ID_CHARS,
   RECOVERY_BRIEF_MAX_TITLE_CHARS,
+  HANDOFF_FRESH_SECONDS,
   type RecoveryFacts,
 } from '../web/restart-recovery-brief.js'
 import { sanitizePromptText } from '../web/prompt-text-sanitize.js'
@@ -36,6 +37,7 @@ const facts = (over: Partial<RecoveryFacts> = {}): RecoveryFacts => ({
   dirty: [],
   dirtyTruncated: false,
   inProgress: [],
+  handoff: null,
   ...over,
 })
 
@@ -382,5 +384,56 @@ describe('outside-written fields are cleaned and cut before they are typed', () 
     expect(briefField('Fix the thing', 120)).toBe('Fix the thing')
     expect(briefField('  padded  ', 120)).toBe('padded')
     expect(briefField('x'.repeat(50), 20)).toBe('x'.repeat(17) + '...')
+  })
+})
+
+
+describe('the first line says which of the two is actually gone', () => {
+  // The measured problem: with a handoff file on disk -- which is every restart
+  // in this fleet -- "az elozo beszelgetesed nincs meg" is true of the
+  // conversation and false of the context. Stated on every single run, it
+  // teaches its reader to skip the brief, and then the brief is not read on the
+  // one run where it IS true: the handoff is missing because the backup failed.
+  const working = { inProgress: [{ id: 'abc12345', title: 'Fix the thing' }] }
+
+  it('points at a fresh handoff instead of claiming the context is gone', () => {
+    const b = buildRecoveryBrief(facts({ ...working, handoff: { path: 'HANDOFF.md', ageSeconds: 120 } }))!
+    expect(b).toContain('KONTEXTUSOD viszont igen')
+    expect(b).toContain('HANDOFF.md')
+    expect(b).toContain('2 perce')
+    expect(b).toContain('olvasd el eloszor')
+    // The claim that was false on every run must not survive anywhere in the text.
+    expect(b).not.toContain('az elozo beszelgetesed nincs meg')
+  })
+
+  it('says a stale handoff is stale instead of pointing at it as current', () => {
+    const b = buildRecoveryBrief(facts({ ...working, handoff: { path: 'HANDOFF.md', ageSeconds: HANDOFF_FRESH_SECONDS + 60 } }))!
+    expect(b).toContain('NEM friss')
+    expect(b).toContain('HANDOFF.md')
+    expect(b).not.toContain('olvasd el eloszor')
+  })
+
+  it('only claims the context is gone when there really is no handoff', () => {
+    const b = buildRecoveryBrief(facts({ ...working, handoff: null }))!
+    expect(b).toContain('sem atado fajlod nincs meg')
+  })
+
+  it('states the measured age in every handoff case, so the agent can overrule the threshold', () => {
+    const fresh = buildRecoveryBrief(facts({ ...working, handoff: { path: 'HANDOFF.md', ageSeconds: 30 } }))!
+    const stale = buildRecoveryBrief(facts({ ...working, handoff: { path: 'HANDOFF.md', ageSeconds: 7200 } }))!
+    expect(fresh).toContain('kevesebb mint egy perce')
+    expect(stale).toContain('kb. 2 oraja')
+  })
+
+  it('a handoff alone never makes an idle agent get a brief', () => {
+    // The handoff changes the WORDING, never the decision to speak. Without
+    // this the guard would be defeated: every restart has a handoff, so every
+    // restart would get a message.
+    expect(buildRecoveryBrief(facts({ handoff: { path: 'HANDOFF.md', ageSeconds: 10 } }))).toBeNull()
+  })
+
+  it('exactly at the freshness boundary the handoff still counts as fresh', () => {
+    const b = buildRecoveryBrief(facts({ ...working, handoff: { path: 'HANDOFF.md', ageSeconds: HANDOFF_FRESH_SECONDS } }))!
+    expect(b).toContain('KONTEXTUSOD viszont igen')
   })
 })

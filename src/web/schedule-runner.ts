@@ -82,7 +82,7 @@ import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig,
 import { enqueueWorksourceItem, worksourceItemStage, worksourcePendingHead, type WorksourceItemStage } from './worksource-queue.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
-import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
+import { classifyDelivery, classifyTurnEvidence, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
 import { paneTyped } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { channelStateDir, getProvider, readChannelToken, readTeamsCreds, type ChannelProviderType } from '../channel-provider.js'
@@ -201,6 +201,11 @@ export interface TaskInflightEntry {
   // Without this the watchdog cannot tell "went busy, then finished" from
   // "never started at all", and treats both as success (see decideTaskTimeout).
   sawTurn: boolean
+  // SCHEDHAMISDONE1014: the session answered our prompt with Claude Code's own
+  // canned reply (model '<synthetic>' -- weekly-limit notice, API error). It
+  // was awake and did NOT do the work, so this is neither a turn nor a lost
+  // delivery. Only ever set from positive evidence in the transcript.
+  sawSynthetic?: boolean
   // Where the target agent's transcripts live, captured at injection time so a
   // config edit mid-flight cannot move the evidence. Reused as the arguments to
   // readTranscriptMtimeAcrossConfigDirs on every sweep.
@@ -357,7 +362,7 @@ export function decideLostRedeliveryAction(
 //                STILL busy after the extra owner window; alert the owner
 //                directly. Added upstream after this branch forked, so the
 //                rebase has to keep it alongside the done/abandoned split.
-export type TaskTimeoutDecision = 'done' | 'abandoned' | 'alert' | 'escalate' | 'hold' | 'lost'
+export type TaskTimeoutDecision = 'done' | 'abandoned' | 'alert' | 'escalate' | 'hold' | 'lost' | 'blocked'
 
 // Pure: decide what the watchdog should do for a single in-flight entry this
 // tick. Exported so it can be unit-tested without tmux I/O.
@@ -537,7 +542,7 @@ export function isWorksourceItemStuckInPending(
 }
 
 export function decideTaskTimeout(
-  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'> & {
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn' | 'sawSynthetic'> & {
     deliveryPending?: boolean
     viaWorksource?: boolean
     worksourcePendingSince?: number
@@ -558,6 +563,11 @@ export function decideTaskTimeout(
     // pending/ sit the alert ladder exists to prevent, so an item still in
     // pending/ keeps the entry open regardless of the turn evidence.
     if (entry.sawTurn && !(entry.viaWorksource === true && worksourceStage === 'pending')) return 'done'
+    // Awake, and refused the work (quota limit / API error). Waits out the
+    // same grace window as 'lost' -- a canned reply can be followed by a real
+    // turn when the CLI retries itself -- and then closes the run honestly
+    // instead of calling it done. No redelivery: the prompt arrived.
+    if (entry.sawSynthetic && elapsed >= opts.graceMs) return 'blocked'
     // Idle, and nothing ever showed the prompt being picked up. Inside the
     // grace window that is just the normal pre-turn lag, so hold; past it the
     // delivery is gone.
@@ -3282,6 +3292,161 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number, reaso
   })()
 }
 
+// --- Kimaradas-riasztas (SCHEDBLOCKED1015) -------------
+//
+// A kartya elso fele azt javitotta, hogy a kvota-blokkolt kor tobbe ne 'done'
+// legyen, hanem 'blocked'. Ettol a konyveles lett helyes, de
+// SENKI NEM TUDOTT ROLA: a 'blocked' ag csak WARN-t irt a naploba. Merve
+// 2026-10-10 es 10-14 kozott: 133 kor futott bele a heti kvota-korlatba, 2874
+// konzerv elutasitassal, harom napon NULLA valodi fordulot, es a gazda ebbol
+// semmit nem kapott.
+//
+// MIERT NEM KORONKENT RIASZTUNK. Egy kvota-korlat egyszerre MINDEN feladatot
+// elvisz, orakra vagy napokra. A koronkenti riasztas igy nem jelzes, hanem
+// aramlas: a fenti ablakban 133 uzenet ment volna ki. Ezert a riasztas a
+// KIMARADASI IDOSZAKRA szol, nem a korre: egy uzenet a szakasz elejen, egy
+// emlekezteto hatoran kent, es egy a vegen, amikor ujra fut valodi kor.
+//
+// ES EZ A HELY, AHOL A HEARTBEAT NEM KIVETEL. A task-timeout riasztas
+// szandekosan kihagyja a heartbeatet, mert az onjavito: a kovetkezo kor percek
+// mulva jon. Egy kvota-blokkolt heartbeat NEM onjavito -- a kovetkezo kor
+// ugyanabba a falba megy. Pont a memoria-heartbeat volt az, amelyik negy napig
+// nemán kimaradt.
+
+export interface BlockedSpellState {
+  /** Az elso blokkolt kor ebben a szakaszban. null = nincs nyitott szakasz. */
+  firstAt: number | null
+  /** Hany blokkolt kor volt a szakasz kezdete ota. */
+  count: number
+  /** Feladatnev -> hany kor maradt ki belole ebben a szakaszban. */
+  tasks: Record<string, number>
+  /** Mikor ment ki utoljara riasztas errol a szakaszrol. */
+  lastAlertAt: number | null
+}
+
+export function emptyBlockedSpell(): BlockedSpellState {
+  return { firstAt: null, count: 0, tasks: {}, lastAlertAt: null }
+}
+
+/**
+ * Hatoránként egy emlekezteto. Rovidebb ablak egy tobbnapos kvota-korlatnal
+ * ujra aramlast csinalna; hosszabbnal a gazda egy egesz napra elfelejtene,
+ * hogy a flotta all.
+ */
+export const BLOCKED_ALERT_REMINDER_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Pure: menjen-e riasztas errol a blokkolt korrol?
+ * 'first'    -- a szakasz elso blokkolt kore (meg nem ment semmi).
+ * 'reminder' -- a szakasz tart, es a legutobbi riasztas ota eltelt az ablak.
+ * 'silent'   -- a szakaszrol mar szoltunk, es az ablak meg nem telt le.
+ */
+export function decideBlockedAlert(
+  state: BlockedSpellState,
+  nowMs: number,
+  reminderMs: number = BLOCKED_ALERT_REMINDER_MS,
+): 'first' | 'reminder' | 'silent' {
+  if (state.lastAlertAt == null) return 'first'
+  return nowMs - state.lastAlertAt >= reminderMs ? 'reminder' : 'silent'
+}
+
+/**
+ * Pure: a sikeres kor zarjon-e le egy kimaradasi szakaszt uzenettel?
+ * Csak akkor, ha volt szakasz ES szoltunk rola -- kulonben a "vege" uzenet
+ * olyasmirol szamolna be, amirol a gazda sosem hallott.
+ */
+export function shouldAnnounceBlockedRecovery(state: BlockedSpellState): boolean {
+  return state.firstAt != null && state.lastAlertAt != null
+}
+
+/** Pure: a riasztas szovegebe kerulo feladat-lista, a legtobbet kimarado elol. */
+export function describeBlockedTasks(tasks: Record<string, number>, max: number = 5): string {
+  const sorted = Object.entries(tasks).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const nevek = sorted.slice(0, max).map(([n, c]) => (c > 1 ? `${n} (${c}x)` : n))
+  const tobb = sorted.length - nevek.length
+  return tobb > 0 ? `${nevek.join(', ')} es meg ${tobb} feladat` : nevek.join(', ')
+}
+
+let blockedSpell: BlockedSpellState = emptyBlockedSpell()
+
+/** Teszt-horgony: a modul-szintu allapot olvasasa es nullazasa. */
+export function readBlockedSpell(): BlockedSpellState {
+  return { ...blockedSpell, tasks: { ...blockedSpell.tasks } }
+}
+export function resetBlockedSpell(): void {
+  blockedSpell = emptyBlockedSpell()
+}
+
+function sendBlockedSpellMessage(text: string, kind: string, fields: Record<string, unknown>): void {
+  const token = resolveSchedulerAlertToken()
+  if (!token) {
+    logger.warn({ ...fields, provider: CHANNEL_PROVIDER }, `${kind} suppressed: no channel bot token (config error)`)
+    return
+  }
+  const ownerChat = resolveSchedulerOwnerChat()
+  if (!ownerChat) {
+    logger.warn({ ...fields, provider: CHANNEL_PROVIDER }, `${kind} suppressed: no owner chat`)
+    return
+  }
+  ;(async () => {
+    try {
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info({ ...fields, provider: CHANNEL_PROVIDER }, `${kind} sent`)
+    } catch (err) {
+      logger.warn({ err, ...fields }, `${kind} delivery failed`)
+    }
+  })()
+}
+
+/**
+ * Egy kor a CLI sajat elutasitasat kapta (kvota-korlat, API-hiba): a munkaja
+ * nem futott le. Konyveles mar van ('blocked'); ez az ertesites.
+ */
+export function noteBlockedRun(taskName: string, agentName: string, nowMs: number): void {
+  if (blockedSpell.firstAt == null) blockedSpell.firstAt = nowMs
+  blockedSpell.count += 1
+  blockedSpell.tasks[taskName] = (blockedSpell.tasks[taskName] ?? 0) + 1
+
+  const dontes = decideBlockedAlert(blockedSpell, nowMs)
+  if (dontes === 'silent') return
+
+  const ora = Math.max(1, Math.round((nowMs - (blockedSpell.firstAt ?? nowMs)) / 60000))
+  const text = dontes === 'first'
+    ? [
+        `[${BOT_NAME} scheduler] KIMARADT KÖR: a(z) "${taskName}" promptjára a CLI saját elutasítása jött (kvóta-korlát vagy API-hiba), tehát a kör MUNKÁJA nem futott le.`,
+        'Ez nem kézbesítési hiba: az üzenet megérkezett, a kapacitás hiányzott. Újraküldés nem történik, mert ugyanabba a falba menne.',
+        'Amíg ez tart, MINDEN ütemezett kör kimarad, a heartbeatek is. A következő üzenetet akkor kapod, ha hat óra múlva is tart, vagy ha újra fut egy valódi kör.',
+      ].join('\n')
+    : [
+        `[${BOT_NAME} scheduler] A KIMARADÁS TART: ${ora} perce, ${blockedSpell.count} kör maradt ki.`,
+        `Érintett feladatok: ${describeBlockedTasks(blockedSpell.tasks)}.`,
+        'Minden kör a CLI saját elutasítását kapja (kvóta-korlát vagy API-hiba). A munka nem fut le, és újraküldés nincs.',
+      ].join('\n')
+  blockedSpell.lastAlertAt = nowMs
+  sendBlockedSpellMessage(text, 'blocked-spell alert', {
+    task: taskName, agent: agentName, kind: dontes, count: blockedSpell.count,
+  })
+}
+
+/**
+ * Egy kor VALODI fordulot futott: ha volt nyitott kimaradasi szakasz, amirol
+ * szoltunk, zarjuk le egy uzenettel. A csendes szakasz csendben zarul.
+ */
+export function noteSuccessfulRun(taskName: string, nowMs: number): void {
+  if (blockedSpell.firstAt == null) return
+  const bejelent = shouldAnnounceBlockedRecovery(blockedSpell)
+  const { count, tasks, firstAt } = blockedSpell
+  blockedSpell = emptyBlockedSpell()
+  if (!bejelent) return
+  const perc = Math.max(1, Math.round((nowMs - (firstAt ?? nowMs)) / 60000))
+  const text = [
+    `[${BOT_NAME} scheduler] A KIMARADÁS VÉGE: a(z) "${taskName}" ismét valódi fordulót futott.`,
+    `A szakasz ${perc} percig tartott, ${count} kör maradt ki: ${describeBlockedTasks(tasks)}.`,
+    'A kimaradt körök NEM futnak le utólag: az alkalom elmúlt, és ezt a task_runs sorai "blocked" kimenetellel őrzik.',
+  ].join('\n')
+  sendBlockedSpellMessage(text, 'blocked-spell recovery', { task: taskName, count })
+}
+
 // Tick interval for the schedule runner. 15 s gives 4x faster inter-agent
 // message delivery and scheduled-task triggering; each tick is a cheap
 // SQLite SELECT so the load is negligible.
@@ -3435,7 +3600,29 @@ export function startScheduleRunner(): NodeJS.Timeout {
       if (!entry.sawTurn) {
         const probed = probeTurnEvidence(entry, state)
         lastMtimeSeen = probed.mtimeSeen
-        if (probed.sawTurn) entry.sawTurn = true
+        if (probed.sawTurn) {
+          // SCHEDHAMISDONE1014: an advanced transcript is necessary evidence,
+          // not sufficient. The quota-blocked session writes its canned
+          // refusal to the same file within half a second, which read as a
+          // started turn and closed the run as 'done' (2851 such rows,
+          // 2026-10-10..14). So the mtime only opens the question; the rows
+          // answer it -- but ONLY a positive 'synthetic' reading overrides
+          // the old behaviour. 'none' (prompt not found, nothing read yet)
+          // keeps the mtime verdict on purpose: downgrading an unreadable
+          // transcript to "no turn" would re-open the false-lost hole, which
+          // costs a redelivery, while the quota case costs only a wrong row.
+          // Local transcripts only (mtimeSeen set, no host): a busy pane is a
+          // direct observation, and a remote agent's rows are not on this disk.
+          const evidence = entry.host == null && probed.mtimeSeen != null
+            ? classifyTurnEvidence(
+              [...new Set(entry.configDirs.map((c) => projectsDirFor(entry.workingDir, c)))],
+              entry.typedAt ?? entry.injectedAt,
+              entry.sentText,
+            )
+            : 'none'
+          if (evidence === 'synthetic') entry.sawSynthetic = true
+          else entry.sawTurn = true
+        }
       }
       // A queued delivery's stage in the agent's queue directory, read for
       // viaWorksource entries ONLY -- the typed path has no queue item to ask
@@ -3502,7 +3689,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // recorded as 'tail-lost' instead of waiting for a tail that is not
       // coming. Bookkeeping only: never alters the decision below, never
       // throws into the sweep.
-      const closing = decision === 'done' || decision === 'abandoned' || decision === 'lost'
+      const closing = decision === 'done' || decision === 'abandoned' || decision === 'lost' || decision === 'blocked'
       const verdict = checkTaskDeliveryIntegrity(entry, closing)
       if (verdict != null) {
         entry.deliveryVerdict = verdict
@@ -3537,6 +3724,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
         if (decision === 'done') {
           lostRedeliveryCounts.delete(`${entry.taskName}@${entry.agentName}`)
           settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now, entry.host != null, worksourceStage === 'done')
+          // A real turn ran, so any open blocked spell is over. 'abandoned' is
+          // deliberately not here: it never saw a turn, so it proves nothing
+          // about capacity being back.
+          try { noteSuccessfulRun(entry.taskName, now) } catch (err) {
+            logger.warn({ err, task: entry.taskName }, 'blocked-spell recovery notice failed (non-fatal)')
+          }
         }
         // The one moment the system knows how the run ended. Before 2026-08-26
         // this branch only deleted the map entry, so the knowledge died here and
@@ -3580,6 +3773,36 @@ export function startScheduleRunner(): NodeJS.Timeout {
           { task: entry.taskName, agent: entry.agentName, session: entry.session, elapsedMs: now - entry.injectedAt, entered: res.ran ? res.value : false },
           'Scheduled prompt parked in an overfull input box -- pressed Enter instead of recording lost',
         )
+      } else if (decision === 'blocked') {
+        // The prompt arrived at an awake session that answered it with the
+        // CLI's canned refusal -- quota limit, API error -- so the task's work
+        // never ran. Three things this branch deliberately does NOT do:
+        //   - it does not record 'done' (the bug this closes);
+        //   - it does not queue a redelivery: the delivery was fine, the
+        //     capacity was not, and re-typing the same prompt into the same
+        //     blocked session only burns the retry budget;
+        //   - it does not clear the lastRun stamp, so the next tick does not
+        //     re-fire the same occurrence into the same wall.
+        // The occurrence is simply missed, and now SAYS it was missed.
+        if (entry.runId != null) {
+          try { markTaskRunCompleted(entry.runId, 'blocked', now) } catch { /* non-fatal */ }
+        }
+        logger.warn(
+          {
+            task: entry.taskName,
+            agent: entry.agentName,
+            session: entry.session,
+            elapsedMs: now - entry.injectedAt,
+            runId: entry.runId,
+          },
+          'Scheduled prompt answered by the CLI itself (quota limit / API error), not by the model -- run recorded as blocked, not done',
+        )
+        // ...and SAY so. Until SCHEDBLOCKED1015 the branch stopped at the WARN
+        // above, so the occurrence was honestly recorded and silently missed.
+        try { noteBlockedRun(entry.taskName, entry.agentName, now) } catch (err) {
+          logger.warn({ err, task: entry.taskName }, 'blocked-spell alert failed (non-fatal)')
+        }
+        taskInflightMap.delete(key)
       } else if (decision === 'lost') {
         // The prompt was typed into a session that never acted on it. Undo the
         // success bookkeeping: overwrite the run record and drop the lastRun

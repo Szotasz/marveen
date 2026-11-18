@@ -21,6 +21,8 @@
 #   messages and is OMITTED when there is no history (unknown is not "instant").
 #   Both are absent against a server that does not return them, so the line is
 #   then exactly "OK id=<n>" as before.
+#   When the homoglyph checker could not run, the id is followed by " UNCHECKED"
+#   ("OK id=<n> UNCHECKED ..."), on stdout, next to the verdict callers read.
 #   A stopped target: "OK id=<n> ... (queued: target not running,
 #   delivered when it starts)" -- the row is PENDING, do NOT re-send.
 #   At MARVEEN_QUEUE_WARN_AT (default 3) or more waiting, a stderr notice says so
@@ -133,6 +135,7 @@ export -n TOKEN
 # and say so. Contaminated text with the checker PRESENT is refused, which is
 # where the closed direction belongs.
 # Overridable so the suite can measure the missing-checker branch too.
+HG_UNCHECKED=""
 HG="${MARVEEN_HOMOGLYPH_BIN:-$BASE/scripts/lib/homoglyph.py}"
 if [ -r "$HG" ] && command -v python3 >/dev/null 2>&1; then
   # THE CHECKER IS A VERDICT, NOT A FILTER: what goes out is the text the
@@ -155,7 +158,22 @@ if [ -r "$HG" ] && command -v python3 >/dev/null 2>&1; then
        exit 4 ;;
   esac
 else
-  echo "WARN: homoglyph checker not found at $HG -- sending UNCHECKED." >&2
+  # GATEUNCHECKED1015: the WARN below goes to STDERR while the result line goes
+  # to STDOUT, so a caller that reads only the result line -- which is all of
+  # us -- cannot tell a checked send from an unchecked one. The fail-open stays
+  # (see the header: blocking every message on an install without the lib file
+  # would be a new, worse failure), but the UNCHECKED mark now travels on the
+  # SAME stream as the verdict the caller actually reads.
+  # The condition above fires on THREE distinct causes and the old text named
+  # only one, sending the operator the wrong way: say all three.
+  HG_UNCHECKED=" UNCHECKED"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "WARN: python3 not on PATH -- homoglyph checker could not run; sending UNCHECKED." >&2
+  elif [ -e "$HG" ]; then
+    echo "WARN: homoglyph checker at $HG exists but is NOT READABLE -- sending UNCHECKED." >&2
+  else
+    echo "WARN: homoglyph checker not found at $HG -- sending UNCHECKED." >&2
+  fi
 fi
 
 BODY="$(FROM="$FROM" TO="$TO" C="$C" P="$PRIORITY" U="$UNBLOCKS" python3 -c 'import json,os
@@ -206,7 +224,7 @@ EOF
   [ "${MINS:-}" = "-" ] && MINS=""
   if { [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; } && [ -n "$ID" ]; then
     # "OK id=<n>" stays the prefix: callers and docs grep for it.
-    LINE="OK id=$ID"
+    LINE="OK id=$ID$HG_UNCHECKED"
     [ -n "${DEPTH:-}" ] && LINE="$LINE queue=$DEPTH"
     [ -n "${MINS:-}" ] && LINE="$LINE (~${MINS} min)"
     if [ "${QUEUED:-}" = "Q" ]; then

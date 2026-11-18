@@ -326,6 +326,27 @@ function recordReferenceUses(ctx: RouteContext, selfId: number, content: string)
   if (ids.length) recordMemoryUse(ids, 'reference', caller.agent)
 }
 
+/**
+ * Warn-only homoglyph check over the durable fields of one write
+ * (GATEHOMOGLIFSWEEP816, extended by MEMKULCSHOMOGLIF1009).
+ *
+ * Takes the fields the CALLER actually sent, never the row as stored: a
+ * category-only PATCH backfills content from the existing row, and warning
+ * about a character the caller did not write would teach the reader to ignore
+ * the field. Names the field it found, because a keywords-only repair whose
+ * warning says nothing about keywords is a warning about the wrong thing.
+ *
+ * Returns undefined when there is nothing to report, so a clean write stays a
+ * plain 200 with no warning key at all.
+ */
+function homoglyphWarningFor(fields: Array<[string, string | undefined]>): string | undefined {
+  const hits = fields
+    .map(([name, text]) => [name, text ? detectHomoglyphs(String(text)) : []] as const)
+    .filter(([, findings]) => findings.length > 0)
+  if (hits.length === 0) return undefined
+  return hits.map(([name, findings]) => `[${name}] ${formatHomoglyphWarning(findings)}`).join(' ')
+}
+
 export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -424,9 +445,16 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816): the save above already
     // happened -- legitimate Cyrillic/Greek content (quotes, foreign records)
     // must never be lost, so the finding rides the response instead of a 4xx.
-    const homoglyphs = detectHomoglyphs(data.content)
-    if (homoglyphs.length > 0) {
-      const warning = formatHomoglyphWarning(homoglyphs)
+    // BOTH durable fields are checked, not just the body (MEMKULCSHOMOGLIF1009).
+    // In `content` a Cyrillic lookalike is cosmetic: the text still reads, and a
+    // later sweep still finds it. In `keywords` it is FUNCTIONAL -- that column is
+    // the search surface, so the corrupted word silently removes the one query
+    // path that led through it while every other keyword on the row keeps
+    // matching, which is why the loss looks like "no such memory", not like a bug.
+    // Measured 2026-10-09 on one memory row: a clean-spelling search missed the row;
+    // a clean co-keyword from the same row returned it.
+    const warning = homoglyphWarningFor([['content', data.content], ['keywords', data.keywords]])
+    if (warning) {
       logger.warn({ agent: data.agent_id, memoryId: result.id }, `memory saved with ${warning}`)
       json(res, { ok: true, id: result.id, ...replaced, homoglyph_warning: warning })
       return true
@@ -564,7 +592,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         const db2 = getDb()
         const pattern = `%${escapeLike(q)}%`
         const dt = tsRange ? ' AND created_at >= ? AND created_at <= ?' : ''
-        results = db2.prepare(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${searchCategory ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?`)
+        results = db2.prepare(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${searchCategory ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC, id DESC LIMIT ?`)
           .all(agentId, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), pattern, pattern, limit) as Memory[]
       }
     } else if (q) {
@@ -583,7 +611,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         // relaxed=false. A zero that looks like a real answer is the whole
         // cost of this bug, which is why the fix is the parity, not a new mode.
         const dt = tsRange ? ' AND created_at >= ? AND created_at <= ?' : ''
-        results = db2.prepare(`SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${searchCategory ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt} ORDER BY accessed_at DESC LIMIT ?`)
+        results = db2.prepare(`SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${searchCategory ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt} ORDER BY accessed_at DESC, id DESC LIMIT ?`)
           .all(pattern, pattern, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), limit) as Memory[]
       }
     } else if (agentId) {
@@ -880,7 +908,42 @@ Respond ONLY with JSON, nothing else:
     // the write-trace. It is distinct from agent_id, which means "reassign
     // the row to this agent" -- an editor updating someone else's memory
     // attributes the WRITE without changing the OWNER.
-    const { content: rawContent, category, tier, agent_id, keywords, updated_by, prepend, if_version } = JSON.parse(body.toString()) as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string; updated_by?: string; prepend?: string; if_version?: string }
+    let parsedBody: Record<string, unknown>
+    try {
+      const raw = JSON.parse(body.toString()) as unknown
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('not an object')
+      parsedBody = raw as Record<string, unknown>
+    } catch {
+      json(res, { error: 'Invalid JSON: the body must be a JSON object' }, 400)
+      return true
+    }
+    const { content: rawContent, category, tier, agent_id, keywords, updated_by, prepend, if_version } = parsedBody as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string; updated_by?: string; prepend?: string; if_version?: string }
+    // SILENT NO-OP GUARD (measured three times in the fleet:
+    // 2026-10-02, 2026-10-08 and 2026-10-09). The destructuring above drops
+    // every key it does not name, and the partial-update backfill below then
+    // re-writes the row onto ITSELF. A body of {"content_append": "...1000
+    // chars..."} therefore returned HTTP 200 {"ok":true} and wrote nothing --
+    // the caller sees exactly what a success looks like. Only a read-back
+    // catches it, i.e. a RULE caught it, not the system.
+    // The gate is "no field that writes", not "any unknown field": an unknown
+    // key next to a real one still performs the real write, and is reported as
+    // ignored_fields rather than failing a good write. if_version is known but
+    // writes nothing on its own, so it does not count as a write field.
+    const writeFields = ['content', 'prepend', 'category', 'tier', 'agent_id', 'keywords', 'updated_by']
+    const allowedFields = [...writeFields, 'if_version']
+    const bodyKeys = Object.keys(parsedBody)
+    const written = bodyKeys.filter(k => writeFields.includes(k))
+    const ignored = bodyKeys.filter(k => !allowedFields.includes(k))
+    if (written.length === 0) {
+      json(res, {
+        error: ignored.length > 0
+          ? `No recognised field in the body -- nothing was written. Unknown: ${ignored.join(', ')}. Allowed: ${allowedFields.join(', ')}`
+          : `No field to write in the body -- nothing was written. Allowed: ${allowedFields.join(', ')}`,
+        unknown_fields: ignored,
+        allowed_fields: allowedFields,
+      }, 400)
+      return true
+    }
     // MEMVERSION930. Both checks below read the row and write it inside this one
     // synchronous stretch (better-sqlite3, no await in between), so nothing can
     // interleave: the compare and the write are atomic with respect to every
@@ -976,7 +1039,28 @@ Respond ONLY with JSON, nothing else:
     if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords, updated_by)) {
       const version = memoryVersion(effectiveContent)
       if (effectiveContent !== before.content) recordReferenceUses(ctx, id, effectiveContent)
-      json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch) } : { ok: true, version })
+      // The PATCH path carried NO homoglyph check until 2026-10-09, and it is
+      // not the rare path: the fleet's tier moves and keyword repairs all come
+      // through here. Measured that day on a sub-agent's own rows -- 176
+      // of 618 carry an updated_by, and two text-writing PATCHes went through
+      // unchecked, one of them the repair OF a contaminated keyword. A second
+      // slip inside that repair would have been invisible, which is how the
+      // same word got corrupted three times in one day.
+      // `content` is checked as sent (or the `prepend` text), not as backfilled
+      // or merged: a category-only move must not report a character its caller
+      // never wrote.
+      const warning = homoglyphWarningFor([['content', rawContent ?? prepend], ['keywords', keywords]])
+      if (warning) logger.warn({ agent: updated_by || agent_id, memoryId: id }, `memory updated with ${warning}`)
+      // A body that wrote something, but also carried keys this route drops,
+      // says so: the dropped keys are what the caller believed it saved.
+      // The clean body keeps the existing { ok, version } shape.
+      json(res, {
+        ok: true,
+        version,
+        ...(ignored.length > 0 ? { ignored_fields: ignored } : {}),
+        ...(mismatch ? { owner_mismatch: ownerMismatchPayload(id, mismatch) } : {}),
+        ...(warning ? { homoglyph_warning: warning } : {}),
+      })
       return true
     }
     json(res, { error: 'Memory not found' }, 404)

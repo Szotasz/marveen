@@ -60,7 +60,7 @@ d=json.load(sys.stdin)
 print(f\"Beakadás: vizsgált={d['examined']}, találat={len(d['stuck'])}\" + ('' if d['examined'] else ' (nem tudott mérni)'))
 now=int(time.time())
 for c in sorted(d['stuck'], key=lambda c: -c['last_activity']):
-    print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', round((now-c['last_activity'])/3600.0,1), 'h |', c['title'])
+    print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', round((now-c['last_activity'])/3600.0,1), 'h tetlen | kor', c.get('age_days','?'), 'nap |', c.get('stuck_reason','idle'), '|', c['title'])
 w=d['waiting']
 print(f\"Várakozó: {w['examined']}, határidőn túl: {len(w['overdue'])}, határidő nélkül: {w['without_deadline']}\")
 for c in w['overdue']:
@@ -68,6 +68,13 @@ for c in w['overdue']:
 "
    ```
    Munka-nyom csak a felelős saját, nem gépi kommentje. Tömeges vagy gépi kommentet `"automated": true`-val írj (POST `/api/kanban/<id>/comments`). A `waiting` nem tétlenség: a határidőn túliakat a tulajdonosnak jelezd, ne pingeld.
+   **AZ AUDIT SAJAT KOMMENTJE IS GEPI IRAS: `"automated": true` kotelezo rajta.**
+   Merve egy kartyan, harom egymast koveto korben: a beakadas-atmento komment jeloletlenul ment ki,
+   a felelos neveben, tehat a detektor MUNKA-NYOMKENT olvasta. A kartya minden korben frissnek latszott,
+   mikozben a valos kora 7,0 naprol 9,6-ra nott. A jeloletlen atmentes magat a jelet torli el.
+   A `stuck` sorok `age_days`-t (valos kor, `created_at`-bol) is adnak az `idle_days` mellett, es a
+   `max_age_days=<nap>` egy MASODIK kuszobot kapcsol be a valos korra (`stuck_reason` mondja meg, melyik
+   szolalt meg). Alapbol ki van kapcsolva: a bekapcsolas MERT dontes, tablankent kulon.
 
 4. **Beakadt task -> ping**: minden beakadt kártyához küldj inter-agent message-t az assignee-nek (kivéve {{MAIN_AGENT_ID}}-nek és üres assignee-nek):
    ```

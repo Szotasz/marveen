@@ -37,11 +37,18 @@ protection everyone has to remember to reach for is not a protection.
 """
 import os
 import sys
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mixed_script import char_script, mixed_script_words  # noqa: E402
 
 
+# mask() AND names() ARE A CONTRACT, NOT PRIVATE HELPERS (2026-10-10). A second
+# gate -- a sub-agent's own gate, the one guarding
+# OUTGOING draft text (it lives in that agent's folder, NOT under scripts/) --
+# imports both so that the fleet has ONE report format instead of two that drift.
+# Renaming or changing their output changes that gate's report too, so change
+# them together, and keep the verdict where it belongs: in the exit code.
 def mask(word):
     """The word with every non-Latin letter replaced by `?`.
 
@@ -53,12 +60,33 @@ def mask(word):
                    for c in word)
 
 
+def names(word):
+    """Every masked letter in the word, named -- not only the first one.
+
+    Measured 2026-10-10 on a word carrying THREE Cyrillic letters: the report
+    named only the first (U+0430). The mask already showed all three as `?`,
+    but a reader fixes what the NAME points at, so one letter got replaced, the
+    gate fired again, and the second failure looked exactly like the first.
+    The set named here is the set mask() hides, so the `?` count and this list
+    always agree.
+    """
+    out = []
+    for i, c in enumerate(word, 1):
+        if char_script(c) not in ("LATIN", "UNKNOWN"):
+            try:
+                n = unicodedata.name(c)
+            except ValueError:
+                n = "UNKNOWN"
+            out.append(f"#{i} {n} (U+{ord(c):04X})")
+    return ", ".join(out)
+
+
 def main():
     t = sys.stdin.read()
     bad = mixed_script_words(t)
     if bad:
-        for word, _ch, name in bad[:10]:
-            sys.stderr.write(f"  {mask(word)}  <- {name}\n")
+        for word, _ch, _name in bad[:10]:
+            sys.stderr.write(f"  {mask(word)}  <- {names(word)}\n")
         if len(bad) > 10:
             sys.stderr.write(f"  ... and {len(bad) - 10} more\n")
         sys.stderr.write(
