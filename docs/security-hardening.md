@@ -412,6 +412,17 @@ next restart rather than immediately.
 
 This is a deny list, not a sandbox.
 
+- **The approval bot (`APPROVAL_BOT_ENABLED`, `docs/jovahagyo-bot.md`): the token is the residual.** The
+  owner a press must come from is the account paired from the dashboard with the owner's session, kept in
+  the server's database. It is never `access.json` or `.env`, which an agent's OS user can write. A token
+  holder could poll the bot and send the owner's one-time code first, so the code only proposes an account:
+  the owner sees that account (name and Telegram id) in the dashboard session and confirms it before it is
+  stored. But whoever holds the token can edit the bot's messages, including after the
+  server rewrote one for the confirm step. So the text next to "Megerősítem" is only as trustworthy as the
+  token. The two-step confirm narrows that window; it does not close it. The read-deny on
+  `store/.approval-bot-token` and keeping `api.telegram.org` off sub-agent egress lists narrow it further.
+  Neither is an isolation boundary.
+
 - **The localhost exception is why only `https://` is denied for `curl`.** The
   rule language has no negation and `deny` always beats `allow`, so "any
   `http://` host except localhost" cannot be expressed. A `*http://*` rule would

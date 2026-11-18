@@ -16,20 +16,28 @@ Telegramtól, TLS-en, közvetlenül a szerver folyamatába jön, és a nyomó az
 ## Beüzemelés (a gazda teendője)
 
 1. A BotFather-nél új bot (`/newbot`), például "Marveen jóváhagyás". A tokent ne küldd el senkinek, chatben sem.
-2. Az új botnak írj egy `/start` üzenetet a saját Telegramodról. Enélkül a bot nem írhat neked; ilyenkor a
-   kérés a megszokott módon, a fő boton megy ki, gomb nélkül.
 3. A tokent írd a `store/.approval-bot-token` fájlba (egyetlen sor), és állítsd a jogot 0600-ra:
    `chmod 600 store/.approval-bot-token`.
 4. A dashboard Beállítások oldalán kapcsold be a "Jóváhagyás Telegram-gombbal" kapcsolót
    (`APPROVAL_BOT_ENABLED`), és indítsd újra a dashboardot.
-5. Próba: egy sub-ágens nyisson egy kérést. Az új bottól jön egy üzenet két gombbal.
+5. Párosítás (bejelentkezve, a dashboardon): `POST /api/approvals/bot/pairing-code` egy egyszer használható
+   kódot ad, 10 percig érvényes. Küldd el az új botnak a saját Telegramodról, privát chatben:
+   `/start <kód>`. Utána a dashboard (Jóváhagyások, bejelentkezve) megmutatja, MELYIK fiók küldte a kódot
+   (név és Telegram-azonosító): ha a tiéd, erősítsd meg. Csak ekkor tárolja a szerver a SAJÁT
+   adatbázisában a fiókot és a chatet, és ezután csak ezt fogadja el. Ha nem a te fiókod áll ott, ne
+   erősítsd meg: valaki más küldte el előbb a kódot (például a bot tokenjével). Új kóddal újrapárosítható.
+   Párosítás nélkül a kérés a megszokott módon, a fő boton megy ki, gomb nélkül.
+   Az API: `POST /api/approvals/bot/pairing-code`, `GET /api/approvals/bot/pairing`,
+   `POST /api/approvals/bot/pairing/confirm`.
+6. Próba: egy sub-ágens nyisson egy kérést. Az új bottól jön egy üzenet két gombbal.
 
 Az aláíró kulcs (`store/.approval-bot-key`) az első indításkor magától jön létre, 0600-as joggal.
 
 ## Mit ellenőriz a szerver minden gombnyomásnál
 
-1. A nyomó rajta van a fő csatorna `allowFrom` listáján, a saját privát chatjében nyom, és ez az a chat,
-   ahová a szerver a kérdést küldte.
+1. A nyomó a párosított fiók, a párosított privát chatben nyom, és ez az a chat, ahová a szerver a kérdést
+   küldte. A fő csatorna `access.json`-ja és az `ALLOWED_CHAT_ID` ebben nem számít: azokat az ágensek
+   gépi felhasználója is írhatja.
 2. Az az üzenet, amit a szerver ehhez a kéréshez küldött. Egy ágens a bot tokenjével küldhet üzenetet
    gombokkal, de azok a gombok nem csinálnak semmit.
 3. A gomb adatának aláírása (HMAC) egyezik.
@@ -44,8 +52,13 @@ eldöntötték vagy lejárt, a gomb ezt írja ki, és nem változtat semmit.
 ## Ami megmarad (tudva)
 
 - A bot tokenje a lemezen van. Aki el tudja olvasni, üzenetet küldhet a nevében és átírhatja az üzeneteit,
-  de gombot nyomni a gazda nevében nem tud. Az átírást a két lépéses megerősítés kezeli.
+  de gombot nyomni a gazda nevében nem tud. MEGMARADÓ KOCKÁZAT: a token birtokosa az üzenetet a szerver
+  újraírása UTÁN is átírhatja, tehát a "Megerősítem" melletti szöveg csak annyira megbízható, mint a token.
+  A két lépés ezt az ablakot szűkíti, de nem zárja be. Ha a token kiszivárgott: új tokent kérj a
+  BotFathertől, és párosíts újra.
 - Védekezés a tokennel való visszaélés ellen: az `api.telegram.org` ne kerüljön egyetlen sub-ágens
   egress-listájára sem. A sandboxolt ágensek (Bash sandbox) eleve nem érik el. A token és a kulcs fájlját
   a self-pace kapu védett fájljai közé vettük, így a sub-ágensek Write/Edit eszközzel nem írhatják.
+- A párosító kódot bárki "elégetheti", aki ismeri a bot nevét: öt rossz `/start` után a kód érvénytelen.
+  Hozzáférést ez nem ad, csak új kódot kell kérni.
 - Csak Telegramon. Discordon, Slacken a jóváhagyás a dashboardon marad.

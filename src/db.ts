@@ -1827,6 +1827,17 @@ export function initDatabase(dbPathOverride?: string): void {
       confirm_at INTEGER
     )
   `)
+  // #2160 review 1: the one owner the approval bot answers. Paired from the dashboard with the owner's session (a
+  // one-time code the owner sends to the bot as /start <code>), so the approver never comes from a file an agent's
+  // OS user can write (access.json, .env). One row at most.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_bot_pairing (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      from_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      paired_at INTEGER NOT NULL
+    )
+  `)
   // EMAILKAPU901 PR2: content-hash anchor + one-shot consumption. content_hash
   // pins an approval to the EXACT letter (sha256 over to+cc+subject+body,
   // computed by scripts/hooks/email-approval-gate.py); consumed_at is flipped
@@ -8656,6 +8667,17 @@ export function recordApprovalBotMessage(approvalId: string, chatId: string, mes
 
 export function getApprovalBotMessage(approvalId: string): ApprovalBotMessage | undefined {
   return db.prepare('SELECT * FROM approval_bot_messages WHERE approval_id = ?').get(approvalId) as ApprovalBotMessage | undefined
+}
+
+export interface ApprovalBotPairing { from_id: string; chat_id: string; paired_at: number }
+
+export function getApprovalBotPairing(): ApprovalBotPairing | undefined {
+  return db.prepare('SELECT from_id, chat_id, paired_at FROM approval_bot_pairing WHERE id = 1').get() as ApprovalBotPairing | undefined
+}
+
+/** Replaces the pairing: a new pairing is the owner's decision (it takes a fresh code from the owner's session). */
+export function setApprovalBotPairing(fromId: string, chatId: string, now = Math.floor(Date.now() / 1000)): void {
+  db.prepare('INSERT OR REPLACE INTO approval_bot_pairing (id, from_id, chat_id, paired_at) VALUES (1, ?, ?, ?)').run(fromId, chatId, now)
 }
 
 export function setApprovalBotConfirmAt(approvalId: string, confirmAt: number | null): void {
