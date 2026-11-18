@@ -363,6 +363,44 @@ def main():
         code, out, err = run_hook(discord_name, rules_file=active)
         check("discord reply with a bad name blocks (exit 2)", code, 2)
 
+        # --- the Slack reply path is audited too -----------------------------
+        # Same audit as Discord: Slack mrkdwn has no MarkdownV2 escaping (a
+        # backslash is a literal the author typed), and the Telegram-only
+        # code-block rule must not fire. Before the slack branch existed in the
+        # dispatch, slack_bad below exited 0 (nothing audited).
+        slack_bad = {"tool_name": "mcp__plugin_slack-channel_slack__reply",
+                     "tool_input": {"chat_id": "D0TEST", "text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(slack_bad, rules_file=active)
+        check("slack reply with em dash blocks (exit 2)", code, 2)
+        check_true("slack block names the SLACK channel, not Telegram",
+                   "(Slack)" in err and "(Telegram)" not in err, err)
+
+        slack_ok = {"tool_name": "mcp__plugin_slack-channel_slack__reply",
+                    "tool_input": {"chat_id": "D0TEST", "text": CLEAN_HU_OK}}
+        code, out, err = run_hook(slack_ok, rules_file=active)
+        check("slack reply clean passes (exit 0)", code, 0)
+
+        slack_edit = {"tool_name": "mcp__plugin_slack-channel_slack__edit_message",
+                      "tool_input": {"chat_id": "D0TEST", "message_id": "1", "text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(slack_edit, rules_file=active)
+        check("slack edit_message with em dash blocks (exit 2)", code, 2)
+
+        slack_fence = {"tool_name": "mcp__plugin_slack-channel_slack__reply",
+                       "tool_input": {"chat_id": "D0TEST", "text": fenced}}
+        code, out, err = run_hook(slack_fence, rules_file=active)
+        check("slack codeblock without markdownv2 passes (exit 0)", code, 0)
+
+        slack_name = {"tool_name": "mcp__plugin_slack-channel_slack__reply",
+                      "tool_input": {"chat_id": "D0TEST", "text": CLEAN_HU_OK + " Üdvözlettel, Teszt Elek"}}
+        code, out, err = run_hook(slack_name, rules_file=active)
+        check("slack reply with a bad name blocks (exit 2)", code, 2)
+
+        # Control: a Slack READ tool is not a send path; the same text passes.
+        slack_read = {"tool_name": "mcp__plugin_slack-channel_slack__fetch_messages",
+                      "tool_input": {"channel": "D0TEST", "text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(slack_read, rules_file=active)
+        check("slack fetch_messages is not audited (exit 0)", code, 0)
+
         # --- COPYGATEENT914: HTML-ENTITAS NEM KERULHETI MEG A GONDOLATJEL-TILTAST ---
         # Marveen merese 2026-09-14, egy VALODI vevo-levelen: a hook a TAGEKET
         # szedte ki, de az entitast sehol nem dekodolta, igy a `&mdash;` atment
