@@ -265,7 +265,7 @@ export type RetireRotationTaskResult = 'none' | 'removed' | 'disabled' | 'kept-d
 function retiredTaskNotice(lang: 'hu' | 'en'): string {
   return lang === 'en'
     ? `The Claude plan rotation now runs in the dashboard itself, with no agent turn. Your edited "${ROTATION_HEARTBEAT_TASK}" scheduled task is now switched off (not deleted), so it cannot switch plans a second time. Delete it on the Schedules page when you no longer need your changes.`
-    : `A Claude-plan rotáció mostantól magában a vezérlőpultban fut, ügynök-kör nélkül. A módosított "${ROTATION_HEARTBEAT_TASK}" ütemezésed ki van kapcsolva (nem töröltük), így nem válthat plant másodszor is. Ha már nincs szükséged a módosításaidra, töröld az Ütemezések között.`
+    : `A Claude-plan rotáció mostantól közvetlenül a dashboardon fut, ügynök-kör nélkül. A módosított "${ROTATION_HEARTBEAT_TASK}" ütemezésed ki van kapcsolva (nem töröltük), így nem válthat plant másodszor is. Ha már nincs szükséged a módosításaidra, töröld az Ütemezések között.`
 }
 
 /**
