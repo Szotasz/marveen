@@ -896,12 +896,13 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     // SKILLAPPROVALOFF1101 (owner, Slack 2026-11-01 22:35): switchable, OFF by default. The scan, the hash binding and
     // an audit line run in both positions; only the hold for the owner's approval is what the switch turns on.
-    // SKILLQUARANTINEDEF1109 (owner, #döntések Rec0CGYNBMRL0 = A, 2026-11-16): the default is now ON ("Jóváhagyásra
-    // várjon"): a new shared skill proposal waits for the owner's approval unless the owner turns the switch off.
+    // SKILLQUARANTINEDEF1109 (owner, Slack 2026-11-18, "Vevőknél is KI"; overrides Rec0CGYNBMRL0 = A of 2026-11-16):
+    // the default is OFF again, on customer installs too, so the skill factory is not slowed down. The scan, the hash
+    // binding, the audit line and the hold of a strong-shape finding run with the switch off as well.
     key: 'SKILL_QUARANTINE',
     type: 'boolean',
-    default: '1',
-    description: 'Skill-karantén. Bekapcsolva (alapértelmezés) minden új vagy javított skill (javaslat, generálás, import) a gazda jóváhagyásáig karanténban vár. Kikapcsolva azonnal élesedik; a scan, a hash-kötés és az auditsor ilyenkor is lefut, és ha a scan nem tudja a skillt teljesen megmutatni (például mert a találati lista elérte a felső korlátját), vagy erős mintát talál benne (hamisított címke vagy fejléc, utasítás-felülírás, láthatatlan Unicode, letöltött kód futtatása, hosszú kódolt blob), az nem élesedik, hanem jóváhagyásra vár. Kikapcsolni (lazítás) csak a dashboard-belépéssel lehet.',
+    default: '0',
+    description: 'Skill-karantén. Bekapcsolva minden új vagy javított skill (javaslat, generálás, import) a gazda jóváhagyásáig karanténban vár. Kikapcsolva (alapértelmezés) azonnal élesedik; a scan, a hash-kötés és az auditsor ilyenkor is lefut, és ha a scan nem tudja a skillt teljesen megmutatni (például mert a találati lista elérte a felső korlátját), vagy erős mintát talál benne (hamisított címke vagy fejléc, utasítás-felülírás, láthatatlan Unicode, letöltött kód futtatása, hosszú kódolt blob), az nem élesedik, hanem jóváhagyásra vár. Kikapcsolni (lazítás) csak a dashboard-belépéssel lehet.',
     module: 'audit',
     secret: false,
     requiresRestart: false,
