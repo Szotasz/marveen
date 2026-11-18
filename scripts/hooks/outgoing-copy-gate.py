@@ -335,7 +335,8 @@ def _code_string_sends(code: str, lang=None) -> bool:
     return bool(_CODE_EXECISH.search(masked) and _CODE_SENDER_LIT.search(code))
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
-_RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
+# CURLMAILAPI1118: the Resend host is read by _curl_mail_api_target with the other mail API hosts (the old token
+# rule _RESEND_TARGET also looked at option values, so a referer naming Resend stopped a call to localhost).
 # CURLMAILAPI1118: a curl/wget/httpie URL on an HTTP mail API host is a send target when its path carries that
 # provider's send shape (_web_mail_sends: Gmail messages/drafts send, Graph sendMail, SendGrid mail/send, Mailgun
 # messages, Postmark email). Before this, only api.resend.com was known on the command line, and
@@ -373,14 +374,15 @@ _CURL_VALUE_LONG = {
 }
 _CURL_VALUE_SHORT = {"curl": set("oHdFuAexTKbcwDmrCEXQ"), "wget": set("OoaUeiBPtTwQ")}
 _HAS_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+-]*:/")
-# a positional token that looks like a URL; one carrying a shell expansion ($VAR, `..`) counts too, because it is
-# most likely the URL itself
-_URLISH = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+-]*:/|[^\s/=]+\.[^\s/=]+(?:/|:|$))|[$`]")
+# A positional token that is no URL candidate: httpie's method word and its request items (key=value, key:=json,
+# Header:value). Every other positional token may be the URL (a schemeless localhost:3420, $URL), and then the option
+# values are data: a call to a host that sends no mail must never stop on a send URL written in a referer or a body.
+_NOT_URL_POSITIONAL = re.compile(r"^(?:[A-Z]+|[^\s/:=]+(?::=|==|=|@).*|[^\s/:=]+:(?![0-9]*(?:/|$)).*)$")
 
 
 def _curl_url_candidates(prog: str, rest):
     """(token, is_option_value) for every token of a curl/wget/httpie/xh call that can carry a URL. An option's value
-    is kept, but marked: there only a URL with a scheme counts, and only when no positional URL exists (below)."""
+    is kept, but marked: there only a URL with a scheme counts, and only when no positional token can be the URL (below)."""
     longs = _CURL_VALUE_LONG.get(prog.lower(), set())
     shorts = _CURL_VALUE_SHORT.get(prog.lower(), set())
     out, i, n = [], 0, len(rest)
@@ -404,10 +406,10 @@ def _curl_url_candidates(prog: str, rest):
             out.append((rest[i + 1], True))
             i += 1
         i += 1
-    # An option value counts only when no positional token looks like a URL: then this list may have taken a
-    # flag for a value-taking one and swallowed the URL. With a positional URL in place the values are data
+    # An option value counts only when no positional token can be the URL: then this list may have taken a flag
+    # for a value-taking one and swallowed the URL. With a positional URL candidate in place the values are data
     # (a referer, a body, a --write-out format), so a send URL written there is no target.
-    if any(not v and _URLISH.match(t) for t, v in out):
+    if any(not v and not _NOT_URL_POSITIONAL.match(t) for t, v in out):
         out = [(t, v) for t, v in out if not v]
     return out
 
@@ -1347,8 +1349,7 @@ def _head_is_send(toks, depth: int) -> bool:
     # RESENDGATE826: csak a TENYLEGES kuldes (POST/PUT/... vagy torzs) akad
     # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
     # tovabbra is fail-closed.
-    if _CURLISH.match(prog) and (any(_RESEND_TARGET.match(t) for t in rest)
-                                 or any(_curl_mail_api_target(t, v) for t, v in _curl_url_candidates(prog, rest))):
+    if _CURLISH.match(prog) and any(_curl_mail_api_target(t, v) for t, v in _curl_url_candidates(prog, rest)):
         return _curl_resend_verdict(prog, rest) != "read"
     return False
 

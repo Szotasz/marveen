@@ -2793,6 +2793,36 @@
       "name": "CURLMAILAPI1118 round 4: glob a lekérdező rész után is, a küldő út előtte",
       "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send?x=[1-2]' -d @/tmp/m.json",
       "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: schemeless localhost:3420 with a Gmail send URL as referer",
+      "cmd": "curl -s -X POST localhost:3420/api/x -e https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: 127.0.0.1 with a Gmail send URL in -d",
+      "cmd": "curl -s -X POST http://127.0.0.1:3420/api/x -d 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: [::1] with a JSON array body",
+      "cmd": "curl -s -X POST 'http://[::1]:3420/api/x' -d '[1,2]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: the dashboard messages API with a Resend URL as referer",
+      "cmd": "curl -s -X POST http://localhost:3420/api/messages -e https://api.resend.com/emails -d @/tmp/m.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: httpie to localhost, header item and a send URL as a value",
+      "cmd": "http POST localhost:3420/api/x Content-Type:application/json note=https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: value fallback: the URL after a flag this list does not know still counts when nothing else can be the URL",
+      "cmd": "curl -s -X POST --unknown-flag https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
     }
   ]
 }

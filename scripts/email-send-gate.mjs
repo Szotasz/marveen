@@ -139,7 +139,7 @@ const NODEISH = /^(node|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
 const CURLISH = /^(curl|wget|http|https|xh|xhs)$/i
-const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
+// CURLMAILAPI1118: the Resend host is read by curlMailApiTarget with the other mail API hosts.
 // RESENDGETTWIN1010: port of the python twin's method verdict (RESENDGATE826,
 // outgoing-copy-gate.py :: _curl_resend_verdict). Until now this copy was
 // method-blind and denied a read-only GET /domains the python copy passed.
@@ -303,7 +303,8 @@ const CURL_VALUE_LONG = {
 }
 const CURL_VALUE_SHORT = { curl: new Set('oHdFuAexTKbcwDmrCEXQ'), wget: new Set('OoaUeiBPtTwQ') }
 const HAS_SCHEME = /^[A-Za-z][A-Za-z0-9+-]*:\//
-const URLISH = /^(?:[A-Za-z][A-Za-z0-9+-]*:\/|[^\s/=]+\.[^\s/=]+(?:\/|:|$))|[$`]/ // a shell expansion is most likely the URL
+// httpie's method word and request items are no URL candidate; any other positional token may be the URL
+const NOT_URL_POSITIONAL = /^(?:[A-Z]+|[^\s/:=]+(?::=|==|=|@).*|[^\s/:=]+:(?![0-9]*(?:\/|$)).*)$/
 // [token, isOptionValue]: an option's value is kept but marked (only a URL with a scheme counts there).
 function curlUrlCandidates(prog, rest) {
   const longs = CURL_VALUE_LONG[prog.toLowerCase()] ?? new Set()
@@ -321,8 +322,8 @@ function curlUrlCandidates(prog, rest) {
     } else out.push([t, false])
     if (takes && i + 1 < rest.length) { out.push([rest[i + 1], true]); i++ }
   }
-  // option values count only when no positional token looks like a URL (see the python twin)
-  if (out.some(([t, v]) => !v && URLISH.test(t))) return out.filter(([, v]) => !v)
+  // option values count only when no positional token can be the URL (see the python twin)
+  if (out.some(([t, v]) => !v && !NOT_URL_POSITIONAL.test(t))) return out.filter(([, v]) => !v)
   return out
 }
 const HEX_ESCAPE = /%([0-9A-Fa-f]{2})/g
@@ -977,7 +978,7 @@ function headIsSend(toks, depth) {
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
   // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
   // read-only GET/HEAD passes; an undecidable method stays fail-closed.
-  if (CURLISH.test(prog) && (rest.some((t) => RESEND_TARGET.test(t)) || curlUrlCandidates(prog, rest).some(([t, v]) => curlMailApiTarget(t, v)))) {
+  if (CURLISH.test(prog) && curlUrlCandidates(prog, rest).some(([t, v]) => curlMailApiTarget(t, v))) {
     return curlResendVerdict(prog, rest) !== 'read'
   }
   return false
