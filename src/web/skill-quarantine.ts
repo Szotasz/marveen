@@ -605,7 +605,9 @@ export function reviewText(buf: Buffer): { text: string; invalidUtf8: number; co
 
 // Invisible to a reader, read by the model: zero-width, bidi controls, the
 // Unicode tag block. Escaped so this source file stays plain ASCII.
-const INVISIBLE_RE = /[​-‏‪-‮⁠-⁤⁦-⁩﻿]|[\u{E0000}-\u{E007F}]/gu
+// U+00AD (soft hyphen) joined from skill-security-auditor's HIDDEN-INSTR rule: it renders
+// as nothing mid-word, so it can split a keyword the patterns below look for.
+const INVISIBLE_RE = /[\u00AD​-‏‪-‮⁠-⁤⁦-⁩﻿]|[\u{E0000}-\u{E007F}]/gu
 
 // The same shapes scripts/hooks/browser-content-notice.py names, plus the
 // install/exec and persistence shapes a skill has no reason to carry.
@@ -623,6 +625,25 @@ export const SKILL_SCAN_PATTERNS: ReadonlyArray<[string, RegExp]> = [
   ['persistence-target', /(settings(\.local)?\.json|scheduled-tasks|crontab\b|LaunchAgents|\.bashrc|\.zshrc|\.profile\b)/i],
   ['install-hook', /"(pre|post)install"\s*:|\bnpm\s+(i|install)\b|\bpip3?\s+install\b|\bbrew\s+install\b/i],
   ['long-encoded-blob', /[A-Za-z0-9+/]{200,}={0,2}/],
+  // SKILLSCANPI1118: the prompt-injection shapes of skill-security-auditor
+  // (alirezarezvani/claude-skills, MIT), the ones the rows above do not already
+  // cover. Its "ignore previous instructions" and "you are now" rows are the
+  // instruction-override and role-reassignment rows here; its "read ~ / /etc /
+  // credentials" row is kept to the .aws part, the rest is credential-target or
+  // fires on every skill that names a home path. Its line-level suppression
+  // comment ("noqa: SEC-AUDITOR", "auditor:ignore") is deliberately NOT taken:
+  // a file under review must not be able to switch its own review off.
+  // Measured before adding: 0 hits on 283 files of this fleet's own skills and
+  // agent folders; on the auditor repo's 495 skills (3400 files) the hits were
+  // security writing that quotes the shapes, which is what a reviewer should see.
+  ['override-directive', /\b(disregard|forget|override)\s+(your|all|any)\s+(instructions|rules|guidelines|constraints|safety)\b/i],
+  ['safety-bypass', /\b(pretend|act\s+as\s+if|imagine)\s+you\s+(have\s+no|don'?t\s+have\s+any)\s+(restrictions|limits|rules|safety)\b|\b(skip|disable|bypass|turn\s+off|ignore)\s+(safety|content|security)\s+(checks?|filters?|restrictions?|rules?)\b/i],
+  ['unrestricted-exec', /\b(execute|run)\s+(any|all|arbitrary)\s+(commands?|code|scripts?)\s+(without|no)\s+(asking|confirmation|restrictions?|limits?)\b/i],
+  ['exfil-instruction', /\b(send|upload|post|transmit|exfiltrate)\s+(the\s+)?(contents?|data|files?|information)\s+(of|from|to)\b/i],
+  ['cloud-credential-target', /(~\/\.aws\b|\.aws\/credentials)/i],
+  ['hidden-html-directive', /<!--\s*(system|instruction|override|ignore|execute|run|sudo|admin)/i],
+  ['excess-permission', /\b(full|unrestricted|complete)\s+(access|control|permissions?)\s+(to|over)\s+(the\s+)?(file\s*system|network|internet|shell|terminal|system)\b/i],
+  ['blanket-approval', /\b(always|automatically)\s+(approve|accept|allow|grant|execute)\s+(all|any|every)\b/i],
 ]
 
 function excerpt(line: string, at: number): string {
