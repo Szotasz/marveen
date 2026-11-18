@@ -30,7 +30,7 @@ import {
   buildSoulPromptEn, buildSkillPromptEn, PRECOMPACT_PROMPT_EN_TPL, fleetBaseRulesEn,
 } from './agent-scaffold-en.js'
 import { FLEET_ROSTER_BEGIN, PACKAGE_SHELL_PREFIX_TEXT, hasPackageManifestFile } from './agent-package/marker.js'
-import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
+import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps, type ExtraHookEntry } from './extra-hook-entries.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -1478,11 +1478,38 @@ export function injectExtraHookEntries(name: string, existing: Record<string, un
           'extra-hooks.json: invalid entries IGNORED (built-in hooks unaffected)')
       }
     }
-    return applyExtraHookEntries(existing, entries)
+    return applyExtraHookEntries(existing, entries.filter((e) => e.scope === 'subagents'))
   } catch (err) {
     logger.error({ err, path }, 'extra-hooks.json: could not be applied, extras IGNORED (built-in hooks unaffected)')
     return false
   }
+}
+
+// The main agent's extras ("scope": "main"): the project-local .claude/settings.local.json, which Claude Code
+// loads for the main session (MAIN_SCOPE_SETTINGS_PATH, the same file the --main-scope egress parser uses). Only
+// this module's own marked groups are replaced; the owner's own keys and hooks keep their bytes. An unreadable
+// file is left alone; a file that held only our entries goes when they go. Returns true if written.
+export function ensureMainScopeExtraHookEntries(path = extraHooksConfigPath(), settingsPath = MAIN_SCOPE_SETTINGS_PATH): boolean {
+  let entries: ExtraHookEntry[]
+  try {
+    entries = loadExtraHookEntries(path, extraHookDeps()).entries.filter((e) => e.scope === 'main')
+  } catch (err) {
+    logger.error({ err, path }, 'extra-hooks.json: main-scope extras could not be read, left as they are')
+    return false
+  }
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false
+  } else if (entries.length === 0) {
+    return false
+  }
+  if (!applyExtraHookEntries(settings, entries)) return false
+  if (settings.hooks && typeof settings.hooks === 'object' && Object.keys(settings.hooks).length === 0) delete settings.hooks
+  if (Object.keys(settings).length === 0) { rmSync(settingsPath, { force: true }); return true }
+  mkdirSync(dirname(settingsPath), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Startup migration twin: brings the extras of an EXISTING sub-agent in line

@@ -101,6 +101,18 @@ export interface ExtraHookEntry {
   matcher?: string
   command: string
   timeout: number
+  /** 'subagents' (default): every sub-agent's settings.json. 'main': the main agent's project-local
+   *  .claude/settings.local.json, behind a guard that is a no-op in any other session. */
+  scope: 'subagents' | 'main'
+}
+
+/**
+ * The guard in front of a main-scope command. A sub-agent session (cwd agents/<name>) loads the project's
+ * .claude/settings.local.json too (measured 2026-11-18 on an install), and there $CLAUDE_PROJECT_DIR is the
+ * agent's own directory: the hook then exits 0 at once, so it neither runs twice nor fails closed on a path.
+ */
+export function mainScopeGuard(projectRoot: string): string {
+  return `[ "$CLAUDE_PROJECT_DIR" = '${projectRoot.replace(/'/g, `'\\''`)}' ] || exit 0;`
 }
 
 export interface ExtraHookLoad {
@@ -137,7 +149,8 @@ function validateEntry(raw: unknown, i: number, deps: ExtraHookDeps, reserved: s
   if (typeof event !== 'string' || !(EXTRA_HOOK_EVENTS as readonly string[]).includes(event)) {
     return `${at}: event must be one of ${EXTRA_HOOK_EVENTS.join(', ')}`
   }
-  if (e.scope !== undefined && e.scope !== 'subagents') return `${at}: scope must be "subagents" (the only scope this version wires)`
+  if (e.scope !== undefined && e.scope !== 'subagents' && e.scope !== 'main') return `${at}: scope must be "subagents" or "main"`
+  const scope: ExtraHookEntry['scope'] = e.scope === 'main' ? 'main' : 'subagents'
   let matcher: string | undefined
   if (e.matcher !== undefined) {
     if (typeof e.matcher !== 'string' || e.matcher.length === 0 || e.matcher.length > MAX_MATCHER) {
@@ -184,9 +197,11 @@ function validateEntry(raw: unknown, i: number, deps: ExtraHookDeps, reserved: s
   const body = e.failClosed
     ? (ext === '.py' ? deps.pythonGateCommand(abs, timeout) : deps.nodeGateCommand(abs, timeout))
     : (ext === '.py' ? `python3 "${abs}"` : `"${deps.nodeBin}" "${abs}"`)
-  const command = `${EXTRA_HOOK_MARK} ${body}`
+  const command = scope === 'main'
+    ? `${EXTRA_HOOK_MARK} ${mainScopeGuard(deps.projectRoot)} ${body}`
+    : `${EXTRA_HOOK_MARK} ${body}`
   if (deps.isUnsafe(command)) return `${at}: script ${script} fails the hook registration guard (volatile tmp path or missing file)`
-  return { event, ...(matcher !== undefined ? { matcher } : {}), command, timeout }
+  return { event, ...(matcher !== undefined ? { matcher } : {}), command, timeout, scope }
 }
 
 /** Pure: validate a parsed config object. */

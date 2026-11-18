@@ -414,7 +414,7 @@ start (so existing agents get it without a respawn).
 | `script` | yes | Path relative to the project root, inside `local-hooks/` (gitignored), `.py`, `.mjs` or `.js`; letters, digits and `_ . / @ + -` only, no `..` |
 | `timeout` | no | Seconds, 1..600, default 10 |
 | `failClosed` | yes | `true`: the same wrapper as the built-in gates (a missing interpreter or any exit other than 0 and 2 = deny, deadline 2 s before the timeout). Allowed on `PreToolUse` only, because on `UserPromptSubmit` a crash would block every prompt. `false`: a plain call, a crash does not block |
-| `scope` | no | Only `"subagents"` (the default); any other value skips the entry |
+| `scope` | no | `"subagents"` (the default): every sub-agent's generated settings. `"main"`: the main agent's project-local `.claude/settings.local.json`, the file the main session loads (the `--main-scope` egress parser uses it too), each command behind `[ "$CLAUDE_PROJECT_DIR" = '<root>' ] \|\| exit 0;`: a sub-agent session loads that file as well, and there the hook does nothing. Only the marked extra entries are replaced; the owner's own keys in the file stay. Any other value skips the entry |
 | `description` | no | Free text, not used by the scaffold |
 
 What an entry can NOT do: replace, remove or reorder a built-in hook (an extra is appended AFTER
