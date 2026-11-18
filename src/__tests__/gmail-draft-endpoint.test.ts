@@ -339,7 +339,8 @@ describe('principal matrix', () => {
     expect(calls).toHaveLength(0)
   })
   it('P5 the auth gate: the path is gated, and a sub-agent token reaches it only when listed', () => {
-    expect(requiresAuth('/api/gmail/draft')).toBe(true)
+    expect(requiresAuth('/api/gmail/draft', 'POST')).toBe(true)
+    expect(requiresAuth('/api/gmail/draft/credentials', 'PUT')).toBe(true)
     const deny = () => agentScopeDenial({ kind: 'token', tokenAgent: 'grafit', agent: 'grafit' }, '/api/gmail/draft', 'POST', 'marveen', () => ({}))
     expect(deny()?.status).toBe(403)
     setOverride('GMAIL_DRAFT_AGENTS', 'grafit')
@@ -387,7 +388,8 @@ describe('owner copy and recipient ledger', () => {
     expect(calls.filter(c => c.url === gd.DRAFTS_URL)).toHaveLength(1)
   })
   it('C3 the real recipient-ledger.mjs loads and fails closed on a missing ledger', async () => {
-    gd._setLedgerLoaderForTest(async () => await import('../../scripts/recipient-ledger.mjs') as any)
+    const ledgerPath = new URL('../../scripts/recipient-ledger.mjs', import.meta.url).href
+    gd._setLedgerLoaderForTest(async () => await import(ledgerPath) as any)
     setOverride('GMAIL_DRAFT_AGENTS', 'grafit')
     const r = await draft(BASE, SUB_TOKEN)
     expect(r.status).toBe(400)
