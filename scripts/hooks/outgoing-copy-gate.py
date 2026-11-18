@@ -204,6 +204,17 @@ _MAIL_API_RULES = (
     (re.compile(r"api\.postmarkapp\.com|['\"]postmark['\"]|\bpostmarker\b", re.I),
      re.compile(r"api\.postmarkapp\.com/email(?:/batch|/withTemplate)?" + _ACTION_END
                 + r"|\.sendEmail(?:Batch|WithTemplate|BatchWithTemplates)?\s*\(|\.emails\.send(?:_batch|_with_template)?\s*\(", re.I)),
+    # MAILCURLSEND1118: Amazon SES: the v2 outbound email endpoints or the v1 query action on a regional email host, or the
+    # SDKs (the node client's send commands, boto3's send_email family on an ses / sesv2 client).
+    (re.compile(r"email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com|['\"]@aws-sdk/client-sesv2?['\"]|\bclient\s*\(\s*['\"]sesv2?['\"]", re.I),
+     re.compile(r"[/]v2[/]email[/]outbound-(?:bulk-)?emails" + _ACTION_END + r"|\bAction=Send(?:Raw|Templated|BulkTemplated)?Email\b"
+                r"|\bSend(?:Raw|Templated|BulkTemplated|Bulk)?EmailCommand\b|\.send_(?:raw_|templated_|bulk_templated_|bulk_)?email\s*\(")),
+    # MAILCURLSEND1118: Mailjet: the send endpoint (v3 or v3.1) on the API host, or the clients' send call.
+    (re.compile(r"api\.mailjet\.com|['\"]node-mailjet['\"]|\bmailjet_rest\b", re.I),
+     re.compile(r"api\.mailjet\.com[/]v3(?:\.1)?[/]send" + _ACTION_END + r"|\.post\s*\(\s*['\"]send['\"]|\.send\.create\s*\(", re.I)),
+    # MAILCURLSEND1118: Brevo (ex Sendinblue): the transactional email endpoint, or the clients' sendTransacEmail call.
+    (re.compile(r"api\.(?:brevo|sendinblue)\.com|['\"]@getbrevo/brevo['\"]|['\"]sib-api-v3-sdk['\"]|\bsib_api_v3_sdk\b|\bbrevo_python\b", re.I),
+     re.compile(r"api\.(?:brevo|sendinblue)\.com[/]v3[/]smtp[/]email" + _ACTION_END + r"|\.(?:sendTransacEmail|send_transac_email)\s*\(", re.I)),
 )
 
 def _mail_api_sends(text: str) -> bool:
@@ -1166,22 +1177,54 @@ def _head_is_send(toks, depth: int) -> bool:
 
 
 # MAILCURLSEND1118: an HTTP mail API send written inline on the command line (curl, wget, httpie, xh) is judged like
-# the same send in a script. A URL word on a mail API host (Gmail: gmail.googleapis.com, or a /gmail/ path on
-# googleapis.com) is judged by that provider's rule in _MAIL_API_RULES: its send endpoint is a send whatever the
-# method, as in a script; a read endpoint on the same host (a message list or get, labels) is not. Cannot tell = send,
-# unless the request is recognisably a read (_curl_resend_verdict: GET or HEAD, no body; every send endpoint here takes
-# a POST with a body): a mail API URL word whose host or path is not literal (a variable or a substitution before its
-# query), or, while the command line carries a mail API host, a URL word that is not literal at all (a word that
-# starts with a variable or a substitution, or a URL whose host or path is one; not the value of a header, data,
-# auth or output option, not a word with a space). A send path with no mail API host in the line is no send, as in a
-# script. The Resend rule above keeps its own method verdict on its host. Stated limit (the class of the code-string
-# rule): a URL the line never shows (a config file, a URL list file) is not seen. Mirrored in email-send-gate.mjs
+# the same send in a script. Each URL word of the client (not an option's value, not a word with a space; `--url=`
+# read) is split into host, path and query; the host is normalised (userinfo and port cut, lower case, trailing dots
+# cut), a `Host:` header naming a mail API host stands for a literal host that is none, and the path is normalised
+# (%-escapes decoded once, empty and `.` segments dropped, `..` resolved).
+# - A literal host of a mail-only API (_MAIL_API_HOSTS) inverts the default: only a known read passes, i.e. a GET or
+#   HEAD without a body (_curl_resend_verdict == "read") on a literal path of that provider's API (its read pattern).
+#   Every other request there is a send: a POST, PUT, PATCH or DELETE on any path (a batch endpoint too), an undecidable
+#   method (httpie, xh, a variable, a config file), a path holding a variable or a substitution, a URL glob ({ or [).
+# - Microsoft Graph is not mail-only (calendar, files, chats): there only its send paths are a send, as in a script.
+# - A host that is not literal (a variable, a substitution) cannot be told: the provider send paths alone decide
+#   (_MAIL_API_HOSTS send pattern on the path after it), and a non-literal URL word while the whole line carries a
+#   mail-only API host counts too; either is a send unless the request is a plain read (GET or HEAD, no body).
+# - A literal host that is no mail API host (localhost, another API, an IP without a Host header) is no send here.
+# The Resend rule above keeps its own method verdict on its host for curl, wget and http. Stated limit (the class of
+# the code-string rule): a URL the line never shows (curl -K, wget -i) is not seen. Mirrored in email-send-gate.mjs
 # (inlineMailApiSends); the `inline` cases of mail-api-send-cases.json bind the two twins.
 _HTTP_CLIENT = re.compile(r"^(?:curl|wget|https?|xhs?)$", re.I)
-_MAIL_API_HOST = re.compile(r"gmail\.googleapis\.com|googleapis\.com(?::\d+)?/(?:upload/)?gmail/|api\.resend\.com"
-                            r"|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com", re.I)
-_MAIL_API_URL = re.compile(r"^(?:[A-Za-z][\w+.-]*://)?(?:[^/@\s]*@)?(?:[^/@\s]*\.)?(?:(?:gmail\.googleapis\.com|api\.resend\.com"
-                           r"|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com)(?![\w.-])|googleapis\.com(?::\d+)?/(?:upload/)?gmail/)", re.I)
+# (provider, host pattern on the normalised host, path prefix a shared host needs, read pattern, send pattern)
+_SEG = r"(?:/[^/]+)"
+_MAIL_API_HOSTS = (
+    ("gmail", re.compile(r"gmail\.googleapis\.com"), None,
+     re.compile(r"^/gmail/v1/users/[^/]+" + _SEG + r"*$"),
+     re.compile(r"/users/[^/]+/(?:messages|drafts)/send$|/batch/gmail(?:/v1)?$")),
+    ("gmail", re.compile(r"(?:www\.)?googleapis\.com"), re.compile(r"^/(?:upload/|batch/)?gmail(?:/|$)"),
+     re.compile(r"^/gmail/v1/users/[^/]+" + _SEG + r"*$"),
+     re.compile(r"/users/[^/]+/(?:messages|drafts)/send$|/batch/gmail(?:/v1)?$")),
+    ("resend", re.compile(r"api\.resend\.com"), None, re.compile(r"^" + _SEG + r"+$"), re.compile(r"/emails(?:/batch)?$")),
+    ("sendgrid", re.compile(r"api\.sendgrid\.com"), None, re.compile(r"^/v3" + _SEG + r"*$"), re.compile(r"/v3/mail/send$")),
+    ("mailgun", re.compile(r"(?:[a-z0-9-]+\.)*mailgun\.net"), None, re.compile(r"^/v[345]" + _SEG + r"*$"),
+     re.compile(r"/v3/[^/]+/messages(?:\.mime)?$")),
+    ("postmark", re.compile(r"api\.postmarkapp\.com"), None, re.compile(r"^" + _SEG + r"+$"),
+     re.compile(r"/email(?:/batch|/withTemplate|/batchWithTemplates)?$")),
+    ("ses", re.compile(r"email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com"), None, re.compile(r"^/v2/email" + _SEG + r"*$"),
+     re.compile(r"/v2/email/outbound-(?:bulk-)?emails$")),
+    ("mailjet", re.compile(r"api\.mailjet\.com"), None, re.compile(r"^/v3(?:\.1)?" + _SEG + r"*$"),
+     re.compile(r"/v3(?:\.1)?/send$")),
+    ("brevo", re.compile(r"api\.(?:brevo|sendinblue)\.com"), None, re.compile(r"^/v3" + _SEG + r"*$"),
+     re.compile(r"/v3/smtp/email$")),
+)
+_GRAPH_HOST = re.compile(r"graph\.microsoft\.com")
+_GRAPH_SEND_PATH = re.compile(r"/(?:me|users/[^/]+)/(?:sendMail|messages/[^/]+/(?:send|reply|replyAll|forward))$", re.I)
+# the line carries a mail-only API host (Graph is not one)
+_MAIL_API_HOST = re.compile(r"gmail\.googleapis\.com|googleapis\.com(?::[0-9]+)?/(?:upload/|batch/)?gmail(?:/|\b)|api\.resend\.com"
+                            r"|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com|email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com"
+                            r"|api\.mailjet\.com|api\.(?:brevo|sendinblue)\.com", re.I)
+_URL_WORD = re.compile(r"^(?:([A-Za-z][A-Za-z0-9+.-]*)://)?([^/?#]*)([^?#]*)(.*)$", re.S)
+_URL_START = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://|[$`]")
+_HOST_HEADER = re.compile(r"^\s*host\s*:\s*(\S+)", re.I)
 _URL_VALUE_SHORT = frozenset("AbcCdDeEFHKmoOQrTuUwxXYyza")
 _URL_VALUE_LONG = frozenset((
     "--header", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii", "--json", "--form",
@@ -1196,24 +1239,89 @@ def _option_value_word(prev: str) -> bool:
     """the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL"""
     if prev.startswith("--"):
         return prev in _URL_VALUE_LONG
-    return len(prev) > 1 and prev.startswith("-") and prev[-1] in _URL_VALUE_SHORT
+    if len(prev) < 2 or not prev.startswith("-"):
+        return False
+    # a short cluster: the first letter that takes a value takes the rest of the word (-XPOST) or, last, the next word
+    k = next((j for j, ch in enumerate(prev[1:], 1) if ch in _URL_VALUE_SHORT), None)
+    return k == len(prev) - 1
+
+
+def _norm_host(auth: str) -> str:
+    return re.sub(r":[0-9]*$", "", auth.rsplit("@", 1)[-1]).lower().rstrip(".")
+
+
+def _norm_path(path: str) -> str:
+    """%-escapes decoded once, empty and `.` segments dropped, `..` resolved"""
+    path = re.sub(r"%([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), path)
+    segs = []
+    for s in path.split("/"):
+        if s == "..":
+            if segs:
+                segs.pop()
+        elif s not in ("", "."):
+            segs.append(s)
+    return "/" + "/".join(segs)
+
+
+def _mail_api_provider(host: str, path: str):
+    """(read pattern, send pattern) of the mail-only API on this normalised host and path, or None"""
+    for _name, host_rx, gate, read, send in _MAIL_API_HOSTS:
+        if host_rx.fullmatch(host) and (gate is None or gate.match(path)):
+            return read, send
+    return None
+
+
+def _host_header(rest):
+    """the normalised host of a `Host:` header option, or None"""
+    for i, t in enumerate(rest):
+        val = None
+        if t in ("-H", "--header") and i + 1 < len(rest):
+            val = rest[i + 1]
+        elif t.startswith("--header="):
+            val = t[len("--header="):]
+        elif t.startswith("-H") and len(t) > 2:
+            val = t[2:]
+        m = _HOST_HEADER.match(val) if val is not None else None
+        if m:
+            return _norm_host(m.group(1))
+    return None
 
 
 def _inline_mail_api_sends(prog, rest) -> bool:
+    plain_read = _curl_resend_verdict(prog, rest) == "read"
+    host_header = _host_header(rest)
     cannot_tell = False
     for i, t in enumerate(rest):
+        if i and _option_value_word(rest[i - 1]):
+            continue
         u = t[len("--url="):] if t.startswith("--url=") else t
-        head = re.split(r"[?#]", u, maxsplit=1)[0]
-        if _MAIL_API_URL.match(u):
-            if not _nonliteral_value(head):
-                if _mail_api_sends(u):
-                    return True
-                continue
-            cannot_tell = True
-        elif (_LINE_MAIL_HOST[0] and not re.search(r"\s", u) and not (i and _option_value_word(rest[i - 1]))
-              and (u.startswith(("$", "`")) or ("://" in u and _nonliteral_value(head)))):
-            cannot_tell = True
-    return cannot_tell and _curl_resend_verdict(prog, rest) != "read"
+        if re.search(r"\s", u) and not _URL_START.match(u):
+            continue   # a header or a sentence; a URL or a variable word may hold a substitution with a space
+        scheme, auth, path, query = _URL_WORD.match(u).groups()
+        npath = _norm_path(path)
+        if _nonliteral_value(auth):
+            if (scheme or u.startswith(("$", "`"))) and (
+                    _LINE_MAIL_HOST[0] or _GRAPH_SEND_PATH.search(npath)
+                    or any(send.search(npath) for *_x, send in _MAIL_API_HOSTS)):
+                cannot_tell = True
+            continue
+        host = _norm_host(auth)
+        if _GRAPH_HOST.fullmatch(host):
+            if _nonliteral_value(path) or "{" in path or "[" in path:
+                cannot_tell = True
+            elif _GRAPH_SEND_PATH.search(npath):
+                return True
+            continue
+        provider = _mail_api_provider(host, npath)
+        if provider is None and host_header and scheme:
+            provider = _mail_api_provider(host_header, npath)
+        if provider is None:
+            continue
+        read, _send = provider
+        if (not plain_read or _nonliteral_value(path) or re.search(r"[{\[]", path + query)
+                or not read.match(npath)):
+            return True
+    return cannot_tell and not plain_read
 
 
 def wrapper_depth_hit(cmd: str) -> bool:

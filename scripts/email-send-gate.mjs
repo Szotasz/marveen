@@ -271,6 +271,17 @@ const MAIL_API_RULES = [
   [/api\.postmarkapp\.com|['"]postmark['"]|\bpostmarker\b/i,
     new RegExp(String.raw`api\.postmarkapp\.com\/email(?:\/batch|\/withTemplate)?` + ACTION_END +
       String.raw`|\.sendEmail(?:Batch|WithTemplate|BatchWithTemplates)?\s*\(|\.emails\.send(?:_batch|_with_template)?\s*\(`, 'i')],
+  // MAILCURLSEND1118: Amazon SES: the v2 outbound email endpoints or the v1 query action on a regional email host, or the
+  // SDKs (the node client's send commands, boto3's send_email family on an ses / sesv2 client).
+  [/email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com|['"]@aws-sdk\/client-sesv2?['"]|\bclient\s*\(\s*['"]sesv2?['"]/i,
+    new RegExp(String.raw`[/]v2[/]email[/]outbound-(?:bulk-)?emails` + ACTION_END + String.raw`|\bAction=Send(?:Raw|Templated|BulkTemplated)?Email\b` +
+      String.raw`|\bSend(?:Raw|Templated|BulkTemplated|Bulk)?EmailCommand\b|\.send_(?:raw_|templated_|bulk_templated_|bulk_)?email\s*\(`)],
+  // MAILCURLSEND1118: Mailjet: the send endpoint (v3 or v3.1) on the API host, or the clients' send call.
+  [/api\.mailjet\.com|['"]node-mailjet['"]|\bmailjet_rest\b/i,
+    new RegExp(String.raw`api\.mailjet\.com[/]v3(?:\.1)?[/]send` + ACTION_END + String.raw`|\.post\s*\(\s*['"]send['"]|\.send\.create\s*\(`, 'i')],
+  // MAILCURLSEND1118: Brevo (ex Sendinblue): the transactional email endpoint, or the clients' sendTransacEmail call.
+  [/api\.(?:brevo|sendinblue)\.com|['"]@getbrevo\/brevo['"]|['"]sib-api-v3-sdk['"]|\bsib_api_v3_sdk\b|\bbrevo_python\b/i,
+    new RegExp(String.raw`api\.(?:brevo|sendinblue)\.com[/]v3[/]smtp[/]email` + ACTION_END + String.raw`|\.(?:sendTransacEmail|send_transac_email)\s*\(`, 'i')],
 ]
 const mailApiSends = (text) => {
   const t = text.replaceAll('\\/', '/')
@@ -851,11 +862,34 @@ function headIsSend(toks, depth) {
 }
 
 // MAILCURLSEND1118: an HTTP mail API send written inline on the command line (curl, wget, httpie, xh) is judged like
-// the same send in a script; the rule and its boundary are written out at _inline_mail_api_sends in
-// hooks/outgoing-copy-gate.py (the python twin); the `inline` cases of hooks/mail-api-send-cases.json bind the two.
+// the same send in a script; the rule and its boundary (the inverted default on a mail-only API host, the host and path
+// normalisation, Graph's send paths, the provider send paths deciding a host that is not literal) are written out at
+// _inline_mail_api_sends in hooks/outgoing-copy-gate.py (the python twin); the `inline` cases of
+// hooks/mail-api-send-cases.json bind the two.
 const HTTP_CLIENT = /^(?:curl|wget|https?|xhs?)$/i
-const MAIL_API_HOST = /gmail\.googleapis\.com|googleapis\.com(?::\d+)?\/(?:upload\/)?gmail\/|api\.resend\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com/i
-const MAIL_API_URL = /^(?:[A-Za-z][\w+.-]*:\/\/)?(?:[^/@\s]*@)?(?:[^/@\s]*\.)?(?:(?:gmail\.googleapis\.com|api\.resend\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com)(?![\w.-])|googleapis\.com(?::\d+)?\/(?:upload\/)?gmail\/)/i
+// [host pattern on the normalised host, path prefix a shared host needs, read pattern, send pattern]
+const SEG = String.raw`(?:\/[^/]+)`
+const GMAIL_READ = new RegExp(String.raw`^\/gmail\/v1\/users\/[^/]+` + SEG + '*$')
+const GMAIL_SEND = /\/users\/[^/]+\/(?:messages|drafts)\/send$|\/batch\/gmail(?:\/v1)?$/
+const MAIL_API_HOSTS = [
+  [/^gmail\.googleapis\.com$/, null, GMAIL_READ, GMAIL_SEND],
+  [/^(?:www\.)?googleapis\.com$/, /^\/(?:upload\/|batch\/)?gmail(?:\/|$)/, GMAIL_READ, GMAIL_SEND],
+  [/^api\.resend\.com$/, null, new RegExp('^' + SEG + '+$'), /\/emails(?:\/batch)?$/],
+  [/^api\.sendgrid\.com$/, null, new RegExp(String.raw`^\/v3` + SEG + '*$'), /\/v3\/mail\/send$/],
+  [/^(?:[a-z0-9-]+\.)*mailgun\.net$/, null, new RegExp(String.raw`^\/v[345]` + SEG + '*$'), /\/v3\/[^/]+\/messages(?:\.mime)?$/],
+  [/^api\.postmarkapp\.com$/, null, new RegExp('^' + SEG + '+$'), /\/email(?:\/batch|\/withTemplate|\/batchWithTemplates)?$/],
+  [/^email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com$/, null, new RegExp(String.raw`^\/v2\/email` + SEG + '*$'),
+    /\/v2\/email\/outbound-(?:bulk-)?emails$/],
+  [/^api\.mailjet\.com$/, null, new RegExp(String.raw`^\/v3(?:\.1)?` + SEG + '*$'), /\/v3(?:\.1)?\/send$/],
+  [/^api\.(?:brevo|sendinblue)\.com$/, null, new RegExp(String.raw`^\/v3` + SEG + '*$'), /\/v3\/smtp\/email$/],
+]
+const GRAPH_HOST = /^graph\.microsoft\.com$/
+const GRAPH_SEND_PATH = /\/(?:me|users\/[^/]+)\/(?:sendMail|messages\/[^/]+\/(?:send|reply|replyAll|forward))$/i
+// the line carries a mail-only API host (Graph is not one)
+const MAIL_API_HOST = /gmail\.googleapis\.com|googleapis\.com(?::[0-9]+)?\/(?:upload\/|batch\/)?gmail(?:\/|\b)|api\.resend\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com|email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com|api\.mailjet\.com|api\.(?:brevo|sendinblue)\.com/i
+const URL_WORD = /^(?:([A-Za-z][A-Za-z0-9+.-]*):\/\/)?([^/?#]*)([^?#]*)([\s\S]*)$/
+const URL_START = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|[$`])/
+const HOST_HEADER = /^\s*host\s*:\s*(\S+)/i
 const URL_VALUE_SHORT = 'AbcCdDeEFHKmoOQrTuUwxXYyza'
 const URL_VALUE_LONG = new Set([
   '--header', '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii', '--json', '--form',
@@ -868,27 +902,77 @@ let lineMailHost = false // set per top-level isSendInvocation call from the WHO
 // the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL
 function optionValueWord(prev) {
   if (prev.startsWith('--')) return URL_VALUE_LONG.has(prev)
-  return prev.length > 1 && prev.startsWith('-') && URL_VALUE_SHORT.includes(prev[prev.length - 1])
+  if (prev.length < 2 || !prev.startsWith('-')) return false
+  // a short cluster: the first letter that takes a value takes the rest of the word (-XPOST) or, last, the next word
+  let k = -1
+  for (let j = 1; j < prev.length; j++) if (URL_VALUE_SHORT.includes(prev[j])) { k = j; break }
+  return k === prev.length - 1
+}
+
+const normHost = (auth) => auth.split('@').pop().replace(/:[0-9]*$/, '').toLowerCase().replace(/\.+$/, '')
+
+// %-escapes decoded once, empty and `.` segments dropped, `..` resolved
+function normPath(path) {
+  const decoded = path.replace(/%([0-9A-Fa-f]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)))
+  const segs = []
+  for (const s of decoded.split('/')) {
+    if (s === '..') segs.pop()
+    else if (s !== '' && s !== '.') segs.push(s)
+  }
+  return '/' + segs.join('/')
+}
+
+// [read pattern, send pattern] of the mail-only API on this normalised host and path, or null
+function mailApiProvider(host, path) {
+  for (const [hostRx, gate, read, send] of MAIL_API_HOSTS) {
+    if (hostRx.test(host) && (gate === null || gate.test(path))) return [read, send]
+  }
+  return null
+}
+
+// the normalised host of a `Host:` header option, or null
+function hostHeader(rest) {
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]
+    let val = null
+    if ((t === '-H' || t === '--header') && i + 1 < rest.length) val = rest[i + 1]
+    else if (t.startsWith('--header=')) val = t.slice('--header='.length)
+    else if (t.startsWith('-H') && t.length > 2) val = t.slice(2)
+    const m = val === null ? null : HOST_HEADER.exec(val)
+    if (m) return normHost(m[1])
+  }
+  return null
 }
 
 function inlineMailApiSends(prog, rest) {
+  const plainRead = curlResendVerdict(prog, rest) === 'read'
+  const headerHost = hostHeader(rest)
   let cannotTell = false
   for (let i = 0; i < rest.length; i++) {
+    if (i && optionValueWord(rest[i - 1])) continue
     const t = rest[i]
     const u = t.startsWith('--url=') ? t.slice('--url='.length) : t
-    const head = u.split(/[?#]/)[0]
-    if (MAIL_API_URL.test(u)) {
-      if (!nonliteralValue(head)) {
-        if (mailApiSends(u)) return true
-        continue
-      }
-      cannotTell = true
-    } else if (lineMailHost && !/\s/.test(u) && !(i && optionValueWord(rest[i - 1]))
-        && (u.startsWith('$') || u.startsWith('`') || (u.includes('://') && nonliteralValue(head)))) {
-      cannotTell = true
+    if (/\s/.test(u) && !URL_START.test(u)) continue // a header or a sentence; a URL or a variable word may hold a substitution with a space
+    const [, scheme, auth, path, query] = URL_WORD.exec(u)
+    const npath = normPath(path)
+    if (nonliteralValue(auth)) {
+      if ((scheme || u.startsWith('$') || u.startsWith('`')) && (
+        lineMailHost || GRAPH_SEND_PATH.test(npath) || MAIL_API_HOSTS.some((row) => row[3].test(npath)))) cannotTell = true
+      continue
     }
+    const host = normHost(auth)
+    if (GRAPH_HOST.test(host)) {
+      if (nonliteralValue(path) || path.includes('{') || path.includes('[')) cannotTell = true
+      else if (GRAPH_SEND_PATH.test(npath)) return true
+      continue
+    }
+    let provider = mailApiProvider(host, npath)
+    if (provider === null && headerHost && scheme) provider = mailApiProvider(headerHost, npath)
+    if (provider === null) continue
+    const [read] = provider
+    if (!plainRead || nonliteralValue(path) || /[{[]/.test(path + query) || !read.test(npath)) return true
   }
-  return cannotTell && curlResendVerdict(prog, rest) !== 'read'
+  return cannotTell && !plainRead
 }
 
 // True when some segment is still a wrapper at the depth bound (HEADDEPTH924),
