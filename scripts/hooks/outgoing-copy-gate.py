@@ -4117,6 +4117,37 @@ def _name_correction() -> str:
 
 BAD_NAME, RULES_STATE = load_bad_name()
 ACCENTED = set("áéíóöőúüűÁÉÍÓÖŐÚÜŰ")
+
+
+def load_extra_accentless():
+    """The install's own accentless entries ("extra_accentless" in the local rules file), e.g. its town's name.
+
+    The shipped ACCENTLESS holds no proper names; this is where an install keeps its own, without editing this
+    file. Pick keys that are never correct without the accent: a key that is also an ordinary unaccented word
+    would block legitimate text. Keys: lowercase ASCII letters; values: a string with at least one accented letter. A shipped key is
+    never overridden (logged). An invalid block is dropped as a whole and logged; it changes nothing else (the
+    name rule above keeps its own state, and no send is blocked because of it). No key: {}."""
+    try:
+        with open(_LOCAL_RULES, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return {}  # missing or broken: load_bad_name() above already reports the file's state
+    extra = data.get("extra_accentless") if isinstance(data, dict) else None
+    if extra is None:
+        return {}
+    if not isinstance(extra, dict) or not all(
+            isinstance(k, str) and re.fullmatch(r"[a-z]+", k) and isinstance(v, str) and any(c in ACCENTED for c in v)
+            for k, v in extra.items()):
+        _gate_log(f"outgoing-copy-gate: extra_accentless ERVENYTELEN ({_LOCAL_RULES}) -- kimarad, "
+                  "kulcs: kisbetus ASCII szo, ertek: ekezetes alak.")
+        return {}
+    clash = sorted(k for k in extra if k in ACCENTLESS)
+    if clash:
+        _gate_log(f"outgoing-copy-gate: extra_accentless a beepitett szotar kulcsat nem irja felul: {', '.join(clash)}")
+    return {k: v for k, v in extra.items() if k not in ACCENTLESS}
+
+
+ACCENTLESS.update(load_extra_accentless())
 TAG = re.compile(r"<[^>]+>")
 
 # GATEKOTOJEL817 + GATEHYPH816 (2026-08-19 este, ket hamis pozitiv elo
