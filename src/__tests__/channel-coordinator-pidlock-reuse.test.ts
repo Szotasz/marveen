@@ -284,12 +284,16 @@ describe('round 3: zombie holder, unsafe tick, no-start deps', () => {
   const linux = realPidLockDeps.bootId?.() !== undefined
 
   async function withZombie(fn: (z: number) => void | Promise<void>) {
-    const sh = spawn('/bin/sh', ['-c', 'true & echo $!; exec sleep 5'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const sh = spawn('/bin/sh', ['-c', 'sleep 0.3 & echo $!; exec sleep 10'], { stdio: ['ignore', 'pipe', 'ignore'] })
     try {
-      const out: string = await new Promise((res) => sh.stdout!.once('data', (c) => res(String(c))))
+      const out: string = await new Promise((res, rej) => {
+        sh.once('error', rej)
+        sh.once('exit', () => rej(new Error('shell exited before any stdout data')))
+        sh.stdout!.once('data', (c) => res(String(c)))
+      })
       const z = Number(out.trim())
       expect(z).toBeGreaterThan(0)
-      const deadline = Date.now() + 2000
+      const deadline = Date.now() + 3000
       const state = () => {
         try {
           const st = readFileSync(`/proc/${z}/stat`, 'utf-8')
@@ -300,7 +304,12 @@ describe('round 3: zombie holder, unsafe tick, no-start deps', () => {
       expect(state()).toBe('Z')
       await fn(z)
     } finally {
+      const exited = new Promise<void>((r) => {
+        if (sh.exitCode !== null || sh.signalCode !== null) r()
+        else sh.once('exit', () => r())
+      })
       sh.kill('SIGKILL')
+      await exited
     }
   }
 
@@ -316,7 +325,9 @@ describe('round 3: zombie holder, unsafe tick, no-start deps', () => {
       const st = readFileSync(`/proc/${z}/stat`, 'utf-8')
       const rawTick = st.slice(st.lastIndexOf(')') + 2).split(' ')[19]
       writeFileSync(file, `${z} ${realPidLockDeps.bootId!()} ${rawTick}`)
-      expect(tryAcquirePidLock(file, SELF, realPidLockDeps)).toMatchObject({ ok: true, reclaimed: z })
+      const d = { ...realPidLockDeps, argvOf: vi.fn((pid: number) => realPidLockDeps.argvOf(pid)) }
+      expect(tryAcquirePidLock(file, SELF, d)).toMatchObject({ ok: true, reclaimed: z })
+      expect(d.argvOf).toHaveBeenCalledWith(z)
     })
   })
 
