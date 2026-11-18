@@ -74,6 +74,7 @@ const BLOCKS = [
   'agent-id-header',
   'memory-search-label',
   'fleet-auth',
+  'shell-grep',
   'evidence-rule',
   'mcp-list-channel',
   'message-close',

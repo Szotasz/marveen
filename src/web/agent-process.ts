@@ -108,7 +108,7 @@ import { loadProfileTemplate, profileWantsThinChiefHandoff, type ProfileTemplate
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { agentVendorHostsEnv } from './agent-egress-env.js'
-import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './agent-scaffold.js'
+import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureShellGrepSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -2475,6 +2475,7 @@ export function rewriteAgentClaudeMdOnStart(name: string, profile: ProfileTempla
   if (profileWantsThinChiefHandoff(profile)) ensureThinChiefHandoffSection(name)
   ensureMemorySearchLabelSection(name)
   ensureFleetAuthSection(name)
+  ensureShellGrepSection(name)
   ensureEvidenceSection(name)
   ensureMcpListChannelSection(name)
   ensureMessageCloseSection(name)

@@ -36,6 +36,7 @@ const SEQUENCE = [
   'ensureThinChiefHandoffSection(name)',
   'ensureMemorySearchLabelSection(name)',
   'ensureFleetAuthSection(name)',
+  'ensureShellGrepSection(name)',
   'ensureEvidenceSection(name)',
   'ensureMcpListChannelSection(name)',
   'ensureMessageCloseSection(name)',
