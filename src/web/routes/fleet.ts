@@ -38,6 +38,8 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
         'Content-Type': 'application/json',
         'Content-Disposition': `attachment; filename="fleet-export-${exported.exportedAt.slice(0, 10)}.json"`,
         'Content-Length': buf.byteLength,
+        // MIOAGENTINSTALL1114 (plan 4.2): the package agents left out, by name (reinstall them from the catalog).
+        ...((exported.skippedPackageAgents ?? []).length > 0 ? { 'X-Skipped-Package-Agents': exported.skippedPackageAgents.join(',') } : {}),
       })
       res.end(buf)
     } catch (err: any) {

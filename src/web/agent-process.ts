@@ -108,7 +108,8 @@ import { loadProfileTemplate, profileWantsThinChiefHandoff, type ProfileTemplate
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { agentVendorHostsEnv } from './agent-egress-env.js'
-import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './agent-scaffold.js'
+import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetBaseRulesSection, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './agent-scaffold.js'
+import { packageStartRefusal, prepareFallbackClaudeMd } from './agent-package/install.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -2438,6 +2439,15 @@ export function shouldBriefAfterStart(
   return result.ok && opts.ownsResume !== true
 }
 
+// OWNER_DRIVE_FOLDER as the settings store has it now, or '' (also when the read fails).
+function ownerDriveFolderSetting(): string {
+  try {
+    return String(getEffectiveSettingValue('OWNER_DRIVE_FOLDER') || '')
+  } catch {
+    return ''
+  }
+}
+
 /**
  * The start-time rewrite of a sub-agent's CLAUDE.md: the token sync, then every generated section in its
  * fixed order, and the project-root replacer. startAgentProcess runs it on every start; it stands alone so
@@ -2457,6 +2467,11 @@ export function rewriteAgentClaudeMdOnStart(name: string, profile: ProfileTempla
   } catch (err) {
     logger.warn({ err, name }, 'per-agent dashboard token sync failed (agent keeps the shared token)')
   }
+  // MIOAGENTINSTALL1114 (plan 4.3, N12): a package agent's fleet base rules block, rendered with its own name and
+  // the token path the sync above settled. Only where the block's markers stand, or on an agent with a package
+  // manifest; a hand-made agent's CLAUDE.md is not touched. The Drive folder is read here, as at creation.
+  const driveFolder = ownerDriveFolderSetting()
+  ensureFleetBaseRulesSection(name, driveFolder)
   ensureFleetRosterSection(name)
   ensureProjectRootInClaudeMd(name)
   ensureAutonomySection(name)
@@ -2492,6 +2507,12 @@ export function rewriteAgentClaudeMdOnStart(name: string, profile: ProfileTempla
 export async function startAgentProcess(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
+  // MIOAGENTINSTALL1114 (plan 7.4): an unfinished package install, missing package files, or a broken shell.
+  const packageRefusal = packageStartRefusal(name, dir)
+  if (packageRefusal !== null) {
+    logger.warn({ name, refusal: packageRefusal }, 'agent start refused by the package guard')
+    return { ok: false, error: packageRefusal }
+  }
 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
@@ -3499,10 +3520,10 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
           try { runTmux(null, ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 }) } catch { /* already gone */ }
           try {
             const fallbackCwd = mkdtempSync(join(tmpdir(), `marveen-agent-${name}-`))
-            const agentClaudeMd = join(dir, 'CLAUDE.md')
-            if (existsSync(agentClaudeMd)) {
-              try { symlinkSync(agentClaudeMd, join(fallbackCwd, 'CLAUDE.md')) } catch { /* degrade to context-less */ }
-            }
+            // MIOAGENTINSTALL1114 (plan 4.4, Samu 77251 B): a package agent's shell is EXPANDED into a real file
+            // (its imports would not load from /tmp, M24); any other agent gets the link as before. 'refused': the
+            // package files are missing or the shell is broken; no context-less start, the owner gets a notice.
+            if (prepareFallbackClaudeMd(name, dir, fallbackCwd) === 'refused') return
             runTmux(null, ['new-session', '-d', '-s', session, buildLaunchCmd(fallbackCwd)], { timeout: 10000 })
             logger.warn({ name, session, fallbackCwd }, 'Agent --channels EPERM in trusted dir; relaunched from /tmp fallback')
           } catch (err) {

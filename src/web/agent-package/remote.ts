@@ -1,7 +1,7 @@
 // Agent package remote (MIOAGENTINSTALL1114, PR-I2; plan 5, 5.2, 6, 6.4, 6.5).
 //
 // The ONE network module of the agent package feature: the fixed origin, the
-// outgoing calls (redeem and catalog here; the download comes with PR-I3), the
+// outgoing calls (redeem, catalog, and the package download since PR-I3), the
 // closed table that maps the publishing side's answers to ours, and the
 // credential file (write, read, delete, tmp-leftover cleanup).
 //
@@ -21,7 +21,7 @@ import { STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { PeerResponseTooLargeError, readBoundedBytes } from '../federation/http.js'
-import { SLUG_RE, VERSION_RE } from './verify.js'
+import { MAX_DELIVERY_BYTES, SLUG_RE, VERSION_RE } from './verify.js'
 
 /** The publishing side's origin. EMPTY until the host is decided (N3): every outgoing call answers not_configured. */
 export const PACKAGE_ORIGIN = ''
@@ -37,6 +37,7 @@ export const ERROR_BODY_MAX_BYTES = 4 * 1024
 
 const REDEEM_PATH = '/functions/v1/device-link-redeem'
 const CATALOG_PATH = '/functions/v1/agent-packages'
+const DOWNLOAD_PATH = '/functions/v1/agent-package-download'
 
 const CREDENTIAL_FILE = 'agent-package-credential.json'
 const TOKEN_RE = /^mdt_[A-Za-z0-9_-]{43}$/
@@ -67,11 +68,18 @@ export type RedeemResult =
 
 export type CatalogResult = { ok: true; catalog: Record<string, unknown> } | { ok: false; refusal: Refusal }
 
+/** The delivery document's bytes (contract 4.3), read with the 3 MiB bound; nothing in them is checked here. */
+export type DownloadResult = { ok: true; bytes: Uint8Array } | { ok: false; refusal: Refusal }
+
 export interface Remote {
   /** POST device-link-redeem with a normalized code; on success the credential file is (over)written. */
   redeem(code: string, deps: CallDeps): Promise<RedeemResult>
   /** GET agent-packages with the stored credential. */
   catalog(deps: CallDeps): Promise<CatalogResult>
+  /** POST agent-package-download for `slug`, with X-Marveen-Version: `ownVersion` and the stored credential. */
+  download(slug: string, ownVersion: string, deps: CallDeps): Promise<DownloadResult>
+  /** False when the origin is not a usable https origin (every call answers not_configured). */
+  configured(): boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +219,14 @@ function loadCredential(): StoredCredential | null {
   const p = credentialPath()
   let raw: string
   try {
-    if (process.platform !== 'win32' && (statSync(p).mode & 0o077) !== 0) {
+    // Not through a link (Dani, #2826 review 79824): the store's other files are read with lstat, and a link here
+    // would let whoever can write the store point the credential read at any file of this user.
+    const st = lstatSync(p)
+    if (!st.isFile()) {
+      logger.warn('agent package credential file is not a regular file (a link or a folder); not used')
+      return null
+    }
+    if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) {
       logger.warn('agent package credential file is readable by others; not used (chmod 600 it, or connect again)')
       return null
     }
@@ -238,6 +253,11 @@ function loadCredential(): StoredCredential | null {
 
 function viewOf(c: StoredCredential): CredentialView & { connected: true } {
   return { connected: true, label: c.label, deviceTokenId: c.deviceTokenId, connectedAt: c.connectedAt }
+}
+
+/** True when a usable credential is stored (6.1 step 5). Never the token. */
+export function hasCredential(): boolean {
+  return loadCredential() !== null
 }
 
 /** GET /api/agent-packages/credential (6.4): the stored credential without its token, or connected:false. */
@@ -352,11 +372,27 @@ async function catalogAt(origin: string | null, deps: CallDeps): Promise<Catalog
   return { ok: true, catalog: body }
 }
 
+async function downloadAt(origin: string | null, slug: string, ownVersion: string, deps: CallDeps): Promise<DownloadResult> {
+  const c = loadCredential()
+  if (c === null) return { ok: false, refusal: { status: 409, body: { error: 'not_connected' } } }
+  if (origin === null) return { ok: false, refusal: transportRefusal('package', 'not_configured') }
+  const x = await exchange(origin + DOWNLOAD_PATH, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${c.token}`, 'content-type': 'application/json', 'x-marveen-version': ownVersion },
+    body: JSON.stringify({ slug }),
+  }, REQUEST_TIMEOUT_MS, MAX_DELIVERY_BYTES, deps)
+  if (!x.ok) return { ok: false, refusal: transportRefusal('package', x.reason) }
+  if (x.status !== 200) return { ok: false, refusal: refusalFor('package', x.status, x.headers, parseJson(x.bytes)) }
+  return { ok: true, bytes: new Uint8Array(x.bytes) }
+}
+
 /** A Remote bound to `origin`. Only an https origin with nothing after it is used; any other answers not_configured. */
 export function makeRemote(origin: string): Remote {
   const o = checkedOrigin(origin)
   return {
     redeem: (code, deps) => redeemAt(o, code, deps),
     catalog: (deps) => catalogAt(o, deps),
+    download: (slug, ownVersion, deps) => downloadAt(o, slug, ownVersion, deps),
+    configured: () => o !== null,
   }
 }

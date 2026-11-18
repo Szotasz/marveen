@@ -1,0 +1,152 @@
+{
+  "note": "MIOAGENTINSTALL1114 plan 7.5 and 10.3: ONE case list for the TS predicates (marker.ts) and the watchdog shell form. b64 is the file bytes.",
+  "prefix": [
+    {
+      "name": "exactly the prefix",
+      "b64": "QFBBQ0tBR0UubWQKCkBMT0NBTC5tZAo=",
+      "shell": true
+    },
+    {
+      "name": "the prefix, then text",
+      "b64": "QFBBQ0tBR0UubWQKCkBMT0NBTC5tZAoKT3duZXIgdGV4dC4K",
+      "shell": true
+    },
+    {
+      "name": "the prefix, then the fleet base rules block",
+      "b64": "QFBBQ0tBR0UubWQKCkBMT0NBTC5tZAoKPCEtLSBCRUdJTiBHRU5FUkFURUQ6IGZsZWV0LWJhc2UtcnVsZXMgKGF1dG8tZ2VuZXJhdGVkLCBkbyBub3QgZWRpdCBieSBoYW5kKSAtLT4KeAo8IS0tIEVORCBHRU5FUkFURUQ6IGZsZWV0LWJhc2UtcnVsZXMgLS0+Cg==",
+      "shell": true
+    },
+    {
+      "name": "the prefix, then a fenced code block",
+      "b64": "QFBBQ0tBR0UubWQKCkBMT0NBTC5tZApgYGAKY29kZQpgYGAK",
+      "shell": true
+    },
+    {
+      "name": "the prefix, then a repeated import line",
+      "b64": "QFBBQ0tBR0UubWQKCkBMT0NBTC5tZApAUEFDS0FHRS5tZAo=",
+      "shell": true
+    },
+    {
+      "name": "a BOM before the prefix",
+      "b64": "77u/QFBBQ0tBR0UubWQKCkBMT0NBTC5tZAo=",
+      "shell": false
+    },
+    {
+      "name": "an empty line before the prefix",
+      "b64": "CkBQQUNLQUdFLm1kCgpATE9DQUwubWQK",
+      "shell": false
+    },
+    {
+      "name": "a space before the first line",
+      "b64": "IEBQQUNLQUdFLm1kCgpATE9DQUwubWQK",
+      "shell": false
+    },
+    {
+      "name": "a tab before the first line",
+      "b64": "CUBQQUNLQUdFLm1kCgpATE9DQUwubWQK",
+      "shell": false
+    },
+    {
+      "name": "a space at the end of the first line",
+      "b64": "QFBBQ0tBR0UubWQgCgpATE9DQUwubWQK",
+      "shell": false
+    },
+    {
+      "name": "a tab at the end of the second import line",
+      "b64": "QFBBQ0tBR0UubWQKCkBMT0NBTC5tZAkK",
+      "shell": false
+    },
+    {
+      "name": "CRLF line ends",
+      "b64": "QFBBQ0tBR0UubWQNCg0KQExPQ0FMLm1kDQo=",
+      "shell": false
+    },
+    {
+      "name": "the two import lines swapped",
+      "b64": "QExPQ0FMLm1kCgpAUEFDS0FHRS5tZAo=",
+      "shell": false
+    },
+    {
+      "name": "only the first import line, then text",
+      "b64": "QFBBQ0tBR0UubWQKCk93bmVyIHRleHQuCg==",
+      "shell": false
+    },
+    {
+      "name": "no empty line between the imports",
+      "b64": "QFBBQ0tBR0UubWQKQExPQ0FMLm1kCg==",
+      "shell": false
+    },
+    {
+      "name": "two empty lines between the imports",
+      "b64": "QFBBQ0tBR0UubWQKCgpATE9DQUwubWQK",
+      "shell": false
+    },
+    {
+      "name": "a heading before the prefix",
+      "b64": "IyBUaXRsZQpAUEFDS0FHRS5tZAoKQExPQ0FMLm1kCg==",
+      "shell": false
+    },
+    {
+      "name": "a fenced code block before the prefix",
+      "b64": "YGBgCngKYGBgCkBQQUNLQUdFLm1kCgpATE9DQUwubWQK",
+      "shell": false
+    },
+    {
+      "name": "a NUL byte inside the prefix",
+      "b64": "QFBBQ0tBR0UubWQKCkBMT0NBTAAubWQK",
+      "shell": false
+    },
+    {
+      "name": "the prefix without its last LF, end of file",
+      "b64": "QFBBQ0tBR0UubWQKCkBMT0NBTC5tZA==",
+      "shell": false
+    },
+    {
+      "name": "shorter than the prefix: the first import line only",
+      "b64": "QFBBQ0tBR0UubWQK",
+      "shell": false
+    },
+    {
+      "name": "zero bytes",
+      "b64": "",
+      "shell": false
+    }
+  ],
+  "blank": [
+    {
+      "name": "zero bytes",
+      "b64": "",
+      "blank": true
+    },
+    {
+      "name": "the six ASCII white space bytes",
+      "b64": "IAkKCwwN",
+      "blank": true
+    },
+    {
+      "name": "a BOM only",
+      "b64": "77u/",
+      "blank": false
+    },
+    {
+      "name": "a no-break space only",
+      "b64": "wqA=",
+      "blank": false
+    },
+    {
+      "name": "a line separator only",
+      "b64": "4oCo",
+      "blank": false
+    },
+    {
+      "name": "an ideographic space only",
+      "b64": "44CA",
+      "blank": false
+    },
+    {
+      "name": "one letter",
+      "b64": "eA==",
+      "blank": false
+    }
+  ]
+}

@@ -28,7 +28,8 @@ export const MESSAGE_LAYER_RESERVED_AGENT_IDS: readonly string[] =
 
 // First path segments the agents API serves itself (AGENTROUTERESERVED1114):
 // GET /api/agents/activity, GET /api/agents/status, POST /api/agents/model-suggest,
-// GET /api/agents/export-all, POST /api/agents/import. They are matched before the
+// GET /api/agents/export-all, POST /api/agents/import, and POST /api/agents/install-package
+// (the agent package installer, MIOAGENTINSTALL1114). They are matched before the
 // generic /api/agents/:name routes, so an agent with one of these names would have
 // its own address answered by the fixed handler. THE one list of them: a new fixed
 // route under /api/agents/ gets its segment added HERE, and
@@ -37,7 +38,7 @@ export const MESSAGE_LAYER_RESERVED_AGENT_IDS: readonly string[] =
 // a path put together from a prefix constant and a segment kept elsewhere is
 // invisible to it (and to any source scan), so write the full path at the route.
 export const AGENT_ROUTE_RESERVED_IDS: readonly string[] =
-  ['activity', 'status', 'model-suggest', 'export-all', 'import']
+  ['activity', 'status', 'model-suggest', 'export-all', 'import', 'install-package']
 
 // The fixed reserved ids: no main agent and no sub-agent may take one.
 // Literals, not imports: the shell migration script keeps the same two lists, and

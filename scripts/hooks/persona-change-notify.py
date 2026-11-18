@@ -42,6 +42,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # A fo agens ket persona-fajlja, ROOT-hoz kepesti uttal.
 _MAIN_WATCHED = ("CLAUDE.md", "SOUL.md")
+# Egy sub-agens figyelt fajljai a sajat mappajaban.
+_AGENT_WATCHED = ("CLAUDE.md", "SOUL.md", "PACKAGE.md", "LOCAL.md")
 
 
 def watched():
@@ -62,7 +64,9 @@ def watched():
     agents_dir = os.path.join(ROOT, "agents")
     try:
         for agent in sorted(os.listdir(agents_dir)):
-            for fn in ("CLAUDE.md", "SOUL.md"):
+            # MIOAGENTINSTALL1114 (plan 4.2, M25): egy csomagos agens CLAUDE.md-je csak a vaz, a tenyleges
+            # persona a PACKAGE.md (csomag-reteg) es a LOCAL.md (helyi reteg): ezek atirasa se maradjon jelzes nelkul.
+            for fn in _AGENT_WATCHED:
                 if os.path.isfile(os.path.join(agents_dir, agent, fn)):
                     names.append(os.path.join("agents", agent, fn))
     except Exception:

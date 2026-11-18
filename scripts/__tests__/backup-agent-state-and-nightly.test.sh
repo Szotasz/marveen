@@ -63,6 +63,14 @@ printf 'k' > "$A/.claude/skills/own/deploy.key"
 printf 't' > "$A/.claude/skills/own/credentials.json"
 mkdir -p "$A/.claude/skills/own/scripts"
 printf 'x' > "$A/.claude/skills/own/scripts/run.sh"
+# MIOAGENTINSTALL1114 (plan 4.2, M23): an agent package's layers and record go in; the installer's own state stays out.
+mkdir -p "$A/.package" "$FAKE/store/agent-package-installing" "$FAKE/store/agent-package-leftovers/alpha.1"
+printf 'p' > "$A/PACKAGE.md"
+printf 'l' > "$A/LOCAL.md"
+printf '{}' > "$A/.package/manifest.json"
+printf '{}' > "$FAKE/store/agent-package-installing/beta.json"
+printf 'x' > "$FAKE/store/agent-package-leftovers/alpha.1/CLAUDE.md"
+printf '[]' > "$FAKE/store/agent-package-hidden.json"
 
 set +e
 OUTPUT="$(cd "$FAKE" && HOME="$FHOME" BACKUP_DIR="$OUT" bash scripts/backup.sh 2>&1)"
@@ -80,6 +88,9 @@ for p in repo/agents/alpha/agent-config.json \
          repo/agents/alpha/.claude-config/projects/p1/memory/note.md \
          repo/.channels-config/projects/p1/memory/note.md \
          repo/agents/alpha/.claude/skills/own/scripts/run.sh \
+         repo/agents/alpha/PACKAGE.md \
+         repo/agents/alpha/LOCAL.md \
+         repo/agents/alpha/.package/manifest.json \
          home/.config/systemd/user/marveen-channels.service \
          home/.config/systemd/user/marveen-backup.timer \
          home/.config/systemd/user/marveen-channels.service.d/onfailure.conf \
@@ -92,6 +103,9 @@ for p in repo/agents/alpha/.claude/skills/own/.env \
          repo/agents/alpha/.claude/skills/own/deploy.key \
          repo/agents/alpha/.claude/skills/own/credentials.json \
          home/.config/systemd/user/other-app.service \
+         repo/store/agent-package-installing/beta.json \
+         repo/store/agent-package-leftovers/alpha.1/CLAUDE.md \
+         repo/store/agent-package-hidden.json \
          home/.config/systemd/user/default.target.wants/other-app.service; do
   if grep -qx "$p" "$LIST"; then fail "kept-out file is in the default archive: $p"; else pass "kept out of the default archive: $p"; fi
 done
