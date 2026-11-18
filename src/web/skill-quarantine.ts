@@ -605,9 +605,7 @@ export function reviewText(buf: Buffer): { text: string; invalidUtf8: number; co
 
 // Invisible to a reader, read by the model: zero-width, bidi controls, the
 // Unicode tag block. Escaped so this source file stays plain ASCII.
-// U+00AD (soft hyphen) joined from skill-security-auditor's HIDDEN-INSTR rule: it renders
-// as nothing mid-word, so it can split a keyword the patterns below look for.
-const INVISIBLE_RE = /[\u00AD​-‏‪-‮⁠-⁤⁦-⁩﻿]|[\u{E0000}-\u{E007F}]/gu
+const INVISIBLE_RE = /[​-‏‪-‮⁠-⁤⁦-⁩﻿]|[\u{E0000}-\u{E007F}]/gu
 
 // The same shapes scripts/hooks/browser-content-notice.py names, plus the
 // install/exec and persistence shapes a skill has no reason to carry.
@@ -625,30 +623,44 @@ export const SKILL_SCAN_PATTERNS: ReadonlyArray<[string, RegExp]> = [
   ['persistence-target', /(settings(\.local)?\.json|scheduled-tasks|crontab\b|LaunchAgents|\.bashrc|\.zshrc|\.profile\b)/i],
   ['install-hook', /"(pre|post)install"\s*:|\bnpm\s+(i|install)\b|\bpip3?\s+install\b|\bbrew\s+install\b/i],
   ['long-encoded-blob', /[A-Za-z0-9+/]{200,}={0,2}/],
-  // SKILLSCANPI1118: the prompt-injection shapes of skill-security-auditor
-  // (alirezarezvani/claude-skills, MIT), the ones the rows above do not already
-  // cover. Its "ignore previous instructions" and "you are now" rows are the
-  // instruction-override and role-reassignment rows here; its "read ~ / /etc /
-  // credentials" row is kept to the .aws part, the rest is credential-target or
-  // fires on every skill that names a home path. Its line-level suppression
-  // comment ("noqa: SEC-AUDITOR", "auditor:ignore") is deliberately NOT taken:
-  // a file under review must not be able to switch its own review off.
-  // Measured before adding: 0 hits on 283 files of this fleet's own skills and
-  // agent folders; on the auditor repo's 495 skills (3400 files) the hits were
-  // security writing that quotes the shapes, which is what a reviewer should see.
-  ['override-directive', /\b(disregard|forget|override)\s+(your|all|any)\s+(instructions|rules|guidelines|constraints|safety)\b/i],
-  ['safety-bypass', /\b(pretend|act\s+as\s+if|imagine)\s+you\s+(have\s+no|don'?t\s+have\s+any)\s+(restrictions|limits|rules|safety)\b|\b(skip|disable|bypass|turn\s+off|ignore)\s+(safety|content|security)\s+(checks?|filters?|restrictions?|rules?)\b/i],
-  ['unrestricted-exec', /\b(execute|run)\s+(any|all|arbitrary)\s+(commands?|code|scripts?)\s+(without|no)\s+(asking|confirmation|restrictions?|limits?)\b/i],
-  ['exfil-instruction', /\b(send|upload|post|transmit|exfiltrate)\s+(the\s+)?(contents?|data|files?|information)\s+(of|from|to)\b/i],
-  ['cloud-credential-target', /(~\/\.aws\b|\.aws\/credentials)/i],
-  ['hidden-html-directive', /<!--\s*(system|instruction|override|ignore|execute|run|sudo|admin)/i],
-  ['excess-permission', /\b(full|unrestricted|complete)\s+(access|control|permissions?)\s+(to|over)\s+(the\s+)?(file\s*system|network|internet|shell|terminal|system)\b/i],
-  ['blanket-approval', /\b(always|automatically)\s+(approve|accept|allow|grant|execute)\s+(all|any|every)\b/i],
+  // SKILLSCANPI1118: prompt-injection shapes a skill has no honest reason to carry.
+  // The idea of covering these shapes comes from skill-security-auditor
+  // (alirezarezvani/claude-skills); the expressions below are our own. A line-level
+  // "ignore this line" comment is deliberately NOT honoured: a file under review must
+  // not be able to switch its own review off.
+  // All rows here are audit lines only: none of them is in the set that holds a skill
+  // with the quarantine switch off. exfil-instruction and cloud-credential-target fire on
+  // honest how-to text now and then, so they stay out of that set on purpose.
+  //
+  // A reader is told to set its standing rules aside.
+  ['override-directive', /\b(?:disregard|forget|override|abandon|set\s+aside)\s+(?:(?:all|any|every|your|of)\s+)+(?:(?:previous|prior|earlier|current|existing)\s+)?(?:instructions|rules|guidelines|constraints|safety)\b/i],
+  // Either a role-play with the limits removed, or an order to switch a safety check off.
+  ['safety-bypass', /\b(?:pretend|imagine|act\s+as\s+(?:if|though))\s+(?:that\s+)?you\s+(?:have\s+no|are\s+free\s+of|(?:do\s+not|don'?t)\s+have\s+any)\s+(?:restrictions|limits|limitations|rules|safety)\b|\b(?:skip|disable|bypass|ignore|(?:turn|switch)\s+off)\s+(?:safety|security|content)\s+(?:checks?|filters?|restrictions?|rules?|guards?)\b/i],
+  // Whatever command, with the confirmation step taken out.
+  ['unrestricted-exec', /\b(?:run|execute)\s+(?:any|every|all|arbitrary|whatever)\s+(?:shell\s+)?(?:commands?|code|scripts?)\b[^.\n]{0,30}?\b(?:without|with\s+no|no)\s+(?:asking|confirm(?:ation|ing)?|approval|restrictions?|limits?)\b/i],
+  // Moving something out of the user's environment: the source is the workspace, or the
+  // destination is somewhere external. A plain "send the data to the API" stays quiet.
+  // The home folder, /etc, .ssh, .env and secret stores count as such sources too.
+  ['exfil-instruction', /\b(?:send|upload|post|transmit|exfiltrate|forward)\s+(?:(?:the|all|every)\s+)?(?:contents?|data|files?|information)\s+(?:(?:of|from)\s+(?:the\s+|this\s+|your\s+|the\s+user'?s\s+)?(?:workspace|repo(?:sitory)?|project|codebase|home|machine|system|disk|environment|session|conversation|~\/|\$HOME|\/etc\/|\.ssh|\.env\b|credentials|secrets|keys)|to\s+(?:an?\s+|the\s+|my\s+)?(?:remote|external|attacker|third[-\s]party|webhook|pastebin|https?:\/\/))/i],
+  // The AWS credential store itself, not the config folder a deployment guide names.
+  ['cloud-credential-target', /\.aws\/(?:credentials|sso\/cache)\b/i],
+  // An HTML comment, invisible when rendered, that opens with an order.
+  ['hidden-html-directive', /<!--\s*\[?\s*(?:system|assistant|instructions?|override|ignore|execute|run|sudo|admin)\b/i],
+  // A claim to whole-machine reach.
+  ['excess-permission', /\b(?:full|unrestricted|complete|unlimited)\s+(?:access|control|permissions?)\s+(?:to|over|on)\s+(?:the\s+|your\s+)?(?:file\s*system|network|internet|shell|terminal|system|machine|host)\b/i],
+  // Approval granted in advance, for everything.
+  ['blanket-approval', /\b(?:always|automatically)\s+(?:approve|accept|allow|grant|execute)\s+(?:all|any|every|each)\b/i],
+  // A soft hyphen between two letters of the same case renders as nothing and can split
+  // a keyword the rows above look for. Only there: the same byte pair turns up in fonts
+  // and images the scan reads as text. Kept apart from invisible-unicode so it never holds a skill.
+  ['soft-hyphen-split', /\p{Ll}\u00AD\p{Ll}|\p{Lu}\u00AD\p{Lu}/u],
 ]
 
 function excerpt(line: string, at: number): string {
   const start = Math.max(0, at - 40)
-  return line.slice(start, start + 120).replace(INVISIBLE_RE, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`)
+  return line.slice(start, start + 120)
+    .replace(INVISIBLE_RE, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`)
+    .replace(/\u00AD/g, '<U+AD>')
 }
 
 export function scanSkillDir(root: string): ScanReport {
