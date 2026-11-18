@@ -198,7 +198,8 @@ type HookGroup = { hooks?: CommandHook[]; [k: string]: unknown }
 function ourScriptPaths(command: string, knownScripts: readonly string[]): string[] {
   const paths: string[] = []
   for (const raw of command.split(/\s+/)) {
-    const token = raw.replace(/^['"]+|['"]+$/g, '')
+    // The fail-closed wrapper writes `python3 -I -S "<path>"; else ...`: a token can end in `";`.
+    const token = raw.replace(/^['"]+/, '').replace(/;+$/, '').replace(/['"]+$/, '')
     if (!token) continue
     const normalized = normalizeSeparators(token)
     const base = normalized.slice(normalized.lastIndexOf('/') + 1)
@@ -269,8 +270,9 @@ export function pruneStaleHookEntries(
 // File-level wrapper: parse a settings.json, prune stale entries, and write it
 // back atomically when anything changed. Unparseable or missing files are left
 // untouched (never destroy a user's settings on a parse error). Returns the
-// pruned command strings for logging.
-export function pruneStaleHooksFromSettingsFile(settingsPath: string): string[] {
+// pruned command strings for logging. `extraKnownScripts` widens "ours" by the
+// install's extra-hook script names (extraHookScriptNames()).
+export function pruneStaleHooksFromSettingsFile(settingsPath: string, extraKnownScripts: readonly string[] = []): string[] {
   if (!existsSync(settingsPath)) return []
   let settings: Record<string, unknown>
   try {
@@ -279,7 +281,10 @@ export function pruneStaleHooksFromSettingsFile(settingsPath: string): string[] 
     return []
   }
   if (!settings || typeof settings !== 'object') return []
-  const { changed, removed } = pruneStaleHookEntries(settings, { fileExists: existsSync })
+  // A hook an install moved into local-hooks/ leaves its old entry behind (e.g. a fail-closed gate on a
+  // deleted scripts/hooks/ path that denies every call): with its name here, that entry is ours too.
+  const knownScripts = extraKnownScripts.length ? [...KNOWN_HOOK_SCRIPTS, ...extraKnownScripts] : KNOWN_HOOK_SCRIPTS
+  const { changed, removed } = pruneStaleHookEntries(settings, { fileExists: existsSync, knownScripts })
   if (changed) atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return removed
 }

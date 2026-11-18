@@ -272,6 +272,28 @@ export interface ExtraHooksDigest {
 const sha256Hex = (b: Buffer): string => createHash('sha256').update(b).digest('hex')
 
 /**
+ * The file names of the scripts the config names under local-hooks/, valid entry or not. The boot prune
+ * (pruneStaleHooksFromSettingsFile) counts a missing-file hook entry with one of these names as ours: a hook an
+ * install moved from scripts/hooks/ into local-hooks/ otherwise keeps its old entry, and a fail-closed gate on a
+ * deleted path denies every call. [] when the file is missing or does not parse.
+ */
+export function extraHookScriptNames(path: string): string[] {
+  let raw: unknown
+  try { raw = JSON.parse(readFileSync(path, 'utf-8')) } catch { return [] }
+  const list = raw && typeof raw === 'object' && Array.isArray((raw as { entries?: unknown }).entries)
+    ? (raw as { entries: unknown[] }).entries : []
+  const names = new Set<string>()
+  for (const e of list) {
+    const script = (e as { script?: unknown } | null)?.script
+    if (typeof script !== 'string' || !SCRIPT_RE.test(script)) continue
+    const parts = script.split('/')
+    if (parts[0] !== EXTRA_HOOKS_DIR || parts.length < 2 || parts.some((x) => x === '..' || x === '.' || x === '')) continue
+    names.add(parts[parts.length - 1])
+  }
+  return [...names]
+}
+
+/**
  * The fingerprint the dashboard logs when it syncs the extras: the file, and
  * every script it names under <projectRoot>/local-hooks/, whether or not the
  * entry is valid (a rejected entry today can be a valid one after the next

@@ -5,13 +5,13 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { foldName, gateDecision, nameForms, protectedMention } from '../../scripts/self-pace-gate.mjs'
 import {
-  EXTRA_HOOK_MARK, applyExtraHookEntries, extraHooksDigest, isExtraHookGroup, loadExtraHookEntries, parseExtraHookEntries,
+  EXTRA_HOOK_MARK, applyExtraHookEntries, extraHookScriptNames, extraHooksDigest, isExtraHookGroup, loadExtraHookEntries, parseExtraHookEntries,
   type ExtraHookDeps, type ExtraHookEntry,
 } from '../web/extra-hook-entries.js'
 
@@ -580,6 +580,35 @@ describe('the gate reads the protected names in every spelling of the name (revi
   ])('stated limit, not covered: %s', (cmd) => {
     const b64 = Buffer.from(join(root, 'store', 'extra-hooks.json')).toString('base64')
     expect(decide(cmd.replace('<B64>', b64)).deny).toBe(false)
+  })
+})
+
+describe('extraHookScriptNames: the names the boot prune counts as ours', () => {
+  it('the file names of the scripts under local-hooks/, valid entry or not; nothing else', () => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    const file = join(root, 'store', 'extra-hooks.json')
+    writeFileSync(file, JSON.stringify({ entries: [
+      ok,
+      { event: 'Bogus', script: 'local-hooks/sub/log.mjs', failClosed: false },
+      { event: 'PreToolUse', script: 'local-hooks/gate.py', failClosed: true }, // a duplicate name
+      { event: 'PreToolUse', script: 'scripts/lib/local.py', failClosed: false },
+      { event: 'PreToolUse', script: 'local-hooks/../x.py', failClosed: false },
+      { event: 'PreToolUse', script: 42, failClosed: false },
+    ] }))
+    expect(extraHookScriptNames(file).sort()).toEqual(['gate.py', 'log.mjs'])
+  })
+
+  it('a missing or unparseable file gives none', () => {
+    expect(extraHookScriptNames(join(root, 'store', 'nope.json'))).toEqual([])
+    mkdirSync(join(root, 'store'), { recursive: true })
+    writeFileSync(join(root, 'store', 'bad.json'), '{ not json')
+    expect(extraHookScriptNames(join(root, 'store', 'bad.json'))).toEqual([])
+  })
+
+  it('the boot backfill passes them to the prune', () => {
+    const web = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
+    expect(web).toContain('const extraHookNames = extraHookScriptNames(extraHooksConfigPath())')
+    expect(web).toContain('pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName), extraHookNames)')
   })
 })
 

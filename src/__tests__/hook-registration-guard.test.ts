@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -130,6 +130,18 @@ function settingsFixture(): Record<string, unknown> {
 describe('pruneStaleHookEntries', () => {
   const liveFiles = new Set(['/opt/app/scripts/hooks/staleness-guard.py'])
   const fileExists = (p: string) => liveFiles.has(p)
+
+  it('reads the path out of the fail-closed wrapper form (`"<path>"; else ...`), live or stale', () => {
+    const wrap = (p: string) => `if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 "/usr/bin/node" "${p}"; else "/usr/bin/node" "${p}"; fi; rc=$?; exit "$rc"`
+    const settings: Record<string, unknown> = { hooks: { PreToolUse: [
+      { matcher: 'Bash', hooks: [{ type: 'command', command: wrap('/opt/gone/scripts/self-pace-gate.mjs') }] },
+      { matcher: 'Bash', hooks: [{ type: 'command', command: wrap('/opt/app/scripts/hooks/staleness-guard.py') }] },
+    ] } }
+    const { removed } = pruneStaleHookEntries(settings, { fileExists })
+    expect(removed).toHaveLength(1)
+    expect(removed[0]).toContain('/opt/gone/scripts/self-pace-gate.mjs')
+    expect(JSON.stringify(settings.hooks)).toContain('staleness-guard.py')
+  })
 
   it('prunes stale worktree entries and keeps valid + foreign entries', () => {
     const settings = settingsFixture()
@@ -278,6 +290,41 @@ describe('pruneStaleHooksFromSettingsFile', () => {
       expect(JSON.stringify(after.hooks)).toContain(liveScript)
       expect(JSON.stringify(after.hooks)).not.toContain('agent-gone')
       expect(after.enabledPlugins).toEqual({ x: true })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('extraKnownScripts: a moved hook\'s old entry on a deleted path is pruned, a live one and a foreign one stay', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hook-guard-test-'))
+    try {
+      const live = join(dir, 'local-hooks', 'post-gate.py')
+      mkdirSync(join(dir, 'local-hooks'))
+      writeFileSync(live, '# live')
+      const gone = join(dir, 'scripts', 'hooks', 'post-gate.py') // the old place, deleted
+      const foreign = join(dir, 'elsewhere', 'their-gate.py') // missing too, but not a name we know
+      const settings = {
+        hooks: {
+          PreToolUse: [
+            { matcher: 'Bash', hooks: [{ type: 'command', command: `timeout 118 python3 -I -S "${gone}"; exit 2`, timeout: 120 }] },
+            { matcher: 'Bash', hooks: [{ type: 'command', command: `: extra-hook; python3 -I -S "${live}"`, timeout: 120 }] },
+            { matcher: 'Bash', hooks: [{ type: 'command', command: `python3 "${foreign}"` }] },
+          ],
+        },
+      }
+      const settingsPath = join(dir, 'settings.json')
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
+
+      // Without the extra names nothing is ours: today's behaviour.
+      expect(pruneStaleHooksFromSettingsFile(settingsPath)).toEqual([])
+
+      const removed = pruneStaleHooksFromSettingsFile(settingsPath, ['post-gate.py'])
+      expect(removed).toHaveLength(1)
+      expect(removed[0]).toContain(gone)
+      const after = JSON.stringify(JSON.parse(readFileSync(settingsPath, 'utf-8')).hooks)
+      expect(after).not.toContain(gone)
+      expect(after).toContain(live)
+      expect(after).toContain(foreign)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

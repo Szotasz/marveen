@@ -25,8 +25,9 @@ import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
 import { forEachAgentIsolated } from './web/agent-seed-loop.js'
 import { retireRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
-import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, extraHooksConfigPath, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
+import { extraHookScriptNames } from './web/extra-hook-entries.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -760,11 +761,13 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       // digest-provenance-gate included), and heartbeat-worker froze at the
       // partial set from its last pre-hiding seed. Hidden technical workers
       // need the guard hooks MORE than visible agents, not less.
+      // A hook the install moved into local-hooks/ counts as ours for the prune below.
+      const extraHookNames = extraHookScriptNames(extraHooksConfigPath())
       forEachAgentIsolated([MAIN_AGENT_ID, ...listAllAgentNames()], (agentName) => {
         // Self-heal FIRST: drop entries this app previously wrote whose script
         // file no longer exists (e.g. a deleted worktree instance's paths), so
         // the re-registration below lands on a clean, unblocked settings file.
-        pruned.push(...pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName)))
+        pruned.push(...pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName), extraHookNames))
         if (ensureAgentHooks(agentName)) patched.push(agentName)
         // HOSTMOVE923: same guard as the hook writes -- a worktree instance must
         // not re-anchor the live fleet's CLAUDE.md onto ITS root.
