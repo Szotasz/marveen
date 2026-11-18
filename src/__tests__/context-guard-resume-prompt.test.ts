@@ -132,3 +132,36 @@ describe('resumePrompt never tells any agent to notify the channel', () => {
     }
   }
 })
+
+// HANDOFFKARTYA1118: at a customer, the fresh session continued from the kanban
+// alone and dropped an agreed HANDOFF item that had no card. Every branch that
+// points at a handoff now says its Next Steps items are tasks even without a
+// card; the no-handoff branch has no Next Steps to point at, so it says nothing.
+describe('resumePrompt: the handoff Next Steps items are tasks even without a card', () => {
+  const ITEMS = 'A HANDOFF Next Steps MINDEN tétele teendő akkor is, ha nincs kártyája'
+  const FIRST_ROUND = 'ebben az első körben minden kártya nélküli tételre hozz létre kártyát (vagy írd a tétel mellé, miért nem kell)'
+  const NOT_FULL = 'A kanban NEM a teljes teendőlista.'
+  const withHandoff: Array<[string, () => string]> = [
+    ['fresh', () => resumePrompt('samu', '/x/HANDOFF.md', true)],
+    ['stale', () => resumePrompt('samu', '/x/HANDOFF.md', true, 42)],
+    ['unknown freshness', () => resumePrompt('samu', '/x/HANDOFF.md', true, 'unknown')],
+    ['main agent, fresh', () => resumePrompt('marveen', '/x/HANDOFF.md', true)],
+  ]
+  for (const [label, make] of withHandoff) {
+    it(`${label}: present, after the kanban/FOLYTASD sentence`, () => {
+      const p = make()
+      expect(p).toContain(ITEMS)
+      expect(p).toContain(FIRST_ROUND)
+      expect(p).toContain(NOT_FULL)
+      expect(p.indexOf(ITEMS)).toBeGreaterThan(p.indexOf('FOLYTASD a megkezdett munkát'))
+    })
+  }
+  it('no handoff written: absent', () => {
+    for (const name of ['samu', 'marveen']) {
+      const p = resumePrompt(name, '/x/HANDOFF.md', false)
+      expect(p).not.toContain(ITEMS)
+      expect(p).not.toContain('kártya nélküli tételre')
+      expect(p).not.toContain(NOT_FULL)
+    }
+  })
+})
