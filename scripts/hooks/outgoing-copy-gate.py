@@ -2201,10 +2201,43 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
 # Not in the class, so not refused here: a data argument or the stdin of a program whose script is a file (the send
 # forms the other rules judge, e.g. `python3 send.py --to x < body.txt`), a pipe from another producer into a
 # program, a program other than the shells / interpreters above, and a value no xargs probe stands for.
-_UNVERIFIABLE_HINT = re.compile(r"<<|<\(|=\(|xargs")
+# EMAILGATEPIPESH1116: a send whose command text a producer pipes or hands to a shell is refused the same way. The
+# producers, whose output text is judged like a heredoc's (a text that cannot be computed cannot be told = a send):
+#   - echo / printf (by path, behind a wrapper or `builtin`): echo's words with -n / -e / -E stepped over, a
+#     backslash left in the text = cannot be told; printf's format with only %s / %% specifiers filled from its
+#     arguments (the format repeats while arguments remain), another specifier or a backslash escape other than \n /
+#     \t = cannot be told, `printf -v` prints nothing;
+#   - a copier (cat with no file operand, tee) passes on the text of its stdin, a pipe included, so a chain of
+#     copiers carries the text through;
+#   - a subshell `( ... )` or a brace group `{ ...; }` writes the texts of the producers at its top level (a segment
+#     that pipes into another one inside the group writes into that pipe, not out of the group); a pipe into a group
+#     reaches the group's first command;
+#   - a command substitution that is the whole `-c` string of a shell or the whole argument of eval (quoted
+#     `"$(...)"` / a backquote pair, or an unquoted `$(...)` right after eval / a -c flag): its inner command's
+#     producer output is the program text; a substitution whose inner command is no producer stays out of the class
+#     (`eval "$(ssh-agent -s)"`, `bash -c "$(curl ...)"`), an unbalanced one cannot be told;
+#   - parallel is judged like xargs: its `{}` (any `{...}` replacement string) is the replace string when the
+#     template has one, else its input is appended; the words after `:::` / `::::` are its input, not the template.
+#   - review round 1: an unquoted `$(...)` or backquote pair in an echo / printf word is replaced by its inner
+#     command's producer output as the shell splits it (trailing newlines dropped, blanks collapsed; a word that is
+#     only the substitution gives its fields); an inner command that is no producer, an unclosed one, or one nested
+#     deeper than _SHELL_C_DEPTH cannot be told; the inner command is still judged for the class in its own right.
+#     An unquoted backquote pair right after eval / a -c flag is read like `$(...)` there. `2>&1` / `&>` stay
+#     inside their command (the tokenizer would cut the command at the `&`).
+# Not producers (so a pipe from them stays out of the class): any other program and a cat with a file operand.
+_UNVERIFIABLE_HINT = re.compile(r"<<|<\(|=\(|xargs|parallel|\||\$\(|`")
 _UV_HEREDOC = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n(?:.*?\n)?\3(?=\s|$)", re.S)
 _UV_MARK = re.compile(r"^__GATE(HEREDOC|PROCSUBST)(\d+)__$")
 _UV_PIPE_OUT, _UV_PIPE_IN = "__GATEPIPEOUT__", "__GATEPIPEIN__"
+_UV_GROUP_OPEN, _UV_GROUP_CLOSE = "__GATEGROUPOPEN__", "__GATEGROUPCLOSE__"
+_UV_CMDSUBST = re.compile(r"^__GATECMDSUBST(\d+)__$")
+_UV_SUBST_ARG = re.compile(r"[\s;&|(](?:eval|-[a-zA-Z]*c[a-zA-Z]*)[ \t]+$")   # an unquoted `$(` right after it
+_UV_PAR_REPL = re.compile(r"\{[^{}\s]*\}")   # parallel's replacement strings ({}, {.}, {1}, ...)
+_UV_PAR_ARGS = (":::", "::::", ":::+", "::::+")
+_UV_WORDSUBST = re.compile(r"__GATEWORDSUBST(\d+)__")   # EMAILGATEPIPESH1116 R1: a substitution in a producer word
+_UV_PRODUCER_SKIP = ("{", "!", "if", "then", "else", "elif", "do", "while", "until", "time", "command", "builtin",
+                     "nohup", "exec", "env")
+_UV_SUBST_SCANS = 64   # substitutions after eval / -c read per command; one more cannot be told (bounds the time)
 _UV_COPIERS = ("cat", "tee")   # a program whose standard output is its standard input
 _UV_STDIN_PATHS = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
 _UV_FD_PATH = re.compile(r"^/(?:dev/fd|proc/self/fd)/\d+$")
@@ -2231,6 +2264,9 @@ def _uv_mark(cmd: str, texts: list) -> str:
         return f"{sep}<< __GATEHEREDOC{len(texts) - 1}__" + m.group(1)[head.end():]
     cmd = _UV_HEREDOC.sub(heredoc, cmd)
     out, q, i, n = [], None, 0, len(cmd)
+    parens = []   # "s" for an open `$(`, "g" for a group `(`: which `)` closes a group
+    scans = 0     # substitution scans after eval / -c, each up to the end of the command: bounded
+    cmd_start, starts, first = 0, [], {}   # where the current simple command starts in `out` (R1)
     while i < n:
         ch = cmd[i]
         if q:
@@ -2239,20 +2275,53 @@ def _uv_mark(cmd: str, texts: list) -> str:
             if ch == q:
                 q = None
             out.append(ch); i += 1; continue
+        if ch == '"' and cmd[i + 1:i + 3] == "$(" and _uv_subst_arg(out):
+            # EMAILGATEPIPESH1116: a whole `"$(...)"` right after eval / a -c flag: the substitution opens its own
+            # quoting, so the word is replaced by one that stands for it (its commands are judged through it)
+            scans += 1
+            end = _uv_close_paren(cmd, i + 3) if scans <= _UV_SUBST_SCANS else -2
+            if 0 < end < n and cmd[end] == '"':
+                texts.append(("cmdsubst", cmd[i + 3:end - 1]))
+                out.append(f" __GATECMDSUBST{len(texts) - 1}__ ")
+                i = end + 1
+                continue
+            if end == -2:   # past the scan bound: cannot be told
+                texts.append(("cmdsubst", None))
+                out.append(f" __GATECMDSUBST{len(texts) - 1}__ ")
         if ch in "'\"":
             q = ch; out.append(ch); i += 1; continue
         if ch == "\\" and i + 1 < n:
             out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "`":
+            # EMAILGATEPIPESH1116 R1: an unquoted backquote pair after eval / a -c flag, or in a producer's word
+            kind = ("cmdsubst" if _uv_subst_arg(out) else
+                    "wordsubst" if _uv_producer_context(out, cmd_start, first) else None)
+            if kind:
+                j = i + 1
+                while j < n and cmd[j] != "`":
+                    j += 2 if cmd[j] == "\\" else 1
+                texts.append((kind, cmd[i + 1:j] if j < n else None))
+                out.append(f" __GATECMDSUBST{len(texts) - 1}__ " if kind == "cmdsubst"
+                           else f"__GATEWORDSUBST{len(texts) - 1}__")
+                i = j + 1
+                continue
+            out.append(ch); i += 1; cmd_start = len(out); continue
+        if ch == "&" and ((i > 0 and cmd[i - 1] in "<>") or cmd[i + 1:i + 2] == ">"):
+            i += 1   # R1: `2>&1`, `&>f`: a redirection, not a separator (the tokenizer would cut the command there)
+            continue
+        if ch in ";&\n":
+            out.append(ch); i += 1; cmd_start = len(out); continue
         if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|("):
             while i < n and cmd[i] != "\n":   # a comment: an apostrophe in it opens no quote
                 out.append(cmd[i]); i += 1
             continue
         if ch == "|" and not (i > 0 and cmd[i - 1] == ">"):
             if i + 1 < n and cmd[i + 1] == "|":
-                out.append("||"); i += 2; continue
+                out.append("||"); i += 2; cmd_start = len(out); continue
             # a pipe: the segment before it ends in _UV_PIPE_OUT, the one after it starts with _UV_PIPE_IN
             out.append(f" {_UV_PIPE_OUT} | {_UV_PIPE_IN} ")
             i += 2 if i + 1 < n and cmd[i + 1] == "&" else 1
+            cmd_start = len(out)
             continue
         if i + 1 < n and cmd[i + 1] == "(" and (ch == "<" or (ch == "=" and (i == 0 or cmd[i - 1] in " \t\n;&|(<"))):
             depth, j, iq = 1, i + 2, None
@@ -2273,8 +2342,75 @@ def _uv_mark(cmd: str, texts: list) -> str:
             out.append(f" __GATEPROCSUBST{len(texts) - 1}__ ")
             i = j
             continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            # EMAILGATEPIPESH1116: right after eval / a -c flag the substitution's inner command is recorded and a
+            # word stands for it there; the substitution itself is still scanned (its commands are judged as before)
+            if _uv_subst_arg(out):
+                scans += 1
+                end = _uv_close_paren(cmd, i + 2) if scans <= _UV_SUBST_SCANS else -1   # past the bound: cannot tell
+                texts.append(("cmdsubst", cmd[i + 2:end - 1] if end > 0 else None))
+                out.append(f" __GATECMDSUBST{len(texts) - 1}__ ")
+            elif _uv_producer_context(out, cmd_start, first):
+                # EMAILGATEPIPESH1116 R1: an unquoted substitution in an echo / printf word: one glued word stands
+                # for it, and its inner command is judged through it (_uv_wordsubst_sends)
+                end = _uv_close_paren(cmd, i + 2)
+                texts.append(("wordsubst", cmd[i + 2:end - 1] if end > 0 else None))
+                out.append(f"__GATEWORDSUBST{len(texts) - 1}__")
+                i = end if end > 0 else n
+                continue
+            parens.append("s")
+            starts.append(cmd_start)
+            out.append("$("); i += 2; cmd_start = len(out); continue
+        if ch == "(":
+            parens.append("g")
+            out.append(f"( {_UV_GROUP_OPEN} "); i += 1; cmd_start = len(out); continue
+        if ch == ")" and parens:
+            if parens.pop() == "g":
+                out.append(f") {_UV_GROUP_CLOSE} "); i += 1; cmd_start = len(out); continue
+            cmd_start = starts.pop() if starts else len(out)
         out.append(ch); i += 1
     return "".join(out)
+
+
+def _uv_producer_context(out, start, cache) -> bool:
+    """EMAILGATEPIPESH1116 R1: the simple command scanned since `start` is an echo / printf (behind keywords,
+    assignments and plain launchers) whose name is a complete word; cached per command start"""
+    if start in cache:
+        return cache[start]
+    text = "".join(out[start:])
+    words = text.split()
+    while words and (words[0] in _UV_PRODUCER_SKIP or re.match(r"^[A-Za-z0-9_]+=", words[0])):
+        words = words[1:]
+    # the substitution in the command name itself (no complete name before it) makes no producer
+    cache[start] = (bool(words) and (len(words) > 1 or text[-1:].isspace())
+                    and _basename(words[0]) in ("echo", "printf"))
+    return cache[start]
+
+
+def _uv_subst_arg(out) -> bool:
+    """the scanned text so far ends in eval or a -c flag and blanks (its last 64 characters are read)"""
+    tail = "".join(out[-64:])
+    return bool(_UV_SUBST_ARG.search((" " if len(out) <= 64 and len(tail) <= 64 else "x") + tail[-64:]))
+
+
+def _uv_close_paren(s: str, j: int) -> int:
+    """the index after the `)` that closes a `(` opened right before index j (quote-aware as the process
+    substitution scan above); -1 when it is not closed"""
+    depth, iq, n = 1, None, len(s)
+    while j < n and depth > 0:
+        c = s[j]
+        j += 1
+        if iq:
+            if c == iq:
+                iq = None
+            continue
+        if c in "'\"":
+            iq = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+    return j if depth == 0 else -1
 
 
 def _uv_produced_text(inner):
@@ -2287,16 +2423,39 @@ def _uv_produced_text(inner):
         return None
     if len(segs) != 1 or not segs[0]:
         return None
-    prog, words = _basename(segs[0][0]), segs[0][1:]
+    printed = _uv_printed(segs[0])
+    return printed[1] if printed else None
+
+
+def _uv_printed(words):
+    """EMAILGATEPIPESH1116: ("text", the text an echo / printf command prints, or None when it cannot be computed);
+    None when the command is no echo / printf or prints nothing (`printf -v`)"""
+    prog, words = _basename(words[0]), list(words[1:])
     if prog == "echo":
         while words and re.match(r"^-[neE]+$", words[0]):
             words = words[1:]
         text = " ".join(words)
-        return None if "\\" in text else text
-    if prog == "printf" and len(words) == 1 and "%" not in words[0]:
-        text = words[0].replace("\\n", "\n").replace("\\t", "\t")
-        return None if "\\" in text else text
-    return None
+        return ("text", None if "\\" in text else text)
+    if prog != "printf":
+        return None
+    if words and words[0] == "--":
+        words = words[1:]
+    if not words or words[0].startswith("-v"):
+        return None
+    fmt = words[0].replace("\\n", "\n").replace("\\t", "\t")
+    specs = re.findall(r"%(.|$)", fmt, re.S)
+    if "\\" in fmt or any(s not in ("s", "%") for s in specs):
+        return ("text", None)
+    args, n = words[1:], specs.count("s")
+
+    def fill(chunk):
+        it = iter(chunk)
+        return re.sub(r"%([s%])", lambda m: "%" if m.group(1) == "%" else next(it, ""), fmt)
+    if n == 0 or not args:
+        return ("text", fill([]))
+    if -(-len(args) // n) * (len(fmt) - 2 * n) + sum(map(len, args)) > 2 * sum(map(len, words)) + 4096:
+        return ("text", None)   # the format repeated far beyond the command's own length: not computed (time bound)
+    return ("text", "".join(fill(args[k:k + n]) for k in range(0, len(args), n)))
 
 
 def _uv_text(word, texts):
@@ -2384,15 +2543,16 @@ def _uv_program_text_sends(kind, text, cwd, depth, texts) -> bool:
     return _heredoc_body_sends(text, kind)
 
 
-def _uv_copier_output(head, texts):
+def _uv_copier_output(head, texts, pipe_feed=None):
     """EMAILGATESUBST1116 (Dani's #2842 review B1): the text a pipeline segment writes into the pipe when its program
     only copies its stdin -- cat with no file operand (only switches, `-` and `--`) or tee (its file operands are
-    extra outputs), behind any path or wrapper -- and that stdin is a heredoc or a here-string in any spelling.
-    ("text", None) when that text is unreadable; None when the segment is no such copier."""
+    extra outputs), behind any path or wrapper -- and that stdin is a heredoc or a here-string in any spelling, or
+    (EMAILGATEPIPESH1116) the text a producer pipes in. ("text", None) when that text is unreadable; None when the
+    segment is no such copier."""
     prog = _basename(head[0])
     if prog not in _UV_COPIERS:
         return None
-    feed, args = _uv_stdin_and_args(head[1:], texts)
+    feed, args = _uv_stdin_and_args(head[1:], texts, pipe_feed)
     if feed is None or feed[0] != "text":
         return None
     if prog == "cat" and any(not a.startswith("-") for a in args):
@@ -2400,12 +2560,95 @@ def _uv_copier_output(head, texts):
     return feed
 
 
+def _uv_head_output(head, texts, pipe_feed=None):
+    """EMAILGATEPIPESH1116: what a command writes to its stdout when it is a producer (echo / printf, a copier):
+    ("text", str or None); None when it is no producer"""
+    prog, rest = _basename(head[0]), list(head[1:])
+    while prog == "builtin" and rest:
+        prog, rest = _basename(rest[0]), rest[1:]
+    if prog in ("echo", "printf"):
+        words = _uv_resolve_words(_uv_stdin_and_args(rest, texts)[1], texts)
+        return ("text", None) if words is None else _uv_printed([prog] + words)
+    return _uv_copier_output(head, texts, pipe_feed)
+
+
+def _uv_resolve_words(words, texts):
+    """EMAILGATEPIPESH1116 R1: a producer's words with each substitution replaced by its inner producer's output as
+    the shell splits it (trailing newlines dropped, blanks collapsed; a word that is only the substitution becomes
+    its fields); None when one of them cannot be computed"""
+    out = []
+    for w in words:
+        if not _UV_WORDSUBST.search(w):
+            out.append(w)
+            continue
+        vals = [texts[int(k)][2][1] if len(texts[int(k)]) > 2 else None for k in _UV_WORDSUBST.findall(w)]
+        if any(v is None for v in vals):
+            return None
+        it = iter(vals)
+        r = _UV_WORDSUBST.sub(lambda m: re.sub(r"\s+", " ", next(it).rstrip("\n")), w)
+        out.extend(r.split() if _UV_WORDSUBST.fullmatch(w) else [r])
+    return out
+
+
+def _uv_wordsubst_sends(k, cwd, depth, texts) -> bool:
+    """EMAILGATEPIPESH1116 R1: judge the inner command of a substitution in a producer word (as the scan would have
+    judged it in place) and keep its producer output for _uv_resolve_words; no producer = cannot be told"""
+    entry = texts[k]
+    if len(entry) > 2:
+        return False
+    if entry[1] is None:
+        texts[k] = ("wordsubst", None, ("text", None))
+        return False
+    if depth >= _SHELL_C_DEPTH:
+        texts[k] = ("wordsubst", entry[1], ("text", None))
+        return True   # nested beyond the bound: cannot be told
+    outs = []
+    if _uv_sends(entry[1], cwd, depth + 1, texts, outs):
+        return True
+    texts[k] = ("wordsubst", entry[1], _uv_join(outs) or ("text", None))
+    return False
+
+
+def _uv_join(feeds):
+    """the texts of several producers written one after another; None when there is none"""
+    if not feeds:
+        return None
+    if any(f[1] is None for f in feeds):
+        return ("text", None)
+    return ("text", "\n".join(f[1] for f in feeds))
+
+
+def _uv_subst_sends(words, cwd, depth, texts) -> bool:
+    """EMAILGATEPIPESH1116: a -c string / an eval argument that is one command substitution as a whole, whose inner
+    command is a producer: its output is the program text, judged like a heredoc's"""
+    m = _UV_CMDSUBST.match(words[0])
+    if not m and len(words) != 1:
+        return False
+    s = words[0].strip()
+    if m:
+        inner = texts[int(m.group(1))][1]
+    elif len(s) > 1 and s[0] == s[-1] == "`" and "`" not in s[1:-1]:
+        inner = s[1:-1]
+    elif s.startswith("$(") and s.endswith(")") and _uv_close_paren(s, 2) == len(s):
+        inner = s[2:-1]
+    else:
+        return False
+    if inner is None:
+        return True   # an unbalanced substitution: cannot be told
+    outs = []
+    if _uv_sends(inner, cwd, depth + 1, texts, outs):
+        return True
+    out = _uv_join(outs)
+    return out is not None and _uv_program_text_sends("sh", out[1], cwd, depth, texts)
+
+
 def _uv_head(head, cwd, depth, texts, pipe_feed=None) -> bool:
     prog, rest = _basename(head[0]), list(head[1:])
     while prog == "builtin" and rest:
         prog, rest = _basename(rest[0]), rest[1:]
     if prog == "eval":
-        return depth < _SHELL_C_DEPTH and bool(rest) and _uv_sends(" ".join(rest), cwd, depth + 1, texts)
+        return depth < _SHELL_C_DEPTH and bool(rest) and (_uv_subst_sends(rest, cwd, depth, texts)
+                                                          or _uv_sends(" ".join(rest), cwd, depth + 1, texts))
     kind = ("sh" if _WRAPPER_SHELL.match(prog) else "src" if prog in ("source", ".") else
             "py" if _PYTHON.match(prog) else "js" if _NODEISH.match(prog) and prog.lower() != "npx" else None)
     if kind is None:
@@ -2422,7 +2665,8 @@ def _uv_head(head, cwd, depth, texts, pipe_feed=None) -> bool:
             return False
         src = "stdin"
     if src == "string":
-        return kind == "sh" and depth < _SHELL_C_DEPTH and _uv_sends(word, cwd, depth + 1, texts)
+        return kind == "sh" and depth < _SHELL_C_DEPTH and (_uv_subst_sends([word], cwd, depth, texts)
+                                                             or _uv_sends(word, cwd, depth + 1, texts))
     if src != "stdin" or feed is None or feed[0] == "file":
         return False
     return _uv_program_text_sends(kind, feed[1], cwd, depth, texts)
@@ -2477,11 +2721,17 @@ def _uv_xargs_templates(words, repl=None, j=0, _memo=None):
     return memo[key]
 
 
-def _uv_xargs_sends(words, cwd, texts) -> bool:
+def _uv_xargs_sends(words, cwd, texts, parallel=False) -> bool:
     """The xargs template judged as written; a value probe only where xargs fills a recipient value; a shell -c program
-    in it judged with its placeholder and positional parameters as values."""
+    in it judged with its placeholder and positional parameters as values. parallel (EMAILGATEPIPESH1116): its
+    template ends at `:::` / `::::`, and a `{...}` replacement string in it is the replace string."""
     for template, repl in _uv_xargs_templates(words):
         template = _uv_stdin_and_args(template, texts)[1]   # a redirection there is xargs' own
+        if parallel:
+            cut = next((k for k, w in enumerate(template) if w in _UV_PAR_ARGS), len(template))
+            template = [_UV_PAR_REPL.sub("{}", w) for w in template[:cut]]
+            if not repl and any("{}" in w for w in template):
+                repl = "{}"
         if not template:
             continue
         if is_send_invocation(" ".join(_uv_shell_word(w) for w in template)):
@@ -2518,31 +2768,60 @@ def _uv_xargs_sends(words, cwd, texts) -> bool:
     return False
 
 
-def _uv_sends(cmd: str, cwd, depth: int, texts: list) -> bool:
+def _uv_sends(cmd: str, cwd, depth: int, texts: list, outs=None) -> bool:
+    """`outs` (EMAILGATEPIPESH1116), when given, collects the producer outputs written at the command's top level"""
     try:
         segments = _segments_tokens(_uv_mark(cmd, texts))
     except ValueError:
         return False   # unparseable: is_send_invocation's legacy fallback judges it
-    pipe_feed = None   # what the previous segment writes into the pipe, when it is a copier
+    pipe_feed = None   # what the previous segment writes into the pipe, when it is a producer
+    frames = []        # the producer outputs of each open group, innermost last
+    carry = None       # a pipe into a `( ... )` group reaches its first command
     for toks in segments:
         feed_in = pipe_feed if toks[0] == _UV_PIPE_IN else None
         pipe_feed = None
         pipes_out = toks[-1] == _UV_PIPE_OUT
-        toks = [t for t in toks if t not in (_UV_PIPE_IN, _UV_PIPE_OUT)]
-        if not toks:
-            continue   # e.g. `( ... ) |`: a subshell is no copier here
-        if toks[-1] in ("<", "="):
-            # a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
-            texts.append(("procsubst", None))
-            toks = toks[:-1] + [f"__GATEPROCSUBST{len(texts) - 1}__"]
-        for i, t in enumerate(toks):
-            if _basename(t) in ("xargs", "gxargs") and _uv_xargs_sends(toks[i + 1:], cwd, texts):
+        closed, group_out = False, None
+        if toks[0] == _UV_GROUP_OPEN:
+            frames.append([])
+            feed_in = carry
+        carry = None
+        if toks[0] == _UV_GROUP_CLOSE:
+            closed, group_out = True, (_uv_join(frames.pop()) if frames else None)
+        toks = [t for t in toks if t not in (_UV_PIPE_IN, _UV_PIPE_OUT, _UV_GROUP_OPEN, _UV_GROUP_CLOSE)]
+        if toks and toks[0] == "{":
+            frames.append([])
+            toks = toks[1:]
+        if toks and toks[0] == "}" and not closed:
+            closed, group_out = True, (_uv_join(frames.pop()) if frames else None)
+            toks = toks[1:]
+        out = None
+        if toks:
+            if any(_uv_wordsubst_sends(int(k), cwd, depth, texts) for t in toks for k in _UV_WORDSUBST.findall(t)):
                 return True
-        heads = [h for h in _command_heads(toks) if h]
-        if any(_uv_head(h, cwd, depth, texts, feed_in) for h in heads):
-            return True
+            if toks[-1] in ("<", "="):
+                # a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
+                texts.append(("procsubst", None))
+                toks = toks[:-1] + [f"__GATEPROCSUBST{len(texts) - 1}__"]
+            for i, t in enumerate(toks):
+                if _basename(t) in ("xargs", "gxargs", "parallel") and _uv_xargs_sends(
+                        [w for w in toks[i + 1:] if not _UV_CMDSUBST.match(w)], cwd, texts, _basename(t) == "parallel"):
+                    return True
+            heads = [h for h in _command_heads(toks) if h]
+            if any(_uv_head(h, cwd, depth, texts, feed_in) for h in heads):
+                return True
+            out = next((f for f in (_uv_head_output(h, texts, feed_in) for h in heads) if f), None)
+        elif feed_in is not None and not closed:
+            carry = feed_in   # `x | ( ...`: the pipe ends at the group's `(`
+        if closed:
+            out = group_out   # what is left of the closing segment are redirections
         if pipes_out:
-            pipe_feed = next((f for f in (_uv_copier_output(h, texts) for h in heads) if f), None)
+            pipe_feed = out
+        elif out is not None:
+            if frames:
+                frames[-1].append(out)
+            elif outs is not None:
+                outs.append(out)
     return False
 
 

@@ -57,11 +57,23 @@ REFUSED = (
     ("a shell reads its program from a stdin heredoc", f"sh -s <<'EOF'\npython3 tool.py --to {A}\nEOF"),
     ("xargs puts its input in a recipient value", f"printf '{A}' | xargs -I{{}} python3 tool.py --to {{}}"),
     ("xargs appends its input after a recipient flag", "xargs -a addrs.txt python3 tool.py --to"),
+    # EMAILGATEPIPESH1116: a send whose command text a producer pipes or hands to a shell
+    ("a producer's text piped into a shell", f"echo 'python3 tool.py --to {A}' | bash"),
+    ("a group's producer text piped into a shell", f"(cat <<'EOF'\npython3 tool.py --to {A}\nEOF\n) | sh"),
+    ("a shell -c string that is a producer's command substitution", f"bash -c \"$(cat <<< 'python3 tool.py --to {A}')\""),
+    ("an eval argument that is a producer's command substitution", f"eval \"$(echo python3 tool.py --to {A})\""),
+    ("parallel puts its input in a recipient value", f"printf '{A}\\n' | parallel python3 tool.py --to {{}}"),
+    ("a substitution in a producer's word, piped into a shell", f"echo $(printf 'python3 tool.py --to {A}') | sh"),
+    ("an unquoted backquoted echo as the eval argument", f"eval `echo 'python3 tool.py --to {A}'`"),
 )
 NOT_SENDS = (
     ("control: xargs runs grep", "find . -name '*.py' | xargs grep -n foo"),
     ("control: a here-string program with no send marker", "bash <<< 'ls -la'"),
     ("control: process substitutions as data arguments", "diff <(sort a) <(sort b)"),
+    ("control: a producer's text with no send marker piped into a shell", "echo 'ls -la' | bash"),
+    ("control: an eval substitution whose command is no producer", "eval \"$(ssh-agent -s)\""),
+    ("control: parallel runs echo", "printf 'a\\nb\\n' | parallel echo {}"),
+    ("control: an unquoted backquoted eval argument whose command is no producer", "eval `ssh-agent -s`"),
 )
 LEGIT_SEND = f"python3 scripts/support-mail/send.py --to {A} --subject S < BODY"
 
