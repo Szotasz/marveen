@@ -2843,8 +2843,9 @@ export function updateMemory(id: number, content: string, category?: string, age
   // live and stay correct, while hybridSearch keeps fusing the stale vector's
   // ranking in. Dropping it to NULL hands the row back to backfillEmbeddings,
   // which processes exactly `WHERE embedding IS NULL` and is therefore
-  // idempotent and resumable. Deliberately NOT regenerating here: that would
-  // put a synchronous Ollama call in the path of a DB write.
+  // idempotent and resumable. Deliberately NOT regenerating synchronously here:
+  // that would put an Ollama call in the path of a DB write. The asynchronous
+  // re-embed after the write (REEMBEDONUPDATE1117, below) fills it in.
   //
   // The trigger is the embedded TEXT changing, which is content AND keywords:
   // both saveAgentMemory and backfillEmbeddings embed `content + ' ' + keywords`,
@@ -2855,7 +2856,8 @@ export function updateMemory(id: number, content: string, category?: string, age
   // resends the unchanged body on a category-only edit), so presence alone says
   // nothing about a change.
   const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
-  if (before && (before.content !== content || keywordsChanged)) {
+  const embeddedTextChanged = !!before && (before.content !== content || keywordsChanged)
+  if (embeddedTextChanged) {
     sets.push('embedding = NULL')
     sets.push('embedding_model = NULL')
   }
@@ -2878,6 +2880,17 @@ export function updateMemory(id: number, content: string, category?: string, age
     } else {
       if (before?.agent_id) memoryCacheInvalidate(before.agent_id)
       if (agentId && agentId !== before?.agent_id) memoryCacheInvalidate(agentId)
+    }
+    // REEMBEDONUPDATE1117: re-embed the new text right away, fire-and-forget,
+    // the same way saveAgentMemory does. Without this the row stayed NULL until
+    // the next backfill (the nightly Dream Engine round), so for up to a day
+    // the vector half of hybrid search could not see a freshly edited memory.
+    // It stays off the write path: scheduleEmbedding never blocks, a backend
+    // outage just leaves the NULL for backfill as before, and its UPDATE is
+    // guarded by `content = ? AND keywords IS ?`, so a slow reply for text
+    // that has been edited again in the meantime is discarded, not stored.
+    if (embeddedTextChanged) {
+      scheduleEmbedding(id, content, keywords !== undefined ? keywords : (before?.keywords ?? undefined))
     }
   }
   return changed
