@@ -344,6 +344,18 @@ describe('claim/release HTTP routes', () => {
     expect(b.body.error).toContain('cody')
   })
 
+  it('a body that is JSON but not an object is a 400 on /claim and /release, and nothing is claimed', async () => {
+    createKanbanCard({ id: 'c1', title: 'One' })
+    for (const action of ['claim', 'release']) {
+      for (const payload of [null, [], ['cody'], 'cody', 42]) {
+        const r = await route('POST', `/api/kanban/c1/${action}`, payload)
+        expect(r.status, `${action} ${JSON.stringify(payload)}`).toBe(400)
+        expect(r.body.error, `${action} ${JSON.stringify(payload)}`).toContain('JSON objektum')
+      }
+    }
+    expect(getKanbanCard('c1')!.claimed_by).toBeNull()
+  })
+
   it('two claims fired in parallel through the route: exactly one 200', async () => {
     createKanbanCard({ id: 'c1', title: 'One' })
     const [x, y] = await Promise.all([
