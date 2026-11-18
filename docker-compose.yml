@@ -12,11 +12,10 @@ name: marveen
 
 services:
   marveen:
+    # DOCKERUX1118: no build: here. With one, a pull that fails (an unpublished tag, no access) made compose build the
+    # image on the server silently (measured, Geri 33317; ~5 GB build cache). Now a missing image is an error that says
+    # so. To build from source, see "Build the image yourself" in docs/docker.md.
     image: ghcr.io/szotasz/marveen:${MARVEEN_VERSION:-latest}
-    build:
-      context: .
-      args:
-        MARVEEN_COMMIT: ${MARVEEN_COMMIT:-}
     restart: unless-stopped
     environment:
       MARVEEN_CHANNEL: ${MARVEEN_CHANNEL:-telegram}
