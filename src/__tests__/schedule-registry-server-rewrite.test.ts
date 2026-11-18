@@ -209,6 +209,18 @@ describe('retireRotationHeartbeatTask (P5)', () => {
     expect(h.sent).toEqual([])
   })
 
+  it('an unedited seed with an extra file the owner put in its dir is not removed: switched off, the file kept', async () => {
+    seeded(buildRotationHeartbeatPromptV2(opts))
+    const extra = join(SCHEDULED_TASKS_DIR, ROTATION_HEARTBEAT_TASK, 'notes.md')
+    writeFileSync(extra, 'my notes')
+    const h = deps()
+    const out = await retireRotationHeartbeatTask(h.d)
+    expect(out.result).not.toBe('removed')
+    expect(existsSync(extra)).toBe(true)
+    expect(readScheduledTask(ROTATION_HEARTBEAT_TASK)?.enabled).toBe(false)
+    expect(readRemovedDefaultTasks().has(ROTATION_HEARTBEAT_TASK)).toBe(false)
+  })
+
   it('an edited task is switched off, kept, still trusted, and the owner is told once, not again on the next start', async () => {
     const edited = buildRotationHeartbeatPromptV2(opts).replace('csendben', 'csendben, de alaposan')
     seeded(edited)

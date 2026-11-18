@@ -11,7 +11,7 @@
 //      default) makes every tick return before deciding.
 // ensureRotationHeartbeatTask() closes (1); rotationReadiness() surfaces (2)
 // and the other silent preconditions through GET /api/claude-plans/readiness.
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { CHANNEL_CHAT_ID, MAIN_AGENT_ID, PROJECT_ROOT, WEB_PORT } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
@@ -283,7 +283,11 @@ export async function retireRotationHeartbeatTask(deps: RetireRotationTaskDeps):
   const opts = { projectRoot: PROJECT_ROOT, webPort: WEB_PORT, chatId: CHANNEL_CHAT_ID }
   let raw = ''
   try { raw = readFileSync(join(dir, 'SKILL.md'), 'utf-8') } catch { raw = '' }
-  if (raw && isServerWrittenRotationSkill(raw, opts)) {
+  // Removal takes the whole dir, so only a dir holding nothing but the two server-written files counts as unedited;
+  // any file the owner added there makes it an edited task (switched off, kept).
+  let onlyServerFiles = false
+  try { onlyServerFiles = readdirSync(dir).every((n) => n === 'SKILL.md' || n === 'task-config.json') } catch { onlyServerFiles = false }
+  if (raw && onlyServerFiles && isServerWrittenRotationSkill(raw, opts)) {
     unregisterScheduledTask(ROTATION_HEARTBEAT_TASK)
     rmSync(dir, { recursive: true, force: true })
     markDefaultTaskRemoved(ROTATION_HEARTBEAT_TASK)
