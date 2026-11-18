@@ -89,9 +89,9 @@ import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(GATE_PY)})
 g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
 t = time.time()
-for c in json.loads(sys.argv[1]): g.unverifiable_send_construction(c, sys.argv[2])
+for c in json.loads(sys.stdin.read()): g.unverifiable_send_construction(c, sys.argv[1])
 print(int((time.time() - t) * 1000))
-`, JSON.stringify(cmds), dir], { encoding: 'utf-8' }).trim())
+`, dir], { encoding: 'utf-8', input: JSON.stringify(cmds) }).trim())
     expect(pyMs).toBeLessThan(5000)
   })
 
