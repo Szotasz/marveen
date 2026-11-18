@@ -37,7 +37,7 @@ function run(provider: string, envFile: string | null) {
   const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } })
   return { out: r.stdout, err: r.stderr, status: r.status }
 }
-const url = (port: number) => `URL=http://127.0.0.1:${port}/api/approvals/teams-card-action`
+const url = (port: number, host = '127.0.0.1') => `URL=http://${host}:${port}/api/approvals/teams-card-action`
 
 describe('channels.sh: MARVEEN_APPROVAL_URL for the main agent Teams plugin', () => {
   it('Teams, no WEB_PORT in the install .env: the default dashboard port on loopback', () => {
@@ -56,6 +56,20 @@ describe('channels.sh: MARVEEN_APPROVAL_URL for the main agent Teams plugin', ()
     const remote = run('teams', 'WEB_HOST=100.64.1.2\n')
     expect(remote.out).toContain('URL=\n')
     expect(remote.out).toContain('WEB_HOST=100.64.1.2 is not loopback')
+  })
+  // Measured with node 22 on macOS: ::1 answers only on [::1]; :: and an empty WEB_HOST also answer on 127.0.0.1;
+  // localhost binds the resolver's first address (::1 there), so the URL keeps the name for the plugin to resolve.
+  it('an IPv6 loopback WEB_HOST gets the [::1] URL; :: and empty stay on 127.0.0.1; localhost stays a name', () => {
+    expect(run('teams', 'WEB_HOST=::1\nWEB_PORT=4100\n').out).toContain(url(4100, '[::1]'))
+    expect(run('teams', 'WEB_HOST="[::1]"\n').out).toContain(url(3420, '[::1]'))
+    expect(run('teams', 'WEB_HOST=::\n').out).toContain(url(3420))
+    expect(run('teams', 'WEB_HOST=\n').out).toContain(url(3420))
+    expect(run('teams', 'WEB_HOST=localhost\n').out).toContain(url(3420, 'localhost'))
+    for (const h of ['::2', '[::1]x', 'localhost.example', '::ffff:10.0.0.1']) {
+      const r = run('teams', `WEB_HOST=${h}\n`)
+      expect(r.out).toContain('URL=\n')
+      expect(r.out).toContain(`WEB_HOST=${h} is not loopback`)
+    }
   })
   it('the state dir export is kept, and other providers get no approval URL', () => {
     const r = run('teams', '')

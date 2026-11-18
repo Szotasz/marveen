@@ -1642,19 +1642,27 @@ STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
 [ "$CHANNEL_PROVIDER" = "gromzo" ] && STATE_DIR_ENV=""
 # TEAMSAPPROVECARD1118: the main agent's Teams plugin (0.3.3+) forwards a click on the dashboard's email approval card
 # to this URL and never hands it to the session (claude-channel-teams docs/approval-cards.md). The plugin accepts only a
-# loopback URL, so the dashboard is addressed on 127.0.0.1 at its WEB_PORT. A dashboard bound to one non-loopback
-# address (WEB_HOST) is not reachable there: nothing is exported, and the plugin answers such a click with its fixed
-# "decide on the dashboard" card.
+# loopback URL (127.0.0.1, [::1], localhost), so the URL names the loopback address the dashboard listens on for its
+# WEB_HOST. Measured with node 22 on macOS: an unset/empty WEB_HOST, 127.0.0.1, 0.0.0.0 and :: all answer on 127.0.0.1;
+# ::1 answers only on [::1]; localhost binds whichever address the resolver gives first (::1 on macOS), so it stays
+# localhost and the plugin's fetch resolves it the same way (Bun tried both addresses). A dashboard bound to one
+# non-loopback address is not reachable on loopback: nothing is exported, and the plugin answers such a click with its
+# fixed "decide on the dashboard" card.
 if [ "$CHANNEL_PROVIDER" = "teams" ]; then
   _approval_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r"'"'"' ')"
   case "$_approval_port" in ''|*[!0-9]*) _approval_port=3420 ;; esac
   _approval_host="$(grep -E '^WEB_HOST=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r"'"'"' ')"
   case "$_approval_host" in
-    ''|127.0.0.1|0.0.0.0|::|localhost)
-      STATE_DIR_ENV="${STATE_DIR_ENV}export MARVEEN_APPROVAL_URL=$(sh_single_quote "http://127.0.0.1:${_approval_port}/api/approvals/teams-card-action") && " ;;
-    *)
-      echo "[channels] TEAMSAPPROVECARD1118: WEB_HOST=$_approval_host is not loopback; Teams approval-card clicks are not forwarded" ;;
+    ''|127.0.0.1|0.0.0.0|::) _approval_origin="127.0.0.1" ;;
+    ::1|'[::1]') _approval_origin="[::1]" ;;
+    localhost) _approval_origin="localhost" ;;
+    *) _approval_origin="" ;;
   esac
+  if [ -n "$_approval_origin" ]; then
+    STATE_DIR_ENV="${STATE_DIR_ENV}export MARVEEN_APPROVAL_URL=$(sh_single_quote "http://${_approval_origin}:${_approval_port}/api/approvals/teams-card-action") && "
+  else
+    echo "[channels] TEAMSAPPROVECARD1118: WEB_HOST=$_approval_host is not loopback; Teams approval-card clicks are not forwarded"
+  fi
 fi
 # TEAMSAPPROVECARD1118 end
 
