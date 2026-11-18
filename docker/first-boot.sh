@@ -57,6 +57,13 @@ fi
 chmod 0600 .env
 
 [ -f .lang ] || printf '%s\n' "${MARVEEN_LANG:-en}" > .lang
+# DOCKERUX1118: the dashboard's default language is the install's (DASHBOARD_LANG defaults to hu, so an en install's
+# wizard came up in Hungarian, Geri 33317). From .lang, so an existing volume gets it too; only when .env has no such
+# line. A choice made later on the Settings page lives in store/config-overrides.json and wins over this line anyway.
+INSTALL_LANG="$(head -n 1 .lang)"
+case "$INSTALL_LANG" in
+  en|hu) grep -q '^DASHBOARD_LANG=' .env || { set_env_key DASHBOARD_LANG "$INSTALL_LANG"; say "DASHBOARD_LANG=$INSTALL_LANG"; } ;;
+esac
 
 # Read the identity back from .env (a finished wizard changed it).
 env_val() { grep -m1 "^$1=" .env | cut -d= -f2-; }
