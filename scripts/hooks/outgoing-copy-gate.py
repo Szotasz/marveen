@@ -3682,7 +3682,8 @@ def load_extra_accentless():
     """The install's own accentless entries ("extra_accentless" in the local rules file), e.g. its town's name.
 
     The shipped ACCENTLESS holds no proper names; this is where an install keeps its own, without editing this
-    file. Keys: lowercase ASCII letters; values: a string with at least one accented letter. A shipped key is
+    file. Pick keys that are never correct without the accent: a key that is also an ordinary unaccented word
+    would block legitimate text. Keys: lowercase ASCII letters; values: a string with at least one accented letter. A shipped key is
     never overridden (logged). An invalid block is dropped as a whole and logged; it changes nothing else (the
     name rule above keeps its own state, and no send is blocked because of it). No key: {}."""
     try:
