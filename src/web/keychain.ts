@@ -50,15 +50,26 @@ export function keychainRetrieve(): string | null {
   return keychainRetrieveStatus().value
 }
 
+// VAULTKEYLOG1118: the value travels in the argument list, and a failed execFileSync puts the whole command line in
+// its error message ("Command failed: ... -w <value> ..."), which the caller logs. So the error that leaves this
+// function is a NEW one that names only the outcome (exit status, signal, error code); the original is not kept as
+// its cause, because a logged cause is printed too.
 export function keychainStore(value: string): void {
-  execFileSync(SECURITY, [
-    'add-generic-password',
-    '-U',
-    '-s', SERVICE,
-    '-a', ACCOUNT,
-    '-w', value,
-    '-A',
-  ], { stdio: ['ignore', 'ignore', 'ignore'], timeout: SECURITY_TIMEOUT_MS })
+  try {
+    execFileSync(SECURITY, [
+      'add-generic-password',
+      '-U',
+      '-s', SERVICE,
+      '-a', ACCOUNT,
+      '-w', value,
+      '-A',
+    ], { stdio: ['ignore', 'ignore', 'ignore'], timeout: SECURITY_TIMEOUT_MS })
+  } catch (err: any) {
+    const status = typeof err?.status === 'number' ? err.status : 'none'
+    const signal = typeof err?.signal === 'string' ? err.signal : 'none'
+    const code = typeof err?.code === 'string' ? `, ${err.code}` : ''
+    throw new Error(`security add-generic-password failed (exit status ${status}, signal ${signal}${code})`)
+  }
 }
 
 export function keychainDelete(): boolean {
