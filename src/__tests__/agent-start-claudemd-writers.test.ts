@@ -35,6 +35,7 @@ const SEQUENCE = [
   'ensureAgentIdHeaderSection(name)',
   'ensureThinChiefHandoffSection(name)',
   'ensureMemorySearchLabelSection(name)',
+  'ensureMemoryFactChangeSection(name)',
   'ensureFleetAuthSection(name)',
   'ensureEvidenceSection(name)',
   'ensureMcpListChannelSection(name)',

@@ -308,6 +308,51 @@ export function buildPaneAtEscapeBodyEn(): string {
   ].join('\n')
 }
 
+// ---- memory-fact-change ----
+export function buildMemoryFactChangeBodyEn(name: string, helper: boolean, f: ScaffoldFrags): string {
+  return [
+    '## When a fact changes: fix the old memory too',
+    '',
+    'An outdated memory comes back from the search exactly like a fresh one: whoever builds on it decides wrong, and',
+    'nothing tells them the claim has expired (measured 2026-11-18: a weeks-old "we have no access" memory made an',
+    'agent ask the owner for access that had long been in place).',
+    '',
+    '- Before you save something that CHANGES A STATE (access granted, wired in, closed, a decision made, a rule',
+    '  overridden), search for the old claim and fix the old row IN THE SAME ROUND:',
+    ...(helper ? [
+      `  \`${f.apiHelper} memory-search ${name} KEYWORD --strict\``,
+      '  - your own row that is fully outdated: save the new one with `--supersedes <old-id>` (the server retracts the',
+      '    old one in the same step; the reply\'s `superseded` field says what it retracted, an id under `skipped`,',
+      '    for example another agent\'s row, it did not), or take it back on its own:',
+      `    \`${f.apiHelper} memory-retract <id> ${name}\``,
+      '  - a row that is still partly valid: `memory-update` on the old id. It replaces the row\'s WHOLE content, so',
+      '    send the whole old text back, with this inserted after the outdated sentence:',
+    ] : [
+      '  (the search recipe above, with `&strict=1`)',
+      '  - your own row that is fully outdated: save the new one with a `"supersedes": [<old-id>]` field (the server',
+      '    retracts the old one in the same step; the reply\'s `superseded` field says what it retracted, an id under',
+      `    \`skipped\`, for example another agent's row, it did not), or take it back on its own: \`POST /api/memories/<id>/retract\` with \`{"agent_id":"${name}"}\``,
+      '  - a row that is still partly valid: a `PUT /api/memories/<id>` on the old id. It replaces the row\'s WHOLE',
+      '    content, so send the whole old text back, with this inserted after the outdated sentence:',
+    ]),
+    '    `[YYYY-MM-DD: OUTDATED, because ... (new memory #id)]`.',
+    '- Never retract or rewrite another agent\'s row: tell its author (inter-agent message). Only the author can retract.',
+    '- NEVER retract an entry that carries a Q/D/B id, and do not name it in `supersedes` either (that retracts it',
+    '  too): write the answer or the closure into it, because the id\'s lookup rests on that row.',
+    '- If the changed fact is also written in a skill or a CLAUDE.md, fix that too in the same round (your own',
+    '  yourself, another agent\'s through its owner). Measured 2026-11-18: of 1547 memories, 34 contradicted a rule',
+    '  file, and in 8 of those it was the rule file that was outdated, not the memory.',
+    '- Do not save a memory about a rule that already stands word for word in a skill or a CLAUDE.md: the two copies',
+    '  drift apart. If the case is worth keeping (a measurement, a date, a cause), save the case and point to where',
+    '  the rule lives.',
+    '- A retraction has no way back (the row stays readable by its id, but it does not return to the search). Retract',
+    '  only when every piece of the row\'s data exists elsewhere; when in doubt, the dated OUTDATED note is the safe choice.',
+    '- Save a present-tense claim ("there is no", "does not work", "waits for the owner") with its date',
+    '  ("at 2026-10-16 05:35 there is no"), so it later shows which moment it describes.',
+    '- A retraction is not a delete: the row stays readable by its id, it only leaves the lists and the search.',
+  ].join('\n')
+}
+
 // ---- skills-path-trap ----
 // The heading is the one templates/en/CLAUDE.md.template refers to ("Skill path trap"); the test pins this.
 export const SKILLS_TRAP_HEADING_EN = '## Skill path trap (MUST READ before writing a skill)'
