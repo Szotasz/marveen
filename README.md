@@ -111,9 +111,6 @@ A Windows telepítő automatikusan beállítja a WSL-t (Windows Subsystem for Li
 
 Marveen also runs as a container with Docker Compose, on any Linux server with Docker:
 
-<!-- DOCKERGUIDEBUILD1108 / DOCKERUX1118: this step needs the published image. Until MARVEEN_PUBLISH_IMAGE is on, the
-     pull is denied, and since DOCKERUX1118 "docker compose up -d" stops there (the compose file has no build:);
-     docs/docker.md says how to build the image instead. Publishing the image is the owner's decision. -->
 ```bash
 git clone -b main https://github.com/Szotasz/marveen.git && cd marveen
 docker compose up -d
