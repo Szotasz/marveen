@@ -285,56 +285,122 @@ const webMailSends = (text) => graphSends(text) || mailApiSends(text)
 const MAIL_API_HOST = /(?:^|\.)(?:googleapis\.com|graph\.microsoft\.com|sendgrid\.com|mailgun\.net|postmarkapp\.com|api\.resend\.com)$/
 const RESEND_HOST = /(?:^|\.)api\.resend\.com$/
 const SENDGRID_HOST = /(?:^|\.)sendgrid\.com$/
-const CURL_VALUE_LONG = new Set([
-  '--output', '--header', '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii', '--json',
-  '--form', '--form-string', '--user', '--user-agent', '--referer', '--proxy', '--upload-file', '--config',
-  '--cookie', '--cookie-jar', '--write-out', '--output-dir', '--dump-header', '--connect-to', '--resolve',
-  '--max-time', '--connect-timeout', '--retry', '--cert', '--key', '--cacert', '--request', '--range',
-  '--continue-at', '--quote', '--oauth2-bearer', '--trace', '--trace-ascii', '--stderr', '--interface',
-  '--unix-socket', '--abstract-unix-socket', '--proxy-user', '--limit-rate', '--max-filesize', '--method',
-  '--output-document', '--output-file', '--append-output', '--post-data', '--post-file', '--body-data',
-  '--body-file', '--input-file', '--directory-prefix', '--tries', '--timeout', '--wait', '--execute', '--base',
-])
-const CURL_VALUE_SHORT = { curl: new Set('oHdFuAexTKbcwDmrCEXQ'), wget: new Set('OoaHUeiBPtTwQ') }
+// Per client (review round 2); httpie and xh: none.
+const CURL_VALUE_LONG = {
+  curl: new Set([
+    '--output', '--header', '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii', '--json',
+    '--form', '--form-string', '--user', '--user-agent', '--referer', '--proxy', '--upload-file', '--config',
+    '--cookie', '--cookie-jar', '--write-out', '--output-dir', '--dump-header', '--connect-to', '--resolve',
+    '--max-time', '--connect-timeout', '--retry', '--cert', '--key', '--cacert', '--request', '--range',
+    '--continue-at', '--quote', '--oauth2-bearer', '--trace', '--trace-ascii', '--stderr', '--interface',
+    '--unix-socket', '--abstract-unix-socket', '--proxy-user', '--limit-rate', '--max-filesize',
+  ]),
+  wget: new Set([
+    '--output-document', '--output-file', '--append-output', '--post-data', '--post-file', '--body-data',
+    '--body-file', '--input-file', '--directory-prefix', '--tries', '--timeout', '--wait', '--execute', '--base',
+    '--header', '--user-agent', '--method',
+  ]),
+}
+const CURL_VALUE_SHORT = { curl: new Set('oHdFuAexTKbcwDmrCEXQ'), wget: new Set('OoaUeiBPtTwQ') }
+const HAS_SCHEME = /^[A-Za-z][A-Za-z0-9+-]*:\//
+const URLISH = /^(?:[A-Za-z][A-Za-z0-9+-]*:\/|[^\s/=]+\.[^\s/=]+(?:\/|:|$))/
+// [token, isOptionValue]: an option's value is kept but marked (only a URL with a scheme counts there).
 function curlUrlCandidates(prog, rest) {
+  const longs = CURL_VALUE_LONG[prog.toLowerCase()] ?? new Set()
   const shorts = CURL_VALUE_SHORT[prog.toLowerCase()] ?? new Set()
   const out = []
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i]
-    if (t.startsWith('--url=')) out.push(t.slice('--url='.length))
-    else if (t.startsWith('--')) { if (CURL_VALUE_LONG.has(t)) i++ }
+    let takes = false
+    if (t.startsWith('--url=')) out.push([t.slice('--url='.length), false])
+    else if (t.startsWith('--')) takes = longs.has(t)
     else if (t.startsWith('-') && t.length > 1) {
       // the first value-taking letter ends the cluster; only as the last letter does its value come next
       const k = [...t.slice(1)].findIndex((ch) => shorts.has(ch))
-      if (k >= 0 && k + 1 === t.length - 1) i++
-    }
-    else out.push(t)
+      takes = k >= 0 && k + 1 === t.length - 1
+    } else out.push([t, false])
+    if (takes && i + 1 < rest.length) { out.push([rest[i + 1], true]); i++ }
   }
+  // option values count only when no positional token looks like a URL (see the python twin)
+  if (out.some(([t, v]) => !v && URLISH.test(t))) return out.filter(([, v]) => !v)
   return out
 }
-function canonMailUrl(tok) {
+const HEX_ESCAPE = /%([0-9A-Fa-f]{2})/g
+const hexDecode = (x) => x.replace(HEX_ESCAPE, (_m, h) => String.fromCharCode(parseInt(h, 16)))
+const GLOB_LIMIT = 64
+// The URLs a curl glob stands for, or null when it cannot be expanded within the limit (a target, fail-closed).
+function curlGlobExpand(t) {
+  const parts = []
+  for (let i = 0; i < t.length;) {
+    const ch = t[i]
+    if (ch === '{') {
+      const j = t.indexOf('}', i)
+      if (j < 0) return null
+      parts.push(t.slice(i + 1, j).split(','))
+      i = j + 1
+      continue
+    }
+    if (ch === '[') {
+      const j = t.indexOf(']', i)
+      if (j < 0) return null
+      const body = t.slice(i + 1, j).split(':')[0]
+      const m = /^(?:([0-9]+)-([0-9]+)|([A-Za-z])-([A-Za-z]))$/.exec(body)
+      if (!m) return null
+      const alts = []
+      if (m[1] !== undefined) {
+        const lo = parseInt(m[1], 10), hi = parseInt(m[2], 10)
+        if (hi < lo || hi - lo >= GLOB_LIMIT) return null
+        for (let x = lo; x <= hi; x++) alts.push(String(x))
+      } else {
+        const lo = m[3].charCodeAt(0), hi = m[4].charCodeAt(0)
+        if (hi < lo) return null
+        for (let x = lo; x <= hi; x++) alts.push(String.fromCharCode(x))
+      }
+      parts.push(alts)
+      i = j + 1
+      continue
+    }
+    parts.push([ch])
+    i++
+  }
+  let urls = ['']
+  for (const alts of parts) {
+    urls = urls.flatMap((u) => alts.map((a) => u + a))
+    if (urls.length > GLOB_LIMIT) return null
+  }
+  return urls
+}
+function canonHost(raw) {
+  let host = hexDecode(raw).split('@').pop().replace(/:[0-9]*$/, '')
+  host = host.replace(/[。．｡]/g, '.').replaceAll('­', '')
+  return host.normalize('NFKC').replace(/\.+$/, '').toLowerCase()
+}
+function canonMailUrl(tok, needScheme = false) {
   const t = tok.replaceAll('\\/', '/')
-  const m = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/)?([^/?#]*)([^?#]*)/.exec(t)
+  if (needScheme && !HAS_SCHEME.test(t)) return null
+  const m = /^(?:[A-Za-z][A-Za-z0-9+-]*:\/+)?([^/?#]*)([^?#]*)/.exec(t)
   if (!m) return null
-  let host = m[1].split('@').pop().replace(/:[0-9]*$/, '').replace(/\.+$/, '').toLowerCase()
+  let host = canonHost(m[1])
   if (!MAIL_API_HOST.test(host)) return null
-  const path0 = m[2].replace(/%([0-9A-Fa-f]{2})/g, (_x, h) => String.fromCharCode(parseInt(h, 16)))
   const segs = []
-  for (const seg of path0.split('/')) {
+  for (const seg of hexDecode(m[2]).split('/')) {
     if (seg === '' || seg === '.') continue
     if (seg === '..') { segs.pop(); continue }
     segs.push(seg)
   }
   const path = ('/' + segs.join('/')).replace(/\/microsoft\.graph\./gi, '/')
   if (SENDGRID_HOST.test(host)) host = 'api.' + 'sendgrid.com'
-  return { host, path, hasGlob: /[{}[\]]/.test(t) }
+  return { host, path }
 }
-function curlMailApiTarget(tok) {
-  const c = canonMailUrl(tok)
-  if (!c) return false
-  if (RESEND_HOST.test(c.host)) return true
-  if (c.hasGlob) return true
-  return webMailSends('https://' + c.host + c.path)
+function curlMailApiTarget(tok, isValue = false) {
+  // a glob is expanded only up to the query: a bracket in the query cannot change the host or the path
+  const head = tok.split(/[?#]/)[0]
+  const urls = /[{[]/.test(head) ? curlGlobExpand(head) : [head]
+  if (urls === null) return true
+  return urls.some((u) => {
+    const c = canonMailUrl(u, isValue)
+    return c !== null && (RESEND_HOST.test(c.host) || webMailSends('https://' + c.host + c.path))
+  })
 }
 // MAILGATEHEREDOCFP1027: a send marker that only sits in DATA is no send. The interpreter's code is read with its
 // prose blanked: a string literal whose text holds whitespace and every comment become spaces (length and line
@@ -901,7 +967,7 @@ function headIsSend(toks, depth) {
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
   // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
   // read-only GET/HEAD passes; an undecidable method stays fail-closed.
-  if (CURLISH.test(prog) && (rest.some((t) => RESEND_TARGET.test(t)) || curlUrlCandidates(prog, rest).some(curlMailApiTarget))) {
+  if (CURLISH.test(prog) && (rest.some((t) => RESEND_TARGET.test(t)) || curlUrlCandidates(prog, rest).some(([t, v]) => curlMailApiTarget(t, v)))) {
     return curlResendVerdict(prog, rest) !== 'read'
   }
   return false

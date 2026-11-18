@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 # --- what counts as an email send -------------------------------------------
 # KAPUHATOKOR822 (2026-08-22, NEGY hamis pozitiv egy delutanon, HAROM
@@ -353,57 +354,126 @@ _MAIL_API_HOST = re.compile(
     r"(?:^|\.)(?:googleapis\.com|graph\.microsoft\.com|sendgrid\.com|mailgun\.net|postmarkapp\.com|api\.resend\.com)$")
 _RESEND_HOST = re.compile(r"(?:^|\.)api\.resend\.com$")
 _SENDGRID_HOST = re.compile(r"(?:^|\.)sendgrid\.com$")
-# Options that take a value, per client (a short cluster: see _curl_url_candidates).
+# Options that take a value, per client (review round 2: one shared list skipped the URL after a flag that takes no
+# value in another client, e.g. wget -H). httpie and xh: none, their flags take no separate value we need.
 _CURL_VALUE_LONG = {
-    "--output", "--header", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii", "--json",
-    "--form", "--form-string", "--user", "--user-agent", "--referer", "--proxy", "--upload-file", "--config",
-    "--cookie", "--cookie-jar", "--write-out", "--output-dir", "--dump-header", "--connect-to", "--resolve",
-    "--max-time", "--connect-timeout", "--retry", "--cert", "--key", "--cacert", "--request", "--range",
-    "--continue-at", "--quote", "--oauth2-bearer", "--trace", "--trace-ascii", "--stderr", "--interface",
-    "--unix-socket", "--abstract-unix-socket", "--proxy-user", "--limit-rate", "--max-filesize", "--method",
-    # wget
-    "--output-document", "--output-file", "--append-output", "--post-data", "--post-file", "--body-data",
-    "--body-file", "--input-file", "--directory-prefix", "--tries", "--timeout", "--wait", "--execute", "--base",
+    "curl": {
+        "--output", "--header", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii", "--json",
+        "--form", "--form-string", "--user", "--user-agent", "--referer", "--proxy", "--upload-file", "--config",
+        "--cookie", "--cookie-jar", "--write-out", "--output-dir", "--dump-header", "--connect-to", "--resolve",
+        "--max-time", "--connect-timeout", "--retry", "--cert", "--key", "--cacert", "--request", "--range",
+        "--continue-at", "--quote", "--oauth2-bearer", "--trace", "--trace-ascii", "--stderr", "--interface",
+        "--unix-socket", "--abstract-unix-socket", "--proxy-user", "--limit-rate", "--max-filesize",
+    },
+    "wget": {
+        "--output-document", "--output-file", "--append-output", "--post-data", "--post-file", "--body-data",
+        "--body-file", "--input-file", "--directory-prefix", "--tries", "--timeout", "--wait", "--execute", "--base",
+        "--header", "--user-agent", "--method",
+    },
 }
-_CURL_VALUE_SHORT = {"curl": set("oHdFuAexTKbcwDmrCEXQ"), "wget": set("OoaHUeiBPtTwQ")}
+_CURL_VALUE_SHORT = {"curl": set("oHdFuAexTKbcwDmrCEXQ"), "wget": set("OoaUeiBPtTwQ")}
+_HAS_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+-]*:/")
+_URLISH = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+-]*:/|[^\s/=]+\.[^\s/=]+(?:/|:|$))")
 
 
 def _curl_url_candidates(prog: str, rest):
-    """The tokens of a curl/wget/httpie call that can be a URL: option values are skipped."""
+    """(token, is_option_value) for every token of a curl/wget/httpie/xh call that can carry a URL. An option's value
+    is kept, but marked: there only a URL with a scheme counts, and only when no positional URL exists (below)."""
+    longs = _CURL_VALUE_LONG.get(prog.lower(), set())
     shorts = _CURL_VALUE_SHORT.get(prog.lower(), set())
     out, i, n = [], 0, len(rest)
     while i < n:
         t = rest[i]
+        takes = False
         if t.startswith("--url="):
-            out.append(t[len("--url="):])
+            out.append((t[len("--url="):], False))
         elif t.startswith("--"):
-            if t in _CURL_VALUE_LONG:
-                i += 1
+            takes = t in longs
         elif t.startswith("-") and len(t) > 1:
-            # the first letter that takes a value ends the cluster: the rest of the token is its value (-XPOST,
-            # -ofile); only when it is the last letter does the value come in the next token
+            # the first value-taking letter ends the cluster: the rest of the token is its value (-XPOST, -ofile);
+            # only when it is the last letter does the value come in the next token
             for k, ch in enumerate(t[1:], 1):
                 if ch in shorts:
-                    if k == len(t) - 1:
-                        i += 1
+                    takes = k == len(t) - 1
                     break
         else:
-            out.append(t)
+            out.append((t, False))
+        if takes and i + 1 < n:
+            out.append((rest[i + 1], True))
+            i += 1
         i += 1
+    # An option value counts only when no positional token looks like a URL: then this list may have taken a
+    # flag for a value-taking one and swallowed the URL. With a positional URL in place the values are data
+    # (a referer, a body, a --write-out format), so a send URL written there is no target.
+    if any(not v and _URLISH.match(t) for t, v in out):
+        out = [(t, v) for t, v in out if not v]
     return out
 
 
 _HEX_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+_GLOB_LIMIT = 64
 
 
-def _canon_mail_url(tok: str):
-    """(host, path, has_glob) of a URL token on a mail API host, or None."""
+def _curl_glob_expand(t: str):
+    """The URLs a curl glob ({a,b}, [a-c], [1-3]) stands for, or None when it cannot be expanded within the limit
+    (the caller treats that as a target, fail-closed)."""
+    parts, i, n = [[""]], 0, len(t)
+    while i < n:
+        ch = t[i]
+        if ch == "{":
+            j = t.find("}", i)
+            if j < 0:
+                return None
+            parts.append(t[i + 1:j].split(","))
+            i = j + 1
+            continue
+        if ch == "[":
+            j = t.find("]", i)
+            if j < 0:
+                return None
+            body = t[i + 1:j].split(":", 1)[0]
+            m = re.fullmatch(r"([0-9]+)-([0-9]+)|([A-Za-z])-([A-Za-z])", body)
+            if not m:
+                return None
+            if m.group(1) is not None:
+                lo, hi = int(m.group(1)), int(m.group(2))
+                if hi < lo or hi - lo >= _GLOB_LIMIT:
+                    return None
+                parts.append([str(x) for x in range(lo, hi + 1)])
+            else:
+                lo, hi = ord(m.group(3)), ord(m.group(4))
+                if hi < lo:
+                    return None
+                parts.append([chr(x) for x in range(lo, hi + 1)])
+            i = j + 1
+            continue
+        parts.append([ch])
+        i += 1
+    urls = [""]
+    for alts in parts:
+        urls = [u + a for u in urls for a in alts]
+        if len(urls) > _GLOB_LIMIT:
+            return None
+    return urls
+
+
+def _canon_host(raw: str) -> str:
+    host = _HEX_ESCAPE.sub(lambda x: chr(int(x.group(1), 16)), raw)
+    host = host.rsplit("@", 1)[-1]
+    host = re.sub(r":[0-9]*$", "", host)
+    host = re.sub("[。．｡]", ".", host).replace("­", "")
+    return unicodedata.normalize("NFKC", host).rstrip(".").lower()
+
+
+def _canon_mail_url(tok: str, need_scheme: bool = False):
+    """(host, path) of a URL token on a mail API host, or None."""
     t = tok.replace("\\/", "/")
-    m = re.match(r"^(?:[A-Za-z][A-Za-z0-9+.-]*://)?([^/?#]*)([^?#]*)", t)
+    if need_scheme and not _HAS_SCHEME.match(t):
+        return None
+    m = re.match(r"^(?:[A-Za-z][A-Za-z0-9+-]*:/+)?([^/?#]*)([^?#]*)", t)
     if not m:
         return None
-    host = m.group(1).rsplit("@", 1)[-1]
-    host = re.sub(r":[0-9]*$", "", host).rstrip(".").lower()
+    host = _canon_host(m.group(1))
     if not _MAIL_API_HOST.search(host):
         return None
     path = _HEX_ESCAPE.sub(lambda x: chr(int(x.group(1), 16)), m.group(2))
@@ -420,19 +490,23 @@ def _canon_mail_url(tok: str):
     path = re.sub(r"/microsoft\.graph\.", "/", path, flags=re.I)
     if _SENDGRID_HOST.search(host):
         host = "api." + "sendgrid.com"
-    return host, path, bool(re.search(r"[{}\[\]]", t))
+    return host, path
 
 
-def _curl_mail_api_target(tok: str) -> bool:
-    c = _canon_mail_url(tok)
-    if c is None:
-        return False
-    host, path, has_glob = c
-    if _RESEND_HOST.search(host):
+def _curl_mail_api_target(tok: str, is_value: bool = False) -> bool:
+    # a glob is expanded only up to the query: a bracket in the query cannot change the host or the path
+    head = re.split(r"[?#]", tok, maxsplit=1)[0]
+    urls = _curl_glob_expand(head) if re.search(r"[{\[]", head) else [head]
+    if urls is None:
         return True
-    if has_glob:
-        return True
-    return _web_mail_sends("https://" + host + path)
+    for u in urls:
+        c = _canon_mail_url(u, need_scheme=is_value)
+        if c is None:
+            continue
+        host, path = c
+        if _RESEND_HOST.search(host) or _web_mail_sends("https://" + host + path):
+            return True
+    return False
 
 # RESENDGATE826: a resend-celu curl/wget csak akkor KULDES, ha a METODUS az.
 # A korabbi minta metodus-vak volt, es egy read-only GET /domains (nincs torzs,
@@ -1257,7 +1331,7 @@ def _head_is_send(toks, depth: int) -> bool:
     # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
     # tovabbra is fail-closed.
     if _CURLISH.match(prog) and (any(_RESEND_TARGET.match(t) for t in rest)
-                                 or any(_curl_mail_api_target(t) for t in _curl_url_candidates(prog, rest))):
+                                 or any(_curl_mail_api_target(t, v) for t, v in _curl_url_candidates(prog, rest))):
         return _curl_resend_verdict(prog, rest) != "read"
     return False
 

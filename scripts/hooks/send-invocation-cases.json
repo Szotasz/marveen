@@ -2363,6 +2363,261 @@
       "name": "CURLMAILAPI1118 round 2: Resend with a port in the host",
       "cmd": "curl -s https://api.resend.com:443/emails -d @/tmp/m.json",
       "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: wget -H (span-hosts, kapcsoló érték nélkül) az URL előtt",
+      "cmd": "wget -q --post-file=/tmp/m.json -H https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: wget --proxy (kapcsoló) az URL előtt",
+      "cmd": "wget -q --post-file=/tmp/m.json --proxy https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: httpie https --json (kapcsoló) az URL előtt",
+      "cmd": "https --json gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: httpie http --form (kapcsoló) az URL előtt",
+      "cmd": "http --form https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: xh --json (kapcsoló) az URL előtt",
+      "cmd": "xh --json https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: curl-glob a hostban (co{m})",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.co{m}/gmail/v1/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: curl-glob a hostban ([s-s])",
+      "cmd": "curl -s -X POST 'https://gmail.googleapi[s-s].com/gmail/v1/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: százalék-kódolt pont a hostban",
+      "cmd": "curl -s -X POST https://gmail%2Egoogleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: százalék-kódolt betű a hostban",
+      "cmd": "curl -s -X POST https://gmail.googleapi%73.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: ideografikus pont a hostban (IDN)",
+      "cmd": "curl -s -X POST https://gmail。googleapis。com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: lágy kötőjel a hostban (IDN)",
+      "cmd": "curl -s -X POST https://gmail.google­apis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: port + záró pont együtt",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com.:443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: felhasználó:jelszó + port",
+      "cmd": "curl -s -X POST https://u:p@gmail.googleapis.com:443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: kódolt pont-szegmens (%2e%2e)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/x/%2e%2e/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: kódolt per (messages%2Fsend)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages%2Fsend -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -o érték után az URL",
+      "cmd": "curl -s -o /tmp/out.json -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: összevont -so, utána URL",
+      "cmd": "curl -so /tmp/out.json -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: összevont -sSLXPOST, utána URL",
+      "cmd": "curl -sSLXPOST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: összevont -sd@fájl, utána URL",
+      "cmd": "curl -sd@/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -O (érték nélküli) után az URL",
+      "cmd": "curl -s -O -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --compressed, -L, -k után az URL",
+      "cmd": "curl -s --compressed -L -k -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -H érték után az URL",
+      "cmd": "curl -s -H 'Authorization: Bearer x' -H 'Content-Type: application/json' -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --retry 3 --max-time 20 után az URL",
+      "cmd": "curl -s --retry 3 --max-time 20 -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: wget -O - és --header után az URL",
+      "cmd": "wget -q -O - --header='Authorization: Bearer x' --post-file=/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: wget -qO- összevonva",
+      "cmd": "wget -qO- --post-file=/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Resend porttal",
+      "cmd": "curl -s -X POST https://api.resend.com:443/emails -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Resend felhasználó-résszel",
+      "cmd": "curl -s -X POST https://x@api.resend.com/emails -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: xhs kliens",
+      "cmd": "xhs POST gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: SendGrid EU porttal",
+      "cmd": "curl -s -X POST https://api.eu.sendgrid.com:443/v3/mail/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Graph users/x/microsoft.graph.sendMail",
+      "cmd": "curl -s -X POST https://graph.microsoft.com/v1.0/users/a@example.test/microsoft.graph.sendMail -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: a séma után három per",
+      "cmd": "curl -s -X POST https:///gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: visszaper a séma után",
+      "cmd": "curl -s -X POST 'https:\\\\gmail.googleapis.com/gmail/v1/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --url külön tokenben, kapcsolók értéke között",
+      "cmd": "curl -s -H 'A: b' --url https://gmail.googleapis.com/gmail/v1/users/me/messages/send -o /tmp/o -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --proto-default https, séma nélkül",
+      "cmd": "curl -s --proto-default https -X POST gmail.googleapis.com/gmail/v1/users/me/drafts/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: piszkozat létrehozása, szögletes zárójel a lekérdezésben",
+      "cmd": "curl -s -g -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/drafts?fields=id&x=[1]' -d @/tmp/d.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Naptár esemény, kapcsos zárójel a lekérdezésben",
+      "cmd": "curl -s -g -X POST 'https://www.googleapis.com/calendar/v3/calendars/primary/events?x={a}' -d @/tmp/e.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -e hivatkozó a küldő URL",
+      "cmd": "curl -s -X POST https://example.test/hook -e https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -d érték a küldő URL (idegen hostra megy)",
+      "cmd": "curl -s -X POST https://example.test/hook -d https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --write-out érték a küldő URL",
+      "cmd": "curl -s -X POST https://example.test/hook -d @/tmp/x.json --write-out https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: OAuth token csere porttal",
+      "cmd": "curl -s -X POST https://oauth2.googleapis.com:443/token -d grant_type=refresh_token",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Gmail lista https klienssel (httpie GET)",
+      "cmd": "https GET gmail.googleapis.com/gmail/v1/users/me/messages",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: xh GET idegen hostra",
+      "cmd": "xh GET https://example.test/api",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: https kliens idegen hostra POST",
+      "cmd": "https POST example.test/hook a=b",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: drafts.create porttal",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com:443/gmail/v1/users/me/drafts -d @/tmp/d.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Gmail olvasás kódolt lekérdezéssel",
+      "cmd": "curl -s 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=from%3Aa%40example.test'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: SendGrid EU statisztika olvasás",
+      "cmd": "curl -s https://api.eu.sendgrid.com/v3/stats",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: hasonló nevű idegen host porttal",
+      "cmd": "curl -s -X POST https://gmail.evilgoogleapis.com:443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: a küldő host a felhasználó-részben, idegen hostra megy",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com@example.test/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Graph piszkozat létrehozás porttal",
+      "cmd": "curl -s -X POST https://graph.microsoft.com:443/v1.0/me/messages -d @/tmp/m.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: helyi dashboard, a szövegben kapcsos zárójel",
+      "cmd": "curl -s -X POST http://localhost:3420/api/messages -d '{\"to\":\"marveen\"}'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Gmail messages.import pont-szegmenssel",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send/../import -d @/tmp/m.json",
+      "expected": false
     }
   ]
 }
