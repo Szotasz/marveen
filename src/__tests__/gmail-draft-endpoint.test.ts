@@ -215,6 +215,26 @@ describe('the closed request list: no send route is reachable', () => {
     expect(code).not.toMatch(/\/send\b|messages\/|\.send\(/)
     // one network primitive, behind the list
     expect(code.match(/fetchImpl\(/g)).toHaveLength(1)
+    // review round 2: the platform fetch is named exactly once (the platformFetch wrapper), so a second call to it
+    // anywhere, with a URL built from split strings or not, turns this red; and no other network module is imported
+    expect(code.match(/\bfetch\b/g)).toHaveLength(1)
+    expect(code).toMatch(/const platformFetch: FetchLike = \(url, init\) => fetch\(url, init\)/)
+    expect(code).not.toMatch(/\b(XMLHttpRequest|WebSocket|globalThis\s*\.\s*fetch|undici|node:https?|node:net|node:tls|node:child_process)\b/)
+    const imports = [...code.matchAll(/^import .* from '([^']+)'/gm)].map(m => m[1]).sort()
+    expect(imports).toEqual(['../config.js', '../env.js', './gmail-draft-policy.js', './vault.js', 'node:crypto', 'node:fs', 'node:path', 'node:url'])
+    expect(code.match(/\bimport\(/g)).toHaveLength(2) // the recipient-ledger loader, default and reset
+  })
+
+  it('N1b the request path itself consults the closed list: a URL outside it is refused before fetch runs', async () => {
+    const G = 'https://gmail.googleapis.com/gmail/v1/users/me'
+    for (const u of [`${G}/drafts/send`, `${G}/messages/send`, 'https://evil.example/token']) {
+      await expect(gd._gmailRequestForTest('POST', u)).rejects.toMatchObject({ code: 'request-not-allowed' })
+    }
+    await expect(gd._gmailRequestForTest('GET', `${G}/messages/m-1?format=full`)).rejects.toMatchObject({ code: 'request-not-allowed' })
+    expect(calls).toHaveLength(0)
+    // control: an allowed one reaches the (mocked) fetch
+    await gd._gmailRequestForTest('POST', gd.TOKEN_URL)
+    expect(calls.map(c => c.url)).toEqual([gd.TOKEN_URL])
   })
 
   it('N3 a proxy or extra CA roots in the environment: refused before any request', async () => {
@@ -309,6 +329,18 @@ describe('attachments only from store/outbox/ (review N1)', () => {
     expect(await refused('big.pdf')).toBe('outbox-file-refused')
     rmSync(join(STORE, 'outbox'), { recursive: true, force: true })
     expect(await refused('a.pdf')).toBe('outbox-missing')
+  })
+  it('A7 the TOTAL cap: files each under 25 MB whose sum is over it are refused (413), nothing goes out', async () => {
+    for (const n of ['part1.pdf', 'part2.pdf']) {
+      writeFileSync(join(STORE, 'outbox', n), '')
+      truncateSync(join(STORE, 'outbox', n), 13 * 1024 * 1024)
+    }
+    const r = await draft({ ...BASE, attachments: ['part1.pdf', 'part2.pdf'] })
+    expect(r.status).toBe(413)
+    expect(r.json().code).toBe('files-too-large')
+    expect(calls).toHaveLength(0)
+    // control: one of them alone passes
+    expect((await draft({ ...BASE, attachments: ['part1.pdf'] })).status).toBe(200)
   })
 })
 

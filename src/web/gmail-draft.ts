@@ -131,12 +131,15 @@ export function isAllowedGmailRequest(method: string, url: string): boolean {
 }
 
 type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string; redirect: 'error'; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown>; text(): Promise<string> }>
-let fetchImpl: FetchLike = (url, init) => fetch(url, init) as unknown as ReturnType<FetchLike>
+// The ONE reference to the platform's fetch in this module (a source scan counts it); every request goes through
+// gmailRequest, which checks the closed list first.
+const platformFetch: FetchLike = (url, init) => fetch(url, init) as unknown as ReturnType<FetchLike>
+let fetchImpl: FetchLike = platformFetch
 
 /** Tests only: a mocked Gmail. Returns the previous implementation. */
 export function _setGmailFetchForTest(f: FetchLike | null): FetchLike {
   const prev = fetchImpl
-  fetchImpl = f ?? ((url, init) => fetch(url, init) as unknown as ReturnType<FetchLike>)
+  fetchImpl = f ?? platformFetch
   return prev
 }
 
@@ -160,6 +163,9 @@ async function gmailRequest(method: 'GET' | 'POST', url: string, headers: Record
     throw new DraftError(502, 'gmail-unreachable', `Gmail could not be reached (${(err as Error).name})`)
   }
 }
+
+/** Tests only: the request path itself, so a test proves it consults the closed list. */
+export const _gmailRequestForTest = (method: 'GET' | 'POST', url: string) => gmailRequest(method, url, {})
 
 async function errorText(resp: { text(): Promise<string> }): Promise<string> {
   try {
