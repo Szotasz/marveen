@@ -9,8 +9,15 @@ import { tryAcquirePidLock, realPidLockDeps } from '../channel-coordinator.js'
 // after a reboot the legacy lock still held the naked pid "1161" written Nov 1;
 // pid 1161 was reused by /usr/bin/node server.js, /bin/ps could not inspect it
 // (argvOf -> undefined), so the coordinator refused to start 2213 times in a row.
-// The fix reclaims such locks from start-time evidence and records boot_id +
-// start time in new locks so reuse is decidable without ps.
+// The fix reads the holder's command line from /proc/<pid>/cmdline before ps
+// and records boot_id + start tick in new locks so reuse is decidable without ps.
+//
+// Round 4 (PR #2881 review, 2026-11-18): the first fix reclaimed a live
+// unknown-argv holder when its start time (derived from the wall clock) was
+// after the lock mtime. A forward clock step (NTP, VM resume) makes a LIVE
+// coordinator look younger than its own lock, so that rule reclaimed it: two
+// coordinators on one token. The rule is gone; a holder whose command line
+// neither /proc nor ps can read is refused (fail closed), whatever the clocks say.
 //
 // Revision round (defect B1, measured 2026-11-18): the new-format lock's third
 // token is the RAW /proc/<pid>/stat field 22 tick, NOT the derived epoch ms of
@@ -41,9 +48,11 @@ interface DepSpec {
   alive?: boolean
   argv?: string | null | undefined
   boot?: string | undefined
-  // startEpochMs -- the DERIVED, jittering epoch ms. Only the legacy mtime
-  // hatch (R1-R4) still consults it; the new-format decisions must not.
+  // startEpochMs -- the DERIVED, jittering epoch ms. Since round 4 no decision
+  // may consult it; C1/C2/R2/R4 still pass it to prove a clock step cannot reclaim.
   start?: (pid: number) => number | undefined
+  // procArgvOf -- the command line from /proc/<pid>/cmdline, read before argvOf.
+  proc?: (pid: number) => string | undefined
   // startTicks -- the RAW /proc tick, the lock's identity token.
   ticks?: (pid: number) => number | undefined
 }
@@ -60,6 +69,7 @@ const deps = (o: DepSpec = {}) => {
   if (o.boot !== undefined) d.bootId = vi.fn(() => o.boot)
   if (o.start) d.startEpochMs = vi.fn((pid: number) => o.start!(pid))
   if (o.ticks) d.startTicks = vi.fn((pid: number) => o.ticks!(pid))
+  if (o.proc) d.procArgvOf = vi.fn((pid: number) => o.proc!(pid))
   return d
 }
 
@@ -69,12 +79,13 @@ const ageFile = (ms: number) => {
 }
 
 describe('tryAcquirePidLock: legacy naked-pid lock after pid reuse', () => {
-  it('R1 reclaims when the live unknown-argv pid started long after the lock was written (the measured WSL incident)', () => {
+  it('R1 reclaims when ps cannot read the live pid but /proc/<pid>/cmdline shows an unrelated process (the measured WSL incident)', () => {
     writeFileSync(file, String(LEGACY))
     ageFile(7 * 24 * 3600 * 1000) // lock written a week ago
-    const d = deps({ alive: true, argv: undefined, start: () => NOW }) // the pid-1161 process started now
+    const d = deps({ alive: true, argv: undefined, proc: () => '/usr/bin/node server.js' })
     expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: true, reclaimed: LEGACY })
     expect(readFileSync(file, 'utf-8').trim()).toBe(String(SELF))
+    expect(d.procArgvOf).toHaveBeenCalledWith(LEGACY)
   })
 
   it('R2 still refuses (fail closed) when the live unknown-argv pid may be the writer: it started before the lock mtime', () => {
@@ -94,6 +105,58 @@ describe('tryAcquirePidLock: legacy naked-pid lock after pid reuse', () => {
     writeFileSync(file, String(LEGACY))
     const d = deps({ alive: true, argv: undefined, start: () => NOW + 200 }) // started ~when the lock was written
     expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: LEGACY, reason: 'unknown' })
+  })
+})
+
+// Round 4 (PR #2881 review): a forward clock step after the lock was written
+// makes the derived start time land AFTER the lock mtime for the very process
+// that wrote it. `start: NOW + 1h` simulates that step; a lock mtime in the
+// future simulates a backward step.
+describe('tryAcquirePidLock: clock steps cannot reclaim a live holder (round 4)', () => {
+  const COORD = 'node /x/dist/channel-coordinator.js'
+  const STEP = 3600_000
+
+  it('C1 forward step, ps cannot read argv, /proc shows the coordinator: held, ps not asked', () => {
+    writeFileSync(file, String(LEGACY))
+    const d = deps({ alive: true, argv: undefined, proc: () => COORD, start: () => NOW + STEP })
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: LEGACY, reason: 'held' })
+    expect(readFileSync(file, 'utf-8').trim()).toBe(String(LEGACY))
+    expect(d.argvOf).not.toHaveBeenCalled()
+  })
+
+  it('C2 forward step, neither /proc nor ps can read argv: unknown (fail closed), not stale', () => {
+    writeFileSync(file, String(LEGACY))
+    const d = deps({ alive: true, argv: undefined, proc: () => undefined, start: () => NOW + STEP })
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: LEGACY, reason: 'unknown' })
+    expect(readFileSync(file, 'utf-8').trim()).toBe(String(LEGACY))
+    expect(d.argvOf).toHaveBeenCalledWith(LEGACY) // /proc could not tell: ps is asked
+  })
+
+  it('C3 backward step (lock mtime in the future), no argv at all: unknown', () => {
+    writeFileSync(file, String(LEGACY))
+    ageFile(-STEP)
+    const d = deps({ alive: true, argv: undefined, start: () => NOW })
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: LEGACY, reason: 'unknown' })
+  })
+
+  it('C4 a reused pid (other argv in /proc) is stale whatever the clocks say', () => {
+    writeFileSync(file, String(LEGACY))
+    const d = deps({ alive: true, argv: undefined, proc: () => '/usr/bin/node server.js', start: () => NOW - STEP })
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: true, reclaimed: LEGACY })
+  })
+
+  it('C5 new-format lock, tick unreadable, forward step, /proc shows the coordinator: held', () => {
+    writeFileSync(file, `31337 ${BOOT} 999000`)
+    const d = deps({ alive: true, argv: undefined, boot: BOOT, ticks: () => undefined, proc: () => COORD, start: () => NOW + STEP })
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: 31337, reason: 'held' })
+    expect(readFileSync(file, 'utf-8').trim()).toBe(`31337 ${BOOT} 999000`)
+  })
+
+  it('C6 /proc is read before ps: a coordinator in /proc wins over a different ps answer', () => {
+    writeFileSync(file, String(LEGACY))
+    const d = deps({ alive: true, argv: '/usr/bin/node server.js', proc: () => COORD })
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: LEGACY, reason: 'held' })
+    expect(d.argvOf).not.toHaveBeenCalled()
   })
 })
 
@@ -267,16 +330,32 @@ describe('realPidLockDeps extended members', () => {
     expect(realPidLockDeps.startTicks?.(child.pid!)).toBeUndefined()
   })
 
-  it('startEpochMs(self) is a plausible epoch ms: within [now-24h, now]', () => {
-    const s = realPidLockDeps.startEpochMs?.(process.pid)
-    expect(s).toBeGreaterThanOrEqual(NOW - 24 * 3600 * 1000)
-    expect(s).toBeLessThanOrEqual(Date.now())
+  // Round 4: the derived startEpochMs member is gone (its only use was the
+  // wall-clock reclaim); procArgvOf reads the command line before ps.
+  it('startEpochMs is no longer a member', () => {
+    expect('startEpochMs' in realPidLockDeps).toBe(false)
   })
 
-  it('startEpochMs of a dead pid is undefined', () => {
+  it.skipIf(!existsSync('/proc/self/cmdline'))('procArgvOf of a live child is its argv, space-joined', async () => {
+    const child = spawn('/bin/sleep', ['30'], { stdio: 'ignore' })
+    try {
+      expect(child.pid).toBeGreaterThan(0)
+      let argv = realPidLockDeps.procArgvOf?.(child.pid!)
+      // fork shows the parent's argv until exec: poll until the exec landed
+      for (let i = 0; argv !== '/bin/sleep 30' && i < 100; i++) {
+        await new Promise((r) => setTimeout(r, 20))
+        argv = realPidLockDeps.procArgvOf?.(child.pid!)
+      }
+      expect(argv).toBe('/bin/sleep 30')
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+
+  it.skipIf(!existsSync('/proc/self/cmdline'))('procArgvOf of a dead pid is undefined', () => {
     const child = spawnSync(process.execPath, ['-e', ''])
     expect(child.pid).toBeGreaterThan(0)
-    expect(realPidLockDeps.startEpochMs?.(child.pid!)).toBeUndefined()
+    expect(realPidLockDeps.procArgvOf?.(child.pid!)).toBeUndefined()
   })
 })
 
@@ -317,6 +396,12 @@ describe('round 3: zombie holder, unsafe tick, no-start deps', () => {
     await withZombie((z) => {
       expect(realPidLockDeps.isAlive(z)).toBe(true)
       expect(realPidLockDeps.startTicks?.(z)).toBeUndefined()
+    })
+  })
+
+  it.skipIf(!linux)('Z3 /proc cannot tell a real zombie\'s argv (empty cmdline): undefined, ps decides', async () => {
+    await withZombie((z) => {
+      expect(realPidLockDeps.procArgvOf?.(z)).toBeUndefined()
     })
   })
 
