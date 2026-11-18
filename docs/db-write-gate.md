@@ -39,8 +39,16 @@ argument of a python/node script file is data, its glob no pattern (GATESCRIPTAR
 Inline code (`-c`, `-e`, `-m`, stdin), a heredoc a script reads, bun/deno and the shell family stay strict, and a
 protected path handed to a script is still denied.
 
+**A file the command writes and then runs** (INSTRWRITEEXEC1105) is judged as the commands it holds. GATEOPENFORMS1118
+widened what counts as running it: a copy of it under another name (a copier, a link, a redirect or a pipe that takes
+its text), a run behind a wrapper, a leading assignment or a compound command's reserved word, a shell start-up variable
+naming it, a program that takes it as its code file through an option (or make's default makefile), its text used as
+code through a command substitution, and a run in the directory a wrapper moves to or after a directory change this
+gate cannot follow. Text that is only written, copied, read or sent on still passes.
+
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
-statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. The
+statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file
+written in an earlier Bash call (or with the Write tool) and run in a later one is not read either. The
 owner's approval becomes trustworthy only once GROMZODONTES1030 (F1-F3) moves the decision to the mxd store.
 
 ## Vész-helyreállítás

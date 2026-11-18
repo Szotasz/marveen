@@ -951,6 +951,186 @@ function shellRunsOnly(segs, k, targets, text) {
   return seen
 }
 
+// GATEOPENFORMS1118 (Dani, #2883 review): run forms of a file this command writes that laterRuns alone does not see.
+// The file is run
+//   (a) through a copy under another name: cp/mv/ln/install/rsync/ditto with the file as a source, or a text tool
+//       (cat, sed, tee, dd, ...) that read it and wrote it on (`cat f > g`, `cat f | tee g`); the new names join the
+//       file's names;
+//   (b) behind a wrapper (nice, nohup, timeout, stdbuf, time, command, builtin, exec, setsid, sudo, ionice, caffeinate,
+//       env), leading assignments or a compound command's reserved word (do, then, else, {, !): the command after them
+//       is read as the segment's command;
+//   (c) by a start-up variable that names it (BASH_ENV, ENV, ...: as a prefix, through env or exported);
+//   (d) as the program file of an option (awk/sed -f, make -f, vim -S, ...) or as make's default makefile;
+//   (e) as the output of a command substitution in code position (eval "$(cat f)", sh -c "$(cat f)", the command word).
+// A wrapper's directory change (env --chdir/-C, sudo -D) is a later directory the file may run in (laterCwds).
+// Still the stated limit: a run in a LATER Bash call, and a program that reads its code from a file it finds itself.
+const RUN_WRAPPERS = {
+  nice: ['-n', '--adjustment'], nohup: [], time: ['-f', '--format', '-o', '--output'], command: [], builtin: [],
+  exec: ['-a'], setsid: [], stdbuf: ['-i', '-o', '-e', '--input', '--output', '--error'],
+  timeout: ['-s', '--signal', '-k', '--kill-after'], gtimeout: ['-s', '--signal', '-k', '--kill-after'],
+  sudo: ['-u', '--user', '-g', '--group', '-C', '--close-from', '-D', '--chdir', '-h', '--host', '-p', '--prompt',
+    '-r', '--role', '-t', '--type', '-U', '--other-user', '-T', '--command-timeout'],
+  ionice: ['-c', '--class', '-n', '--classdata'], caffeinate: ['-t', '-w'],
+  env: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'],
+}
+const WRAPPER_CHDIR = { env: ['-C', '--chdir'], sudo: ['-D', '--chdir'] }
+const RESERVED_RUN_LEAD = new Set(['do', 'then', 'else', '{', '!'])
+// A variable whose value a program reads code from at start-up (a file, or code naming one).
+const STARTUP_VARS = new Set(['BASH_ENV', 'ENV', 'ZDOTDIR', 'PROMPT_COMMAND', 'NODE_OPTIONS', 'PERL5OPT', 'RUBYOPT',
+  'PYTHONSTARTUP', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES'])
+const DECLARERS = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
+const wordName = (w) => commandName([w]) || w.value.slice(w.value.lastIndexOf('/') + 1)
+export function unwrapRun(words) {
+  let i = 0
+  const assigns = []
+  const chdirs = []
+  const splits = []
+  let wrapped = false
+  for (;;) {
+    while (i < words.length && ASSIGN_RX.test(words[i].value)) {
+      const v = words[i].value
+      assigns.push({ name: v.slice(0, v.indexOf('=')), value: v.slice(v.indexOf('=') + 1) })
+      i++
+    }
+    if (i >= words.length) break
+    // a compound command's leading reserved word (`do sh f`, `then sh f`, `{ sh f`, `! sh f`) starts no program
+    if (RESERVED_RUN_LEAD.has(words[i].value)) { wrapped = true; i++; continue }
+    const name = wordName(words[i])
+    const opts = RUN_WRAPPERS[name]
+    if (!opts) break
+    wrapped = true
+    i++
+    while (i < words.length) {
+      const v = words[i].value
+      if (v === '--') { i++; break }
+      if (!v.startsWith('-') || v === '-') break
+      const eq = v.indexOf('=')
+      const long = v.startsWith('--')
+      const flag = long && eq > 0 ? v.slice(0, eq) : !long && v.length > 2 && opts.includes(v.slice(0, 2)) ? v.slice(0, 2) : v
+      let arg = null
+      if (long && eq > 0) arg = v.slice(eq + 1)
+      else if (flag !== v) arg = v.slice(2)
+      else if (opts.includes(v)) { arg = words[i + 1]?.value ?? ''; i++ }
+      if (arg !== null && WRAPPER_CHDIR[name]?.includes(flag)) chdirs.push(arg)
+      if (arg !== null && name === 'env' && (flag === '-S' || flag === '--split-string')) splits.push(arg)
+      i++
+    }
+    // timeout's DURATION
+    if ((name === 'timeout' || name === 'gtimeout') && i < words.length) i++
+  }
+  return { rest: words.slice(i), assigns, chdirs, splits, wrapped }
+}
+const segCommand = (rest) => (rest.length ? wordName(rest[0]) : '')
+const namesAny = (text, names) => names.some((t) => text.includes(t))
+const COPY_PROGRAMS = new Set(['cp', 'mv', 'install', 'ln', 'rsync', 'ditto', 'gcp', 'gmv', 'gln', 'ginstall'])
+// Tools that pass a file's text on as it is (or as a slice of it). A program that builds new text from it (an interpreter,
+// jq, printf with the name in its format) is the stated limit (a string assembled at run time), not a copy.
+const TEXT_PASS = new Set(['cat', 'tac', 'head', 'tail', 'tee', 'dd', 'sed', 'gsed', 'awk', 'gawk', 'mawk', 'nawk', 'tr',
+  'sort', 'uniq', 'cut', 'paste', 'fold', 'expand', 'unexpand', 'iconv'])
+// (a) the file's names, grown by every copy a later segment makes of it (to a fixpoint)
+export function copiedNames(segs, k, targets) {
+  const names = [...targets]
+  const add = (v) => { if (v && v !== '/dev/null' && !names.includes(v)) { names.push(v); return true } return false }
+  const stdinOf = (own) => names.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}(?:['"\\s;|&)]|$)`).test(own))
+  for (let grew = true; grew;) {
+    grew = false
+    // carries[j]: segment j passes the file's text on unchanged (a text tool or copier that read it, as an operand, on
+    // its stdin, or from a carrying segment piped into it)
+    const carries = []
+    for (let j = k + 1; j < segs.length; j++) {
+      const s = segs[j]
+      const all = shellWords(s.own)
+      if (!all || !all.length) continue
+      const { rest } = unwrapRun(all)
+      const prog = segCommand(rest)
+      const vals = rest.slice(1).map((w) => w.value)
+      const piped = j > k + 1 && (segs[j - 1].sep === '|' || segs[j - 1].sep === '|&') && carries[j - 1] === true
+      if (TEXT_PASS.has(prog)) {
+        const fed = piped || stdinOf(s.own) || vals.some((v) => names.includes(v) || (v.startsWith('if=') && names.includes(v.slice(3))))
+        if (!fed) continue
+        carries[j] = true
+        for (const r of all.redirects) if (add(r.value)) grew = true
+        if (prog === 'tee') for (const v of vals) if (!v.startsWith('-') && add(v)) grew = true
+        if (prog === 'dd') for (const v of vals) if (v.startsWith('of=') && add(v.slice(3))) grew = true
+        continue
+      }
+      if (!COPY_PROGRAMS.has(prog)) continue
+      const operands = []
+      let dest = null
+      for (let x = 0; x < vals.length; x++) {
+        const v = vals[x]
+        if (v.startsWith('--target-directory=')) dest = v.slice('--target-directory='.length)
+        else if (v === '--target-directory' || (prog !== 'rsync' && /^-[A-Za-z]*t$/.test(v))) dest = vals[++x] ?? null
+        else if (!v.startsWith('-')) operands.push(v)
+      }
+      if (dest === null) dest = operands.length >= 2 ? operands.pop() : null
+      // a copier writes its destination, and a source's name inside it when that is a directory, only when a source is the file
+      if (dest === null || !operands.some((src) => names.includes(src))) continue
+      if (add(dest)) grew = true
+      for (const src of operands) if (names.includes(src) && add(dest.replace(/\/+$/, '') + '/' + basename(src))) grew = true
+    }
+  }
+  return names
+}
+const OPTION_PROGRAMS = { awk: ['-f', '--file'], gawk: ['-f', '--file'], mawk: ['-f', '--file'], nawk: ['-f', '--file'],
+  sed: ['-f', '--file'], gsed: ['-f', '--file'], make: ['-f', '--file', '--makefile'], gmake: ['-f', '--file', '--makefile'],
+  bmake: ['-f'] }
+const VIM_NAMES = new Set(['vim', 'vi', 'nvim', 'ex', 'view', 'gvim', 'mvim', 'vimdiff', 'rvim'])
+const MAKEFILE_RX = /(?:^|\/)(?:GNUmakefile|makefile|Makefile)$/
+// (d) the file as a program's code file, given by an option (or make's default makefile)
+function optionProgramRuns(name, rest, names) {
+  const vals = rest.slice(1).map((w) => w.value)
+  if (VIM_NAMES.has(name)) return vals.some((v) => namesAny(v, names))
+  const flags = OPTION_PROGRAMS[name]
+  if (!flags) return false
+  if (flags.includes('--makefile') && names.some((t) => MAKEFILE_RX.test(t))) return true
+  return vals.some((v, x) => {
+    const eq = v.indexOf('=')
+    if (v.startsWith('--') && eq > 0) return flags.includes(v.slice(0, eq)) && names.includes(v.slice(eq + 1))
+    if (flags.includes(v) || /^-[A-Za-z]*f$/.test(v)) return names.includes(vals[x + 1])
+    return /^-f./.test(v) && names.includes(v.slice(2))
+  })
+}
+const SUBST_MARK = '\u0000SPVAL\u0000'
+const CODE_RUNNER_RX = /^(?:(?:ba|z|da|k)?sh|ash|fish|python[\d.]*|node|nodejs|perl|ruby|php|bun|deno|osascript|tsx)$/
+// (e) a command substitution's output used as code
+function substAsCode(rest, name) {
+  if (!rest.length) return false
+  if (rest[0].value.includes(SUBST_MARK)) return true
+  if (name === 'eval' || name === 'source' || name === '.') return rest.slice(1).some((w) => w.value.includes(SUBST_MARK))
+  if (!CODE_RUNNER_RX.test(name)) return false
+  return rest.some((w, i) => i > 0 && /^-[A-Za-z]*[ceE]$/.test(w.value) && (rest[i + 1]?.value ?? '').includes(SUBST_MARK))
+}
+// Does a later segment run (or feed as code) a file segment [k] writes? laterRuns, plus the forms above.
+export function runsWrittenFile(segs, k, targets, cmd) {
+  if (!targets.length) return false
+  const names = copiedNames(segs, k, targets)
+  if (laterRuns(segs, k, names)) return true
+  const subsName = liveSubstitutions(cmd).some((s) => namesAny(s, names))
+  const startup = (a) => STARTUP_VARS.has(a.name) && (namesAny(a.value, names)
+    || names.some((t) => t.startsWith(a.value.replace(/\/+$/, '') + '/')))
+  for (let j = k + 1; j < segs.length; j++) {
+    const s = segs[j]
+    const all = shellWords(s.own)
+    if (!all || !all.length) continue
+    const { rest, assigns, splits, wrapped } = unwrapRun(all)
+    const name = segCommand(rest)
+    const declared = DECLARERS.has(name)
+      ? rest.slice(1).filter((w) => ASSIGN_RX.test(w.value)).map((w) => ({ name: w.value.slice(0, w.value.indexOf('=')), value: w.value.slice(w.value.indexOf('=') + 1) }))
+      : []
+    if ([...assigns, ...declared].some(startup)) return true
+    if (splits.some((v) => namesAny(v, names))) return true
+    if (rest.length && wrapped) {
+      const q = (v) => `'${v.replace(/'/g, `'\\''`)}'`
+      const stdin = names.filter((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}`).test(s.own)).map((t) => ` < ${q(t)}`).join('')
+      if (laterRuns([segs[k], { ...s, own: rest.map((w) => q(w.value)).join(' ') + stdin }], 0, names)) return true
+    }
+    if (rest.length && optionProgramRuns(name, rest, names)) return true
+    if (subsName && substAsCode(rest, name)) return true
+  }
+  return false
+}
+
 const PRINTERS = new Set(['echo', 'printf'])
 // The escapes printf (format and %b), echo -e and a POSIX echo decode: \\ and the letter escapes, octal (\NNN, \0NNN),
 // hex (\xHH) and \uHHHH. A decoded control character is a line break for the reading (it ends a word).
@@ -1507,18 +1687,29 @@ export function installFileDeny(command, opts = {}) {
     const c = { ...ctx }
     const out = []
     for (let j = k + 1; j < segs.length; j++) {
-      cwdAfterSegment(subshellParts(segs[j].own).body, c)
+      const body = subshellParts(segs[j].own).body
+      // GATEOPENFORMS1118: a wrapper's directory change (env --chdir/-C, sudo -D) is where its command runs
+      const ws = shellWords(body)
+      for (const d of ws ? unwrapRun(ws).chdirs : []) {
+        if (/[$`*?[]/.test(d) || !c.cwd) return null
+        const at = d.startsWith('/') || d === '~' || d.startsWith('~/') ? resolve(expandHome(d === '~' ? '~/' : d)) : resolve(c.cwd, d)
+        if (at !== ctx.cwd && !out.includes(at)) out.push(at)
+      }
+      cwdAfterSegment(body, c)
       if (!c.cwd) return null
       if (c.cwd !== ctx.cwd && !out.includes(c.cwd)) out.push(c.cwd)
     }
     return out
   }
+  // (a null cwd: a directory this gate cannot know, read with the lost-cwd reading, GATEOPENFORMS1118)
   const atCwd = (cwd, fn) => {
     const c = ctx.cwd
     const d = ctx.cwdInsideDir
+    const l = ctx.cwdLost
     ctx.cwd = cwd
     ctx.cwdInsideDir = insideDir(cwd)
-    try { return fn() } finally { ctx.cwd = c; ctx.cwdInsideDir = d }
+    if (cwd === null) ctx.cwdLost = true
+    try { return fn() } finally { ctx.cwd = c; ctx.cwdInsideDir = d; ctx.cwdLost = l }
   }
   // INSTRWRITEEXEC1105: the text of the segments piped into segment k (printf/echo decoded, a reader's heredoc only)
   const pipedInText = (k) => {
@@ -1631,7 +1822,7 @@ export function installFileDeny(command, opts = {}) {
         const script = args.find((v) => !v.startsWith('-'))
         return script !== undefined && targets.includes(script)
       })
-      if (targets.length && (laterRuns(segs, k, targets) || prefixedRun())) {
+      if (targets.length && (runsWrittenFile(segs, k, targets, cmd) || prefixedRun())) {
         const text = [pipedInText(k), scriptTextOf(own, seg.bodies, name)].filter(Boolean).join('\n')
         // a name an earlier segment assigned a protected path to, used in the text: an unquoted heredoc expands it as it
         // is written, an exported one expands as the file runs
@@ -1655,7 +1846,9 @@ export function installFileDeny(command, opts = {}) {
           if (hits.some((h) => h.kind !== 'ancestor')) return true
           return hits.length > 0 && shellRunsOnly(segs, k, targets, text) && (!ancestorOnlyHolds(text) || dirChangeInScript(text))
         }
-        if ((laterCwds(k) ?? []).some((cwd) => atCwd(cwd, judgeLater))) return true
+        // GATEOPENFORMS1118: a later directory change that cannot be followed (`cd $D && sh s.sh`) is an unknown
+        // directory: the text is read there as a command run after such a cd is (WRITEGATERELPATH1115)
+        if ((laterCwds(k) ?? [null]).some((cwd) => atCwd(cwd, judgeLater))) return true
       }
       // The text a shell runs itself gets the same reading: its -c code, or, when it names no script file, its heredoc
       // and what is piped into it (`sh -c 'rm -rf scripts'` at the root removes a protected directory's parent).
