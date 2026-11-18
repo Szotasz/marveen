@@ -135,6 +135,10 @@ export function requiresAuth(path: string, method: string): boolean {
   // authorised by a single-file, short-lived ticket instead, which the handler
   // checks itself (routes/video-review.ts); without a valid ticket it is 403.
   if (path === '/api/video-review/file' && (method === 'GET' || method === 'HEAD')) return false
+  // TEAMSAPPROVECARD1118: the Teams approval-card click, forwarded by the Teams plugin. It is authorised by the Bot
+  // Framework channel token the handler checks itself (bot-channel-token.ts); a dashboard token, shared by every agent,
+  // must not count there, so the route takes none. Without a channel token it is 401 (web/approval-teams-card.ts).
+  if (path === '/api/approvals/teams-card-action' && method === 'POST') return false
   return path.startsWith('/api/')
 }
 
