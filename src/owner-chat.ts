@@ -87,6 +87,10 @@ export function resolveOwnerChatId(
 ): string | null {
   const fromEnv = normalizeChatId(configured)
   if (fromEnv) return fromEnv
+  if (provider === 'teams') {
+    // TEAMSAPPROVECARD1118: the Teams plugin writes no access.json (see teamsAllowlistIds).
+    try { return teamsAllowlistIds(JSON.parse(readAccessFile(join(channelStateDir(provider), TEAMS_ALLOWLIST_FILE))))[0] ?? null } catch { return null }
+  }
   try {
     // `provider` defaults to 'telegram' so every existing caller (daily digest,
     // welcome/avatar messages, command-task, inbound-probe) is byte-identical.
@@ -153,6 +157,7 @@ export function resolveAlertOwnerChat(
 ): AlertOwnerChat {
   const fromEnv = normalizeChatId(configured)
   if (fromEnv) return { chatId: fromEnv }
+  if (provider === 'teams') return soleTeamsOwner(readAccessFile)
   let raw: Record<string, unknown>
   try {
     raw = JSON.parse(readAccessFile(join(channelStateDir(provider), 'access.json'))) as Record<string, unknown>
@@ -160,6 +165,42 @@ export function resolveAlertOwnerChat(
     return { chatId: null, reason: 'no owner chat: .env placeholder/empty and no readable access.json' }
   }
   return soleDmOwner(raw)
+}
+
+// TEAMSAPPROVECARD1118: the claude-channel-teams plugin (0.3.x, src/pairing/allowlist.ts) writes NO access.json. Its
+// paired users live in <state dir>/allowlist.json, {"version":1,"entries":[{"aad_object_id":"<uuid>",...}]}, compared
+// case-insensitively. Reading access.json for Teams answered "no readable access.json" on every real Teams install,
+// so the approval notification and every owner alert of a Teams main agent was dropped (customer, v1.49.1). The
+// object id found here is a delivery target: resolveTeamsTarget (teams-send.ts) turns it into that person's 1:1 chat.
+export const TEAMS_ALLOWLIST_FILE = 'allowlist.json'
+
+/** The paired users of a parsed Teams allowlist.json, lowercased and deduplicated, in file order. Any shape the
+ *  plugin itself reads as empty (another version, no entries array, an entry without a string id) gives none. */
+export function teamsAllowlistIds(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object') return []
+  const file = raw as { version?: unknown; entries?: unknown }
+  if (file.version !== 1 || !Array.isArray(file.entries)) return []
+  const ids: string[] = []
+  for (const e of file.entries) {
+    const id = e && typeof e === 'object' ? (e as { aad_object_id?: unknown }).aad_object_id : undefined
+    if (typeof id !== 'string') continue
+    const norm = id.trim().toLowerCase()
+    if (norm && !ids.includes(norm)) ids.push(norm)
+  }
+  return ids
+}
+
+/** The alert rule for Teams: exactly one paired user is the owner; none or several is a reason, never a guess. */
+function soleTeamsOwner(readAccessFile: (path: string) => string): AlertOwnerChat {
+  let ids: string[]
+  try {
+    ids = teamsAllowlistIds(JSON.parse(readAccessFile(join(channelStateDir('teams'), TEAMS_ALLOWLIST_FILE))))
+  } catch {
+    return { chatId: null, reason: 'no owner chat: .env placeholder/empty and no readable Teams allowlist.json' }
+  }
+  if (ids.length === 1) return { chatId: ids[0] }
+  if (ids.length === 0) return { chatId: null, reason: 'no owner chat: .env placeholder/empty and the Teams allowlist.json has no paired user' }
+  return { chatId: null, reason: `no owner chat: .env placeholder/empty and the Teams allowlist.json has ${ids.length} paired users, refusing to guess` }
 }
 
 /** The exactly-one-DM-entry rule on a parsed access.json, shared by the
