@@ -6,9 +6,9 @@ import { join } from 'node:path'
 import type { ClaudePlansState } from '../web/claude-plans-state.js'
 import { rotationActionFromLine } from '../claude-plan-rotate-check-run.js'
 import {
-  runRotationTick, staleCheckAlert, lineField, clockHHMM, ROTATION_STALE_AFTER_MS, PENDING_SIGNALS_KEPT, type RotationBackendDeps,
+  runRotationTick, staleCheckAlert, lineField, clockHHMM, ROTATION_STALE_AFTER_MS, PENDING_SIGNALS_KEPT, ROTATION_DEFAULT_EVERY_MIN, type RotationBackendDeps,
 } from '../web/claude-rotation-backend.js'
-import { withRotationLock } from '../web/claude-rotation-lock.js'
+import { withRotationLock, mainRotationTooSoon, MAIN_ROTATION_MIN_GAP_MS } from '../web/claude-rotation-lock.js'
 import {
   exhaustedReadingFrom429, RATE_LIMIT_EXHAUSTED_RETRY_AFTER_SEC, HEADERLESS_429_FRESH_MS, RETRY_AFTER_CAP_SEC,
 } from '../claude-plan-rotate-heartbeat.js'
@@ -176,6 +176,48 @@ describe('web.ts wiring', () => {
   it('the rotate route takes the same lock', () => {
     const ROUTE = readFileSync(join(__dirname, '..', 'web', 'routes', 'claude-plans.ts'), 'utf-8')
     expect(ROUTE).toContain('await withRotationLock(() => rotatePlan({ agentId, targetPlanId, continue: wantContinue }))')
+  })
+})
+
+// PLANROTATEDEADLOCK1115 P5: a second main-agent rotation within MAIN_ROTATION_MIN_GAP_MS is refused in the tick,
+// before the "restarts now" signal: logged, not signalled, not rotated.
+describe('the lastRotationAt guard in the tick (P5)', () => {
+  it('a ROTATE within the gap of the last main rotation: no signal, no rotation, counted as refused', async () => {
+    const h = harness([[ROTATE]])
+    h.deps.writeState({ ...h.state(), backend: { lastRotationAt: NOW - MAIN_ROTATION_MIN_GAP_MS + 60_000 } })
+    const s = await runRotationTick(h.deps)
+    expect(h.order).toEqual([])
+    expect(h.deps.rotate).not.toHaveBeenCalled()
+    expect(s.refused).toEqual(['marveen'])
+    expect(s.rotated).toEqual([])
+    expect(h.state().backend?.lastRotationAt).toBe(NOW - MAIN_ROTATION_MIN_GAP_MS + 60_000)
+  })
+
+  it('at the gap or later it rotates as before (signal first)', async () => {
+    const h = harness([[ROTATE]])
+    h.deps.writeState({ ...h.state(), backend: { lastRotationAt: NOW - MAIN_ROTATION_MIN_GAP_MS } })
+    const s = await runRotationTick(h.deps)
+    expect(h.order[0]).toMatch(/^signal:Claude plan switch/)
+    expect(h.order[1]).toBe('rotate:marveen->b')
+    expect(s.refused).toEqual([])
+  })
+
+  it('a sub-agent rotation is not held back by a recent main rotation', async () => {
+    const h = harness([[SUB_ROTATE]])
+    h.deps.writeState({ ...h.state(), backend: { lastRotationAt: NOW - 60_000 } })
+    await runRotationTick(h.deps)
+    expect(h.order[0]).toBe('rotate:iris->c')
+  })
+
+  it('the gap is longer than two ticks of the default period (the C-rule\'s fastest flip back is refused)', () => {
+    expect(MAIN_ROTATION_MIN_GAP_MS).toBeGreaterThan(2 * ROTATION_DEFAULT_EVERY_MIN * 60_000)
+  })
+
+  it('mainRotationTooSoon: none recorded, inside, at the gap, and a timestamp from the future', () => {
+    expect(mainRotationTooSoon(undefined, NOW)).toBeNull()
+    expect(mainRotationTooSoon(NOW - 20 * 60_000, NOW)).toBe(20 * 60_000)
+    expect(mainRotationTooSoon(NOW - MAIN_ROTATION_MIN_GAP_MS, NOW)).toBeNull()
+    expect(mainRotationTooSoon(NOW + 60_000, NOW)).toBeNull()
   })
 })
 

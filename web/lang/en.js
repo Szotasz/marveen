@@ -1121,8 +1121,6 @@ window._i18n.en = {
   'settings.claude_plans.readiness.main_agent_on_api_key': 'The main agent runs on an API key (its authentication is set to API key on the dashboard), so rotation never applies to the main agent.',
   'settings.claude_plans.readiness.main_agent_explicit_config_dir': 'The main agent has its own Claude login (MAIN_AGENT_CONFIG_DIR is set). That always takes precedence, so rotation never applies to the main agent.',
   'settings.claude_plans.readiness.too_few_channel_plans': 'At least 2 plans that allow channels use are needed.',
-  'settings.claude_plans.readiness.heartbeat_task_missing': 'The rotation heartbeat schedule (claude-plan-rotate-check) is missing. It is created on dashboard start while rotation is on; if you deleted it, turn rotation off and on again.',
-  'settings.claude_plans.readiness.heartbeat_task_disabled': 'The rotation heartbeat schedule (claude-plan-rotate-check) is disabled on the Schedules page.',
   'settings.desc.CLAUDE_ROTATION_ENABLED': 'Automatic Claude key rotation: if the main agent\'s active subscription runs out, automatically switch to another registered plan. Requires MAIN_AGENT_ISOLATED_CONFIG=1 and at least 2 registered plans. Switching restarts the main agent\'s session.',
   'settings.desc.CLAUDE_ROTATION_FLEET': 'Fleet follows the rotation: when the main agent switches to a token-mode plan, the shared fleet token is replaced with that plan\'s token too (with a backup), and every sub-agent using the shared token is restarted. Agents with their own token or config dir are untouched; a config-dir target plan skips this step. Requires automatic rotation to be on.',
   'settings.col.key':            'Key',

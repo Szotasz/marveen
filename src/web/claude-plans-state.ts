@@ -106,6 +106,11 @@ export interface RotationBackendRecord {
   noAlternativeSent?: string[]
   /** Unix epoch ms of the last stale-check alert, so one stale episode alerts once. */
   staleAlertAt?: number
+  /** Unix epoch ms of the last successful MAIN-agent rotation (tick or route); a second one within
+   *  MAIN_ROTATION_MIN_GAP_MS is refused (claude-rotation-lock.ts). */
+  lastRotationAt?: number
+  /** Unix epoch ms the owner was told that the edited old rotation task was disabled, so a restart does not repeat it. */
+  retiredTaskNoticeAt?: number
 }
 
 /** A sub-agent's rotation bookkeeping between heartbeat ticks. */
@@ -145,6 +150,8 @@ function readBackend(v: unknown): RotationBackendRecord | undefined {
   const out: RotationBackendRecord = {}
   const lastCheckAt = num(v.lastCheckAt); if (lastCheckAt !== undefined) out.lastCheckAt = lastCheckAt
   const staleAlertAt = num(v.staleAlertAt); if (staleAlertAt !== undefined) out.staleAlertAt = staleAlertAt
+  const lastRotationAt = num(v.lastRotationAt); if (lastRotationAt !== undefined) out.lastRotationAt = lastRotationAt
+  const retiredTaskNoticeAt = num(v.retiredTaskNoticeAt); if (retiredTaskNoticeAt !== undefined) out.retiredTaskNoticeAt = retiredTaskNoticeAt
   const pendingSignals = strings(v.pendingSignals); if (pendingSignals?.length) out.pendingSignals = pendingSignals
   const pendingDropped = num(v.pendingDropped); if (pendingDropped !== undefined && pendingDropped > 0) out.pendingDropped = pendingDropped
   const noAlternativeSent = strings(v.noAlternativeSent); if (noAlternativeSent?.length) out.noAlternativeSent = noAlternativeSent

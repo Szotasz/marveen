@@ -1560,8 +1560,6 @@ window._i18n.hu = {
   'settings.claude_plans.readiness.main_agent_on_api_key': 'A fő agent API-kulccsal fut (a dashboardon a hitelesítése API-kulcsra van állítva), ezért a rotáció a fő agentnél nem érvényesül.',
   'settings.claude_plans.readiness.main_agent_explicit_config_dir': 'A fő agentnek saját Claude-loginja van (MAIN_AGENT_CONFIG_DIR be van állítva). Ez mindig elsőbbséget kap, ezért a rotáció a fő agentnél nem érvényesül.',
   'settings.claude_plans.readiness.too_few_channel_plans': 'Legalább 2 olyan plan kell, amelyen a csatorna futhat.',
-  'settings.claude_plans.readiness.heartbeat_task_missing': 'Hiányzik a rotációs heartbeat ütemezés (claude-plan-rotate-check). Bekapcsolt rotációnál a dashboard indításkor létrehozza; ha kézzel törölted, kapcsold ki és be a rotációt.',
-  'settings.claude_plans.readiness.heartbeat_task_disabled': 'A rotációs heartbeat ütemezés (claude-plan-rotate-check) ki van kapcsolva az Ütemezések között.',
   'settings.desc.CLAUDE_ROTATION_ENABLED': 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan. A váltás a fő agent session-jének újraindításával jár.',
   'settings.desc.CLAUDE_ROTATION_FLEET': 'A flotta is kövesse a rotációt: amikor a fő agent egy token-módú planre vált, a közös flotta-token is erre cserélődik (mentéssel), és újraindul minden sub-agent, amely a közös tokent használja. Saját tokenes vagy saját configDir-os agenteket nem érint; configDir-módú célplannél ez a lépés kimarad. Előfeltétel: automata rotáció bekapcsolva.',
   'settings.col.key':            'Kulcs',

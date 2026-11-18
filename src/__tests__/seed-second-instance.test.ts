@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { shouldRegisterHooks } from '../web/hook-registration-guard.js'
 
@@ -22,17 +22,36 @@ describe('the default task seed runs only in the instance that owns the install'
     expect(web.split('ensureDefaultScheduledTasks()').length - 1).toBe(1)
   })
 
-  it('the rotation heartbeat seed sits in the same register branch (Dani 64715: the same class)', () => {
+  // PLANROTATEDEADLOCK1115 P5: the old rotation task is no longer seeded; its retirement took the seed's place, in the
+  // same register branch (it removes or rewrites a task in the user-global dir: the same class, Dani 64715), and only
+  // with the background services on.
+  it('the rotation task retirement sits in the same register branch, behind the services gate', () => {
     const guard = web.indexOf('  if (!hookDecision.register) {\n    logger.info({ reason: hookDecision.reason }, \'Default scheduled tasks not seeded (second instance)\')\n  } else {')
-    const call = web.indexOf('      const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })')
+    const gate = web.indexOf('    if (!servicesOff) {\n      void withRotationLock(() => retireRotationHeartbeatTask(defaultRotationBackendDeps()))', guard)
     // The branch ends right before the orphan sweep (since #2419 behind its own servicesOff gate).
     const branchEnd = web.indexOf('\n  }\n\n  // The orphan sweep kills', guard)
     expect(guard).toBeGreaterThan(-1)
-    expect(call).toBeGreaterThan(guard)
-    expect(branchEnd).toBeGreaterThan(call)
-    // The else branch holds no closing brace at its own indent before the call: the call is inside it.
-    expect(web.slice(guard, call).split('\n  }\n').length - 1).toBe(0)
-    expect(web.split('ensureRotationHeartbeatTask(').length - 1).toBe(1)
+    expect(gate).toBeGreaterThan(guard)
+    expect(branchEnd).toBeGreaterThan(gate)
+    expect(web.slice(guard, gate).split('\n  }\n').length - 1).toBe(0)
+    expect(web.split('retireRotationHeartbeatTask(').length - 1).toBe(1)
+  })
+
+  it('no former seed path calls the rotation task seeders any more (startup, Settings toggle, any other source)', () => {
+    const files: string[] = []
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name)
+        if (e.isDirectory()) { if (e.name !== '__tests__') walk(p) } else if (e.name.endsWith('.ts')) files.push(p)
+      }
+    }
+    walk(join(__dirname, '..'))
+    walk(join(__dirname, '..', '..', 'scripts'))
+    const callers = files
+      .filter((f) => !f.endsWith(join('web', 'claude-rotation-heartbeat.ts')))
+      .filter((f) => /\b(ensureRotationHeartbeatTask|syncRotationHeartbeatTask)\b/.test(readFileSync(f, 'utf-8')))
+    expect(files.length).toBeGreaterThan(100)
+    expect(callers).toEqual([])
   })
 
   it('every second-instance kind says no (the decision the seed now follows)', () => {

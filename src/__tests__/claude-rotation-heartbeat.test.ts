@@ -130,43 +130,23 @@ describe('ensureRotationHeartbeatTask', () => {
   })
 })
 
-describe('POST /api/settings trigger', () => {
-  it('turning CLAUDE_ROTATION_ENABLED on seeds the task', async () => {
+// PLANROTATEDEADLOCK1115 P5: the rotation runs in the dashboard backend, so the Settings switch (a former seed
+// path) neither creates the old task nor flips one: an edited task the start disabled stays off.
+describe('POST /api/settings no longer touches the rotation task (P5)', () => {
+  it('turning CLAUDE_ROTATION_ENABLED on creates no task', async () => {
     const { ctx, out } = fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '1' })
     expect(await tryHandleSettings(ctx)).toBe(true)
     expect(out.status).toBe(200)
-    expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)?.enabled).toBe(true)
-  })
-
-  it('turning it off, or changing an unrelated key, seeds nothing', async () => {
-    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '0' }).ctx)
-    settings.set('CLAUDE_ROTATION_ENABLED', '1')
-    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_FLEET', value: '1' }).ctx)
     expect(existsSync(taskDir())).toBe(false)
   })
 
-  // PR #1602 review: turning rotation off left the seeded task enabled, and
-  // every tick was a main-session LLM turn plus a live probe.
-  it('turning it off disables the seeded task (kept, not deleted), and on again re-enables it', async () => {
+  it('turning it on does not re-enable a switched-off old task, and turning it off leaves an enabled one as it is', async () => {
+    io.writeScheduledTask(ROTATION_HEARTBEAT_TASK, { prompt: 'edited', schedule: ROTATION_HEARTBEAT_SCHEDULE, agent: 'host-main', enabled: false })
     await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '1' }).ctx)
-    const seededPrompt = io.readScheduledTask(ROTATION_HEARTBEAT_TASK)!.prompt
-    // An operator edit that must survive the round trip.
-    io.writeScheduledTask(ROTATION_HEARTBEAT_TASK, { schedule: '*/30 * * * *' })
-
-    const { ctx, out } = fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '0' })
-    await tryHandleSettings(ctx)
-    expect(out.status).toBe(200)
-    expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)).toMatchObject({ enabled: false, schedule: '*/30 * * * *', prompt: seededPrompt })
-
-    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '1' }).ctx)
-    expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)).toMatchObject({ enabled: true, schedule: '*/30 * * * *', prompt: seededPrompt })
-  })
-
-  it('a restart never re-enables a task that rotation-off disabled', async () => {
-    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '1' }).ctx)
-    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '0' }).ctx)
-    expect(ensureRotationHeartbeatTask({ respectRemoval: true })).toBe('rotation-off')
     expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)?.enabled).toBe(false)
+    io.writeScheduledTask(ROTATION_HEARTBEAT_TASK, { enabled: true })
+    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '0' }).ctx)
+    expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)?.enabled).toBe(true)
   })
 })
 
@@ -199,11 +179,12 @@ describe('rotationReadiness', () => {
     settings.set('MAIN_AGENT_ISOLATED_CONFIG', '1')
     plans = [plan('a'), plan('b')]
     activePlanByAgent = { 'host-main': 'a' }
-    ensureRotationHeartbeatTask()
   }
 
-  it('all preconditions met: ready, no blockers', () => {
+  // PLANROTATEDEADLOCK1115 P5: the old task is no precondition any more (the check runs in the backend).
+  it('all preconditions met: ready, no blockers, with no rotation task at all', () => {
     readyBaseline()
+    expect(existsSync(taskDir())).toBe(false)
     expect(rotationReadiness()).toEqual({ ready: true, blockers: [], details: [] })
   })
 
@@ -266,16 +247,12 @@ describe('rotationReadiness', () => {
     expect(rotationReadiness().blockers).toEqual(['no_active_plan'])
   })
 
-  it('heartbeat task missing', () => {
+  it('a leftover old task, enabled or switched off, is no blocker either (P5)', () => {
     readyBaseline()
-    rmSync(taskDir(), { recursive: true, force: true })
-    expect(rotationReadiness().blockers).toEqual(['heartbeat_task_missing'])
-  })
-
-  it('heartbeat task disabled', () => {
-    readyBaseline()
+    io.writeScheduledTask(ROTATION_HEARTBEAT_TASK, { prompt: 'x', schedule: ROTATION_HEARTBEAT_SCHEDULE, agent: 'host-main', enabled: true })
+    expect(rotationReadiness().blockers).toEqual([])
     io.writeScheduledTask(ROTATION_HEARTBEAT_TASK, { enabled: false })
-    expect(rotationReadiness().blockers).toEqual(['heartbeat_task_disabled'])
+    expect(rotationReadiness().blockers).toEqual([])
   })
 })
 

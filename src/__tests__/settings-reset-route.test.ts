@@ -186,9 +186,10 @@ describe('DELETE /api/settings/<KEY>', () => {
     expect(await tryHandleSettings(call('PUT', '/api/settings/KANBAN_WIP_WARN_PCT').ctx)).toBe(false)
   })
 
-  it('resetting the rotation switch re-syncs its heartbeat task, like saving it does', async () => {
+  // PLANROTATEDEADLOCK1115 P5: the rotation runs in the backend; resetting the switch, like saving it, wires no task.
+  it('resetting the rotation switch touches no rotation task', async () => {
     setOverride('CLAUDE_ROTATION_ENABLED', '1')
     await tryHandleSettings(call('DELETE', '/api/settings/CLAUDE_ROTATION_ENABLED').ctx)
-    expect(rotationSyncs).toEqual(['sync'])
+    expect(rotationSyncs).toEqual([])
   })
 })
