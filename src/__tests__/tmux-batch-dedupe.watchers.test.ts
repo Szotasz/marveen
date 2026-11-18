@@ -6,7 +6,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { MAIN_CHANNELS_SESSION } from '../web/main-agent.js'
 import { startStuckInputWatcher } from '../web/stuck-input-watcher.js'
 import { startReauthHealer } from '../web/reauth-healer.js'
-import { startChannelIntakeMonitor } from '../web/channel-intake-monitor.js'
+import { startChannelIntakeMonitor, resetIntakeObservations } from '../web/channel-intake-monitor.js'
 
 const h = vi.hoisted(() => ({
   agents: ['dedupe-b', 'dedupe-c', 'dedupe-a'],
@@ -206,19 +206,21 @@ describe('watcher run-state prepasses', () => {
     expectOneListSpawn()
   })
 
-  it('stuck-input: a timed-out list-sessions resets one pass and starts, messages, alerts nothing', async () => {
+  it('stuck-input: a timed-out list-sessions keeps every spell for that pass and starts, messages, alerts nothing', async () => {
     const deletes = vi.spyOn(Map.prototype, 'delete')
     startStuckInputWatcher()
     await vi.advanceTimersByTimeAsync(15_000)
     const maps = deletedMaps(deletes, 'agent-dedupe-c')
     expect(maps).toHaveLength(1)
-    for (const session of runningOrder) maps[0].set(session, { parkedSig: 'stale' })
+    const spell = { parkedSig: 'stale', firstSeenAt: 1, lastRecoverAt: 2, attempts: 3 }
+    for (const name of h.agents) maps[0].set(`agent-${name}`, spell)
 
     h.listError = listTimeoutError()
     h.spawns.length = 0
     await vi.advanceTimersByTimeAsync(5_000)
     expectOnlyListAndMainCaptures()
-    for (const session of runningOrder) expect(maps[0].has(session)).toBe(false)
+    // One failed listing is not "every session gone": nothing is decided this pass.
+    for (const name of h.agents) expect(maps[0].get(`agent-${name}`)).toEqual(spell)
 
     h.listError = null
     h.spawns.length = 0
@@ -228,6 +230,8 @@ describe('watcher run-state prepasses', () => {
     expect(panes()).toEqual([MAIN_CHANNELS_SESSION, MAIN_CHANNELS_SESSION,
       runningOrder[0], runningOrder[0], runningOrder[1], runningOrder[1]])
     expectOneListSpawn()
+    // The next successful listing decides: the stopped agent's spell goes now.
+    expect(maps[0].has('agent-dedupe-c')).toBe(false)
   })
 
   it('reauth: a timed-out list-sessions skips one pass and starts, messages, alerts nothing', async () => {
@@ -288,23 +292,23 @@ describe('watcher run-state prepasses', () => {
     }
   })
 
-  it('intake: a timed-out list-sessions resets one pass and starts, messages, alerts nothing', async () => {
+  it('intake: a timed-out list-sessions keeps every observation for that pass and starts, messages, alerts nothing', async () => {
     h.agents = [MAIN_AGENT_ID, ...h.agents]
     const deletes = vi.spyOn(Map.prototype, 'delete')
     startChannelIntakeMonitor('/unused-project')
     await vi.advanceTimersByTimeAsync(100_000)
     const maps = deletedMaps(deletes, 'dedupe-c')
     expect(maps).toHaveLength(1)
-    for (const name of ['dedupe-b', 'dedupe-a']) {
-      maps[0].set(name, { at: 1, pendingUpdates: 99 })
-    }
+    const observation = { at: 1, pendingUpdates: 99 }
+    for (const name of ['dedupe-b', 'dedupe-c', 'dedupe-a']) maps[0].set(name, observation)
 
     h.listError = listTimeoutError()
     h.spawns.length = 0
     vi.mocked(fetch).mockClear()
     await vi.advanceTimersByTimeAsync(200_000)
     expectOnlyListAndMainCaptures()
-    for (const name of ['dedupe-b', 'dedupe-a']) expect(maps[0].has(name)).toBe(false)
+    // One failed listing is not "every agent stopped": nothing is decided this pass.
+    for (const name of ['dedupe-b', 'dedupe-c', 'dedupe-a']) expect(maps[0].get(name)).toEqual(observation)
     expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([
       'https://api.telegram.org/botmain/getWebhookInfo',
     ])
@@ -323,5 +327,36 @@ describe('watcher run-state prepasses', () => {
     expect(panes()).toEqual([])
     expect(h.hostReads).toEqual(['dedupe-b', 'dedupe-c', 'dedupe-a'])
     expectOneListSpawn()
+    // The next successful listing decides: the stopped agent's observation goes now.
+    expect(maps[0].has('dedupe-c')).toBe(false)
+  })
+
+  it('intake: after one failed listing the deaf alerts come at the same passes as without it', async () => {
+    h.agents = [MAIN_AGENT_ID, ...h.agents]
+    // Every bot holds 2 unfetched updates, so each running agent reads deaf from its second reading on.
+    async function deadPerPass(failAtPass: number | null): Promise<string[][]> {
+      vi.clearAllTimers()
+      resetIntakeObservations()
+      const warn = vi.spyOn(logger, 'warn')
+      startChannelIntakeMonitor('/unused-project')
+      const passes: string[][] = []
+      for (const [i, step] of [100_000, 200_000, 300_000, 300_000, 300_000].entries()) {
+        h.listError = i === failAtPass ? listTimeoutError() : null
+        warn.mockClear()
+        await vi.advanceTimersByTimeAsync(step)
+        passes.push(warn.mock.calls
+          .filter(c => c[1] === 'channel-intake-monitor: channel intake is dead')
+          .map(c => String((c[0] as { agent: string }).agent)))
+      }
+      warn.mockRestore()
+      return passes
+    }
+    const clean = await deadPerPass(null)
+    const failed = await deadPerPass(2)
+    expect(clean).toEqual([[], [MAIN_AGENT_ID, 'dedupe-b', 'dedupe-a'], [MAIN_AGENT_ID, 'dedupe-b', 'dedupe-a'],
+      [MAIN_AGENT_ID, 'dedupe-b', 'dedupe-a'], [MAIN_AGENT_ID, 'dedupe-b', 'dedupe-a']])
+    // The failed pass decides nothing for the sub-agents; every later pass alerts exactly as without the failure.
+    expect(failed[2]).toEqual([MAIN_AGENT_ID])
+    expect(failed.filter((_, i) => i !== 2)).toEqual(clean.filter((_, i) => i !== 2))
   })
 })
