@@ -73,13 +73,17 @@ print(int((time.time() - t) * 1000))
     const cmds = [
       "echo 'ls' " + '| cat '.repeat(2000) + '| bash',
       '('.repeat(2000) + 'echo ls' + ')'.repeat(2000) + ' | bash',
-      'eval $('.repeat(6000),
+      'eval $('.repeat(12000),
       Array(2000).fill('bash -c "$(echo ls)"').join('; '),
       "printf '" + 'x'.repeat(5000) + "%s\\n' " + 'a '.repeat(3000) + '| bash',
+      'echo $('.repeat(2000) + 'printf ls' + ')'.repeat(2000) + ' | bash',
+      'echo ' + '$(echo a) '.repeat(2000) + '| bash',
+      'echo$(a)'.repeat(2000) + ' | bash',
+      Array(2000).fill('eval `echo ls`').join('; '),
     ]
     const t0 = Date.now()
     for (const c of cmds) unverifiableSendConstruction(c, dir)
-    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(Date.now() - t0).toBeLessThan(5000)
     const pyMs = Number(execFileSync('python3', ['-c', `
 import importlib.util, json, sys, time
 spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(GATE_PY)})
@@ -88,7 +92,7 @@ t = time.time()
 for c in json.loads(sys.argv[1]): g.unverifiable_send_construction(c, sys.argv[2])
 print(int((time.time() - t) * 1000))
 `, JSON.stringify(cmds), dir], { encoding: 'utf-8' }).trim())
-    expect(pyMs).toBeLessThan(2000)
+    expect(pyMs).toBeLessThan(5000)
   })
 
   it('the sub-agent gate denies such a command with its own reason, before the send checks', () => {

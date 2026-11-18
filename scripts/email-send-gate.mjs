@@ -1011,6 +1011,9 @@ const UV_CMDSUBST = /^__GATECMDSUBST(\d+)__$/
 const UV_SUBST_ARG = /[\s;&|(](?:eval|-[a-zA-Z]*c[a-zA-Z]*)[ \t]+$/ // an unquoted `$(` right after it
 const UV_PAR_REPL = /\{[^{}\s]*\}/g // parallel's replacement strings ({}, {.}, {1}, ...)
 const UV_PAR_ARGS = [':::', '::::', ':::+', '::::+']
+const UV_WORDSUBST = /__GATEWORDSUBST(\d+)__/g // EMAILGATEPIPESH1116 R1: a substitution in a producer word
+const UV_PRODUCER_SKIP = ['{', '!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time', 'command', 'builtin',
+  'nohup', 'exec', 'env']
 const UV_SUBST_SCANS = 64 // substitutions after eval / -c read per command; one more cannot be told (bounds the time)
 const UV_COPIERS = ['cat', 'tee'] // a program whose standard output is its standard input
 const UV_MARK = /^__GATE(HEREDOC|PROCSUBST)(\d+)__$/
@@ -1040,6 +1043,9 @@ function uvMark(cmdIn, texts) {
   let q = null
   const parens = [] // 's' for an open `$(`, 'g' for a group `(`: which `)` closes a group
   let scans = 0 // substitution scans after eval / -c, each up to the end of the command: bounded
+  let cmdStart = 0 // where the current simple command starts in `out` (R1)
+  const starts = []
+  const first = new Map()
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]
     if (q) {
@@ -1064,16 +1070,34 @@ function uvMark(cmdIn, texts) {
     }
     if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
     if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+    if (ch === '`') {
+      // EMAILGATEPIPESH1116 R1: an unquoted backquote pair after eval / a -c flag, or in a producer's word
+      const kind = uvSubstArg(out) ? 'cmdsubst' : uvProducerContext(out, cmdStart, first) ? 'wordsubst' : null
+      if (kind) {
+        let j = i + 1
+        while (j < cmd.length && cmd[j] !== '`') j += cmd[j] === '\\' ? 2 : 1
+        texts.push([kind, j < cmd.length ? cmd.slice(i + 1, j) : null])
+        out += kind === 'cmdsubst' ? ` __GATECMDSUBST${texts.length - 1}__ ` : `__GATEWORDSUBST${texts.length - 1}__`
+        i = j
+        continue
+      }
+      out += ch
+      cmdStart = out.length
+      continue
+    }
+    if (ch === '&' && ((i > 0 && '<>'.includes(cmd[i - 1])) || cmd[i + 1] === '>')) continue // R1: `2>&1`, `&>f`
+    if (ch === ';' || ch === '&' || ch === '\n') { out += ch; cmdStart = out.length; continue }
     if (ch === '#' && (i === 0 || ' \t\n;&|('.includes(cmd[i - 1]))) {
       while (i < cmd.length && cmd[i] !== '\n') out += cmd[i++] // a comment: an apostrophe in it opens no quote
       i--
       continue
     }
     if (ch === '|' && !(i > 0 && cmd[i - 1] === '>')) {
-      if (cmd[i + 1] === '|') { out += '||'; i++; continue }
+      if (cmd[i + 1] === '|') { out += '||'; i++; cmdStart = out.length; continue }
       // a pipe: the segment before it ends in UV_PIPE_OUT, the one after it starts with UV_PIPE_IN
       out += ` ${UV_PIPE_OUT} | ${UV_PIPE_IN} `
       if (cmd[i + 1] === '&') i++
+      cmdStart = out.length
       continue
     }
     if (cmd[i + 1] === '(' && (ch === '<' || (ch === '=' && (i === 0 || ' \t\n;&|(<'.includes(cmd[i - 1]))))) {
@@ -1098,17 +1122,40 @@ function uvMark(cmdIn, texts) {
         const end = ++scans <= UV_SUBST_SCANS ? uvCloseParen(cmd, i + 2) : -1 // past the bound: cannot tell
         texts.push(['cmdsubst', end > 0 ? cmd.slice(i + 2, end - 1) : null])
         out += ` __GATECMDSUBST${texts.length - 1}__ `
+      } else if (uvProducerContext(out, cmdStart, first)) {
+        // EMAILGATEPIPESH1116 R1: an unquoted substitution in an echo / printf word (python twin)
+        const end = uvCloseParen(cmd, i + 2)
+        texts.push(['wordsubst', end > 0 ? cmd.slice(i + 2, end - 1) : null])
+        out += `__GATEWORDSUBST${texts.length - 1}__`
+        i = end > 0 ? end - 1 : cmd.length
+        continue
       }
       parens.push('s')
+      starts.push(cmdStart)
       out += '$('
       i++
+      cmdStart = out.length
       continue
     }
-    if (ch === '(') { parens.push('g'); out += `( ${UV_GROUP_OPEN} `; continue }
-    if (ch === ')' && parens.length && parens.pop() === 'g') { out += `) ${UV_GROUP_CLOSE} `; continue }
+    if (ch === '(') { parens.push('g'); out += `( ${UV_GROUP_OPEN} `; cmdStart = out.length; continue }
+    if (ch === ')' && parens.length) {
+      if (parens.pop() === 'g') { out += `) ${UV_GROUP_CLOSE} `; cmdStart = out.length; continue }
+      cmdStart = starts.length ? starts.pop() : out.length
+    }
     out += ch
   }
   return out
+}
+
+// EMAILGATEPIPESH1116 R1: see _uv_producer_context in hooks/outgoing-copy-gate.py
+function uvProducerContext(out, start, cache) {
+  if (cache.has(start)) return cache.get(start)
+  const text = out.slice(start)
+  let words = text.split(/\s+/).filter(Boolean)
+  while (words.length && (UV_PRODUCER_SKIP.includes(words[0]) || /^[A-Za-z0-9_]+=/.test(words[0]))) words = words.slice(1)
+  // the substitution in the command name itself (no complete name before it) makes no producer
+  cache.set(start, words.length > 0 && (words.length > 1 || /\s$/.test(text)) && ['echo', 'printf'].includes(basename(words[0])))
+  return cache.get(start)
 }
 
 const uvSubstArg = (out) => UV_SUBST_ARG.test((out.length <= 64 ? ' ' : 'x') + out.slice(-64))
@@ -1261,8 +1308,38 @@ function uvHeadOutput(head, texts, pipeFeed = null) {
   let prog = basename(head[0])
   let rest = head.slice(1)
   while (prog === 'builtin' && rest.length) { prog = basename(rest[0]); rest = rest.slice(1) }
-  if (prog === 'echo' || prog === 'printf') return uvPrinted([prog, ...uvStdinAndArgs(rest, texts).args])
+  if (prog === 'echo' || prog === 'printf') {
+    const words = uvResolveWords(uvStdinAndArgs(rest, texts).args, texts)
+    return words == null ? { text: null } : uvPrinted([prog, ...words])
+  }
   return uvCopierOutput(head, texts, pipeFeed)
+}
+
+// EMAILGATEPIPESH1116 R1: see _uv_resolve_words and _uv_wordsubst_sends in hooks/outgoing-copy-gate.py
+function uvResolveWords(words, texts) {
+  const out = []
+  for (const w of words) {
+    const ks = [...w.matchAll(UV_WORDSUBST)].map((m) => Number(m[1]))
+    if (!ks.length) { out.push(w); continue }
+    const vals = ks.map((k) => (texts[k].length > 2 ? texts[k][2].text : null))
+    if (vals.some((v) => v == null)) return null
+    let x = 0
+    const r = w.replace(UV_WORDSUBST, () => vals[x++].replace(/\n+$/, '').replace(/\s+/g, ' '))
+    if (/^__GATEWORDSUBST\d+__$/.test(w)) out.push(...r.split(/\s+/).filter(Boolean))
+    else out.push(r)
+  }
+  return out
+}
+
+function uvWordsubstSends(k, cwd, depth, texts) {
+  const entry = texts[k]
+  if (entry.length > 2) return false
+  if (entry[1] == null) { texts[k] = ['wordsubst', null, { text: null }]; return false }
+  if (depth >= SHELL_C_DEPTH) { texts[k] = ['wordsubst', entry[1], { text: null }]; return true } // nested beyond the bound
+  const outs = []
+  if (uvSends(entry[1], cwd, depth + 1, texts, outs)) return true
+  texts[k] = ['wordsubst', entry[1], uvJoin(outs) ?? { text: null }]
+  return false
 }
 
 function uvJoin(feeds) {
@@ -1427,6 +1504,7 @@ function uvSends(cmd, cwd, depth, texts, outs = null) {
     }
     let out = null
     if (toks.length) {
+      if (toks.some((t) => [...t.matchAll(UV_WORDSUBST)].some((m) => uvWordsubstSends(Number(m[1]), cwd, depth, texts)))) return true
       if (toks[toks.length - 1] === '<' || toks[toks.length - 1] === '=') {
         // a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
         texts.push(['procsubst', null])

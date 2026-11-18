@@ -63,6 +63,8 @@ REFUSED = (
     ("a shell -c string that is a producer's command substitution", f"bash -c \"$(cat <<< 'python3 tool.py --to {A}')\""),
     ("an eval argument that is a producer's command substitution", f"eval \"$(echo python3 tool.py --to {A})\""),
     ("parallel puts its input in a recipient value", f"printf '{A}\\n' | parallel python3 tool.py --to {{}}"),
+    ("a substitution in a producer's word, piped into a shell", f"echo $(printf 'python3 tool.py --to {A}') | sh"),
+    ("an unquoted backquoted echo as the eval argument", f"eval `echo 'python3 tool.py --to {A}'`"),
 )
 NOT_SENDS = (
     ("control: xargs runs grep", "find . -name '*.py' | xargs grep -n foo"),
@@ -71,6 +73,7 @@ NOT_SENDS = (
     ("control: a producer's text with no send marker piped into a shell", "echo 'ls -la' | bash"),
     ("control: an eval substitution whose command is no producer", "eval \"$(ssh-agent -s)\""),
     ("control: parallel runs echo", "printf 'a\\nb\\n' | parallel echo {}"),
+    ("control: an unquoted backquoted eval argument whose command is no producer", "eval `ssh-agent -s`"),
 )
 LEGIT_SEND = f"python3 scripts/support-mail/send.py --to {A} --subject S < BODY"
 
