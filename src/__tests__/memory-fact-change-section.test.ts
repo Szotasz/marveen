@@ -99,6 +99,19 @@ describe('memory-fact-change section: what it says (Hungarian)', () => {
     expect(body).toMatch(/A visszavonás nem törlés/)
   })
 
+  it('the rule file is fixed too, a rule is not copied into a memory, and a retraction has no way back', () => {
+    expect(body).toMatch(/skillben vagy CLAUDE\.md-ben is le van írva, azt is javítsd ugyanabban a körben/)
+    expect(body).toMatch(/1547 emlékből 34 ellentmondott egy szabályfájlnak,\s+és ebből 8 esetben a szabályfájl volt az elavult/)
+    expect(body).toMatch(/Ne ments emléket olyan szabályról, ami már szó szerint/)
+    expect(body).toMatch(/az esetet mentsd, és hivatkozz a szabály helyére/)
+    // src/db.ts retractMemory is the only write to retracted_at, and it only ever sets it.
+    expect(body).toMatch(/A visszavonásnak nincs visszaállító útja/)
+    expect(body).toMatch(/kétség esetén a dátumos ELAVULT-jelölés a biztonságos/)
+    // The new points sit after the Q/D/B point, before the present-tense one.
+    expect(body.indexOf('Q/D/B azonosítós')).toBeLessThan(body.indexOf('Ha a megváltozott tény'))
+    expect(body.indexOf('A visszavonásnak nincs')).toBeLessThan(body.indexOf('Jelen idejű állítást'))
+  })
+
   it('one heading, no em or en dash, no at-sign (a CLAUDE.md reads at-sign plus path as an import)', () => {
     expect(body.split('\n').filter((l) => l.startsWith('## ')).length).toBe(1)
     expect(body).not.toMatch(/[–—]/)
@@ -137,6 +150,11 @@ describe('memory-fact-change section: the English twin', () => {
     expect(en).toMatch(/replaces the row's WHOLE content, so\s+send the whole old text back/)
     expect(enRaw).toMatch(/`PUT \/api\/memories\/<id>` on the old id\. It replaces the row's WHOLE/)
     expect(en).toMatch(/A retraction is not a delete/)
+    expect(en).toMatch(/also written in a skill or a CLAUDE\.md, fix that too in the same round/)
+    expect(en).toMatch(/of 1547 memories, 34 contradicted a rule\s+file, and in 8 of those it was the rule file that was outdated/)
+    expect(en).toMatch(/Do not save a memory about a rule that already stands word for word/)
+    expect(en).toMatch(/A retraction has no way back/)
+    expect(en).toMatch(/when in doubt, the dated OUTDATED note is the safe choice/)
     expect(enRaw).not.toMatch(/marveen-api\.sh/)
     expect(enRaw).toMatch(/`POST \/api\/memories\/<id>\/retract` with `\{"agent_id":"agent-b"\}`/)
     expect(en).not.toMatch(/[–—]/)
