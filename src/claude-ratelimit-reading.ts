@@ -16,10 +16,21 @@
 //   {"ok":true,"windows":{"five_hour":{used_percent,resets_at,status},"seven_day":{...}}}
 //   {"ok":false,"reason":"<fixed text, never the token>"}
 // The exit code is 0 either way; anything else is a crash the caller reports.
+//
+// QUOTAHDRROT1118: under plan rotation (claude-plan-rotation-mode.ts) the token
+// usage-collect.py hands over is the host's default login, which need not be
+// the plan the main agent is on. A trusted 'ratelimit_headers' reading of that
+// account would then stand in for the active plan in the quota gate, so the
+// entry does not call the API at all there: it answers ok:false with a fixed
+// reason, and usage-collect.py falls back to its estimate (an untrusted source,
+// the gate stays open and says it is blind). The rotation reads the active
+// plan with its own token (claude-plan-rotate-check-run.ts).
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { probePlanUsage, usageFromProbe, type ProbeResult } from './claude-plan-usage-probe.js'
 import { activeReadingFromProbe, exhaustedReadingFrom429 } from './claude-plan-rotate-heartbeat.js'
+import { planRotationInEffect } from './claude-plan-rotation-mode.js'
+import { readClaudePlans } from './web/claude-plans.js'
 
 export const TOKEN_ENV = 'CLAUDE_RATELIMIT_TOKEN'
 
@@ -43,12 +54,21 @@ export function readingFromProbe(result: ProbeResult, nowMs: number): RateLimitR
   return { ok: true, windows: { five_hour: win(reading.fiveHour), ...(reading.sevenDay ? { seven_day: win(reading.sevenDay) } : {}) } }
 }
 
+export const ROTATION_SKIP_REASON = 'plan rotation in effect: the host login may not be the active plan'
+
+/** The reading for one run: no call without a token or under plan rotation, else one probe. */
+export async function readRateLimits(token: string, nowMs: () => number = Date.now): Promise<RateLimitReading> {
+  if (!token) return { ok: false, reason: `no token in ${TOKEN_ENV}` }
+  let rotation = false
+  try { rotation = planRotationInEffect(readClaudePlans()) } catch { rotation = false }
+  if (rotation) return { ok: false, reason: ROTATION_SKIP_REASON }
+  return readingFromProbe(await probePlanUsage(token, { timeoutMs: 8_000 }), nowMs())
+}
+
 async function main(): Promise<void> {
   const token = process.env[TOKEN_ENV] ?? ''
   delete process.env[TOKEN_ENV]
-  const out: RateLimitReading = token
-    ? readingFromProbe(await probePlanUsage(token, { timeoutMs: 8_000 }), Date.now())
-    : { ok: false, reason: `no token in ${TOKEN_ENV}` }
+  const out = await readRateLimits(token)
   process.stdout.write(JSON.stringify(out) + '\n')
 }
 

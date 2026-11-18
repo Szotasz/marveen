@@ -658,6 +658,10 @@ def _read_claude_statusline(max_age_minutes, now_utc=None, path=None):
 # Last-resort Claude source: the unified rate-limit headers of one minimal
 # Messages call, read by the compiled TypeScript entry (the same parser and 429
 # rules as the plan rotation). Costs a few tokens of the quota per run.
+# Under plan rotation (MAIN_AGENT_ISOLATED_CONFIG=1, 2+ plans, no
+# MAIN_AGENT_CONFIG_DIR) the entry makes no call: the token read below is the
+# host's default login, not necessarily the active plan, so it answers ok:false
+# and this collector falls through to the estimate (QUOTAHDRROT1118).
 RATELIMIT_ENTRY = os.path.join(REPO_ROOT, "dist", "claude-ratelimit-reading.js")
 
 

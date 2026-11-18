@@ -16,6 +16,7 @@ import { getSecret } from './web/vault.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from './config.js'
 import { readAgentAuthMode } from './web/agent-config.js'
+import { planRotationInEffect } from './claude-plan-rotation-mode.js'
 
 function settingIsOn(key: string): boolean {
   try { return String(getEffectiveSettingValue(key)) === '1' } catch { return false }
@@ -66,11 +67,7 @@ export async function refreshIdlePlans(): Promise<void> {
 // MAIN_AGENT_CONFIG_DIR. Outside that, the main agent runs on the host login,
 // which is exactly what usage-collect.py reads.
 export function activeTokenPlan(plans: ClaudePlan[]): ClaudePlan | null {
-  if (!settingIsOn('MAIN_AGENT_ISOLATED_CONFIG')) return null
-  let explicitDir = ''
-  try { explicitDir = String(getEffectiveSettingValue('MAIN_AGENT_CONFIG_DIR') ?? '').trim() } catch { explicitDir = '' }
-  if (explicitDir) return null
-  if (plans.length < 2) return null
+  if (!planRotationInEffect(plans)) return null
   const activeId = readClaudePlansState().activePlanByAgent[MAIN_AGENT_ID]
   const plan = plans.find((p) => p.id === activeId)
   return plan?.tokenSecretId ? plan : null
