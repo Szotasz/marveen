@@ -1,0 +1,11 @@
+{
+  "schedule": "30 3 * * *",
+  "agent": "marveen",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": true,
+  "once": true,
+  "seedWhen": "existing-memories",
+  "description": "Egyszer, a frissítés után: a memória és a szabályfájlok (CLAUDE.md, SKILL.md) összevetése",
+  "createdAt": 1795046400
+}

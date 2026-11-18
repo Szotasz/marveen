@@ -407,9 +407,10 @@ describe('the shipped English seed texts', () => {
   // dream-engine's em-dash gate names the characters it looks for; so does ai-fleet-project-execution's diff re-grep
   const DASH_OK = [/grep -oE '—\|–\|―'/g, /` — ` -> ` -- `/g, /grep -cE "\^\\\+\.\*\(—\| -- \)"/g]
 
-  it('covers the A group (Samu 72774, 10 files) and the DOCKERI18N1119 group (16 files)', () => {
+  it('covers the A group (Samu 72774, 10 files), the DOCKERI18N1119 group (16 files) and the memory consistency pass (MEMCONSONCE1118, 4 files)', () => {
     expect(pairs.sort()).toEqual([
       'scheduled-tasks/dream-engine/SKILL.md', 'scheduled-tasks/ledger-live-drain/SKILL.md', 'scheduled-tasks/memoria-heartbeat/SKILL.md',
+      'scheduled-tasks/memoria-konzisztencia/SKILL.md',
       'scheduled-tasks/reggeli-napindito/SKILL.md', 'seed-scheduled-tasks/bumblebee-hygiene-scan/SKILL.md',
       'seed-scheduled-tasks/intel-collector/SKILL.md', 'seed-scheduled-tasks/intel-daily-brief/SKILL.md', 'seed-scheduled-tasks/kanban-audit/SKILL.md',
       'seed-scheduled-tasks/kanban-audit/references/kanban-audit-buktatok.md', 'seed-scheduled-tasks/kanban-audit/references/kanban-audit-step4b-waiting.md',
@@ -417,6 +418,8 @@ describe('the shipped English seed texts', () => {
       'seed-skills/ai-fleet-project-execution/SKILL.md', 'seed-skills/approval-request-handling/SKILL.md', 'seed-skills/bridge-szolgaltatas-lapok/SKILL.md',
       'seed-skills/channel-plugin-duplicate-socket/SKILL.md', 'seed-skills/fleet-helper/SKILL.md', 'seed-skills/fleet-helper/scripts/README.md',
       'seed-skills/fleet-hygiene/SKILL.md', 'seed-skills/github-pr-rebase-merge/SKILL.md', 'seed-skills/handoff/SKILL.md',
+      'seed-skills/memoria-szabaly-konzisztencia/SKILL.md', 'seed-skills/memoria-szabaly-konzisztencia/references/besorolo-brief.md',
+      'seed-skills/memoria-szabaly-konzisztencia/references/review-brief.md',
       'seed-skills/retrospective/SKILL.md', 'seed-skills/self-rename/SKILL.md', 'seed-skills/skill-management/SKILL.md',
       'skills/skill-factory/SKILL.md', 'templates/scheduled-tasks/folyamatos-ellenorzes/SKILL.md',
     ])
