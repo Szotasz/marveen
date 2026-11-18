@@ -105,9 +105,9 @@ To: {target agent or "next session"}
 - Edge cases discovered}
 
 ## Next Steps
-{Concrete, actionable items for the receiving session:
-1. First thing to do (most specific)
-2. Second thing
+{Concrete, actionable items for the receiving session, each with its kanban card ID or the marker `KÁRTYA NÉLKÜL` (no card):
+1. First thing to do (most specific) -- card #123
+2. Second thing -- KÁRTYA NÉLKÜL
 3. ...
 Keep each step concrete enough to execute without asking questions.}
 ```
@@ -151,4 +151,4 @@ Report to the user/caller:
 | kanban | Task tracking | Source: includes assigned/active cards |
 | daily log | Chronological record | Source: includes today's log entries |
 
-The handoff READS from these systems but does not REPLACE them. After a handoff, the receiving session should still check the live state of kanban/memory -- the handoff is a starting-context accelerator, not the source of truth.
+The handoff READS from these systems but does not REPLACE them. After a handoff, the receiving session should still check the live state of kanban/memory -- the handoff is a starting-context accelerator, not the source of truth. But the kanban is not the full to-do list either: every open Next Steps item of the handoff is a task besides the kanban cards, also one marked `KÁRTYA NÉLKÜL`. In its first round the receiving session creates a card for each such item, or writes next to it why none is needed.

@@ -515,7 +515,7 @@ export function handoffPrompt(pctRound: number, handoffPath: string): string {
     `[CONTEXT-GUARD] A munkakontextusod ~${pctRound}%-on van -- kritikus. ` +
     `NE folytasd a feladatot. EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
     `(purpose: a folyamatban lévő feladat folytatása friss kontextusban; Goal / Current Progress / What Worked / What Didn't Work / Next Steps szekciók, ` +
-    `konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). Ha nincs aktív feladatod, írd bele hogy nincs. ` +
+    `konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). Ha nincs aktív feladatod, írd bele hogy nincs. ` +
     `Utána ÁLLJ MEG -- a rendszer friss kontextussal újraindít és a HANDOFF.md-ből folytatod.`
   )
 }
@@ -535,7 +535,7 @@ export function idleFlushHandoffPrompt(tokens: number, idleMinutes: number, hand
     `[CONTEXT-GUARD] Rutin karbantartás, nem vészhelyzet. A sessionöd kontextusa ~${Math.round(tokens / 1000)}k token, ` +
     `és ${idleMinutes} perce nincs benne aktivitás, ezért friss kontextussal indítalak újra -- így olcsóbb és gyorsabb lesz a következő kör. ` +
     `EGYETLEN dolgod: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
-    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
     `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
   )
@@ -556,7 +556,7 @@ export function dailyHandoffPrompt(atTime: string, handoffPath: string): string 
     `[CONTEXT-GUARD] Ütemezett napi újraindítás (${atTime}), nem vészhelyzet és nem hiba. ` +
     `A sessionöd hamarosan friss kontextussal indul újra, és ami nincs leírva, az nem éli túl. ` +
     `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
-    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
     `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
   )
@@ -572,7 +572,7 @@ export function periodicHandoffPrompt(everyMinutes: number, handoffPath: string)
     `[CONTEXT-GUARD] Ütemezett, ${everyMinutes} percenkénti frissítés, nem vészhelyzet és nem hiba. ` +
     `A sessionöd hamarosan friss kontextussal indul újra, és ami nincs leírva, az nem éli túl. ` +
     `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
-    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
     `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
   )
@@ -587,7 +587,7 @@ export function taskCloseHandoffPrompt(handoffPath: string): string {
     `[CONTEXT-GUARD] Lezárult az utolsó nyitott kanban-kártyád, és nincs megválaszolatlan bejövő üzeneted: ` +
     `ez természetes szünet, a sessionöd most friss kontextussal indul újra. Nem vészhelyzet és nem hiba. ` +
     `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
-    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
     `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
   )
@@ -711,6 +711,12 @@ export function resumePrompt(
     base + source + heavyJobResumeText(heavyJobs) +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
     `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
+    // HANDOFFKARTYA1118: a fresh session that continued from the kanban alone
+    // dropped an agreed handoff item that had no card. Only when a handoff exists.
+    (hadHandoff
+      ? `A HANDOFF Next Steps MINDEN tétele teendő akkor is, ha nincs kártyája: ebben az első körben minden kártya nélküli tételre hozz létre kártyát ` +
+        `(vagy írd a tétel mellé, miért nem kell). A kanban NEM a teljes teendőlista. `
+      : '') +
     // ORSICTX912: msg 23670 was delivered SEVEN SECONDS after the guard kill
     // started, into the dying session -- the queue marked it delivered, the
     // fresh session had no reason to look, and completed_at is unused (0/37
