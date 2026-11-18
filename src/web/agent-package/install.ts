@@ -654,19 +654,22 @@ export function packageStartRefusal(name: string, dir: string): string | null {
  * import lines are replaced by the two files' text (an import from /tmp would be external and silently not load,
  * M24), 0600 in a 0700 folder, plus a LOCAL.md link so the agent's writes land in the real file. Any other agent gets
  * the CLAUDE.md link it always got. EVERY agent (#2878, changing the plan's N13 "the non-package branch is unchanged")
- * also gets its project-level settings and skills linked in (linkFallbackProjectConfig): the fallback session runs
+ * also gets its project-level settings, hooks and skills linked in (linkFallbackProjectConfig): the fallback session runs
  * from /tmp and would otherwise start without them. 'refused' when the guard refuses, the expansion fails or an existing
  * settings file cannot be linked: the caller does not start then.
  */
 /** The agent's project-level Claude Code files the fallback session must see from its /tmp cwd. */
-export const FALLBACK_PROJECT_LINKS = ['settings.json', 'settings.local.json', 'skills'] as const
+export const FALLBACK_PROJECT_LINKS = ['settings.json', 'settings.local.json', 'hooks', 'skills'] as const
 
 /**
  * The fallback session runs from the /tmp folder, so Claude Code would not see the agent's project-level settings and
  * skills there (#2878 C-path, measured: the package skill did not load). Each one that exists in the agent's .claude
- * folder is linked under <fallbackCwd>/.claude/ (0700); a missing source gets no link (no dangling link). Returns false
- * when an existing settings file could not be linked: the session would then start without the agent's project
- * settings, so the caller does not start it (fail closed).
+ * folder is linked under <fallbackCwd>/.claude/ (0700); a missing source gets no link (no dangling link). The hooks
+ * folder too: CLAUDE_PROJECT_DIR is the /tmp folder in that session, so a project hook written as
+ * "$CLAUDE_PROJECT_DIR/.claude/hooks/x.sh" would fail with exit 127, a non-blocking error, and the owner's own gate
+ * would drop out silently (C-path re-run, measured). Returns false when an existing settings file or hooks folder could
+ * not be linked: the session would then start without the agent's project settings or gates, so the caller does not
+ * start it (fail closed).
  */
 export function linkFallbackProjectConfig(dir: string, fallbackCwd: string): boolean {
   const target = join(fallbackCwd, '.claude')

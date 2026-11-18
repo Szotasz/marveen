@@ -194,9 +194,9 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
       rmSync(fb2, { recursive: true, force: true })
     }
   })
-  it('every fallback (package and hand-made) links the agent project settings and skills under .claude, 0700, no dangling link', () => {
+  it('every fallback (package and hand-made) links the agent project settings, hooks and skills under .claude, 0700, no dangling link', () => {
     const SET = '{"hooks":{}}\n'
-    const files = { '.claude/settings.json': SET, '.claude/settings.local.json': '{}\n', '.claude/skills/canary/SKILL.md': '# canary\n' }
+    const files = { '.claude/settings.json': SET, '.claude/settings.local.json': '{}\n', '.claude/hooks/gate.sh': '#!/bin/sh\n', '.claude/skills/canary/SKILL.md': '# canary\n' }
     const pkgAgent = agent({ 'CLAUDE.md': I.packageShellText('a1', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': 'notes\n', ...files })
     const plain = agent({ 'CLAUDE.md': '# hand-made\n', ...files })
     const partial = agent({ 'CLAUDE.md': '# hand-made\n', '.claude/settings.json': SET })
@@ -209,6 +209,8 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
           expect(lstatSync(join(fb, '.claude', n)).isSymbolicLink()).toBe(true)
           expect(readlinkSync(join(fb, '.claude', n))).toBe(join(d, '.claude', n))
         }
+        // a project hook written as "$CLAUDE_PROJECT_DIR/.claude/hooks/gate.sh" resolves from the fallback folder
+        expect(readFileSync(join(fb, '.claude', 'hooks', 'gate.sh'), 'utf8')).toBe('#!/bin/sh\n')
       } finally {
         rmSync(fb, { recursive: true, force: true })
       }
@@ -221,6 +223,7 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
       expect(I.prepareFallbackClaudeMd(partial.split('/').pop()!, partial, fb)).toBe('linked')
       expect(lstatSync(join(fb, '.claude', 'settings.json')).isSymbolicLink()).toBe(true)
       expect(existsSync(join(fb, '.claude', 'settings.local.json'))).toBe(false)
+      expect(() => lstatSync(join(fb, '.claude', 'hooks'))).toThrow()
       expect(() => lstatSync(join(fb, '.claude', 'skills'))).toThrow()
     } finally {
       rmSync(fb, { recursive: true, force: true })
@@ -232,6 +235,16 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
     try {
       mkdirSync(join(fb, '.claude'), { mode: 0o700 })
       writeFileSync(join(fb, '.claude', 'settings.json'), 'squatter')
+      expect(I.prepareFallbackClaudeMd(d.split('/').pop()!, d, fb)).toBe('refused')
+    } finally {
+      rmSync(fb, { recursive: true, force: true })
+    }
+  })
+  it('a hooks folder that exists but cannot be linked refuses the fallback start (fail closed)', () => {
+    const d = agent({ 'CLAUDE.md': '# hand-made\n', '.claude/hooks/gate.sh': '#!/bin/sh\n' })
+    const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+    try {
+      mkdirSync(join(fb, '.claude', 'hooks'), { recursive: true, mode: 0o700 })
       expect(I.prepareFallbackClaudeMd(d.split('/').pop()!, d, fb)).toBe('refused')
     } finally {
       rmSync(fb, { recursive: true, force: true })
