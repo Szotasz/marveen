@@ -104,6 +104,76 @@ describe('skill-index.sh -- description truncation', () => {
   })
 })
 
+// IDXBLOCK1118: the description was read with `grep -m1 "^description:"`, so a
+// YAML block scalar (`description: >` / `|` with the text on the next lines)
+// went into the Level 0 index as a lone ">" or "|" and the skill could not be
+// found by keyword. Measured on the live install: 10+ project skills
+// (blog-writer, fact-checker, keyword-clusterer, ...).
+describe('skill-index.sh -- description forms (IDXBLOCK1118)', () => {
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), 'skill-index-test-'))
+  })
+
+  afterEach(() => {
+    rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  // Writes one skill whose frontmatter lines are given verbatim (after `name:`),
+  // runs the script and returns the description cell of that skill's index row.
+  // The body carries a second `description:` line on purpose: it must never win.
+  function descOf(frontmatter: string): string {
+    mkdirSync(join(tmpHome, '.claude', 'skills', 'skill-x'), { recursive: true })
+    writeFileSync(
+      join(tmpHome, '.claude', 'skills', 'skill-x', 'SKILL.md'),
+      `---\nname: skill-x\n${frontmatter}---\n\n# skill-x\n\ndescription: body line, not frontmatter\n`,
+    )
+    runScript([], { HOME: tmpHome })
+    const content = readFileSync(join(tmpHome, '.claude', 'skills', '.skill-index.md'), 'utf-8')
+    const row = content.split('\n').find((l) => l.startsWith('| `skill-x` |'))
+    expect(row).toBeDefined()
+    return row!.slice('| `skill-x` | '.length, -' |'.length)
+  }
+
+  it('keeps a plain one-line description as it was', () => {
+    expect(descOf('description: Plain one-line description\n')).toBe('Plain one-line description')
+  })
+
+  it('drops the quotes of a quoted description, as before', () => {
+    expect(descOf('description: "Quoted: with a colon"\n')).toBe('Quoted: with a colon')
+    expect(descOf("description: 'Single quoted'\n")).toBe('Single quoted')
+  })
+
+  it('keeps an accented one-line description intact', () => {
+    expect(descOf('description: Árvíztűrő tükörfúrógép, ékezetes leírás\n')).toBe('Árvíztűrő tükörfúrógép, ékezetes leírás')
+  })
+
+  it('folds a `>` block scalar into one line instead of ">"', () => {
+    expect(descOf('description: >\n  Folded block\n  on two lines.\nlicense: MIT\n')).toBe('Folded block on two lines.')
+  })
+
+  it('reads a `>-` block scalar', () => {
+    expect(descOf('description: >-\n  Strip-chomped folded\n  text, ékezettel.\n')).toBe('Strip-chomped folded text, ékezettel.')
+  })
+
+  it('joins a `|` literal block scalar onto one table line', () => {
+    const d = descOf('description: |\n  First line.\n\n  Second paragraph.\nallowed-tools: Bash\n')
+    expect(d).toBe('First line. Second paragraph.')
+    expect(d).not.toContain('|')
+  })
+
+  it('cuts a long block scalar at 120 characters without splitting an accented one', () => {
+    const d = descOf(`description: >\n  ${'é'.repeat(70)}\n  ${'ő'.repeat(70)}\n`)
+    expect(d).toBe('é'.repeat(70) + ' ' + 'ő'.repeat(49))
+    expect(d).not.toContain('�')
+  })
+
+  it('writes the placeholder when the frontmatter has no description', () => {
+    expect(descOf('license: MIT\n')).toBe('(nincs leírás)')
+  })
+})
+
 describe('skill-index.sh -- AGENT_DIR mode (merged index)', () => {
   let tmpHome: string
   let agentDir: string
