@@ -215,6 +215,7 @@ function parseLockContent(raw: string): ParsedLock | null {
   const [pidTok, bootTok, tickTok] = toks as [string, string, string]
   const pid = parsePid(pidTok)
   if (pid === null || !/^\S+$/.test(bootTok) || !/^[0-9]+$/.test(tickTok)) return null
+  if (!Number.isSafeInteger(Number(tickTok))) return null
   return { pid, boot: bootTok, tick: Number(tickTok) }
 }
 
@@ -417,6 +418,7 @@ export const realPidLockDeps: PidLockDeps = {
       const r = stat.lastIndexOf(')')
       if (r < 0) return undefined
       const f = stat.slice(r + 2).split(' ')
+      if (f[0] === 'Z' || f[0] === 'X') return undefined // zombie/dead: kill(pid,0) and the tick lie; undefined hands the decision to the ps-based tree (pre-c3f84534)
       const tok = f[19] // field 22 overall (index 19 after the last ')' + space); measured
       if (tok === undefined || !/^[0-9]+$/.test(tok)) return undefined
       const ticks = Number(tok)

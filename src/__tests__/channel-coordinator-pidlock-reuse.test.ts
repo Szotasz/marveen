@@ -187,6 +187,7 @@ describe('tryAcquirePidLock: jitter immunity of the identity token (B1)', () => 
     writeFileSync(file, `31337 ${BOOT} 777777`)
     expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: 31337, reason: 'held' })
     expect(d.argvOf).not.toHaveBeenCalled()
+    expect(d.startEpochMs).not.toHaveBeenCalled()
     expect(readFileSync(file, 'utf-8').trim()).toBe(`31337 ${BOOT} 777777`)
     // The fake reproduces the measurement it stands for: many distinct values,
     // spread well beyond the 9 ms single-step jitter.
@@ -200,6 +201,7 @@ describe('tryAcquirePidLock: jitter immunity of the identity token (B1)', () => 
     writeFileSync(file, `${SELF} ${BOOT} 123456`)
     expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: true, reclaimed: null })
     expect(d.argvOf).not.toHaveBeenCalled()
+    expect(d.startEpochMs).not.toHaveBeenCalled()
     expect(readFileSync(file, 'utf-8').trim()).toBe(`${SELF} ${BOOT} 123456`) // not rewritten
   })
 })
@@ -275,5 +277,69 @@ describe('realPidLockDeps extended members', () => {
     const child = spawnSync(process.execPath, ['-e', ''])
     expect(child.pid).toBeGreaterThan(0)
     expect(realPidLockDeps.startEpochMs?.(child.pid!)).toBeUndefined()
+  })
+})
+
+describe('round 3: zombie holder, unsafe tick, no-start deps', () => {
+  const linux = realPidLockDeps.bootId?.() !== undefined
+
+  async function withZombie(fn: (z: number) => void | Promise<void>) {
+    const sh = spawn('/bin/sh', ['-c', 'true & echo $!; exec sleep 5'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    try {
+      const out: string = await new Promise((res) => sh.stdout!.once('data', (c) => res(String(c))))
+      const z = Number(out.trim())
+      expect(z).toBeGreaterThan(0)
+      const deadline = Date.now() + 2000
+      const state = () => {
+        try {
+          const st = readFileSync(`/proc/${z}/stat`, 'utf-8')
+          return st.slice(st.lastIndexOf(')') + 2).split(' ')[0]
+        } catch { return undefined }
+      }
+      while (state() !== 'Z' && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20))
+      expect(state()).toBe('Z')
+      await fn(z)
+    } finally {
+      sh.kill('SIGKILL')
+    }
+  }
+
+  it.skipIf(!linux)('Z1 a real zombie is alive to kill(0) but has no tick', async () => {
+    await withZombie((z) => {
+      expect(realPidLockDeps.isAlive(z)).toBe(true)
+      expect(realPidLockDeps.startTicks?.(z)).toBeUndefined()
+    })
+  })
+
+  it.skipIf(!linux)('Z2 a lock held by a real zombie is reclaimed', async () => {
+    await withZombie((z) => {
+      const st = readFileSync(`/proc/${z}/stat`, 'utf-8')
+      const rawTick = st.slice(st.lastIndexOf(')') + 2).split(' ')[19]
+      writeFileSync(file, `${z} ${realPidLockDeps.bootId!()} ${rawTick}`)
+      expect(tryAcquirePidLock(file, SELF, realPidLockDeps)).toMatchObject({ ok: true, reclaimed: z })
+    })
+  })
+
+  it('G1 an unsafe-integer tick is garbage, not a reuse verdict', () => {
+    const d = deps({ alive: true, boot: BOOT, ticks: () => 999000 })
+    writeFileSync(file, `31337 ${BOOT} 99999999999999999999`)
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: true, reclaimed: null }) // garbage has no parseable pid
+    expect(d.isAlive).not.toHaveBeenCalled()
+  })
+
+  it('A3b unreadable tick, unreadable argv: unknown', () => {
+    const d = deps({ alive: true, argv: undefined, boot: BOOT, ticks: () => undefined })
+    writeFileSync(file, `31337 ${BOOT} 999000`)
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: 31337, reason: 'unknown' })
+    expect(d.argvOf).toHaveBeenCalled()
+  })
+
+  it('A3c unreadable tick: argv decides', () => {
+    const d = deps({ alive: true, argv: 'node /x/dist/channel-coordinator.js', boot: BOOT, ticks: () => undefined })
+    writeFileSync(file, `31337 ${BOOT} 999000`)
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: 31337, reason: 'held' })
+    const d2 = deps({ alive: true, argv: 'node server.js', boot: BOOT, ticks: () => undefined })
+    writeFileSync(file, `31337 ${BOOT} 999000`)
+    expect(tryAcquirePidLock(file, SELF, d2)).toEqual({ ok: true, reclaimed: 31337 })
   })
 })
