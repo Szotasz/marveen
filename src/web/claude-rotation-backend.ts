@@ -13,6 +13,8 @@
 //   FLEET_*                     relayed.
 // P6: every finished tick writes backend.lastCheckAt; a separate watch alerts the owner once per stale episode when
 // rotation is on and the last check is older than 30 minutes.
+// P5: a ROTATE within MAIN_ROTATION_MIN_GAP_MS of the last main-agent rotation (backend.lastRotationAt) is skipped,
+// logged and not signalled; retireRotationHeartbeatTask (claude-rotation-heartbeat.ts) runs once at start.
 import { logger } from '../logger.js'
 import { APP_TZ, MAIN_AGENT_ID } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
@@ -22,7 +24,7 @@ import { rotatePlan } from './routes/claude-plans.js'
 import { readClaudePlans } from './claude-plans.js'
 import { readClaudePlansState, writeClaudePlansState, type ClaudePlansState, type RotationBackendRecord } from './claude-plans-state.js'
 import { approvalTextLang } from './agent-text-lang.js'
-import { withRotationLock } from './claude-rotation-lock.js'
+import { withRotationLock, mainRotationTooSoon } from './claude-rotation-lock.js'
 
 export const ROTATION_FIRST_DELAY_MS = 2 * 60_000
 export const ROTATION_DEFAULT_EVERY_MIN = 10
@@ -122,6 +124,8 @@ export function noAlternativeKey(a: RotationAction, nowMs: number): string {
 export interface RotationTickSummary {
   actions: string[]
   rotated: string[]
+  /** Main-agent rotations the lastRotationAt guard refused (logged, not signalled). */
+  refused: string[]
   signalsSent: number
   signalsQueued: number
 }
@@ -133,7 +137,7 @@ export function runRotationTick(deps: RotationBackendDeps = defaultRotationBacke
 
 async function tickBody(deps: RotationBackendDeps): Promise<RotationTickSummary> {
   const lang = deps.lang()
-  const summary: RotationTickSummary = { actions: [], rotated: [], signalsSent: 0, signalsQueued: 0 }
+  const summary: RotationTickSummary = { actions: [], rotated: [], refused: [], signalsSent: 0, signalsQueued: 0 }
   const queued: string[] = []
   const notify = async (text: string): Promise<boolean> => {
     try { return await deps.notify(text) } catch { return false }
@@ -160,6 +164,14 @@ async function tickBody(deps: RotationBackendDeps): Promise<RotationTickSummary>
     const agentId = lineField(a.line, 'agent') || MAIN_AGENT_ID
     const target = lineField(a.line, 'target')
     if (a.kind === 'ROTATE') {
+      // P5: a main-agent rotation too soon after the last one is refused here, BEFORE the "restarts now" signal, so the
+      // owner is not told about a switch that does not happen (rotatePlan refuses it as well, for the route path).
+      const lastRotationAt = deps.readState().backend?.lastRotationAt
+      if (mainRotationTooSoon(lastRotationAt, deps.now()) !== null) {
+        summary.refused.push(agentId)
+        logger.info({ agentId, targetPlanId: target, lastRotationAt }, 'claude rotation backend: main agent rotation refused, the last one was too recent')
+        continue
+      }
       await send(rotateText(a, lang, deps.planLabel(target), false))
       const r = await deps.rotate({ agentId, targetPlanId: target, continue: false })
       if (r.status === 200) summary.rotated.push(agentId)

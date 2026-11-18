@@ -6,7 +6,6 @@ import {
 } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
-import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import { noticeTargetDrift } from '../../notify.js'
@@ -123,11 +122,8 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // APPROVALSLACK1030 (2): the approving Slack id changed -> the OLD one is told (Dani 65925).
       if (key === 'SLACK_OWNER_USER_ID') void announceSlackOwnerChange(String(oldValue), String(validation.value))
 
-      // The rotation switch also wires its heartbeat, in both directions: on
-      // creates or re-enables it (otherwise the switch is inert, measured
-      // 2026-09-26), off disables it (otherwise a leftover task keeps ticking,
-      // PR #1602 review). See syncRotationHeartbeatTask.
-      if (key === 'CLAUDE_ROTATION_ENABLED') syncRotationAfterChange()
+      // PLANROTATEDEADLOCK1115 P5: the rotation switch no longer wires a scheduled task (the check runs in the
+      // dashboard backend, the old task is retired at start), so saving it touches no task.
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })
     } catch (err) {
       logger.error({ err }, 'Failed to update setting')
@@ -188,7 +184,6 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         logger.info({ key, oldValue, newValue: now.value, source: now.source }, 'Setting override removed')
         if (key === 'NOTIFY_SLACK_TARGET') void noticeTargetDrift(String(now.value), { fallbackOld: String(oldValue) })
         if (key === 'SLACK_OWNER_USER_ID') void announceSlackOwnerChange(String(oldValue), String(now.value))
-        if (key === 'CLAUDE_ROTATION_ENABLED') syncRotationAfterChange()
       }
       json(res, { ok: true, key, removed: result.removed, value: now.value, source: now.source, requiresRestart: def.requiresRestart })
     } catch (err) {
@@ -199,13 +194,4 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
   }
 
   return false
-}
-
-function syncRotationAfterChange(): void {
-  try {
-    const synced = syncRotationHeartbeatTask()
-    if (synced !== 'unchanged' && synced !== 'rotation-off') logger.info({ task: 'claude-plan-rotate-check', result: synced }, 'Claude rotation heartbeat task synced')
-  } catch (err) {
-    logger.warn({ err }, 'Claude rotation heartbeat task sync failed')
-  }
 }
