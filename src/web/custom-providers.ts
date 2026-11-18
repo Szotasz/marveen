@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { isReservedVaultId } from './vault-reserved.js'
 
 const PROVIDERS_PATH = join(PROJECT_ROOT, 'store', 'custom-providers.json')
 
@@ -118,6 +119,10 @@ export function validateCustomProvider(data: unknown): string | null {
   const vaultKey = d.vaultKey === null || d.vaultKey === undefined ? null : String(d.vaultKey).trim()
   if (authHeader !== 'none' && !vaultKey) {
     return 'vaultKey is required unless authHeader is none'
+  }
+  // GMAILDRAFT1116 review B1: a provider's key is sent to its baseUrl as a header; a reserved entry never leaves this way.
+  if (vaultKey && isReservedVaultId(vaultKey)) {
+    return 'vaultKey names a reserved vault entry, which is never handed to a provider'
   }
 
   return null

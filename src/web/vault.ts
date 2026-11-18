@@ -5,6 +5,7 @@ import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { isKeychainAvailable, keychainStore, keychainRetrieveStatus } from './keychain.js'
 import { logger } from '../logger.js'
+import { isReservedVaultId } from './vault-reserved.js'
 
 const VAULT_PATH = join(PROJECT_ROOT, 'store', 'vault.json')
 const VAULT_KEY_PATH = join(PROJECT_ROOT, 'store', '.vault-key')
@@ -234,11 +235,20 @@ function writeVault(store: VaultStore): void {
   atomicWriteFileSync(VAULT_PATH, JSON.stringify(store, null, 2) + '\n', { mode: 0o600 })
 }
 
+// GMAILDRAFT1116 review B1: a reserved entry (vault-reserved.ts) is not listed, not read, not written, not relabelled
+// and not deleted by the generic functions below. Its owner module uses reservedVaultAccess instead.
 export function listSecrets(): Array<{ id: string, label: string, createdAt: string, updatedAt: string }> {
-  return readVault().entries.map(({ id, label, createdAt, updatedAt }) => ({ id, label, createdAt, updatedAt }))
+  return readVault().entries
+    .filter(e => !isReservedVaultId(e.id))
+    .map(({ id, label, createdAt, updatedAt }) => ({ id, label, createdAt, updatedAt }))
 }
 
 export function setSecret(id: string, label: string, value: string): void {
+  if (isReservedVaultId(id)) throw new Error(`vault: "${id}" is a reserved entry; it is not written through the generic vault`)
+  writeEntry(id, label, value)
+}
+
+function writeEntry(id: string, label: string, value: string): void {
   const store = readVault()
   const now = new Date().toISOString()
   const idx = store.entries.findIndex(e => e.id === id)
@@ -267,6 +277,7 @@ export function normalizeVaultLabel(id: string, label: string): string {
 // for byte: nothing is decrypted or re-encrypted, so the master key is not even
 // touched. Returns false when the id does not exist.
 export function updateSecretLabel(id: string, label: string): boolean {
+  if (isReservedVaultId(id)) return false
   const store = readVault()
   const entry = store.entries.find(e => e.id === id)
   if (!entry) return false
@@ -277,6 +288,16 @@ export function updateSecretLabel(id: string, label: string): boolean {
 }
 
 export function getSecret(id: string): string | null {
+  if (isReservedVaultId(id)) {
+    // Not decrypted at all. A caller reaching here with a reserved id is a custom provider, a plan, a binding or a
+    // resolver script naming it: that is the path review B1 closed, so it leaves a trace and gets "not there".
+    logger.warn({ event: 'vault-reserved-refused', id, via: 'getSecret' }, 'vault: a reserved entry was asked for through the generic reader')
+    return null
+  }
+  return readEntry(id)
+}
+
+function readEntry(id: string): string | null {
   const store = readVault()
   const entry = store.entries.find(e => e.id === id)
   if (!entry) return null
@@ -284,6 +305,11 @@ export function getSecret(id: string): string | null {
 }
 
 export function deleteSecret(id: string): boolean {
+  if (isReservedVaultId(id)) return false
+  return deleteEntry(id)
+}
+
+function deleteEntry(id: string): boolean {
   const store = readVault()
   const before = store.entries.length
   store.entries = store.entries.filter(e => e.id !== id)
@@ -300,3 +326,26 @@ export function getSecretsForEnv(envMap: Record<string, string>): Record<string,
   }
   return result
 }
+
+// GMAILDRAFT1116 review B1: the ONLY way to a reserved entry, for the module that owns it, in the dashboard process.
+// Every function refuses a non-reserved id, so this is not a second generic reader. A source-scan test
+// (vault-reserved-entries.test.ts) pins which files import this name; adding a reader means editing that pin in a
+// reviewed commit. Not an OS boundary: see vault-reserved.ts.
+export const reservedVaultAccess = Object.freeze({
+  read(id: string): string | null {
+    if (!isReservedVaultId(id)) throw new Error('reservedVaultAccess: not a reserved id')
+    return readEntry(id)
+  },
+  present(id: string): boolean {
+    if (!isReservedVaultId(id)) throw new Error('reservedVaultAccess: not a reserved id')
+    return readVault().entries.some(e => e.id === id)
+  },
+  write(id: string, label: string, value: string): void {
+    if (!isReservedVaultId(id)) throw new Error('reservedVaultAccess: not a reserved id')
+    writeEntry(id, label, value)
+  },
+  remove(id: string): boolean {
+    if (!isReservedVaultId(id)) throw new Error('reservedVaultAccess: not a reserved id')
+    return deleteEntry(id)
+  },
+})

@@ -17,6 +17,7 @@ import { readBody, json } from '../http-helpers.js'
 import { mayActAsOwner, refuseOwner } from './auth.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret, updateSecretLabel, normalizeVaultLabel, VAULT_LABEL_MAX_LENGTH } from '../vault.js'
+import { isReservedVaultId, RESERVED_VAULT_REFUSAL } from '../vault-reserved.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
@@ -829,10 +830,21 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   const AGENT_API_KEY_ID = /^agent-[^/]+-api-key$/
   const agentApiKeyWriteRefused = (id: string): boolean => AGENT_API_KEY_ID.test(id) && !mayActAsOwner(ctx.auth, req)
 
+  // GMAILDRAFT1116 review B1: a reserved entry (vault-reserved.ts, today the owner's gmail.compose grant behind
+  // POST /api/gmail/draft) is refused on EVERY generic vault route below, for EVERY principal, the owner session
+  // included: no value read, no resolve, no binding, no write, no relabel, no delete. The owner manages it through its
+  // own owner-only route (routes/gmail-draft.ts), which never returns it either. One warn line per refusal; the value
+  // is not decrypted.
+  const refuseReserved = (id: string, via: string): void => {
+    const { kind, principal } = principalOf(ctx.auth)
+    logger.warn({ event: 'vault-reserved-refused', id, via, kind, principal }, 'vault: reserved entry refused on a generic route')
+    json(res, { error: RESERVED_VAULT_REFUSAL, code: 'vault-reserved' }, 403)
+  }
+
   if (path === '/api/vault' && method === 'GET') {
     // ssh-key-* entries are managed exclusively via the SSH key pool
     // (/api/vault/ssh-keys) and must not appear as generic secret cards too.
-    json(res, { secrets: listSecrets().filter(s => !s.id.startsWith('ssh-key-')) })
+    json(res, { secrets: listSecrets().filter(s => !s.id.startsWith('ssh-key-') && !isReservedVaultId(s.id)) })
     return true
   }
 
@@ -840,6 +852,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
     if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
+    if (isReservedVaultId(id)) { refuseReserved(id.trim(), 'write'); return true }
     if (agentApiKeyWriteRefused(id.trim())) {
       refuseOwner(res, 'Storing an agent API key needs the dashboard login (an owner session): it decides which Console account the agent runs on.')
       return true
@@ -873,9 +886,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const acl = readVaultAcl()
     const values: Record<string, string> = Object.create(null)
     const missing: string[] = []
-    const refused: Array<{ id: string; reason: 'ssh-key' | 'acl' }> = []
+    const refused: Array<{ id: string; reason: 'ssh-key' | 'acl' | 'reserved' }> = []
     for (const raw of ids as string[]) {
       const id = raw.trim()
+      if (isReservedVaultId(id)) {
+        logVaultRead(id, ctx.auth, false, acl, { channel: 'resolve', refused: true })
+        refused.push({ id, reason: 'reserved' })
+        continue
+      }
       if (isSshPrivateKeyId(id)) {
         logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'resolve', refused: true })
         refused.push({ id, reason: 'ssh-key' })
@@ -912,6 +930,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // Measured 2026-09-23 before closing it: no legitimate caller uses this path (the SSH
     // feature, the dashboard's reveal/edit buttons, scripts, skills, agent commands: 0).
     // The audit row is kept so an attempt stays visible, and the key is not even decrypted.
+    if (isReservedVaultId(id)) {
+      logVaultRead(id, ctx.auth, false, readVaultAcl(), { channel: 'value', refused: true })
+      refuseReserved(id, 'value')
+      return true
+    }
     if (isSshPrivateKeyId(id)) {
       logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), readVaultAcl(), { channel: 'value', refused: true })
       json(res, { error: 'SSH private keys are not served by this route' }, 403)
@@ -937,6 +960,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   // (syncSecret propagates the VALUE into bound MCP configs; the label is not part of them).
   if (vaultMatch && !isVaultSubroute && method === 'PATCH') {
     const id = decodeURIComponent(vaultMatch[1])
+    if (isReservedVaultId(id)) { refuseReserved(id, 'label'); return true }
     // ssh-key-* entries are managed exclusively by the SSH key pool.
     if (isSshPrivateKeyId(id)) {
       json(res, { error: 'SSH private keys are managed by the SSH key pool' }, 403)
@@ -959,6 +983,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (vaultMatch && !isVaultSubroute && method === 'DELETE') {
     const id = decodeURIComponent(vaultMatch[1])
+    if (isReservedVaultId(id)) { refuseReserved(id, 'delete'); return true }
     if (agentApiKeyWriteRefused(id)) {
       refuseOwner(res, 'Deleting an agent API key needs the dashboard login (an owner session).')
       return true
@@ -998,6 +1023,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // to vault-headers-helper, which sends it to a REMOTE server as an HTTP header; an env
     // binding would put it into a child process. Refused before any write or sync runs.
     // Measured 2026-09-23: the live store/vault-bindings.json has 1 binding, 0 on an ssh-key.
+    if (isReservedVaultId(data.vaultSecretId)) { refuseReserved(String(data.vaultSecretId).trim(), 'binding'); return true }
     if (isSshPrivateKeyId(data.vaultSecretId)) {
       // The refusal leaves a server-side trace (Marveen 29017): a binding attempt that only
       // gets a 400 back would be visible to the caller and to no one else. No value is read.
@@ -1087,6 +1113,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         createBinding: boolean
         targets: Array<{ mcpFilePath: string, serverName: string }>
       }>
+    }
+    if (Array.isArray(importRequests) && importRequests.some((imp) => isReservedVaultId(imp?.vaultId))) {
+      refuseReserved(String(importRequests.find((imp) => isReservedVaultId(imp?.vaultId))?.vaultId ?? '').trim(), 'import')
+      return true
     }
     // MAINAUTH1107: an import names its vault id freely, so it is the same write door as POST /api/vault.
     if (Array.isArray(importRequests) && importRequests.some((imp) => typeof imp?.vaultId === 'string' && agentApiKeyWriteRefused(imp.vaultId.trim()))) {
