@@ -22,6 +22,7 @@ import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.
 import { mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { assertEnvEntry } from '../../env.js'
 import { mainGromzoPrimaryReady } from '../main-gromzo-launch.js'
+import { teamsAllowlistIds, TEAMS_ALLOWLIST_FILE } from '../../owner-chat.js'
 import type { RouteContext } from './types.js'
 
 const execFileAsync = promisify(execFile)
@@ -211,11 +212,10 @@ function existingChannelTokens(): { botToken: string | null; appToken: string | 
 // TEAMSPAIRED1115: the Teams plugin (claude-channel-teams 0.3.0, src/pairing/allowlist.ts) keeps its paired users
 // in <stateDir>/allowlist.json as {"version":1,"entries":[{"aad_object_id":"<uuid>",...}]} and writes no access.json.
 // Paired = at least one entry with an object id; any other shape the plugin itself treats as empty.
+// The parser is owner-chat.ts teamsAllowlistIds, shared with the owner-alert target (TEAMSAPPROVECARD1118).
 function teamsPaired(): boolean {
   try {
-    const a = JSON.parse(readFileSync(join(channelStateDir('teams'), 'allowlist.json'), 'utf-8')) as { version?: unknown; entries?: unknown }
-    if (!a || a.version !== 1 || !Array.isArray(a.entries)) return false
-    return a.entries.some((e) => !!e && typeof (e as { aad_object_id?: unknown }).aad_object_id === 'string' && (e as { aad_object_id: string }).aad_object_id.trim() !== '')
+    return teamsAllowlistIds(JSON.parse(readFileSync(join(channelStateDir('teams'), TEAMS_ALLOWLIST_FILE), 'utf-8'))).length > 0
   } catch { return false }
 }
 

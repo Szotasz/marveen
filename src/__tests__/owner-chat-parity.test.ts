@@ -159,3 +159,72 @@ print(r or "")
     expect(out).toBe('0')
   })
 })
+
+// TEAMSAPPROVECARD1118: on Teams the owner is the plugin's one paired user in <state dir>/allowlist.json
+// ({"version":1,"entries":[{"aad_object_id":...}]}); the plugin writes no access.json, and reading one for Teams
+// dropped every owner alert of a Teams main agent ("no readable access.json", customer v1.49.1).
+describe('owner-chat parity on Teams: the plugin allowlist.json, never access.json', () => {
+  const OWNER = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE'
+  const OTHER = '11111111-2222-3333-4444-555555555555'
+  const entry = (id: unknown) => ({ aad_object_id: id, added_at: '2026-11-17T08:00:00Z' })
+
+  function makeTeamsInstall(envValue: string | undefined, allowlist: unknown, access?: unknown): string {
+    const dir = mkdtempSync(join(tmpdir(), 'owner-chat-parity-teams-'))
+    dirs.push(dir)
+    const envLine = envValue === undefined ? '' : `TEAMS_ALLOWED_CONVERSATION_ID=${envValue}\n`
+    writeFileSync(join(dir, '.env'), `MAIN_AGENT_ID=marveen\nCHANNEL_PROVIDER=teams\n${envLine}`)
+    const chDir = join(dir, '.claude', 'channels', 'teams')
+    mkdirSync(chDir, { recursive: true })
+    writeFileSync(join(chDir, '.env'), 'TEAMS_BOT_APP_ID=x\n')
+    if (allowlist !== undefined) writeFileSync(join(chDir, 'allowlist.json'), typeof allowlist === 'string' ? allowlist : JSON.stringify(allowlist))
+    if (access !== undefined) writeFileSync(join(chDir, 'access.json'), JSON.stringify(access))
+    return dir
+  }
+  function shTeams(envFile: string): string {
+    try {
+      return execFileSync('bash', ['-c', `set -e; . "${SH_LIB}"; resolve_owner_chat_id "$1" teams 2>/dev/null`, '_', envFile], { encoding: 'utf-8', env: childEnv() }).trim()
+    } catch { return '' }
+  }
+  function pyTeams(envFile: string): string {
+    const code = `
+import sys
+sys.path.insert(0, ${JSON.stringify(PY_LIB)})
+import owner_chat
+r = owner_chat.resolve_owner_chat_id(${JSON.stringify(envFile)}, "teams")
+print(r or "")
+`
+    try { return execFileSync('python3', ['-c', code], { encoding: 'utf-8', env: childEnv() }).trim() } catch { return '' }
+  }
+  function tsTeams(envValue: string, allowlist: unknown, access?: unknown): string | null {
+    const reader = (p: string) => {
+      if (p.endsWith('access.json') && access !== undefined) return JSON.stringify(access)
+      if (!p.endsWith('allowlist.json') || allowlist === undefined) throw new Error('ENOENT')
+      return typeof allowlist === 'string' ? allowlist : JSON.stringify(allowlist)
+    }
+    return resolveAlertOwnerChat(reader, envValue, 'teams').chatId
+  }
+
+  const teamsCases: Array<{ name: string; env?: string; allowlist: unknown; access?: unknown; expected: string | null }> = [
+    { name: 'one paired user is the owner (lowercased, as the plugin compares)', allowlist: { version: 1, entries: [entry(OWNER)] }, expected: OWNER.toLowerCase() },
+    { name: 'a configured conversation id wins', env: 'a:1configured', allowlist: { version: 1, entries: [entry(OWNER)] }, expected: 'a:1configured' },
+    { name: 'the "0" placeholder falls back to the allowlist', env: '0', allowlist: { version: 1, entries: [entry(OWNER)] }, expected: OWNER.toLowerCase() },
+    { name: 'no allowlist.json', allowlist: undefined, expected: null },
+    { name: 'no paired user', allowlist: { version: 1, entries: [] }, expected: null },
+    { name: 'two paired users: no guess', allowlist: { version: 1, entries: [entry(OWNER), entry(OTHER)] }, expected: null },
+    { name: 'the same user twice, in two cases, is one user', allowlist: { version: 1, entries: [entry(OWNER), entry(OWNER.toLowerCase())] }, expected: OWNER.toLowerCase() },
+    { name: 'entries without a string id are skipped', allowlist: { version: 1, entries: [entry(42), {}, null, entry('   '), entry(OWNER)] }, expected: OWNER.toLowerCase() },
+    { name: 'another file version is empty, as the plugin reads it', allowlist: { version: 2, entries: [entry(OWNER)] }, expected: null },
+    { name: 'a boolean version is not 1', allowlist: { version: true, entries: [entry(OWNER)] }, expected: null },
+    { name: 'malformed JSON', allowlist: 'not json', expected: null },
+    { name: 'an access.json is never read for Teams', allowlist: undefined, access: { allowFrom: [OTHER] }, expected: null },
+  ]
+  for (const c of teamsCases) {
+    it(c.name, () => {
+      const dir = makeTeamsInstall(c.env, c.allowlist, c.access)
+      const envFile = join(dir, '.env')
+      expect(tsTeams(c.env ?? '', c.allowlist, c.access), 'TS').toBe(c.expected)
+      expect(shTeams(envFile) || null, 'shell').toBe(c.expected)
+      expect(pyTeams(envFile) || null, 'python').toBe(c.expected)
+    })
+  }
+})
