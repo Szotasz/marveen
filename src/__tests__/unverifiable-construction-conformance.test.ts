@@ -41,7 +41,7 @@ print(json.dumps([g.unverifiable_send_construction(c, inp["cwd"]) for c in inp["
 })
 afterAll(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
 
-describe('a send command built by process substitution, a here-string, a stdin heredoc or xargs is refused as unverifiable', () => {
+describe('a send command built by process substitution, a here-string, a stdin heredoc, xargs or parallel, or whose command text a producer pipes or hands to a shell, is refused as unverifiable', () => {
   TABLE.cases.forEach((c, i) => {
     it(`${c.name} -> ${c.expected}`, () => {
       expect(unverifiableSendConstruction(c.cmd, dir), `JS (sub-agent gate) verdict for: ${c.cmd}`).toBe(c.expected)
@@ -67,6 +67,28 @@ t = time.time(); assert g.unverifiable_send_construction(sys.argv[1], sys.argv[2
 print(int((time.time() - t) * 1000))
 `, cmd, dir], { encoding: 'utf-8' }).trim())
     expect(pyMs).toBeLessThan(1000)
+  })
+
+  it('reading producer texts, groups and substitutions costs bounded time in both copies', () => {
+    const cmds = [
+      "echo 'ls' " + '| cat '.repeat(2000) + '| bash',
+      '('.repeat(2000) + 'echo ls' + ')'.repeat(2000) + ' | bash',
+      'eval $('.repeat(6000),
+      Array(2000).fill('bash -c "$(echo ls)"').join('; '),
+      "printf '" + 'x'.repeat(5000) + "%s\\n' " + 'a '.repeat(3000) + '| bash',
+    ]
+    const t0 = Date.now()
+    for (const c of cmds) unverifiableSendConstruction(c, dir)
+    expect(Date.now() - t0).toBeLessThan(2000)
+    const pyMs = Number(execFileSync('python3', ['-c', `
+import importlib.util, json, sys, time
+spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(GATE_PY)})
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+t = time.time()
+for c in json.loads(sys.argv[1]): g.unverifiable_send_construction(c, sys.argv[2])
+print(int((time.time() - t) * 1000))
+`, JSON.stringify(cmds), dir], { encoding: 'utf-8' }).trim())
+    expect(pyMs).toBeLessThan(2000)
   })
 
   it('the sub-agent gate denies such a command with its own reason, before the send checks', () => {

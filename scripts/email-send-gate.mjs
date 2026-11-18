@@ -999,10 +999,19 @@ export function isSendInvocation(cmd, depth = 0) {
 // EMAILGATESUBST1116: a send command built by process substitution, a here-string, a stdin heredoc or xargs is
 // refused as unverifiable. Twin of unverifiable_send_construction in hooks/outgoing-copy-gate.py, where the boundary
 // is written out; unverifiable-construction-cases.json binds the two. gateDecision calls it before the send checks.
-const UNVERIFIABLE_HINT = /<<|<\(|=\(|xargs/
+// EMAILGATEPIPESH1116: a send whose command text a producer pipes or hands to a shell is refused the same way (the
+// producers are listed at the python twin).
+const UNVERIFIABLE_HINT = /<<|<\(|=\(|xargs|parallel|\||\$\(|`/
 const UV_HEREDOC = /(<<-?\s*(['"]?)(\w+)\2[^\n]*)\n(?:[\s\S]*?\n)?\3(?=\s|$)/g
 const UV_PIPE_OUT = '__GATEPIPEOUT__'
 const UV_PIPE_IN = '__GATEPIPEIN__'
+const UV_GROUP_OPEN = '__GATEGROUPOPEN__'
+const UV_GROUP_CLOSE = '__GATEGROUPCLOSE__'
+const UV_CMDSUBST = /^__GATECMDSUBST(\d+)__$/
+const UV_SUBST_ARG = /[\s;&|(](?:eval|-[a-zA-Z]*c[a-zA-Z]*)[ \t]+$/ // an unquoted `$(` right after it
+const UV_PAR_REPL = /\{[^{}\s]*\}/g // parallel's replacement strings ({}, {.}, {1}, ...)
+const UV_PAR_ARGS = [':::', '::::', ':::+', '::::+']
+const UV_SUBST_SCANS = 64 // substitutions after eval / -c read per command; one more cannot be told (bounds the time)
 const UV_COPIERS = ['cat', 'tee'] // a program whose standard output is its standard input
 const UV_MARK = /^__GATE(HEREDOC|PROCSUBST)(\d+)__$/
 const UV_STDIN_PATHS = ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']
@@ -1029,6 +1038,8 @@ function uvMark(cmdIn, texts) {
   })
   let out = ''
   let q = null
+  const parens = [] // 's' for an open `$(`, 'g' for a group `(`: which `)` closes a group
+  let scans = 0 // substitution scans after eval / -c, each up to the end of the command: bounded
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]
     if (q) {
@@ -1036,6 +1047,20 @@ function uvMark(cmdIn, texts) {
       if (ch === q) q = null
       out += ch
       continue
+    }
+    if (ch === '"' && cmd.slice(i + 1, i + 3) === '$(' && uvSubstArg(out)) {
+      // EMAILGATEPIPESH1116: a whole `"$(...)"` right after eval / a -c flag (python twin)
+      const end = ++scans <= UV_SUBST_SCANS ? uvCloseParen(cmd, i + 3) : -2
+      if (end > 0 && end < cmd.length && cmd[end] === '"') {
+        texts.push(['cmdsubst', cmd.slice(i + 3, end - 1)])
+        out += ` __GATECMDSUBST${texts.length - 1}__ `
+        i = end
+        continue
+      }
+      if (end === -2) { // past the scan bound: cannot be told
+        texts.push(['cmdsubst', null])
+        out += ` __GATECMDSUBST${texts.length - 1}__ `
+      }
     }
     if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
     if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
@@ -1067,9 +1092,39 @@ function uvMark(cmdIn, texts) {
       i = j - 1
       continue
     }
+    if (ch === '$' && cmd[i + 1] === '(') {
+      // EMAILGATEPIPESH1116: right after eval / a -c flag the substitution's inner command is recorded (python twin)
+      if (uvSubstArg(out)) {
+        const end = ++scans <= UV_SUBST_SCANS ? uvCloseParen(cmd, i + 2) : -1 // past the bound: cannot tell
+        texts.push(['cmdsubst', end > 0 ? cmd.slice(i + 2, end - 1) : null])
+        out += ` __GATECMDSUBST${texts.length - 1}__ `
+      }
+      parens.push('s')
+      out += '$('
+      i++
+      continue
+    }
+    if (ch === '(') { parens.push('g'); out += `( ${UV_GROUP_OPEN} `; continue }
+    if (ch === ')' && parens.length && parens.pop() === 'g') { out += `) ${UV_GROUP_CLOSE} `; continue }
     out += ch
   }
   return out
+}
+
+const uvSubstArg = (out) => UV_SUBST_ARG.test((out.length <= 64 ? ' ' : 'x') + out.slice(-64))
+
+function uvCloseParen(s, jIn) {
+  let depth = 1
+  let j = jIn
+  let iq = null
+  while (j < s.length && depth > 0) {
+    const c = s[j++]
+    if (iq) { if (c === iq) iq = null; continue }
+    if (c === "'" || c === '"') iq = c
+    else if (c === '(') depth++
+    else if (c === ')') depth--
+  }
+  return depth === 0 ? j : -1
 }
 
 function uvProducedText(inner) {
@@ -1077,18 +1132,39 @@ function uvProducedText(inner) {
   let segs
   try { segs = uvTokens(inner) } catch { return null }
   if (segs.length !== 1 || !segs[0].length) return null
-  const prog = basename(segs[0][0])
-  let words = segs[0].slice(1)
+  const printed = uvPrinted(segs[0])
+  return printed ? printed.text : null
+}
+
+// EMAILGATEPIPESH1116: { text } an echo / printf command prints (text null: cannot be computed); null when the
+// command is no echo / printf or prints nothing (`printf -v`). Twin of _uv_printed.
+function uvPrinted(all) {
+  const prog = basename(all[0])
+  let words = all.slice(1)
   if (prog === 'echo') {
     while (words.length && /^-[neE]+$/.test(words[0])) words = words.slice(1)
     const text = words.join(' ')
-    return text.includes('\\') ? null : text
+    return { text: text.includes('\\') ? null : text }
   }
-  if (prog === 'printf' && words.length === 1 && !words[0].includes('%')) {
-    const text = words[0].replaceAll('\\n', '\n').replaceAll('\\t', '\t')
-    return text.includes('\\') ? null : text
+  if (prog !== 'printf') return null
+  if (words.length && words[0] === '--') words = words.slice(1)
+  if (!words.length || words[0].startsWith('-v')) return null
+  const fmt = words[0].replaceAll('\\n', '\n').replaceAll('\\t', '\t')
+  const specs = [...fmt.matchAll(/%([\s\S]|$)/g)].map((m) => m[1])
+  if (fmt.includes('\\') || specs.some((s) => s !== 's' && s !== '%')) return { text: null }
+  const args = words.slice(1)
+  const n = specs.filter((s) => s === 's').length
+  const fill = (chunk) => {
+    let k = 0
+    return fmt.replace(/%([s%])/g, (_m, c) => (c === '%' ? '%' : (chunk[k++] ?? '')))
   }
-  return null
+  if (n === 0 || !args.length) return { text: fill([]) }
+  // the format repeated far beyond the command's own length: not computed (time bound)
+  const total = (ws) => ws.reduce((a, w) => a + w.length, 0)
+  if (Math.ceil(args.length / n) * (fmt.length - 2 * n) + total(args) > 2 * total(words) + 4096) return { text: null }
+  let text = ''
+  for (let k = 0; k < args.length; k += n) text += fill(args.slice(k, k + n))
+  return { text }
 }
 
 function uvText(word, texts) {
@@ -1170,20 +1246,55 @@ function uvProgramTextSends(kind, text, cwd, depth, texts) {
 }
 
 // Dani's #2842 review B1: see _uv_copier_output in hooks/outgoing-copy-gate.py.
-function uvCopierOutput(head, texts) {
+// EMAILGATEPIPESH1116: a copier also passes on the text a producer pipes in.
+function uvCopierOutput(head, texts, pipeFeed = null) {
   const prog = basename(head[0])
   if (!UV_COPIERS.includes(prog)) return null
-  const { feed, args } = uvStdinAndArgs(head.slice(1), texts)
+  const { feed, args } = uvStdinAndArgs(head.slice(1), texts, pipeFeed)
   if (!feed || feed.file) return null
   if (prog === 'cat' && args.some((a) => !a.startsWith('-'))) return null // a file operand: the output is not only the stdin
   return feed
+}
+
+// EMAILGATEPIPESH1116: see _uv_head_output, _uv_join and _uv_subst_sends in hooks/outgoing-copy-gate.py.
+function uvHeadOutput(head, texts, pipeFeed = null) {
+  let prog = basename(head[0])
+  let rest = head.slice(1)
+  while (prog === 'builtin' && rest.length) { prog = basename(rest[0]); rest = rest.slice(1) }
+  if (prog === 'echo' || prog === 'printf') return uvPrinted([prog, ...uvStdinAndArgs(rest, texts).args])
+  return uvCopierOutput(head, texts, pipeFeed)
+}
+
+function uvJoin(feeds) {
+  if (!feeds.length) return null
+  if (feeds.some((f) => f.text == null)) return { text: null }
+  return { text: feeds.map((f) => f.text).join('\n') }
+}
+
+function uvSubstSends(words, cwd, depth, texts) {
+  const m = UV_CMDSUBST.exec(words[0])
+  if (!m && words.length !== 1) return false
+  const s = words[0].trim()
+  let inner
+  if (m) inner = texts[Number(m[1])][1]
+  else if (s.length > 1 && s[0] === '`' && s[s.length - 1] === '`' && !s.slice(1, -1).includes('`')) inner = s.slice(1, -1)
+  else if (s.startsWith('$(') && s.endsWith(')') && uvCloseParen(s, 2) === s.length) inner = s.slice(2, -1)
+  else return false
+  if (inner == null) return true // an unbalanced substitution: cannot be told
+  const outs = []
+  if (uvSends(inner, cwd, depth + 1, texts, outs)) return true
+  const out = uvJoin(outs)
+  return out != null && uvProgramTextSends('sh', out.text, cwd, depth, texts)
 }
 
 function uvHead(head, cwd, depth, texts, pipeFeed = null) {
   let prog = basename(head[0])
   let rest = head.slice(1)
   while (prog === 'builtin' && rest.length) { prog = basename(rest[0]); rest = rest.slice(1) }
-  if (prog === 'eval') return depth < SHELL_C_DEPTH && rest.length > 0 && uvSends(rest.join(' '), cwd, depth + 1, texts)
+  if (prog === 'eval') {
+    return depth < SHELL_C_DEPTH && rest.length > 0 && (uvSubstSends(rest, cwd, depth, texts) ||
+      uvSends(rest.join(' '), cwd, depth + 1, texts))
+  }
   const kind = WRAPPER_SHELL.test(prog) ? 'sh' : (prog === 'source' || prog === '.') ? 'src'
     : PYTHON.test(prog) ? 'py' : (NODEISH.test(prog) && prog.toLowerCase() !== 'npx') ? 'js' : null
   if (!kind) return false
@@ -1196,7 +1307,10 @@ function uvHead(head, cwd, depth, texts, pipeFeed = null) {
     if (!UV_STDIN_PATHS.includes(word)) return false
     src = 'stdin'
   }
-  if (src === 'string') return kind === 'sh' && depth < SHELL_C_DEPTH && uvSends(word, cwd, depth + 1, texts)
+  if (src === 'string') {
+    return kind === 'sh' && depth < SHELL_C_DEPTH && (uvSubstSends([word], cwd, depth, texts) ||
+      uvSends(word, cwd, depth + 1, texts))
+  }
   if (src !== 'stdin' || !feed || feed.file) return false
   return uvProgramTextSends(kind, feed.text, cwd, depth, texts)
 }
@@ -1245,9 +1359,15 @@ function uvXargsTemplates(words, replIn = null, jIn = 0, memo = new Map()) {
   return memo.get(key)
 }
 
-function uvXargsSends(words, cwd, texts) {
-  for (const [raw, repl] of uvXargsTemplates(words)) {
-    const template = uvStdinAndArgs(raw, texts).args // a redirection there is xargs' own
+function uvXargsSends(words, cwd, texts, parallel = false) {
+  for (const [raw, replIn] of uvXargsTemplates(words)) {
+    let template = uvStdinAndArgs(raw, texts).args // a redirection there is xargs' own
+    let repl = replIn
+    if (parallel) { // EMAILGATEPIPESH1116: see _uv_xargs_sends
+      const cut = template.findIndex((w) => UV_PAR_ARGS.includes(w))
+      template = (cut < 0 ? template : template.slice(0, cut)).map((w) => w.replace(UV_PAR_REPL, '{}'))
+      if (!repl && template.some((w) => w.includes('{}'))) repl = '{}'
+    }
     if (!template.length) continue
     if (isSendInvocation(template.map(uvShellWord).join(' '))) return true // the template program is itself a send
     let hit
@@ -1282,27 +1402,53 @@ function uvXargsSends(words, cwd, texts) {
   return false
 }
 
-function uvSends(cmd, cwd, depth, texts) {
+// `outs` (EMAILGATEPIPESH1116), when given, collects the producer outputs written at the command's top level
+function uvSends(cmd, cwd, depth, texts, outs = null) {
   let segments
   try { segments = uvTokens(uvMark(cmd, texts)) } catch { return false } // unparseable: isSendInvocation's legacy fallback judges it
-  let pipeFeed = null // what the previous segment writes into the pipe, when it is a copier
+  let pipeFeed = null // what the previous segment writes into the pipe, when it is a producer
+  const frames = [] // the producer outputs of each open group, innermost last
+  let carry = null // a pipe into a `( ... )` group reaches its first command
   for (let toks of segments) {
-    const feedIn = toks[0] === UV_PIPE_IN ? pipeFeed : null
+    let feedIn = toks[0] === UV_PIPE_IN ? pipeFeed : null
     pipeFeed = null
     const pipesOut = toks[toks.length - 1] === UV_PIPE_OUT
-    toks = toks.filter((t) => t !== UV_PIPE_IN && t !== UV_PIPE_OUT)
-    if (!toks.length) continue // e.g. `( ... ) |`: a subshell is no copier here
-    if (toks[toks.length - 1] === '<' || toks[toks.length - 1] === '=') {
-      // a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
-      texts.push(['procsubst', null])
-      toks = [...toks.slice(0, -1), `__GATEPROCSUBST${texts.length - 1}__`]
+    let closed = false
+    let groupOut = null
+    if (toks[0] === UV_GROUP_OPEN) { frames.push([]); feedIn = carry }
+    carry = null
+    if (toks[0] === UV_GROUP_CLOSE) { closed = true; groupOut = frames.length ? uvJoin(frames.pop()) : null }
+    toks = toks.filter((t) => t !== UV_PIPE_IN && t !== UV_PIPE_OUT && t !== UV_GROUP_OPEN && t !== UV_GROUP_CLOSE)
+    if (toks.length && toks[0] === '{') { frames.push([]); toks = toks.slice(1) }
+    if (toks.length && toks[0] === '}' && !closed) {
+      closed = true
+      groupOut = frames.length ? uvJoin(frames.pop()) : null
+      toks = toks.slice(1)
     }
-    for (let i = 0; i < toks.length; i++) {
-      if ((basename(toks[i]) === 'xargs' || basename(toks[i]) === 'gxargs') && uvXargsSends(toks.slice(i + 1), cwd, texts)) return true
+    let out = null
+    if (toks.length) {
+      if (toks[toks.length - 1] === '<' || toks[toks.length - 1] === '=') {
+        // a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
+        texts.push(['procsubst', null])
+        toks = [...toks.slice(0, -1), `__GATEPROCSUBST${texts.length - 1}__`]
+      }
+      for (let i = 0; i < toks.length; i++) {
+        const b = basename(toks[i])
+        if ((b === 'xargs' || b === 'gxargs' || b === 'parallel') &&
+          uvXargsSends(toks.slice(i + 1).filter((w) => !UV_CMDSUBST.test(w)), cwd, texts, b === 'parallel')) return true
+      }
+      const heads = commandHeads(toks).filter((h) => h && h.length)
+      if (heads.some((h) => uvHead(h, cwd, depth, texts, feedIn))) return true
+      out = heads.map((h) => uvHeadOutput(h, texts, feedIn)).find((f) => f) ?? null
+    } else if (feedIn != null && !closed) {
+      carry = feedIn // `x | ( ...`: the pipe ends at the group's `(`
     }
-    const heads = commandHeads(toks).filter((h) => h && h.length)
-    if (heads.some((h) => uvHead(h, cwd, depth, texts, feedIn))) return true
-    if (pipesOut) pipeFeed = heads.map((h) => uvCopierOutput(h, texts)).find((f) => f) ?? null
+    if (closed) out = groupOut // what is left of the closing segment are redirections
+    if (pipesOut) pipeFeed = out
+    else if (out != null) {
+      if (frames.length) frames[frames.length - 1].push(out)
+      else if (outs != null) outs.push(out)
+    }
   }
   return false
 }
