@@ -74,8 +74,9 @@ export const QUOTA_GATE = {
   trustedSources: ['authoritative', 'authoritative_cached', 'statusline', 'ratelimit_headers'],
   /**
    * 'ratelimit_headers' (above) is the anthropic-ratelimit-unified-* headers of
-   * one minimal Messages call, read by usage-collect.py when the usage
-   * endpoint rejects the token: the same windows, measured live.
+   * one minimal Messages call (src/claude-ratelimit-reading.ts), which
+   * usage-collect.py runs only as a last resort: after the usage endpoint,
+   * the statusLine file and a fresh authoritative cache all gave nothing.
    *
    * Blind gate: a snapshot whose source is not trusted (e.g. 'estimate'), or
    * one older than this, means the gate cannot see the quota. It still runs

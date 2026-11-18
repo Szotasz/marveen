@@ -12,10 +12,11 @@ Reads current usage/quota status for two providers:
     does not exist). On a transient
     failure (429/5xx/timeout) it reuses the last authoritative snapshot
     from store/usage-latest.json if it's fresh enough (source becomes
-    "authoritative_cached") instead of losing real numbers. Before that
-    cache, when the endpoint and the statusLine side file gave nothing, the
+    "authoritative_cached") instead of losing real numbers. When neither
+    the endpoint, the statusLine side file nor that cache gave anything, the
     same windows are read from the rate-limit headers of one minimal
-    Messages call (source "ratelimit_headers"). Only falls
+    Messages call (dist/claude-ratelimit-reading.js, source
+    "ratelimit_headers"). Only falls
     back to a token-total ESTIMATE built from local
     ~/.claude/projects/*/*.jsonl transcripts when there's no usable
     cache: missing/expired token, a 403 (real scope problem), or a
@@ -38,7 +39,6 @@ noted in the summary/snapshot instead of raising.
 import argparse
 import glob
 import json
-import math
 import os
 import subprocess
 import sys
@@ -82,15 +82,6 @@ CONFIG = {
     "claude_statusline_max_age_min": 10,
 }
 
-# Fourth Claude source: the unified rate-limit headers of one minimal Messages
-# call (the same method as src/claude-plan-usage-probe.ts). Used only when the
-# usage endpoint and the statusLine side file gave nothing, e.g. a
-# `claude setup-token` value, which oauth/usage rejects with 403 but the
-# Messages API accepts. Costs a few tokens of the quota per run.
-RATELIMIT_PROBE_URL = "https://api.anthropic.com/v1/messages"
-RATELIMIT_PROBE_MODEL = "claude-haiku-4-5-20251001"
-RATELIMIT_HEADER_PREFIX = "anthropic-ratelimit-unified-"
-RATELIMIT_HEADER_WINDOWS = (("5h", "five_hour"), ("7d", "seven_day"))
 
 # Window length in seconds, keyed by the Claude window's dict key. Codex
 # windows carry their own "window_minutes" field so no static table is
@@ -664,67 +655,34 @@ def _read_claude_statusline(max_age_minutes, now_utc=None, path=None):
     return windows, age_minutes
 
 
-def _parse_ratelimit_headers(headers):
-    """Unified rate-limit headers -> windows dict ({} when none is usable).
-    A window needs both its utilization (0..1 fraction) and its reset (epoch
-    seconds): a percentage without its reset boundary, or the reverse, is not
-    a reading. Missing headers never read as 0%."""
-    windows = {}
-    for hkey, wkey in RATELIMIT_HEADER_WINDOWS:
-        try:
-            util = float(headers.get(f"{RATELIMIT_HEADER_PREFIX}{hkey}-utilization"))
-            reset = float(headers.get(f"{RATELIMIT_HEADER_PREFIX}{hkey}-reset"))
-        except (TypeError, ValueError):
-            continue
-        if not (math.isfinite(util) and math.isfinite(reset)):
-            continue
-        windows[wkey] = {
-            "used_percent": round(util * 100, 2),
-            "resets_at": reset,
-            "status": headers.get(f"{RATELIMIT_HEADER_PREFIX}{hkey}-status"),
-        }
-    return windows
+# Last-resort Claude source: the unified rate-limit headers of one minimal
+# Messages call, read by the compiled TypeScript entry (the same parser and 429
+# rules as the plan rotation). Costs a few tokens of the quota per run.
+RATELIMIT_ENTRY = os.path.join(REPO_ROOT, "dist", "claude-ratelimit-reading.js")
 
 
 def _collect_claude_ratelimit_headers():
-    """Return (windows_dict, None) or (None, reason). One minimal Messages
-    call; the reading is in the response headers, the body is not read.
-    A 429 still carries the headers ("100% until X" is a reading). The token
-    only travels in the Authorization header: no reason string contains it."""
+    """Return (windows_dict, None) or (None, reason). The token travels to the
+    entry in its environment only, never in argv; no reason string contains it."""
     token, token_source = _read_claude_token()
     if not token:
         return None, "no oauth token available"
-    body = json.dumps({
-        "model": RATELIMIT_PROBE_MODEL,
-        "max_tokens": 1,
-        "messages": [{"role": "user", "content": "hi"}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        RATELIMIT_PROBE_URL,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "anthropic-version": "2023-06-01",
-            "anthropic-beta": "oauth-2025-04-20",
-            "content-type": "application/json",
-        },
-    )
+    if not os.path.isfile(RATELIMIT_ENTRY):
+        return None, "dist/claude-ratelimit-reading.js not built"
     try:
-        # 8 s (per socket operation, DNS not bounded): with the 10 s usage call and the
+        # 10 s: the entry's own probe timeout is 8 s; with the 10 s usage call and the
         # 5 s `claude --version` this stays inside the seed task's 30 s timeoutMs.
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            status, headers = resp.status, resp.headers
-    except urllib.error.HTTPError as e:
-        if e.code != 429:
-            return None, f"HTTP {e.code} ({token_source} token)"
-        status, headers = e.code, e.headers
+        proc = subprocess.run(
+            ["node", RATELIMIT_ENTRY], capture_output=True, text=True, timeout=10,
+            env={**os.environ, "CLAUDE_RATELIMIT_TOKEN": token},
+        )
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
     except Exception as e:
         # The exception text is dropped: only its type is safe to record.
         return None, type(e).__name__
-    windows = _parse_ratelimit_headers(headers or {})
-    if not windows:
-        return None, f"HTTP {status}: no {RATELIMIT_HEADER_PREFIX}* window headers"
-    return windows, None
+    if out.get("ok") is True and isinstance(out.get("windows"), dict):
+        return out["windows"], None
+    return None, f"{out.get('reason', 'no reading')} ({token_source} token)"
 
 
 def _claude_transcript_globs():
@@ -835,16 +793,6 @@ def collect_claude():
         result["statusline_age_minutes"] = round(sl_age, 1)
         return result
 
-    # No fresh statusLine reading: ask the Messages API for the same numbers
-    # in its rate-limit headers. A live reading beats the cache below.
-    rl_windows, rl_err = _collect_claude_ratelimit_headers()
-    if rl_windows is not None:
-        result["source"] = "ratelimit_headers"
-        result["windows"] = rl_windows
-        result["measured_at"] = datetime.now(timezone.utc).isoformat()
-        return result
-    result["ratelimit_headers_error"] = rl_err
-
     # A transient failure (429/5xx/timeout/unparseable) must not throw away
     # real numbers -- reuse the last authoritative snapshot if it's fresh
     # enough. A missing token or a 403 (real scope problem) skips the cache
@@ -858,6 +806,16 @@ def collect_claude():
             result["windows"] = cached_windows
             result["cache_age_minutes"] = round(age_minutes, 1)
             return result
+
+    # Last resort before the estimate: the rate-limit headers. Never ahead of a
+    # fresh authoritative cache above, which is what the plan rotation sees (#2839 B1).
+    rl_windows, rl_err = _collect_claude_ratelimit_headers()
+    if rl_windows is not None:
+        result["source"] = "ratelimit_headers"
+        result["windows"] = rl_windows
+        result["measured_at"] = datetime.now(timezone.utc).isoformat()
+        return result
+    result["ratelimit_headers_error"] = rl_err
 
     try:
         result.update(_collect_claude_estimate())
@@ -946,7 +904,7 @@ def render_summary(snapshot):
         lines.append(f"  error: {claude.get('error')}")
     elif claude.get("source") in ("authoritative", "authoritative_cached", "statusline", "ratelimit_headers"):
         if claude.get("source") == "ratelimit_headers":
-            lines.append(f"  (from the rate-limit headers of a 1-token Messages call -- usage endpoint error: {claude.get('auth_error')})")
+            lines.append(f"  (from the rate-limit headers of a minimal Messages call -- usage endpoint error: {claude.get('auth_error')})")
         if claude.get("source") == "statusline":
             age = claude.get("statusline_age_minutes")
             age_str = f"{age:.0f}" if isinstance(age, (int, float)) else "?"
