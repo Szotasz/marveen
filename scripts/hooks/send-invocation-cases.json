@@ -2183,6 +2183,96 @@
       "name": "JSCDSEND1104: control, gtimeout in front of a non-sender",
       "cmd": "gtimeout 10 ls",
       "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Gmail messages/send",
+      "cmd": "curl -s -X POST -H \"Authorization: Bearer x\" https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Gmail drafts/send",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/drafts/send -d '{\"id\":\"r1\"}'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl implicit POST (body file) to Gmail messages/send",
+      "cmd": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send --data-binary @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl double-quoted Gmail messages/send URL with --json",
+      "cmd": "curl -s \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\" --json @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl --url= Gmail upload messages/send",
+      "cmd": "curl -s --url=https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media -H \"Content-Type: message/rfc822\" --data-binary @/tmp/m.eml",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: wget --post-file to Gmail messages/send",
+      "cmd": "wget -q --post-file=/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST legacy www.googleapis.com Gmail send",
+      "cmd": "curl -s -X POST https://www.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Graph sendMail",
+      "cmd": "curl -s -X POST https://graph.microsoft.com/v1.0/me/sendMail -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST SendGrid mail/send",
+      "cmd": "curl -s -X POST https://api.sendgrid.com/v3/mail/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Mailgun messages",
+      "cmd": "curl -s --user api:k https://api.mailgun.net/v3/mg.example.test/messages -F to=a@example.test",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Postmark email",
+      "cmd": "curl -s https://api.postmarkapp.com/email -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl to Gmail send with an undecidable method stays fail-closed",
+      "cmd": "curl -s -X $M https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: read: Gmail messages list",
+      "cmd": "curl -s -H \"Authorization: Bearer x\" \"https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread\"",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: read: Gmail drafts.get",
+      "cmd": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/drafts/r-123?format=full",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: draft: Gmail drafts.create puts nothing on the wire",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/drafts -d @/tmp/d.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: read: explicit GET on the send path is no send",
+      "cmd": "curl -s -X GET https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: payload only names the Gmail send URL",
+      "cmd": "curl -s http://localhost:3420/api/messages -d '{\"to\":\"samu\",\"content\":\"https://gmail.googleapis.com/gmail/v1/users/me/messages/send megy at\"}'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: Graph read: list messages",
+      "cmd": "curl -s https://graph.microsoft.com/v1.0/me/messages",
+      "expected": false
     }
   ]
 }

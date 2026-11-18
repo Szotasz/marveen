@@ -278,6 +278,11 @@ const mailApiSends = (text) => {
 }
 // A Microsoft Graph send or an HTTP mail API send in a code string or a script file.
 const webMailSends = (text) => graphSends(text) || mailApiSends(text)
+// CURLMAILAPI1118: twin of _curl_mail_api_target in hooks/outgoing-copy-gate.py. A curl/wget URL token on another
+// HTTP mail API host is a send only when the same token carries that provider's send shape; until now only
+// api.resend.com was known on the command line, so a bare curl to Gmail's messages/send passed both gates.
+const MAIL_API_URL = /^(?:--url=)?(https?:\/\/)?([^/@\s]*\.)?(?:googleapis\.com|graph\.microsoft\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com)(\/|$)/i
+const curlMailApiTarget = (tok) => MAIL_API_URL.test(tok) && webMailSends(tok)
 // MAILGATEHEREDOCFP1027: a send marker that only sits in DATA is no send. The interpreter's code is read with its
 // prose blanked: a string literal whose text holds whitespace and every comment become spaces (length and line
 // breaks kept); a literal without whitespace (a URL, a package name, a 'sendmail' argv item) stays, and so do the
@@ -843,7 +848,7 @@ function headIsSend(toks, depth) {
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
   // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
   // read-only GET/HEAD passes; an undecidable method stays fail-closed.
-  if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) {
+  if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t) || curlMailApiTarget(t))) {
     return curlResendVerdict(prog, rest) !== 'read'
   }
   return false

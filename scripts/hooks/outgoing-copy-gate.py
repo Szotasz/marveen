@@ -335,6 +335,22 @@ def _code_string_sends(code: str, lang=None) -> bool:
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
 _RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
+# CURLMAILAPI1118: a curl/wget URL token on another HTTP mail API host is a send only when the SAME token also
+# carries that provider's send shape (_web_mail_sends: Gmail messages/drafts send, Graph sendMail, SendGrid
+# mail/send, Mailgun messages, Postmark email). Before this, only api.resend.com was known on the command line,
+# and `curl -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send` passed the approval gate at
+# level 2 with no approval, while the same call from a script file was stopped. A read (messages list, drafts.get,
+# drafts.create) keeps passing, and the method verdict below still decides send vs read. A URL assembled from a
+# variable ($BASE/messages/send) is not seen here: the same stated limit as for interpreter code.
+_MAIL_API_URL = re.compile(
+    r"^(?:--url=)?(https?://)?([^/@\s]*\.)?"
+    r"(?:googleapis\.com|graph\.microsoft\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com)(/|$)",
+    re.I,
+)
+
+
+def _curl_mail_api_target(tok: str) -> bool:
+    return bool(_MAIL_API_URL.match(tok)) and _web_mail_sends(tok)
 
 # RESENDGATE826: a resend-celu curl/wget csak akkor KULDES, ha a METODUS az.
 # A korabbi minta metodus-vak volt, es egy read-only GET /domains (nincs torzs,
@@ -1158,7 +1174,7 @@ def _head_is_send(toks, depth: int) -> bool:
     # RESENDGATE826: csak a TENYLEGES kuldes (POST/PUT/... vagy torzs) akad
     # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
     # tovabbra is fail-closed.
-    if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
+    if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) or _curl_mail_api_target(t) for t in rest):
         return _curl_resend_verdict(prog, rest) != "read"
     return False
 
