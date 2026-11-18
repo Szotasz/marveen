@@ -1,7 +1,7 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
-import { withTmuxBatch, isAgentRunning, captureParkedInputView, sendEnterToSession, capturePaneAsync } from './agent-process.js'
+import { withTmuxBatch, tmuxBatchListSessionsFailed, isAgentRunning, captureParkedInputView, sendEnterToSession, capturePaneAsync } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
@@ -321,9 +321,11 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     const names = listAgentNames()
     // Read run state once at pass start: new starts wait one pass; stops use the existing check failure path.
     const running = withTmuxBatch(() => new Map(names.map(name => [name, isAgentRunning(name)])))
+    const listFailed = tmuxBatchListSessionsFailed()
     for (const name of names) {
       if (!running.get(name)) {
-        watchState.delete(resolveAgentSession(name))
+        // A failed LOCAL listing is not "every session gone": keep the spell, the next successful pass decides.
+        if (!listFailed) watchState.delete(resolveAgentSession(name))
         continue
       }
       const session = resolveAgentSession(name)
