@@ -1136,6 +1136,33 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
   },
   {
+    // TEAMSAPPROVECARD1118 (Samu D3): one more way to approve, so off by default and switching it on needs the owner.
+    key: 'APPROVAL_TEAMS_CARDS',
+    type: 'string',
+    default: 'off',
+    description: 'Teams-kártyás jóváhagyás (TEAMSAPPROVECARD1118): bekapcsolva (on) a levélküldés (email_send) jóváhagyás-kérése kártyaként megy a gazda Teams 1:1 chatjébe a bottal, Jóváhagyom / Elutasítom gombbal. A kártyát a szerver állítja össze a tárolt borítékból (címzett, másolat, a levél szövege), és a kattintást a szerver maga ellenőrzi (Microsoft által aláírt csatorna-token, a bot tenantja, a gazda azonosítója, az elküldött kártya, egyszeri kód); az ügynök nincs az úton. Csak kifejezett TEAMS_OWNER_AAD_OBJECT_ID mellett, és csak olyan levélre, amelynek borítéka a horgonnyal egyezik; minden más kérés a dashboardon dől el. A Teams-plugin 0.3.2 utáni változata kell hozzá. Alapból KI.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
+  },
+  {
+    // TEAMSAPPROVECARD1118 (Samu D2): whose click approves. The plugin allowlist's single entry is an alert target only,
+    // never the approver, so this is explicit, and ANY change needs the owner's session (as SLACK_OWNER_USER_ID).
+    key: 'TEAMS_OWNER_AAD_OBJECT_ID',
+    type: 'string',
+    default: '',
+    description: 'A gazda Microsoft Entra objektum-azonosítója (GUID, pl. 6f1c2d3e-0000-4000-8000-000000000001). Ha a Teams-kártyás jóváhagyás be van kapcsolva, csak az ő kattintása dönt. Üresen a kártyás jóváhagyás nem működik (a döntés a dashboardon marad). A Teams-plugin párosítási listája (allowlist.json) ehhez nem elég: ott a riasztások címzettje áll, nem a jóváhagyóé.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (v.trim() === '' || /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(v.trim())
+      ? null
+      : 'Entra objektum-azonosító (GUID) kell, pl. 6f1c2d3e-0000-4000-8000-000000000001. / An Entra object id (GUID) is required.'),
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== newValue.trim().toLowerCase(),
+  },
+  {
     key: 'SCHEDULED_DELIVERY_CHANNEL',
     type: 'string',
     default: '',

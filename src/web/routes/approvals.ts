@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, DASHBOARD_PUBLIC_URL, WEB_PORT } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, CHANNEL_TOKEN, DASHBOARD_PUBLIC_URL, WEB_PORT } from '../../config.js'
 import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
@@ -10,7 +10,7 @@ import {
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
-import { readBody, json } from '../http-helpers.js'
+import { readBody, readBodyOrRefuse, json } from '../http-helpers.js'
 import { approvalGranteeOf, approvalNotGrantedReason, identityDenialBody } from '../auth-gate.js'
 import { ownerAlertChatOverride, resolveOwnerChatId } from '../../owner-chat.js'
 import { sendOwnerMessage, sendOwnerSlackDm, slackTargetFor, noticeTargetDrift } from '../../notify.js'
@@ -20,6 +20,9 @@ import { reactionRoute, reactionsOn, repliesOn, dashboardOnlyLine, postReactionP
 import { OWNER_TEXT, formatExpiry, type ApprovalLang } from '../approval-texts.js'
 import { approvalTextLang } from '../agent-text-lang.js'
 import { sendTelegramMessage } from '../telegram.js'
+import { teamsCardRoute, teamsCardsOn, postApprovalCard, handleTeamsCardAction, type TeamsCardDeps } from '../approval-teams-card.js'
+import { sendTeamsMessage } from '../../teams-send.js'
+import { readTeamsCreds, channelStateDir } from '../../channel-provider.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 
@@ -232,6 +235,15 @@ export const reactionDeps: RouteDeps = {
   lang: () => approvalTextLang(),
 }
 
+// TEAMSAPPROVECARD1118: what the Teams approval card reads, in one place (tests replace it).
+export const teamsCardDeps: TeamsCardDeps = {
+  setting: (key) => String(getEffectiveSettingValue(key) ?? ''),
+  creds: () => (CHANNEL_PROVIDER === 'teams' && CHANNEL_TOKEN ? readTeamsCreds(CHANNEL_TOKEN) : null),
+  stateDir: () => channelStateDir('teams'),
+  send: sendTeamsMessage,
+  alert: (text) => { void sendOwnerMessage(text) },
+}
+
 function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false, filedLang?: ApprovalLang): void {
   const informative = chatApprovedMessageId != null
   // APPROVALTAGEN1108: the language is read ONCE per request: the text, the Slack DM, its expiry and the language
@@ -245,6 +257,13 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     // APPROVALSLACK1030 (2): the owner decides with a Slack reaction the server itself checks, when this request may
     // (approval-slack-route.ts); otherwise the normal DM below, saying the decision is on the dashboard.
     // APPROVALSLACK1030 B: with APPROVAL_SLACK_REPLIES on, the same one-message path, and the owner's typed reply decides.
+    // TEAMSAPPROVECARD1118: on a Teams install with the card switch on, an email_send request whose envelope the server
+    // can verify goes out as the server-rendered card; anything else gets the normal message saying where to decide.
+    if (!informative && CHANNEL_PROVIDER === 'teams' && teamsCardsOn(teamsCardDeps.setting)) {
+      const route = teamsCardRoute(approval, teamsCardDeps)
+      if (route.ok && await postApprovalCard(approval, route, formatExpiry(approval.timeout_at, lang), lang, teamsCardDeps)) return
+      text += '\n' + OWNER_TEXT[lang].teamsCardOnly(route.ok ? 'teams_post_failed' : route.reason)
+    }
     if (!informative && (reactionsOn(reactionDeps.setting) || repliesOn(reactionDeps.setting))) {
       const expires = formatExpiry(approval.timeout_at, lang)
       const route = await reactionRoute(approval, serverFiled, reactionDeps, expires, approvalsPageUrl(), lang)
@@ -474,6 +493,20 @@ function handleCategoryConsume(ctx: RouteContext, id: string, body: Record<strin
 
 export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
+
+  // POST /api/approvals/teams-card-action -- TEAMSAPPROVECARD1118: an approval-card click forwarded by the Teams
+  // plugin. No dashboard token is taken here (auth-gate requiresAuth): the handler checks the Bot Framework channel
+  // token itself, and only a click on the server-posted card by the owner decides (web/approval-teams-card.ts).
+  if (path === '/api/approvals/teams-card-action' && method === 'POST') {
+    const raw = await readBodyOrRefuse(req, res, { maxBytes: 64 * 1024 })
+    if (!raw) return true
+    let activity: unknown
+    try { activity = JSON.parse(raw.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    const auth = req.headers.authorization
+    const answer = await handleTeamsCardAction(typeof auth === 'string' ? auth : undefined, activity, teamsCardDeps)
+    json(res, answer.body, answer.status)
+    return true
+  }
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {

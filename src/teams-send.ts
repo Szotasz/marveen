@@ -322,6 +322,8 @@ export async function sendTeamsMessage(
     timeoutMs?: number
     readRefs?: typeof readTeamsServiceUrl
     resolveTarget?: typeof resolveTeamsTarget
+    /** TEAMSAPPROVECARD1118: an Adaptive Card sent below the text (the server-rendered approval card). */
+    card?: Record<string, unknown>
   },
 ): Promise<{ status: number; messageId?: string }> {
   if (!creds.appId || !creds.secret || !creds.tenant) {
@@ -371,7 +373,9 @@ export async function sendTeamsMessage(
       {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ type: 'message', text }),
+        body: JSON.stringify(deps?.card
+          ? { type: 'message', text, attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', content: deps.card }] }
+          : { type: 'message', text }),
         redirect: 'error',
         signal: AbortSignal.timeout(deps?.timeoutMs ?? TEAMS_DEFAULT_TIMEOUT_MS),
       },
