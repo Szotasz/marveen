@@ -35,7 +35,8 @@ server gets the press from Telegram over TLS, inside the server process.
 
 ## Checks on every press (all required)
 
-1. `from.id` is on the main channel's `allowFrom` (read at press time), the message's chat is that same
+1. (Superseded by #2160 review 1: the approver is the PAIRED account, stored in the server's database from a
+   one-time code the owner's session issues; allowFrom is no longer read.) `from.id` is on the main channel's `allowFrom` (read at press time), the message's chat is that same
    private chat (`chat.id === from.id`), and it equals the chat stored for this approval.
 2. The pressed message is the one the server sent for this approval (`message_id` stored), so a message an
    agent sends with the same bot token carries buttons that do nothing, even with a correct HMAC.

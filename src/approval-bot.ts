@@ -7,9 +7,14 @@
 // running as the same OS user. A bot that only this server polls gets the press from Telegram over TLS,
 // inside this process, with `from.id` set by Telegram.
 //
+// Who the owner is: the PAIRED account only (#2160 review 1). The owner pairs from the dashboard, with the
+// owner's session: the server issues a one-time code (issuePairingCode), the owner sends `/start <code>` to the
+// approval bot in a private chat, and the server stores that from.id and chat in its own database
+// (approval_bot_pairing). access.json and .env are never read for this: an agent's OS user can write both.
+//
 // What a press must pass (all of it, handleCallback):
-//   1. from.id is on the main channel's allowFrom, the chat is that same private chat (chat.id === from.id),
-//      and it is the chat this server sent the question to;
+//   1. from.id and the chat are the paired pair, in a private chat (chat.id === from.id), and it is the chat
+//      this server sent the question to;
 //   2. it is the very message this server sent for that approval (message_id on record): a message an agent
 //      sends with the same bot token carries buttons that do nothing;
 //   3. the callback data's HMAC matches;
@@ -21,21 +26,22 @@
 //
 // Off by default (APPROVAL_BOT_ENABLED). The bot token is the owner's: store/.approval-bot-token.
 // What the code cannot do -- keep the bot token away from an agent that reads files -- is narrowed by
-// keeping api.telegram.org off every sub-agent egress list (sandboxed agents cannot reach it at all).
+// keeping api.telegram.org off every sub-agent egress list (sandboxed agents cannot reach it at all), and by
+// the read-deny on the token file. RESIDUAL, not closed: whoever holds the token can edit the bot's messages
+// again after step 1 rewrote them, so the text next to "Megerősítem" is only as trustworthy as the token. The
+// two-step confirm narrows that window; it does not remove it.
 
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { APP_TZ, STORE_DIR } from './config.js'
 import { logger } from './logger.js'
 import { isSettingOn } from './setting-flag.js'
-import { channelStateDir } from './channel-provider.js'
-import { resolveOwnerChatId } from './owner-chat.js'
 import {
   getApproval, resolveApproval, recordApprovalBotMessage, getApprovalBotMessage, setApprovalBotConfirmAt,
-  type Approval,
+  getApprovalBotPairing, setApprovalBotPairing, type Approval,
 } from './db.js'
-import { getUpdates, TelegramApiError, type RawUpdate } from './channel-coordinator/telegram-client.js'
+import { getUpdates, TelegramApiError, type RawUpdate, type RawMessage } from './channel-coordinator/telegram-client.js'
 
 export const APPROVAL_BOT_SETTING = 'APPROVAL_BOT_ENABLED'
 export const TOKEN_FILE = '.approval-bot-token'
@@ -50,15 +56,94 @@ export interface BotApi {
   editMessageText(chatId: string, messageId: number, text: string, keyboard: InlineButton[][] | null): Promise<void>
   answerCallbackQuery(callbackQueryId: string, text: string): Promise<void>
 }
+/** The paired owner: Telegram's from.id and the private chat the questions go to (the same id). */
+export interface Pairing { fromId: string; chatId: string }
 export interface ApprovalBot {
   token: string
   key: Buffer
   api: BotApi
-  ownerChat: () => string | null
-  allowFrom: () => string[]
+  /** The paired owner, or null: then no question goes out through this bot and no press counts. */
+  pairing: () => Pairing | null
   now: () => number
 }
 export type CallbackQuery = NonNullable<RawUpdate['callback_query']>
+
+/** The pairing as the database holds it (the only source: never access.json or .env). */
+export function pairingFromDb(): Pairing | null {
+  const p = getApprovalBotPairing()
+  return p ? { fromId: p.from_id, chatId: p.chat_id } : null
+}
+
+// ---- pairing: one outstanding one-time code, issued for the owner's session (routes/approvals.ts)
+export const PAIRING_CODE_TTL_SEC = 10 * 60
+export const PAIRING_MAX_TRIES = 5
+let pendingCode: { hash: Buffer; expiresAt: number; tries: number } | null = null
+const sha = (s: string): Buffer => createHash('sha256').update(s).digest()
+
+/** A fresh code; it replaces any earlier one. Only its hash is kept, and only in this process. */
+export function issuePairingCode(now = Math.floor(Date.now() / 1000)): { code: string; expiresAt: number } {
+  const code = randomBytes(6).toString('base64url') // 8 characters, 48 bits
+  pendingCode = { hash: sha(code), expiresAt: now + PAIRING_CODE_TTL_SEC, tries: 0 }
+  return { code, expiresAt: pendingCode.expiresAt }
+}
+
+/** True once for the right code within its lifetime; PAIRING_MAX_TRIES wrong tries burn the code. */
+export function consumePairingCode(code: string, now: number): boolean {
+  const p = pendingCode
+  if (!p || now > p.expiresAt) { pendingCode = null; return false }
+  const ok = timingSafeEqual(sha(code), p.hash)
+  if (ok) { pendingCode = null; return true }
+  if (++p.tries >= PAIRING_MAX_TRIES) pendingCode = null
+  return false
+}
+
+/**
+ * The account that sent the right code, NOT yet the approver: whoever holds the bot token can poll the bot too,
+ * see the owner's `/start <code>` and send it first from another account (#2160 review). So the pair is stored
+ * only after the owner, in the dashboard session, has seen WHICH account it is (name and id) and confirmed it.
+ */
+export interface PendingPairing extends Pairing { name: string; at: number }
+let pendingPairing: PendingPairing | null = null
+
+export function pendingPairingInfo(now = Math.floor(Date.now() / 1000)): PendingPairing | null {
+  if (pendingPairing && now - pendingPairing.at > PAIRING_CODE_TTL_SEC) pendingPairing = null
+  return pendingPairing
+}
+
+/** The owner's confirmation (routes/approvals.ts, owner session): the pending account becomes the approver. */
+export function confirmPendingPairing(fromId: string, now = Math.floor(Date.now() / 1000)): boolean {
+  const p = pendingPairingInfo(now)
+  if (!p || p.fromId !== fromId) return false
+  setApprovalBotPairing(p.fromId, p.chatId, now)
+  pendingPairing = null
+  logger.info({ from: p.fromId }, 'approval bot: pairing confirmed by the owner')
+  return true
+}
+
+/** Tests only. */
+export function resetPairingCodeForTest(): void { pendingCode = null; pendingPairing = null }
+
+export type PairingOutcome = 'pending-confirm' | 'bad-code' | 'not-private' | 'ignored'
+
+/** A plain message to the bot: only `/start <code>` in a private chat means anything. */
+export async function handleMessage(bot: ApprovalBot, msg: RawMessage): Promise<PairingOutcome> {
+  const text = typeof msg.text === 'string' ? msg.text.trim() : ''
+  const m = /^\/start(?:@\w+)?\s+(\S+)$/.exec(text)
+  if (!m) return 'ignored'
+  const fromId = msg.from?.id != null ? String(msg.from.id) : null
+  const chatId = String(msg.chat.id)
+  if (!fromId || chatId !== fromId) return 'not-private'
+  if (!consumePairingCode(m[1], bot.now())) {
+    await bot.api.sendMessage(chatId, 'A párosító kód nem érvényes vagy lejárt. Kérj újat a dashboardon.', []).catch(() => null)
+    logger.warn({ from: fromId }, 'approval bot: pairing refused (wrong or expired code)')
+    return 'bad-code'
+  }
+  const name = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') + (msg.from?.username ? ` (@${msg.from.username})` : '')
+  pendingPairing = { fromId, chatId, name: name.trim() || '?', at: bot.now() }
+  await bot.api.sendMessage(chatId, 'A kód rendben. Erősítsd meg a párosítást a dashboardon (Jóváhagyások).', []).catch(() => null)
+  logger.info({ from: fromId }, 'approval bot: pairing waits for the owner\'s confirmation on the dashboard')
+  return 'pending-confirm'
+}
 
 // ---- callback data: <op>.<id22>.<mac16>, 41 bytes (Telegram allows 64)
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -145,7 +230,7 @@ function confirmKeyboard(bot: ApprovalBot, approvalId: string, chatId: string): 
 // ---- sending the question
 /** Send the question through the approval bot. True when it went out (and is on record). */
 export async function sendApprovalPrompt(bot: ApprovalBot, a: Approval): Promise<boolean> {
-  const chatId = bot.ownerChat()
+  const chatId = bot.pairing()?.chatId ?? null // unpaired: the main-bot path runs instead
   if (!chatId || !compactId(a.id)) return false
   const messageId = await bot.api.sendMessage(chatId, promptText(a), firstKeyboard(bot, a.id, chatId))
   if (messageId == null) return false
@@ -174,9 +259,10 @@ async function decide(bot: ApprovalBot, cq: CallbackQuery): Promise<CallbackOutc
   const chatId = cq.message?.chat.id != null ? String(cq.message.chat.id) : null
   const messageId = cq.message?.message_id ?? null
 
-  // 1. the owner, in the owner's own private chat
-  if (!fromId || !bot.allowFrom().includes(fromId)) { await answer('Nincs jogosultságod.'); return 'not-owner' }
-  if (!chatId || chatId !== fromId || messageId == null) { await answer(REFUSAL_ANSWER); return 'wrong-chat' }
+  // 1. the paired owner, in the paired private chat
+  const pair = bot.pairing()
+  if (!pair || !fromId || fromId !== pair.fromId) { await answer('Nincs jogosultságod.'); return 'not-owner' }
+  if (!chatId || chatId !== fromId || chatId !== pair.chatId || messageId == null) { await answer(REFUSAL_ANSWER); return 'wrong-chat' }
   // 3. data intact
   const parsed = parseCallbackData(bot.key, String(cq.data ?? ''), chatId)
   if (!parsed) { await answer(REFUSAL_ANSWER); return 'bad-data' }
@@ -258,15 +344,6 @@ export function telegramBotApi(token: string, fetchImpl: typeof fetch = fetch): 
 }
 
 // ---- configuration
-export function readAllowFrom(read: (p: string) => string = (p) => readFileSync(p, 'utf-8')): string[] {
-  try {
-    const raw = JSON.parse(read(join(channelStateDir('telegram'), 'access.json'))) as { allowFrom?: unknown }
-    return Array.isArray(raw.allowFrom) ? raw.allowFrom.map((x) => String(x).trim()).filter(Boolean) : []
-  } catch {
-    return []
-  }
-}
-
 export function loadOrCreateKey(path: string): Buffer {
   if (existsSync(path)) {
     const k = readFileSync(path)
@@ -294,8 +371,7 @@ export function activeApprovalBot(storeDir = STORE_DIR): ApprovalBot | null {
     token,
     key: loadOrCreateKey(join(storeDir, KEY_FILE)),
     api: telegramBotApi(token),
-    ownerChat: () => resolveOwnerChatId(),
-    allowFrom: () => readAllowFrom(),
+    pairing: pairingFromDb,
     now: () => Math.floor(Date.now() / 1000),
   }
   return active
@@ -321,6 +397,7 @@ export function startApprovalBotPoller(
         for (const u of updates) {
           offset = Math.max(offset, u.update_id + 1)
           if (u.callback_query) await handleCallback(bot, u.callback_query).catch((err) => logger.warn({ err }, 'approval bot: press handling failed'))
+          else if (u.message) await handleMessage(bot, u.message).catch((err) => logger.warn({ err }, 'approval bot: message handling failed'))
         }
       } catch (err) {
         if (err instanceof TelegramApiError && err.kind === 'fatal') {
