@@ -11,9 +11,10 @@ import { isSendInvocation, scriptRunSends } from '../../scripts/email-send-gate.
 // so the two gates cannot drift apart on it.
 
 type Case = { name: string; file: string; body: string; expected: boolean; helpers?: Record<string, string>; file_only?: boolean }
-const { cases } = JSON.parse(
+type InlineCase = { name: string; cmd: string; expected: boolean }
+const { cases, inline } = JSON.parse(
   readFileSync(join(__dirname, '..', '..', 'scripts', 'hooks', 'mail-api-send-cases.json'), 'utf-8'),
-) as { cases: Case[] }
+) as { cases: Case[]; inline: InlineCase[] }
 
 // The same quoting as python's shlex.quote, so both twins judge the identical command.
 const shQuote = (s: string) => `'${s.replaceAll("'", `'"'"'`)}'`
@@ -39,5 +40,17 @@ describe('HTTP mail API sends (MAILGATEHTTPAPI1027)', () => {
     const prog = progFor(c.file)
     const flag = prog === 'python3' ? '-c' : '-e'
     expect(isSendInvocation(`${prog} ${flag} ${shQuote(c.body)}`)).toBe(c.expected)
+  })
+})
+
+// MAILCURLSEND1118: an HTTP mail API send written inline on the command line is judged like the same send in a script.
+describe('HTTP mail API sends written inline on the command line (MAILCURLSEND1118)', () => {
+  it('the inline list has send and no-send cases', () => {
+    expect(inline.some((c) => c.expected)).toBe(true)
+    expect(inline.some((c) => !c.expected)).toBe(true)
+  })
+
+  it.each(inline)('inline command: $name', (c) => {
+    expect(isSendInvocation(c.cmd)).toBe(c.expected)
   })
 })
