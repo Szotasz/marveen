@@ -163,7 +163,7 @@ function isLink(p: string): boolean {
   }
 }
 
-export type PendingNoticeKind = 'set_aside' | 'set_aside_failed' | 'orphan_marker' | 'bad_marker' | 'marker_blocked' | 'fallback_refused'
+export type PendingNoticeKind = 'set_aside' | 'set_aside_failed' | 'orphan_marker' | 'bad_marker' | 'marker_blocked' | 'fallback_refused' | 'fallback_scan_finding'
 
 export function pendingNoticesDir(): string {
   return join(leftoversDir(), 'pending-notices')
@@ -198,6 +198,8 @@ export function noticeText(n: { kind: string; name: string; path: string }): str
       return `Agent package installer: ${n.path} is not a regular file, so it was left alone, and installing "${n.name}" stays blocked until it is removed.`
     case 'fallback_refused':
       return `Agent "${n.name}" could not be started from its fallback folder: its package files are missing or its shell is broken (${n.path}). Start it again from the dashboard to see the reason.`
+    case 'fallback_scan_finding':
+      return `Agent "${n.name}" started from its fallback folder, and its combined instructions contain text the package rules would refuse. The agent is running; check its PACKAGE.md and LOCAL.md (${n.path}).`
     default:
       return `Agent package installer notice for "${n.name}": ${n.path}`
   }
@@ -684,6 +686,14 @@ export function prepareFallbackClaudeMd(name: string, dir: string, fallbackCwd: 
     }
     const rest = claude.toString('utf8').slice(PACKAGE_SHELL_PREFIX_TEXT.length)
     const expanded = `\n${pkg}\n\n\n${local}\n${rest}`
+    // Report only (#2878 review): the expanded text joins the package layer with the local layer, which no package
+    // rule has seen. A finding is logged and the owner told; the start goes on, as on the normal path, which loads
+    // the same texts through the two import lines.
+    const finding = scanPackageText(Buffer.from(expanded, 'utf8'))
+    if (finding !== null) {
+      logger.warn({ name, reason: finding.reason, rule: finding.rule }, 'EPERM fallback: the expanded CLAUDE.md has a package text rule finding; starting anyway (report only)')
+      writePendingNotice('fallback_scan_finding', name, dir, new Date())
+    }
     chmodSync(fallbackCwd, 0o700)
     const target = join(fallbackCwd, 'CLAUDE.md')
     writeFileSync(target, expanded, { mode: 0o600, flag: 'wx' })
