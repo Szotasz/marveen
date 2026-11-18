@@ -200,7 +200,10 @@ function deriveKey(master: Buffer, salt: Buffer): Buffer {
 }
 
 function encrypt(plaintext: string): string {
-  const master = getMasterKey()
+  return encryptWithKey(getMasterKey(), plaintext)
+}
+
+function encryptWithKey(master: Buffer, plaintext: string): string {
   const salt = randomBytes(SALT_LENGTH)
   const key = deriveKey(master, salt)
   const iv = randomBytes(IV_LENGTH)
@@ -349,3 +352,28 @@ export const reservedVaultAccess = Object.freeze({
     return deleteEntry(id)
   },
 })
+
+// GMAILDRAFT1116 review round 2 (E1): a fleet import replaces vault.json AND the master key with the bundle's. This
+// machine's reserved entries are never in a bundle (exportVault skips them), so to keep them the import carries them
+// over: each one is decrypted here with the CURRENT master key and re-encrypted with the bundle's key, in this module,
+// and only the ciphertext leaves it. `dropped` names the ids that could not be carried (the current key did not open
+// them, or no current key is readable); the caller logs them, and the owner sets that credential again.
+export function reservedEntriesReencryptedFor(newMasterKeyB64: string): { entries: Array<Record<string, unknown>>; dropped: string[] } {
+  const reserved = readVault().entries.filter(e => isReservedVaultId(e.id))
+  if (!reserved.length) return { entries: [], dropped: [] }
+  const newMaster = Buffer.from(String(newMasterKeyB64 ?? '').trim(), 'base64')
+  if (!newMaster.length) return { entries: [], dropped: reserved.map(e => e.id) }
+  let current: Buffer
+  try { current = getMasterKey() } catch { return { entries: [], dropped: reserved.map(e => e.id) } }
+  const entries: Array<Record<string, unknown>> = []
+  const dropped: string[] = []
+  for (const e of reserved) {
+    try {
+      const plain = decryptWithKey(current, e.encrypted)
+      entries.push({ ...e, encrypted: encryptWithKey(newMaster, plain) })
+    } catch {
+      dropped.push(e.id)
+    }
+  }
+  return { entries, dropped }
+}
