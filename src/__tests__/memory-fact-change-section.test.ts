@@ -85,9 +85,16 @@ describe('memory-fact-change section: what it says (Hungarian)', () => {
     expect(body).toMatch(/\[ÉÉÉÉ-HH-NN: ELAVULT, mert \.\.\. \(új emlék #id\)\]/)
   })
 
+  it('says what the server actually does: superseded vs skipped, and that memory-update replaces the whole content', () => {
+    // saveAgentMemorySuperseding skips another agent's id without an error; only the reply tells.
+    expect(body).toMatch(/`superseded` mezője mondja meg[\s\S]{0,120}`skipped` mezőben áll/)
+    // memory-update is a PUT of the whole content: a note sent alone would overwrite the row.
+    expect(body).toMatch(/TELJES tartalmát cseréli[\s\S]{0,80}teljes régi szöveget küldd vissza/)
+  })
+
   it('never another agent\'s row, never a Q/D/B row; a present-tense claim is saved with its date', () => {
     expect(body).toMatch(/Idegen sort ne vonj vissza/)
-    expect(body).toMatch(/Q\/D\/B azonosítós bejegyzést SOHA ne vonj vissza/)
+    expect(body).toMatch(/Q\/D\/B azonosítós bejegyzést SOHA ne vonj vissza, és `supersedes`-ben se add meg/)
     expect(body).toMatch(/Jelen idejű állítást[\s\S]{0,80}dátummal ments/)
     expect(body).toMatch(/A visszavonás nem törlés/)
   })
@@ -107,6 +114,8 @@ describe('memory-fact-change section: an agent off the helper gets the raw route
     expect(body).toMatch(/`POST \/api\/memories\/<id>\/retract`, törzs: `\{"agent_id":"agent-b"\}`/)
     expect(body).toMatch(/`"supersedes": \[<régi-id>\]`/)
     expect(body).toMatch(/&strict=1/)
+    expect(body).toMatch(/`PUT \/api\/memories\/<id>` a régi id-re\. Ez a sor TELJES tartalmát cseréli/)
+    expect(body).toMatch(/`skipped` mezőben áll/)
   })
 })
 
@@ -123,7 +132,10 @@ describe('memory-fact-change section: the English twin', () => {
     expect(en).toMatch(/memory-retract <id> agent-b`/)
     expect(en).toMatch(/\[YYYY-MM-DD: OUTDATED, because \.\.\. \(new memory #id\)\]/)
     expect(en).toMatch(/Never retract or rewrite another agent's row/)
-    expect(en).toMatch(/NEVER retract an entry that carries a Q\/D\/B id/)
+    expect(en).toMatch(/NEVER retract an entry that carries a Q\/D\/B id, and do not name it in `supersedes` either/)
+    expect(en).toMatch(/`superseded` field says what it retracted, an id under `skipped`/)
+    expect(en).toMatch(/replaces the row's WHOLE content, so\s+send the whole old text back/)
+    expect(enRaw).toMatch(/`PUT \/api\/memories\/<id>` on the old id\. It replaces the row's WHOLE/)
     expect(en).toMatch(/A retraction is not a delete/)
     expect(enRaw).not.toMatch(/marveen-api\.sh/)
     expect(enRaw).toMatch(/`POST \/api\/memories\/<id>\/retract` with `\{"agent_id":"agent-b"\}`/)
