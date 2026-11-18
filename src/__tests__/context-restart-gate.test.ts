@@ -779,6 +779,20 @@ describe('gateWakePrompt', () => {
   it('tells the agent that "nothing in flight" is a complete state', () => {
     expect(gateWakePrompt('samu')).toContain('ne talalj ki magadnak feladatot')
   })
+
+  // HANDOFFGATE1118: an open HANDOFF item without a card is running work, not "nothing in flight" (as #2863).
+  it('counts an open HANDOFF item as running work, card or not, before the "do not invent work" sentence', () => {
+    for (const name of [MAIN_AGENT_ID, 'samu']) {
+      const p = gateWakePrompt(name)
+      const open = p.indexOf('annak Next Steps nyitott tetele futo munka akkor is, ha nincs kartyaja')
+      const card = p.indexOf('minden kartya nelkuli tetelre hozz letre kartyat')
+      const idle = p.indexOf('Ha nem volt futo munkad es az atadoban sincs nyitott tetel')
+      expect(open).toBeGreaterThan(-1)
+      expect(card).toBeGreaterThan(open)
+      expect(idle).toBeGreaterThan(card)
+      expect(p).not.toContain('Ha nem volt futo munkad, az is teljes erteku allapot')
+    }
+  })
 })
 
 // LEDGERACK905: an unanswered inbound holds the gate only until the drain has

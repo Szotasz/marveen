@@ -69,7 +69,10 @@ export function gateWakePrompt(name: string): string {
     'es -- ha volt futo munkad -- a TASK-FOLYTATAS a mar kesz lepesekkel es a kovetkezo akcioval. ' +
     'Olvasd be oket, ellenorizd a kanban tabladat es a hot memoriaidat, es FOLYTASD onnan ahol abbamaradt. ' +
     'Ne kezdd elolrol ami mar kesz, es ne delegald ujra amit mar atadtal. ' +
-    'Ha nem volt futo munkad, az is teljes erteku allapot -- olyankor ne talalj ki magadnak feladatot. ' +
+    // HANDOFFGATE1118 (as #2863 for the restart wake): an open HANDOFF item is running work even without a card.
+    'Ha van atadod (HANDOFF.md), annak Next Steps nyitott tetele futo munka akkor is, ha nincs kartyaja: ' +
+    'ebben az elso korben minden kartya nelkuli tetelre hozz letre kartyat (vagy ird a tetel melle, miert nem kell). ' +
+    'Ha nem volt futo munkad es az atadoban sincs nyitott tetel, az is teljes erteku allapot -- olyankor ne talalj ki magadnak feladatot. ' +
     // Owner request 2026-10-21: no channel notice about the fresh context (several
     // agents' channel is the owner's Telegram); only a faulty restart is reported,
     // by a sub-agent to the main agent over the inter-agent queue.
