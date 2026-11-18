@@ -1640,6 +1640,23 @@ export "$STATE_ENV_VAR"="$MAIN_CHAN_DIR"
 STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
 # gromzo has no channel state dir (no token, no access.json): nothing to export (GROMZONOPROVIDER1108).
 [ "$CHANNEL_PROVIDER" = "gromzo" ] && STATE_DIR_ENV=""
+# TEAMSAPPROVECARD1118: the main agent's Teams plugin (0.3.3+) forwards a click on the dashboard's email approval card
+# to this URL and never hands it to the session (claude-channel-teams docs/approval-cards.md). The plugin accepts only a
+# loopback URL, so the dashboard is addressed on 127.0.0.1 at its WEB_PORT. A dashboard bound to one non-loopback
+# address (WEB_HOST) is not reachable there: nothing is exported, and the plugin answers such a click with its fixed
+# "decide on the dashboard" card.
+if [ "$CHANNEL_PROVIDER" = "teams" ]; then
+  _approval_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r"'"'"' ')"
+  case "$_approval_port" in ''|*[!0-9]*) _approval_port=3420 ;; esac
+  _approval_host="$(grep -E '^WEB_HOST=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r"'"'"' ')"
+  case "$_approval_host" in
+    ''|127.0.0.1|0.0.0.0|::|localhost)
+      STATE_DIR_ENV="${STATE_DIR_ENV}export MARVEEN_APPROVAL_URL=$(sh_single_quote "http://127.0.0.1:${_approval_port}/api/approvals/teams-card-action") && " ;;
+    *)
+      echo "[channels] TEAMSAPPROVECARD1118: WEB_HOST=$_approval_host is not loopback; Teams approval-card clicks are not forwarded" ;;
+  esac
+fi
+# TEAMSAPPROVECARD1118 end
 
 # P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
 # new-session. A new session inherits the tmux SERVER's global environment, not
