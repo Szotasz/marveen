@@ -61,6 +61,16 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/email-audit-capture.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/email-audit-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Skill|Read|Bash",
         "hooks": [
           {
@@ -112,6 +122,16 @@
       }
     ],
     "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/email-audit-capture.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/email-audit-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "*",
         "hooks": [
@@ -195,6 +215,16 @@
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/email-audit-capture.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/email-audit-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "*",
         "hooks": [

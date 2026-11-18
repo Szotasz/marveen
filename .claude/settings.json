@@ -39,6 +39,7 @@
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/taskstate-stub.py\"", "timeout": 10 } ] }
     ],
     "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-audit-capture.py\"", "timeout": 10 } ] },
       { "matcher": "mcp__plugin_[^_]+_[^_]+__reply", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-outbound.py\"", "timeout": 15 } ] },
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/tool-log-capture.py\"", "timeout": 5 } ] },
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/persona-change-notify.py\"", "timeout": 15 } ] },
@@ -49,10 +50,12 @@
       { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-frontmatter-bash-gate.py\"", "timeout": 10 } ] }
     ],
     "PostToolUseFailure": [
+      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-audit-capture.py\"", "timeout": 10 } ] },
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/tool-log-capture.py\"", "timeout": 5 } ] },
       { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-frontmatter-bash-gate.py\"", "timeout": 10 } ] }
     ],
     "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/email-audit-capture.py\"", "timeout": 10 } ] },
       { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/fleet-freeze-gate.sh\"", "timeout": 5 } ] },
       { "matcher": "Bash", "hooks": [ { "type": "command", "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"", "timeout": 15 } ] },
       { "matcher": ".*send_email.*", "hooks": [ { "type": "command", "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; else python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): outgoing-copy-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"", "timeout": 15 } ] },

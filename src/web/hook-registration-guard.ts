@@ -60,6 +60,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'telegram-reply-directive.py',
   'skill-usage-capture.py',
   'tool-log-capture.py',
+  'email-audit-capture.py',
   'memory-frontmatter-gate.py',
   'memory-frontmatter-bash-gate.py',
   'shell-rescan-guard.py',

@@ -334,6 +334,7 @@ export const AGENT_TOKEN_ALLOWLIST: readonly AgentAllowEntry[] = [
   { methods: ['GET', 'POST'], pattern: /^\/api\/agent-taskstate\/[^/]+(?:\/replay|\/consume)?$/, why: 'task-state save/replay (PreCompact prompt, taskstate-replay hook)' },
   { methods: ['POST'], pattern: /^\/api\/skill-usage$/, why: 'skill-usage-capture hook' },
   { methods: ['POST'], pattern: /^\/api\/tool-log$/, why: 'tool-log-capture hook' },
+  { methods: ['POST'], pattern: /^\/api\/email-audit$/, why: 'email-audit-capture hook; WRITE only -- a GET would expose another principal mail envelope' },
   { methods: ['GET'], pattern: /^\/api\/voice\/directive$/, why: 'voice-reply-directive hook' },
   // VAULTSZELES826 (0) replay, Samu 74563: what sub-agents call today and must keep after AGENT_TOKENS.
   // The proposer is the authenticated token (routes/skills.ts proposedBy = auth.agent); approval stays the owner's.
@@ -487,6 +488,7 @@ export const AGENT_IDENTITY_BINDINGS: readonly IdentityBinding[] = [
   { methods: ['POST'], pattern: new RegExp(`^/api/kanban/${KANBAN_CARD}/comments$`), bodyFields: ['author'], why: 'a comment is authored by the caller' },
   { methods: ['POST'], pattern: new RegExp(`^/api/kanban/${KANBAN_CARD}/(?:archive|unarchive|labels|blockers)$`), bodyFields: ['actor'], why: 'audit actor is the caller' },
   { methods: ['POST'], pattern: /^\/api\/tool-log$/, bodyFields: ['agent_id'], why: 'tool-log rows are written as the caller' },
+  { methods: ['POST'], pattern: /^\/api\/email-audit$/, bodyFields: ['agent_id'], why: 'email-audit rows are written as the caller' },
   { methods: ['POST'], pattern: /^\/api\/skill-usage$/, bodyFields: ['agent_id'], why: 'skill-usage rows are written as the caller' },
 ]
 
