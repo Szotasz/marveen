@@ -44,6 +44,7 @@ import type { AgentTokenResolver } from './agent-tokens.js'
 import { logger } from '../logger.js'
 import { getAgentMessage, getApproval, getDb } from '../db.js'
 import { readBody, stashPreReadBody, RequestBodyTooLargeError } from './http-helpers.js'
+import { gmailDraftAgents } from './gmail-draft-policy.js'
 import { agentVaultMode, isAgentReadableVaultId, readVaultAcl, type AgentVaultMode, type VaultAcl } from './vault-acl.js'
 
 export type AuthResult =
@@ -337,6 +338,9 @@ export const AGENT_TOKEN_ALLOWLIST: readonly AgentAllowEntry[] = [
   { methods: ['GET'], pattern: /^\/api\/updates$/, why: 'update status (read): version, conflict guard, deployment kind' },
   // AUTOUPDATEDIVERG1110 (Dani F3): read-only, no fetch; an agent reads the hash it files its update_rebase request with.
   { methods: ['GET'], pattern: /^\/api\/updates\/rebase-plan$/, why: 'update rebase plan (read): local commits, upstream, the hash an approval binds' },
+  // GMAILDRAFT1116: a draft into the owner's Gmail (never a send), ONLY for a sub-agent the owner listed in GMAIL_DRAFT_AGENTS
+  // (default empty: none). The route checks the same list again (routes/gmail-draft.ts draftCallerOf).
+  { methods: ['POST'], pattern: /^\/api\/gmail\/draft$/, check: (_m, c) => gmailDraftAgents().has(c.agent), why: 'Gmail draft (draft-only endpoint), only agents listed in GMAIL_DRAFT_AGENTS' },
   { methods: ['GET'], pattern: /^\/api\/claude-plans\/(?:state|readiness)$/, why: 'plan rotation telemetry and readiness (read); rotation and plan writes stay the main agent\'s' },
 ]
 
