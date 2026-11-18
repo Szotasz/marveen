@@ -391,12 +391,16 @@ if ni_on; then
       case "${!__s}" in *$'\n'*|*$'\r'*) ni_stop "$(_t ni.bad_value) $__s" ;; esac
     done
     for __s in "${__files[@]}"; do
-      if ! { [ -f "${!__s}" ] && [ -r "${!__s}" ] && grep -q '[^[:space:]]' "${!__s}" 2>/dev/null; }; then
+      # The same read as ni_answer's file branch (first line, same IFS): what is checked here is what is used.
+      __v=''
+      { [ -f "${!__s}" ] && [ -r "${!__s}" ] && { IFS=$' \t\r\n' read -r __v < "${!__s}" || true; }; } 2>/dev/null
+      if [ -z "$__v" ]; then
+        unset __v
         ni_stop "$(_t ni.bad_file) $__s"
       fi
     done
   fi
-  unset __s __need __files
+  unset __s __need __files __v
 fi
 
 clear

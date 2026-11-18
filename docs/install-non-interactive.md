@@ -28,7 +28,12 @@ MARVEEN_CHANNEL=telegram \
 MARVEEN_BOT_NAME=Marveen \
 MARVEEN_TELEGRAM_TOKEN_FILE=~/telegram-token \
   bash install-linux.sh --non-interactive
+
+# 4. The secret now lives where the installer wrote it: remove the copy
+rm -f ~/telegram-token
 ```
+
+Do not run the installer with shell tracing (`DEBUG=1`, `bash -x`) while it reads secrets: a trace prints variable values.
 
 The run must start from a Marveen checkout (the directory with `package.json`); a standalone downloaded
 `install-linux.sh` is refused in this mode, because the token has to be in the checkout's `store/` before the run.

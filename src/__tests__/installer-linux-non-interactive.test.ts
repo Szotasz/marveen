@@ -47,7 +47,7 @@ const PRELUDE = [
 ].join('\n')
 // The flag's own helpers (INSTALL_NONINTERACTIVE=0 .. ni_answer), the start-of-run check, service_auth_present.
 const NI_HELPERS = between(SCRIPT, 'INSTALL_NONINTERACTIVE=0\n', '\n}\n')
-const NI_CHECK = between(SCRIPT, 'if ni_on; then\n  ni_stop()', '\n  unset __s __need __files\nfi\n')
+const NI_CHECK = between(SCRIPT, 'if ni_on; then\n  ni_stop()', '\n  unset __s __need __files __v\nfi\n')
 const AUTH_FN = between(SCRIPT, 'service_auth_present() {', '\n}\n')
 
 type Env = Record<string, string>
@@ -134,6 +134,15 @@ describe('the start-of-run check (before any step)', () => {
       const r = check({ ...TG(), MARVEEN_TELEGRAM_TOKEN_FILE: f })
       expect(r.status).toBe(1)
       expect(r.stderr).toContain('MARVEEN_TELEGRAM_TOKEN_FILE')
+    }
+  })
+
+  it('a secret file whose FIRST line is empty is refused, even when a later line has the token (only the first line is read)', () => {
+    for (const body of ['\nSECRET-LATER-9f8e7d\n', '   \nSECRET-LATER-9f8e7d\n', '\r\nSECRET-LATER-9f8e7d\r\n']) {
+      const r = check({ ...TG(), MARVEEN_TELEGRAM_TOKEN_FILE: secretFile(body) })
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('MARVEEN_TELEGRAM_TOKEN_FILE')
+      expect(r.stdout + r.stderr).not.toContain('SECRET-LATER-9f8e7d')
     }
   })
 
