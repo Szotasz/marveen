@@ -71,7 +71,26 @@ export const QUOTA_GATE = {
    * command (scripts/statusline-ratelimit.sh): the same numbers the official
    * endpoint reports, which usage-collect.py only uses when it is fresh.
    */
-  trustedSources: ['authoritative', 'authoritative_cached', 'statusline'],
+  trustedSources: ['authoritative', 'authoritative_cached', 'statusline', 'ratelimit_headers'],
+  /**
+   * 'ratelimit_headers' (above) is the anthropic-ratelimit-unified-* headers of
+   * one minimal Messages call (src/claude-ratelimit-reading.ts), which
+   * usage-collect.py runs only as a last resort: after the usage endpoint,
+   * the statusLine file and a fresh authoritative cache all gave nothing.
+   *
+   * Blind gate: a snapshot whose source is not trusted (e.g. 'estimate'), or
+   * one older than this, means the gate cannot see the quota. It still runs
+   * everything (FAIL OPEN), but the scheduler says so once per state change
+   * (quotaBlindness below). A missing file is not "blind": it means the
+   * collector task is not enabled on this install, which is a choice.
+   */
+  blindAfterMs: 2 * 60 * 60_000,
+  // Tiers for a small plan, OPT-IN via the QUOTA_GATE_HARD_AT_PERCENT setting
+  // (0 = off, the default: every rule above applies unchanged). When it is set:
+  //   - from deferAtPercent (and on a near reset) up to the hard line, only
+  //     background tasks marked `essential: true` in task-config.json run;
+  //   - at or above the hard line no background task runs at all.
+  // Owner-facing and command tasks are never affected.
 } as const
 
 /** Highest utilization across all windows, or null when none reports one. */
@@ -109,12 +128,36 @@ function windowResettingSoon(
   return best
 }
 
+/**
+ * Why the gate cannot see the quota right now, or null when it can (or when no
+ * collector runs at all: a missing snapshot is a configuration choice, not a
+ * fault). The value is a state KIND, stable across ticks, so the caller can
+ * act on a change only.
+ */
+export function quotaBlindness(
+  snapshot: QuotaSnapshot | null | undefined,
+  nowMs: number,
+): 'untrusted-source' | 'stale-snapshot' | null {
+  if (!snapshot) return null
+  const source = (snapshot.source ?? '').toLowerCase()
+  if (!(QUOTA_GATE.trustedSources as readonly string[]).includes(source)) return 'untrusted-source'
+  const at = snapshot.generatedAtMs
+  if (typeof at !== 'number' || Number.isNaN(at) || nowMs - at > QUOTA_GATE.blindAfterMs) return 'stale-snapshot'
+  return null
+}
+
 export function decideQuotaAction(input: {
   snapshot: QuotaSnapshot | null | undefined
   nowMs: number
   workClass: QuotaWorkClass
+  /** The task's `essential: true` flag; only read when tiers are on. */
+  essential?: boolean
+  /** QUOTA_GATE_HARD_AT_PERCENT; 0/unset = tiers off (today's behaviour). */
+  hardAtPercent?: number
 }): QuotaDecision {
   const { snapshot, nowMs, workClass } = input
+  const hard = Number.isFinite(input.hardAtPercent) ? (input.hardAtPercent as number) : 0
+  const tiersOn = hard > 0
 
   // Shell commands cost no tokens -- the gate has no business touching them.
   if (workClass === 'free') return { action: 'run', reason: 'no-model-cost', pressure: null }
@@ -142,6 +185,14 @@ export function decideQuotaAction(input: {
   // go quiet on them -- report it in the reason and run.
   if (workClass === 'owner-facing') {
     return { action: 'run', reason: `owner-facing@${pressure}%`, pressure }
+  }
+
+  if (tiersOn && pressure >= hard) {
+    return { action: 'defer', reason: `hard:${pressure}%`, pressure }
+  }
+  // Below the hard line an essential task is exempt from both soft defers.
+  if (tiersOn && input.essential === true) {
+    return { action: 'run', reason: `essential@${pressure}%`, pressure }
   }
 
   if (pressure >= QUOTA_GATE.deferAtPercent) {

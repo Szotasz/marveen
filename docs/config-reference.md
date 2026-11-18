@@ -174,6 +174,9 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `HEARTBEAT_START_HOUR` | int | 9 | min 0, max 22 | nem |
 | `HEARTBEAT_END_HOUR` | int | 23 | min 1, max 24 | nem |
 | `HEARTBEAT_AGENT_ENABLED` | string | `1` | `0` vagy `1` | igen |
+| `QUOTA_GATE_HARD_AT_PERCENT` | int | 0 (ki) | min 0, max 100 | nem |
+
+`QUOTA_GATE_HARD_AT_PERCENT` a kvóta-kapu (`src/quota-gate.ts`) szintjeit kapcsolja be kis előfizetéshez. 0: a mai viselkedés (85%-tól minden háttér-heartbeat áll). Ha be van állítva (pl. 95): 85% és e határ között csak az `essential: true` jelölésű heartbeatek futnak (`scheduled-tasks.md`), a határon és fölötte egy háttérfeladat sem. 85 vagy annál kisebb érték mindenkire lejjebb hozza a vonalat (az essential sem fut). A 20 perc és 2 óra közötti régi pillanatképnél a kapu már nem tart vissza, de még nem riaszt; 2 óra után egyszer szól. A `task` és `command` típusú feladatokat nem érinti.
 **Registry -- Ötletláda modul:**
 
 | Kulcs | Típus | Alapérték | Korlát | Újraindítás |
