@@ -278,6 +278,24 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     ? buildOwnerChatApprovedText(approval, chatApprovedMessageId, lang)
     : buildOwnerApprovalText(approval, lang)
   void (async () => {
+    // 80d0e3c6: with the approval bot on, the question goes out through it, with buttons whose press this
+    // server receives (src/approval-bot.ts). It runs before the Slack paths: a paired bot is the owner's own later
+    // choice (measured 2026-11-18: with APPROVAL_SLACK_REPLIES on, the paired bot never got a request). If it cannot
+    // send (not paired yet, Telegram down), the paths below run as if the bot were off.
+    if (!informative) {
+      const bot = activeApprovalBot()
+      if (bot) {
+        try {
+          if (await sendApprovalPrompt(bot, approval)) {
+            logger.info({ approvalId: approval.id }, 'approval owner notification sent through the approval bot')
+            return
+          }
+          logger.warn({ approvalId: approval.id }, 'approval bot could not send the question: using the other paths')
+        } catch (err) {
+          logger.warn({ err, approvalId: approval.id }, 'approval bot send FAILED: using the other paths')
+        }
+      }
+    }
     // APPROVALSLACK1030 (2): the owner decides with a Slack reaction the server itself checks, when this request may
     // (approval-slack-route.ts); otherwise the normal DM below, saying the decision is on the dashboard.
     // APPROVALSLACK1030 B: with APPROVAL_SLACK_REPLIES on, the same one-message path, and the owner's typed reply decides.
@@ -323,23 +341,6 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
       return
     }
 
-    // 80d0e3c6: with the approval bot on, the question goes out through it, with buttons whose press this
-    // server receives (src/approval-bot.ts). If it cannot send (not paired yet, Telegram down), the main-bot
-    // path below runs as if the bot were off.
-    if (!informative) {
-      const bot = activeApprovalBot()
-      if (bot) {
-        try {
-          if (await sendApprovalPrompt(bot, approval)) {
-            logger.info({ approvalId: approval.id }, 'approval owner notification sent through the approval bot')
-            return
-          }
-          logger.warn({ approvalId: approval.id }, 'approval bot could not send the question: using the main bot')
-        } catch (err) {
-          logger.warn({ err, approvalId: approval.id }, 'approval bot send FAILED: using the main bot')
-        }
-      }
-    }
     // APPROVALVAK821 fixed this path so the request reaches the OWNER and not
     // only the main agent's queue -- but the fix went out Telegram-only, so on
     // any install that speaks another provider the old silence came straight

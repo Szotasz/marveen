@@ -43,6 +43,7 @@ vi.mock('../owner-chat.js', async (importOriginal) => {
 })
 
 const { tryHandleApprovals, approvalsPageUrl } = await import('../web/routes/approvals.js')
+const { setActiveApprovalBotForTest } = await import('../approval-bot.js')
 
 function fakePost(path: string, body: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
@@ -106,6 +107,26 @@ describe('a Slack owner gets the approval request in the Slack DM, never on Tele
       const fallbacks = ownerUnreached()
       expect(fallbacks).toHaveLength(1)
       expect(fallbacks[0]).toContain(reason)
+    })
+  }
+
+  // 2026-11-18: with a Slack target set, the paired approval bot never got a request. A paired bot is the owner's
+  // later choice, so it goes first; unpaired, the Slack DM as before.
+  for (const paired of [true, false]) {
+    it(`approval bot on, ${paired ? 'paired: the bot carries it, Slack gets nothing' : 'unpaired: the Slack DM as before'}`, async () => {
+      const botSends: unknown[] = []
+      setActiveApprovalBotForTest({
+        token: '1:' + 'a'.repeat(35), key: Buffer.alloc(32, 7), now: () => Math.floor(Date.now() / 1000),
+        pairing: () => (paired ? { fromId: '1268077055', chatId: '1268077055' } : null),
+        api: { async sendMessage(...a: unknown[]) { botSends.push(a); return 501 }, async editMessageText() {}, async answerCallbackQuery() {} },
+      } as any)
+      try {
+        await kerest()
+        expect(botSends).toHaveLength(paired ? 1 : 0)
+        expect(slackTexts).toHaveLength(paired ? 0 : 1)
+        expect(telegramSends).toHaveLength(0)
+        expect(ownerUnreached()).toHaveLength(0)
+      } finally { setActiveApprovalBotForTest(undefined) }
     })
   }
 
