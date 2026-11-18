@@ -15,7 +15,11 @@ vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: (k: string) => settings.get(k) ?? (k === 'MAIN_AGENT_CONFIG_DIR' ? '' : '0'),
 }))
 let plans: ClaudePlan[] = []
-vi.mock('../web/claude-plans.js', () => ({ readClaudePlans: () => plans, subAgentTokenPlanIds: () => new Set<string>() }))
+let plansThrow = false
+vi.mock('../web/claude-plans.js', () => ({
+  readClaudePlans: () => { if (plansThrow) throw new Error('plans unreadable'); return plans },
+  subAgentTokenPlanIds: () => new Set<string>(),
+}))
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   MAIN_AGENT_ID: 'marveen',
@@ -38,7 +42,7 @@ vi.mock('../claude-plan-usage-probe.js', async (importOriginal) => ({
   probePlanUsage: (token: string, opts?: unknown) => probeMock(token, opts),
 }))
 
-const { readRateLimits, ROTATION_SKIP_REASON } = await import('../claude-ratelimit-reading.js')
+const { readRateLimits, ROTATION_SKIP_REASON, PLANS_UNREADABLE_REASON } = await import('../claude-ratelimit-reading.js')
 const { activeTokenPlan } = await import('../claude-plan-rotate-check-run.js')
 
 const plan = (id: string): ClaudePlan => ({ id, label: id, tokenSecretId: `S-${id}`, channelsAllowed: true } as unknown as ClaudePlan)
@@ -47,6 +51,7 @@ const reading = { ok: true, windows: { five_hour: { used_percent: 35, resets_at:
 beforeEach(() => {
   settings.clear()
   plans = []
+  plansThrow = false
   probeMock.mockClear()
 })
 
@@ -82,6 +87,15 @@ describe('readRateLimits under plan rotation (QUOTAHDRROT1118)', () => {
     plans = [plan('a'), plan('b')]
     expect(await readRateLimits('host-token', () => NOW)).toEqual(reading)
     expect(probeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('an unreadable plan registry counts as "rotation may be in effect": no call, a fixed reason (Samu, #2879)', async () => {
+    plansThrow = true
+    expect(await readRateLimits('host-token', () => NOW)).toEqual({ ok: false, reason: PLANS_UNREADABLE_REASON })
+    // Even with isolation off: without the registry the gate cannot tell, so it does not spend the host login.
+    settings.set('MAIN_AGENT_ISOLATED_CONFIG', '1')
+    expect(await readRateLimits('host-token', () => NOW)).toEqual({ ok: false, reason: PLANS_UNREADABLE_REASON })
+    expect(probeMock).not.toHaveBeenCalled()
   })
 
   it('no token: no call (unchanged)', async () => {

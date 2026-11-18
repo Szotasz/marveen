@@ -55,13 +55,18 @@ export function readingFromProbe(result: ProbeResult, nowMs: number): RateLimitR
 }
 
 export const ROTATION_SKIP_REASON = 'plan rotation in effect: the host login may not be the active plan'
+export const PLANS_UNREADABLE_REASON = 'plan registry unreadable: plan rotation may be in effect'
 
-/** The reading for one run: no call without a token or under plan rotation, else one probe. */
+/**
+ * The reading for one run: no call without a token or under plan rotation, else one probe.
+ * A plans read that throws counts as "rotation may be in effect" (no call): reading it as off would
+ * let the host login stand in for the active plan, which is what this skip exists to prevent.
+ */
 export async function readRateLimits(token: string, nowMs: () => number = Date.now): Promise<RateLimitReading> {
   if (!token) return { ok: false, reason: `no token in ${TOKEN_ENV}` }
-  let rotation = false
-  try { rotation = planRotationInEffect(readClaudePlans()) } catch { rotation = false }
-  if (rotation) return { ok: false, reason: ROTATION_SKIP_REASON }
+  let plans: ReturnType<typeof readClaudePlans>
+  try { plans = readClaudePlans() } catch { return { ok: false, reason: PLANS_UNREADABLE_REASON } }
+  if (planRotationInEffect(plans)) return { ok: false, reason: ROTATION_SKIP_REASON }
   return readingFromProbe(await probePlanUsage(token, { timeoutMs: 8_000 }), nowMs())
 }
 
