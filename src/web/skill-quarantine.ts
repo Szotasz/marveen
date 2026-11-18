@@ -625,6 +625,42 @@ export const SKILL_SCAN_PATTERNS: ReadonlyArray<[string, RegExp]> = [
   ['persistence-target', /(settings(\.local)?\.json|scheduled-tasks|crontab\b|LaunchAgents|\.bashrc|\.zshrc|\.profile\b)/i],
   ['install-hook', /"(pre|post)install"\s*:|\bnpm\s+(i|install)\b|\bpip3?\s+install\b|\bbrew\s+install\b/i],
   ['long-encoded-blob', /[A-Za-z0-9+/]{200,}={0,2}/],
+  // SKILLSCANPI1118: prompt-injection shapes a skill has no honest reason to carry.
+  // The idea of covering these shapes comes from skill-security-auditor
+  // (alirezarezvani/claude-skills); the expressions below are our own. A line-level
+  // "ignore this line" comment is deliberately NOT honoured: a file under review must
+  // not be able to switch its own review off.
+  // All rows here are audit lines only: none of them is in the set that holds a skill
+  // with the quarantine switch off. exfil-instruction and cloud-credential-target fire on
+  // honest how-to text now and then, so they stay out of that set on purpose.
+  //
+  // A reader is told to set its standing rules aside.
+  ['override-directive', /\b(?:disregard|forget|override|abandon|set\s+aside)\s+(?:(?:all|any|every|your|of)\s+)+(?:(?:previous|prior|earlier|current|existing)\s+)?(?:instructions|rules|guidelines|constraints|safety)\b/i],
+  // Either a role-play with the limits removed, or an order to switch a safety check off.
+  ['safety-bypass', /\b(?:pretend|imagine|act\s+as\s+(?:if|though))\s+(?:that\s+)?you\s+(?:have\s+no|are\s+free\s+of|(?:do\s+not|don'?t)\s+have\s+any)\s+(?:restrictions|limits|limitations|rules|safety)\b|\b(?:skip|disable|bypass|ignore|(?:turn|switch)\s+off)\s+(?:safety|security|content)\s+(?:checks?|filters?|restrictions?|rules?|guards?)\b/i],
+  // Whatever command, with the confirmation step taken out.
+  ['unrestricted-exec', /\b(?:run|execute)\s+(?:any|every|all|arbitrary|whatever)\s+(?:shell\s+)?(?:commands?|code|scripts?)\b[^.\n]{0,30}?\b(?:without|with\s+no|no)\s+(?:asking|confirm(?:ation|ing)?|approval|restrictions?|limits?)\b/i],
+  // Moving something out of the user's environment: the source is the workspace, or the
+  // destination is somewhere external. A plain "send the data to the API" stays quiet.
+  // The home folder, /etc, .ssh, .env and secret stores count as such sources too.
+  ['exfil-instruction', /\b(?:send|upload|post|transmit|exfiltrate|forward)\s+(?:(?:the|all|every)\s+)?(?:contents?|data|files?|information)\s+(?:(?:of|from)\s+(?:the\s+|this\s+|your\s+|the\s+user'?s\s+)?(?:workspace|repo(?:sitory)?|project|codebase|home|machine|system|disk|environment|session|conversation|~\/|\$HOME|\/etc\/|\.ssh|\.env\b|credentials|secrets|keys)|to\s+(?:an?\s+|the\s+|my\s+)?(?:remote|external|attacker|third[-\s]party|webhook|pastebin|https?:\/\/))/i],
+  // The AWS credential store itself, not the config folder a deployment guide names.
+  ['cloud-credential-target', /\.aws\/(?:credentials|sso\/cache)\b/i],
+  // An HTML comment, invisible when rendered, that speaks to the model: it carries a role
+  // label (system:, developer:, assistant:) or tells "you" what you must or may now do.
+  // A maintainer's note ("runbook: keep in sync") names no role and addresses no one.
+  ['hidden-html-directive', /<!--[^>]{0,40}?(?:\b(?:system|developer|assistant)\s*(?:prompt\s*)?[:\]>]|\byou\s+(?:must|may|should|are\s+now)\b)/i],
+  // A claim to whole-machine reach: an all-or-root grade of access, aimed within a few
+  // words at the machine as a whole rather than at one folder.
+  ['excess-permission', /\b(?:unrestricted|unlimited|full|complete|total|root|admin(?:istrator)?)[-\s]+(?:level\s+)?(?:access|control|rights|privileges)\b[^.\n]{0,30}?\b(?:file\s*system|disk|network|internet|shell|terminal|machine|computer|host|everything)\b/i],
+  // Consent given before the question is asked: an unconditional consent verb over every
+  // action of a kind, or consent to everything with the review left out. Accepting all
+  // dialogs in a test browser names no action of the agent and stays quiet.
+  ['blanket-approval', /\b(?:always|automatically|blindly|unconditionally|auto-?)\s*(?:approve|accept|allow|confirm|say\s+yes\s+to)\s+(?:all|any|every)\s+(?:\w+\s+)?(?:tool\s*calls?|requests?|prompts?|permissions?|actions?|commands?|operations?)\b|\b(?:approve|accept|allow)\s+(?:everything|all\s+of\s+(?:them|it))\s+without\b/i],
+  // A soft hyphen between two letters of the same case renders as nothing and can split
+  // a keyword the rows above look for. Only there: the same byte pair turns up in fonts
+  // and images the scan reads as text. Kept apart from invisible-unicode so it never holds a skill.
+  ['soft-hyphen-split', /\p{Ll}\u00AD\p{Ll}|\p{Lu}\u00AD\p{Lu}/u],
 ]
 
 // SKILLHOLDSTRONG1117 (owner, 2026-11-17): with the switch OFF, a finding of one of these shapes still holds the
@@ -649,7 +685,9 @@ export const SKILL_HOLD_PATTERNS: ReadonlySet<string> = new Set([
 
 function excerpt(line: string, at: number): string {
   const start = Math.max(0, at - 40)
-  return line.slice(start, start + 120).replace(INVISIBLE_RE, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`)
+  return line.slice(start, start + 120)
+    .replace(INVISIBLE_RE, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`)
+    .replace(/\u00AD/g, '<U+AD>')
 }
 
 export function scanSkillDir(root: string): ScanReport {
