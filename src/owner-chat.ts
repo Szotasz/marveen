@@ -88,8 +88,11 @@ export function resolveOwnerChatId(
   const fromEnv = normalizeChatId(configured)
   if (fromEnv) return fromEnv
   if (provider === 'teams') {
-    // TEAMSAPPROVECARD1118: the Teams plugin writes no access.json (see teamsAllowlistIds).
-    try { return teamsAllowlistIds(JSON.parse(readAccessFile(join(channelStateDir(provider), TEAMS_ALLOWLIST_FILE))))[0] ?? null } catch { return null }
+    // TEAMSAPPROVECARD1118: the Teams plugin writes no access.json (see teamsAllowlistIds). Unlike the first-entry
+    // heuristic below, Teams takes the alert rule here too (review, #2884): exactly one paired user is the owner. With
+    // two paired users the first one is not the owner by anything but file order, and the digest, the welcome message
+    // and the command-task output are owner content; null skips the send instead of handing it to the other person.
+    return soleTeamsOwner(readAccessFile).chatId
   }
   try {
     // `provider` defaults to 'telegram' so every existing caller (daily digest,

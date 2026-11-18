@@ -100,21 +100,29 @@ describe('the owner message of a Teams main agent, owner paired the way the plug
   })
 })
 
-describe('resolveOwnerChatId on Teams (the digest and welcome-message rule: the first paired user)', () => {
-  it('reads allowlist.json, never access.json', async () => {
+describe('resolveOwnerChatId on Teams (the digest, welcome and command-task target): exactly one paired user, as for alerts', () => {
+  // #2884 review: the first-entry heuristic of the other providers would hand owner content to whoever was paired
+  // first. Teams takes the alert rule: one paired user is the owner, none or several is null.
+  async function digestTarget(allowlistIds: string[] | null, configured = '0') {
     const { resolveOwnerChatId } = await import('../owner-chat.js')
-    const files: Record<string, string> = {
-      'allowlist.json': JSON.stringify({ version: 1, entries: [{ aad_object_id: OWNER.toUpperCase() }, { aad_object_id: OTHER }] }),
-      'access.json': JSON.stringify({ allowFrom: ['999'] }),
-    }
+    const files: Record<string, string> = { 'access.json': JSON.stringify({ allowFrom: ['999'] }) }
+    if (allowlistIds) files['allowlist.json'] = JSON.stringify({ version: 1, entries: allowlistIds.map((id) => ({ aad_object_id: id })) })
     const reader = (p: string) => {
       const hit = Object.keys(files).find((k) => p.endsWith(`/${k}`))
       if (!hit) throw new Error('ENOENT')
       return files[hit]
     }
-    expect(resolveOwnerChatId(reader, '0', 'teams')).toBe(OWNER)
-    delete files['allowlist.json']
-    expect(resolveOwnerChatId(reader, '0', 'teams')).toBeNull()
-    expect(resolveOwnerChatId(reader, 'a:1configured', 'teams')).toBe('a:1configured')
+    return resolveOwnerChatId(reader, configured, 'teams')
+  }
+  it('one paired user: that user, from allowlist.json, never access.json', async () => {
+    expect(await digestTarget([OWNER.toUpperCase()])).toBe(OWNER)
+  })
+  it('two paired users: null, not the first one', async () => {
+    expect(await digestTarget([OWNER, OTHER])).toBeNull()
+    expect(await digestTarget([OTHER, OWNER])).toBeNull()
+  })
+  it('no allowlist.json: null; a configured conversation id wins', async () => {
+    expect(await digestTarget(null)).toBeNull()
+    expect(await digestTarget([OWNER, OTHER], 'a:1configured')).toBe('a:1configured')
   })
 })
