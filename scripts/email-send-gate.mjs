@@ -298,14 +298,12 @@ const CURL_VALUE_LONG = {
   wget: new Set([
     '--output-document', '--output-file', '--append-output', '--post-data', '--post-file', '--body-data',
     '--body-file', '--input-file', '--directory-prefix', '--tries', '--timeout', '--wait', '--execute', '--base',
-    '--header', '--user-agent', '--method',
+    '--header', '--user-agent', '--method', '--referer',
   ]),
 }
 const CURL_VALUE_SHORT = { curl: new Set('oHdFuAexTKbcwDmrCEXQ'), wget: new Set('OoaUeiBPtTwQ') }
 const HAS_SCHEME = /^[A-Za-z][A-Za-z0-9+-]*:\//
-// httpie's method word and request items are no URL candidate; any other positional token may be the URL
-const NOT_URL_POSITIONAL = /^(?:[A-Z]+|[^\s/:=]+(?::=|==|=|@).*|[^\s/:=]+:(?![0-9]*(?:\/|$)).*)$/
-// [token, isOptionValue]: an option's value is kept but marked (only a URL with a scheme counts there).
+// [token, false] for every positional token: the URL candidates (see the python twin).
 function curlUrlCandidates(prog, rest) {
   const longs = CURL_VALUE_LONG[prog.toLowerCase()] ?? new Set()
   const shorts = CURL_VALUE_SHORT[prog.toLowerCase()] ?? new Set()
@@ -320,16 +318,13 @@ function curlUrlCandidates(prog, rest) {
       const k = [...t.slice(1)].findIndex((ch) => shorts.has(ch))
       takes = k >= 0 && k + 1 === t.length - 1
     } else out.push([t, false])
-    if (takes && i + 1 < rest.length) { out.push([rest[i + 1], true]); i++ }
+    if (takes) i++ // a known option value is data, never a URL
   }
-  // option values count only when no positional token can be the URL (see the python twin)
-  if (out.some(([t, v]) => !v && !NOT_URL_POSITIONAL.test(t))) return out.filter(([, v]) => !v)
   return out
 }
 const HEX_ESCAPE = /%([0-9A-Fa-f]{2})/g
 const hexDecode = (x) => x.replace(HEX_ESCAPE, (_m, h) => String.fromCharCode(parseInt(h, 16)))
 const GLOB_LIMIT = 64
-const MAIL_PROVIDER_WORD = /googleapis|graph|microsoft|sendgrid|mailgun|postmark|resend/
 // [status, urls] of a curl glob: 'ok', 'bad' (no valid glob: judge the literal text) or 'big' (past the limit).
 function curlGlobExpand(t) {
   const parts = []
@@ -345,7 +340,9 @@ function curlGlobExpand(t) {
     if (ch === '[') {
       const j = t.indexOf(']', i)
       if (j < 0) return ['bad', null]
-      const body = t.slice(i + 1, j).split(':')[0]
+      const inner = t.slice(i + 1, j)
+      if (inner.includes(':') && /^[0-9A-Fa-f:.]*$/.test(inner)) { parts.push([t.slice(i, j + 1)]); i = j + 1; continue } // IPv6-shaped: kept
+      const body = inner.split(':')[0]
       const m = /^(?:([0-9]+)-([0-9]+)|([A-Za-z])-([A-Za-z]))$/.exec(body)
       if (!m) return ['bad', null]
       const alts = []
@@ -398,16 +395,11 @@ function canonMailUrl(tok, needScheme = false) {
 function curlMailApiTarget(tok, isValue = false) {
   if (isValue && !HAS_SCHEME.test(tok.replaceAll('\\/', '/'))) return false
   // twin of the python rules: glob only up to the query, an IPv6 literal is no glob, an invalid glob is judged
-  // literally, only a too-large glob is fail-closed and only when the host can be a mail API host
+  // literally, and so is a glob too large to expand
   const head = tok.split(/[?#]/)[0]
   let [status, urls] = ['ok', [head]]
   if (/[{[]/.test(head.replace(/^((?:[A-Za-z][A-Za-z0-9+-]*:\/+)?[^/?#]*?@?)\[[0-9A-Fa-f:.]*\]/, '$1'))) [status, urls] = curlGlobExpand(head)
-  if (status === 'bad') urls = [head]
-  else if (status === 'big') {
-    const auth = /^(?:[A-Za-z][A-Za-z0-9+-]*:\/+)?([^/?#]*)/.exec(head)[1]
-    if (/[{[]/.test(auth)) return MAIL_PROVIDER_WORD.test(canonHost(auth))
-    return canonMailUrl(head) !== null
-  }
+  if (status !== 'ok') urls = [head] // invalid or too large: judged literally (the python twin says why)
   return urls.some((u) => {
     const c = canonMailUrl(u, isValue)
     return c !== null && (RESEND_HOST.test(c.host) || webMailSends('https://' + c.host + c.path))

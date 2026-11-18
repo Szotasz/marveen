@@ -2705,9 +2705,9 @@
       "expected": true
     },
     {
-      "name": "CURLMAILAPI1118 round 4: hét glob-lista (128 URL, a korlát felett)",
+      "name": "CURLMAILAPI1118 round 5: stated limit, a glob past the 64 URL limit is judged literally",
       "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/{m,n}{e,f}{s,t}{s,t}{a,b}{g,h}{e,f}s/send' -d @/tmp/m.json",
-      "expected": true
+      "expected": false
     },
     {
       "name": "CURLMAILAPI1118 round 4: számtartomány 1-65 (a korlát felett) a küldő úton",
@@ -2823,6 +2823,31 @@
       "name": "CURLMAILAPI1118 round 4: value fallback: the URL after a flag this list does not know still counts when nothing else can be the URL",
       "cmd": "curl -s -X POST --unknown-flag https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
       "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: IPv6-shaped bracket in the path next to a range glob (curl keeps the bracket, expands the glob)",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/x/[::1]/../messages/sen[d-d]' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: IPv6-shaped bracket in the user info next to a glob in the path",
+      "cmd": "curl -s -X POST 'https://[::1]@gmail.googleapis.com/gmail/v1/users/me/messages/sen[d-d]' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: local host guard: a variable inside the positional URL, a send URL as referer",
+      "cmd": "curl -s -X POST localhost:$PORT/api/x -e https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: wget --referer value is data",
+      "cmd": "wget -q --post-file=/tmp/m.json --referer https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: foreign host with a large glob in the host",
+      "cmd": "curl -s -X POST 'https://graph{0-99}.example.test/x' -d @/tmp/m.json",
+      "expected": false
     }
   ]
 }

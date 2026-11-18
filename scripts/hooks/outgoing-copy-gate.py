@@ -369,20 +369,18 @@ _CURL_VALUE_LONG = {
     "wget": {
         "--output-document", "--output-file", "--append-output", "--post-data", "--post-file", "--body-data",
         "--body-file", "--input-file", "--directory-prefix", "--tries", "--timeout", "--wait", "--execute", "--base",
-        "--header", "--user-agent", "--method",
+        "--header", "--user-agent", "--method", "--referer",
     },
 }
 _CURL_VALUE_SHORT = {"curl": set("oHdFuAexTKbcwDmrCEXQ"), "wget": set("OoaUeiBPtTwQ")}
 _HAS_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+-]*:/")
-# A positional token that is no URL candidate: httpie's method word and its request items (key=value, key:=json,
-# Header:value). Every other positional token may be the URL (a schemeless localhost:3420, $URL), and then the option
-# values are data: a call to a host that sends no mail must never stop on a send URL written in a referer or a body.
-_NOT_URL_POSITIONAL = re.compile(r"^(?:[A-Z]+|[^\s/:=]+(?::=|==|=|@).*|[^\s/:=]+:(?![0-9]*(?:/|$)).*)$")
 
 
 def _curl_url_candidates(prog: str, rest):
-    """(token, is_option_value) for every token of a curl/wget/httpie/xh call that can carry a URL. An option's value
-    is kept, but marked: there only a URL with a scheme counts, and only when no positional token can be the URL (below)."""
+    """(token, False) for every positional token of a curl/wget/httpie/xh call: the URL candidates. The value of an
+    option this list knows to take one is data (a referer, a body, a file name, a --write-out format), never a URL
+    (review rounds 3-4: counting it stopped calls to localhost). An unknown flag takes no value here, so the token
+    after it stays a candidate; a wrong entry in these lists could hide a URL (stated limit)."""
     longs = _CURL_VALUE_LONG.get(prog.lower(), set())
     shorts = _CURL_VALUE_SHORT.get(prog.lower(), set())
     out, i, n = [], 0, len(rest)
@@ -402,21 +400,14 @@ def _curl_url_candidates(prog: str, rest):
                     break
         else:
             out.append((t, False))
-        if takes and i + 1 < n:
-            out.append((rest[i + 1], True))
+        if takes:
             i += 1
         i += 1
-    # An option value counts only when no positional token can be the URL: then this list may have taken a flag
-    # for a value-taking one and swallowed the URL. With a positional URL candidate in place the values are data
-    # (a referer, a body, a --write-out format), so a send URL written there is no target.
-    if any(not v and not _NOT_URL_POSITIONAL.match(t) for t, v in out):
-        out = [(t, v) for t, v in out if not v]
     return out
 
 
 _HEX_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
 _GLOB_LIMIT = 64
-_MAIL_PROVIDER_WORD = re.compile(r"googleapis|graph|microsoft|sendgrid|mailgun|postmark|resend")
 
 
 def _curl_glob_expand(t: str):
@@ -437,7 +428,14 @@ def _curl_glob_expand(t: str):
             j = t.find("]", i)
             if j < 0:
                 return "bad", None
-            body = t[i + 1:j].split(":", 1)[0]
+            inner = t[i + 1:j]
+            if ":" in inner and re.fullmatch(r"[0-9A-Fa-f:.]*", inner):
+                # an IPv6-shaped bracket is kept as it stands, and the globs next to it still expand (review round 4:
+                # curl turned /a/[::1]/../sen[d-d] into /a/send)
+                parts.append([t[i:j + 1]])
+                i = j + 1
+                continue
+            body = inner.split(":", 1)[0]
             m = re.fullmatch(r"([0-9]+)-([0-9]+)|([A-Za-z])-([A-Za-z])", body)
             if not m:
                 return "bad", None
@@ -505,19 +503,16 @@ def _curl_mail_api_target(tok: str, is_value: bool = False) -> bool:
     if is_value and not _HAS_SCHEME.match(tok.replace("\\/", "/")):
         return False
     # a glob is expanded only up to the query: a bracket in the query cannot change the host or the path. An IPv6
-    # literal ([::1]) is no glob. A bracket that is no valid curl glob is judged as the literal text; only a glob
-    # too large to expand is fail-closed, and only when the host can be a mail API host.
+    # literal ([::1]) is no glob, and an IPv6-shaped bracket inside the URL is kept as it stands.
     head = re.split(r"[?#]", tok, maxsplit=1)[0]
     status, urls = "ok", [head]
     if re.search(r"[{\[]", re.sub(r"^((?:[A-Za-z][A-Za-z0-9+-]*:/+)?[^/?#]*?@?)\[[0-9A-Fa-f:.]*\]", r"\1", head)):
         status, urls = _curl_glob_expand(head)
-    if status == "bad":
+    if status != "ok":
+        # no valid glob (curl refuses it, or sends it literally with -g), or one too large to expand: judged as the
+        # literal text. A send hidden in a glob of more than _GLOB_LIMIT URLs is a stated limit (round 4: making it
+        # fail-closed stopped Drive uploads and foreign hosts).
         urls = [head]
-    elif status == "big":
-        auth = re.match(r"^(?:[A-Za-z][A-Za-z0-9+-]*:/+)?([^/?#]*)", head).group(1)
-        if re.search(r"[{\[]", auth):
-            return bool(_MAIL_PROVIDER_WORD.search(_canon_host(auth)))
-        return _canon_mail_url(head) is not None
     for u in urls:
         c = _canon_mail_url(u, need_scheme=is_value)
         if c is None:
