@@ -73,6 +73,7 @@ const BLOCKS = [
   'system-directive-auth',
   'agent-id-header',
   'memory-search-label',
+  'memory-fact-change',
   'fleet-auth',
   'evidence-rule',
   'mcp-list-channel',

@@ -25,7 +25,7 @@ import { seedSourceFor } from './seed-lang.js'
 import {
   type ScaffoldFrags, type RosterText, ROSTER_TEXT_EN, buildMcpListChannelBodyEn, buildAutonomyBodyEn, buildEvidenceBodyEn, buildMessageCloseBodyEn,
   buildBackgroundCheckpointBodyEn, buildPaneAtEscapeBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
-  buildMemorySearchLabelBodyEn, buildFleetAuthBodyEn, buildStrictApiBodyEn, buildApiHelperBodyEn,
+  buildMemorySearchLabelBodyEn, buildMemoryFactChangeBodyEn, buildFleetAuthBodyEn, buildStrictApiBodyEn, buildApiHelperBodyEn,
   type PromptRecipes, strictPromptRecipesEn, SKILL_SECTION_HEADING_EN, buildSkillSectionEn, buildClaudeMdPromptEn,
   buildSoulPromptEn, buildSkillPromptEn, PRECOMPACT_PROMPT_EN_TPL,
 } from './agent-scaffold-en.js'
@@ -5085,6 +5085,79 @@ export function ensureMemorySearchLabelSection(name: string): void {
   const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name, agentUsesApiHelper(name))}\n${MEMORY_SEARCH_LABEL_END}`
   const updated = hasBlock
     ? existing.replace(MEMORY_SEARCH_LABEL_BLOCK_RE, () => block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// ---- When a fact changes, the old memory is fixed too (MEMFACTCHANGE1118) ----
+//
+// A memory that states a condition ("we have no server access", "waits for the
+// owner") keeps answering the search long after the condition ended, and reads
+// exactly like a fresh one. Measured 2026-11-18: a weeks-old "no access" row
+// made an agent ask the owner for access that had existed since the same
+// morning; a review of the store the same day found 444 such stale claims. The
+// rule asks the saver to fix the old row in the same round: --supersedes /
+// retract for one's own fully stale row, an in-place note for a partly valid one,
+// never a retraction of a Q/D/B row (its id lookup rests on it). Same idempotency
+// contract as ensureMessageCloseSection, called from the same two surfaces.
+const MEMFACTCHANGE_BEGIN = '<!-- BEGIN GENERATED: memory-fact-change (auto-generated, do not edit by hand) -->'
+const MEMFACTCHANGE_END = '<!-- END GENERATED: memory-fact-change -->'
+const MEMFACTCHANGE_BLOCK_RE = new RegExp(
+  `${MEMFACTCHANGE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MEMFACTCHANGE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildMemoryFactChangeBody(name: string, helper = true): string {
+  if (agentTextLang() === 'en') return buildMemoryFactChangeBodyEn(name, helper, scaffoldFrags(name))
+  return [
+    '## Ha egy tény megváltozik: a régi emléket is javítsd',
+    '',
+    'Egy elavult emlék ugyanúgy jön vissza a keresésből, mint egy friss: aki ráépít, rosszul dönt, és semmi nem',
+    'jelzi neki, hogy az állítás lejárt (mérve 2026-11-18: egy hetekkel korábbi "nincs hozzáférésünk" emlék miatt',
+    'egy ügynök a gazdától kérte el a már rég meglévő hozzáférést).',
+    '',
+    '- Mielőtt olyat mentesz, ami egy ÁLLAPOTOT változtat meg (hozzáférés lett, bekötve, lezárva, döntés született,',
+    '  felülírt szabály), keress rá a régi állításra, és a régi sort UGYANABBAN a körben javítsd:',
+    ...(helper ? [
+      `  \`${apiHelper} memory-search ${name} KULCSSZO --strict\``,
+      '  - a saját, teljesen elavult sorod: az újat `--supersedes <régi-id>` kapcsolóval mentsd (a szerver a régit',
+      '    ugyanabban a lépésben visszavonja), vagy vond vissza külön:',
+      `    \`${apiHelper} memory-retract <id> ${name}\``,
+      '  - ha a sor részben még érvényes: `memory-update` a régi id-re, az elavult mondat után',
+    ] : [
+      '  (a fenti keresés receptje, `&strict=1`-gyel)',
+      '  - a saját, teljesen elavult sorod: az újat `"supersedes": [<régi-id>]` mezővel mentsd (a szerver a régit',
+      `    ugyanabban a lépésben visszavonja), vagy vond vissza külön: \`POST /api/memories/<id>/retract\`, törzs: \`{"agent_id":"${name}"}\``,
+      '  - ha a sor részben még érvényes: `PUT /api/memories/<id>` a régi id-re, az elavult mondat után',
+    ]),
+    '    `[ÉÉÉÉ-HH-NN: ELAVULT, mert ... (új emlék #id)]`.',
+    '- Idegen sort ne vonj vissza és ne írj át: szólj a gazdájának (inter-agent üzenet). Visszavonni csak a szerző tud.',
+    '- Q/D/B azonosítós bejegyzést SOHA ne vonj vissza: írd bele a választ vagy a lezárást, mert az azonosító',
+    '  visszakereshetősége ezen a soron áll.',
+    '- Jelen idejű állítást ("nincs", "nem működik", "vár a gazdára") dátummal ments ("2026-10-16 05:35-kor nincs"),',
+    '  hogy később látszódjon, mikori állapotot ír le.',
+    '- A visszavonás nem törlés: a sor az id-jével olvasható marad, csak a listákból és a keresésből tűnik el.',
+  ].join('\n')
+}
+
+export function ensureMemoryFactChangeSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${MEMFACTCHANGE_BEGIN}\n${buildMemoryFactChangeBody(name, agentUsesApiHelper(name))}\n${MEMFACTCHANGE_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = MEMFACTCHANGE_BLOCK_RE.test(existing)
+    ? existing.replace(MEMFACTCHANGE_BLOCK_RE, () => block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return

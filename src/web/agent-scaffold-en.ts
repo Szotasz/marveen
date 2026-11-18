@@ -308,6 +308,39 @@ export function buildPaneAtEscapeBodyEn(): string {
   ].join('\n')
 }
 
+// ---- memory-fact-change ----
+export function buildMemoryFactChangeBodyEn(name: string, helper: boolean, f: ScaffoldFrags): string {
+  return [
+    '## When a fact changes: fix the old memory too',
+    '',
+    'An outdated memory comes back from the search exactly like a fresh one: whoever builds on it decides wrong, and',
+    'nothing tells them the claim has expired (measured 2026-11-18: a weeks-old "we have no access" memory made an',
+    'agent ask the owner for access that had long been in place).',
+    '',
+    '- Before you save something that CHANGES A STATE (access granted, wired in, closed, a decision made, a rule',
+    '  overridden), search for the old claim and fix the old row IN THE SAME ROUND:',
+    ...(helper ? [
+      `  \`${f.apiHelper} memory-search ${name} KEYWORD --strict\``,
+      '  - your own row that is fully outdated: save the new one with `--supersedes <old-id>` (the server retracts the',
+      '    old one in the same step), or take it back on its own:',
+      `    \`${f.apiHelper} memory-retract <id> ${name}\``,
+      '  - a row that is still partly valid: `memory-update` on the old id, after the outdated sentence',
+    ] : [
+      '  (the search recipe above, with `&strict=1`)',
+      '  - your own row that is fully outdated: save the new one with a `"supersedes": [<old-id>]` field (the server',
+      `    retracts the old one in the same step), or take it back on its own: \`POST /api/memories/<id>/retract\` with \`{"agent_id":"${name}"}\``,
+      '  - a row that is still partly valid: a `PUT /api/memories/<id>` on the old id, after the outdated sentence',
+    ]),
+    '    `[YYYY-MM-DD: OUTDATED, because ... (new memory #id)]`.',
+    '- Never retract or rewrite another agent\'s row: tell its author (inter-agent message). Only the author can retract.',
+    '- NEVER retract an entry that carries a Q/D/B id: write the answer or the closure into it, because the id\'s',
+    '  lookup rests on that row.',
+    '- Save a present-tense claim ("there is no", "does not work", "waits for the owner") with its date',
+    '  ("at 2026-10-16 05:35 there is no"), so it later shows which moment it describes.',
+    '- A retraction is not a delete: the row stays readable by its id, it only leaves the lists and the search.',
+  ].join('\n')
+}
+
 // ---- skills-path-trap ----
 // The heading is the one templates/en/CLAUDE.md.template refers to ("Skill path trap"); the test pins this.
 export const SKILLS_TRAP_HEADING_EN = '## Skill path trap (MUST READ before writing a skill)'
