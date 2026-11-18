@@ -644,12 +644,17 @@ export const SKILL_SCAN_PATTERNS: ReadonlyArray<[string, RegExp]> = [
   ['exfil-instruction', /\b(?:send|upload|post|transmit|exfiltrate|forward)\s+(?:(?:the|all|every)\s+)?(?:contents?|data|files?|information)\s+(?:(?:of|from)\s+(?:the\s+|this\s+|your\s+|the\s+user'?s\s+)?(?:workspace|repo(?:sitory)?|project|codebase|home|machine|system|disk|environment|session|conversation|~\/|\$HOME|\/etc\/|\.ssh|\.env\b|credentials|secrets|keys)|to\s+(?:an?\s+|the\s+|my\s+)?(?:remote|external|attacker|third[-\s]party|webhook|pastebin|https?:\/\/))/i],
   // The AWS credential store itself, not the config folder a deployment guide names.
   ['cloud-credential-target', /\.aws\/(?:credentials|sso\/cache)\b/i],
-  // An HTML comment, invisible when rendered, that opens with an order.
-  ['hidden-html-directive', /<!--\s*\[?\s*(?:system|assistant|instructions?|override|ignore|execute|run|sudo|admin)\b/i],
-  // A claim to whole-machine reach.
-  ['excess-permission', /\b(?:full|unrestricted|complete|unlimited)\s+(?:access|control|permissions?)\s+(?:to|over|on)\s+(?:the\s+|your\s+)?(?:file\s*system|network|internet|shell|terminal|system|machine|host)\b/i],
-  // Approval granted in advance, for everything.
-  ['blanket-approval', /\b(?:always|automatically)\s+(?:approve|accept|allow|grant|execute)\s+(?:all|any|every|each)\b/i],
+  // An HTML comment, invisible when rendered, that speaks to the model: it carries a role
+  // label (system:, developer:, assistant:) or tells "you" what you must or may now do.
+  // A maintainer's note ("runbook: keep in sync") names no role and addresses no one.
+  ['hidden-html-directive', /<!--[^>]{0,40}?(?:\b(?:system|developer|assistant)\s*(?:prompt\s*)?[:\]>]|\byou\s+(?:must|may|should|are\s+now)\b)/i],
+  // A claim to whole-machine reach: an all-or-root grade of access, aimed within a few
+  // words at the machine as a whole rather than at one folder.
+  ['excess-permission', /\b(?:unrestricted|unlimited|full|complete|total|root|admin(?:istrator)?)[-\s]+(?:level\s+)?(?:access|control|rights|privileges)\b[^.\n]{0,30}?\b(?:file\s*system|disk|network|internet|shell|terminal|machine|computer|host|everything)\b/i],
+  // Consent given before the question is asked: an unconditional consent verb over every
+  // action of a kind, or consent to everything with the review left out. Accepting all
+  // dialogs in a test browser names no action of the agent and stays quiet.
+  ['blanket-approval', /\b(?:always|automatically|blindly|unconditionally|auto-?)\s*(?:approve|accept|allow|confirm|say\s+yes\s+to)\s+(?:all|any|every)\s+(?:\w+\s+)?(?:tool\s*calls?|requests?|prompts?|permissions?|actions?|commands?|operations?)\b|\b(?:approve|accept|allow)\s+(?:everything|all\s+of\s+(?:them|it))\s+without\b/i],
   // A soft hyphen between two letters of the same case renders as nothing and can split
   // a keyword the rows above look for. Only there: the same byte pair turns up in fonts
   // and images the scan reads as text. Kept apart from invisible-unicode so it never holds a skill.
