@@ -155,7 +155,7 @@ KBD_SCHEMA = ("reply schema files property", re.compile(
     r"^ *description: 'Absolute file paths to attach\. [^\n]*',\n( *)\},\n", re.MULTILINE), "insert-after",
     "{indent}buttons: {{ type: 'array', items: {{ type: 'string' }}, description: 'Optional one-tap answer buttons, "
     "shown under the message; after one tap the chosen one stays, marked with a check mark, and its label comes back "
-    "as an ordinary text message from the user. Also write the options into text, so the question can be answered by "
+    "as an ordinary text message from the user, quoting the question (reply_to_text). Also write the options into text, so the question can be answered by "
     "typing. At most 12 labels, each non-empty, at most 64 characters, not starting with a slash; private chats only. "
     "Editing the message with edit_message removes the buttons; with files the buttons sit under the last text part. "
     "An empty list removes a keyboard shown earlier under the input field.' }}, "
@@ -213,11 +213,20 @@ KBD_CALLBACK = ("callback perm regex", re.compile(
 # message_id. A later spread wins over the earlier `ts` key; message_id is the id of the QUESTION the button sits on
 # (the conversation ledger keys the tapped answer by it). Before the imagePath line, not after the ts line: the topics
 # patch inserts after the ts line, and both orders must give the same file.
+# The tap also carries the question itself, the same way a typed reply carries the message it quotes (quote1101):
+# reply_to_message_id is the question's id and reply_to_text a single-line excerpt of it (whitespace collapsed, at
+# most 300 code points; its caption when the question is a captioned file). Before, a tap arrived as the bare label
+# ("Egyik sem"), and once the session had moved on (a restart, a tap days later) nothing said which question it
+# answered (owner report, 2026-11-08). No reply_to_selected: the excerpt is never the owner's own selection.
 KBD_TS = ("inbound meta imagePath", re.compile(
     r"^( *)\.\.\.\(imagePath \? \{ image_path: imagePath \} : \{\}\),\n", re.MULTILINE), "insert-before",
     _kbd_lines([
-        "...(ctx.callbackQuery?.message ? { ts: new Date().toISOString(), "
-        "message_id: String(ctx.callbackQuery.message.message_id) } : {}),",
+        "...(ctx.callbackQuery?.message ? ((kbdQ, kbdQText) => ({ ts: new Date().toISOString(), "
+        "message_id: String(kbdQ.message_id), reply_to_message_id: String(kbdQ.message_id), "
+        "...(kbdQText ? { reply_to_text: kbdQText } : {}) }))(ctx.callbackQuery.message, "
+        "Array.from((('text' in ctx.callbackQuery.message && ctx.callbackQuery.message.text) "
+        "|| ('caption' in ctx.callbackQuery.message && ctx.callbackQuery.message.caption) || '')"
+        ".replace(/\\s+/g, ' ').trim()).slice(0, 300).join('')) : {}),",
     ]))
 # ISSUE2398KBD (marveen#2398): a question answered by TYPING kept its live buttons. The question's message id is
 # remembered per chat when the keyboard goes out (the last text chunk of the reply), and the next typed text message
