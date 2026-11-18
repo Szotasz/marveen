@@ -34,7 +34,8 @@
 // once on the same path (goLiveUnquarantined below): scanned, bound to the
 // scanned hash, one audit line in store/skills-audit.jsonl, and what the scan
 // cannot show in full still waits, as does a finding of a strong shape
-// (SKILL_HOLD_PATTERNS, SKILLHOLDSTRONG1117). For every other finding, the scan
+// (SKILL_HOLD_PATTERNS, SKILLHOLDSTRONG1117), and so does a findings list that
+// reached its cap, since a strong finding past the cap is not in it. For every other finding, the scan
 // and the audit are a record, not a gate.
 //
 // Not covered here (stated, not hidden):
@@ -965,7 +966,10 @@ export function goLiveUnquarantined(
     ? { ok: false as const, status: 409, error: 'The pending skill changed while it was scanned; it waits for a decision' }
     : strong.length > 0
       ? { ok: false as const, status: 409, error: `The scan found ${strong.join(', ')}; it waits for the owner's decision` }
-      : approvePending(id, p.hash)
+      // The findings list stops at MAX_FINDINGS, so a strong finding past the cap is not in it: a capped list holds too.
+      : p.report.findingsTruncated
+        ? { ok: false as const, status: 409, error: "The scan could not show every finding (the list reached its cap); it waits for the owner's decision" }
+        : approvePending(id, p.hash)
   if (!r.ok) {
     audit({ ...base, event: 'held_unquarantined', hash: p.hash, why: r.error })
     logger.warn({ id, name: p.name, status: r.status }, 'skill: quarantine is off, but this one did not go live; it waits for a decision')
