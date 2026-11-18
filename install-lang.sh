@@ -501,6 +501,23 @@ _t() {
     hu:errxl.unknown_head) echo "A hibázó eszköz a jelek szerint:" ;;
     en:errxl.unknown_next) echo "Copy the lines above when asking for help; re-running the installer is safe (finished steps are skipped)." ;;
     hu:errxl.unknown_next) echo "Segítségkéréshez a fenti sorokat másold ki; a telepítő újrafuttatása biztonságos (a kész lépéseket átugorja)." ;;
+    # ── --non-interactive (INSTNONINTER1118, docs/install-non-interactive.md) ──
+    en:ni.stop) echo "Error (--non-interactive):" ;;
+    hu:ni.stop) echo "Hiba (--non-interactive):" ;;
+    en:ni.missing) echo "a required value is missing, set the env variable:" ;;
+    hu:ni.missing) echo "hiányzik egy kötelező érték, add meg ezt a környezeti változót:" ;;
+    en:ni.bad_value) echo "invalid value (one line, the listed choices):" ;;
+    hu:ni.bad_value) echo "érvénytelen érték (egy sor, a felsorolt választások):" ;;
+    en:ni.secret_env) echo "a secret is not taken from an env value; put it in a file and give its path in the matching _FILE variable (see docs/install-non-interactive.md):" ;;
+    hu:ni.secret_env) echo "titkot nem veszünk át környezeti változó értékéből; tedd fájlba, és az útját a megfelelő _FILE változóban add meg (docs/install-non-interactive.md):" ;;
+    en:ni.bad_file) echo "the file is missing, unreadable or empty:" ;;
+    hu:ni.bad_file) echo "a fájl nem létezik, nem olvasható vagy üres:" ;;
+    en:ni.no_checkout) echo "run it from a Marveen checkout (git clone, then bash install-linux.sh --non-interactive); no package.json in:" ;;
+    hu:ni.no_checkout) echo "egy Marveen-checkoutból futtasd (git clone, utána bash install-linux.sh --non-interactive); nincs package.json itt:" ;;
+    en:ni.no_auth) echo "no Claude auth: place the token (claude setup-token, sk-ant-oat01-...) in this file, mode 600:" ;;
+    hu:ni.no_auth) echo "nincs Claude-hitelesítés: a tokent (claude setup-token, sk-ant-oat01-...) tedd ebbe a fájlba, 600-as joggal:" ;;
+    en:ni.pairing_skipped) echo "Non-interactive install: channel pairing was skipped. Pair the channel on the dashboard:" ;;
+    hu:ni.pairing_skipped) echo "Nem-interaktív telepítés: a csatorna párosítása kimaradt. Párosítsd a dashboardon:" ;;
     # ── Fallback: return the key itself ──────────────────────────────
     *) echo "$key" ;;
   esac

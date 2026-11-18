@@ -3,6 +3,8 @@
 # Detects the operating system and launches the appropriate installer.
 
 # ── Language selection ────────────────────────────────────────────────────────
+# INSTNONINTER1118: --non-interactive asks nothing; MARVEEN_LANG or the default (hu).
+for __a in "$@"; do [ "$__a" = --non-interactive ] && MARVEEN_LANG="${MARVEEN_LANG:-hu}"; done
 if [[ -z "${MARVEEN_LANG:-}" ]]; then
   echo ""
   echo "  🌍  1. Magyar (HU)    2. English (EN)"
