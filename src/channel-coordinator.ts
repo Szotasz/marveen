@@ -26,7 +26,7 @@
 // Lifecycle: launchd (com.<SERVICE_ID>.channel-coordinator, #1873) with KeepAlive. SIGTERM
 // drains, persists offset, exits cleanly.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
@@ -145,6 +145,16 @@ export interface PidLockDeps {
   // The process's command line. string = the command line; null = the process
   // does not exist (gone); undefined = could not be determined (ps missing, denied, timed out).
   argvOf(pid: number): string | null | undefined
+  // Machine boot id (/proc/sys/kernel/random/boot_id). undefined = cannot read.
+  // Optional: when absent (every fake deps in the pre-existing tests) the lock
+  // behaves exactly as before -- legacy content, argv-based decisions.
+  bootId?(): string | undefined
+  // Process start time in epoch ms (/proc/<pid>/stat field 22 + /proc/uptime).
+  // undefined = unknown (process gone, /proc unreadable). Optional, same
+  // backward-compat rule as bootId. Under one boot id a pid's start time is
+  // unique and immutable, so a recorded starttime that no longer matches the
+  // pid is proof of pid REUSE, decided without ps.
+  startEpochMs?(pid: number): number | undefined
 }
 export type PidLockResult =
   | { ok: true; reclaimed: number | null }
@@ -166,18 +176,131 @@ function parsePid(raw: string): number | null {
   return Number.isSafeInteger(n) ? n : null
 }
 
+// Lock file formats (#c3f84534). Legacy: a single token, the pid (strict parse,
+// exactly as before). New: "pid boot_id starttime" -- three whitespace-separated
+// tokens, pid matches the strict pid regex, boot_id is a non-empty token,
+// starttime is epoch ms. Anything else is garbage (today's stale path).
+type ParsedLock =
+  | { pid: number; boot: null; start: null } // legacy naked-pid lock
+  | { pid: number; boot: string; start: number } // new self-validating lock
+
+function parseLockContent(raw: string): ParsedLock | null {
+  const toks = raw.trim().split(/\s+/)
+  if (toks.length === 1) {
+    const pid = parsePid(toks[0] ?? '')
+    return pid === null ? null : { pid, boot: null, start: null }
+  }
+  if (toks.length !== 3) return null
+  const [pidTok, bootTok, startTok] = toks as [string, string, string]
+  const pid = parsePid(pidTok)
+  if (pid === null || !/^\S+$/.test(bootTok) || !/^[0-9]+$/.test(startTok)) return null
+  return { pid, boot: bootTok, start: Number(startTok) }
+}
+
+// What we write for OURSELVES: the new format when both boot id and our own
+// start time are available, today's legacy content otherwise.
+function ownLockContent(selfPid: number, deps: PidLockDeps): string {
+  const boot = deps.bootId?.()
+  if (typeof boot !== 'string') return String(selfPid)
+  const start = deps.startEpochMs?.(selfPid)
+  if (typeof start !== 'number') return String(selfPid)
+  return `${selfPid} ${boot} ${start}`
+}
+
+type LockVerdict =
+  | { kind: 'ours' } // our own current lock: keep it, untouched
+  | { kind: 'held'; holder: number } // another live coordinator holds it
+  | { kind: 'unknown'; holder: number } // alive, cannot tell: refuse (fail closed)
+  | { kind: 'stale' } // provably not a live holder: reclaim
+
+const STALE: LockVerdict = { kind: 'stale' }
+
+// A live unknown-argv holder is provably NOT the writer when it started more
+// than this far AFTER the lock file was written (the writer started first).
+// The margin covers mtime granularity and read/compare skew.
+const STARTTIME_SKEW_MS = 1000
+
+// Verdict for a holder pid already known to be alive: argv decides, with the
+// start-time-vs-mtime reclaim as the escape hatch when ps cannot read argv.
+function liveHolderVerdict(pid: number, deps: PidLockDeps, pidFile: string): LockVerdict {
+  const argv = deps.argvOf(pid)
+  if (argv === undefined) {
+    // Alive but ps cannot tell us who it is. One more piece of evidence: if we
+    // know when this process started and that is after the lock was written
+    // (+skew), the pid was REUSED by an unrelated process -- the measured WSL
+    // incident (2026-11-17): a legacy lock held pid 1161 written Nov 1, pid
+    // 1161 was reused by an unrelated node server.js on Nov 17 whose argv ps
+    // could not read, and the coordinator refused to start 2213 times.
+    const start = deps.startEpochMs?.(pid)
+    if (typeof start === 'number') {
+      let mtimeMs: number
+      try {
+        mtimeMs = statSync(pidFile).mtimeMs
+      } catch (err) {
+        // Lock vanished since our read: the next loop pass re-creates it.
+        if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return STALE
+        throw err
+      }
+      return start > mtimeMs + STARTTIME_SKEW_MS ? STALE : { kind: 'unknown', holder: pid }
+    }
+    // No start-time evidence at all (deps without startEpochMs, or /proc
+    // unreadable): today's fail-closed behavior.
+    return { kind: 'unknown', holder: pid }
+  }
+  return argv !== null && isCoordinatorArgv(argv) ? { kind: 'held', holder: pid } : STALE
+}
+
+// The legacy decision tree for a holder pid that is not us: liveness, then
+// argv, with the start-time reclaim inside the unknown-argv branch.
+function legacyVerdict(pid: number, deps: PidLockDeps, pidFile: string): LockVerdict {
+  if (!deps.isAlive(pid)) return STALE
+  return liveHolderVerdict(pid, deps, pidFile)
+}
+
+// Decision tree for an existing lock, in order: garbage -> stale; our own pid
+// -> keep (legacy, or new with identical tokens) / rewrite (our pid recorded
+// before a reboot); new-format other pid -> boot_id and starttime decide
+// without ps, falling back to the legacy tree when they cannot; legacy other
+// pid -> the legacy tree above.
+function verdictForExisting(lock: ParsedLock | null, selfPid: number, deps: PidLockDeps, pidFile: string): LockVerdict {
+  if (lock === null) return STALE // garbage: today's stale path
+  if (lock.pid === selfPid) {
+    if (lock.boot === null) return { kind: 'ours' } // our legacy lock: untouched
+    const myBoot = deps.bootId?.()
+    const myStart = deps.startEpochMs?.(selfPid)
+    return myBoot === lock.boot && myStart === lock.start
+      ? { kind: 'ours' } // our current new-format lock: untouched
+      : STALE // our pid, tokens from before a reboot: rewrite a fresh own lock
+  }
+  if (lock.boot === null) return legacyVerdict(lock.pid, deps, pidFile)
+  const myBoot = deps.bootId?.()
+  if (myBoot === undefined) return legacyVerdict(lock.pid, deps, pidFile) // cannot validate: conservative
+  if (myBoot !== lock.boot) return STALE // written before the last reboot
+  if (!deps.isAlive(lock.pid)) return STALE // holder process is gone
+  const cur = deps.startEpochMs?.(lock.pid)
+  if (cur === lock.start) return { kind: 'held', holder: lock.pid } // same process since the lock was written: held, no ps needed
+  if (cur !== undefined) return STALE // same boot, different start: pid reuse
+  return liveHolderVerdict(lock.pid, deps, pidFile) // start unreadable: ps-based tree
+}
+
 // A bare kill(pid, 0) is not enough: after a reboot or crash the recorded pid can
 // belong to an unrelated process (pid reuse), so the holder must also look like a
 // coordinator by its argv. A live pid whose argv cannot be read is treated as held
-// (fail closed). O_EXCL makes the create exclusive; reclaiming a stale file re-reads
-// it right before unlinking, which narrows but cannot fully close the window in which
-// two starters act on the same stale file (Node has no flock). Attempts are bounded;
-// if another starter keeps winning we refuse (the safe side).
+// (fail closed). Since #c3f84534 the lock records boot_id + start time, which makes
+// pid reuse decidable WITHOUT ps (the thing that failed on the incident host):
+// a different boot_id means the lock predates the last reboot; a different start
+// time under the same boot means the pid was reused. Legacy locks held by a live
+// unknown-argv pid are reclaimed when that process provably started after the
+// lock was written (it cannot be the writer). O_EXCL makes the create exclusive;
+// reclaiming a stale file re-reads it right before unlinking, which narrows but
+// cannot fully close the window in which two starters act on the same stale file
+// (Node has no flock). Attempts are bounded; if another starter keeps winning we
+// refuse (the safe side).
 export function tryAcquirePidLock(pidFile: string, selfPid: number, deps: PidLockDeps): PidLockResult {
   let reclaimed: number | null = null
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      writeFileSync(pidFile, String(selfPid), { flag: 'wx', mode: 0o600 })
+      writeFileSync(pidFile, ownLockContent(selfPid, deps), { flag: 'wx', mode: 0o600 })
       return { ok: true, reclaimed }
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
@@ -187,15 +310,11 @@ export function tryAcquirePidLock(pidFile: string, selfPid: number, deps: PidLoc
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue
       throw err
     }
-    const prev = parsePid(content)
-    if (prev !== null) {
-      if (prev === selfPid) return { ok: true, reclaimed: null }
-      if (deps.isAlive(prev)) {
-        const argv = deps.argvOf(prev)
-        if (argv === undefined) return { ok: false, holder: prev, reason: 'unknown' }
-        if (argv !== null && isCoordinatorArgv(argv)) return { ok: false, holder: prev, reason: 'held' }
-      }
-    }
+    const lock = parseLockContent(content)
+    const verdict = verdictForExisting(lock, selfPid, deps, pidFile)
+    if (verdict.kind === 'ours') return { ok: true, reclaimed: null }
+    if (verdict.kind === 'held') return { ok: false, holder: verdict.holder, reason: 'held' }
+    if (verdict.kind === 'unknown') return { ok: false, holder: verdict.holder, reason: 'unknown' }
     // Stale: unlink only if the file is still exactly what the decision was based on.
     let again: string
     try { again = readFileSync(pidFile, 'utf-8') } catch (err) {
@@ -206,7 +325,9 @@ export function tryAcquirePidLock(pidFile: string, selfPid: number, deps: PidLoc
     try { unlinkSync(pidFile) } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
     }
-    if (prev !== null) reclaimed = prev
+    // Never report our own pid as reclaimed (the file held our pid from before
+    // a reboot; the rewrite below is just a refresh).
+    if (lock !== null && lock.pid !== selfPid) reclaimed = lock.pid
   }
   return { ok: false, holder: null, reason: 'contention' }
 }
@@ -237,6 +358,30 @@ export const realPidLockDeps: PidLockDeps = {
       }
     }
     return undefined // no ps at all: unknown
+  },
+  // Machine boot id: changes on every reboot, so a lock whose boot_id differs
+  // from the current one was written by a process that no longer exists.
+  bootId: () => {
+    try {
+      const s = readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim()
+      return s || undefined
+    } catch { return undefined }
+  },
+  // Process start time in epoch ms, computed from /proc (no ps involved):
+  // stat field 22 is starttime in clock ticks since boot; boot time is now
+  // minus uptime. CLK_TCK is 100 on Linux. Returns undefined on ANY failure --
+  // including a dead pid, whose /proc/<pid>/stat is gone -- and never throws.
+  startEpochMs: (pid) => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8')
+      const r = stat.lastIndexOf(')')
+      if (r < 0) return undefined
+      const f = stat.slice(r + 2).split(' ')
+      const ticks = Number(f[19]) // field 22 overall (index 19 after the last ')' + space); measured
+      const up = Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0])
+      if (!Number.isFinite(ticks) || !Number.isFinite(up)) return undefined
+      return Math.round(Date.now() - up * 1000 + (ticks / 100) * 1000)
+    } catch { return undefined }
   },
 }
 
