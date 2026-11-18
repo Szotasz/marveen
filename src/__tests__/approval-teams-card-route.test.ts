@@ -74,7 +74,8 @@ describe('POST /api/approvals/teams-card-action', () => {
   it('the shared dashboard token is not a channel token: 401 from the real verifier, before any network', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
     const { ctx, out } = fakePost('/api/approvals/teams-card-action', { type: 'invoke', name: 'adaptiveCard/action', channelId: 'msteams', serviceUrl: 'https://smba.trafficmanager.net/emea/' },
-      { authorization: 'Bearer 3f9a0c1d2e4b5a6978c0d1e2f3a4b5c6d7e8f90123456789abcdef0123456789' })
+      // A stand-in of the shared dashboard token's length; built here, not a token-shaped literal (secret-gate).
+      { authorization: 'Bearer ' + 'x'.repeat(64) })
     expect(await tryHandleApprovals(ctx)).toBe(true)
     expect(out).toEqual({ status: 401, body: { error: 'unauthorized' } })
     expect(fetchSpy).not.toHaveBeenCalled()

@@ -170,7 +170,8 @@ describe('handleTeamsCardAction: a forwarded click', () => {
     const { deps, sent, alerts } = makeDeps({}, { verifier: () => async () => ({ ok: false, reason: 'not a Bot Framework channel token (issuer)' }) })
     const a = request()
     const nonce = await postCard(a, deps, sent)
-    const r = await handleTeamsCardAction('Bearer the-shared-dashboard-token', click(a, nonce), deps)
+    // A stand-in of the shared dashboard token, built here, not a token-shaped literal (secret-gate).
+    const r = await handleTeamsCardAction('Bearer ' + 'x'.repeat(64), click(a, nonce), deps)
     expect(r).toEqual({ status: 401, body: { error: 'unauthorized' } })
     expect(getApproval(a.id)?.status).toBe('pending')
     expect(getApprovalTeamsCard(a.id)?.decided_at).toBeNull()
