@@ -373,7 +373,9 @@ _CURL_VALUE_LONG = {
 }
 _CURL_VALUE_SHORT = {"curl": set("oHdFuAexTKbcwDmrCEXQ"), "wget": set("OoaUeiBPtTwQ")}
 _HAS_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+-]*:/")
-_URLISH = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+-]*:/|[^\s/=]+\.[^\s/=]+(?:/|:|$))")
+# a positional token that looks like a URL; one carrying a shell expansion ($VAR, `..`) counts too, because it is
+# most likely the URL itself
+_URLISH = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+-]*:/|[^\s/=]+\.[^\s/=]+(?:/|:|$))|[$`]")
 
 
 def _curl_url_candidates(prog: str, rest):
@@ -412,38 +414,42 @@ def _curl_url_candidates(prog: str, rest):
 
 _HEX_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
 _GLOB_LIMIT = 64
+_MAIL_PROVIDER_WORD = re.compile(r"googleapis|graph|microsoft|sendgrid|mailgun|postmark|resend")
 
 
 def _curl_glob_expand(t: str):
-    """The URLs a curl glob ({a,b}, [a-c], [1-3]) stands for, or None when it cannot be expanded within the limit
-    (the caller treats that as a target, fail-closed)."""
+    """(status, urls): "ok" with the URLs a curl glob ({a,b}, [a-c], [1-3]) stands for; "bad" when it is no valid
+    curl glob (curl refuses the URL, or with -g sends it literally: either way the literal text is what to judge);
+    "big" when it expands past the limit."""
     parts, i, n = [[""]], 0, len(t)
     while i < n:
         ch = t[i]
         if ch == "{":
             j = t.find("}", i)
             if j < 0:
-                return None
+                return "bad", None
             parts.append(t[i + 1:j].split(","))
             i = j + 1
             continue
         if ch == "[":
             j = t.find("]", i)
             if j < 0:
-                return None
+                return "bad", None
             body = t[i + 1:j].split(":", 1)[0]
             m = re.fullmatch(r"([0-9]+)-([0-9]+)|([A-Za-z])-([A-Za-z])", body)
             if not m:
-                return None
+                return "bad", None
             if m.group(1) is not None:
                 lo, hi = int(m.group(1)), int(m.group(2))
-                if hi < lo or hi - lo >= _GLOB_LIMIT:
-                    return None
+                if hi < lo:
+                    return "bad", None
+                if hi - lo >= _GLOB_LIMIT:
+                    return "big", None
                 parts.append([str(x) for x in range(lo, hi + 1)])
             else:
                 lo, hi = ord(m.group(3)), ord(m.group(4))
                 if hi < lo:
-                    return None
+                    return "bad", None
                 parts.append([chr(x) for x in range(lo, hi + 1)])
             i = j + 1
             continue
@@ -453,8 +459,8 @@ def _curl_glob_expand(t: str):
     for alts in parts:
         urls = [u + a for u in urls for a in alts]
         if len(urls) > _GLOB_LIMIT:
-            return None
-    return urls
+            return "big", None
+    return "ok", urls
 
 
 def _canon_host(raw: str) -> str:
@@ -494,11 +500,22 @@ def _canon_mail_url(tok: str, need_scheme: bool = False):
 
 
 def _curl_mail_api_target(tok: str, is_value: bool = False) -> bool:
-    # a glob is expanded only up to the query: a bracket in the query cannot change the host or the path
+    if is_value and not _HAS_SCHEME.match(tok.replace("\\/", "/")):
+        return False
+    # a glob is expanded only up to the query: a bracket in the query cannot change the host or the path. An IPv6
+    # literal ([::1]) is no glob. A bracket that is no valid curl glob is judged as the literal text; only a glob
+    # too large to expand is fail-closed, and only when the host can be a mail API host.
     head = re.split(r"[?#]", tok, maxsplit=1)[0]
-    urls = _curl_glob_expand(head) if re.search(r"[{\[]", head) else [head]
-    if urls is None:
-        return True
+    status, urls = "ok", [head]
+    if re.search(r"[{\[]", re.sub(r"^((?:[A-Za-z][A-Za-z0-9+-]*:/+)?[^/?#]*?@?)\[[0-9A-Fa-f:.]*\]", r"\1", head)):
+        status, urls = _curl_glob_expand(head)
+    if status == "bad":
+        urls = [head]
+    elif status == "big":
+        auth = re.match(r"^(?:[A-Za-z][A-Za-z0-9+-]*:/+)?([^/?#]*)", head).group(1)
+        if re.search(r"[{\[]", auth):
+            return bool(_MAIL_PROVIDER_WORD.search(_canon_host(auth)))
+        return _canon_mail_url(head) is not None
     for u in urls:
         c = _canon_mail_url(u, need_scheme=is_value)
         if c is None:

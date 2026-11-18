@@ -2618,6 +2618,181 @@
       "name": "CURLMAILAPI1118 round 3: Gmail messages.import pont-szegmenssel",
       "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send/../import -d @/tmp/m.json",
       "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: IPv6 literál, helyi POST",
+      "cmd": "curl -s -X POST 'http://[::1]:3420/api/kanban' -d '{\"title\":\"x\"}'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: séma nélküli localhost + JSON tömb törzs",
+      "cmd": "curl -s -X POST localhost:3420/api/x -H 'Content-Type: application/json' -d '[1,2,3]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: séma nélküli localhost + JSON objektumtömb törzs",
+      "cmd": "curl -s -X POST localhost:3420/api/x -d '[{\"a\":1}]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: változós URL + JSON tömb törzs",
+      "cmd": "curl -s -X POST \"$BASE/api/x\" -H \"Authorization: Bearer $T\" -d '[{\"a\":1}]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: változós URL + szögletes zárójel a fejlécben",
+      "cmd": "curl -s -X POST \"$BASE/api/x\" -H 'X-Tags: [a,b]' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: idegen host, szögletes zárójel az útban (nem tartomány)",
+      "cmd": "curl -s -g -X POST 'https://example.test/items[abc]/x' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: idegen host, lezáratlan kapcsos zárójel az útban",
+      "cmd": "curl -s -g -X POST 'https://example.test/a{b' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: idegen host, nagy számtartomány (feltöltés 1-100)",
+      "cmd": "curl -s -T /tmp/f.bin 'https://example.test/up/part[1-100].bin'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: helyi dashboard sémával + JSON tömb törzs",
+      "cmd": "curl -s -X POST http://localhost:3420/api/x -d '[1,2,3]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: séma nélküli localhost + JSON objektum törzs",
+      "cmd": "curl -s -X POST localhost:3420/api/messages -d '{\"to\":\"marveen\",\"content\":\"x\"}'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: Naptár esemény, szögletes zárójel az útban",
+      "cmd": "curl -s -g -X POST 'https://www.googleapis.com/calendar/v3/calendars/primary/events/[x]/move' -d @/tmp/e.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: változós URL, a -e értéke a küldő URL",
+      "cmd": "curl -s -X POST \"$HOOK\" -e https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: wget idegen hostra, -e robots=off",
+      "cmd": "wget -q -e robots=off --post-file=/tmp/x.json https://example.test/hook",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: Gmail lista, tartomány-glob az útban (olvasás)",
+      "cmd": "curl -s 'https://gmail.googleapis.com/gmail/v1/users/me/messages/[1-3]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: glob-lista a hostban ({gmail,x})",
+      "cmd": "curl -s -X POST 'https://{gmail,x}.googleapis.com/gmail/v1/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: glob lépésközzel (sen[d-d:1])",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/sen[d-d:1]' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: két glob-lista (4 URL)",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/{messages,drafts}/{send,x}' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: hét glob-lista (128 URL, a korlát felett)",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/{m,n}{e,f}{s,t}{s,t}{a,b}{g,h}{e,f}s/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: számtartomány 1-65 (a korlát felett) a küldő úton",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send?x' -d @/tmp/m[1-65].json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: betűtartomány a hostban és az útban",
+      "cmd": "curl -s -X POST 'https://gmail.googleapi[s-s].com/gmail/v1/users/me/message[s-s]/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: bekarikázott betű a hostban (NFKC)",
+      "cmd": "curl -s -X POST https://ⓖmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: teljes szélességű pont a hostban",
+      "cmd": "curl -s -X POST https://gmail．googleapis．com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: félszélességű ideografikus pont a hostban",
+      "cmd": "curl -s -X POST https://gmail｡googleapis｡com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: kódolt @ a felhasználó-részben",
+      "cmd": "curl -s -X POST https://a%40b@gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: kódolt kettőspont-port (%3A443)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com%3A443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: két per a séma után, egy helyett egy",
+      "cmd": "curl -s -X POST https:/gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: wget -nH (két betűs kapcsoló) az URL előtt",
+      "cmd": "wget -q -nH --post-file=/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: xh --form az URL előtt",
+      "cmd": "xh --form POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: curl két URL, az első olvasás, a második küldés",
+      "cmd": "curl -s -d @/tmp/m.json https://example.test/a https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: kódolt lekérdezőjel a send után (send%3Falt=json)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send%3Falt=json -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: nagybetűs séma és host, porttal",
+      "cmd": "curl -s -X POST HTTPS://GMAIL.GOOGLEAPIS.COM:443/gmail/v1/users/me/drafts/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: vezető nullás számtartomány a verzióban (v[01-01])",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v[1-1]/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: nagy-kisbetű tartomány ([S-s]) a küldő szóban",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/[S-s]end' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: üres glob-elem ({,x}) a küldő szó után",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send{,x}' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: glob a lekérdező rész után is, a küldő út előtte",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send?x=[1-2]' -d @/tmp/m.json",
+      "expected": true
     }
   ]
 }

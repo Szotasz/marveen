@@ -303,7 +303,7 @@ const CURL_VALUE_LONG = {
 }
 const CURL_VALUE_SHORT = { curl: new Set('oHdFuAexTKbcwDmrCEXQ'), wget: new Set('OoaUeiBPtTwQ') }
 const HAS_SCHEME = /^[A-Za-z][A-Za-z0-9+-]*:\//
-const URLISH = /^(?:[A-Za-z][A-Za-z0-9+-]*:\/|[^\s/=]+\.[^\s/=]+(?:\/|:|$))/
+const URLISH = /^(?:[A-Za-z][A-Za-z0-9+-]*:\/|[^\s/=]+\.[^\s/=]+(?:\/|:|$))|[$`]/ // a shell expansion is most likely the URL
 // [token, isOptionValue]: an option's value is kept but marked (only a URL with a scheme counts there).
 function curlUrlCandidates(prog, rest) {
   const longs = CURL_VALUE_LONG[prog.toLowerCase()] ?? new Set()
@@ -328,32 +328,34 @@ function curlUrlCandidates(prog, rest) {
 const HEX_ESCAPE = /%([0-9A-Fa-f]{2})/g
 const hexDecode = (x) => x.replace(HEX_ESCAPE, (_m, h) => String.fromCharCode(parseInt(h, 16)))
 const GLOB_LIMIT = 64
-// The URLs a curl glob stands for, or null when it cannot be expanded within the limit (a target, fail-closed).
+const MAIL_PROVIDER_WORD = /googleapis|graph|microsoft|sendgrid|mailgun|postmark|resend/
+// [status, urls] of a curl glob: 'ok', 'bad' (no valid glob: judge the literal text) or 'big' (past the limit).
 function curlGlobExpand(t) {
   const parts = []
   for (let i = 0; i < t.length;) {
     const ch = t[i]
     if (ch === '{') {
       const j = t.indexOf('}', i)
-      if (j < 0) return null
+      if (j < 0) return ['bad', null]
       parts.push(t.slice(i + 1, j).split(','))
       i = j + 1
       continue
     }
     if (ch === '[') {
       const j = t.indexOf(']', i)
-      if (j < 0) return null
+      if (j < 0) return ['bad', null]
       const body = t.slice(i + 1, j).split(':')[0]
       const m = /^(?:([0-9]+)-([0-9]+)|([A-Za-z])-([A-Za-z]))$/.exec(body)
-      if (!m) return null
+      if (!m) return ['bad', null]
       const alts = []
       if (m[1] !== undefined) {
         const lo = parseInt(m[1], 10), hi = parseInt(m[2], 10)
-        if (hi < lo || hi - lo >= GLOB_LIMIT) return null
+        if (hi < lo) return ['bad', null]
+        if (hi - lo >= GLOB_LIMIT) return ['big', null]
         for (let x = lo; x <= hi; x++) alts.push(String(x))
       } else {
         const lo = m[3].charCodeAt(0), hi = m[4].charCodeAt(0)
-        if (hi < lo) return null
+        if (hi < lo) return ['bad', null]
         for (let x = lo; x <= hi; x++) alts.push(String.fromCharCode(x))
       }
       parts.push(alts)
@@ -366,9 +368,9 @@ function curlGlobExpand(t) {
   let urls = ['']
   for (const alts of parts) {
     urls = urls.flatMap((u) => alts.map((a) => u + a))
-    if (urls.length > GLOB_LIMIT) return null
+    if (urls.length > GLOB_LIMIT) return ['big', null]
   }
-  return urls
+  return ['ok', urls]
 }
 function canonHost(raw) {
   let host = hexDecode(raw).split('@').pop().replace(/:[0-9]*$/, '')
@@ -393,10 +395,18 @@ function canonMailUrl(tok, needScheme = false) {
   return { host, path }
 }
 function curlMailApiTarget(tok, isValue = false) {
-  // a glob is expanded only up to the query: a bracket in the query cannot change the host or the path
+  if (isValue && !HAS_SCHEME.test(tok.replaceAll('\\/', '/'))) return false
+  // twin of the python rules: glob only up to the query, an IPv6 literal is no glob, an invalid glob is judged
+  // literally, only a too-large glob is fail-closed and only when the host can be a mail API host
   const head = tok.split(/[?#]/)[0]
-  const urls = /[{[]/.test(head) ? curlGlobExpand(head) : [head]
-  if (urls === null) return true
+  let [status, urls] = ['ok', [head]]
+  if (/[{[]/.test(head.replace(/^((?:[A-Za-z][A-Za-z0-9+-]*:\/+)?[^/?#]*?@?)\[[0-9A-Fa-f:.]*\]/, '$1'))) [status, urls] = curlGlobExpand(head)
+  if (status === 'bad') urls = [head]
+  else if (status === 'big') {
+    const auth = /^(?:[A-Za-z][A-Za-z0-9+-]*:\/+)?([^/?#]*)/.exec(head)[1]
+    if (/[{[]/.test(auth)) return MAIL_PROVIDER_WORD.test(canonHost(auth))
+    return canonMailUrl(head) !== null
+  }
   return urls.some((u) => {
     const c = canonMailUrl(u, isValue)
     return c !== null && (RESEND_HOST.test(c.host) || webMailSends('https://' + c.host + c.path))
