@@ -901,7 +901,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'SKILL_QUARANTINE',
     type: 'boolean',
     default: '1',
-    description: 'Skill-karantén. Bekapcsolva (alapértelmezés) minden új vagy javított skill (javaslat, generálás, import) a gazda jóváhagyásáig karanténban vár. Kikapcsolva azonnal élesedik; a scan, a hash-kötés és az auditsor ilyenkor is lefut, és ha a scan nem tudja a skillt teljesen megmutatni, az nem élesedik, hanem jóváhagyásra vár. Kikapcsolni (lazítás) csak a dashboard-belépéssel lehet.',
+    description: 'Skill-karantén. Bekapcsolva (alapértelmezés) minden új vagy javított skill (javaslat, generálás, import) a gazda jóváhagyásáig karanténban vár. Kikapcsolva azonnal élesedik; a scan, a hash-kötés és az auditsor ilyenkor is lefut, és ha a scan nem tudja a skillt teljesen megmutatni (például mert a találati lista elérte a felső korlátját), vagy erős mintát talál benne (hamisított címke vagy fejléc, utasítás-felülírás, láthatatlan Unicode, letöltött kód futtatása, hosszú kódolt blob), az nem élesedik, hanem jóváhagyásra vár. Kikapcsolni (lazítás) csak a dashboard-belépéssel lehet.',
     module: 'audit',
     secret: false,
     requiresRestart: false,

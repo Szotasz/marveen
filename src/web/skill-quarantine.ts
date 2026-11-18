@@ -33,8 +33,10 @@
 // 2026-11-16). OFF, a queued skill goes live at
 // once on the same path (goLiveUnquarantined below): scanned, bound to the
 // scanned hash, one audit line in store/skills-audit.jsonl, and what the scan
-// cannot show in full still waits. There, the scan and the audit are a record,
-// not a gate.
+// cannot show in full still waits, as does a finding of a strong shape
+// (SKILL_HOLD_PATTERNS, SKILLHOLDSTRONG1117), and so does a findings list that
+// reached its cap, since a strong finding past the cap is not in it. For every other finding, the scan
+// and the audit are a record, not a gate.
 //
 // Not covered here (stated, not hidden):
 //   - an agent writing a skill directory directly with its file tools. For its
@@ -625,6 +627,26 @@ export const SKILL_SCAN_PATTERNS: ReadonlyArray<[string, RegExp]> = [
   ['long-encoded-blob', /[A-Za-z0-9+/]{200,}={0,2}/],
 ]
 
+// SKILLHOLDSTRONG1117 (owner, 2026-11-17): with the switch OFF, a finding of one of these shapes still holds the
+// skill for the owner's decision. They are the shapes of an attack on the agent itself (forged tags and headers,
+// instruction override, hidden text, run-what-you-download), which an honest skill has no reason to carry. The
+// other patterns (exfil-shape, credential-target, persistence-target, install-hook, shell-exec) stay in the audit
+// only: measured on one install, 21 of 30 unquarantined go-lives carried at least one of them, all from the
+// fleet's own operational skills (a curl to a LAN host, a settings.json path in a note), none of a strong shape.
+// Holding on those would put two thirds of every skill fix in front of the owner, which trains a reflex click.
+// Still a triage list, not a verdict: an empty strong set does not mean safe.
+export const SKILL_HOLD_PATTERNS: ReadonlySet<string> = new Set([
+  'security-tag-forgery',
+  'system-reminder-forgery',
+  'directive-header-forgery',
+  'instruction-override',
+  'role-reassignment',
+  'pipe-to-shell',
+  'decode-and-run',
+  'long-encoded-blob',
+  'invisible-unicode',
+])
+
 function excerpt(line: string, at: number): string {
   const start = Math.max(0, at - 40)
   return line.slice(start, start + 120).replace(INVISIBLE_RE, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`)
@@ -939,9 +961,15 @@ export function goLiveUnquarantined(
     at: new Date().toISOString(), id, name: p.name, source: p.source, target: p.target, proposedBy: p.proposedBy ?? null,
     replaces: !!p.replaces, findings, findingsTruncated: p.report.findingsTruncated,
   }
-  const r = before === p.hash
-    ? approvePending(id, p.hash)
-    : { ok: false as const, status: 409, error: 'The pending skill changed while it was scanned; it waits for a decision' }
+  const strong = [...new Set(p.report.findings.map((f) => f.pattern).filter((n) => SKILL_HOLD_PATTERNS.has(n)))]
+  const r = before !== p.hash
+    ? { ok: false as const, status: 409, error: 'The pending skill changed while it was scanned; it waits for a decision' }
+    : strong.length > 0
+      ? { ok: false as const, status: 409, error: `The scan found ${strong.join(', ')}; it waits for the owner's decision` }
+      // The findings list stops at MAX_FINDINGS, so a strong finding past the cap is not in it: a capped list holds too.
+      : p.report.findingsTruncated
+        ? { ok: false as const, status: 409, error: "The scan could not show every finding (the list reached its cap); it waits for the owner's decision" }
+        : approvePending(id, p.hash)
   if (!r.ok) {
     audit({ ...base, event: 'held_unquarantined', hash: p.hash, why: r.error })
     logger.warn({ id, name: p.name, status: r.status }, 'skill: quarantine is off, but this one did not go live; it waits for a decision')
