@@ -9,6 +9,7 @@
 #                   <AGENT_DIR>/.claude/skills/.skill-index.md
 #                   (backward-compatible format for no-arg callers)
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GLOBAL_SKILLS_DIR="$HOME/.claude/skills"
 
 if [ $# -ge 1 ]; then
@@ -68,8 +69,10 @@ index_skills_dir() {
     # `cut -c` is byte-oriented in GNU coreutils even under a UTF-8 locale, so
     # a 120-byte cut lands mid-character on accented text and writes a broken
     # byte into the index every agent reads. python3 counts characters.
-    desc=$(grep -m1 "^description:" "$skill_md" 2>/dev/null | sed 's/^description: *//' | tr -d '"' | tr -d "'" \
-      | python3 -c 'import sys; sys.stdout.write(sys.stdin.read().rstrip(chr(10))[:120])')
+    # IDXBLOCK1118: a `grep "^description:"` also turned a YAML block scalar
+    # (`description: >` with the text below) into a lone ">"; skill-desc.py
+    # reads the frontmatter and joins it onto one line.
+    desc=$(python3 "$SCRIPT_DIR/skill-desc.py" "$skill_md" 2>/dev/null)
     if [ -z "$desc" ]; then
       desc="(nincs leírás)"
     fi
