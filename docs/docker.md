@@ -54,6 +54,17 @@ The dashboard listens on the server's `127.0.0.1:3420` only. Plain http on a pub
 
 The link carries the install's access token. Set the dashboard password in the wizard's first step; after that you log in with it, and the token link is not needed.
 
+## On a Hostinger VPS
+
+Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/hostinger-compose.yml), the file the "Deploy on Hostinger" button points at. It is the same Marveen and Ollama as `docker-compose.yml`, made for a panel that gets this one file and not the repository: a pinned Marveen version, no `build:`, no Caddy, and a default for every setting (the language is English unless you set `MARVEEN_LANG`).
+
+- **The dashboard link:** in Docker Manager, open the project's **⋮** menu and choose **View logs**; the link is in the `marveen` container's output.
+- **Opening the dashboard:** it listens on the VPS's `127.0.0.1:3420` only, as above. Use the Marveen Bridge, or an SSH tunnel from your computer (Hostinger's Docker VPS template logs you in as `root`):
+  ```bash
+  ssh -L 3420:127.0.0.1:3420 root@<your VPS's IP>
+  ```
+  then open the link from the log on your computer.
+
 ## The setup wizard
 
 1. The dashboard password (the owner's login).
