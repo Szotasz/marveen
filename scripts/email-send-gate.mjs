@@ -148,7 +148,7 @@ const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
 // (variable, truncated flag, config file) stays a send. httpie (`http`) takes
 // its method positionally and its body as `key=value` items, none of which this
 // flag scan reads, so it is undecidable too and stays a send in both twins.
-const HTTPIE = /^http$/i
+const HTTPIE = /^(?:https?|xhs?)$/i // MAILCURLSEND1118: httpie's `https` and xh / xhs take the same shape
 const CURL_BODY_OPTS = new Set([
   '-d', '--data', '--data-raw', '--data-binary', '--data-urlencode',
   '--data-ascii', '-F', '--form', '--form-string', '--json',
@@ -846,7 +846,49 @@ function headIsSend(toks, depth) {
   if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) {
     return curlResendVerdict(prog, rest) !== 'read'
   }
+  if (HTTP_CLIENT.test(prog) && inlineMailApiSends(prog, rest)) return true
   return false
+}
+
+// MAILCURLSEND1118: an HTTP mail API send written inline on the command line (curl, wget, httpie, xh) is judged like
+// the same send in a script; the rule and its boundary are written out at _inline_mail_api_sends in
+// hooks/outgoing-copy-gate.py (the python twin); the `inline` cases of hooks/mail-api-send-cases.json bind the two.
+const HTTP_CLIENT = /^(?:curl|wget|https?|xhs?)$/i
+const MAIL_API_HOST = /gmail\.googleapis\.com|googleapis\.com(?::\d+)?\/(?:upload\/)?gmail\/|api\.resend\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com/i
+const MAIL_API_URL = /^(?:[A-Za-z][\w+.-]*:\/\/)?(?:[^/@\s]*@)?(?:[^/@\s]*\.)?(?:(?:gmail\.googleapis\.com|api\.resend\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com)(?![\w.-])|googleapis\.com(?::\d+)?\/(?:upload\/)?gmail\/)/i
+const URL_VALUE_SHORT = 'AbcCdDeEFHKmoOQrTuUwxXYyza'
+const URL_VALUE_LONG = new Set([
+  '--header', '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii', '--json', '--form',
+  '--form-string', '--upload-file', '--user', '--output', '--output-document', '--user-agent', '--referer',
+  '--cookie', '--cookie-jar', '--config', '--write-out', '--max-time', '--connect-timeout', '--request',
+  '--method', '--oauth2-bearer', '--proxy', '--cacert', '--cert', '--key', '--post-data', '--post-file',
+  '--body-data', '--body-file', '--auth', '--password', '--http-user', '--http-password'])
+let lineMailHost = false // set per top-level isSendInvocation call from the WHOLE command line
+
+// the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL
+function optionValueWord(prev) {
+  if (prev.startsWith('--')) return URL_VALUE_LONG.has(prev)
+  return prev.length > 1 && prev.startsWith('-') && URL_VALUE_SHORT.includes(prev[prev.length - 1])
+}
+
+function inlineMailApiSends(prog, rest) {
+  let cannotTell = false
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]
+    const u = t.startsWith('--url=') ? t.slice('--url='.length) : t
+    const head = u.split(/[?#]/)[0]
+    if (MAIL_API_URL.test(u)) {
+      if (!nonliteralValue(head)) {
+        if (mailApiSends(u)) return true
+        continue
+      }
+      cannotTell = true
+    } else if (lineMailHost && !/\s/.test(u) && !(i && optionValueWord(rest[i - 1]))
+        && (u.startsWith('$') || u.startsWith('`') || (u.includes('://') && nonliteralValue(head)))) {
+      cannotTell = true
+    }
+  }
+  return cannotTell && curlResendVerdict(prog, rest) !== 'read'
 }
 
 // True when some segment is still a wrapper at the depth bound (HEADDEPTH924),
@@ -975,6 +1017,7 @@ export function isSendInvocation(cmd, depth = 0) {
   // FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
   // A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
   lineExemptOk = (depth === 0 || lineExemptOk) && lineClean(cmd)
+  lineMailHost = (depth > 0 && lineMailHost) || MAIL_API_HOST.test(cmd) // MAILCURLSEND1118
   if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {

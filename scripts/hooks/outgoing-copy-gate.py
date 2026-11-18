@@ -358,7 +358,7 @@ _SAFE_METHODS = {"GET", "HEAD"}
 # a torzse `kulcs=ertek` / `kulcs:=json` elem -- egyiket sem ismeri az alabbi
 # curl/wget flag-olvaso, ezert a `http POST .../emails to=...` "read" lett, es a
 # kapu atengedte. A httpie-re a metodus itt nem dontheto: fail-closed.
-_HTTPIE = re.compile(r"^http$", re.I)
+_HTTPIE = re.compile(r"^(?:https?|xhs?)$", re.I)   # MAILCURLSEND1118: httpie's `https` and xh / xhs take the same shape
 
 
 def _curl_resend_verdict(prog, rest):
@@ -1160,7 +1160,60 @@ def _head_is_send(toks, depth: int) -> bool:
     # tovabbra is fail-closed.
     if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
         return _curl_resend_verdict(prog, rest) != "read"
+    if _HTTP_CLIENT.match(prog) and _inline_mail_api_sends(prog, rest):
+        return True
     return False
+
+
+# MAILCURLSEND1118: an HTTP mail API send written inline on the command line (curl, wget, httpie, xh) is judged like
+# the same send in a script. A URL word on a mail API host (Gmail: gmail.googleapis.com, or a /gmail/ path on
+# googleapis.com) is judged by that provider's rule in _MAIL_API_RULES: its send endpoint is a send whatever the
+# method, as in a script; a read endpoint on the same host (a message list or get, labels) is not. Cannot tell = send,
+# unless the request is recognisably a read (_curl_resend_verdict: GET or HEAD, no body; every send endpoint here takes
+# a POST with a body): a mail API URL word whose host or path is not literal (a variable or a substitution before its
+# query), or, while the command line carries a mail API host, a URL word that is not literal at all (a word that
+# starts with a variable or a substitution, or a URL whose host or path is one; not the value of a header, data,
+# auth or output option, not a word with a space). A send path with no mail API host in the line is no send, as in a
+# script. The Resend rule above keeps its own method verdict on its host. Stated limit (the class of the code-string
+# rule): a URL the line never shows (a config file, a URL list file) is not seen. Mirrored in email-send-gate.mjs
+# (inlineMailApiSends); the `inline` cases of mail-api-send-cases.json bind the two twins.
+_HTTP_CLIENT = re.compile(r"^(?:curl|wget|https?|xhs?)$", re.I)
+_MAIL_API_HOST = re.compile(r"gmail\.googleapis\.com|googleapis\.com(?::\d+)?/(?:upload/)?gmail/|api\.resend\.com"
+                            r"|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com", re.I)
+_MAIL_API_URL = re.compile(r"^(?:[A-Za-z][\w+.-]*://)?(?:[^/@\s]*@)?(?:[^/@\s]*\.)?(?:(?:gmail\.googleapis\.com|api\.resend\.com"
+                           r"|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com)(?![\w.-])|googleapis\.com(?::\d+)?/(?:upload/)?gmail/)", re.I)
+_URL_VALUE_SHORT = frozenset("AbcCdDeEFHKmoOQrTuUwxXYyza")
+_URL_VALUE_LONG = frozenset((
+    "--header", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii", "--json", "--form",
+    "--form-string", "--upload-file", "--user", "--output", "--output-document", "--user-agent", "--referer",
+    "--cookie", "--cookie-jar", "--config", "--write-out", "--max-time", "--connect-timeout", "--request",
+    "--method", "--oauth2-bearer", "--proxy", "--cacert", "--cert", "--key", "--post-data", "--post-file",
+    "--body-data", "--body-file", "--auth", "--password", "--http-user", "--http-password"))
+_LINE_MAIL_HOST = [False]   # set per top-level is_send_invocation call from the WHOLE command line
+
+
+def _option_value_word(prev: str) -> bool:
+    """the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL"""
+    if prev.startswith("--"):
+        return prev in _URL_VALUE_LONG
+    return len(prev) > 1 and prev.startswith("-") and prev[-1] in _URL_VALUE_SHORT
+
+
+def _inline_mail_api_sends(prog, rest) -> bool:
+    cannot_tell = False
+    for i, t in enumerate(rest):
+        u = t[len("--url="):] if t.startswith("--url=") else t
+        head = re.split(r"[?#]", u, maxsplit=1)[0]
+        if _MAIL_API_URL.match(u):
+            if not _nonliteral_value(head):
+                if _mail_api_sends(u):
+                    return True
+                continue
+            cannot_tell = True
+        elif (_LINE_MAIL_HOST[0] and not re.search(r"\s", u) and not (i and _option_value_word(rest[i - 1]))
+              and (u.startswith(("$", "`")) or ("://" in u and _nonliteral_value(head)))):
+            cannot_tell = True
+    return cannot_tell and _curl_resend_verdict(prog, rest) != "read"
 
 
 def wrapper_depth_hit(cmd: str) -> bool:
@@ -1295,6 +1348,7 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
     # FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
     # A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
     _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and _line_clean(cmd)
+    _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or bool(_MAIL_API_HOST.search(cmd))   # MAILCURLSEND1118
     if _heredoc_program_sends(cmd, _depth):
         return True
     try:

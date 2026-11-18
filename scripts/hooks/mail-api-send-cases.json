@@ -260,5 +260,243 @@
    "expected": true,
    "body": "import subprocess\ntitle = 'launch 🚀🚀 today'\nsubprocess.run('sendmail -t < /tmp/m.eml', shell=True)\n"
   }
+ ],
+ "inline_comment": "MAILCURLSEND1118: an HTTP mail API send written inline on the command line (curl, wget, httpie, xh) is judged like the same send in a script. Each `inline` cmd runs through is_send_invocation / isSendInvocation in both twins' tests (scripts/__tests__/mail-api-send-cases.test.py, src/__tests__/mail-api-send-cases.test.ts). A provider's send endpoint is a send whatever the method; a read or a non-send write on the same host is not; cannot tell (a variable or a substitution in the host or path, or a non-literal URL word while the line carries a mail API host) is a send unless the request is recognisably a read. The boundary is written out at _inline_mail_api_sends in outgoing-copy-gate.py.",
+ "inline": [
+  {
+   "name": "a provider send endpoint, POST with a JSON body",
+   "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send' -H \"Authorization: Bearer $TOK\" -H 'Content-Type: application/json' -d '{\"raw\":\"abc\"}'",
+   "expected": true
+  },
+  {
+   "name": "a provider draft send endpoint",
+   "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/drafts/send' -H \"Authorization: Bearer $TOK\" -d '{\"id\":\"r1\"}'",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint, body from a file",
+   "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send' --data @body.json",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint, unquoted URL",
+   "cmd": "curl -sX POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d '{\"raw\":\"abc\"}'",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint, glued method, double-quoted URL",
+   "cmd": "curl -XPOST \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\" -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint given with --url",
+   "cmd": "curl -X POST --url https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint given with --url=",
+   "cmd": "curl -X POST --url=https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint behind env",
+   "cmd": "env curl -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint, client by absolute path",
+   "cmd": "/usr/bin/curl -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint in a shell -c string",
+   "cmd": "bash -c 'curl -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @body.json'",
+   "expected": true
+  },
+  {
+   "name": "a provider upload send endpoint",
+   "cmd": "curl -X POST 'https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media' --data-binary @m.eml",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint on the shared API host",
+   "cmd": "curl -X POST https://www.googleapis.com/gmail/v1/users/me/messages/send -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint, wget",
+   "cmd": "wget -q -O- --post-file=body.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint, httpie",
+   "cmd": "http POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint, httpie https, scheme-less",
+   "cmd": "https POST gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+   "expected": true
+  },
+  {
+   "name": "a provider send endpoint, xh",
+   "cmd": "xh POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+   "expected": true
+  },
+  {
+   "name": "a second provider's send endpoint",
+   "cmd": "curl -X POST https://api.sendgrid.com/v3/mail/send -H \"Authorization: Bearer $SG\" -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "a third provider's send endpoint, variable domain in the path",
+   "cmd": "curl -s --user \"api:$MG\" https://api.mailgun.net/v3/$DOMAIN/messages -F to=a@b.hu -F text=x",
+   "expected": true
+  },
+  {
+   "name": "a third provider's send endpoint, regional host",
+   "cmd": "curl -s --user \"api:$MG\" https://api.eu.mailgun.net/v3/mg.example.hu/messages -F to=a@b.hu",
+   "expected": true
+  },
+  {
+   "name": "a fourth provider's send endpoint",
+   "cmd": "curl -X POST https://api.postmarkapp.com/email -H \"X-Postmark-Server-Token: $PM\" -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "a fourth provider's batch send endpoint, xh",
+   "cmd": "xh POST https://api.postmarkapp.com/email/batch @body.json",
+   "expected": true
+  },
+  {
+   "name": "a fifth provider's send endpoint, xh",
+   "cmd": "xh POST https://api.resend.com/emails to=a@b.hu",
+   "expected": true
+  },
+  {
+   "name": "cannot tell: a variable URL, a mail API host in the line",
+   "cmd": "U=https://gmail.googleapis.com/gmail/v1/users/me/messages/send; curl -X POST \"$U\" -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "cannot tell: a literal mail API host, a variable path",
+   "cmd": "curl -X POST \"https://gmail.googleapis.com/gmail/v1/users/me/$EP\" -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "cannot tell: a variable base before a send path, the host in the line",
+   "cmd": "B=https://gmail.googleapis.com/gmail/v1/users/me; curl -X POST \"$B/messages/send\" -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "cannot tell: a substitution in the path",
+   "cmd": "curl -X POST \"https://gmail.googleapis.com/gmail/v1/users/me/$(cat ep.txt)\" -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "cannot tell: an unquoted substitution as the URL, the host in the line",
+   "cmd": "curl -X POST $(echo https://gmail.googleapis.com/gmail/v1/users/me/messages/send) -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "cannot tell: a variable URL, the fifth provider's host in the line",
+   "cmd": "U=https://api.resend.com/emails; curl -X POST \"$U\" -d @body.json",
+   "expected": true
+  },
+  {
+   "name": "cannot tell: a variable host before a provider path, a host in the line",
+   "cmd": "curl -X POST \"https://$H/gmail/v1/users/me/messages/send\" -d @body.json # gmail.googleapis.com",
+   "expected": true
+  },
+  {
+   "name": "cannot tell: httpie with a variable path (its method is not read here)",
+   "cmd": "http \"https://gmail.googleapis.com/gmail/v1/users/me/$EP\"",
+   "expected": true
+  },
+  {
+   "name": "cannot tell: xh with a variable path and a body item (its method is not read here)",
+   "cmd": "xh \"https://gmail.googleapis.com/gmail/v1/users/me/$EP\" raw=abc",
+   "expected": true
+  },
+  {
+   "name": "a read: message list",
+   "cmd": "curl -s 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=from:x' -H \"Authorization: Bearer $TOK\"",
+   "expected": false
+  },
+  {
+   "name": "a read: labels",
+   "cmd": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/labels -H \"Authorization: Bearer $TOK\"",
+   "expected": false
+  },
+  {
+   "name": "a read: one message by a literal id",
+   "cmd": "curl -s 'https://gmail.googleapis.com/gmail/v1/users/me/messages/18c2f?format=full' -H \"Authorization: Bearer $TOK\"",
+   "expected": false
+  },
+  {
+   "name": "a write that sends nothing: label change",
+   "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/18c2f/modify -H \"Authorization: Bearer $TOK\" -d '{\"addLabelIds\":[\"X\"]}'",
+   "expected": false
+  },
+  {
+   "name": "a write that sends nothing: draft create",
+   "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/drafts -d @body.json",
+   "expected": false
+  },
+  {
+   "name": "a read: one message by a variable id (GET)",
+   "cmd": "curl -s \"https://gmail.googleapis.com/gmail/v1/users/me/messages/$ID?format=full\" -H \"Authorization: Bearer $TOK\"",
+   "expected": false
+  },
+  {
+   "name": "a variable in the query only",
+   "cmd": "curl -s -X POST \"https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify?k=$K\" -d @ids.json",
+   "expected": false
+  },
+  {
+   "name": "a variable URL without any mail API host in the line",
+   "cmd": "curl -X POST \"$URL\" -d @body.json",
+   "expected": false
+  },
+  {
+   "name": "a send-shaped path without any provider",
+   "cmd": "curl -X POST http://localhost:8080/messages/send -d x",
+   "expected": false
+  },
+  {
+   "name": "an inter-agent POST whose body names a provider send URL",
+   "cmd": "curl -s -X POST http://localhost:3420/api/messages -H \"Authorization: Bearer $(cat t)\" -d '{\"content\":\"the https://gmail.googleapis.com/gmail/v1/users/me/messages/send shape\"}'",
+   "expected": false
+  },
+  {
+   "name": "a variable header value next to a provider non-send write",
+   "cmd": "curl -s -X POST -H \"$AUTH\" https://gmail.googleapis.com/gmail/v1/users/me/messages/18c2f/trash",
+   "expected": false
+  },
+  {
+   "name": "a read on the third provider",
+   "cmd": "curl -s --user \"api:$MG\" https://api.mailgun.net/v3/mg.example.hu/events",
+   "expected": false
+  },
+  {
+   "name": "a read on the second provider",
+   "cmd": "curl -s https://api.sendgrid.com/v3/stats -H \"Authorization: Bearer $SG\"",
+   "expected": false
+  },
+  {
+   "name": "a read on the fifth provider (its own method rule)",
+   "cmd": "curl -s https://api.resend.com/domains -H \"Authorization: Bearer $RK\"",
+   "expected": false
+  },
+  {
+   "name": "another API on the shared host",
+   "cmd": "curl -X POST \"https://www.googleapis.com/upload/drive/v3/files?uploadType=media\" --data-binary @f.pdf",
+   "expected": false
+  },
+  {
+   "name": "the provider URL named in an echo",
+   "cmd": "echo https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+   "expected": false
+  }
  ]
 }
