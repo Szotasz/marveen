@@ -5,6 +5,7 @@ import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { isKeychainAvailable, keychainStore, keychainRetrieveStatus } from './keychain.js'
 import { logger } from '../logger.js'
+import { readEnvFile } from '../env.js'
 
 const VAULT_PATH = join(PROJECT_ROOT, 'store', 'vault.json')
 const VAULT_KEY_PATH = join(PROJECT_ROOT, 'store', '.vault-key')
@@ -72,6 +73,49 @@ function keyOpensVault(master: Buffer): boolean {
   }
 }
 
+// VAULT_KEY_STORE=file (in .env, or in the process environment, which wins): the master key lives in
+// store/.vault-key (0600) and the macOS Keychain is never called -- no read, no migration, no store -- in ANY
+// process that loads this module (dashboard, rotation check, setup, the vault scripts). It is read on every key
+// request, so a change in .env takes effect without a restart. Why it exists: with the default store a locked
+// login Keychain stops every decrypt in the dashboard (VaultKeyError "did not answer"), and the only switch that
+// kept the file key, MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION, is read from process.env alone, which .env never reaches
+// (readEnvFile does not export), so on the dashboard it could only be set in the launchd plist the installer rewrites.
+// On a single-user install the Keychain item is no stronger a boundary than a 0600 file: the same user reads both.
+// Any other value (unset, empty, "keychain") keeps today's behaviour.
+function keyStoreIsFile(): boolean {
+  const raw = process.env.VAULT_KEY_STORE ?? readEnvFile(['VAULT_KEY_STORE']).VAULT_KEY_STORE ?? ''
+  return raw.trim().toLowerCase() === 'file'
+}
+
+let fileStoreNoticeLogged = false
+
+// The file-store branch of getMasterKey(). Same fail-closed rules as the Keychain branch: a key file that does not
+// open vault.json is refused, and a missing key file next to existing secrets is an error, never a new key.
+function getMasterKeyFromFileStore(entryCount: number): Buffer {
+  if (!fileStoreNoticeLogged) {
+    fileStoreNoticeLogged = true
+    logger.info('VAULT_KEY_STORE=file: the vault master key is read from store/.vault-key, the Keychain is not used')
+  }
+  if (!existsSync(VAULT_KEY_PATH)) {
+    if (entryCount > 0) {
+      throw new VaultKeyError(
+        `VAULT_KEY_STORE=file, but store/.vault-key is missing and vault.json holds ${entryCount} entr(y/ies) -- ` +
+        'refusing to generate a new key. After a Keychain migration the key is in store/.vault-key.migrated: ' +
+        'copy it to store/.vault-key with mode 600, or restore the key file from backup.'
+      )
+    }
+    atomicWriteFileSync(VAULT_KEY_PATH, randomBytes(64).toString('base64'), { mode: 0o600 })
+  }
+  const fileKeyBuf = Buffer.from(readFileSync(VAULT_KEY_PATH, 'utf-8').trim(), 'base64')
+  if (!keyOpensVault(fileKeyBuf)) {
+    throw new VaultKeyError(
+      'VAULT_KEY_STORE=file, but store/.vault-key does not decrypt vault.json -- refusing to use it. ' +
+      'Restore the correct master key (check store/.vault-key.migrated and backups).'
+    )
+  }
+  return fileKeyBuf
+}
+
 // Read-only master-key resolution for the fleet EXPORT. Unlike getMasterKey()
 // it never migrates, renames, writes or generates anything: it returns the
 // base64 key from the first source that actually opens vault.json, or null
@@ -86,10 +130,11 @@ export function resolveMasterKeyForExport(): string | null {
   const entryCount = vaultEntryCount()
   const candidates: string[] = []
   let keychainUnavailable = false
+  const keychainTried = !keyStoreIsFile() && isKeychainAvailable()
   for (const path of [VAULT_KEY_PATH, VAULT_KEY_MIGRATED]) {
     if (existsSync(path)) candidates.push(readFileSync(path, 'utf-8').trim())
   }
-  if (isKeychainAvailable()) {
+  if (keychainTried) {
     const read = keychainRetrieveStatus()
     if (read.status === 'ok' && read.value) candidates.push(read.value)
     else if (read.status === 'unavailable') keychainUnavailable = true
@@ -100,7 +145,7 @@ export function resolveMasterKeyForExport(): string | null {
   if (entryCount === 0) return null
   throw new VaultKeyError(
     `vault.json holds ${entryCount} entr(y/ies) but no available master key opens it ` +
-    `(tried store/.vault-key, store/.vault-key.migrated${isKeychainAvailable() ? ', macOS Keychain' : ''}` +
+    `(tried store/.vault-key, store/.vault-key.migrated${keychainTried ? ', macOS Keychain' : ''}` +
     `${keychainUnavailable ? ' -- the Keychain did not answer, unlock it and retry' : ''}). ` +
     'The export would drop every secret, so it is refused.'
   )
@@ -110,6 +155,8 @@ let noMigrationNoticeLogged = false
 
 function getMasterKey(): Buffer {
   const entryCount = vaultEntryCount()
+
+  if (keyStoreIsFile()) return getMasterKeyFromFileStore(entryCount)
 
   if (isKeychainAvailable()) {
     if (existsSync(VAULT_KEY_PATH)) {
