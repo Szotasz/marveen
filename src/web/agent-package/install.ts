@@ -653,14 +653,49 @@ export function packageStartRefusal(name: string, dir: string): string | null {
  * agent (its CLAUDE.md starts with the shell: the SHELL decides, not the manifest) gets a REAL file in which the two
  * import lines are replaced by the two files' text (an import from /tmp would be external and silently not load,
  * M24), 0600 in a 0700 folder, plus a LOCAL.md link so the agent's writes land in the real file. Any other agent gets
- * the link it always got. 'refused' when the guard refuses or the expansion fails: the caller does not start then.
+ * the CLAUDE.md link it always got. EVERY agent (#2878, changing the plan's N13 "the non-package branch is unchanged")
+ * also gets its project-level settings and skills linked in (linkFallbackProjectConfig): the fallback session runs
+ * from /tmp and would otherwise start without them. 'refused' when the guard refuses, the expansion fails or an existing
+ * settings file cannot be linked: the caller does not start then.
  */
+/** The agent's project-level Claude Code files the fallback session must see from its /tmp cwd. */
+export const FALLBACK_PROJECT_LINKS = ['settings.json', 'settings.local.json', 'skills'] as const
+
+/**
+ * The fallback session runs from the /tmp folder, so Claude Code would not see the agent's project-level settings and
+ * skills there (#2878 C-path, measured: the package skill did not load). Each one that exists in the agent's .claude
+ * folder is linked under <fallbackCwd>/.claude/ (0700); a missing source gets no link (no dangling link). Returns false
+ * when an existing settings file could not be linked: the session would then start without the agent's project
+ * settings, so the caller does not start it (fail closed).
+ */
+export function linkFallbackProjectConfig(dir: string, fallbackCwd: string): boolean {
+  const target = join(fallbackCwd, '.claude')
+  try { mkdirSync(target, { mode: 0o700 }) } catch { /* exists: checked below */ }
+  try { chmodSync(target, 0o700) } catch { return false }
+  let ok = true
+  for (const name of FALLBACK_PROJECT_LINKS) {
+    const src = join(dir, '.claude', name)
+    if (!existsSync(src)) continue // existsSync follows links: a missing or dangling source gets no link
+    try {
+      symlinkSync(src, join(target, name))
+    } catch (err) {
+      logger.error({ err, src }, 'EPERM fallback: a project-level Claude Code file could not be linked into the fallback folder')
+      if (name !== 'skills') ok = false
+    }
+  }
+  return ok
+}
+
 export function prepareFallbackClaudeMd(name: string, dir: string, fallbackCwd: string): 'expanded' | 'linked' | 'refused' {
   const agentClaudeMd = join(dir, 'CLAUDE.md')
   const claude = regularFileBytes(agentClaudeMd)
   if (claude === null || !startsWithPackageShell(claude)) {
     if (existsSync(agentClaudeMd)) {
       try { symlinkSync(agentClaudeMd, join(fallbackCwd, 'CLAUDE.md')) } catch { /* degrade to context-less */ }
+    }
+    if (!linkFallbackProjectConfig(dir, fallbackCwd)) {
+      writePendingNotice('fallback_refused', name, dir, new Date())
+      return 'refused'
     }
     return 'linked'
   }
@@ -689,7 +724,11 @@ export function prepareFallbackClaudeMd(name: string, dir: string, fallbackCwd: 
     // Report only (#2878 review): the expanded text joins the package layer with the local layer, which no package
     // rule has seen. A finding is logged and the owner told; the start goes on, as on the normal path, which loads
     // the same texts through the two import lines.
-    const finding = scanPackageText(Buffer.from(expanded, 'utf8'))
+    // Only the two layers are scanned (#2878 C-path): the shell rest is the product's own generated text (its
+    // sections carry an at-sign after white space, e.g. "[Uzenet @..."), which would raise a false notice on every
+    // fallback. The layers are scanned joined exactly as they stand in the expanded file, so a shape formed across
+    // their boundary is still seen.
+    const finding = scanPackageText(Buffer.from(`\n${pkg}\n\n\n${local}\n`, 'utf8'))
     if (finding !== null) {
       logger.warn({ name, reason: finding.reason, rule: finding.rule }, 'EPERM fallback: the expanded CLAUDE.md has a package text rule finding; starting anyway (report only)')
       writePendingNotice('fallback_scan_finding', name, dir, new Date())
@@ -699,6 +738,10 @@ export function prepareFallbackClaudeMd(name: string, dir: string, fallbackCwd: 
     writeFileSync(target, expanded, { mode: 0o600, flag: 'wx' })
     chmodSync(target, 0o600)
     try { symlinkSync(join(dir, 'LOCAL.md'), join(fallbackCwd, 'LOCAL.md')) } catch { /* the write link is best effort */ }
+    if (!linkFallbackProjectConfig(dir, fallbackCwd)) {
+      writePendingNotice('fallback_refused', name, dir, new Date())
+      return 'refused'
+    }
     return 'expanded'
   } catch (err) {
     logger.error({ err, name }, 'EPERM fallback: the package agent CLAUDE.md could not be expanded; not started')

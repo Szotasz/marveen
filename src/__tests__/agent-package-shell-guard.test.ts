@@ -167,6 +167,76 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
       rmSync(dirty, { recursive: true, force: true })
     }
   })
+  it('the report scan ignores the product-generated sections of the started CLAUDE.md, but still sees a forbidden token in PACKAGE.md', async () => {
+    const S = await import('../web/agent-scaffold.js')
+    const notices = () => (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])
+      .map((f) => JSON.parse(readFileSync(join(I.pendingNoticesDir(), f), 'utf8')))
+      .filter((n) => n.kind === 'fallback_scan_finding').length
+    const started = agent({ 'CLAUDE.md': I.packageShellText('a1', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': 'notes\n' })
+    const name = started.split('/').pop()!
+    // The real start-time writers append their generated sections (the system-directive one carries "[Uzenet @...").
+    S.ensureSystemDirectiveAuthSection(name)
+    S.ensureMessageCloseSection(name)
+    const claude = readFileSync(join(started, 'CLAUDE.md'), 'utf8')
+    expect(claude).toMatch(/\s@/)
+    expect(M.startsWithPackageShell(Buffer.from(claude))).toBe(true)
+    const before = notices()
+    const fb1 = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+    const fb2 = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+    try {
+      expect(I.prepareFallbackClaudeMd(name, started, fb1)).toBe('expanded')
+      expect(notices()).toBe(before)
+      const bad = agent({ 'CLAUDE.md': claude, 'PACKAGE.md': '# Package\n@../../secret.md\n', 'LOCAL.md': 'notes\n' })
+      expect(I.prepareFallbackClaudeMd(bad.split('/').pop()!, bad, fb2)).toBe('expanded')
+      expect(notices()).toBe(before + 1)
+    } finally {
+      rmSync(fb1, { recursive: true, force: true })
+      rmSync(fb2, { recursive: true, force: true })
+    }
+  })
+  it('every fallback (package and hand-made) links the agent project settings and skills under .claude, 0700, no dangling link', () => {
+    const SET = '{"hooks":{}}\n'
+    const files = { '.claude/settings.json': SET, '.claude/settings.local.json': '{}\n', '.claude/skills/canary/SKILL.md': '# canary\n' }
+    const pkgAgent = agent({ 'CLAUDE.md': I.packageShellText('a1', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': 'notes\n', ...files })
+    const plain = agent({ 'CLAUDE.md': '# hand-made\n', ...files })
+    const partial = agent({ 'CLAUDE.md': '# hand-made\n', '.claude/settings.json': SET })
+    for (const [d, want] of [[pkgAgent, 'expanded'], [plain, 'linked']] as const) {
+      const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+      try {
+        expect(I.prepareFallbackClaudeMd(d.split('/').pop()!, d, fb)).toBe(want)
+        expect(statSync(join(fb, '.claude')).mode & 0o777).toBe(0o700)
+        for (const n of I.FALLBACK_PROJECT_LINKS) {
+          expect(lstatSync(join(fb, '.claude', n)).isSymbolicLink()).toBe(true)
+          expect(readlinkSync(join(fb, '.claude', n))).toBe(join(d, '.claude', n))
+        }
+      } finally {
+        rmSync(fb, { recursive: true, force: true })
+      }
+      // removing the fallback folder leaves the targets alone
+      expect(readFileSync(join(d, '.claude', 'settings.json'), 'utf8')).toBe(SET)
+      expect(existsSync(join(d, '.claude', 'skills', 'canary', 'SKILL.md'))).toBe(true)
+    }
+    const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+    try {
+      expect(I.prepareFallbackClaudeMd(partial.split('/').pop()!, partial, fb)).toBe('linked')
+      expect(lstatSync(join(fb, '.claude', 'settings.json')).isSymbolicLink()).toBe(true)
+      expect(existsSync(join(fb, '.claude', 'settings.local.json'))).toBe(false)
+      expect(() => lstatSync(join(fb, '.claude', 'skills'))).toThrow()
+    } finally {
+      rmSync(fb, { recursive: true, force: true })
+    }
+  })
+  it('a settings file that exists but cannot be linked refuses the fallback start (fail closed)', () => {
+    const d = agent({ 'CLAUDE.md': '# hand-made\n', '.claude/settings.json': '{"hooks":{}}\n' })
+    const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+    try {
+      mkdirSync(join(fb, '.claude'), { mode: 0o700 })
+      writeFileSync(join(fb, '.claude', 'settings.json'), 'squatter')
+      expect(I.prepareFallbackClaudeMd(d.split('/').pop()!, d, fb)).toBe('refused')
+    } finally {
+      rmSync(fb, { recursive: true, force: true })
+    }
+  })
   it('a missing LOCAL.md is an empty local layer, not a refusal', () => {
     const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
     try {
