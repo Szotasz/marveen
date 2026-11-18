@@ -23,9 +23,7 @@ tool prefix (mcp__gmail__v2_reply_all) or a server of any name
 send_draft carries only a draftId, so no envelope can be anchored: level 1
 deny, level 2 deny with a pointer to send_email with the full envelope (which
 the anchor CAN pin), level 3 allow. A draft tool puts nothing on the wire and
-stays out of scope. So does one literal Bash run of the project's own, pinned
-Gmail draft writer (scripts/hooks/gmail-draft.py, GMAILDRAFT1116: see
-canonical_draft_run); an edited or moved copy of it is a send.
+stays out of scope.
 
 THE SENDERS CHECK THEMSELVES. A hook sees a command's text, not what runs:
 a glob or variable script path, an interpreter option (python3 -u / -X utf8)
@@ -1228,109 +1226,6 @@ def canonical_forms_text() -> str:
             "literal, vagy <<'EOF' heredoc, utana semmi mas parancs")
 
 
-# GMAILDRAFT1116: the project's canonical Gmail DRAFT writer, scripts/hooks/gmail-draft.py. An HTTPS Gmail-API draft
-# writer imports urllib, so with an address it is a send for the script judge (COPYGATEDRAFTFP1104 allows only the
-# stdlib modules an IMAP writer needs, and the gmail.compose grant it holds CAN send). This one file is a draft
-# instead, like the MCP draft tools: the level does not apply to it; the recipient ledger and the owner-CC check
-# (MAILCCGATE1016) do, as for an MCP draft. It is a draft ONLY when ALL of these hold:
-#   - the whole command is one literal call: `python3 -I -S <path> --flag value ...`, optionally `2>&1` at the end,
-#     nothing else (no env prefix, no other interpreter option, no chain, pipe, redirect, heredoc or substitution);
-#     -I -S: no PYTHON* setting, no script-dir or user-site import, no .pth / sitecustomize start-up code;
-#   - <path> is this install's own scripts/hooks/gmail-draft.py (absolute, or relative with cwd = the root), on a
-#     path with no symlink: a copy elsewhere is a send (that tree is write-protected for agents, db-write-gate.mjs);
-#   - the file's sha256 is GMAIL_DRAFT_SHA256: an edited file (a drafts.send or messages.send added, anything) is a
-#     send until the pin is updated in the same reviewed commit (a test keeps the two equal);
-#   - every argument is one of the writer's own flags, spelled in full, each value literal and not starting with
-#     '-', and a single-value flag is not repeated (the writer runs argparse with allow_abbrev=False).
-# What this does not see (the same limits as the canonical senders): which `python3` PATH finds, and a file swapped
-# between this check and the run (the write protection of scripts/hooks/ is a text-level gate, not an OS boundary).
-GMAIL_DRAFT_REL = "scripts/hooks/gmail-draft.py"
-GMAIL_DRAFT_SHA256 = "e9d910280848df746435c5af78e2655360856fcd319fda8d83584b70bcfccce7"
-_DRAFT_VALUE_FLAGS = frozenset(("--subject", "--text", "--html", "--to", "--cc", "--bcc", "--inline", "--attach",
-                                "--signature-html", "--signature-text", "--thread", "--in-reply-to"))
-_DRAFT_REPEATABLE = frozenset(("--inline", "--attach"))
-_DRAFT_BOOL_FLAGS = frozenset(("--also-attach",))
-
-
-def _draft_writer_path(word: str, cwd):
-    """The writer's real path when `word` names this install's own writer on a symlink-free path, else ''."""
-    canon = _ROOT + "/" + GMAIL_DRAFT_REL
-    if os.path.realpath(canon) != canon:
-        return ""
-    if word == canon:
-        return canon
-    if word == GMAIL_DRAFT_REL and isinstance(cwd, str) and cwd == _ROOT and os.path.realpath(cwd) == _ROOT:
-        return canon
-    return ""
-
-
-def _sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def canonical_draft_run(cmd: str, cwd):
-    """GMAILDRAFT1116: {'to': [...], 'cc': [...], 'bcc': [...]} when the whole command is one literal run of this
-    install's own, unmodified Gmail draft writer (see above), else None. Any doubt is None: a send."""
-    # Revizor 4076 L1: a backslash-newline inside a word is joined by the shell (`--cc\<newline>=x` runs as
-    # `--cc=x`), while the scanner ends the word there and reads `=x` as the next one: what the gate and the ledger
-    # read would not be what the writer gets. No line continuation at all, and no value starting with `=`.
-    if "\\\n" in cmd:
-        return None
-    try:
-        sc = _ShapeScanner(cmd.strip(" \t\n"))
-        words = sc.words_until_operator()
-        if words[:3] != ["python3", "-I", "-S"] or len(words) < 4:
-            return None
-        path = _draft_writer_path(words[3], cwd)
-        if not path or not os.path.isfile(path) or os.path.islink(path):
-            return None
-        if _sha256_file(path) != GMAIL_DRAFT_SHA256:
-            return None
-        fields = {"to": [], "cc": [], "bcc": []}
-        seen = set()
-        args = words[4:]
-        j = 0
-        while j < len(args):
-            name, eq, value = args[j].partition("=")
-            if name in _DRAFT_VALUE_FLAGS:
-                if name in seen and name not in _DRAFT_REPEATABLE:
-                    return None
-                seen.add(name)
-                if not eq:
-                    j += 1
-                    if j >= len(args):
-                        return None
-                    value = args[j]
-                if value.startswith(("-", "=")) or not value.strip():
-                    return None
-                if name in ("--to", "--cc", "--bcc"):
-                    fields[name[2:]] = [v.strip() for v in value.split(",") if v.strip()]
-            elif not (name in _DRAFT_BOOL_FLAGS and not eq):
-                return None
-            j += 1
-        sc.skip_ws()
-        if sc.s.startswith("2>&1", sc.i):
-            sc.i += 4
-            sc.skip_ws()
-        return fields if sc.i >= sc.n else None
-    except (_NotCanonical, OSError):
-        return None
-
-
-def draft_writer_hint(cmd: str) -> str:
-    """The canonical form, named when a command mentions the draft writer but is not that form."""
-    if "gmail-draft.py" not in cmd:
-        return ""
-    return ("(A Gmail-piszkozatiro csak ebben az alakban piszkozat: python3 -I -S " + GMAIL_DRAFT_REL +
-            " --subject ... --text <fajl> ... a projekt gyokerebol, vagy ugyanez abszolut, szimlink nelkuli "
-            "utvonallal; egyetlen parancs, literal ertekekkel, csak a sajat kapcsoloival, legfeljebb 2>&1 a vegen. "
-            "Mas alakban, modositott vagy athelyezett peldanykent kuldesnek szamit.)\n")
-
-
 def pass_with_warning(msg: str) -> str:
     """A non-blocking warning, for BOTH readers. `systemMessage` is shown on
     the host's terminal only and never enters the model's request; the agent
@@ -1437,14 +1332,6 @@ def main():
         unverifiable, unverifiable_msg = _load_unverifiable_construction()
         if unverifiable(cmd, payload.get("cwd")):
             deny(unverifiable_msg)
-        draft_fields = canonical_draft_run(cmd, payload.get("cwd"))
-        if draft_fields is not None:
-            # GMAILDRAFT1116: the canonical draft writer puts nothing on the wire; like an MCP draft, the ledger
-            # and the owner-CC check apply, the level does not.
-            if ledger_enabled():
-                ledger_gate("bash", tool_input, cmd)
-            owner_cc_gate(draft_fields, True, "")
-            sys.exit(0)
         if not (_load_is_send_invocation()(cmd)
                 or _load_script_run_sends()(cmd, payload.get("cwd"))):
             sys.exit(0)
@@ -1479,7 +1366,7 @@ def main():
     if level >= 3:
         sys.exit(0)
     if tool == "Bash":
-        prefix += draft_hint_note(cmd, payload.get("cwd")) + draft_writer_hint(cmd)
+        prefix += draft_hint_note(cmd, payload.get("cwd"))
     if level <= 1:
         deny(prefix +
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"
