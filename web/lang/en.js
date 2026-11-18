@@ -916,7 +916,7 @@ window._i18n.en = {
   'approvals.bot.pair': 'Get a pairing code',
   'approvals.bot.code': 'Send this to the approval bot from your own Telegram, in a private chat (valid for 10 minutes):',
   'approvals.bot.error': 'Could not get a code (you need to be logged in, and the bot must be on).',
-  'approvals.bot.pending': 'This account sent the code:',
+  'approvals.bot.pending': 'This account sent the code (check the id, not the name):',
   'approvals.bot.confirm': 'That is me, confirm',
   'approvals.filter.all_status': 'All statuses',
   'approvals.filter.all_agents': 'All agents',

@@ -1347,7 +1347,7 @@ window._i18n.hu = {
   'approvals.bot.pair': 'Párosító kód kérése',
   'approvals.bot.code': 'Küldd el a jóváhagyó botnak a saját Telegramodról, privát chatben (10 percig érvényes):',
   'approvals.bot.error': 'Nem sikerült kódot kérni (bejelentkezés kell, és a botnak bekapcsolva kell lennie).',
-  'approvals.bot.pending': 'Ez a fiók küldte el a kódot:',
+  'approvals.bot.pending': 'Ez a fiók küldte el a kódot (az azonosítót nézd, ne a nevet):',
   'approvals.bot.confirm': 'Ez én vagyok, megerősítem',
   'approvals.filter.all_status': 'Összes státusz',
   'approvals.filter.all_agents': 'Összes ágens',

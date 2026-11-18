@@ -667,8 +667,8 @@ export function startWebServer(port = 3420): http.Server {
   // AGENTCREATEPR3-1119: the owner's Gromzo answers to agent_create rows, read from mxd every 15 s
   if (!servicesOff) startGromzoDecisionWatch()
   // 80d0e3c6: the approval bot's presses (off unless APPROVAL_BOT_ENABLED and store/.approval-bot-token).
-  // Not in WEB_ONLY: one getUpdates consumer per bot token.
-  if (!webOnly) startApprovalBotPoller()
+  // Only where the background services run (not WEB_ONLY, not a second instance): one getUpdates consumer per bot token.
+  if (!servicesOff) startApprovalBotPoller()
 // Desktop-lock TTL sweeper. Independent of the schedule gate on purpose: an
 // abandoned lock must expire (and be reported) even on a day when no
 // desktop-driving round happens to be due.
