@@ -38,6 +38,8 @@ function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
 
   function applyLang(lang) {
     window._lang = VALID.has(lang) ? lang : 'hu'
+    // DOCKERUX1118 (Geri 33345): the page's own language follows the shown one (it stayed "hu" on an English page).
+    document.documentElement.lang = window._lang
   }
 
   // Initialise from localStorage; server default fetched async below.
@@ -72,6 +74,7 @@ function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
   window.setLang = function setLang(lang) {
     if (!VALID.has(lang)) return
     window._lang = lang
+    document.documentElement.lang = lang
     localStorage.setItem(LS_KEY, lang)
     renderNav()
     // Static elements (kanban column titles, hints, empty states) are otherwise
@@ -16181,6 +16184,69 @@ async function refreshOnboarding() {
   const s = await fetchOnboardingStatus()
   if (s) renderOnboarding(s, await fetchOnboardingAuth())
 }
+// DOCKERUX1118 (owner 33327/33329, Samu 80886): the install's language on the wizard's first screen, in the container
+// only. Before the owner is signed in a click switches the wizard's text in this browser and is remembered; the
+// install's own language (its persona files and seeded texts, where untouched) changes once the owner is signed in,
+// through POST /api/onboarding/language, which also says which edited files it kept.
+const ONB_LANG_PENDING = 'marveen.onbLangPending'
+let onbLangState = { docker: false, installLang: null, loginStep: true, busy: false }
+function onbLangPending() { try { return localStorage.getItem(ONB_LANG_PENDING) } catch { return null } }
+function setOnbLangPending(lang) { try { if (lang) localStorage.setItem(ONB_LANG_PENDING, lang); else localStorage.removeItem(ONB_LANG_PENDING) } catch { /* ignore */ } }
+function syncOnboardingLang(s, loginStep) {
+  onbLangState = { ...onbLangState, docker: s.deployment === 'docker', installLang: s.installLang || null, loginStep }
+  const box = document.getElementById('onbLang')
+  if (!box) return
+  box.hidden = !onbLangState.docker
+  box.querySelectorAll('.onb-lang-btn').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.lang === window._lang))
+    b.disabled = onbLangState.busy
+  })
+}
+// The server's answer as one line: how many files follow the new language, and which edited ones were kept.
+function onbLangSummary(d) {
+  const files = Array.isArray(d.files) ? d.files : []
+  const done = files.filter((f) => f.result === 're-rendered' || f.result === 'added').length
+  const kept = files.filter((f) => f.result === 'kept_customized').map((f) => f.file)
+  return t('onboarding.lang.done', { done }) + (kept.length ? ' ' + t('onboarding.lang.kept', { files: kept.join(', ') }) : '')
+}
+async function switchInstallLang(lang) {
+  onbLangState.busy = true
+  const before = window._lang
+  try {
+    const r = await fetch('/api/onboarding/language', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang }) })
+    const d = await r.json().catch(() => ({}))
+    setOnbLangPending(null)
+    onbLangState.busy = false
+    if (r.ok && d.ok) {
+      window.setLang(lang)
+      await refreshOnboarding()
+      onbMsg(onbLangSummary(d))
+      return
+    }
+    // Not switched: the wizard stays in the install's language, so what it shows is what the agent will use.
+    window.setLang(onbLangState.installLang || before)
+    await refreshOnboarding()
+    onbMsg(t('onboarding.lang.failed', { error: d.error || r.status }), true)
+  } catch {
+    onbLangState.busy = false
+    window.setLang(before)
+    onbMsg(t('auth.login.err_network'), true)
+  }
+}
+document.querySelectorAll('#onbLang .onb-lang-btn').forEach((b) => b.addEventListener('click', async () => {
+  const lang = b.dataset.lang
+  if (onbLangState.busy || !onbLangState.docker) return
+  if (onbLangState.loginStep) {
+    // Not signed in yet: this browser only; the install follows right after the login.
+    setOnbLangPending(lang === onbLangState.installLang ? null : lang)
+    if (lang !== window._lang) window.setLang(lang)
+    applyOnboardingProviderTab()
+    await refreshOnboarding()
+    return
+  }
+  if (lang === onbLangState.installLang && lang === window._lang) return
+  await switchInstallLang(lang)
+}))
 // ONBOARDOWNERPW1107 (owner decision, 11-07): the wizard's FIRST step is the dashboard login, so every later step runs
 // in the owner's session (the Bridge key or the token plus the owner cookie) and never stops on a "go to Settings"
 // text. owner_session is in the status only for a caller that could hold it (the shared token, a FULL device key, a
@@ -16220,6 +16286,13 @@ function renderOnboarding(s, auth) {
   const base = onboardingCurrentStep(s)
   if (base === 0) { overlay.classList.remove('active'); overlay.hidden = true; document.body.style.overflow = ''; return }
   const loginStep = onboardingNeedsLogin(auth)
+  syncOnboardingLang(s, loginStep)
+  // DOCKERUX1118: a language chosen before the login is the install's now that the owner is signed in.
+  const pendingLang = onbLangPending()
+  if (!loginStep && onbLangState.docker && !onbLangState.busy && (pendingLang === 'en' || pendingLang === 'hu')) {
+    if (pendingLang === s.installLang) setOnbLangPending(null)
+    else { switchInstallLang(pendingLang); return }
+  }
   const step = onboardingDisplayStep(base, auth)
   overlay.hidden = false
   overlay.classList.add('active')

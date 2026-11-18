@@ -36,7 +36,7 @@ If the start stops with `error from registry: denied`, the image of this version
 **Choosing the channel and other settings:** the channel is chosen **before** the first start, with `MARVEEN_CHANNEL=telegram|discord|slack` in a `.env` file next to `docker-compose.yml` or in your shell. It is fixed for this install. Other optional settings:
 
 - `MARVEEN_AGENT_ID`: the main agent's id, default `marveen`; also fixed.
-- `MARVEEN_LANG`: `en` or `hu`.
+- `MARVEEN_LANG`: `en` (default) or `hu`, the install's language: the agent's files and the dashboard. You can also switch it on the setup wizard's first screen (Magyar / English); see [The setup wizard](#the-setup-wizard).
 - `TZ`: e.g. `Europe/Budapest`.
 - `MARVEEN_VERSION`: the image tag, default `latest`.
 
@@ -63,6 +63,8 @@ The link carries the install's access token. Set the dashboard password in the w
 5. Pairing: message your bot, and approve the code in the dashboard.
 
 The main agent starts as soon as the token is saved.
+
+**The language:** the wizard's first screen has a Magyar / English switch. Before you have signed in it changes the wizard's text only; once you have signed in, it changes the install's language. The agent's files that you have not edited (`CLAUDE.md`, `SOUL.md`, the shipped skills and scheduled tasks) are written again in the new language. A file you edited is left as it is, and the wizard lists it. The switch works until the main agent first starts.
 
 ### After the wizard: the name rule of the outgoing-text check
 

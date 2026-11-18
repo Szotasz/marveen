@@ -2292,6 +2292,10 @@ window._i18n.hu = {
   'onboarding.login.tab':        'Belépés',
   'onboarding.login.create_desc': 'Először hozd létre a dashboard-belépésedet. Ezzel a felhasználónévvel és jelszóval lépsz be később is, és ezzel hagyod jóvá a beállításokat. Utána a varázsló innen folytatódik.',
   'onboarding.login.create_btn':  'Létrehozás és belépés',
+  // DOCKERUX1118: the install language switch
+  'onboarding.lang.done':  'A telepítés nyelve átváltva. Az új nyelvre írt fájlok: {done}.',
+  'onboarding.lang.kept':  'Ezeket testreszabtad, ezért változatlanul hagytam: {files}.',
+  'onboarding.lang.failed':  'A nyelvváltás nem sikerült: {error}',
   'onboarding.login.signin_desc': 'Ezen a gépen már van dashboard-belépés. Lépj be vele, és a varázsló innen folytatódik.',
   'onboarding.login.created_signin': 'A belépés létrejött, de a bejelentkezés most nem sikerült. Lépj be vele itt.',
   'onboarding.login.taken_signin': 'Közben létrejött egy dashboard-belépés ezen a gépen. Lépj be vele itt.',

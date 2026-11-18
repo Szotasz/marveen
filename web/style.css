@@ -8049,6 +8049,12 @@ body {
 .onboarding-modal .modal-close { position: absolute; top: 12px; right: 12px; }
 .onboarding-modal h2 { margin: 0 0 4px; }
 .onb-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 16px; }
+/* DOCKERUX1118: the install language buttons on the wizard's first screen */
+.onb-lang { display: flex; gap: 6px; margin: -6px 0 14px; }
+.onb-lang[hidden] { display: none; }
+.onb-lang-btn { font-size: 12px; padding: 6px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-muted); cursor: pointer; }
+.onb-lang-btn[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.onb-lang-btn:disabled { opacity: 0.6; cursor: wait; }
 .onboarding-steps { display: flex; gap: 8px; margin-bottom: 10px; }
 .onb-flow-note { font-size: 12px; color: var(--text-muted); background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0 0 14px; }
 .onboarding-step { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 6px 8px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); }
