@@ -22,7 +22,7 @@
 // that (at-least-once + best-effort dedup); a durable dedup column is phase 2.
 import { logger } from '../../logger.js'
 import type { AgentMessage } from '../../db.js'
-import { getFederationConfig, FEDERATION_MIN_TOKEN_LENGTH, type FederationPeer } from './config.js'
+import { getFederationConfig, FEDERATION_MIN_TOKEN_LENGTH, isPeerAgentAllowed, type FederationPeer } from './config.js'
 import { parseQualifiedId } from './address.js'
 import { readBoundedBody } from './http.js'
 
@@ -112,6 +112,11 @@ export async function sendFederatedMessage(
   if (!peer) return { kind: 'failed', error: `Unknown federation peer '${target.system}'` }
   if (!peer.outboundToken || peer.outboundToken.length < FEDERATION_MIN_TOKEN_LENGTH) {
     return { kind: 'failed', error: `Pairing incomplete for peer '${peer.id}': no outbound token configured yet` }
+  }
+  // Owner-set agent allowlist: an agent outside it does not exist for us, so a
+  // message addressed to it is terminal (no retry would ever make it legal).
+  if (!isPeerAgentAllowed(peer, target.agent)) {
+    return { kind: 'failed', error: `Agent '${target.agent}' of peer '${peer.id}' is not in this peer's allowedAgents list` }
   }
 
   // The stored from_agent is local (slash-free -- POST /api/messages rejects

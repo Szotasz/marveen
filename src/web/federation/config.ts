@@ -68,6 +68,39 @@ export interface FederationPeer {
   // Summaries are derived from persona files and may carry personal color --
   // the owner grants them peer by peer, not globally.
   shareCapabilitySummaries?: boolean
+  // Optional per-peer agent allowlist (owner choice). Absent = every agent the
+  // peer publishes is visible and reachable (the pre-allowlist behaviour).
+  // Present = ONLY these agents of that peer exist for us: they are the only
+  // ones shown (status/directory/UI), the only ones we send to, and the only
+  // senders we accept from that peer. Stored lowercase, compared
+  // case-insensitively. An empty list is rejected: "nobody" is what removing
+  // the peer is for, and an accidental [] would silently cut the link.
+  allowedAgents?: string[]
+}
+
+export const MAX_ALLOWED_AGENTS_PER_PEER = 100
+
+/** Validate a raw allowedAgents value. undefined/null -> undefined (no
+ *  allowlist); otherwise a deduped lowercase list, or an error string. */
+export function parseAllowedAgents(raw: unknown): string[] | undefined | string {
+  if (raw === undefined || raw === null) return undefined
+  if (!Array.isArray(raw)) return 'allowedAgents must be an array of agent ids'
+  if (raw.length === 0) return 'allowedAgents must not be empty (remove the peer instead)'
+  if (raw.length > MAX_ALLOWED_AGENTS_PER_PEER) return `allowedAgents has more than ${MAX_ALLOWED_AGENTS_PER_PEER} entries`
+  const out: string[] = []
+  for (const a of raw) {
+    if (!isValidIdSegment(a)) return 'allowedAgents contains an invalid agent id'
+    const id = (a as string).toLowerCase()
+    if (!out.includes(id)) out.push(id)
+  }
+  return out
+}
+
+/** Whether `agentId` of `peer` is visible/reachable for us. No allowlist =
+ *  every agent is allowed. */
+export function isPeerAgentAllowed(peer: Pick<FederationPeer, 'allowedAgents'> | undefined, agentId: string): boolean {
+  if (!peer || !peer.allowedAgents) return true
+  return peer.allowedAgents.includes(agentId.toLowerCase())
 }
 
 export interface FederationConfig {
@@ -171,6 +204,10 @@ export function validateFederationConfig(parsed: unknown): FederationConfig | st
       if (typeof p.shareCapabilitySummaries !== 'boolean') return `invalid shareCapabilitySummaries for ${id} (boolean)`
       shareCapabilitySummaries = p.shareCapabilitySummaries
     }
+    // Same round-trip rule as above: a dropped allowlist would silently
+    // re-expose every peer agent on the next peer edit.
+    const allowedAgents = parseAllowedAgents(p.allowedAgents)
+    if (typeof allowedAgents === 'string') return `invalid allowedAgents for ${id} (${allowedAgents})`
     peers.push({
       id,
       baseUrl: (p.baseUrl as string).replace(/\/+$/, ''),
@@ -179,6 +216,7 @@ export function validateFederationConfig(parsed: unknown): FederationConfig | st
       trust: 'untrusted',
       ...(abandonWindowMinutes !== undefined ? { abandonWindowMinutes } : {}),
       ...(shareCapabilitySummaries ? { shareCapabilitySummaries: true } : {}),
+      ...(allowedAgents ? { allowedAgents } : {}),
     })
   }
   // Main-agent delegation eagerness (global, not per-peer). Absent -> default;
