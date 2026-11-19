@@ -320,7 +320,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     const pr = paired()
     // Only surface an already-saved token while step 3 (channel setup) is the one still pending --  once the
     // channel is configured there is nothing to pre-fill and no reason to hand the value back over the wire.
-    const existingTokens = !ch ? existingChannelTokens() : { botToken: null, appToken: null }
+    // DOCKERHTTPS1119 Dani n2 (81264): a setup session (the public listener before the first login) never gets a saved
+    // channel token back; the wizard reaches the channel step only after the password, on the owner session.
+    const existingTokens = !ch && ctx.auth?.kind !== 'setup' ? existingChannelTokens() : { botToken: null, appToken: null }
     // Slack pre-flight, surfaced passively (GET, no probe/write/restart): when  a token is already on disk
     // but the managed-settings.json plugin allowlist isn't, the wizard can show the sudo command immediately
     // instead of making the operator hit Save just to learn it's needed. Kept null whenever there's nothing to

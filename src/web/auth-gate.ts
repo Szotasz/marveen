@@ -654,7 +654,9 @@ export async function gateRequest(
   opts: { dashboardToken: string; resolveAgentToken?: AgentTokenResolver; mainAgentId: string; identityLookups?: IdentityLookups; agentVaultAcl?: () => VaultAcl; publicListener?: boolean },
 ): Promise<AuthResult | null> {
   const auth = resolveAuth(req, url, path, method, opts.dashboardToken, opts.resolveAgentToken, opts.publicListener === true)
-  if (opts.publicListener === true && auth.kind === 'none' && path.startsWith('/api/') && !requiresAuth(path, method) && !publicListenerOpenPath(path, method)) {
+  // Dani n1 (81264): a setup session counts as no principal here too, so it does not reach the self-authenticating
+  // public routes (the operator login, avatars, the video file, the Teams card callback) either.
+  if (opts.publicListener === true && (auth.kind === 'none' || auth.kind === 'setup') && path.startsWith('/api/') && !requiresAuth(path, method) && !publicListenerOpenPath(path, method)) {
     res.writeHead(404, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: 'Not found' }))
     return null
