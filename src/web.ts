@@ -111,6 +111,7 @@ import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper, startApprovalReactionSweeper } from './web/routes/approvals.js'
 import { registerAgentCreateConsumer, sweepAgentCreateOnStart } from './web/agent-create-approval.js'
+import { startGromzoDecisionWatch } from './web/agent-create-gromzo.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleFleetFreeze } from './web/routes/fleet-freeze.js'
 import { initGromzoConsentWatch, tryHandleGromzo } from './web/routes/gromzo.js'
@@ -662,6 +663,8 @@ export function startWebServer(port = 3420): http.Server {
   // AGENTCREATEPR2-1119: the agent_create consumer, and the start-up sweep of requests decided while it could not run
   registerAgentCreateConsumer()
   void sweepAgentCreateOnStart().catch((err) => logger.error({ err }, 'agent_create start-up sweep failed'))
+  // AGENTCREATEPR3-1119: the owner's Gromzo answers to agent_create rows, read from mxd every 15 s
+  if (!servicesOff) startGromzoDecisionWatch()
 // Desktop-lock TTL sweeper. Independent of the schedule gate on purpose: an
 // abandoned lock must expire (and be reported) even on a day when no
 // desktop-driving round happens to be due.

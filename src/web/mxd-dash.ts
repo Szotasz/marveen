@@ -18,6 +18,7 @@
 // the live controller: tests must use a fake socket (see the VITEST guard below).
 
 import net from 'node:net'
+import { randomBytes } from 'node:crypto'
 import { readEnvFile } from '../env.js'
 
 /** mxd's dash.sock where the installers put it (the agent.sock sibling, see
@@ -301,4 +302,61 @@ export async function requestAgentAvatar(call: MxdDashCall, slug: string, bytes:
   if (!MXD_AGENT_SLUG_RE.test(slug) || bytes.length === 0) return { ok: false, code: 'bad_request' }
   const r = await call({ verb: 'agent_avatar', slug, image: bytes.toString('base64') })
   return r.ok === true ? { ok: true, applied: r.applied === true, pending: r.applied !== true && r.pending === true } : { ok: false, code: errorCode(r) }
+}
+
+// AGENTCREATEPR3-1119: the owner's decisions through mxd (GROMZODONTES1030, marveen-mxd src/decisions.rs; the verbs came
+// with mxd 84ef8fe). The dashboard posts an approval row, the owner answers it from a signed Gromzo device, and the
+// gate spends the approval once. mxd computes the row's hash itself (F1); a consume names the kind, the hash and the gate.
+const DECISION_ID_RE = /^[A-Za-z0-9_-]{8,64}$/
+const DECISION_KEY_RE = /^[a-z][a-z0-9_]{0,39}$/
+const DECISION_HASH_RE = /^[0-9a-f]{64}$/
+
+/** Can this mxd take decisions? A decision_get of a random id (Samu 81756, 3): an unknown id means the verb exists
+ *  (ready); unknown_verb is an mxd older than the decisions verbs (old_mxd: the adapter stays off, loudly); anything
+ *  else, a socket error or a timeout is "not reachable now" (unavailable), never "old". Asked before every post. */
+export type DecisionsCapability = 'ready' | 'old_mxd' | 'unavailable'
+export async function probeDecisions(call: MxdDashCall): Promise<DecisionsCapability> {
+  try {
+    const r = await call({ verb: 'decision_get', id: `probe-${randomBytes(8).toString('hex')}` })
+    if (r.ok === true) return 'ready'
+    const code = errorCode(r)
+    if (code === 'unknown_id') return 'ready'
+    if (code === 'unknown_verb') return 'old_mxd'
+    return 'unavailable'
+  } catch {
+    return 'unavailable'
+  }
+}
+
+export type DecisionPostResult = { ok: true, hash: string } | { ok: false, code: string }
+/** Posts an approval row (options: mxd's own approve/reject). The reply's hash is mxd's, over the canonical row. */
+export async function postDecision(call: MxdDashCall, id: string, kind: string, fields: Record<string, string>): Promise<DecisionPostResult> {
+  const keys = Object.keys(fields)
+  if (!DECISION_ID_RE.test(id) || !DECISION_KEY_RE.test(kind) || keys.length === 0 || keys.length > 12 || !keys.every((k) => DECISION_KEY_RE.test(k))) return { ok: false, code: 'bad_request' }
+  const r = await call({ verb: 'decision_post', id, row: 'approval', kind, fields })
+  if (r.ok !== true) return { ok: false, code: errorCode(r) }
+  return typeof r.hash === 'string' && DECISION_HASH_RE.test(r.hash) ? { ok: true, hash: r.hash } : { ok: false, code: 'bad_reply' }
+}
+
+export type DecisionGetResult =
+  | { ok: true, state: 'open', hash: string }
+  | { ok: true, state: 'answered', choice: string, consumed: boolean, hash: string }
+  | { ok: false, code: string }
+/** The row's state, from mxd's store only (a posted field never makes it decided). */
+export async function getDecision(call: MxdDashCall, id: string): Promise<DecisionGetResult> {
+  if (!DECISION_ID_RE.test(id)) return { ok: false, code: 'bad_request' }
+  const r = await call({ verb: 'decision_get', id })
+  if (r.ok !== true) return { ok: false, code: errorCode(r) }
+  if (typeof r.hash !== 'string' || !DECISION_HASH_RE.test(r.hash)) return { ok: false, code: 'bad_reply' }
+  if (r.state === 'open') return { ok: true, state: 'open', hash: r.hash }
+  if (r.state === 'answered' && typeof r.choice === 'string') return { ok: true, state: 'answered', choice: r.choice, consumed: r.consumed === true, hash: r.hash }
+  return { ok: false, code: 'bad_reply' }
+}
+
+export type DecisionConsumeResult = { ok: true } | { ok: false, code: string }
+/** Spends one approval of [kind] whose row hashes to [hash], for [gate]; once. */
+export async function consumeDecision(call: MxdDashCall, kind: string, hash: string, gate: string): Promise<DecisionConsumeResult> {
+  if (!DECISION_KEY_RE.test(kind) || !DECISION_KEY_RE.test(gate) || !DECISION_HASH_RE.test(hash)) return { ok: false, code: 'bad_request' }
+  const r = await call({ verb: 'decision_consume', kind, hash, gate })
+  return r.ok === true ? { ok: true } : { ok: false, code: errorCode(r) }
 }

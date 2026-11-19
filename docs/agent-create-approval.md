@@ -112,10 +112,25 @@ hash, and whoever decides must pass back exactly the hash the owner was shown. A
   shared token, a sub-agent's own token and a device key without the owner session get 403, and so does the first-run
   or install path, which has no owner session. This gives no new right: the owner session can create an agent on the
   dashboard directly anyway.
-- **In a channel**, an adapter checks the owner's decision itself and passes the hash it showed. The adapters (Teams
-  card, Telegram, Slack, Gromzo) come in the next step.
+- **In a channel**, an adapter checks the owner's decision itself and passes the hash it showed.
+  - A filed request asks the owner right away, as any server-filed request does: a Teams card, else the Slack reply path,
+    else the Slack DM, else Telegram. It goes to the Gromzo app too, when mxd can take decisions. A delivery that fails
+    never undoes the filing: the request stays pending on the dashboard, and the failure is logged.
+  - **Teams card**: rendered from the stored spec, only while its canonical JSON still hashes to the approval's hash.
+    The card shows the server's whole text, and the click is decided against the hash the card showed.
+  - **Slack reply** (✅ or "mehet"; there is no Slack button): the post records the hash it showed, and the reply is
+    decided against it. A request too long for one Slack message is never split: the DM is a short "decide on the
+    dashboard" pointer with no post row, so no reply can approve it.
+  - **Gromzo**: the stored spec's text goes to the owner's app as an mxd decisions row. Before every post a capability
+    probe (`decision_get` of a random id) tells an mxd older than the decisions verbs (the adapter stays off, loudly)
+    from one that cannot be reached now. A watcher reads the owner's answer and spends it in this order: our row
+    pending to consuming, then mxd's `decision_consume`, then the core decides against the hash the posted row showed.
+    If mxd refuses, the row goes back to pending and nothing is decided. If mxd spent it but the core did not decide,
+    the main agent is alerted and nothing is created.
+  - Telegram's button comes in a separate change.
 
-A rejection stays a plain status write.
+On a channel a rejection is bound to the shown hash too (as the Teams card always was); on the dashboard it stays a plain
+status write.
 
 ## The creation
 

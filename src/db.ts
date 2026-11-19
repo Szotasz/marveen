@@ -1807,6 +1807,9 @@ export function initDatabase(dbPathOverride?: string): void {
     'decided_by_ts TEXT', 'binding TEXT', 'notice_ts TEXT',
     // APPROVALTAGEN1108: the language the post was made in (its words decide); NULL = hu, as every older row.
     'lang TEXT',
+    // AGENTCREATEPR3-1119: the content hash of a hash-bound request (agent_create) the post showed; the reply decides
+    // against it. NULL for every other category and every older row (they bind the posted text only).
+    'content_hash TEXT',
   ]) {
     try { db.exec(`ALTER TABLE approval_slack_posts ADD COLUMN ${col}`) } catch { /* already exists */ }
   }
@@ -1848,6 +1851,21 @@ export function initDatabase(dbPathOverride?: string): void {
       decision TEXT,
       decided_activity_id TEXT,
       decided_by_aad TEXT
+    )
+  `)
+  // AGENTCREATEPR3-1119: an approval posted to the owner's Gromzo app through mxd's decisions verbs. mxd_hash is the hash
+  // mxd computed over the posted row (the one its consume is spent against); spec_hash is the approval's content hash the
+  // posted row showed (the core decides against it, never the approval's current hash). state: pending (waiting for the owner's
+  // answer), consuming (the answer was approve and mxd's consume is under way), done, failed. A security table.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_gromzo_posts (
+      approval_id TEXT PRIMARY KEY,
+      mxd_hash TEXT NOT NULL,
+      spec_hash TEXT NOT NULL,
+      state TEXT NOT NULL,
+      posted_at INTEGER NOT NULL,
+      updated_at INTEGER,
+      note TEXT
     )
   `)
   // Every consume call leaves a row here, the refused ones too: a second send
@@ -8181,17 +8199,18 @@ export interface ApprovalSlackPostRow {
   binding: string | null
   notice_ts: string | null
   lang: string | null
+  content_hash?: string | null
 }
 
 export function recordApprovalSlackPost(p: {
   approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string
-  contentBasis?: string; reactionMode?: boolean; replyMode?: boolean; lang?: 'hu' | 'en'
+  contentBasis?: string; reactionMode?: boolean; replyMode?: boolean; lang?: 'hu' | 'en'; contentHash?: string | null
 }): boolean {
   return db.prepare(`
-    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at, content_basis, reaction_mode, reply_mode, lang)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at, content_basis, reaction_mode, reply_mode, lang, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000),
-    p.contentBasis ?? null, p.reactionMode === false ? 0 : 1, p.replyMode === true ? 1 : 0, p.lang === 'en' ? 'en' : null).changes > 0
+    p.contentBasis ?? null, p.reactionMode === false ? 0 : 1, p.replyMode === true ? 1 : 0, p.lang === 'en' ? 'en' : null, p.contentHash ?? null).changes > 0
 }
 
 /**
@@ -8244,8 +8263,11 @@ export function decideApprovalFromSlack(p: {
         WHERE approval_id = ? AND decided_at IS NULL
       `).run(now, p.decision, p.decidedByTs ?? null, p.binding ?? null, p.approvalId).changes > 0
       if (!closed) return { outcome: 'already_decided' as const, changed: false }
-      // The Slack post binds the message text (checked before this call), not the request's content_hash: no hash here.
-      const core = decideApprovalInTx({ approvalId: p.approvalId, status: p.status, resolvedBy: p.resolvedBy, now })
+      // The Slack post binds the message text (checked before this call). AGENTCREATEPR3-1119: a hash-bound request's
+      // post also recorded the content hash it showed, and the decision is bound to it (agent_create).
+      const post = db.prepare('SELECT content_hash FROM approval_slack_posts WHERE approval_id = ?').get(p.approvalId) as { content_hash: string | null } | undefined
+      const core = decideApprovalInTx({ approvalId: p.approvalId, status: p.status, resolvedBy: p.resolvedBy, now,
+        ...(post?.content_hash ? { expectedContentHash: post.content_hash } : {}) })
       return { outcome: 'recorded' as const, changed: core === 'decided' }
     })()
   } catch (err) {
@@ -8254,6 +8276,32 @@ export function decideApprovalFromSlack(p: {
   }
   if (res.changed) runApprovalConsumer(p.approvalId)
   return res
+}
+
+// AGENTCREATEPR3-1119: the Gromzo approval rows (see the table's comment).
+export interface ApprovalGromzoPost { approval_id: string; mxd_hash: string; spec_hash: string; state: string; posted_at: number; updated_at: number | null; note: string | null }
+export function recordApprovalGromzoPost(approvalId: string, mxdHash: string, specHash: string): boolean {
+  return db.prepare('INSERT OR IGNORE INTO approval_gromzo_posts (approval_id, mxd_hash, spec_hash, state, posted_at) VALUES (?, ?, ?, ?, ?)')
+    .run(approvalId, mxdHash, specHash, 'pending', Math.floor(Date.now() / 1000)).changes > 0
+}
+/** The rows waiting for the owner's answer, their approval still pending. */
+export function pendingApprovalGromzoPosts(limit = 50): ApprovalGromzoPost[] {
+  return db.prepare(`
+    SELECT g.* FROM approval_gromzo_posts g JOIN approvals a ON a.id = g.approval_id
+    WHERE g.state = 'pending' AND a.status = 'pending' ORDER BY g.posted_at ASC LIMIT ?
+  `).all(limit) as ApprovalGromzoPost[]
+}
+/** Rows a stopped server left between mxd's consume and the commit (swept at the watcher's start). */
+export function consumingApprovalGromzoPosts(): ApprovalGromzoPost[] {
+  return db.prepare("SELECT * FROM approval_gromzo_posts WHERE state = 'consuming' ORDER BY posted_at ASC").all() as ApprovalGromzoPost[]
+}
+export function getApprovalGromzoPost(approvalId: string): ApprovalGromzoPost | undefined {
+  return db.prepare('SELECT * FROM approval_gromzo_posts WHERE approval_id = ?').get(approvalId) as ApprovalGromzoPost | undefined
+}
+/** Moves the row from [from] to [to] (one step, compare-and-set): true when it moved. */
+export function moveApprovalGromzoPost(approvalId: string, from: string, to: string, note: string | null = null): boolean {
+  return db.prepare('UPDATE approval_gromzo_posts SET state = ?, updated_at = ?, note = COALESCE(?, note) WHERE approval_id = ? AND state = ?')
+    .run(to, Math.floor(Date.now() / 1000), note, approvalId, from).changes > 0
 }
 
 // TEAMSAPPROVECARD1118: the Teams approval card rows (see the table's comment).
