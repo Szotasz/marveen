@@ -90,7 +90,7 @@ describe('the notice comes BEFORE each root step on managed-settings.json', () =
   const MACOS_STEPS = [
     'if managed_write "$MANAGED_FILE" --add-plugin discord@claude-plugins-official',
     '      if managed_write "$MANAGED_FILE" \\',
-    'if /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR" 2>/dev/null && managed_write "$MANAGED_FILE" --create --channels-enabled',
+    'if /usr/bin/sudo /bin/mkdir -p -m 0755 "$MANAGED_DIR" 2>/dev/null && managed_write "$MANAGED_FILE" --create --channels-enabled',
   ]
 
   it('install-macos.sh: a call between the previous step and each block\'s first root step', () => {
@@ -110,7 +110,7 @@ describe('the notice comes BEFORE each root step on managed-settings.json', () =
     const firstCall = lineOf(MACOS, '  managed_settings_notice')
     const rootSteps = lines
       .map((l, i) => ({ l, i }))
-      .filter(({ l }) => !/^\s*#/.test(l) && (/managed_write "\$MANAGED_FILE"/.test(l) || /\/usr\/bin\/sudo \/bin\/mkdir -p "\$MANAGED_DIR"/.test(l)))
+      .filter(({ l }) => !/^\s*#/.test(l) && (/managed_write "\$MANAGED_FILE"/.test(l) || /\/usr\/bin\/sudo \/bin\/mkdir -p -m 0755 "\$MANAGED_DIR"/.test(l)))
     // discord merge, slack merge, slack mkdir + create, the channels gate (mkdir and write on one line)
     expect(rootSteps.length).toBe(5)
     for (const { i } of rootSteps) expect(i).toBeGreaterThan(firstCall)
