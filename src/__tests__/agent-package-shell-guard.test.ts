@@ -191,6 +191,44 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
     start(); start()
     expect(count()).toBe(before + 3)
   })
+  it('the normal start path runs the same report scan, once per finding, shared with the fallback (PRI3HARDEN1118 point 2)', () => {
+    const kinds = (name: string) => (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])
+      .map((f) => JSON.parse(readFileSync(join(I.pendingNoticesDir(), f), 'utf8')))
+      .filter((n) => n.name === name && (n.kind === 'start_scan_finding' || n.kind === 'fallback_scan_finding'))
+      .map((n) => n.kind)
+    const d = agent({ 'CLAUDE.md': I.packageShellText('both1', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': 'run !`id` now\n' })
+    I.reportPackageLayersAtStart('both1', d)
+    I.reportPackageLayersAtStart('both1', d)
+    expect(kinds('both1')).toEqual(['start_scan_finding'])
+    // the fallback after a normal start: the same finding is not told again
+    const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+    try { expect(I.prepareFallbackClaudeMd('both1', d, fb)).toBe('expanded') } finally { rmSync(fb, { recursive: true, force: true }) }
+    expect(kinds('both1')).toEqual(['start_scan_finding'])
+    // a clean start resets; the finding coming back is told again
+    writeFileSync(join(d, 'LOCAL.md'), 'notes\n')
+    I.reportPackageLayersAtStart('both1', d)
+    writeFileSync(join(d, 'LOCAL.md'), 'run !`id` now\n')
+    I.reportPackageLayersAtStart('both1', d)
+    expect(kinds('both1')).toEqual(['start_scan_finding', 'start_scan_finding'])
+    expect(I.noticeText({ kind: 'start_scan_finding', name: 'both1', path: '/p' })).toMatch(/^Agent "both1" started, and/)
+  })
+  it('a hand-made agent (no package shell) is not scanned at start', () => {
+    const d = agent({ 'CLAUDE.md': '# hand-made\nrun !`id` now\n', 'LOCAL.md': 'run !`id` now\n' })
+    const name = d.split('/').pop()!
+    I.reportPackageLayersAtStart(name, d)
+    const mine = (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])
+      .map((f) => JSON.parse(readFileSync(join(I.pendingNoticesDir(), f), 'utf8'))).filter((n) => n.name === name)
+    expect(mine).toEqual([])
+  })
+  it('startAgentProcess runs the report scan right after the package guard', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf8')
+    const start = src.slice(src.indexOf('export async function startAgentProcess'))
+    const guard = start.indexOf('packageStartRefusal(name, dir)')
+    const report = start.indexOf('reportPackageLayersAtStart(name, dir)')
+    expect(guard).toBeGreaterThan(0)
+    expect(report).toBeGreaterThan(guard)
+    expect(report).toBeLessThan(start.indexOf('readAgentRemoteConfig(name)'))
+  })
   it('the report scan ignores the product-generated sections of the started CLAUDE.md, but still sees a forbidden token in PACKAGE.md', async () => {
     const S = await import('../web/agent-scaffold.js')
     const notices = () => (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])
