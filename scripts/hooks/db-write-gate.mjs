@@ -1136,6 +1136,72 @@ export function runsWrittenFile(segs, k, targets, cmd) {
   return false
 }
 
+// GATEPATHNORM1118: the run checks compare names as the command spells them. The same file spelled another way (a
+// relative name after a directory change, ./, ../, //, /./, an absolute path for a relative write) is the same file:
+// every word of a later segment that resolves, at the directory that segment runs in, to a written (or copied) file
+// is added as one more spelling of it. Only spellings are added, never taken away, so this can only deny more. Where a
+// directory cannot be followed (a cd or a wrapper chdir to a variable, a write at an unknown directory), a word with
+// the same last path part counts, as the lost-cwd reading does for the text (WRITEGATERELPATH1115).
+const UNRESOLVABLE_WORD_RX = /[$`*?[\]\u0000]/
+function resolvedAt(word, cwd) {
+  if (!word || word.startsWith('-') || UNRESOLVABLE_WORD_RX.test(word)) return null
+  if (word.startsWith('/')) return resolve(word)
+  if (word === '~' || word.startsWith('~/')) return resolve(expandHome(word === '~' ? '~/' : word))
+  if (word.startsWith('~')) return null
+  return cwd ? resolve(cwd, word) : null
+}
+const lastPart = (p) => { const s = String(p).replace(/\/+$/, ''); return s.slice(s.lastIndexOf('/') + 1) }
+export function writtenFileSpellings(segs, k, targets, ctx) {
+  const names = new Set(targets)
+  const abs = new Set()
+  const lostParts = new Set()
+  const add = (n, cwd) => {
+    const a = resolvedAt(n, cwd)
+    if (a) abs.add(a)
+    else if (!n.startsWith('-') && lastPart(n)) lostParts.add(lastPart(n))
+  }
+  for (const t of targets) add(t, ctx.cwd)
+  // the directory each later segment's command runs in (its wrapper's chdir included); null where it cannot be followed
+  // (a later absolute cd makes it known again)
+  const where = []
+  const c = { ...ctx }
+  const segWords = []
+  for (let j = k + 1; j < segs.length; j++) {
+    const body = subshellParts(segs[j].own).body
+    const ws = shellWords(body)
+    let here = c.cwd ?? null
+    for (const d of ws ? unwrapRun(ws).chdirs : []) here = here === null ? null : resolvedAt(d, here)
+    where[j] = here
+    segWords[j] = ws ? [...ws.map((w) => w.value), ...(ws.redirects ?? []).map((r) => r.value)] : []
+    cwdAfterSegment(body, c)
+  }
+  const matches = (w, j) => {
+    const a = resolvedAt(w, where[j])
+    if (a && abs.has(a)) return true
+    if (!lostParts.size && where[j] !== null) return false
+    // an unknown directory on either side: the last path part decides
+    const part = lastPart(w)
+    if (!part || w.startsWith('-') || UNRESOLVABLE_WORD_RX.test(w)) return false
+    return lostParts.has(part) || (where[j] === null && !w.startsWith('/') && [...abs].some((x) => lastPart(x) === part))
+  }
+  // a copy made later is one more written file: its spellings are added the same way, until nothing new appears
+  for (let round = 0; round <= segs.length; round++) {
+    let grew = false
+    for (let j = k + 1; j < segs.length; j++) {
+      for (const w of segWords[j]) if (!names.has(w) && matches(w, j)) { names.add(w); grew = true }
+    }
+    for (const n of copiedNames(segs, k, [...names])) {
+      if (names.has(n)) continue
+      names.add(n)
+      grew = true
+      const j = segWords.findIndex((ws, i) => i > k && ws?.includes(n))
+      add(n, j > k ? where[j] : null)
+    }
+    if (!grew) break
+  }
+  return [...names]
+}
+
 const PRINTERS = new Set(['echo', 'printf'])
 // The escapes printf (format and %b), echo -e and a POSIX echo decode: \\ and the letter escapes, octal (\NNN, \0NNN),
 // hex (\xHH) and \uHHHH. A decoded control character is a line break for the reading (it ends a word).
@@ -1822,23 +1888,33 @@ export function installFileDeny(command, opts = {}) {
         const rest = ws.map((w) => w.value).filter((v, i, a) => !a.slice(0, i + 1).every((x) => /^[A-Za-z_]\w*=/.test(x)))
         const [w, ...args] = rest
         if (!w) return false
-        if (targets.includes(w)) return true
+        if (spellings.includes(w)) return true
         if (!/^(?:\S*\/)?(?:(?:ba|z|da|k)?sh|source|\.|python[\d.]*|node|perl|ruby|php)$/.test(w)) return false
         const script = args.find((v) => !v.startsWith('-'))
-        return script !== undefined && targets.includes(script)
+        return script !== undefined && spellings.includes(script)
       })
-      if (targets.length && (runsWrittenFile(segs, k, targets, cmd) || prefixedRun())) {
+      // GATEPATHNORM1118: the run checks take every spelling of the written file, resolved at each segment's directory
+      const spellings = targets.length ? writtenFileSpellings(segs, k, targets, ctx) : targets
+      if (targets.length && (runsWrittenFile(segs, k, spellings, cmd) || prefixedRun())) {
         const text = [pipedInText(k), scriptTextOf(own, seg.bodies, name)].filter(Boolean).join('\n')
         // a name an earlier segment assigned a protected path to, used in the text: an unquoted heredoc expands it as it
         // is written, an exported one expands as the file runs
         if (taintedIn(text)) return true
+        // GATEPATHNORM1118: "only a shell runs it" read over the other spellings too, so a run under another spelling is
+        // read as the same run under the written one. Where the written names are named again (the only runs the earlier
+        // reading saw), the written names must agree as well; the later-directory reading takes either: neither can pass
+        // more than before.
+        const literalNamed = segs.slice(k + 1).some((s) => targets.some((t) => [s.own, ...s.bodies].join('\n').includes(t)))
+          || liveSubstitutions(cmd).some((x) => namesAny(x, targets))
+        const shellRunsOnlyJudge = () => shellRunsOnly(segs, k, spellings, text) && (!literalNamed || shellRunsOnly(segs, k, targets, text))
+        const shellRunsOnlyLater = () => shellRunsOnly(segs, k, targets, text) || shellRunsOnly(segs, k, spellings, text)
         // judged at the cwd and, after a cd that may have failed, at the old directory too (INSTRFILES1104 A)
         const judge = () => {
           const hits = text ? hitsIn(text, ctx) : []
           if (hits.some((h) => h.kind !== 'ancestor')) return true
           // The ancestor-only pass reads the text as shell (its cd followed). It holds only when a shell is what runs
           // the file; another interpreter changes directory in its own language, which this reading does not see.
-          return hits.length > 0 && (!shellRunsOnly(segs, k, targets, text) || !ancestorOnlyHolds(text) || dirChangeInScript(text))
+          return hits.length > 0 && (!shellRunsOnlyJudge() || !ancestorOnlyHolds(text) || dirChangeInScript(text))
         }
         if (both(judge)) return true
         // ...and at every directory a later segment moves to before the file runs (`cd <dir> && sh s.sh`, Dani #2546):
@@ -1849,7 +1925,7 @@ export function installFileDeny(command, opts = {}) {
         const judgeLater = () => {
           const hits = text ? hitsIn(text, ctx) : []
           if (hits.some((h) => h.kind !== 'ancestor')) return true
-          return hits.length > 0 && shellRunsOnly(segs, k, targets, text) && (!ancestorOnlyHolds(text) || dirChangeInScript(text))
+          return hits.length > 0 && shellRunsOnlyLater() && (!ancestorOnlyHolds(text) || dirChangeInScript(text))
         }
         // GATEOPENFORMS1118: a later directory change that cannot be followed (`cd $D && sh s.sh`) is an unknown
         // directory: the text is read there as a command run after such a cd is (WRITEGATERELPATH1115)
