@@ -1920,6 +1920,10 @@ function roughCommands(cmd) {
   return out
 }
 
+// 47eeb016: the written file the script rule treated as run, and the protected name that matched in its text.
+// redirect noise a read-only reading may ignore: fd dups and /dev/null, as whole tokens only (not /dev/nullx)
+const REDIRECT_NOISE_RX = /\d*>&\d(?![\w/.])|\d*>\s*\/dev\/null(?![\w/.])/g
+let scriptDetail = null
 const ASSIGN_RX = /^([A-Za-z_]\w*)=/
 
 // A segment's subshell parentheses: the "(" that open one before its command (after a control word too) and the ")"
@@ -1946,6 +1950,7 @@ const DIR_CHANGE_RX = /(?:^|[\s;&|(`{])(?:cd|pushd|popd)(?=$|[\s;&|)`}])/
 
 // Bash: does the command write a protected install path? true = deny.
 export function installFileDeny(command, opts = {}) {
+  scriptDetail = null
   const cmd = String(command ?? '')
   // The fast path below is judged with the STRICT re-shell reading (reShell true: no literal reading, the wider dotglob
   // test), whose hits include the literal reading's; the real reading (for python a python start, py-inline-data.py)
@@ -2046,7 +2051,39 @@ export function installFileDeny(command, opts = {}) {
   }
   // A flat $(...) naming a protected path is kept as written (not replaced by an
   // opaque marker), so its segment fails to parse below and is denied.
-  const segs = shellSegments(cmd, { surface: 'security', projectRoot: ctx.root, keepSubst: (inner) => hitsIn(inner, ctx).length > 0 })
+  // 47eeb016: ...unless the outer command is a reader and everything inside the substitution is a plain reader too
+  // (`grep -n x $(ls <root>/scripts/hooks/*.mjs)`): nothing there can write, so the substitution is blanked as usual.
+  // Anything else (a redirect write, a directory changer, an interpreter, a non-reader outer such as curl -d) stays kept.
+  let outerReadersOnly
+  const outerIsReader = () => {
+    if (outerReadersOnly !== undefined) return outerReadersOnly
+    let flat = cmd
+    for (let i = 0; i < 8; i++) flat = flat.replace(/[$<]\(([^()]*)\)/g, ' X ')
+    outerReadersOnly = !/[$<>`()]/.test(flat.replace(REDIRECT_NOISE_RX, '')) && splitSegments(flat).filter(Boolean).every((sg) => {
+      const w = shellWords(sg)
+      if (!w || !w.length) return false
+      const n = commandName(w)
+      return READERS.has(n) || isReadOnlyFsCommand(w, n)
+    })
+    return outerReadersOnly
+  }
+  const innerReadOnly = (inner) => {
+    if (/>/.test(inner.replace(REDIRECT_NOISE_RX, ''))) return false
+    const cmds = roughCommands(inner)
+    return cmds.length > 0 && cmds.every((w) => {
+      const n = commandName(w)
+      // DIR_CHANGERS decides only for `find` here: a find with no action counts as read-only below, but it walks a
+      // directory, so it stays kept as written (conservative). The other directory changers are never readers.
+      if (DIR_CHANGERS.has(n) || INTERPRETERS.has(n) || writesIntoCwd(w, n)) return false
+      return READERS.has(n) || isReadOnlyFsCommand(w, n)
+    })
+  }
+  // 47eeb016: a flat process substitution `<(cat <path>)` is blanked under the same two conditions (shellWords cannot
+  // read it, so it would deny the whole segment); with a writer inside or a non-reader outer it stays.
+  const cmdForSegs = cmd.replace(/<\(([^()]*)\)/g, (full, inner) =>
+    hitsIn(inner, ctx).length > 0 && outerIsReader() && innerReadOnly(inner) ? ' X ' : full)
+  const segs = shellSegments(cmdForSegs, { surface: 'security', projectRoot: ctx.root,
+    keepSubst: (inner) => hitsIn(inner, ctx).length > 0 && !(outerIsReader() && innerReadOnly(inner)) })
   // A git write or an implicit cwd writer inside a live command substitution: the segments below see only a marker
   // in its place.
   for (const inner of liveSubstitutions(cmd)) {
@@ -2265,7 +2302,7 @@ export function installFileDeny(command, opts = {}) {
         const text = [pipedInText(k), scriptTextOf(own, seg.bodies, name)].filter(Boolean).join('\n')
         // a name an earlier segment assigned a protected path to, used in the text: an unquoted heredoc expands it as it
         // is written, an exported one expands as the file runs
-        if (taintedIn(text)) return true
+        if (taintedIn(text)) { scriptDetail = { file: targets[0], name: text.match(/\$\{?(\w+)/)?.[0] ?? '(tainted variable)' }; return true }
         // GATEPATHNORM1118: "only a shell runs it" read over the other spellings too, so a run under another spelling is
         // read as the same run under the written one. Where the written names are named again (the only runs the earlier
         // reading saw), the written names must agree as well; the later-directory reading takes either: neither can pass
@@ -2277,6 +2314,7 @@ export function installFileDeny(command, opts = {}) {
         // judged at the cwd and, after a cd that may have failed, at the old directory too (INSTRFILES1104 A)
         const judge = () => {
           const hits = text ? hitsIn(text, ctx) : []
+          if (hits[0]) scriptDetail = { file: targets[0], name: hits[0].word }
           if (hits.some((h) => h.kind !== 'ancestor')) return true
           // The ancestor-only pass reads the text as shell (its cd followed). It holds only when a shell is what runs
           // the file; another interpreter changes directory in its own language, which this reading does not see.
@@ -2290,6 +2328,7 @@ export function installFileDeny(command, opts = {}) {
         // its inline form is (PATHGLOBSPLIT1105).
         const judgeLater = () => {
           const hits = text ? hitsIn(text, ctx) : []
+          if (hits[0]) scriptDetail = { file: targets[0], name: hits[0].word }
           if (hits.some((h) => h.kind !== 'ancestor')) return true
           return hits.length > 0 && shellRunsOnlyLater() && (!ancestorOnlyHolds(text) || dirChangeInScript(text))
         }
@@ -2505,6 +2544,7 @@ function decide(toolName, toolInput, opts = {}) {
     if (subOnly() && claudeMcpListWrite(command)) return { deny: true, reason: 'subagent-file' }
     if (subOnly() && claudePluginWrite(command)) return { deny: true, reason: 'subagent-file' }
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
+    scriptDetail = null
     const file = installFileDeny(command, opts)
     if (file === true && subOnly() && !installFileDeny(command, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
     if (file) return { deny: true, reason: file === 'git' ? 'git' : 'install-file' }
@@ -2614,6 +2654,18 @@ function deny(reason) {
   process.exit(0)
 }
 
+// 47eeb016: the Fix-4 diagnostics -- the written file the script rule treated as run, and the protected name that
+// matched in its text -- live ONLY in the deny message. They are recomputed in the worker thread by the same engine
+// from the same input; the verdict object from gateDecision carries no detail field, and only the finished suffix
+// string travels to the main thread, in the IPC message's `trigger` field.
+function installFileTrigger(command, opts) {
+  scriptDetail = null
+  installFileDeny(String(command ?? ''), opts)
+  return scriptDetail
+    ? ` [written file treated as run: ${String(scriptDetail.file).slice(0, 200)}; protected name matched: ${String(scriptDetail.name).slice(0, 200)}]`
+    : ''
+}
+
 function isInvokedDirectly() {
   try {
     const self = realpathSync(fileURLToPath(import.meta.url))
@@ -2628,7 +2680,9 @@ function isInvokedDirectly() {
 // deadline, and a throw, a hang or a missing verdict is a DENY (exit 1 or a
 // harness timeout would read as "allow"). Stdin that is not JSON allows: it
 // comes from the harness, not from the agent.
-const DECISION_DEADLINE_MS = Math.min(5000, Math.max(100, Number(process.env.DB_WRITE_GATE_DEADLINE_MS) || 5000))
+// Deadline: default 5000 ms, floor 100 ms, ceiling 30000 ms; DB_WRITE_GATE_DEADLINE_MS can lower or raise it within
+// that range (47eeb016: the ceiling used to be the default, so a slow host could only shorten it).
+const DECISION_DEADLINE_MS = Math.min(30000, Math.max(100, Number(process.env.DB_WRITE_GATE_DEADLINE_MS) || 5000))
 
 const FAIL_CLOSED_MSG = (why) => 'DB-iro kapu: belso hiba vagy idotullepes a vizsgalat kozben ' +
   `(${String(why).slice(0, 200)}). Fail-closed: a hivas nem vizsgalhato, ezert TILTVA.` + LIMIT_MSG
@@ -2656,7 +2710,8 @@ function decideInWorker(toolName, toolInput, opts = {}) {
 if (!isMainThread && workerData?.dbWriteGateWorker) {
   try {
     const verdict = gateDecision(workerData.toolName, workerData.toolInput, workerData.opts ?? {})
-    parentPort.postMessage({ ok: true, deny: verdict.deny === true, reason: verdict.reason, error: verdict.error })
+    const trigger = verdict.reason === 'install-file' ? installFileTrigger(workerData.toolInput?.command, workerData.opts ?? {}) : ''
+    parentPort.postMessage({ ok: true, deny: verdict.deny === true, reason: verdict.reason, error: verdict.error, trigger })
   } catch (err) {
     parentPort.postMessage({ ok: false, error: String(err?.stack ?? err) })
   }
@@ -2673,17 +2728,18 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
     // MCP fast path: a call that names no local path (and is not a known writer missing one) needs no worker
     const mcp = mcpFileTargets(payload?.tool_name, payload?.tool_input)
     if (mcp && mcp.targets.length === 0 && !mcp.missingPath && !mcp.truncated && !mcp.dbNamed && !mcp.bare.length) allow()
-    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input,
-      {
-        cwd: payload?.cwd,
-        subAgent: isSubAgentCaller(process.env.CLAUDE_PROJECT_DIR, INSTALL_ROOT, process.env.CLAUDE_CONFIG_DIR || null),
-        projectDir: process.env.CLAUDE_PROJECT_DIR || null,
-        // the caller's user-level settings live in its config dir; unset, that is ~/.claude
-        configDir: process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
-      })
+    const opts = {
+      cwd: payload?.cwd,
+      subAgent: isSubAgentCaller(process.env.CLAUDE_PROJECT_DIR, INSTALL_ROOT, process.env.CLAUDE_CONFIG_DIR || null),
+      projectDir: process.env.CLAUDE_PROJECT_DIR || null,
+      // the caller's user-level settings live in its config dir; unset, that is ~/.claude
+      configDir: process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
+    }
+    const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, opts)
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
-      deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG
+      const trigger = verdict.trigger ?? ''
+      deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG + trigger
         : verdict.reason === 'subagent-file' ? SUBAGENT_FILE_GATE_MSG
         : verdict.reason === 'mcp-install-file' ? MCP_PREFIX_MSG + INSTALL_FILE_GATE_MSG
         : verdict.reason === 'mcp-subagent-file' ? MCP_PREFIX_MSG + SUBAGENT_FILE_GATE_MSG
