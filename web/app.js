@@ -7002,9 +7002,8 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     // #1878 (6): on the main agent the save restarts the channels session; a failed
     // restart must not read as "connected".
     if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), 12000)
-    // INSTTGPOLLWARN1119: another install polling the same bot cannot be checked; said, not blocked.
-    else if (result.pollerNote) showToast(t('channel.toast.connected', { provider: getProviderLabel() }) + ' ' + t('channel.telegram.poller_unverifiable'), 10000)
-    else showToast(t('channel.toast.connected', { provider: getProviderLabel() }))
+    // INSTTGPOLLWARN1119: another install polling the same bot cannot be checked; said with "connected", not blocked.
+    else showToast(t('channel.toast.connected', { provider: getProviderLabel() }) + (result.pollerNote ? ' ' + t('channel.telegram.poller_unverifiable') : ''), result.pollerNote ? 10000 : undefined)
     // Refresh detail
     // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
     if (currentAgent.name === mainAgentId()) await refreshMainChannelUnconfBanner()
