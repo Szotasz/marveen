@@ -264,7 +264,8 @@ START_OUT="$(env -u BASH_SANDBOX_AGENTS HOME="$FH2" node --input-type=module -e 
   const m = await import(process.argv[1])
   m.recordDashboardNode()
   process.stdout.write(String(m.syncBashSandboxSettings("free")))' "$FX2/dist/web/bash-sandbox.js" 2>&1)"
-NODE_MODE="$(stat -f %Lp "$FX2/store/.dashboard-node" 2>/dev/null || stat -c %a "$FX2/store/.dashboard-node" 2>/dev/null)"
+# GNU form first: on Linux `stat -f` is the file-system status, not the BSD format flag (CI job 135496143155).
+NODE_MODE="$(stat -c %a "$FX2/store/.dashboard-node" 2>/dev/null || stat -f %Lp "$FX2/store/.dashboard-node" 2>/dev/null)"
 [ "$(cat "$FX2/store/.dashboard-node" 2>/dev/null)" = "$REAL_NODE" ] && [ "$NODE_MODE" = 444 ] \
   && pass "dashboard start: store/.dashboard-node holds its node, 0444" \
   || fail "dashboard start: store/.dashboard-node holds its node, 0444" "$START_OUT / mode=$NODE_MODE / $(ls -la "$FX2/store")"
