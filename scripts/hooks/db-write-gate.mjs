@@ -150,6 +150,13 @@ export const PROTECTED_INSTALL_PATHS = [
   // break-glass CLI on the machine; deleting it no longer turns the factor off (dashboard_users.totp_enabled, a
   // security table, keeps it on and the login fails closed), but a write could swap a secret or reset the replay step.
   { rel: 'store/.dashboard-totp.json' },
+  // The per-agent launch files the dashboard derives from the owner's switches and every restart path reads
+  // (WDSANDBOXMARKER1119): store/bash-sandbox/<id>.settings.json, the --settings file of an agent on
+  // BASH_SANDBOX_AGENTS, and store/code-mode/<id>.on, the Code Mode marker. Only the dashboard's start and the
+  // watchdog's restart write them (neither is a tool call); a deleted or edited file would change how that agent
+  // comes back. The whole directories, as directories.
+  { rel: 'store/bash-sandbox', dir: true },
+  { rel: 'store/code-mode', dir: true },
   // The main checkout's git wiring (Samu 56299 2, Dani 56284): its remote, its remote-tracking refs and its hooks. A
   // worktree shares them, so a ref or a URL changed from a worktree is changed for the install's pull as well.
   { rel: '.git/config' },
@@ -2101,6 +2108,7 @@ export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
   'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json, store/.owner-slack-target, store/.net-target-hosts.json, store/custom-providers.json, store/context-guard.json es store/.dashboard-totp.json fajljat (GATEFILES1110, DOCKERHTTPS1119: ezeket az owner-kapus API-ut irja), ' +
+  'sem a store/bash-sandbox/ es store/code-mode/ mappat (WDSANDBOXMARKER1119: ezeket csak a dashboard inditasa es a watchdog irja), ' +
   'sem BARMELY agens agents/<nev>/.claude/settings.json, settings.local.json es .claude-config/settings.json fajljat (ezeket csak a dashboard irja; Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
