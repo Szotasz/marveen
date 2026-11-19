@@ -1508,7 +1508,14 @@ export function scheduleSurfaceVariants(text) {
   return [joined, unquoted, glued, joinedLiterals]
 }
 
-export function globMatchesName(glob, name) {
+// A bracket class whose range runs backwards (`[x-1]`, as in the Python index `row[x-1000]`) is a SyntaxError for a JS
+// RegExp, which the catch in globMatchesName read as "unreadable glob: matches everything": a read-only measuring script
+// (python heredoc, `lum[y-1000]`) was denied as an egress-allowlist write (kodolo2, 2026-11-19). bash and dash expand a
+// reversed range to nothing (measured), so it names no file. The retry reads such a range as the SWAPPED one (`1-x`),
+// a superset of every plausible reading (nothing, the two endpoints, the span between them), so it still matches
+// whatever any shell could. A NEGATED class (`[!x-1]`) is left as it was: swapping would shrink the set it excludes, so
+// it stays unreadable and fail-closed.
+function globToRegexSource(glob, swapReversed) {
   let rx = ''
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i]
@@ -1517,11 +1524,17 @@ export function globMatchesName(glob, name) {
     else if (c === '[') {
       const j = glob.indexOf(']', i + 1)
       if (j === -1) { rx += '\\['; continue }
-      rx += '[' + glob.slice(i + 1, j).replace(/^!/, '^').replace(/\\/g, '\\\\') + ']'
+      let body = glob.slice(i + 1, j)
+      if (swapReversed && !body.startsWith('!') && !body.includes('\\')) body = body.replace(/(.)-(.)/gs, (m, a, b) => (a > b ? `${b}-${a}` : m))
+      rx += '[' + body.replace(/^!/, '^').replace(/\\/g, '\\\\') + ']'
       i = j
     } else rx += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   }
-  try { return new RegExp(`^${rx}$`, 'i').test(name) } catch { return true } // unreadable glob: fail closed
+  return rx
+}
+export function globMatchesName(glob, name) {
+  try { return new RegExp(`^${globToRegexSource(glob, false)}$`, 'i').test(name) } catch { /* retry below */ }
+  try { return new RegExp(`^${globToRegexSource(glob, true)}$`, 'i').test(name) } catch { return true } // unreadable glob: fail closed
 }
 
 // Bash brace expansion of one word: `api/sch{e,}dules` -> [api/schedules,
