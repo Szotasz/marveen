@@ -28,8 +28,8 @@ const POLL_MS = 10_000 // the route's poll interval
 const FAKE_TMUX = `#!/bin/sh
 d="$FAKE_TMUX_DIR"
 sub="$1"
-printf 'start %s\\n' "$*" >> "$d/calls.log"
 printf '%s\\n' "$$" >> "$d/pids"
+printf 'start %s\\n' "$*" >> "$d/calls.log"
 if [ -f "$d/sleep" ]; then sleep "$(cat "$d/sleep")"; fi
 if [ -f "$d/sleep-$sub" ]; then sleep "$(cat "$d/sleep-$sub")"; fi
 if [ -f "$d/no-server" ]; then echo "no server running on /tmp/fake-tmux" >&2; printf 'end %s\\n' "$sub" >> "$d/calls.log"; exit 1; fi
@@ -86,6 +86,11 @@ const sessions = (): string[] => (existsSync(join(dir, 'sessions')) ? readFileSy
 // waits for 'done' can end while that fake still writes calls.log and sessions:
 // removing the directory then raced it (CI, 2026-11-16: ENOTEMPTY on rmdir in
 // afterEach). A fake killed by a route timeout is already gone.
+// The fake writes its pid BEFORE its 'start' line: whoever has seen 'start' must
+// find the pid. In the other order the pids file can still be empty when 'start'
+// is seen (a shell descheduled between the two writes), and this returned at
+// once. That matches CI 2026-11-19 ('end kill-session' missing right after the
+// settle), and a 0.1 s sleep between the two writes reproduced it 3/3.
 async function settleFakeTmux(d: string, boundMs = 10_000): Promise<void> {
   const f = join(d, 'pids')
   const pids = existsSync(f) ? readFileSync(f, 'utf-8').split('\n').filter(Boolean).map(Number) : []
