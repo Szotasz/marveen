@@ -24,6 +24,8 @@ let ready = true
 let pane: string | null = null
 let firstRunGate = false
 let modalClears = false
+let feedbackModal = false
+const mockClearModal = vi.fn(() => modalClears)
 
 vi.mock('../web/schedule-registry.js', () => ({
   filterRegisteredTasks: <T,>(tasks: T[]) => tasks,
@@ -69,7 +71,7 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
 }))
 vi.mock('../web/agent-process.js', () => ({
   withTmuxBatch: (fn: () => unknown) => fn(),
-  clearFeedbackModalAndRecheck: () => modalClears,
+  clearFeedbackModalAndRecheck: () => mockClearModal(),
   agentSessionName: (name: string) => `agent-${name}`,
   isAgentRunning: () => true,
   isSessionReadyForPrompt: () => ready,
@@ -83,7 +85,11 @@ vi.mock('../web/agent-process.js', () => ({
 }))
 vi.mock('../pane-state.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../pane-state.js')>()
-  return { ...real, detectsFirstRunGate: (p: string) => (firstRunGate ? 'folder-trust' : real.detectsFirstRunGate(p)) }
+  return {
+    ...real,
+    detectsFirstRunGate: (p: string) => (firstRunGate ? 'folder-trust' : real.detectsFirstRunGate(p)),
+    detectsFeedbackDraftModal: (p: string) => (feedbackModal || real.detectsFeedbackDraftModal(p)),
+  }
 })
 
 const dir = mkdtempSync(join(tmpdir(), 'precheck-busy-'))
@@ -137,6 +143,7 @@ describe('a skipIfBusy task does not run its pre-check for a busy target (PRECHE
     pane = null
     firstRunGate = false
     modalClears = false
+    feedbackModal = false
     mockSendPrompt.mockImplementation(() => 'sent')
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
     vi.setSystemTime(new Date('2026-07-31T06:00:30.000Z'))
@@ -183,12 +190,23 @@ describe('a skipIfBusy task does not run its pre-check for a busy target (PRECHE
     expect(mockInsertRetry.mock.calls[0][3]).toBe('first-run')
   })
 
-  it('a pane held only by the feedback modal counts as free once the modal is cleared', async () => {
+  it('a pane held only by the feedback modal counts as free; the modal is dismissed once, by the fire attempt', async () => {
     ready = false
+    pane = 'modal'
+    feedbackModal = true
     modalClears = true
     await runOneTick(() => mockSendPrompt.mock.calls.length > 0)
     expect(preCheckRuns()).toBe(1)
     expect(mockSendPrompt).toHaveBeenCalledTimes(1)
+    expect(mockClearModal).toHaveBeenCalledTimes(1)
+  })
+
+  it('the probe itself types nothing: a busy pane is dropped without a modal-dismissal attempt', async () => {
+    ready = false
+    pane = 'busy pane'
+    await runOneTick(() => mockAppendTaskRun.mock.calls.length > 0)
+    expect(runsOf()).toEqual(['skipped'])
+    expect(mockClearModal).not.toHaveBeenCalled()
   })
 })
 

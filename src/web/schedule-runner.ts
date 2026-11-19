@@ -111,7 +111,7 @@ import { trackDetachedGroup } from './detached-groups.js'
 import { decideQuotaAction, quotaBlindness, type QuotaSnapshot, type QuotaWorkClass } from '../quota-gate.js'
 import { isAgentBudgetHeld } from './agent-budget-alerts.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
-import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
+import { detectsFeedbackDraftModal, detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
 import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
@@ -2770,8 +2770,10 @@ async function queueScheduledToWorksource(
 // after the fire attempt). Mirrors attemptFireTask's order and returns false for
 // every state that is NOT dropped there: a missing session (auto-start), the
 // main session respawning, a first-run dialog, a refused target -- those keep
-// their own path. The feedback-modal dismissal is the same one attemptFireTask
-// would do, so a modal-only pane still counts as free.
+// their own path. A pane held by the feedback-draft modal counts as free (the
+// probe types nothing; attemptFireTask dismisses the modal as before).
+// This NARROWS the loss, it does not close it: a target that turns busy while
+// the pre-check runs is still dropped after the pre-check advanced its state.
 export async function targetBusyForSkipIfBusy(task: ScheduledTask, agentName: string, now: number): Promise<boolean> {
   if (targetSessionRefused(task)) return false
   if (isRestartInFlight(agentName)) return true
@@ -2781,7 +2783,10 @@ export async function targetBusyForSkipIfBusy(task: ScheduledTask, agentName: st
   if (await isSessionReadyForPrompt(session, host)) return false
   const pane = capturePane(session, host)
   if (pane != null && detectsFirstRunGate(pane)) return false
-  if (await clearFeedbackModalAndRecheck(session, host)) return false
+  // A feedback-draft modal is NOT dismissed here (no keystrokes from a probe):
+  // the pane counts as free, the pre-check runs, and attemptFireTask dismisses
+  // the modal exactly as before.
+  if (pane != null && detectsFeedbackDraftModal(pane)) return false
   return true
 }
 
