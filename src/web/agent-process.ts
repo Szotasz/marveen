@@ -41,7 +41,7 @@ import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-b
 import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
@@ -61,6 +61,7 @@ import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { agentIsolatedConfigDir, setCodeModeCaveats } from './code-mode-caveats.js'
 import { paneTyped } from './pane-text.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
 import {
@@ -80,7 +81,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, providerCapabilities, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { CONTINUE_OPT_OUT_REASON, decideContinueFlag, readContinueOptOut, verifyContinueLaunch } from './channel-continue-policy.js'
+import { CODE_MODE_SWITCH_REASON, CONTINUE_OPT_OUT_REASON, decideContinueFlag, readContinueOptOut, verifyContinueLaunch } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
@@ -2507,7 +2508,29 @@ export function rewriteAgentClaudeMdOnStart(name: string, profile: ProfileTempla
 // CODEMODEFLAG1119: the launch piece for the per-agent Code Mode switch. Empty when off: the variable is then only
 // unset (unsetTokens in startAgentProcess), so an agent without codeMode launches exactly as before apart from that.
 export function codeModeLaunchEnv(enabled: boolean): string {
-  return enabled ? 'export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 && ' : ''
+  // n1 (Dani): off is an explicit 0, not only an unset: 0 wins over an env block in a shared settings.json.
+  return `export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=${enabled ? '1' : '0'} && `
+}
+
+// CODEMODEFLAG1119 (Q2): whether this launch really runs in Code Mode. Only with the switch on AND the agent on its
+// OWN isolated config dir, whose .claude.json then carries the two caveat keys (re-ensured here, idempotent: the PUT
+// wrote them, and a never-launched agent's file only exists after provisioning). Anything else launches WITHOUT Code
+// Mode and says why: the first Code Mode session would otherwise stop on "Yes, turn on Code Mode" in an unattended
+// pane, and the keys are never written into a shared or operator-configured .claude.json.
+export function resolveCodeModeLaunch(name: string, claudeConfigDir: string | null): boolean {
+  if (!readAgentCodeMode(name)) return false
+  if (!claudeConfigDir || claudeConfigDir !== agentIsolatedConfigDir(name)) {
+    logger.warn({ name, claudeConfigDir }, 'Code Mode is on for this agent, but it does not run on its own isolated config dir; launching WITHOUT Code Mode')
+    return false
+  }
+  try {
+    const r = setCodeModeCaveats(join(claudeConfigDir, '.claude.json'), true, { groupShared: readAgentRunAsUser(name) != null })
+    if (r === 'written' || r === 'unchanged') return true
+    logger.warn({ name, result: r }, 'Code Mode: the caveat keys could not be ensured in the isolated .claude.json; launching WITHOUT Code Mode')
+  } catch (err) {
+    logger.warn({ err, name }, 'Code Mode: the isolated .claude.json is unreadable; launching WITHOUT Code Mode')
+  }
+  return false
 }
 
 export async function startAgentProcess(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
@@ -3314,18 +3337,22 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // bot.pid) with a fresh fallback, see below. Channel-less agents keep
     // --continue as before.
     const usesLaunchSecret = providerEnv !== '' || apiKeyEnv !== ''
+    // CODEMODEFLAG1119 (Q1): a switch since the last launch makes this start fresh (see CODE_MODE_SWITCH_REASON).
+    const codeModeOn = resolveCodeModeLaunch(name, claudeConfigDir)
+    const codeModeSwitched = codeModeOn !== readAgentCodeModeLaunched(name)
     const installedCli = hasAnyChannel ? (await measureClaudeCliVersion()).version : null
     const continueDecision = decideContinueFlag({
       hasPriorSession, fresh: !!opts.fresh, hasChannel, isMainAgent: name === MAIN_AGENT_ID,
       provider: agentProvider, usesLaunchSecret, fleetTokenLaunch: oauthTokenEnv !== '',
       useMcpJsonForChannel, installedCli, extraProviders: extraLaunch.providers,
       continueOptOut: readContinueOptOut(readFileOr(join(dir, 'agent-config.json'), '{}')),
+      codeModeSwitched,
     })
     if (hasAnyChannel && hasPriorSession && !opts.fresh) {
       logger.info({ name, useContinue: continueDecision.useContinue, reason: continueDecision.reason, installedCli }, 'channel agent resume decision')
     }
     // The channel log above covers channel agents; a channel-less agent that opted out says so here.
-    if (!hasAnyChannel && continueDecision.reason === CONTINUE_OPT_OUT_REASON) {
+    if (!hasAnyChannel && (continueDecision.reason === CONTINUE_OPT_OUT_REASON || continueDecision.reason === CODE_MODE_SWITCH_REASON)) {
       logger.info({ name, reason: continueDecision.reason }, 'agent resume decision')
     }
     const continueFlag = continueDecision.useContinue ? '--continue ' : ''
@@ -3340,10 +3367,10 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // channel-less agent, whose tools then reported 'failed to connect' until
     // the agent was restarted. A channel agent
     // re-exports its OWN dir right after this, via channelSetup below.
-    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
-    // CODEMODEFLAG1119: the Code Mode variable is unset above for every launch (an inherited value never switches it
-    // on) and exported again only for an agent whose agent-config.json says codeMode: true.
-    const codeModeEnv = codeModeLaunchEnv(readAgentCodeMode(name))
+    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR'
+    // CODEMODEFLAG1119: every launch sets the Code Mode variable explicitly, 1 or 0, so neither an inherited value nor
+    // a settings.json env block decides it.
+    const codeModeEnv = codeModeLaunchEnv(codeModeOn)
     // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
     // their environment, not just omitted from the launch export. The parent tmux
     // server carries the fleet OAuth token in its own env, and
@@ -3459,6 +3486,11 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // capture-pane failed against the router's empty tmux server.
     const startTarget = agentTmuxTarget(name)
     runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
+    // CODEMODEFLAG1119 (Q1): recorded only once the session started (runTmux throws otherwise), so a failed start
+    // never records a mode no session runs in; a failed write only costs one more fresh start.
+    if (codeModeSwitched) {
+      try { writeAgentCodeModeLaunched(name, codeModeOn) } catch (err) { logger.warn({ err, name }, 'Code Mode: could not record the launched mode') }
+    }
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
     // APRO920 (c)(2): the --model value actually passed, with the config-chain

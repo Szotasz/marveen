@@ -56,12 +56,18 @@ export interface ContinueDecisionInput {
   extraProviders?: readonly string[]
   /** agent-config.json `"continue": false` (see readContinueOptOut): this agent is always launched fresh. */
   continueOptOut?: boolean
+  /** CODEMODEFLAG1119: this launch runs in a different Code Mode than the last one (agent-config.json codeModeLaunched). */
+  codeModeSwitched?: boolean
 }
 
 export interface ContinueDecision { useContinue: boolean; reason: string }
 
 /** The reason decideContinueFlag gives for a per-agent opt-out; the launch path logs it by this name. */
 export const CONTINUE_OPT_OUT_REASON = 'per-agent opt-out (agent-config.json "continue": false)'
+
+/** CODEMODEFLAG1119: a Code Mode session resumed without Code Mode refuses to start, and a session started without it
+ *  resumes without it even with the variable set; so a switch since the last launch means a fresh start. */
+export const CODE_MODE_SWITCH_REASON = 'Code Mode switched since the last launch (a resume would refuse to start or keep the old mode)'
 
 /** Per-agent opt-out from `--continue`. Only a literal JSON
  *  false counts: absent, true, a string, a broken or non-object config keep
@@ -75,6 +81,7 @@ export function decideContinueFlag(i: ContinueDecisionInput): ContinueDecision {
   if (!i.hasPriorSession) return { useContinue: false, reason: 'no prior session to continue' }
   if (i.fresh) return { useContinue: false, reason: 'fresh launch requested' }
   if (i.continueOptOut) return { useContinue: false, reason: CONTINUE_OPT_OUT_REASON }
+  if (i.codeModeSwitched) return { useContinue: false, reason: CODE_MODE_SWITCH_REASON }
   const extras = i.extraProviders ?? []
   if (!i.hasChannel && extras.length === 0) return { useContinue: true, reason: 'channel-less agent keeps its context' }
   if (i.isMainAgent) return { useContinue: false, reason: 'main agent lifecycle is service-managed; not in scope' }

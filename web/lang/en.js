@@ -1609,7 +1609,7 @@ window._i18n.en = {
   'agents.toast.memory_isolation_on':        'Memory isolation enabled. Takes effect on the next restart.',
   'agents.toast.memory_isolation_off':       'Memory isolation disabled.',
   'agents.settings.code_mode_toggle':        'Code Mode (experimental)',
-  'agents.settings.code_mode_desc':          'Experimental: Claude Code runs in Code Mode. Takes effect at the next start.',
+  'agents.settings.code_mode_desc':          'Experimental. In Code Mode, Claude writes and runs JavaScript that calls its tools, instead of calling them one at a time. This is an early experiment: it can behave differently from normal Claude Code, and it may change or be removed in any release. Remote Control, Claude in Chrome and computer use are off in Code Mode. A session started in Code Mode can be resumed only with Code Mode on, so after every switch the next start is a fresh session (the earlier context is not resumed). Sessions start in the same permission mode as without Code Mode, which can be auto mode. In auto mode, the safety check reads each piece of JavaScript once, before it runs; it does not check each tool call the code then makes, so it cannot see values the code works out as it runs. Turning this on accepts these Code Mode notices for this agent. Takes effect at the next start.',
   'agents.toast.code_mode_on':               'Code Mode enabled. Takes effect at the next start.',
   'agents.toast.code_mode_off':              'Code Mode disabled. Takes effect at the next start.',
   'agents.settings.idle_flush_label': 'Idle flush',

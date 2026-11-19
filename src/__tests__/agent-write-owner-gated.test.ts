@@ -128,13 +128,43 @@ describe('PUT /api/agents/:name with the bare shared token', () => {
 // on its own (not only through the AGENT_PUT_OWNER_FIELDS loop above, which a removed entry would silently skip).
 describe('PUT codeMode: owner only, sub-agents only', () => {
   const config = () => JSON.parse(readFileSync(join(DIR, 'agent-config.json'), 'utf-8'))
+  // Q2 (Samu 81017): the agent's isolated .claude.json, in the two-space shape Claude Code writes.
+  const DOT = join(DIR, '.claude-config', '.claude.json')
+  const DOT_ORIGINAL = '{\n  "numStartups": 4,\n  "hasCompletedOnboarding": true,\n  "projects": {\n    "/a": {\n      "hasTrustDialogAccepted": true\n    }\n  }\n}\n'
+  const writeDot = () => { mkdirSync(join(DIR, '.claude-config'), { recursive: true }); writeFileSync(DOT, DOT_ORIGINAL) }
+  const dotBytes = () => readFileSync(DOT, 'utf-8')
 
-  it('the bare shared token: 403 owner_session_required, agent-config.json byte-identical', async () => {
+  it('the bare shared token: 403 owner_session_required, agent-config.json AND the isolated .claude.json byte-identical', async () => {
+    writeDot()
     const before = snapshot()
     const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, TOKEN, { codeMode: true })
     expect(refusedByOwnerGate(r)).toBe(true)
     expect(r.body.fields).toEqual(['codeMode'])
     expect(snapshot()).toEqual(before)
+    expect(dotBytes()).toBe(DOT_ORIGINAL)
+  })
+
+  it('the owner switch is the acceptance: on stamps both caveat keys, off -> on -> off leaves .claude.json byte-identical', async () => {
+    writeDot()
+    expect((await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { codeMode: false })).status).toBe(200)
+    expect(dotBytes()).toBe(DOT_ORIGINAL)
+    expect((await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { codeMode: true })).status).toBe(200)
+    const on = JSON.parse(dotBytes())
+    expect(on.codeModeCaveatsAcceptedV1).toBe(true)
+    expect(on.codeModeAutoModeCaveatAcceptedV1).toBe(true)
+    expect((await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { codeMode: false })).status).toBe(200)
+    expect(dotBytes()).toBe(DOT_ORIGINAL)
+    expect(config()).toEqual({ model: 'claude-opus-5' })
+  })
+
+  it('an unreadable isolated .claude.json refuses the switch (500) and changes nothing', async () => {
+    mkdirSync(join(DIR, '.claude-config'), { recursive: true })
+    writeFileSync(DOT, '{broken')
+    const before = snapshot()
+    const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { codeMode: true })
+    expect(r.status).toBe(500)
+    expect(snapshot()).toEqual(before)
+    expect(dotBytes()).toBe('{broken')
   })
 
   it('the owner session: 200, codeMode written beside the other keys, and false removes it again', async () => {

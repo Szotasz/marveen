@@ -19,6 +19,7 @@ import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { agentIsolatedConfigDir, setCodeModeCaveats } from '../code-mode-caveats.js'
 import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { hasLaunchTrace, hasPackageManifestFile, startsWithPackageShell } from '../agent-package/marker.js'
@@ -3099,6 +3100,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // agent never starts through it (its lifecycle is service-managed: channels.sh and the channel-monitor respawn).
       if (isMainChannelsAgent(name)) {
         json(res, { error: 'codeMode is not applicable to the main agent' }, 400)
+        return true
+      }
+      // Q2 (Samu 81017): the owner's switch IS the acceptance of Code Mode's two confirmation windows. The keys go
+      // into the agent's own isolated .claude.json while the switch is on and come out again when it goes off; no
+      // file yet (never launched) is fine, the launch stamps it. An unreadable file refuses the switch, unchanged.
+      try {
+        setCodeModeCaveats(join(agentIsolatedConfigDir(name), '.claude.json'), data.codeMode === true, { groupShared: readAgentRunAsUser(name) != null })
+      } catch (err) {
+        logger.warn({ err, name }, 'codeMode: the isolated .claude.json could not be updated')
+        json(res, { error: 'codeMode: the agent\'s isolated .claude.json could not be updated' }, 500)
         return true
       }
       writeAgentCodeMode(name, data.codeMode === true)
