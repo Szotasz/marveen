@@ -2403,7 +2403,7 @@ function wireKanbanColumnDnD(col) {
       })
       loadKanban()
     } catch {
-      showToast(t('kanban.toast.move_error'))
+      showToast(t('kanban.toast.move_error'), 'error')
     }
   })
 }
@@ -2570,7 +2570,7 @@ async function kanbanTouchEnd(e) {
     if (!r.ok) throw new Error('move failed')
     loadKanban()
   } catch {
-    showToast(t('kanban.toast.move_error'))
+    showToast(t('kanban.toast.move_error'), 'error')
   }
 }
 
@@ -2710,7 +2710,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
     closeModal(cardModalOverlay)
     loadKanban()
   } catch (err) {
-    showToast(t('kanban.toast.save_error_msg', { msg: err.message }))
+    showToast(t('kanban.toast.save_error_msg', { msg: err.message }), 'error')
   }
 })
 
@@ -2744,7 +2744,7 @@ async function renderCardLabelsSection(card) {
         await fetch(`/api/kanban/${encodeURIComponent(card.id)}/labels/${encodeURIComponent(label.id)}`, { method: 'DELETE' })
         renderCardLabelsSection(card)
         loadKanban()
-      } catch { showToast(t('kanban.toast.label_remove_error')) }
+      } catch { showToast(t('kanban.toast.label_remove_error'), 'error') }
     })
     listEl.appendChild(pill)
   }
@@ -2769,7 +2769,7 @@ async function renderCardLabelsSection(card) {
       })
       renderCardLabelsSection(card)
       loadKanban()
-    } catch { showToast(t('kanban.toast.label_add_error')) }
+    } catch { showToast(t('kanban.toast.label_add_error'), 'error') }
   }
 
   newForm.style.display = 'none'
@@ -2811,7 +2811,7 @@ async function renderCardLabelsSection(card) {
       newForm.style.display = 'none'
       renderCardLabelsSection(card)
       loadKanban()
-    } catch { showToast(t('kanban.toast.label_create_error')) }
+    } catch { showToast(t('kanban.toast.label_create_error'), 'error') }
   }
 }
 
@@ -2922,7 +2922,7 @@ async function renderCardBlockersSection(card) {
           await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers/${encodeURIComponent(ref.id)}`, { method: 'DELETE' })
           renderCardBlockersSection(card)
           loadKanban()
-        } catch { showToast(t('kanban.toast.blocker_remove_error')) }
+        } catch { showToast(t('kanban.toast.blocker_remove_error'), 'error') }
       })
       row.appendChild(rm)
     }
@@ -2975,7 +2975,7 @@ async function renderCardBlockersSection(card) {
       }
       renderCardBlockersSection(card)
       loadKanban()
-    } catch { showToast(t('kanban.toast.blocker_add_error')) }
+    } catch { showToast(t('kanban.toast.blocker_add_error'), 'error') }
   }
 }
 
@@ -3090,7 +3090,7 @@ async function showCardDetail(card) {
         loadKanban && loadKanban()
       } catch {
         restore(current)
-        showToast(t('kanban.toast.move_error'))
+        showToast(t('kanban.toast.move_error'), 'error')
       }
     }
     sel.addEventListener('change', save)
@@ -3151,7 +3151,7 @@ async function showCardDetail(card) {
         loadKanban && loadKanban()
       } catch {
         assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
-        showToast(t('kanban.toast.save_error'))
+        showToast(t('kanban.toast.save_error'), 'error')
       }
     }
     sel.addEventListener('change', save)
@@ -3278,7 +3278,7 @@ async function showCardDetail(card) {
       document.getElementById('commentContent').value = ''
       showCardDetail(card) // refresh
     } catch {
-      showToast(t('kanban.toast.comment_error'))
+      showToast(t('kanban.toast.comment_error'), 'error')
     }
   }
 
@@ -3315,7 +3315,7 @@ async function showCardDetail(card) {
       showToast(t('kanban.toast.card_archived'))
       loadKanban()
     } catch {
-      showToast(t('kanban.toast.archive_error'))
+      showToast(t('kanban.toast.archive_error'), 'error')
     }
   }
 
@@ -3334,7 +3334,7 @@ async function showCardDetail(card) {
       showToast(t('kanban.toast.card_deleted'))
       loadKanban()
     } catch {
-      showToast(t('common.error_delete'))
+      showToast(t('common.error_delete'), 'error')
     }
   }
 
@@ -3364,7 +3364,7 @@ async function showCardDetail(card) {
           showToast(t('kanban.toast.subtask_created'))
           loadKanban()
           showCardDetail(card)
-        } catch { showToast(t('kanban.toast.subtask_error')) }
+        } catch { showToast(t('kanban.toast.subtask_error'), 'error') }
       }
     } else {
       addSubtaskSection.style.display = 'none'
@@ -3406,7 +3406,7 @@ async function showCardDetail(card) {
               showToast(t('kanban.toast.subtask_deleted'))
               loadKanban()
               showCardDetail(card)
-            } catch { showToast(t('common.error_delete')) }
+            } catch { showToast(t('common.error_delete'), 'error') }
           }
           div.appendChild(delBtn)
         }
@@ -3439,7 +3439,7 @@ async function showCardDetail(card) {
       const dodSec = document.getElementById('breakdownDoDSection')
       if (dodSec) dodSec.style.display = 'none'
     } catch (err) {
-      showToast(t('kanban.breakdown.failed'))
+      showToast(t('kanban.breakdown.failed'), 'error')
     } finally {
       btn.disabled = false
       btn.replaceChildren(...label)
@@ -3461,7 +3461,7 @@ async function triggerBreakdown(card) {
     breakdownSubtasks = data.subtasks
     showBreakdownModal(data.subtasks, card)
   } catch {
-    showToast(t('kanban.breakdown.failed'))
+    showToast(t('kanban.breakdown.failed'), 'error')
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '⚡' }
   }
@@ -3548,7 +3548,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
     showToast(t('kanban.breakdown.created_count', { count: data.created.length }))
     loadKanban()
   } catch {
-    showToast(t('common.error_save'))
+    showToast(t('common.error_save'), 'error')
   }
 })
 
@@ -4015,7 +4015,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       updateWizardUI()
     }, 600)
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
     // Back to step 1 only when the create POST itself failed. Once the agent exists, a later error (detail fetch,
     // avatar) goes on to its review: step 1 would only offer to create it again (#2845).
     if (wizardCreatedName) {
@@ -4076,7 +4076,7 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
       switchAgentTab('channel')
     } catch { /* detail open failed, list refresh already happened */ }
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     createBtn.disabled = false
     createBtn.querySelector('.btn-text').hidden = false
@@ -4421,7 +4421,7 @@ document.getElementById('saveContextGuardBtn').addEventListener('click', async (
     })
     if (!res.ok) throw new Error()
     showToast(t('agents.toast.ctx_guard_saved'))
-  } catch { showToast(t('common.error_save')) }
+  } catch { showToast(t('common.error_save'), 'error') }
 })
 
 // Populate the idle-flush controls from an agent payload. Same source as
@@ -4994,7 +4994,7 @@ async function openAgentDetail(agentName) {
     if (!res.ok) throw new Error('Not found')
     currentAgent = await res.json()
   } catch (err) {
-    showToast(t('agents.toast.load_failed'))
+    showToast(t('agents.toast.load_failed'), 'error')
     return
   }
 
@@ -5121,7 +5121,7 @@ async function openAgentDetail(agentName) {
       showToast(t('agents.toast.deleted'))
       loadAgents()
     } catch (err) {
-      showToast(t('common.error_delete'))
+      showToast(t('common.error_delete'), 'error')
     }
   }
 
@@ -5161,7 +5161,7 @@ async function openAgentDetail(agentName) {
       URL.revokeObjectURL(objectUrl)
       showToast(t(withSecrets ? 'agents.export.done_secrets' : 'agents.export.done'))
     } catch {
-      showToast(t('agents.export.error'))
+      showToast(t('agents.export.error'), 'error')
     }
   }
 
@@ -5198,7 +5198,7 @@ function populateDetailAvatarGrid() {
         document.getElementById('detailAvatarGallery').hidden = true
         loadAgents()
       } catch {
-        showToast(t('agents.toast.avatar_error'))
+        showToast(t('agents.toast.avatar_error'), 'error')
       }
     })
     grid.appendChild(item)
@@ -5233,7 +5233,7 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
           gallery.hidden = true
           loadAgents()
         } catch {
-          showToast(t('agents.toast.avatar_error'))
+          showToast(t('agents.toast.avatar_error'), 'error')
         }
       })
       grid.appendChild(item)
@@ -5309,7 +5309,7 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
       resetAvatarUpload()
       loadAgents()
     } catch {
-      showToast(t('common.error_save'))
+      showToast(t('common.error_save'), 'error')
       resetAvatarUpload()
     }
   }
@@ -5524,7 +5524,7 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
   try {
     if (await restartMainAgentGated()) showToast(t('agents.toast.marveen_restarted'))
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
   }
@@ -5552,7 +5552,7 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
     }
     loadAgents()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -5584,7 +5584,7 @@ document.getElementById('agentStopBtn').addEventListener('click', async () => {
     }
     loadAgents()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   }
 })
 
@@ -6121,7 +6121,7 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
       return
     }
     startModelRestartPolling(name, newModel, triggeredAt)
-  } catch { showToast(t('common.error_save')) }
+  } catch { showToast(t('common.error_save'), 'error') }
 })
 
 document.getElementById('modelSuggestBtn').addEventListener('click', async () => {
@@ -6257,7 +6257,7 @@ if (exportAllAgentsBtn) {
       URL.revokeObjectURL(objectUrl)
       showToast(t(withSecrets ? 'agents.export_all.done_secrets' : 'agents.export_all.done'))
     } catch {
-      showToast(t('agents.export.error'))
+      showToast(t('agents.export.error'), 'error')
     }
   })
 }
@@ -6329,7 +6329,7 @@ if (importAgentBtn && importAgentFile) {
       showToast(parts.join(' '))
       loadAgents()
     } catch {
-      showToast(t('agents.import.error'))
+      showToast(t('agents.import.error'), 'error')
     } finally {
       importAgentFile.value = ''
     }
@@ -6360,7 +6360,7 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
     if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error'); return }
     if (currentAgent) currentAgent.autoRestart = reply.body.autoRestart
     showToast(t('agents.toast.auto_restart_saved'))
-  } catch { showToast(t('common.error_save')) }
+  } catch { showToast(t('common.error_save'), 'error') }
 })
 
 document.getElementById('saveIdleFlushBtn').addEventListener('click', async () => {
@@ -6382,7 +6382,7 @@ document.getElementById('saveIdleFlushBtn').addEventListener('click', async () =
     const cur = await fetch(`/api/agents/${encodeURIComponent(id)}/context-guard`)
     if (!cur.ok) throw new Error()
     current = (await cur.json()).contextGuard || {}
-  } catch { showToast(t('common.error_save')); return }
+  } catch { showToast(t('common.error_save'), 'error'); return }
   const cfg = Object.assign({}, current, {
     idleFlushEnabled: document.getElementById('ifEnabled').checked,
     idleFlushTokens: Math.round(Number(document.getElementById('ifTokens').value) * 1000),
@@ -6398,7 +6398,7 @@ document.getElementById('saveIdleFlushBtn').addEventListener('click', async () =
     const body = await res.json()
     if (currentAgent) currentAgent.contextGuard = body.contextGuard
     showToast(t('agents.toast.idle_flush_saved'))
-  } catch { showToast(t('common.error_save')) }
+  } catch { showToast(t('common.error_save'), 'error') }
 })
 
 // ---- voice config UI -------------------------------------------------------
@@ -6508,7 +6508,7 @@ document.getElementById('voiceInstallBtn').addEventListener('click', async () =>
   } catch {
     btn.disabled = false
     btn.textContent = 'Telepítés'
-    showToast(t('agents.voice.install_error'))
+    showToast(t('agents.voice.install_error'), 'error')
   }
 })
 
@@ -6527,7 +6527,7 @@ document.getElementById('saveVoiceConfigBtn').addEventListener('click', async ()
     const reply = await readActionReply(r)
     if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }), 'error'); return }
     showToast(t('agents.voice.saved'))
-  } catch { showToast(t('common.error_save')) }
+  } catch { showToast(t('common.error_save'), 'error') }
 })
 
 document.getElementById('saveProfileBtn').addEventListener('click', async () => {
@@ -6543,7 +6543,7 @@ document.getElementById('saveProfileBtn').addEventListener('click', async () => 
     const body = await res.json()
     showToast(body.requiresRestart ? t('agents.toast.profile_saved_restart') : t('agents.toast.profile_saved'))
     loadAgents()
-  } catch { showToast(t('agents.toast.profile_error')) }
+  } catch { showToast(t('agents.toast.profile_error'), 'error') }
 })
 
 document.getElementById('savePlanBtn').addEventListener('click', async () => {
@@ -6561,7 +6561,7 @@ document.getElementById('savePlanBtn').addEventListener('click', async () => {
     currentAgent.claudePlan = claudePlan || null
     showToast(t('agents.toast.plan_saved'))
     loadAgents()
-  } catch { showToast(t('agents.toast.plan_error')) }
+  } catch { showToast(t('agents.toast.plan_error'), 'error') }
 })
 
 // === Auth Mode ===
@@ -6704,7 +6704,7 @@ document.getElementById('memoryIsolationToggle').addEventListener('change', asyn
     showToast(t(enabled ? 'agents.toast.memory_isolation_on' : 'agents.toast.memory_isolation_off'))
   } catch {
     e.target.checked = !enabled
-    showToast(t('common.error_save'))
+    showToast(t('common.error_save'), 'error')
   }
 })
 
@@ -6722,7 +6722,7 @@ document.getElementById('codeModeToggle').addEventListener('change', async (e) =
     showToast(t(enabled ? 'agents.toast.code_mode_on' : 'agents.toast.code_mode_off'))
   } catch {
     e.target.checked = !enabled
-    showToast(t('common.error_save'))
+    showToast(t('common.error_save'), 'error')
   }
 })
 
@@ -6749,7 +6749,7 @@ document.getElementById('saveAuthModeBtn').addEventListener('click', async () =>
       currentAgent = updated
       updateAuthModeUI(updated.authMode || 'shared', updated.hasApiKey || false)
     }
-  } catch { showToast(t('common.error_save')) }
+  } catch { showToast(t('common.error_save'), 'error') }
 })
 
 document.getElementById('saveClaudeMdBtn').addEventListener('click', async () => {
@@ -6763,7 +6763,7 @@ document.getElementById('saveClaudeMdBtn').addEventListener('click', async () =>
     if (!res.ok) throw new Error()
     markFieldSaved(document.getElementById('editClaudeMd'))
     showToast(t('agents.claude_md_saved'))
-  } catch { showToast(t('common.error_save')) }
+  } catch { showToast(t('common.error_save'), 'error') }
 })
 
 document.getElementById('saveSoulMdBtn').addEventListener('click', async () => {
@@ -6777,7 +6777,7 @@ document.getElementById('saveSoulMdBtn').addEventListener('click', async () => {
     if (!res.ok) throw new Error()
     markFieldSaved(document.getElementById('editSoulMd'))
     showToast(t('agents.soul_md_saved'))
-  } catch { showToast(t('common.error_save')) }
+  } catch { showToast(t('common.error_save'), 'error') }
 })
 
 document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => {
@@ -6791,7 +6791,7 @@ document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => 
     if (!res.ok) throw new Error()
     markFieldSaved(document.getElementById('editMcpJson'))
     showToast(t('agents.mcp_json_saved'))
-  } catch { showToast(t('common.error_save')) }
+  } catch { showToast(t('common.error_save'), 'error') }
 })
 
 // === Channel tab ===
@@ -7018,7 +7018,7 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -7054,7 +7054,7 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
       showToast(t('channel.toast.test_ok') + suffix, suffix ? 8000 : undefined)
     }
   } catch {
-    showToast(t('channel.toast.smoke_failed'))
+    showToast(t('channel.toast.smoke_failed'), 'error')
   }
 })
 
@@ -7074,7 +7074,7 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
       showToast(data.message || t('channel.toast.reconnect_failed'), 8000)
     }
   } catch {
-    showToast(t('channel.toast.reconnect_error'), 8000)
+    showToast(t('channel.toast.reconnect_error'), { kind: 'error', duration: 8000 })
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -7096,7 +7096,7 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
     }
     showSmokeTestResult(data.output || 'OK')
   } catch {
-    showToast(t('channel.smoke_test.error'), 8000)
+    showToast(t('channel.smoke_test.error'), { kind: 'error', duration: 8000 })
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -7167,7 +7167,7 @@ async function approvePairing(code) {
     refreshPendingPairings()
     refreshAllowedList()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   }
 }
 
@@ -7235,7 +7235,7 @@ async function removeAllowed(kind, id) {
     showToast(t('common.toast.removed'))
     refreshAllowedList()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   }
 }
 
@@ -7278,7 +7278,7 @@ async function refreshInvites() {
         copyBtn.addEventListener('click', async (e) => {
           const link = e.currentTarget.getAttribute('data-link')
           try { await navigator.clipboard.writeText(link); showToast(t('common.toast.copied')) }
-          catch { showToast(t('common.toast.copy_failed')) }
+          catch { showToast(t('common.toast.copy_failed'), 'error') }
         })
       }
       const revokeBtn = item.querySelector('button[data-token]')
@@ -7310,7 +7310,7 @@ async function generateInvite() {
     }
     refreshInvites()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.textContent = t('channel.btn.invite_new')
@@ -7335,7 +7335,7 @@ async function revokeInviteToken(token) {
     showToast(t('channel.toast.invite_revoked'))
     refreshInvites()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   }
 }
 
@@ -7424,7 +7424,7 @@ async function submitApproveModal() {
     showToast(t('channel.toast.approved'))
     refreshChannelRequests()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     confirmBtn.querySelector('.btn-text').hidden = false
     confirmBtn.querySelector('.btn-loading').hidden = true
@@ -7442,7 +7442,7 @@ async function denyChannelRequest(id, itemEl) {
     showToast(t('channel.toast.denied'))
     refreshChannelRequests()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
     refreshChannelRequests()
   }
 }
@@ -7489,7 +7489,7 @@ document.getElementById('chDisconnectBtn').addEventListener('click', async () =>
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch {
-    showToast(t('channel.toast.disconnect_error'))
+    showToast(t('channel.toast.disconnect_error'), 'error')
   }
 })
 
@@ -7542,7 +7542,7 @@ async function loadSkills(agentName) {
             showToast(t('skills.toast.deleted'))
             loadSkills(agentName)
           } catch {
-            showToast(t('common.error_delete'))
+            showToast(t('common.error_delete'), 'error')
           }
         })
       }
@@ -7644,7 +7644,7 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
       loadSkills(agentApiName())
     }
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -7689,7 +7689,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
       loadSkills(agentApiName())
     }
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -8053,7 +8053,7 @@ function renderPendingRetries(container, rows) {
         if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'))
         loadPendingRetries()
       } catch {
-        showToast(t('tasks.toast.cancel_pending_error'))
+        showToast(t('tasks.toast.cancel_pending_error'), 'error')
       }
     })
   })
@@ -8149,7 +8149,7 @@ function makeScheduleRow(task) {
         if (r.ok) showToast(t('tasks.toast.run_started') + (data.result ? ': ' + data.result : ''))
         else showToast(t('common.not_done', { msg: refusalReason(r, data) }), 'error')
         loadSchedules()
-      } catch { showToast(t('tasks.toast.run_error')) }
+      } catch { showToast(t('tasks.toast.run_error'), 'error') }
     })
 
     row.querySelector('[data-action="toggle"]').addEventListener('click', async (e) => {
@@ -8160,7 +8160,7 @@ function makeScheduleRow(task) {
         if (reply.ok) showToast(task.enabled ? t('tasks.toast.toggled_paused') : t('tasks.toast.toggled_resumed'))
         else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error')
         loadSchedules()
-      } catch { showToast(t('common.error')) }
+      } catch { showToast(t('common.error'), 'error') }
     })
 
     row.querySelector('[data-action="delete"]').addEventListener('click', async (e) => {
@@ -8178,7 +8178,7 @@ function makeScheduleRow(task) {
         if (reply.ok) showToast(t('tasks.toast.deleted'))
         else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error')
         loadSchedules()
-      } catch { showToast(t('common.error_delete')) }
+      } catch { showToast(t('common.error_delete'), 'error') }
     })
 
     row.querySelector('[data-action="history"]').addEventListener('click', async (e) => {
@@ -8599,7 +8599,7 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
         questionsEl.hidden = true
         showToast(t('tasks.expand.done'))
       } catch {
-        showToast(t('tasks.expand.error'))
+        showToast(t('tasks.expand.error'), 'error')
       } finally {
         applyBtn.disabled = false
         applyBtn.querySelector('.btn-text').hidden = false
@@ -8667,7 +8667,7 @@ saveScheduleBtn.addEventListener('click', async () => {
     closeModal(scheduleModalOverlay)
     loadSchedules()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     saveScheduleBtn.disabled = false
     saveScheduleBtn.querySelector('.btn-text').hidden = false
@@ -8809,7 +8809,7 @@ async function saveMemoryFromModal() {
     loadMemories()
     loadMemStats()
   } catch {
-    showToast(t('common.error_save'))
+    showToast(t('common.error_save'), 'error')
   }
 }
 document.getElementById('saveMemBtn').addEventListener('click', saveMemoryFromModal)
@@ -8903,7 +8903,7 @@ async function moveMemTier(mem, tier) {
     loadMemories()
     loadMemStats()
   } catch {
-    showToast(t('common.error_save'))
+    showToast(t('common.error_save'), 'error')
   }
 }
 
@@ -8933,7 +8933,7 @@ async function loadMemStats() {
         if (data.ok === false) showToast(t('memories.toast.vector_error'))
         else showToast(t('memories.toast.vector_count', { count: data.embedded ?? data.count }))
         loadMemStats()
-      } catch { showToast(t('memories.toast.vector_error')) }
+      } catch { showToast(t('memories.toast.vector_error'), 'error') }
     })
   } catch (err) {
     console.error('Stats hiba:', err)
@@ -9176,7 +9176,7 @@ function renderMemories(memories) {
           showToast(`${t('common.error_delete')}: ${body.error || res.status}`)
         }
       } catch {
-        showToast(t('common.error_delete'))
+        showToast(t('common.error_delete'), 'error')
       }
     })
 
@@ -10066,7 +10066,7 @@ document.getElementById('connectorRefreshBtn').addEventListener('click', async (
       await loadCatalog()
     }
   } catch (err) {
-    showToast(t('updates.toast.error', {msg: err.message || err}))
+    showToast(t('updates.toast.error', {msg: err.message || err}), 'error')
   } finally {
     btn.disabled = false
   }
@@ -11223,7 +11223,7 @@ function renderSshServers() {
       try {
         await fetch(`/api/vault/ssh-servers/${encodeURIComponent(id)}`, { method: 'DELETE' })
         await loadSshServers()
-      } catch { showToast(t('vault.toast.delete_error')) }
+      } catch { showToast(t('vault.toast.delete_error'), 'error') }
     })
   })
 
@@ -11337,7 +11337,7 @@ function openSshKeygenModal(callback) {
 
       await loadSshKeys()
       if (_sshKeygenCallback) _sshKeygenCallback(data.key || data)
-    } catch { showToast(t('vault.toast.network_error')); resetKeygenForm() }
+    } catch { showToast(t('vault.toast.network_error'), 'error'); resetKeygenForm() }
   })
 
   copyBtn?.addEventListener('click', () => {
@@ -11584,7 +11584,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
       panel.hidden = true
       await loadSshServers()
       showToast(t(isEdit ? 'vault.ssh.toast.server_updated' : 'vault.ssh.toast.server_added'))
-    } catch { showToast(t('vault.toast.network_error')) }
+    } catch { showToast(t('vault.toast.network_error'), 'error') }
   })
 
   cardViewBtn?.addEventListener('click', () => {
@@ -11863,7 +11863,7 @@ function renderVaultGrid(secrets) {
       openModal(overlay)
     } catch (err) {
       console.error('Vault bind modal error:', err)
-      showToast(t('vault.bind.load_error', { msg: err.message }))
+      showToast(t('vault.bind.load_error', { msg: err.message }), 'error')
     }
   })
 
@@ -12388,7 +12388,7 @@ async function openConnectorDetail(connector) {
       showToast(t('connectors.toast.deleted'))
       loadConnectors()
     } catch {
-      showToast(t('common.error_delete'))
+      showToast(t('common.error_delete'), 'error')
     }
   }
 
@@ -12406,7 +12406,7 @@ async function openConnectorDetail(connector) {
       closeModal(connectorDetailOverlay)
       loadConnectors()
     } catch {
-      showToast(t('connectors.toast.assignment_error'))
+      showToast(t('connectors.toast.assignment_error'), 'error')
     }
   }
 
@@ -12510,7 +12510,7 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     }
     loadConnectors()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -13079,7 +13079,7 @@ memImportSaveBtn.addEventListener('click', async () => {
     }
   } catch (err) {
     memImportProgress.hidden = true
-    showToast(t('memories.toast.import_error'))
+    showToast(t('memories.toast.import_error'), 'error')
   }
 
   memImportSaveBtn.querySelector('.btn-text').hidden = false
@@ -13133,7 +13133,7 @@ document.getElementById('migrateScanBtn').addEventListener('click', async () => 
     document.getElementById('migrateStep1').hidden = true
     document.getElementById('migrateStep2').hidden = false
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -13239,7 +13239,7 @@ document.getElementById('migrateRunBtn').addEventListener('click', async () => {
       ${data.details ? '<div class="migrate-result-details">' + data.details.map(d => escapeHtml(d)).join('<br>') + '</div>' : ''}
     `
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -13296,7 +13296,7 @@ document.getElementById('fleetExportBtn').addEventListener('click', async () => 
 
     showToast(t('fleet.export.success'))
   } catch (err) {
-    showToast(`${t('fleet.export.error')}: ${err.message}`)
+    showToast(`${t('fleet.export.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -13327,7 +13327,7 @@ document.getElementById('fleetDryRunBtn').addEventListener('click', async () => 
   try {
     const text = await fileInput.files[0].text()
     // Validate JSON client-side first
-    try { JSON.parse(text) } catch { showToast(t('fleet.import.invalid_json')); return }
+    try { JSON.parse(text) } catch { showToast(t('fleet.import.invalid_json'), 'error'); return }
 
     const password = document.getElementById('fleetImportPassword').value.trim()
     const headers = { 'Content-Type': 'application/json' }
@@ -13388,7 +13388,7 @@ document.getElementById('fleetDryRunBtn').addEventListener('click', async () => 
       applyBtn.disabled = false
     }
   } catch (err) {
-    showToast(`${t('fleet.import.error')}: ${err.message}`)
+    showToast(`${t('fleet.import.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -13444,7 +13444,7 @@ document.getElementById('fleetApplyBtn').addEventListener('click', async () => {
     fleetLastBody = null
     btn.disabled = true
   } catch (err) {
-    showToast(`${t('fleet.import.error')}: ${err.message}`)
+    showToast(`${t('fleet.import.error')}: ${err.message}`, 'error')
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
     btn.querySelector('.btn-loading').hidden = true
@@ -14098,7 +14098,7 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
         loadGlobalSkills()
       } catch (err) {
         console.error('Skill mentés hiba:', err)
-        showToast(t('skills.toast.save_error'))
+        showToast(t('skills.toast.save_error'), 'error')
       } finally {
         saveBtn.disabled = false
       }
@@ -14145,7 +14145,7 @@ async function saveTeamReportsTo(childId, parentId, ctx) {
     showToast(t('team.drop.saved', { child: childLabel, parent: parentLabel }))
     loadTeamGraph()
   } catch {
-    showToast(t('team.drop.error'))
+    showToast(t('team.drop.error'), 'error')
   }
 }
 
@@ -14994,7 +14994,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
     setTimeout(() => { btn.textContent = originalText; btn.disabled = false }, 1800)
     loadAgents()
   } catch {
-    showToast(t('team.save_error'))
+    showToast(t('team.save_error'), 'error')
     btn.textContent = originalText
     btn.disabled = false
   }
@@ -15190,7 +15190,7 @@ document.getElementById('projectsGrid')?.addEventListener('click', async (e) => 
       showToast(t('common.saved'))
     } catch (err) {
       console.error('save project description failed:', err)
-      showToast(t('projects.save_error'))
+      showToast(t('projects.save_error'), 'error')
     }
     return
   }
@@ -15951,7 +15951,7 @@ async function applyCliUpdate(target) {
     renderCliUpdateOffer(true)
   } catch (err) {
     if (btn) btn.disabled = false
-    showToast(t('updates.cli.failed', { msg: err.message || err }))
+    showToast(t('updates.cli.failed', { msg: err.message || err }), 'error')
   }
 }
 
@@ -16001,7 +16001,7 @@ async function runDiagnose() {
     if (btn) { btn.hidden = true }
   } catch (err) {
     if (btn) btn.disabled = false
-    showToast(t('updates.diagnose.failed', { msg: err.message || err }))
+    showToast(t('updates.diagnose.failed', { msg: err.message || err }), 'error')
   }
 }
 
@@ -16028,7 +16028,7 @@ async function offerRebaseUpdate() {
       return
     }
   } catch (err) {
-    showToast(t('updates.rebase.plan_error', { msg: err.message || String(err) }), 12000)
+    showToast(t('updates.rebase.plan_error', { msg: err.message || String(err) }), { kind: 'error', duration: 12000 })
     return
   }
   if (plan.willFail) {
@@ -16139,7 +16139,7 @@ async function runUpdate(autoStash, rebaseApproval) {
     await pollUpdateOutcome(resetBtn)
   } catch (err) {
     resetBtn()
-    showToast(t('updates.toast.error', {msg: err.message || err}))
+    showToast(t('updates.toast.error', {msg: err.message || err}), 'error')
   }
 }
 
@@ -16951,7 +16951,7 @@ function fallbackCopyToClipboard(text, btn) {
       showToast(t('common.toast.copy_failed'))
     }
   } catch {
-    showToast(t('common.toast.copy_failed'))
+    showToast(t('common.toast.copy_failed'), 'error')
   }
   document.body.removeChild(ta)
 }
@@ -17015,7 +17015,7 @@ document.getElementById('chSlackManifestBtn').addEventListener('click', async ()
     const data = await res.json()
     showSlackManifestModal(data.manifest, data.instructions)
   } catch {
-    showToast(t('channel.toast.manifest_failed'))
+    showToast(t('channel.toast.manifest_failed'), 'error')
   } finally {
     btn.disabled = false
   }
@@ -17249,7 +17249,7 @@ async function startBgTask() {
     showToast(t('bgTasks.toast.started'))
     loadBgTasks()
   } catch {
-    showToast(t('bgTasks.toast.start_error'))
+    showToast(t('bgTasks.toast.start_error'), 'error')
   } finally {
     btn.disabled = false
   }
@@ -17320,7 +17320,7 @@ async function viewBgTask(id) {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
     document.getElementById('bgModalClose').addEventListener('click', () => modal.remove())
   } catch {
-    showToast(t('bgTasks.load_error'))
+    showToast(t('bgTasks.load_error'), 'error')
   }
 }
 
@@ -17342,7 +17342,7 @@ async function cancelBgTask(id, agent) {
       showToast(t('bgTasks.toast.stop_error'))
     }
   } catch {
-    showToast(t('bgTasks.toast.stop_error'))
+    showToast(t('bgTasks.toast.stop_error'), 'error')
   }
 }
 
@@ -17431,7 +17431,7 @@ async function setAutonomyLevel(key, level) {
     const tabFooter = document.getElementById('settingsAutonomyUpdatedAt')
     if (tabGrid) renderAutonomyContent(tabGrid, tabFooter)
   } catch {
-    showToast(t('kanban.toast.save_error'))
+    showToast(t('kanban.toast.save_error'), 'error')
   }
 }
 
@@ -17662,7 +17662,7 @@ async function _resolveApproval(id, decision) {
     _renderApprovalsStats()
     _renderApprovalsTable()
   } catch (err) {
-    showToast(t('approvals.toast.error', { msg: String(err.message || err) }))
+    showToast(t('approvals.toast.error', { msg: String(err.message || err) }), 'error')
   }
 }
 
@@ -18697,7 +18697,7 @@ function wireFleetFreeze() {
       if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
       renderFleetFreeze(data)
       showToast(t('fleet_freeze.toast.frozen'))
-    } catch (err) { showToast(String(err.message || err)) }
+    } catch (err) { showToast(String(err.message || err), 'error') }
   })
   unfreezeBtn.addEventListener('click', async () => {
     if (!window.confirm(t('fleet_freeze.prompt.unfreeze'))) return
@@ -18708,7 +18708,7 @@ function wireFleetFreeze() {
       if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
       renderFleetFreeze({ frozen: false })
       showToast(t('fleet_freeze.toast.unfrozen'))
-    } catch (err) { showToast(String(err.message || err)) }
+    } catch (err) { showToast(String(err.message || err), 'error') }
   })
   pollFleetFreeze()
   setInterval(pollFleetFreeze, FLEET_FREEZE_POLL_MS)
@@ -19614,7 +19614,7 @@ async function probeClaudePlan(id, btn) {
       else if (res.status !== 502) showToast((data && data.error) || t('settings.claude_plans.probe_failed'))
     }
   } catch {
-    showToast(t('settings.claude_plans.probe_failed'))
+    showToast(t('settings.claude_plans.probe_failed'), 'error')
   }
   btn.textContent = original
   await loadClaudePlansList()
@@ -19831,7 +19831,7 @@ function buildProvidersUI(container, providers) {
           }
           renderProvidersContent(container)
           loadAvailableModels()
-        } catch { showToast(t('providers.toast.delete_error')) }
+        } catch { showToast(t('providers.toast.delete_error'), 'error') }
       })
     })
   } else {
@@ -19938,7 +19938,7 @@ function openAddProviderModal(container, editProvider = null) {
       overlay.remove()
       renderProvidersContent(container)
       loadAvailableModels()
-    } catch { showToast(t('providers.toast.save_error')) }
+    } catch { showToast(t('providers.toast.save_error'), 'error') }
   })
 }
 
@@ -21656,7 +21656,7 @@ function wireNotesPage() {
       showToast(t('notes.toast.added'))
       loadNotesPage()
     } catch (err) {
-      showToast(t('notes.toast.error', { msg: String(err.message || err) }))
+      showToast(t('notes.toast.error', { msg: String(err.message || err) }), 'error')
     } finally {
       if (btn) btn.disabled = false
     }
@@ -21680,7 +21680,7 @@ function wireNotesPage() {
       loadNotesPage()
     } catch (err) {
       btn.disabled = false
-      showToast(t('notes.toast.error', { msg: String(err.message || err) }))
+      showToast(t('notes.toast.error', { msg: String(err.message || err) }), 'error')
     }
   })
 }
@@ -22122,7 +22122,7 @@ async function setIdeaStatus(id, status) {
     const res = await fetch(`/api/ideas/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
     if (!res.ok) { showToast(t('ideas.toast.status_error')); return }
     loadIdeasPage()
-  } catch { showToast(t('ideas.toast.status_error')) }
+  } catch { showToast(t('ideas.toast.status_error'), 'error') }
 }
 
 // Promote an idea to the board via AI breakdown + per-subtask approval.
@@ -22150,7 +22150,7 @@ async function openIdeaBreakdown(id) {
     const dodSection = document.getElementById('breakdownDoDSection')
     if (dodSection) { dodSection.style.display = ''; document.getElementById('breakdownSuccessCriteria').value = '' }
   } catch {
-    showToast(t('kanban.breakdown.failed'))
+    showToast(t('kanban.breakdown.failed'), 'error')
   }
 }
 
@@ -22612,7 +22612,7 @@ function renderFederationPage() {
       if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); e.target.checked = !enabled; return }
       showToast(enabled ? t('federation.toast.enabled') : t('federation.toast.disabled'))
       fedRefreshAndReload()
-    } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); e.target.checked = !enabled }
+    } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error'); e.target.checked = !enabled }
   })
   document.querySelectorAll('input[name="fedRoutingMode"]').forEach((radio) => {
     radio.addEventListener('change', async (e) => {
@@ -22622,7 +22622,7 @@ function renderFederationPage() {
         const data = await res.json().catch(() => ({}))
         if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
         showToast(t('federation.routing.toast_set', { mode: t('federation.routing.mode.' + mode + '.label') }))
-      } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+      } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
     })
   })
 
@@ -22683,7 +22683,7 @@ async function fedRevealToken(peerId, card) {
       () => showToast(t('federation.toast.token_copied')),
       () => {},
     )
-  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
 }
 
 // A peer's inbound token in the app's own dialog (the pairing showed it in a native prompt()): selectable,
@@ -22706,7 +22706,7 @@ async function fedShowInboundTokenDialog(peerId, token, messageKey) {
   try {
     await navigator.clipboard.writeText(token)
     showToast(t('federation.toast.token_copied'))
-  } catch { showToast(t('federation.token_dialog.copy_failed')) }
+  } catch { showToast(t('federation.token_dialog.copy_failed'), 'error') }
 }
 
 async function fedRotateToken(peerId) {
@@ -22725,7 +22725,7 @@ async function fedRotateToken(peerId) {
     loadFederationPage()
     // The answer carries the new token: shown right away, like at pairing.
     if (data.inboundToken) await fedShowInboundTokenDialog(peerId, data.inboundToken, 'federation.token_dialog.rotated_hint')
-  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
 }
 
 async function fedToggleShareCap(peerId, share) {
@@ -22737,7 +22737,7 @@ async function fedToggleShareCap(peerId, share) {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); loadFederationPage(); return }
     showToast(share ? t('federation.toast.share_cap_on') : t('federation.toast.share_cap_off'))
-  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); loadFederationPage() }
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error'); loadFederationPage() }
 }
 
 async function fedDeletePeer(peerId) {
@@ -22760,7 +22760,7 @@ async function fedDeletePeer(peerId) {
     if (chatSelectedAgent && chatSelectedAgent.startsWith(peerId + '/')) chatSelectedAgent = null
     showToast(t('federation.toast.peer_deleted'))
     loadFederationPage()
-  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
 }
 
 // Apply federation config changes to the RUNNING main agent by restarting it
@@ -22801,7 +22801,7 @@ async function fedApplyToMainAgent() {
     }
     if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
     showToast(t('federation.toast.applied'))
-  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
 }
 
 // Re-poll peer reachability then re-render. Called after config mutations
@@ -22858,7 +22858,7 @@ async function fedSavePeerModal() {
     }
     closeModal(document.getElementById('fedPeerModalOverlay'))
     fedRefreshAndReload()
-  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
 }
 
 async function fedRemoveAll() {
@@ -22883,7 +22883,7 @@ async function fedRemoveAll() {
     if (chatSelectedAgent && chatSelectedAgent.includes('/')) chatSelectedAgent = null
     showToast(t('federation.toast.removed'))
     loadFederationPage()
-  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
 }
 
 function wireFederationPage() {
@@ -23077,7 +23077,7 @@ function downloadMarkdown(name, content) {
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (e) {
-    showToast(t('common.toast.download_failed', { msg: String(e && e.message || e) }))
+    showToast(t('common.toast.download_failed', { msg: String(e && e.message || e) }), 'error')
   }
 }
 

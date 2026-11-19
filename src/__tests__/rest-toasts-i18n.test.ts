@@ -219,6 +219,6 @@ describe('the handlers speak the dashboard language', () => {
     expect(APP).toContain("navigator.clipboard.writeText(url).then(() => showToast(t('common.toast.copied')))")
     const mcp = APP.slice(APP.indexOf("document.getElementById('saveMcpJsonBtn')"))
     expect(mcp.slice(0, mcp.indexOf('\n})\n'))).toContain("showToast(t('agents.mcp_json_saved'))")
-    expect(APP).toContain("showToast(t('agents.voice.install_error'))")
+    expect(APP).toContain("showToast(t('agents.voice.install_error'), 'error')")
   })
 })
