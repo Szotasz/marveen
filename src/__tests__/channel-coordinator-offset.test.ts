@@ -11,7 +11,17 @@ vi.mock('../channel-coordinator/ingest.js', async (importOriginal) => {
   }
 })
 
-import { processBatch } from '../channel-coordinator.js'
+// KBDBACKFILLEXP1119: the reply-button max age, set per test; every other key reads through.
+const settings = vi.hoisted(() => ({ kbdMaxAge: 0 as number }))
+vi.mock('../settings-store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../settings-store.js')>()
+  return {
+    ...actual,
+    getEffectiveSettingValue: (key: string) => (key === 'TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS' ? settings.kbdMaxAge : actual.getEffectiveSettingValue(key)),
+  }
+})
+
+import { processBatch, isExpiredKbdTap } from '../channel-coordinator.js'
 import { mapUpdate } from '../channel-coordinator/telegram-client.js'
 import * as ingest from '../channel-coordinator/ingest.js'
 
@@ -215,5 +225,64 @@ describe('runLoop persists only the offset processBatch returns (source pin)', (
     expect(mutated).not.toBe(runLoopBody(src)) // the mutant must actually differ
     expect(setOffsetArgs(mutated)).not.toEqual(['SOURCE, hw', 'SOURCE, offset'])
     expect(batchOffsetComesStraightFromProcessBatch(mutated)).toBe(false)
+  })
+})
+
+// KBDBACKFILLEXP1119: while the plugin is down, the backfill drops a tap on a reply button of an expired question,
+// with the plugin's own rule (the question's send time, strictly older than the max age, 0 = never).
+describe('expired reply-button taps in the backfill', () => {
+  const now = () => Math.floor(Date.now() / 1000)
+  const tap = (id: number, data: string, ageSec: number) => ({
+    update_id: id,
+    callback_query: { id: `cq${id}`, data, from: { id: 42 }, message: { message_id: 500 + id, date: now() - ageSec, chat: { id: 42, type: 'private' } } },
+  })
+  const oldMsg = (id: number, ageSec: number) => ({
+    update_id: id,
+    message: { message_id: id, date: now() - ageSec, text: `m${id}`, chat: { id: 42, type: 'private' }, from: { id: 42 } },
+  })
+  const stored = (u: Parameters<typeof mapUpdate>[0]) => !realInsert(SOURCE, mapUpdate(u)!).inserted
+  afterEach(() => { settings.kbdMaxAge = 0 })
+
+  it('K1 max age 24 h, a tap on a 25 h old question: offset advances, nothing stored, nothing handed off', () => {
+    settings.kbdMaxAge = 24
+    const u = tap(20, 'kbd:1', 25 * 3600)
+    expect(processBatch([u])).toEqual({ offset: 20, stalled: false })
+    expect(messageCount()).toBe(0)
+    expect(stored(u)).toBe(false)
+  })
+
+  it('K2 max age 24 h, a tap on a 23 h old question is delivered', () => {
+    settings.kbdMaxAge = 24
+    const u = tap(21, 'kbd:2', 23 * 3600)
+    expect(processBatch([u])).toEqual({ offset: 21, stalled: false })
+    expect(messageCount()).toBe(1)
+    expect(stored(u)).toBe(true)
+  })
+
+  it('K3 max age 0 (the default): an old tap is delivered as before', () => {
+    const u = tap(22, 'kbd:0', 400 * 3600)
+    expect(processBatch([u])).toEqual({ offset: 22, stalled: false })
+    expect(messageCount()).toBe(1)
+  })
+
+  it('K4 only kbd: taps: an old message and an old non-kbd callback are delivered', () => {
+    settings.kbdMaxAge = 24
+    expect(processBatch([oldMsg(23, 48 * 3600), tap(24, 'perm:allow:x', 48 * 3600)])).toEqual({ offset: 24, stalled: false })
+    expect(messageCount()).toBe(2)
+  })
+
+  it('K5 a dropped tap between two messages: both messages delivered, the offset covers all three', () => {
+    settings.kbdMaxAge = 1
+    expect(processBatch([oldMsg(25, 10), tap(26, 'kbd:1', 2 * 3600), oldMsg(27, 10)])).toEqual({ offset: 27, stalled: false })
+    expect(messageCount()).toBe(2)
+  })
+
+  it('isExpiredKbdTap: strictly older than the max age, like the plugin; no date or a zero date never expires', () => {
+    const ev = (tg_date: number | null) => ({ kind: 'callback_query', content: 'kbd:1', tg_date })
+    expect(isExpiredKbdTap(ev(1000), 1, 1000 + 3600)).toBe(false)
+    expect(isExpiredKbdTap(ev(1000), 1, 1000 + 3601)).toBe(true)
+    expect(isExpiredKbdTap(ev(null), 1, 10 ** 9)).toBe(false)
+    expect(isExpiredKbdTap(ev(0), 1, 10 ** 9)).toBe(false)
+    expect(isExpiredKbdTap({ kind: 'message', content: 'kbd:1', tg_date: 1000 }, 1, 10 ** 9)).toBe(false)
   })
 })
