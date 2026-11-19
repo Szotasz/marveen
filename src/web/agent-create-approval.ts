@@ -39,13 +39,6 @@ export async function fileAgentSpecRequest(body: unknown, requestedBy: string, d
   if (!agentCreateViaApprovalOn(deps.setting)) {
     return { status: 403, body: { error: 'Agent creation by approval is off (AGENT_CREATE_VIA_APPROVAL).' } }
   }
-  const now0 = Math.floor(Date.now() / 1000)
-  const open = getDb().prepare(`
-    SELECT agent_id FROM approvals WHERE category = ? AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
-  `).all(AGENT_CREATE_CATEGORY, now0) as Array<{ agent_id: string }>
-  if (open.length >= AGENT_CREATE_MAX_OPEN || open.filter((o) => o.agent_id === requestedBy).length >= AGENT_CREATE_MAX_OPEN_PER_REQUESTER) {
-    return { status: 429, body: { error: 'Too many open agent_create requests; wait for the owner to decide the open ones.' } }
-  }
   const r = await canonicalAgentSpec(body, { vaultReadable: deps.vaultReadable })
   if (!r.ok) return { status: r.status, body: { error: r.error } }
   const json = canonicalJson(r.spec)
@@ -53,12 +46,20 @@ export async function fileAgentSpecRequest(body: unknown, requestedBy: string, d
   const text = renderAgentSpec(r.spec, hash, deps.lang)
   const id = randomUUID()
   const now = Math.floor(Date.now() / 1000)
-  getDb().transaction(() => {
+  // The count and the insert in ONE synchronous transaction, nothing awaited in between (Dani 81221: counted before the
+  // spec's await, 30 parallel requests all passed): better-sqlite3 runs it to the end, so in this process it is atomic.
+  const filed = getDb().transaction((): boolean => {
+    const open = getDb().prepare(`
+      SELECT agent_id FROM approvals WHERE category = ? AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
+    `).all(AGENT_CREATE_CATEGORY, now) as Array<{ agent_id: string }>
+    if (open.length >= AGENT_CREATE_MAX_OPEN || open.filter((o) => o.agent_id === requestedBy).length >= AGENT_CREATE_MAX_OPEN_PER_REQUESTER) return false
     createApproval({ id, agent_id: requestedBy, category: AGENT_CREATE_CATEGORY, action_description: text, action_payload: null, timeout_at: now + AGENT_CREATE_TIMEOUT_S, content_hash: hash })
     getDb().prepare(`
       INSERT INTO agent_create_specs (approval_id, spec_json, content_hash, requested_by, requested_at) VALUES (?, ?, ?, ?, ?)
     `).run(id, json, hash, requestedBy, now)
+    return true
   })()
+  if (!filed) return { status: 429, body: { error: 'Too many open agent_create requests; wait for the owner to decide the open ones.' } }
   logger.info({ approvalId: id, requestedBy, name: r.spec.name }, 'agent_create request filed; waiting for the owner')
   return { status: 201, body: { ok: true, approvalId: id, contentHash: hash, text } }
 }

@@ -136,6 +136,18 @@ describe('the vault entry a spec may name (Dani #2922 B1) and the open-request c
     expect((await call('POST', '/api/agent-specs', tg('GAZDA-BOT'), { kind: 'session', user: 'owner' })).status).toBe(201)
   })
 
+  it('ten requests from one requester at once: exactly three filed, the rest 429 (Dani 81221: the count and the insert are one step)', async () => {
+    const rs = await Promise.all(Array.from({ length: 10 }, (_, i) => call('POST', '/api/agent-specs', { ...SPEC, name: `Egyszerre${i}` })))
+    expect(rs.filter((r) => r.status === 201)).toHaveLength(3)
+    expect(rs.filter((r) => r.status === 429)).toHaveLength(7)
+    expect(db.listApprovals({ category: 'agent_create', status: 'pending' })).toHaveLength(3)
+  })
+
+  it('SSH material is not usable from the owner session either (the floor holds for everyone)', async () => {
+    h.vault.set('ssh-key-2', TOKEN)
+    expect(await call('POST', '/api/agent-specs', tg('ssh-key-2'), { kind: 'session', user: 'owner' })).toEqual(UNUSABLE('ssh-key-2'))
+  })
+
   it('at most twenty open requests in all, whoever asks: the twenty-first is 429', async () => {
     for (let i = 0; i < 20; i++) {
       const r = await call('POST', '/api/agent-specs', { ...SPEC, name: `Ossz${i}`, channel: undefined }, { kind: 'token', agent: `ugynok${Math.floor(i / 3)}` })

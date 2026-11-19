@@ -526,8 +526,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const reader = auth?.kind === 'token' ? (auth.tokenAgent ?? claimedAgentOf(auth)) : null
     const acl = readVaultAcl()
     const vaultReadable = (id: string): boolean => {
+      // the floor holds for the owner's session too: SSH material or a vault sub-resource is never a bot token (Dani 81221)
+      if (!isAgentReadableDecodedVaultId(id)) return false
       if (auth?.kind === 'session') return true
-      if (!reader || !isAgentReadableDecodedVaultId(id)) return false
+      if (!reader) return false
       const listed = Object.prototype.hasOwnProperty.call(acl, id) && Array.isArray(acl[id]) ? acl[id] : []
       return listed.includes(reader)
     }
