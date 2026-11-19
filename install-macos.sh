@@ -212,6 +212,27 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 MSW_PY
 }
+# MANAGEDUMASK1119: an EXISTING managed dir keeps its mode under `mkdir -p -m 0755`, and an older install made it
+# 0700 under a 077 umask: the session cannot read the policy inside, and even the checks below, which read as the
+# user, see no file there. If $1 is a real directory (not a symlink), owned by root and not 0755, set it to 0755 as
+# root, loudly, after the notice. 0755 never adds a group/other write bit; a dir owned by anyone else, or a symlink,
+# is left alone (the writer refuses those anyway). The check reads as the user (stat on the dir itself needs no
+# access inside it), so an already-correct host asks for no password. Called at the start of each managed block.
+managed_dir_repair() { # $1 = the managed dir
+  [ -d "$1" ] && [ ! -L "$1" ] || return 0
+  local om owner mode
+  om="$(/usr/bin/stat -f '%u %Lp' "$1" 2>/dev/null)" || return 0
+  owner="${om%% *}"; mode="${om##* }"
+  [ "$owner" = "0" ] && [ "$mode" != "755" ] || return 0
+  managed_settings_notice
+  if /usr/bin/sudo /bin/chmod 0755 "$1" 2>/dev/null; then
+    echo -e "  ${ORANGE}!${NC} A $1 mappa joga $mode volt (a session nem latott bele) -- 0755-re allitva."
+  else
+    echo -e "  ${RED}✗${NC} A $1 mappa joga $mode, es nem sikerult 0755-re allitani -- kezi root-lepes:"
+    echo -e "  ${DIM}  sudo chmod 0755 \"$1\"${NC}"
+  fi
+}
+
 # Read as the user, nothing written: 0 when the file already has every wanted entry (NAME@MARKETPLACE, or
 # --channels for channelsEnabled), so an already-correct host asks for no password (the gate's old rule).
 # A wrong answer only means a needless or skipped write, never code run as root.
@@ -898,6 +919,7 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   # file and the official-marketplace plugin runs fine without it, so we only
   # MERGE when the file already exists -- never create it here.
   MANAGED_FILE="/Library/Application Support/ClaudeCode/managed-settings.json"
+  managed_dir_repair "$(dirname "$MANAGED_FILE")" # MANAGEDUMASK1119: before the -f check, which reads as the user
   if [ -f "$MANAGED_FILE" ]; then
     managed_settings_notice
     # Read as the user (MACROOTFROMCLONE1106): an already-allowed discord needs no password.
@@ -951,6 +973,7 @@ else
   REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY,$TEAMS_ENTRY,$DISCORD_ENTRY]}"
 
   managed_settings_notice
+  managed_dir_repair "$MANAGED_DIR" # MANAGEDUMASK1119: before the -f check, which reads as the user
   if [ -f "$MANAGED_FILE" ]; then
     # Gate on ALL required plugins being present (not just slack) -- otherwise an
     # install that already has slack/telegram but not teams skips the merge and
@@ -1025,6 +1048,7 @@ fi
 CHANNELS_GATE_STATE="manual"
 MANAGED_DIR="/Library/Application Support/ClaudeCode"
 MANAGED_FILE="$MANAGED_DIR/managed-settings.json"
+managed_dir_repair "$MANAGED_DIR" # MANAGEDUMASK1119: before managed_has, which reads as the user
 if managed_has "$MANAGED_FILE" --channels; then
   echo "  channelsEnabled: mar be van kapcsolva ($MANAGED_FILE)"
   CHANNELS_GATE_STATE="ok"
