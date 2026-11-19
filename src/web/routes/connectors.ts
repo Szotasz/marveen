@@ -159,6 +159,56 @@ export function vaultAndBindEnvSecrets(
   }
 }
 
+/** AGENTCREATEPR2B-1119: the config of an MCP server already on this install, by name, looked up in the order the
+ *  assign route always used (the project's server list, ~/.claude.json, every agent's and its projects' server list,
+ *  the external project paths); null when none has it. The agent-create consumer reads it the same way. */
+export function findConnectorConfig(connectorName: string): any | null {
+  return findConnectorConfigWithSource(connectorName)?.config ?? null
+}
+
+/** findConnectorConfig with the file it came from (relative to the install, or ~/.claude.json, or the external path)
+ *  and whether an agent can write that file: an agent's projects/<p> server list and an external project's are not
+ *  behind the install-file gate (Dani #2940 n1), the install's, ~/.claude.json and agents/<n>/.mcp.json are. */
+export function findConnectorConfigWithSource(connectorName: string): { config: any; source: string; agentWritable: boolean } | null {
+  const configSources: Array<{ path: string; label: string; agentWritable: boolean }> = [
+    { path: join(PROJECT_ROOT, '.mcp.json'), label: '.mcp.json', agentWritable: false },
+    { path: join(homedir(), '.claude.json'), label: '~/.claude.json', agentWritable: false },
+  ]
+  for (const agentName of listAgentNames()) {
+    configSources.push({ path: join(AGENTS_BASE_DIR, agentName, '.mcp.json'), label: `agents/${agentName}/.mcp.json`, agentWritable: false })
+    const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
+    if (existsSync(projectsDir)) {
+      try {
+        for (const proj of readdirSync(projectsDir)) {
+          if (statSync(join(projectsDir, proj)).isDirectory()) {
+            configSources.push({ path: join(projectsDir, proj, '.mcp.json'), label: `agents/${agentName}/projects/${proj}/.mcp.json`, agentWritable: true })
+          }
+        }
+      } catch { /* ignore */ }
+    }
+  }
+  for (const extPath of getExternalProjectPaths()) {
+    configSources.push({ path: join(extPath, '.mcp.json'), label: join(extPath, '.mcp.json'), agentWritable: true })
+  }
+  for (const src of configSources) {
+    try {
+      const parsed = JSON.parse(readFileOr(src.path, '{}'))
+      if (parsed.mcpServers && parsed.mcpServers[connectorName]) return { config: parsed.mcpServers[connectorName], source: src.label, agentWritable: src.agentWritable }
+    } catch { /* fall through */ }
+  }
+  return null
+}
+
+/** AGENTCREATEPR2B-1119: one server config into an agent's server list, its other servers kept (the assign route's
+ *  per-target write). The caller has checked the agent name against the known agents. */
+export function writeConnectorIntoAgent(agentName: string, connectorName: string, connectorConfig: unknown): void {
+  const mcpPath = join(AGENTS_BASE_DIR, agentName, '.mcp.json')
+  const mcpConfig = readJsonObjectForWrite(mcpPath) as any
+  if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {}
+  mcpConfig.mcpServers[connectorName] = connectorConfig
+  atomicWriteFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
+}
+
 export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -622,47 +672,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    let connectorConfig: any = null
-    const configSources = [
-      join(PROJECT_ROOT, '.mcp.json'),
-      join(homedir(), '.claude.json'),
-    ]
-    for (const agentName of listAgentNames()) {
-      configSources.push(join(AGENTS_BASE_DIR, agentName, '.mcp.json'))
-      const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
-      if (existsSync(projectsDir)) {
-        try {
-          for (const proj of readdirSync(projectsDir)) {
-            if (statSync(join(projectsDir, proj)).isDirectory()) {
-              configSources.push(join(projectsDir, proj, '.mcp.json'))
-            }
-          }
-        } catch { /* ignore */ }
-      }
-    }
-    for (const extPath of getExternalProjectPaths()) {
-      configSources.push(join(extPath, '.mcp.json'))
-    }
-    for (const src of configSources) {
-      try {
-        const parsed = JSON.parse(readFileOr(src, '{}'))
-        if (parsed.mcpServers && parsed.mcpServers[connectorName]) {
-          connectorConfig = parsed.mcpServers[connectorName]
-          break
-        }
-      } catch { /* fall through */ }
-    }
+    const connectorConfig = findConnectorConfig(connectorName)
     if (!connectorConfig) { json(res, { error: 'Connector not found' }, 404); return true }
 
     const targetSet = new Set(targetAgents)
-    for (const agentName of targetAgents) {
-      const mcpPath = join(AGENTS_BASE_DIR, agentName, '.mcp.json')
-      let mcpConfig: any = {}
-      mcpConfig = readJsonObjectForWrite(mcpPath) as any
-      if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {}
-      mcpConfig.mcpServers[connectorName] = connectorConfig
-      atomicWriteFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
-    }
+    for (const agentName of targetAgents) writeConnectorIntoAgent(agentName, connectorName, connectorConfig)
 
     if (visibleAgents) {
       for (const agentName of visibleAgents) {

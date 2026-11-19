@@ -54,8 +54,11 @@ describe('canonicalAgentSpec: validated before anything is stored', () => {
 
   it.each([
     [{ ...base, invite: 'x' }, 'unknown field: invite'],
-    [{ ...base, spec_version: 2 }, 'spec_version must be 1'],
-    [{ ...base, spec_version: undefined }, 'spec_version must be 1'],
+    [{ ...base, spec_version: 3 }, 'spec_version must be one of: 1, 2'],
+    [{ ...base, spec_version: undefined }, 'spec_version must be one of: 1, 2'],
+    [{ ...base, team: {} }, 'unknown field: team'],
+    [{ ...base, mcp: [] }, 'unknown field: mcp'],
+    [{ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT' }, allowFrom: ['1'] } }, 'unknown field: channel.allowFrom'],
     [{ ...base, name: 7 }, 'name must be a string'],
     [{ ...base, model: 5 }, 'model must be a string'],
     [{ ...base, channel: { provider: 'telegram', botToken: TOKEN } }, 'channel.botToken must be { vault_ref }: a secret is never sent as a value'],

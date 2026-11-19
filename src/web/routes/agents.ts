@@ -801,6 +801,74 @@ function paneActivityLabel(running: boolean, pane: string | null, paneCommand: s
 export { refuseIfCliCannotLaunch }
 
 
+/** AGENTCREATEPR2B-1119: the team block write of PUT /api/agents/:name/team, callable without a request (the route keeps
+ *  the owner gate; the agent-create consumer calls it after the owner's approval). Every field is optional and falls
+ *  back to the current value; unknown names and the agent itself are dropped with warnings; a reportsTo that would make
+ *  a reporting cycle keeps the current one (cycleRejected). The tagline is written only when given. */
+export function applyAgentTeam(name: string, data: any): { ok: true; team: TeamConfig; tagline: string; warnings: ReturnType<typeof sanitizeTeamConfig>['warnings']; cycleRejected: boolean } {
+  const current = readAgentTeam(name)
+  const proposed: TeamConfig = {
+    role: data.role === 'leader' ? 'leader' : (data.role === 'member' ? 'member' : current.role),
+    reportsTo: typeof data.reportsTo === 'string'
+      ? (data.reportsTo.trim() || null)
+      : (data.reportsTo === null ? null : current.reportsTo),
+    delegatesTo: Array.isArray(data.delegatesTo)
+      ? data.delegatesTo.filter((x: unknown) => typeof x === 'string')
+      : current.delegatesTo,
+    autoDelegation: typeof data.autoDelegation === 'boolean' ? data.autoDelegation : current.autoDelegation,
+    trustFrom: Array.isArray(data.trustFrom)
+      ? data.trustFrom.filter((x: unknown) => typeof x === 'string')
+      : (current.trustFrom ?? []),
+  }
+  // Reject a reportsTo that would create a reporting cycle (e.g. dragging a
+  // manager under its own report in the Team graph). Keep the current parent
+  // and flag it so the UI can explain why the drop was ignored.
+  let cycleRejected = false
+  if (
+    proposed.reportsTo &&
+    proposed.reportsTo !== current.reportsTo &&
+    reportsToCreatesCycle(name, proposed.reportsTo, readAgentTeam, MAIN_AGENT_ID)
+  ) {
+    proposed.reportsTo = current.reportsTo
+    cycleRejected = true
+  }
+  const { team: next, warnings } = sanitizeTeamConfig(name, proposed)
+  writeAgentTeam(name, next)
+  // The tagline lives beside the team block (a top-level config key, like
+  // displayName); only touched when the request carries it.
+  if (typeof data.tagline === 'string') writeAgentTagline(name, data.tagline)
+  return { ok: true, team: next, tagline: readAgentTagline(name), warnings, cycleRejected }
+}
+
+/** AGENTCREATEPR2B-1119: the invite issue of POST .../channels/:provider/invites after its owner gate, lifted out
+ *  unchanged (the agent-create consumer issues the invite of an approved spec through it). The token is in the
+ *  returned body; the caller decides who sees it. */
+export async function issueAgentChannelInvite(name: string, provider: ChannelProviderType): Promise<{ status: number; body: Record<string, unknown> }> {
+  let botName: string | undefined
+  if (provider === 'telegram') {
+    botName = name === MAIN_AGENT_ID
+      ? readMarveenTelegramConfig().botUsername
+      : readAgentTelegramConfig(name).botUsername
+    if (!botName) {
+      const stateDir = name === MAIN_AGENT_ID ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
+      const token = readChannelToken(provider, join(stateDir, '.env'))
+      if (token) {
+        const r = await getProvider(provider).validateToken(token)
+        if (r.ok) botName = r.botName
+      }
+    }
+  }
+  const accessPath = resolveAccessPath(name, provider)
+  try {
+    return { status: 200, body: createInvite(accessPath, botName, provider) as unknown as Record<string, unknown> }
+  } catch (err) {
+    logger.error({ err }, 'Failed to create invite')
+    // The detail names a refused unreadable/invalid access.json or
+    // invites.json (ACCESSREADFAIL1030) -- path only, never contents.
+    return { status: 500, body: { error: 'Failed to create invite', detail: err instanceof Error ? err.message : String(err) } }
+  }
+}
+
 // AGENTCREATEPR2-1119: the channel setup after its owner gate, lifted out of the route unchanged so that the approved
 // agent_create consumer sets a channel up through the SAME code (agent-channel-setup-characterization.test.ts pins it).
 export async function setupAgentChannel(name: string, provider: ChannelProviderType, data: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -1916,39 +1984,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    const current = readAgentTeam(name)
-    const proposed: TeamConfig = {
-      role: data.role === 'leader' ? 'leader' : (data.role === 'member' ? 'member' : current.role),
-      reportsTo: typeof data.reportsTo === 'string'
-        ? (data.reportsTo.trim() || null)
-        : (data.reportsTo === null ? null : current.reportsTo),
-      delegatesTo: Array.isArray(data.delegatesTo)
-        ? data.delegatesTo.filter((x: unknown) => typeof x === 'string')
-        : current.delegatesTo,
-      autoDelegation: typeof data.autoDelegation === 'boolean' ? data.autoDelegation : current.autoDelegation,
-      trustFrom: Array.isArray(data.trustFrom)
-        ? data.trustFrom.filter((x: unknown) => typeof x === 'string')
-        : (current.trustFrom ?? []),
-    }
-    // Reject a reportsTo that would create a reporting cycle (e.g. dragging a
-    // manager under its own report in the Team graph). Keep the current parent
-    // and flag it so the UI can explain why the drop was ignored.
-    let cycleRejected = false
-    if (
-      proposed.reportsTo &&
-      proposed.reportsTo !== current.reportsTo &&
-      reportsToCreatesCycle(name, proposed.reportsTo, readAgentTeam, MAIN_AGENT_ID)
-    ) {
-      proposed.reportsTo = current.reportsTo
-      cycleRejected = true
-    }
-    const { team: next, warnings } = sanitizeTeamConfig(name, proposed)
-    writeAgentTeam(name, next)
-    // The tagline lives beside the team block (a top-level config key, like
-    // displayName); only touched when the request carries it.
-    if (typeof data.tagline === 'string') writeAgentTagline(name, data.tagline)
-    json(res, { ok: true, team: next, tagline: readAgentTagline(name), warnings, cycleRejected })
+    json(res, applyAgentTeam(name, JSON.parse(body.toString())))
     return true
   }
 
@@ -2078,30 +2114,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       refuseOwner(res, 'Creating a channel invite needs the dashboard login (an owner session).')
       return true
     }
-    let botName: string | undefined
-    if (provider === 'telegram') {
-      botName = name === MAIN_AGENT_ID
-        ? readMarveenTelegramConfig().botUsername
-        : readAgentTelegramConfig(name).botUsername
-      if (!botName) {
-        const stateDir = name === MAIN_AGENT_ID ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
-        const token = readChannelToken(provider, join(stateDir, '.env'))
-        if (token) {
-          const r = await getProvider(provider).validateToken(token)
-          if (r.ok) botName = r.botName
-        }
-      }
-    }
-    const accessPath = resolveAccessPath(name, provider)
-    try {
-      const result = createInvite(accessPath, botName, provider)
-      json(res, result)
-    } catch (err) {
-      logger.error({ err }, 'Failed to create invite')
-      // The detail names a refused unreadable/invalid access.json or
-      // invites.json (ACCESSREADFAIL1030) -- path only, never contents.
-      json(res, { error: 'Failed to create invite', detail: err instanceof Error ? err.message : String(err) }, 500)
-    }
+    const r = await issueAgentChannelInvite(name, provider)
+    json(res, r.body, r.status)
     return true
   }
 
