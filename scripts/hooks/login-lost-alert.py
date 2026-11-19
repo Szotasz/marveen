@@ -13,7 +13,7 @@ What it does, per agent (the id comes from the transcript path, ledger_lib.agent
     every REPEAT_SECONDS (30 minutes);
   - the first normal turn after that: one "recovered" message, and the agent's state is cleared. With two
     sessions under one agent id, a normal turn of one does not recover the other while it is still logged out
-    (only that session's own normal turn recovers it; a session that never comes back expires silently after 24 hours). A failed "recovered" send is retried.
+    (a session not seen logged out for an hour counts as gone, and that recovery is worded as "probably"). A failed "recovered" send is retried.
     The 30-minute brake is per agent, so two logged-out sessions never double the alert, and a Stop plus a
     StopFailure for the same turn count as one failed turn.
 State: <install>/store/login-alert-state.json (agent -> since, last alert, failed turns), under a lock.
@@ -40,7 +40,7 @@ import ledger_lib  # noqa: E402
 
 STATE_FILE = "login-alert-state.json"
 REPEAT_SECONDS = 30 * 60
-ABANDONED_SECONDS = 24 * 60 * 60
+SESSION_STALE_SECONDS = 60 * 60
 SAME_TURN_SECONDS = 10
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 AUTH_ERROR = "authentication_failed"
@@ -206,36 +206,35 @@ def handle(agent_id, v, now, session="-", event=""):
             data[agent_id] = st
             _save(f, data)
         elif v == "up" and isinstance(st, dict):
-            # Only the logged-out session's OWN normal turn recovers it. Two sessions can share an agent id (the
-            # ledger maps every session under the install to the main agent), and a good session must never
-            # "recover" one that is still logged out. A session that never comes back (replaced after a re-login
-            # or a restart) expires silently after ABANDONED_SECONDS; the agent-level 30-minute brake stays.
+            # Two sessions can share an agent id (the ledger maps every session under the install to the main
+            # agent). A normal turn of one session must not "recover" another that is still logged out, or the
+            # two would alternate alert / recovered on every turn. A session that has not been seen logged out
+            # for SESSION_STALE_SECONDS counts as gone (replaced after a re-login or a restart); a recovery that rests
+            # only on that says so, because the silent session may also just have had nothing to do.
             sessions = st.get("sessions") if isinstance(st.get("sessions"), dict) else {}
-            pending = st.get("pending_recovery")
-            if session not in sessions and pending != session:
-                sessions = {k: t for k, t in sessions.items() if now - float(t or 0) < ABANDONED_SECONDS}
-                if sessions or pending:
-                    st["sessions"] = sessions
-                    data[agent_id] = st
-                else:
-                    data.pop(agent_id, None)  # every logged-out session abandoned: drop it, no message
-                _save(f, data)
-                return
+            own = session in sessions
             sessions.pop(session, None)
+            sessions = {k: t for k, t in sessions.items() if now - float(t or 0) < SESSION_STALE_SECONDS}
+            if not sessions and own:
+                st["own_recovery"] = True  # kept if the send below fails, so the retry words it the same way
             if sessions:
-                st["sessions"] = sessions  # another session of this agent is still logged out
-                st.pop("pending_recovery", None)
+                st["sessions"] = sessions
                 data[agent_id] = st
                 _save(f, data)
                 return
             if st.get("last_alert"):
                 minutes = max(1, int(round((now - float(st.get("since") or now)) / 60)))
-                sent = notify(f"HELYREÁLLT: a(z) {agent_id} ügynök újra rendesen válaszol "
-                              f"(kiesés {_hhmm(st['since'])} és {_hhmm(now)} között, kb. {minutes} perc).")
+                if st.get("own_recovery"):
+                    msg = (f"HELYREÁLLT: a(z) {agent_id} ügynök újra rendesen válaszol "
+                           f"(kiesés {_hhmm(st['since'])} és {_hhmm(now)} között, kb. {minutes} perc).")
+                else:
+                    msg = (f"VALÓSZÍNŰLEG HELYREÁLLT: a(z) {agent_id} ügynök egy munkamenete rendesen válaszol, a kiesett "
+                           f"munkamenet egy órája nem jelzett (kiesés {_hhmm(st['since'])} óta). "
+                           f"Ha még nincs bejelentkezve, a következő köre új riasztást küld.")
+                sent = notify(msg)
                 if not sent:
-                    # Keep the outage so this session's next normal turn sends the "recovered" message again.
+                    # Keep the outage so the next normal turn sends the "recovered" message again.
                     st["sessions"] = {}
-                    st["pending_recovery"] = session
                     data[agent_id] = st
                     _save(f, data)
                     return
