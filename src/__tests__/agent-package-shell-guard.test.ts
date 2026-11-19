@@ -167,6 +167,30 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
       rmSync(dirty, { recursive: true, force: true })
     }
   })
+  it('the finding is told once per agent and finding, a clean start resets it, a new finding is told again (PRI3HARDEN1118)', () => {
+    const count = () => (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])
+      .map((f) => JSON.parse(readFileSync(join(I.pendingNoticesDir(), f), 'utf8')))
+      .filter((n) => n.kind === 'fallback_scan_finding' && n.name === 'dedup1').length
+    const shell = I.packageShellText('dedup1', '')
+    const d = agent({ 'CLAUDE.md': shell, 'PACKAGE.md': '# Package\n', 'LOCAL.md': 'run !`id` now\n' })
+    const start = (): void => {
+      const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+      try { expect(I.prepareFallbackClaudeMd('dedup1', d, fb)).toBe('expanded') } finally { rmSync(fb, { recursive: true, force: true }) }
+    }
+    const before = count()
+    start(); start(); start()
+    expect(count()).toBe(before + 1)
+    writeFileSync(join(d, 'LOCAL.md'), 'notes\n')
+    start()
+    expect(count()).toBe(before + 1)
+    writeFileSync(join(d, 'LOCAL.md'), 'run !`id` now\n')
+    start()
+    expect(count()).toBe(before + 2)
+    // a different finding (an import line instead of the command) is a new notice
+    writeFileSync(join(d, 'LOCAL.md'), '@../../x.md\n')
+    start(); start()
+    expect(count()).toBe(before + 3)
+  })
   it('the report scan ignores the product-generated sections of the started CLAUDE.md, but still sees a forbidden token in PACKAGE.md', async () => {
     const S = await import('../web/agent-scaffold.js')
     const notices = () => (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])

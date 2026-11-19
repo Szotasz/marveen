@@ -224,6 +224,25 @@ const STEPS: Array<[string, (c: Ctx) => void]> = [
   ['5', I.step5Files], ['6', I.step6Local], ['7', I.step7Manifest], ['7b', I.step7bRoster],
 ]
 
+describe('a folder swapped for a symlink before the package files land (PRI3HARDEN1118)', () => {
+  for (const [what, link, step] of [['.claude (step 5, the skills)', '.claude', I.step5Files], ['.package (step 7, the record)', '.package', I.step7Manifest]] as const) {
+    it(`${what}: the write is refused and nothing lands outside the agent folder`, () => {
+      const c = ctxOf()
+      const outside = mkdtempSync(join(tmpdir(), 'marveen-pri3-outside-'))
+      try {
+        // every step before the one under test (steps 1 to 4, or 1 to 6)
+        for (const [, s] of STEPS.slice(0, link === '.claude' ? 5 : 7)) s(c)
+        rmSync(join(dir('invoice-helper'), link), { recursive: true, force: true })
+        symlinkSync(outside, join(dir('invoice-helper'), link))
+        expect(() => step(c)).toThrow(/outside the agent directory/)
+        expect(readdirSync(outside)).toEqual([])
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  }
+})
+
 describe('process death after each step, then the reaper (plan 7.2 table; mutants 23, 39, 50)', () => {
   for (let k = 1; k <= STEPS.length; k++) {
     const last = STEPS[k - 1][0]
