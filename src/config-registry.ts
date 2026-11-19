@@ -1103,6 +1103,26 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'ROOT_CLAUDEMD_EXCLUDE_AGENTS',
+    type: 'string',
+    default: '',
+    // Adding an agent (or '*') drops the install root's CLAUDE.md, fleet rules included, for it: a loosening, so only
+    // the owner can save it. Taking one off restores the rules and stays open to everyone.
+    loosens: (oldValue, newValue) => {
+      const ids = (v: string) => new Set(v.split(/[\s,]+/).map((w) => w.trim()).filter(Boolean))
+      const old = ids(oldValue)
+      return [...ids(newValue)].some((id) => !old.has(id))
+    },
+    validate: (v) =>
+      v.split(/[\s,]+/).filter(Boolean).every((n) => n === '*' || AGENT_NAME_RE.test(n))
+        ? null
+        : 'Ügynöknevek vesszővel elválasztva (pl. pm,reviewer), vagy * minden al-ügynökre.',
+    description: 'Al-ügynökök, akik NEM töltik be a telepítés gyökerében álló CLAUDE.md-t (a fő ágens személyiségét és a közös szabályokat), csak a sajátjukat: így egy hívás kb. 50 KB-tal kisebb. Vesszővel elválasztott ügynöknevek, vagy * minden al-ügynökre, a később létrehozottakra is. A fő ágensre nem hat. FIGYELEM: a kizárt ügynök a gyökér közös szabályait sem kapja meg, ezért előbb a saját CLAUDE.md-jébe kell kerülniük. Ügynököt felvenni csak bejelentkezett gazda-session vagy teljes jogú eszközkulcs tud (a közös tokennel nem), levenni bárki. A .env ROOT_CLAUDEMD_EXCLUDE_AGENTS sora (a korábbi út) ettől függetlenül érvényes marad, a kettő összeadódik. A módosítás az ügynök következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'NOTIFY_SLACK_TARGET',
     type: 'string',
     default: '',

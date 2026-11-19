@@ -39,7 +39,8 @@ import { writeAgentSettingsFromProfile, agentSettingsPath, ROOT_ONLY_RULE_GROUPS
 import { agentDir, agentExcludesRootClaudeMd } from '../web/agent-config.js'
 import { loadProfileTemplate } from '../web/profiles.js'
 import { MAIN_AGENT_ID } from '../config.js'
-import { getSettingDefinition } from '../config-registry.js'
+import { getSettingDefinition, isOverridesOnly, validateSettingValue } from '../config-registry.js'
+import { setOverride, clearOverride, getEffectiveSettingValue } from '../settings-store.js'
 import { logger } from '../logger.js'
 
 const NAME = 'mdexcl-test-agent'
@@ -55,6 +56,7 @@ beforeEach(() => {
     writeFileSync(join(agentDir(a), 'agent-config.json'), '{}')
   }
   env.value = undefined
+  clearOverride(KEY)
 })
 afterEach(() => { vi.restoreAllMocks(); for (const a of [NAME, OTHER]) rmSync(agentDir(a), { recursive: true, force: true }) })
 afterAll(() => rmSync(sandbox.root, { recursive: true, force: true }))
@@ -134,6 +136,32 @@ it(`${KEY}: settings.local.json (the operator's manual override) stays byte-iden
   }
 })
 
-it(`${KEY}: not a settings-registry key, so POST /api/settings cannot write it`, () => {
-  expect(getSettingDefinition(KEY)).toBeUndefined()
+it(`${KEY}: the Settings value works alone and adds to the .env line`, () => {
+  expect(setOverride(KEY, NAME)).toEqual({ ok: true })
+  spawn(NAME)
+  spawn(OTHER)
+  expect(settingsOf(NAME).claudeMdExcludes).toEqual([ROOT_MD])
+  expect(settingsOf(OTHER)).not.toHaveProperty('claudeMdExcludes')
+  env.value = OTHER
+  spawn(OTHER)
+  expect(settingsOf(OTHER).claudeMdExcludes).toEqual([ROOT_MD])
+  expect(setOverride(KEY, '*')).toEqual({ ok: true })
+  expect(agentExcludesRootClaudeMd(MAIN_AGENT_ID)).toBe(false)
+  clearOverride(KEY)
+  env.value = undefined
+  spawn(NAME)
+  expect(settingsOf(NAME)).not.toHaveProperty('claudeMdExcludes')
+})
+
+it(`${KEY}: registry key whose additions need the owner; a .env line never counts through the settings layer`, () => {
+  const def = getSettingDefinition(KEY)!
+  expect(isOverridesOnly(def)).toBe(true)
+  expect(def.loosens!('', NAME)).toBe(true)
+  expect(def.loosens!('', '*')).toBe(true)
+  expect(def.loosens!(`${NAME},${OTHER}`, NAME)).toBe(false)
+  expect(def.loosens!(NAME, '')).toBe(false)
+  expect(validateSettingValue(def, `${NAME}, *`).ok).toBe(true)
+  expect(validateSettingValue(def, 'bad/name').ok).toBe(false)
+  env.value = NAME
+  expect(getEffectiveSettingValue(KEY)).toBe('')
 })

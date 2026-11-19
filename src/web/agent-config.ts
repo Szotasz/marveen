@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { readEnvFile } from '../env.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { parseExtraChannels, wantsGromzo } from './agent-extra-channels.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
@@ -1041,10 +1042,15 @@ export function agentMaySudo(name: string): boolean {
 // persona, an ancestor of agents/<name>). Dropping it drops fleet rules too, so it comes from the same place and with
 // the same parsing as SUDO_AGENTS above, never from the agent's own agent-config.json. The main agent never qualifies.
 // A '*' entry means every sub-agent, including ones created later (it is not a valid agent name, so no clash).
+// The Settings page value (owner-only to add, see the registry's loosens) adds to the .env line. The .env line is read
+// raw on purpose: the registry key is overrides-only, but dropping the released .env path would break installs using it.
 export function agentExcludesRootClaudeMd(name: string): boolean {
   if (name === MAIN_AGENT_ID) return false
   try {
-    const raw = readEnvFile(['ROOT_CLAUDEMD_EXCLUDE_AGENTS']).ROOT_CLAUDEMD_EXCLUDE_AGENTS
+    const raw = [
+      String(getEffectiveSettingValue('ROOT_CLAUDEMD_EXCLUDE_AGENTS')),
+      readEnvFile(['ROOT_CLAUDEMD_EXCLUDE_AGENTS']).ROOT_CLAUDEMD_EXCLUDE_AGENTS ?? '',
+    ].join(',')
     if (typeof raw === 'string' && raw.split(/[\s,]+/).includes('*')) return true
     return parseSudoAgents(raw).includes(name)
   } catch {
