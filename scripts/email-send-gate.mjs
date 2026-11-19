@@ -31,7 +31,7 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
+import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -160,8 +160,36 @@ const SAFE_METHODS = new Set(['GET', 'HEAD'])
 const ALPHA = /^\p{L}+$/u // python str.isalpha()
 
 // 'read' | 'send' | 'unknown' -- the caller treats unknown as a send.
+// MAILURLFILE1118: a method-override header turns a GET into the method it names on a server that honours it, so a
+// non-safe method there is a send and a value that cannot be read is undecidable (see the python twin).
+const METHOD_OVERRIDE = /^\s*x-(?:http-method(?:-override)?|method-override)\s*:\s*([\s\S]*)$/i
+
+// the values of the client's header options: curl -H / --header in every short form, wget --header
+function headerValues(prog, rest) {
+  const out = []
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]
+    const nxt = i + 1 < rest.length ? rest[i + 1] : null
+    if (t === '--header') out.push(nxt)
+    else if (t.startsWith('--header=')) out.push(t.slice('--header='.length))
+    else if (prog.toLowerCase() === 'curl' && /^-[^-]/.test(t)) {
+      let k = -1
+      for (let j = 1; j < t.length; j++) if (URL_VALUE_SHORT.includes(t[j])) { k = j; break }
+      if (k !== -1 && t[k] === 'H') out.push(t.slice(k + 1) || nxt)
+    }
+  }
+  return out.filter((v) => v !== null)
+}
+
 function curlResendVerdict(prog, rest) {
   if (HTTPIE.test(prog)) return 'unknown'
+  for (const v of headerValues(prog, rest)) { // MAILURLFILE1118
+    const m = METHOD_OVERRIDE.exec(v)
+    if (m) {
+      if (!ALPHA.test(m[1].trim())) return 'unknown'
+      if (!SAFE_METHODS.has(m[1].trim().toUpperCase())) return 'send'
+    }
+  }
   let method = null
   let hasBody = false
   let getForced = false
@@ -238,7 +266,9 @@ const CODE_SEND_MODULE = new RegExp(
 // MAILGATESCRIPT1027 R1: a send needs the endpoint shape AND Graph evidence in the same text (an application
 // route of the same shape is no send); `\/` is normalised to `/` first (JSON-escaped URLs).
 const GRAPH_SEND = /\/(?:me|users\/[^\n]{1,120}?)\/(?:sendMail(?![A-Za-z0-9_-]|[^\x00-\x7f])|messages\/[^\n]{1,160}?\/(?:send|reply|replyAll|forward)(?![A-Za-z0-9_-]|[^\x00-\x7f]))/i
-const GRAPH_EVIDENCE = /graph\.microsoft\.com|microsoft-graph-client|msgraph|\.api\s*\(/i
+// MAILURLFILE1118: the Graph host of every cloud, the national clouds too; the source is at _GRAPH_HOSTS in the python twin
+const GRAPH_HOSTS = String.raw`graph\.microsoft\.(?:com|us|de)|microsoftgraph\.chinacloudapi\.cn|graph\.svc\.sovcloud\.fr`
+const GRAPH_EVIDENCE = new RegExp(GRAPH_HOSTS + String.raw`|microsoft-graph-client|msgraph|\.api\s*\(`, 'i')
 const graphSends = (text) => {
   const t = text.replaceAll('\\/', '/')
   return GRAPH_SEND.test(t) && GRAPH_EVIDENCE.test(t)
@@ -857,7 +887,12 @@ function headIsSend(toks, depth) {
   if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) {
     return curlResendVerdict(prog, rest) !== 'read'
   }
-  if (HTTP_CLIENT.test(prog) && inlineMailApiSends(prog, rest)) return true
+  if (HTTP_CLIENT.test(prog)) {
+    // MAILURLFILE1118: the words a URL file of the client adds are judged with the line's own
+    const { alternatives, undecidable } = urlFileWords(prog, rest)
+    if (undecidable && urlFileMarker()) return true
+    if (alternatives.some((words) => inlineMailApiSends(prog, words))) return true
+  }
   return false
 }
 
@@ -883,7 +918,7 @@ const MAIL_API_HOSTS = [
   [/^api\.mailjet\.com$/, null, new RegExp(String.raw`^\/v3(?:\.1)?` + SEG + '*$'), /\/v3(?:\.1)?\/send$/],
   [/^api\.(?:brevo|sendinblue)\.com$/, null, new RegExp(String.raw`^\/v3` + SEG + '*$'), /\/v3\/smtp\/email$/],
 ]
-const GRAPH_HOST = /^graph\.microsoft\.com$/
+const GRAPH_HOST = new RegExp(`^(?:${GRAPH_HOSTS})$`)
 const GRAPH_SEND_PATH = /\/(?:me|users\/[^/]+)\/(?:sendMail|messages\/[^/]+\/(?:send|reply|replyAll|forward))$/i
 // the line carries a mail-only API host (Graph is not one)
 const MAIL_API_HOST = /gmail\.googleapis\.com|googleapis\.com(?::[0-9]+)?\/(?:upload\/|batch\/)?gmail(?:\/|\b)|api\.resend\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com|email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com|api\.mailjet\.com|api\.(?:brevo|sendinblue)\.com/i
@@ -898,6 +933,10 @@ const URL_VALUE_LONG = new Set([
   '--method', '--oauth2-bearer', '--proxy', '--cacert', '--cert', '--key', '--post-data', '--post-file',
   '--body-data', '--body-file', '--auth', '--password', '--http-user', '--http-password'])
 let lineMailHost = false // set per top-level isSendInvocation call from the WHOLE command line
+// MAILURLFILE1118: a mail marker for a URL file that cannot be read and for an unparseable command: a mail-only API host
+// or a Microsoft Graph host (of any cloud) anywhere in the text
+const MAIL_MARKER = new RegExp(MAIL_API_HOST.source + '|' + GRAPH_HOSTS, 'i')
+let lineCtx = { cwd: undefined, texts: [] } // MAILURLFILE1118: the cwd of the top-level isSendInvocation call and every text it judged
 
 // the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL
 function optionValueWord(prev) {
@@ -974,6 +1013,143 @@ function inlineMailApiSends(prog, rest) {
   }
   return cannotTell && !plainRead
 }
+
+// MAILURLFILE1118: a curl config file (-K / --config) or a wget input file (-i / --input-file) the line only names is read
+// and its words join the client's own; the rule, its "cannot tell" cases and its stated limits are written out at
+// _url_file_words in hooks/outgoing-copy-gate.py (the python twin); the `url_file` cases of
+// hooks/mail-api-send-cases.json bind the two.
+const WGET_VALUE_SHORT = 'oaeiBtOTwQPUlARDIXn' // wget's short options that take a value (-n takes its letter)
+const URL_FILE_ALTERNATIVES = 16
+
+// [the client's words without its URL-file options, the files they name (null for a missing operand)]
+function urlFileSplit(prog, rest) {
+  const [short, long] = prog === 'curl' ? ['K', '--config'] : ['i', '--input-file']
+  const values = prog === 'curl' ? URL_VALUE_SHORT : WGET_VALUE_SHORT
+  const words = []
+  const files = []
+  for (let i = 0; i < rest.length;) {
+    const t = rest[i]
+    const nxt = i + 1 < rest.length ? rest[i + 1] : null
+    if (t === long) { files.push(nxt); i += 2; continue }
+    if (t.startsWith(long + '=')) { files.push(t.slice(long.length + 1)); i++; continue }
+    let k = -1
+    if (/^-[^-]/.test(t)) for (let j = 1; j < t.length; j++) if (values.includes(t[j])) { k = j; break }
+    if (k !== -1 && t[k] === short) {
+      if (k > 1) words.push(t.slice(0, k))
+      if (t.slice(k + 1)) { files.push(t.slice(k + 1)); i++ } else { files.push(nxt); i += 2 }
+      continue
+    }
+    words.push(t)
+    i++
+  }
+  return [words, files]
+}
+
+const CONFIG_ESCAPES = { t: '\t', n: '\n', r: '\r', v: '\v' }
+
+// a curl config file as command-line words
+function curlConfigWords(text) {
+  const words = []
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    const s = line.trim()
+    if (!s || s.startsWith('#')) continue
+    const [, name, val] = /^([^\s=:]+)[\s=:]*([\s\S]*)$/.exec(s)
+    words.push(name.startsWith('-') ? name : '--' + name)
+    if (val.startsWith('"')) {
+      let out = ''
+      let i = 1
+      while (i < val.length && val[i] !== '"') {
+        if (val[i] === '\\' && i + 1 < val.length) { out += CONFIG_ESCAPES[val[i + 1]] ?? val[i + 1]; i += 2 } else { out += val[i]; i++ }
+      }
+      words.push(out)
+    } else if (val) words.push(val.split(/\s+/)[0])
+  }
+  return words
+}
+
+// the file a `< FILE` redirect among the words names, or null
+function stdinFile(words) {
+  for (let i = 0; i < words.length; i++) {
+    const t = words[i]
+    if (t === '<' && i + 1 < words.length) return words[i + 1]
+    if (t.startsWith('<') && t.length > 1 && !'<(&'.includes(t[1])) return t.slice(1)
+  }
+  return null
+}
+
+function wgetForceHtml(words) {
+  for (const t of words) {
+    if (t === '--force-html') return true
+    if (/^-[^-]/.test(t)) {
+      let k = t.length
+      for (let j = 1; j < t.length; j++) if (WGET_VALUE_SHORT.includes(t[j])) { k = j; break }
+      if (t.slice(1, k).includes('F')) return true
+    }
+  }
+  return false
+}
+
+const isRegularFile = (p) => { try { return statSync(p).isFile() } catch { return false } }
+
+// [the readable texts the file operand can name, undecidable]
+function urlFileBodies(f) {
+  if (f === null || f === '-' || f.startsWith('<') || f.startsWith('(') || nonliteralValue(f) || URL_START.test(f)) return [[], true]
+  let cwd = lineCtx.cwd
+  if (typeof cwd !== 'string') { try { cwd = process.cwd() } catch { cwd = null } }
+  let words = []
+  for (const text of lineCtx.texts) {
+    try { words.push(...segmentsTokens(text).flat()) } catch { /* an unparseable text adds no cd */ }
+  }
+  words = [...words, ...envChdirDirs(words).flatMap((d) => ['cd', d])]
+  const bodies = []
+  let undecidable = false
+  for (const p of resolveScriptPaths(f, cwd, words)) {
+    const body = isRegularFile(p) ? readScriptHead(p) : null
+    if (body !== null) {
+      bodies.push(body)
+      undecidable ||= Buffer.byteLength(body) >= SCRIPT_READ_LIMIT
+    }
+  }
+  const relative = !(isAbsolute(f) || f === '~' || f.startsWith('~/'))
+  return [bodies, undecidable || !bodies.length || (relative && cdBases(cwd, words).undecidable)]
+}
+
+// {alternatives, undecidable}: the client's words as written, and with every URL file read in
+function urlFileWords(progIn, rest) {
+  const prog = basename(progIn).toLowerCase()
+  if (prog !== 'curl' && prog !== 'wget') return { alternatives: [rest], undecidable: false }
+  const [words, files] = urlFileSplit(prog, rest)
+  if (!files.length) return { alternatives: [rest], undecidable: false }
+  let alternatives = [words]
+  let undecidable = false
+  for (const f of files) {
+    const [bodies, undec] = urlFileBodies(f === '-' ? stdinFile(words) : f)
+    undecidable ||= undec
+    if (!bodies.length) continue
+    const added = []
+    for (const body of bodies) {
+      if (MAIL_API_HOST.test(body)) { lineMailHost = true; lineCtx.texts.push(body) }
+      let fw
+      if (prog === 'curl') {
+        const [w, nested] = urlFileSplit(prog, curlConfigWords(body))
+        fw = w
+        undecidable ||= nested.length > 0
+      } else if (wgetForceHtml(words)) {
+        fw = []
+        undecidable = true
+      } else {
+        fw = body.split(/\r\n|\r|\n/).map((l) => l.trim()).filter(Boolean)
+      }
+      added.push(...alternatives.map((a) => [...a, ...fw]))
+    }
+    undecidable ||= added.length > URL_FILE_ALTERNATIVES // a cut alternative is not judged
+    alternatives = added.slice(0, URL_FILE_ALTERNATIVES)
+  }
+  // a file that cannot be read keeps the line as written in play too (its URL-file option is undecidable there)
+  return { alternatives: [...(undecidable ? [rest] : []), ...alternatives], undecidable }
+}
+
+const urlFileMarker = () => lineMailHost || lineCtx.texts.some((t) => MAIL_MARKER.test(t))
 
 // True when some segment is still a wrapper at the depth bound (HEADDEPTH924),
 // so the deny says WHY -- see wrapper_depth_hit in outgoing-copy-gate.py.
@@ -1097,7 +1273,10 @@ function heredocProgramSends(cmd, depth = 0) {
   return writtenThenRun(cmd, written, depth)
 }
 
-export function isSendInvocation(cmd, depth = 0) {
+export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
+  // MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
+  if (depth === 0) lineCtx = { cwd, texts: [] }
+  lineCtx.texts.push(cmd)
   // FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
   // A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
   lineExemptOk = (depth === 0 || lineExemptOk) && lineClean(cmd)
@@ -1109,7 +1288,7 @@ export function isSendInvocation(cmd, depth = 0) {
   } catch {
     // Unparseable command: fall back to the LEGACY content patterns, so on
     // this path the gate is exactly as strict as before -- never weaker.
-    return SEND_PATTERNS.some((re) => re.test(cmd))
+    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd) // MAILURLFILE1118: a mail host too
   }
   if (segments.some((toks) => segmentIsSend(toks, depth))) return true
   // The same command with every substitution as one undecidable word (see
@@ -1119,7 +1298,7 @@ export function isSendInvocation(cmd, depth = 0) {
   try {
     return segmentsTokens(flat).some((toks) => segmentIsSend(toks, depth))
   } catch {
-    return SEND_PATTERNS.some((re) => re.test(cmd))
+    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd)
   }
 }
 
@@ -3152,7 +3331,7 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
     if (unverifiableSendConstruction(cmd, cwd)) return { deny: true, kind: 'unverifiable-construction' }
-    if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
+    if (isSendInvocation(cmd, 0, cwd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
     if (scriptRunSends(cmd, cwd)) return { deny: true, kind: 'script-send' }
   }
   return { deny: false }

@@ -1332,7 +1332,7 @@ def main():
         unverifiable, unverifiable_msg = _load_unverifiable_construction()
         if unverifiable(cmd, payload.get("cwd")):
             deny(unverifiable_msg)
-        if not (_load_is_send_invocation()(cmd)
+        if not (_load_is_send_invocation()(cmd, cwd=payload.get("cwd"))   # MAILURLFILE1118: the URL file's cwd
                 or _load_script_run_sends()(cmd, payload.get("cwd"))):
             sys.exit(0)
         if ledger_enabled():

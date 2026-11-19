@@ -166,7 +166,10 @@ _GRAPH_SEND = re.compile(
     r"/(?:me|users/[^\n]{1,120}?)/(?:sendMail(?![A-Za-z0-9_-]|[^\x00-\x7f])|messages/[^\n]{1,160}?/(?:send|reply|replyAll|forward)(?![A-Za-z0-9_-]|[^\x00-\x7f]))",
     re.I,
 )
-_GRAPH_EVIDENCE = re.compile(r"graph\.microsoft\.com|microsoft-graph-client|msgraph|\.api\s*\(", re.I)
+# MAILURLFILE1118: the Graph host of every cloud, the national clouds too (source: the cloud endpoint table of the Azure
+# CLI, azure/cli/core/cloud.py, microsoft_graph_resource_id); mirrored as GRAPH_HOSTS in email-send-gate.mjs
+_GRAPH_HOSTS = r"graph\.microsoft\.(?:com|us|de)|microsoftgraph\.chinacloudapi\.cn|graph\.svc\.sovcloud\.fr"
+_GRAPH_EVIDENCE = re.compile(_GRAPH_HOSTS + r"|microsoft-graph-client|msgraph|\.api\s*\(", re.I)
 
 
 def _graph_sends(text: str) -> bool:
@@ -372,10 +375,39 @@ _SAFE_METHODS = {"GET", "HEAD"}
 _HTTPIE = re.compile(r"^(?:https?|xhs?)$", re.I)   # MAILCURLSEND1118: httpie's `https` and xh / xhs take the same shape
 
 
+# MAILURLFILE1118: a method-override header turns a GET into the method it names on a server that honours it, so a
+# non-safe method there is a send and a value that cannot be read is undecidable.
+_METHOD_OVERRIDE = re.compile(r"^\s*x-(?:http-method(?:-override)?|method-override)\s*:\s*(.*)$", re.I | re.S)
+
+
+def _header_values(prog, rest):
+    """MAILURLFILE1118: the values of the client's header options: curl -H / --header (also -Hvalue and -H at the end of
+    a short cluster, --header=value), wget --header; httpie and xh are undecidable in _curl_resend_verdict anyway."""
+    out = []
+    for i, t in enumerate(rest):
+        nxt = rest[i + 1] if i + 1 < len(rest) else None
+        if t == "--header":
+            out.append(nxt)
+        elif t.startswith("--header="):
+            out.append(t[len("--header="):])
+        elif prog.lower() == "curl" and re.match(r"^-[^-]", t):
+            k = next((j for j, ch in enumerate(t[1:], 1) if ch in _URL_VALUE_SHORT), None)
+            if k is not None and t[k] == "H":
+                out.append(t[k + 1:] or nxt)
+    return [v for v in out if v is not None]
+
+
 def _curl_resend_verdict(prog, rest):
     """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed."""
     if _HTTPIE.match(prog):
         return "unknown"
+    for v in _header_values(prog, rest):   # MAILURLFILE1118
+        m = _METHOD_OVERRIDE.match(v)
+        if m:
+            if not m.group(1).strip().isalpha():
+                return "unknown"
+            if m.group(1).strip().upper() not in _SAFE_METHODS:
+                return "send"
     method = None
     has_body = False
     get_forced = False
@@ -1171,8 +1203,13 @@ def _head_is_send(toks, depth: int) -> bool:
     # tovabbra is fail-closed.
     if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
         return _curl_resend_verdict(prog, rest) != "read"
-    if _HTTP_CLIENT.match(prog) and _inline_mail_api_sends(prog, rest):
-        return True
+    if _HTTP_CLIENT.match(prog):
+        # MAILURLFILE1118: the words a URL file of the client adds are judged with the line's own
+        alternatives, undecidable = _url_file_words(prog, rest)
+        if undecidable and _url_file_marker():
+            return True
+        if any(_inline_mail_api_sends(prog, words) for words in alternatives):
+            return True
     return False
 
 
@@ -1190,8 +1227,8 @@ def _head_is_send(toks, depth: int) -> bool:
 #   (_MAIL_API_HOSTS send pattern on the path after it), and a non-literal URL word while the whole line carries a
 #   mail-only API host counts too; either is a send unless the request is a plain read (GET or HEAD, no body).
 # - A literal host that is no mail API host (localhost, another API, an IP without a Host header) is no send here.
-# The Resend rule above keeps its own method verdict on its host for curl, wget and http. Stated limit (the class of
-# the code-string rule): a URL the line never shows (curl -K, wget -i) is not seen. Mirrored in email-send-gate.mjs
+# The Resend rule above keeps its own method verdict on its host for curl, wget and http. A URL the line only names in
+# a file (curl -K, wget -i) is read in by _url_file_words (MAILURLFILE1118). Mirrored in email-send-gate.mjs
 # (inlineMailApiSends); the `inline` cases of mail-api-send-cases.json bind the two twins.
 _HTTP_CLIENT = re.compile(r"^(?:curl|wget|https?|xhs?)$", re.I)
 # (provider, host pattern on the normalised host, path prefix a shared host needs, read pattern, send pattern)
@@ -1216,7 +1253,7 @@ _MAIL_API_HOSTS = (
     ("brevo", re.compile(r"api\.(?:brevo|sendinblue)\.com"), None, re.compile(r"^/v3" + _SEG + r"*$"),
      re.compile(r"/v3/smtp/email$")),
 )
-_GRAPH_HOST = re.compile(r"graph\.microsoft\.com")
+_GRAPH_HOST = re.compile(_GRAPH_HOSTS)
 _GRAPH_SEND_PATH = re.compile(r"/(?:me|users/[^/]+)/(?:sendMail|messages/[^/]+/(?:send|reply|replyAll|forward))$", re.I)
 # the line carries a mail-only API host (Graph is not one)
 _MAIL_API_HOST = re.compile(r"gmail\.googleapis\.com|googleapis\.com(?::[0-9]+)?/(?:upload/|batch/)?gmail(?:/|\b)|api\.resend\.com"
@@ -1233,6 +1270,10 @@ _URL_VALUE_LONG = frozenset((
     "--method", "--oauth2-bearer", "--proxy", "--cacert", "--cert", "--key", "--post-data", "--post-file",
     "--body-data", "--body-file", "--auth", "--password", "--http-user", "--http-password"))
 _LINE_MAIL_HOST = [False]   # set per top-level is_send_invocation call from the WHOLE command line
+# MAILURLFILE1118: a mail marker for a URL file that cannot be read and for an unparseable command: a mail-only API host
+# or a Microsoft Graph host (of any cloud) anywhere in the text
+_MAIL_MARKER = re.compile(_MAIL_API_HOST.pattern + "|" + _GRAPH_HOSTS, re.I)
+_LINE_CTX = [None, []]   # MAILURLFILE1118: the cwd of the top-level is_send_invocation call and every text it judged
 
 
 def _option_value_word(prev: str) -> bool:
@@ -1322,6 +1363,168 @@ def _inline_mail_api_sends(prog, rest) -> bool:
                 or not read.match(npath)):
             return True
     return cannot_tell and not plain_read
+
+
+# MAILURLFILE1118: the URL (and the method, headers and body) of a request may come from a FILE the line only names: a
+# curl config file (-K FILE, --config FILE, --config=FILE, a K ending a short cluster or with the file glued on) or a
+# wget input file (-i FILE, --input-file FILE, --input-file=FILE, the same short forms). The file is read and its words
+# join the client's own, so the inline rule above judges the request as if the line held them: a curl config line
+# `name value`, `name = value` or `name: value` (the name with or without its dashes, a double-quoted value with its
+# backslash escapes, `#` comments) is the option and its value, a wget input file is one URL per line. A mail-only
+# API host in the file counts as one in the line. The file is looked up like a script: absolute, `~`, or relative
+# under the cwd and every literal `cd DIR` of the line; each readable candidate is judged on its own. When some file
+# cannot be read, the line as written is judged too (its URL-file option undecidable), as before this rule.
+# Cannot tell: the file is stdin (`-` with no `< FILE` redirect naming it: a pipe, a heredoc), a variable, a URL, a
+# process substitution, not a regular file, missing, unreadable or too large, an HTML input (wget --force-html), a
+# config that names another config, or a relative file after a `cd` that cannot be resolved. That is a send ONLY when
+# the line carries a mail marker (_MAIL_MARKER, the file's text included); without one it passes, so a config that
+# only holds an auth header next to another API's URL keeps working. Stated limits (class level): a config the client
+# reads on its own (a default rc file), a long option abbreviation, and wget's own rc commands are not read. Mirrored
+# in email-send-gate.mjs (urlFileWords); the `url_file` cases of mail-api-send-cases.json bind the two twins.
+_WGET_VALUE_SHORT = frozenset("oaeiBtOTwQPUlARDIXn")   # wget's short options that take a value (-n takes its letter)
+_URL_FILE_ALTERNATIVES = 16
+
+
+def _url_file_split(prog, rest):
+    """(the client's words without its URL-file options, the files they name; None for a missing operand)"""
+    short, long_ = ("K", "--config") if prog == "curl" else ("i", "--input-file")
+    values = _URL_VALUE_SHORT if prog == "curl" else _WGET_VALUE_SHORT
+    words, files = [], []
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        nxt = rest[i + 1] if i + 1 < len(rest) else None
+        if t == long_:
+            files.append(nxt)
+            i += 2
+            continue
+        if t.startswith(long_ + "="):
+            files.append(t[len(long_) + 1:])
+            i += 1
+            continue
+        k = next((j for j, ch in enumerate(t[1:], 1) if ch in values), None) if re.match(r"^-[^-]", t) else None
+        if k is not None and t[k] == short:
+            if k > 1:
+                words.append(t[:k])
+            if t[k + 1:]:
+                files.append(t[k + 1:])
+                i += 1
+            else:
+                files.append(nxt)
+                i += 2
+            continue
+        words.append(t)
+        i += 1
+    return words, files
+
+
+def _curl_config_words(text):
+    """a curl config file as command-line words"""
+    words = []
+    for line in re.split(r"\r\n|\r|\n", text):
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        name, val = re.match(r"([^\s=:]+)[\s=:]*(.*)$", s, re.S).groups()
+        words.append(name if name.startswith("-") else "--" + name)
+        if val.startswith('"'):
+            out, i = [], 1
+            while i < len(val) and val[i] != '"':
+                if val[i] == "\\" and i + 1 < len(val):
+                    out.append({"t": "\t", "n": "\n", "r": "\r", "v": "\v"}.get(val[i + 1], val[i + 1]))
+                    i += 2
+                else:
+                    out.append(val[i])
+                    i += 1
+            words.append("".join(out))
+        elif val:
+            words.append(val.split()[0])
+    return words
+
+
+def _stdin_file(words):
+    """the file a `< FILE` redirect among the words names, or None"""
+    for i, t in enumerate(words):
+        if t == "<" and i + 1 < len(words):
+            return words[i + 1]
+        if t.startswith("<") and len(t) > 1 and t[1] not in "<(&":
+            return t[1:]
+    return None
+
+
+def _wget_force_html(words):
+    for t in words:
+        if t == "--force-html":
+            return True
+        if re.match(r"^-[^-]", t):
+            k = next((j for j, ch in enumerate(t[1:], 1) if ch in _WGET_VALUE_SHORT), len(t))
+            if "F" in t[1:k]:
+                return True
+    return False
+
+
+def _url_file_bodies(f):
+    """(the readable texts the file operand can name, undecidable)"""
+    if f is None or f == "-" or f.startswith(("<", "(")) or _nonliteral_value(f) or _URL_START.match(f):
+        return [], True
+    cwd = _LINE_CTX[0]
+    if not isinstance(cwd, str):
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            cwd = None
+    words = []
+    for text in _LINE_CTX[1]:
+        try:
+            words += [w for toks in _segments_tokens(text) for w in toks]
+        except ValueError:
+            pass
+    words = _with_env_chdir(words)
+    bodies, undecidable = [], False
+    for p in _resolve_script_paths(f, cwd, words):
+        body = _read_script_head(p) if os.path.isfile(p) else None
+        if body is not None:
+            bodies.append(body)
+            undecidable = undecidable or len(body.encode("utf-8", "replace")) >= _SCRIPT_READ_LIMIT
+    relative = not (os.path.isabs(f) or f == "~" or f.startswith("~/"))
+    return bodies, undecidable or not bodies or (relative and _cd_bases(cwd, words)[1])
+
+
+def _url_file_words(prog, rest):
+    """(alternatives, undecidable): the client's words as written, and with every URL file read in"""
+    p = _basename(prog).lower()
+    if p not in ("curl", "wget"):
+        return [rest], False
+    words, files = _url_file_split(p, rest)
+    if not files:
+        return [rest], False
+    alternatives, undecidable = [words], False
+    for f in files:
+        bodies, undec = _url_file_bodies(_stdin_file(words) if f == "-" else f)
+        undecidable = undecidable or undec
+        if not bodies:
+            continue
+        added = []
+        for body in bodies:
+            if _MAIL_API_HOST.search(body):
+                _LINE_MAIL_HOST[0] = True
+                _LINE_CTX[1].append(body)
+            if p == "curl":
+                fw, nested = _url_file_split(p, _curl_config_words(body))
+                undecidable = undecidable or bool(nested)
+            elif _wget_force_html(words):
+                fw, undecidable = [], True
+            else:
+                fw = [ln.strip() for ln in re.split(r"\r\n|\r|\n", body) if ln.strip()]
+            added += [a + fw for a in alternatives]
+        undecidable = undecidable or len(added) > _URL_FILE_ALTERNATIVES   # a cut alternative is not judged
+        alternatives = added[:_URL_FILE_ALTERNATIVES]
+    # a file that cannot be read keeps the line as written in play too (its URL-file option is undecidable there)
+    return ([rest] if undecidable else []) + alternatives, undecidable
+
+
+def _url_file_marker() -> bool:
+    return _LINE_MAIL_HOST[0] or any(_MAIL_MARKER.search(t) for t in _LINE_CTX[1])
 
 
 def wrapper_depth_hit(cmd: str) -> bool:
@@ -1452,7 +1655,11 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
     return _written_then_run(cmd, written, depth)
 
 
-def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
+    # MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
+    if _depth == 0:
+        _LINE_CTX[:] = [cwd, []]
+    _LINE_CTX[1].append(cmd)
     # FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
     # A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
     _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and _line_clean(cmd)
@@ -1466,7 +1673,7 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
         # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
         # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
         # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
-        return bool(_FALLBACK_LITERALS.search(cmd))
+        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))   # MAILURLFILE1118: a mail host too
     if any(_segment_is_send(toks, _depth) for toks in segments):
         return True
     # the same command with every substitution as one undecidable word
@@ -1477,7 +1684,7 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
     try:
         return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
     except ValueError:
-        return bool(_FALLBACK_LITERALS.search(cmd))
+        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))
 
 # MAILGATESCRIPT1027: a mail send done by a SCRIPT FILE. is_send_invocation sees the command text only,
 # so `node send-it.mjs` or `python3 notify.py` ran a mail past the main agent's approval gate. This is the
@@ -5137,7 +5344,7 @@ def main():
         if unverifiable_send_construction(cmd, payload.get("cwd")):
             sys.stderr.write(f"KIMENO-SZOVEG KAPU: TILTVA.\n{UNVERIFIABLE_CONSTRUCTION_MSG}\n")
             sys.exit(2)
-        if not is_send_invocation(cmd):
+        if not is_send_invocation(cmd, cwd=payload.get("cwd")):   # MAILURLFILE1118: a relative URL file is read there
             http_channel_gate(cmd)  # exits if it is a human-facing HTTP send; else returns
             inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else
         text, unreadable = collect_bash_body(cmd)
