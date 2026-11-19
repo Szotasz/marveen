@@ -1198,12 +1198,14 @@ export function wordNamesFile(v, t) {
 const CONTAINER_RUNNERS = new Set(['docker', 'podman', 'nerdctl', 'kubectl', 'colima', 'lima', 'limactl', 'tart', 'orb', 'multipass'])
 const LOCAL_HOST_RX = /^(?:[^@\s]+@)?(?:localhost|127\.\d+\.\d+\.\d+|::1|\[::1\]|0\.0\.0\.0)$/
 const SSH_ARG_OPTS = new Set(['-b', '-c', '-D', '-E', '-e', '-F', '-I', '-i', '-J', '-L', '-l', '-m', '-O', '-o', '-p', '-Q', '-R', '-S', '-W', '-w'])
-function namedByUnknownProgram(name, rest, own, names, fns = new Set()) {
+function namedByUnknownProgram(name, rest, own, names, fns = new Set(), made = new Set()) {
   if (!rest.length || !name) return false
   // a program given by its path, or a shell function the command defines, is the caller's own code: what it does with
-  // a file it is handed is the stated limit (like an interpreter's script arguments), not a run read from its name
+  // a file it is handed is the stated limit (like an interpreter's script arguments), not a run read from its name.
+  // Not when this command made that program itself (F1: a copied or linked shell under a path or a .sh name).
   const word0 = rest[0].value
-  if (word0.includes('/') || fns.has(word0) || /\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|php)$/.test(word0)) return false
+  const madeHere = made.has(lastPart(word0))
+  if (!madeHere && (word0.includes('/') || fns.has(word0) || /\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|php)$/.test(word0))) return false
   if (CONTAINER_RUNNERS.has(name)) return false
   const vals = rest.slice(1).map((w) => w.value)
   const stdin = names.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}(?:['"\\s;|&)]|$)`).test(own))
@@ -1237,6 +1239,34 @@ function namedByUnknownProgram(name, rest, own, names, fns = new Set()) {
 }
 
 // Does a later segment run (or feed as code) a file segment [k] writes? laterRuns, plus the forms above.
+// GATEPATHNORM1118 F1 (Dani 81347): the last path parts of the files segments [0, upto) write, copy or link: a redirect
+// target, a copier's destination (cp/mv/install/ln/rsync, -t DIR naming the sources' last parts there) and tee's
+// operands. A program word among them is not the caller's own code (a copied or linked shell given by a path or a .sh
+// name): its run is judged like any program's. A redirect counts only when it carries another file's content
+// (cat /bin/sh > m): a script whose text the command itself writes (a heredoc, a here-string, echo/printf) is read
+// by the run rules when it runs, and the data handed to it stays data (the fleet meter's one false denial).
+export function madeFileParts(segs, upto) {
+  const made = new Set()
+  for (let i = 0; i < upto && i < segs.length; i++) {
+    const ws = shellWords(segs[i].own)
+    if (!ws) continue
+    const { rest } = unwrapRun(ws)
+    const prog = lastPart(rest[0]?.value ?? '')
+    const ownText = segs[i].own.includes('<<') || PRINTERS.has(prog)
+    if (!ownText) for (const r of ws.redirects ?? []) if (r.value && r.value !== '/dev/null') made.add(lastPart(r.value))
+    const vals = rest.slice(1).map((w) => w.value)
+    const ops = vals.filter((v, x) => !v.startsWith('-') && !['-t', '--target-directory'].includes(vals[x - 1] ?? ''))
+    if (COPY_PROGRAMS.has(prog)) {
+      const t = vals.findIndex((v) => v === '-t' || v === '--target-directory')
+      const tEq = vals.find((v) => v.startsWith('--target-directory='))
+      if (t >= 0 || tEq) for (const src of ops) made.add(lastPart(src))
+      else if (ops.length >= 2) made.add(lastPart(ops[ops.length - 1]))
+    } else if (prog === 'tee') for (const v of ops) made.add(lastPart(v))
+  }
+  made.delete('')
+  return made
+}
+
 export function runsWrittenFile(segs, k, targets, cmd) {
   if (!targets.length) return false
   // a substitution's text with the command's own literal assignments spelled out (S=/abs; ... "$(cat $S/a.sh)")
@@ -1288,7 +1318,7 @@ export function runsWrittenFile(segs, k, targets, cmd) {
     }
     if (rest.length && optionProgramRuns(name, rest, names)) return true
     // GATEPATHNORM1118 (b)(c)(d): any other program naming it, and an assignment before the command that names it
-    if (rest.length && namedByUnknownProgram(name, rest, s.own, names, fns)) return true
+    if (rest.length && namedByUnknownProgram(name, rest, s.own, names, fns, madeFileParts(segs, j))) return true
     if (rest.length && assigns.some((a) => names.some((t) => wordNamesFile(a.value, t)))) return true
     if (subsName && substAsCode(rest, name)) return true
     // (e) a here-string to a shell holding a substitution that reads the file (bash <<< "$(cat f)") needs no rule here:
@@ -1353,15 +1383,19 @@ export function writtenFileSpellings(segs, k, targets, ctx) {
     segWords[j] = ws ? [...ws.map((w) => w.value), ...(ws.redirects ?? []).map((r) => r.value), ...stdinWords] : []
     cwdAfterSegment(expand(body), c)
   }
+  // F2 (Dani 81347): on a case-insensitive file system (macOS, Windows; ctx.caseInsensitiveFs overrides) a case variant
+  // of the path is the same file; and $PWD / ${PWD} is the directory the segment runs in
+  const ci = ctx.caseInsensitiveFs ?? (process.platform === 'darwin' || process.platform === 'win32')
+  const same = (x, y) => x === y || (ci && x.toLowerCase() === y.toLowerCase())
   const matches = (w0, j) => {
-    const w = expand(w0)
+    const w = expand(w0).replace(/\$\{PWD\}|\$PWD(?![A-Za-z0-9_])/g, (m) => where[j] ?? m)
     const a = resolvedAt(w, where[j])
-    if (a && abs.has(a)) return true
+    if (a && (abs.has(a) || (ci && [...abs].some((x) => same(x, a))))) return true
     if (!lostParts.size && where[j] !== null) return false
     // an unknown directory on either side: the last path part decides
     const part = lastPart(w)
     if (!part || w.startsWith('-') || UNRESOLVABLE_WORD_RX.test(w)) return false
-    return lostParts.has(part) || (where[j] === null && !w.startsWith('/') && [...abs].some((x) => lastPart(x) === part))
+    return [...lostParts].some((p) => same(p, part)) || (where[j] === null && !w.startsWith('/') && [...abs].some((x) => same(lastPart(x), part)))
   }
   // a copy made later is one more written file: its spellings are added the same way, until nothing new appears
   for (let round = 0; round <= segs.length; round++) {
@@ -1789,6 +1823,7 @@ export function installFileDeny(command, opts = {}) {
   // test), whose hits include the literal reading's; the real reading (for python a python start, py-inline-data.py)
   // is computed only past it. (Only the segment reading below and the dotglob test read it.)
   const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd, true),
+    caseInsensitiveFs: typeof opts.caseInsensitiveFs === 'boolean' ? opts.caseInsensitiveFs : undefined,
     reShell: true,
     // WRITEGATERELPATH1115: a command that sets HOME itself: a `cd ~` / `cd $HOME` there leads to no known directory
     homeTouched: /(?<![$\w{])HOME(?!\w)/.test(cmd.replace(/\$(?=['"])|["'\\]/g, '')) }

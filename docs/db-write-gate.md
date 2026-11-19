@@ -61,6 +61,13 @@ a brace or glob source and a symlink to its directory. A variable that holds the
 to a shell, the command word. A spelling built from the command's own literal assignments (`S=/abs; ... $S/a.sh`)
 counts as well. All of this acts only when the written text names a protected path.
 
+The caller's own script (a path or a `.sh` name) is no own code when the same command made that program. That covers
+a copy, a link, `install`, `tee`, or a redirect of another file's content such as `cat /bin/sh > m`. Its run is judged
+like any program's. A script whose text the command writes itself (a heredoc, `echo`/`printf`) keeps the exception:
+the run rules read its text, and the data handed to it stays data. On a case-insensitive file system (macOS, Windows)
+a case variant of the written file's path is the same file. `$PWD` and `${PWD}` stand for the directory the segment
+runs in.
+
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file
 written in an earlier Bash call (or with the Write tool) and run in a later one is not read either. What the caller's
