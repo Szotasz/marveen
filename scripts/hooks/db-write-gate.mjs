@@ -1586,8 +1586,6 @@ function claudeDirCopyIn(words, ctx) {
 // Programs that write into the CWD when no target directory is named: an
 // archive extracted, a patch applied (Dani 56276 2a). The names they create
 // come from the archive or the patch, not from the command.
-// INSTRSURFACE1118: a command that changes its directory (see installFileDeny's fast path)
-const CWD_CHANGER_RX = /(?:^|[\s;&|(`])(?:cd|pushd)(?=\s|$)/
 const IMPLICIT_WRITER_RX = /(?:^|[\s;&|(/`"'])(?:tar|bsdtar|gtar|unzip|patch|cpio|7z|7za)(?=\s|$)/
 function writesIntoCwd(words, name) {
   const vals = words.map((w) => w.value)
