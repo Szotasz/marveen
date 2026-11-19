@@ -1482,7 +1482,10 @@ ok "Csatorna: $CHANNEL_PROVIDER"
 # the install, and the headless derive contract (Bridge payload) forbids new
 # interactive reads here -- so we say it loudly and let the install continue.
 # The dashboard save path hard-rejects the same states (#926); this is the
-# installer-side voice for the same three findings, each with its remedy.
+# installer-side voice for the same two findings, each with its remedy. A second running poller on the same
+# token is NOT detectable from here: getUpdates?timeout=0 answers 200 even while another poller is live (measured
+# 2026-11-18), and a long poll would disturb that poller. So the installer says plainly that it cannot tell
+# (INSTTGPOLLWARN1119).
 # set -e safe: every path ends in return 0; curl failures are guarded.
 # The token value itself is NEVER printed, and never put on a command line: each URL reaches
 # curl as a config line on stdin (-K -), so ps does not show it (INSTTGTOKENARGV1118).
@@ -1519,12 +1522,8 @@ probe_telegram_token() {
       echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot azzal.${NC}"
       return 0 ;;
   esac
-  _ptt_up="$(printf 'url = "%s"\n' "https://api.telegram.org/bot${_ptt_t}/getUpdates?timeout=0&limit=1" | curl -s -o /dev/null -w '%{http_code}' --max-time 8 -K - 2>/dev/null)" || return 0
-  if [ "$_ptt_up" = "409" ]; then
-    warn "A bot token ervenyes, de egy MASIK futo rendszer mar hasznalja (Telegram 409 Conflict)."
-    echo -e "    ${DIM}Egy tokent egyszerre csak egy telepites hasznalhat. Teendo: allitsd le a korabbi telepitest,${NC}"
-    echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot az uj tokennel.${NC}"
-  fi
+  echo -e "    ${DIM}Nem ellenorizheto, hogy mas gep hasznalja-e ezt a botot; ha igen, a ket poller utkozni fog.${NC}"
+  echo -e "    ${DIM}Egy tokent egyszerre csak egy telepites hasznalhat: ha a bot mashol is fut, allitsd le ott, vagy keszits uj botot.${NC}"
   return 0
 }
 

@@ -2064,6 +2064,7 @@ window._i18n.en = {
 
   // --- Agent status/labels ---
   'agents.channel.connected':    'Connected',
+  'channel.telegram.poller_unverifiable': 'It cannot be checked whether another machine uses this bot; if one does, the two will conflict. One bot token can be used by only one install at a time.',
   'agents.channel.saved_restart_failed': '{provider} saved, but restarting the agent failed, so it is not connected yet. Restart it by hand: {cmd} (on macOS from a terminal of the GUI login).',
   'agents.channel.disconnected': 'Not connected',
   'agents.channel.not_configured': 'No channel configured',
