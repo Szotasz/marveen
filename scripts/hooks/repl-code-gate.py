@@ -23,7 +23,9 @@ measurement of the pinned version. It does not inspect the code (an earlier
 word check did; it denied everyday developer work such as editing an import
 line or writing a TS file, Dani's review of #2906), and it cannot tell
 whether the pinned version's seal still holds in a configuration the
-measurement did not cover.
+measurement did not cover. It reads the running version from the session's
+own transcript, which the agent can also write, so it is a tripwire for a
+silently changing seal, NOT a defence against a deliberate bypass.
 
 VERSION SOURCE. The hook payload carries transcript_path; every message row
 Claude Code writes there carries "version" (measured on Dani's probe
