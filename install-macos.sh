@@ -986,7 +986,11 @@ else
     fi
   else
     echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_create)"
-    /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR"
+    # explicit 0755 (8628c640): never group- or other-writable (the writer refuses such a dir)
+    # AND always traversable by the unprivileged session, which must read the policy inside;
+    # a root-owned 0700 dir (umask 077) hid the policy. macOS twin of the Linux Teams fix.
+    # -m only applies to a dir mkdir creates now; an existing dir keeps its mode.
+    /usr/bin/sudo /bin/mkdir -p -m 0755 "$MANAGED_DIR"
     # Fresh file through the same shared writer (--create): a fresh mkstemp file
     # and os.replace, so an interrupted install can never leave a truncated or
     # empty org-policy file that a later run would then refuse to touch (the
@@ -1027,7 +1031,8 @@ if managed_has "$MANAGED_FILE" --channels; then
 else
   managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
-  if /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR" 2>/dev/null && managed_write "$MANAGED_FILE" --create --channels-enabled; then
+  # explicit 0755, same as the Slack create above (8628c640)
+  if /usr/bin/sudo /bin/mkdir -p -m 0755 "$MANAGED_DIR" 2>/dev/null && managed_write "$MANAGED_FILE" --create --channels-enabled; then
     echo "  channelsEnabled=true beallitva a managed-settings-ben ($MANAGED_FILE)"
     echo "    (a bejovo channel-uzenetek team/enterprise orgnal is celba ernek; restart utan lep eletbe.)"
     CHANNELS_GATE_STATE="ok"
