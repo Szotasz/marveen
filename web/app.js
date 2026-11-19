@@ -259,6 +259,28 @@ function mainAgentId() {
     const passEl = overlay.querySelector('#mv-login-pass')
     const errEl = overlay.querySelector('#mv-login-err')
     const submitEl = overlay.querySelector('#mv-login-submit')
+    // DOCKERHTTPS1119: the password was right and the second factor is on: the code step replaces the form; the
+    // pending token lives only in that step's closure. Expired: back to the password form with the reason.
+    const showCodeStep = (pending) => {
+      form.hidden = true
+      const cancelEl = overlay.querySelector('#mv-login-cancel')
+      const step = buildTotpCodeStep({
+        pending,
+        idPrefix: 'mv-totp',
+        title: tr('auth.login.title', 'Sign in'),
+        formClass: 'mv-auth-card',
+        descClass: 'mv-auth-desc',
+        errClass: 'mv-auth-err',
+        cancel: cancelEl ? { label: cancelEl.textContent, onClick: () => cancelEl.click() } : null,
+        onExpired: (msg) => {
+          step.remove()
+          form.hidden = false
+          errEl.textContent = msg
+          setTimeout(() => passEl.focus(), 50)
+        },
+      })
+      overlay.appendChild(step)
+    }
     form.addEventListener('submit', async (e) => {
       e.preventDefault()
       errEl.textContent = ''
@@ -273,10 +295,17 @@ function mainAgentId() {
           body: JSON.stringify({ username, password }),
         })
         if (r.ok) { window.location.reload(); return }
+        let data = null
+        try { data = await r.json() } catch { /* not JSON */ }
+        // DOCKERHTTPS1119: keyed on the contract's code, never on the English error text.
+        const o = totpOutcome(r.status, data)
+        if (o.kind === 'totp_required') { passEl.value = ''; showCodeStep(o.pending); return }
         if (r.status === 429) {
-          let retry = 0
-          try { retry = (await r.json()).retry_after_s || 0 } catch { /* ignore */ }
+          const retry = (data && data.retry_after_s) || 0
           errEl.textContent = tr('auth.login.err_throttled', 'Too many attempts. Try again later.') + (retry ? ' (' + retry + 's)' : '')
+        } else if (o.kind === 'unavailable') {
+          // No password-only fallback: the server refuses it, the text says what must be repaired.
+          errEl.textContent = totpOutcomeText(o)
         } else {
           errEl.textContent = tr('auth.login.err_invalid', 'Invalid credentials.')
         }
@@ -301,11 +330,34 @@ function mainAgentId() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       })
-      let retryAfter = 0
-      if (r.status === 429) { try { retryAfter = (await r.json()).retry_after_s || 0 } catch { /* ignore */ } }
-      return { ok: r.ok, status: r.status, retryAfter }
+      let data = null
+      if (!r.ok) { try { data = await r.json() } catch { /* not JSON */ } }
+      const retryAfter = (r.status === 429 && data && data.retry_after_s) || 0
+      // DOCKERHTTPS1119: a right password with the second factor on comes back as totp_required and its pending token.
+      const o = totpOutcome(r.status, data)
+      return {
+        ok: r.ok, status: r.status, retryAfter,
+        totpRequired: o.kind === 'totp_required', pending: o.kind === 'totp_required' ? o.pending : '',
+        code: data && typeof data.code === 'string' ? data.code : '',
+      }
     } catch {
-      return { ok: false, status: 0, retryAfter: 0 }
+      return { ok: false, status: 0, retryAfter: 0, totpRequired: false, pending: '', code: '' }
+    }
+  }
+
+  // DOCKERHTTPS1119: the two-step sign-in endpoints, on the unwrapped fetch like the login above: their 401s (a wrong
+  // code or password) must not wipe the stored token or open the full-screen login. The owner session rides on the
+  // mv_session cookie. Returns { status, body }; status 0 on a network error.
+  window.mvTotpCall = async (method, path, body) => {
+    try {
+      const init = { method, cache: 'no-store', credentials: 'same-origin' }
+      if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body) }
+      const r = await originalFetch(path, init)
+      let data = null
+      try { data = await r.json() } catch { /* not JSON */ }
+      return { status: r.status, body: data }
+    } catch {
+      return { status: 0, body: null }
     }
   }
 
@@ -16323,7 +16375,9 @@ function renderOnboarding(s, auth) {
     if (pendingLang === s.installLang) setOnbLangPending(null)
     else { switchInstallLang(pendingLang); return }
   }
-  const step = onboardingDisplayStep(base, auth)
+  // DOCKERHTTPS1119: the optional two-step sign-in step belongs to the login step (1) in the bar.
+  const totpOffer = !loginStep && onbTotpOfferPending()
+  const step = totpOffer ? 1 : onboardingDisplayStep(base, auth)
   overlay.hidden = false
   overlay.classList.add('active')
   document.body.style.overflow = 'hidden'
@@ -16343,6 +16397,7 @@ function renderOnboarding(s, auth) {
     wireOnboardingLogin(auth)
     return
   }
+  if (totpOffer) { renderOnbTotpOffer(body); return }
   if (base === 1) body.innerHTML = onbIdentityHtml(s)
   else if (base === 2) body.innerHTML = onbStep1Html(s)
   else if (base === 3) body.innerHTML = onbStep2Html(s)
@@ -16387,10 +16442,56 @@ function onbLoginHtml(auth) {
 async function onbSignIn(username, password) {
   const r = await window.mvPasswordLogin(username, password)
   if (r.ok) { window.location.reload(); return true }
+  // DOCKERHTTPS1119: the second factor is on: the code step, as in the login overlay.
+  if (r.totpRequired) { renderOnbTotpLogin(r.pending); return true }
   if (r.status === 429) onbMsg(t('auth.login.err_throttled') + (r.retryAfter ? ` (${r.retryAfter}s)` : ''), true)
+  else if (r.code === 'totp_store_unavailable') onbMsg(t('auth.totp.err_unavailable'), true)
   else if (r.status === 401) onbMsg(t('auth.login.err_invalid'), true)
   else onbMsg(t('auth.login.err_network'), true)
   return false
+}
+// DOCKERHTTPS1119: the optional two-step sign-in step, right after the owner login is created in the wizard. A flag for
+// this browser tab (no secret in it) carries "just created" across the sign-in's reload; Skip is the default action.
+const ONB_TOTP_OFFER_KEY = 'mvOnbTotpOffer'
+function onbTotpOfferPending() {
+  try { return sessionStorage.getItem(ONB_TOTP_OFFER_KEY) === '1' } catch { return false }
+}
+function setOnbTotpOffer(on) {
+  try { if (on) sessionStorage.setItem(ONB_TOTP_OFFER_KEY, '1'); else sessionStorage.removeItem(ONB_TOTP_OFFER_KEY) } catch { /* storage blocked */ }
+}
+function renderOnbTotpOffer(body) {
+  body.innerHTML = `<p><strong>${escapeHtml(t('onboarding.totp.title'))}</strong></p>`
+    + `<p>${escapeHtml(t('onboarding.totp.desc'))}</p>`
+    + `<div class="totp-actions" id="onbTotpActions">`
+    + `<button class="btn-primary btn-compact" id="onbTotpSkip">${escapeHtml(t('onboarding.totp.skip'))}</button>`
+    + `<button class="btn-secondary btn-compact" id="onbTotpStart">${escapeHtml(t('onboarding.totp.start'))}</button>`
+    + `</div>`
+    + `<div id="onbTotpFlow"></div>`
+    + `<div id="onbMsg" class="onb-msg"></div>`
+  const finish = () => { setOnbTotpOffer(false); refreshOnboarding() }
+  const skip = document.getElementById('onbTotpSkip')
+  skip.addEventListener('click', finish)
+  document.getElementById('onbTotpStart').addEventListener('click', () => {
+    document.getElementById('onbTotpActions').hidden = true
+    mountTotpSetup(document.getElementById('onbTotpFlow'), { idPrefix: 'onbTotpSetup', cancelLabel: t('onboarding.totp.skip'), onDone: finish })
+  })
+  setTimeout(() => skip.focus(), 50)
+}
+// The wizard's sign-in, second step: the shared code step in the wizard's body.
+function renderOnbTotpLogin(pending) {
+  const body = document.getElementById('onboardingBody')
+  if (!body) return
+  body.innerHTML = ''
+  body.appendChild(buildTotpCodeStep({
+    pending,
+    idPrefix: 'onbTotpLogin',
+    formClass: 'auth-form onb-totp-login',
+    descClass: '',
+    errClass: 'onb-msg err',
+    inputClass: 'onb-input',
+    submitClass: 'btn-primary btn-compact',
+    onExpired: async (msg) => { await refreshOnboarding(); onbMsg(msg, true) },
+  }))
 }
 function wireOnboardingLogin(auth) {
   const field = (id) => document.getElementById(id)
@@ -16407,6 +16508,8 @@ function wireOnboardingLogin(auth) {
       const r = await fetch('/api/auth/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password: p1 }) })
       const d = await r.json().catch(() => ({}))
       if (r.ok) {
+        // DOCKERHTTPS1119: the optional two-step step comes right after this new login, past the sign-in's reload.
+        setOnbTotpOffer(true)
         const signedIn = await onbSignIn(username, p1)
         clearPasswords()
         if (!signedIn) {
@@ -17524,6 +17627,404 @@ function markSettingDirty(key, input, originalValue, type, errorEl) {
 
 const SETTINGS_ACTIVE_TAB_KEY = 'settings-active-tab'
 
+// === Two-step sign-in (TOTP, DOCKERHTTPS1119) ===
+// Off by default. The login overlay and the wizard's sign-in ask for the code after a right password (401
+// totp_required); Settings and the wizard's optional step turn it on and off. Every branch is keyed on the contract's
+// `code`, never on the English `error` text. The calls go through window.mvTotpCall (the unwrapped fetch).
+
+// What an answer of these endpoints means. Pure, so the tests run the shipped code.
+function totpOutcome(status, body) {
+  const CODE_KINDS = {
+    totp_invalid: 'invalid',
+    totp_pending_expired: 'expired',
+    totp_store_unavailable: 'unavailable',
+    totp_already_enabled: 'already_on',
+    totp_not_enabled: 'not_on',
+    totp_setup_missing: 'setup_missing',
+    totp_code_required: 'code_required',
+    owner_session_required: 'owner',
+  }
+  const b = body && typeof body === 'object' ? body : {}
+  const code = typeof b.code === 'string' ? b.code : ''
+  if (!status) return { kind: 'network' }
+  if (status >= 200 && status < 300) {
+    return {
+      kind: 'ok',
+      backupUsed: b.backup_code_used === true,
+      left: Number.isInteger(b.backup_codes_left) ? b.backup_codes_left : null,
+    }
+  }
+  if (status === 429) return { kind: 'throttled', retry: Number.isInteger(b.retry_after_s) ? b.retry_after_s : 0 }
+  if (code === 'totp_required') {
+    return typeof b.pending === 'string' && b.pending ? { kind: 'totp_required', pending: b.pending } : { kind: 'other' }
+  }
+  if (Object.prototype.hasOwnProperty.call(CODE_KINDS, code)) {
+    const kind = CODE_KINDS[code]
+    return kind === 'owner' ? { kind, setupRequired: b.setup_required === true } : { kind }
+  }
+  // A 401 without a code is the password's: "Invalid credentials" at login, at disable (and at enable).
+  if (status === 401 && !code) return { kind: 'bad_password' }
+  return { kind: 'other' }
+}
+function totpOutcomeText(o) {
+  switch (o && o.kind) {
+    case 'invalid': return t('auth.totp.err_invalid')
+    case 'expired': return t('auth.totp.err_expired')
+    case 'unavailable': return t('auth.totp.err_unavailable')
+    case 'throttled': return t('auth.login.err_throttled') + (o.retry ? ` (${o.retry}s)` : '')
+    case 'bad_password': return t('auth.totp.err_password')
+    case 'code_required': return t('auth.totp.err_code_required')
+    case 'owner': return t(o.setupRequired ? 'auth.totp.err_owner_setup' : 'auth.totp.err_owner')
+    case 'already_on': return t('auth.totp.err_already_on')
+    case 'not_on': return t('auth.totp.err_not_on')
+    case 'setup_missing': return t('auth.totp.err_setup_missing')
+    case 'network': return t('auth.login.err_network')
+    default: return t('auth.card.err_generic')
+  }
+}
+// After a backup-code sign-in: the count, and at 0-2 the way to new codes.
+function totpBackupLeftText(n) {
+  const left = Number.isInteger(n) ? n : 0
+  return t('auth.totp.backup_left', { n: left }) + (left <= 2 ? ' ' + t('auth.totp.backup_low') : '')
+}
+// The base32 key in groups of four, for typing it by hand.
+function totpGroupSecret(secret) {
+  return String(secret || '').replace(/\s+/g, '').replace(/(.{4})(?=.)/g, '$1 ')
+}
+
+// The code step of the sign-in (the login overlay and the wizard). The pending token stays in this closure only.
+// opts: pending, idPrefix, title?, formClass, descClass, errClass, inputClass?, submitClass?, cancel? {label, onClick},
+// onExpired(msg). The markup is static; ids and classes are set on the elements (data-totp names the parts).
+function buildTotpCodeStep(opts) {
+  const p = opts.idPrefix
+  let pending = opts.pending
+  const form = document.createElement('form')
+  form.className = (opts.formClass || '') + ' totp-code-step'
+  form.id = p + '-form'
+  form.innerHTML =
+    (opts.title ? `<h2>${escapeHtml(opts.title)}</h2>` : '') +
+    `<p data-totp="desc"></p>` +
+    `<input data-totp="code" type="text" autocapitalize="off" autocorrect="off" spellcheck="false">` +
+    `<button type="button" class="totp-switch" data-totp="switch"></button>` +
+    `<button type="submit" data-totp="submit">${escapeHtml(t('auth.totp.verify'))}</button>` +
+    `<div data-totp="err" role="alert"></div>`
+  const descEl = form.querySelector('[data-totp="desc"]')
+  const codeEl = form.querySelector('[data-totp="code"]')
+  const switchEl = form.querySelector('[data-totp="switch"]')
+  const submitEl = form.querySelector('[data-totp="submit"]')
+  const errEl = form.querySelector('[data-totp="err"]')
+  descEl.className = opts.descClass || 'auth-muted'
+  descEl.id = p + '-desc'
+  codeEl.className = opts.inputClass || ''
+  codeEl.id = p + '-code'
+  switchEl.id = p + '-switch'
+  submitEl.className = opts.submitClass || ''
+  submitEl.id = p + '-submit'
+  errEl.className = opts.errClass || 'auth-form-msg err'
+  errEl.id = p + '-err'
+  if (opts.cancel) {
+    const c = document.createElement('button')
+    c.type = 'button'
+    c.className = 'btn-secondary btn-compact'
+    c.id = p + '-cancel'
+    c.textContent = opts.cancel.label
+    c.addEventListener('click', opts.cancel.onClick)
+    form.appendChild(c)
+  }
+  let backup = false
+  const setMode = (toBackup) => {
+    backup = toBackup
+    codeEl.value = ''
+    descEl.textContent = t(backup ? 'auth.totp.login_backup_desc' : 'auth.totp.login_code_desc')
+    codeEl.placeholder = t(backup ? 'auth.totp.backup_placeholder' : 'auth.totp.code_placeholder')
+    codeEl.setAttribute('inputmode', backup ? 'text' : 'numeric')
+    codeEl.setAttribute('autocomplete', backup ? 'off' : 'one-time-code')
+    codeEl.maxLength = backup ? 40 : 7
+    switchEl.textContent = t(backup ? 'auth.totp.use_app_code' : 'auth.totp.use_backup')
+    errEl.textContent = ''
+    setTimeout(() => codeEl.focus(), 50)
+  }
+  switchEl.addEventListener('click', () => setMode(!backup))
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const code = (codeEl.value || '').trim()
+    if (!code) { errEl.textContent = t('auth.totp.err_code_required'); return }
+    errEl.textContent = ''
+    submitEl.disabled = true
+    const r = await window.mvTotpCall('POST', '/api/auth/login/totp', { pending, code })
+    submitEl.disabled = false
+    const o = totpOutcome(r.status, r.body)
+    if (o.kind === 'ok') {
+      pending = null
+      if (!o.backupUsed) { window.location.reload(); return }
+      // Signed in with a backup code: the remaining count first, then on.
+      for (const el of [codeEl, switchEl, submitEl, errEl]) el.remove()
+      const cancelEl = form.querySelector('.btn-secondary')
+      if (cancelEl) cancelEl.remove()
+      descEl.id = p + '-left'
+      descEl.textContent = totpBackupLeftText(o.left)
+      const go = document.createElement('button')
+      go.type = 'button'
+      go.className = opts.submitClass || ''
+      go.id = p + '-continue'
+      go.textContent = t('auth.totp.continue')
+      go.addEventListener('click', () => window.location.reload())
+      form.appendChild(go)
+      setTimeout(() => go.focus(), 50)
+      return
+    }
+    if (o.kind === 'expired') { pending = null; opts.onExpired(totpOutcomeText(o)); return }
+    errEl.textContent = totpOutcomeText(o)
+    if (o.kind === 'invalid') codeEl.select()
+  })
+  setMode(false)
+  return form
+}
+
+// Turning it on: setup -> QR + key -> password and code -> enable -> the backup codes, once. The same component in
+// Settings and in the wizard. The key and the URI live only in this closure, the QR and the grouped key under it;
+// they and the codes are dropped when the component closes. opts: idPrefix, cancelLabel, onDone(enabledNow).
+// The markup is static; the parts are found by data-totp and get their ids (idPrefix + name) after rendering.
+function mountTotpSetup(host, opts) {
+  const p = opts.idPrefix
+  let secret = null
+  let uri = null
+  let codes = null
+  const close = (enabled) => {
+    secret = null; uri = null; codes = null
+    host.innerHTML = ''
+    opts.onDone(enabled)
+  }
+  const name = (el) => el.dataset.totp.charAt(0).toUpperCase() + el.dataset.totp.slice(1)
+  const tagIds = () => { host.querySelectorAll('[data-totp]').forEach((el) => { el.id = p + name(el) }) }
+  const say = (text, isErr) => {
+    const m = host.querySelector('[data-totp="msg"]')
+    if (!m) return
+    m.className = 'auth-form-msg' + (isErr ? ' err' : ' ok')
+    m.textContent = text
+  }
+  function renderError(text, alreadyOn) {
+    host.innerHTML = `<div class="totp-setup"><p class="auth-form-msg err" data-totp="msg"></p>` +
+      `<div class="totp-actions"><button type="button" class="btn-secondary btn-compact" data-totp="close"></button></div></div>`
+    tagIds()
+    host.querySelector('[data-totp="msg"]').textContent = text
+    const btn = host.querySelector('[data-totp="close"]')
+    btn.textContent = opts.cancelLabel
+    btn.addEventListener('click', () => close(alreadyOn))
+  }
+  async function start(note) {
+    host.innerHTML = `<p class="auth-muted">${escapeHtml(t('common.loading'))}</p>`
+    const r = await window.mvTotpCall('POST', '/api/auth/totp/setup', {})
+    if (!host.isConnected) return
+    const o = totpOutcome(r.status, r.body)
+    if (o.kind !== 'ok' || !r.body || typeof r.body.secret !== 'string' || typeof r.body.otpauth_uri !== 'string') {
+      renderError(o.kind === 'ok' ? t('auth.card.err_generic') : totpOutcomeText(o), o.kind === 'already_on')
+      return
+    }
+    secret = r.body.secret
+    uri = r.body.otpauth_uri
+    renderScan(note)
+  }
+  function renderScan(note) {
+    host.innerHTML =
+      `<div class="totp-setup">` +
+        `<p class="auth-muted">${escapeHtml(t('auth.totp.setup_scan'))}</p>` +
+        `<div class="totp-qr" data-totp="qr"></div>` +
+        `<p class="auth-muted" data-totp="secretLabel">${escapeHtml(t('auth.totp.setup_manual'))}</p>` +
+        `<div class="totp-secret-row"><code class="totp-secret" data-totp="secret"></code>` +
+          `<button type="button" class="btn-secondary btn-compact" data-totp="copySecret">${escapeHtml(t('auth.totp.copy'))}</button></div>` +
+        `<p class="auth-muted">${escapeHtml(t('auth.totp.setup_confirm'))}</p>` +
+        `<div class="auth-form">` +
+          `<input data-totp="pass" type="password" autocomplete="current-password" placeholder="${escapeHtml(t('auth.card.current_password'))}">` +
+          `<input data-totp="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="${escapeHtml(t('auth.totp.code_placeholder'))}">` +
+          `<div class="totp-actions">` +
+            `<button type="button" class="btn-primary btn-compact" data-totp="enable">${escapeHtml(t('auth.totp.turn_on'))}</button>` +
+            `<button type="button" class="btn-secondary btn-compact" data-totp="cancel"></button>` +
+          `</div>` +
+          `<div class="auth-form-msg" data-totp="msg"></div>` +
+        `</div>` +
+      `</div>`
+    tagIds()
+    host.querySelector('[data-totp="secret"]').textContent = totpGroupSecret(secret)
+    host.querySelector('[data-totp="cancel"]').textContent = opts.cancelLabel
+    const qrBox = host.querySelector('[data-totp="qr"]')
+    let drawn = false
+    if (typeof qrcode === 'function') {
+      try {
+        const qr = qrcode(0, 'M')
+        qr.addData(uri)
+        qr.make()
+        qrBox.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true })
+        drawn = true
+      } catch { /* drawn stays false: the key alone */ }
+    }
+    if (!drawn) {
+      // No QR library (CDN blocked) or a failed draw: only the key, said plainly.
+      qrBox.hidden = true
+      host.querySelector('[data-totp="secretLabel"]').textContent = t('auth.totp.setup_no_qr')
+    }
+    if (note) say(note, true)
+    const copyBtn = host.querySelector('[data-totp="copySecret"]')
+    copyBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(secret || ''); copyBtn.textContent = t('auth.totp.copied') } catch { /* clipboard blocked: the key is on screen */ }
+    })
+    host.querySelector('[data-totp="cancel"]').addEventListener('click', () => close(false))
+    host.querySelector('[data-totp="enable"]').addEventListener('click', enable)
+    host.querySelector('[data-totp="code"]').addEventListener('keydown', (e) => { if (e.key === 'Enter') enable() })
+  }
+  async function enable() {
+    const passEl = host.querySelector('[data-totp="pass"]')
+    const codeEl = host.querySelector('[data-totp="code"]')
+    const btn = host.querySelector('[data-totp="enable"]')
+    const password = passEl.value || ''
+    const code = (codeEl.value || '').trim()
+    if (!password) { say(t('auth.totp.err_password_required'), true); return }
+    if (!code) { say(t('auth.totp.err_code_required'), true); return }
+    btn.disabled = true
+    say('')
+    const r = await window.mvTotpCall('POST', '/api/auth/totp/enable', { password, code })
+    if (!host.isConnected) return
+    const o = totpOutcome(r.status, r.body)
+    if (o.kind === 'ok' && r.body && Array.isArray(r.body.backup_codes)) {
+      passEl.value = ''
+      secret = null
+      uri = null
+      renderCodes(r.body.backup_codes)
+      return
+    }
+    btn.disabled = false
+    if (o.kind === 'setup_missing') { await start(t('auth.totp.err_setup_missing')); return }
+    if (o.kind === 'already_on') { renderError(totpOutcomeText(o), true); return }
+    say(totpOutcomeText(o), true)
+    if (o.kind === 'invalid') codeEl.select()
+    else if (o.kind === 'bad_password') passEl.select()
+  }
+  function renderCodes(list) {
+    codes = list.map(String)
+    host.innerHTML =
+      `<div class="totp-setup">` +
+        `<p class="totp-codes-title" data-totp="codesTitle">${escapeHtml(t('auth.totp.codes_title'))}</p>` +
+        `<p class="auth-muted">${escapeHtml(t('auth.totp.codes_note'))}</p>` +
+        `<ol class="totp-codes" data-totp="codes"></ol>` +
+        `<div class="totp-actions">` +
+          `<button type="button" class="btn-secondary btn-compact" data-totp="copyCodes">${escapeHtml(t('auth.totp.copy'))}</button>` +
+          `<button type="button" class="btn-secondary btn-compact" data-totp="downloadCodes">${escapeHtml(t('auth.totp.download'))}</button>` +
+        `</div>` +
+        `<label class="totp-saved"><input type="checkbox" data-totp="saved"> <span>${escapeHtml(t('auth.totp.codes_saved'))}</span></label>` +
+        `<div class="totp-actions"><button type="button" class="btn-primary btn-compact" data-totp="done" disabled>${escapeHtml(t('auth.totp.codes_done'))}</button></div>` +
+      `</div>`
+    tagIds()
+    const ol = host.querySelector('[data-totp="codes"]')
+    for (const c of codes) { const li = document.createElement('li'); li.textContent = c; ol.appendChild(li) }
+    const copyBtn = host.querySelector('[data-totp="copyCodes"]')
+    copyBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText((codes || []).join('\n')); copyBtn.textContent = t('auth.totp.copied') } catch { /* clipboard blocked: the codes are on screen */ }
+    })
+    host.querySelector('[data-totp="downloadCodes"]').addEventListener('click', () => {
+      const text = t('auth.totp.file_header') + '\n\n' + (codes || []).join('\n') + '\n'
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'backup-codes.txt'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    })
+    const saved = host.querySelector('[data-totp="saved"]')
+    const done = host.querySelector('[data-totp="done"]')
+    saved.addEventListener('change', () => { done.disabled = !saved.checked })
+    done.addEventListener('click', () => { if (saved.checked) close(true) })
+  }
+  start()
+}
+
+// The Settings block: status, on, off. Only for an owner session (renderAuthCard decides); a refusal shows its reason.
+async function renderTotpSection(body) {
+  let wrap = document.getElementById('authTotp')
+  if (!wrap || !body.contains(wrap)) {
+    wrap = document.createElement('div')
+    wrap.className = 'auth-device-keys auth-totp'
+    wrap.id = 'authTotp'
+    body.appendChild(wrap)
+  }
+  wrap.innerHTML = `<div class="auth-sessions-title">${escapeHtml(t('auth.totp.title'))}</div>` +
+    `<div id="authTotpBody"><p class="auth-muted">${escapeHtml(t('common.loading'))}</p></div>`
+  const inner = wrap.querySelector('#authTotpBody')
+  const r = await window.mvTotpCall('GET', '/api/auth/totp')
+  if (!inner.isConnected) return
+  if (r.status !== 200 || !r.body || typeof r.body.enabled !== 'boolean') {
+    inner.innerHTML = `<p class="auth-form-msg err" id="authTotpStatus"></p>`
+    inner.querySelector('#authTotpStatus').textContent = totpOutcomeText(totpOutcome(r.status === 200 ? 500 : r.status, r.body))
+    return
+  }
+  const on = r.body.enabled
+  const left = Number.isInteger(r.body.backup_codes_left) ? r.body.backup_codes_left : 0
+  inner.innerHTML =
+    `<p class="auth-muted">${escapeHtml(t('auth.totp.desc'))}</p>` +
+    `<p class="auth-totp-status" id="authTotpStatus"></p>` +
+    `<div class="auth-actions" id="authTotpActions">` +
+      `<button type="button" class="btn-secondary btn-compact" id="${on ? 'authTotpOffBtn' : 'authTotpOnBtn'}">${escapeHtml(t(on ? 'auth.totp.turn_off' : 'auth.totp.turn_on'))}</button>` +
+    `</div>` +
+    `<div id="authTotpFlow"></div>`
+  inner.querySelector('#authTotpStatus').textContent = on
+    ? t('auth.totp.status_on', { n: left }) + (left <= 2 ? ' ' + t('auth.totp.backup_low') : '')
+    : t('auth.totp.status_off')
+  const actions = inner.querySelector('#authTotpActions')
+  const flow = inner.querySelector('#authTotpFlow')
+  const again = () => renderTotpSection(body)
+  if (!on) {
+    inner.querySelector('#authTotpOnBtn').addEventListener('click', () => {
+      actions.hidden = true
+      mountTotpSetup(flow, { idPrefix: 'authTotpSetup', cancelLabel: t('auth.totp.cancel'), onDone: again })
+    })
+    return
+  }
+  inner.querySelector('#authTotpOffBtn').addEventListener('click', () => {
+    actions.hidden = true
+    flow.innerHTML =
+      `<p class="auth-muted">${escapeHtml(t('auth.totp.off_desc'))}</p>` +
+      `<div class="auth-form">` +
+        `<input id="authTotpOffPass" type="password" autocomplete="current-password" placeholder="${escapeHtml(t('auth.card.current_password'))}">` +
+        `<input id="authTotpOffCode" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="40" placeholder="${escapeHtml(t('auth.totp.off_code_placeholder'))}">` +
+        `<div class="totp-actions">` +
+          `<button type="button" class="btn-primary btn-compact" id="authTotpOffConfirm">${escapeHtml(t('auth.totp.turn_off'))}</button>` +
+          `<button type="button" class="btn-secondary btn-compact" id="authTotpOffCancel">${escapeHtml(t('auth.totp.cancel'))}</button>` +
+        `</div>` +
+        `<div class="auth-form-msg" id="authTotpOffMsg"></div>` +
+      `</div>`
+    const msg = flow.querySelector('#authTotpOffMsg')
+    const say = (text, isErr) => { msg.className = 'auth-form-msg' + (isErr ? ' err' : ' ok'); msg.textContent = text }
+    flow.querySelector('#authTotpOffCancel').addEventListener('click', again)
+    const btn = flow.querySelector('#authTotpOffConfirm')
+    btn.addEventListener('click', async () => {
+      const passEl = flow.querySelector('#authTotpOffPass')
+      const codeEl = flow.querySelector('#authTotpOffCode')
+      const password = passEl.value || ''
+      const code = (codeEl.value || '').trim()
+      if (!password) { say(t('auth.totp.err_password_required'), true); return }
+      if (!code) { say(t('auth.totp.err_code_required'), true); return }
+      btn.disabled = true
+      say('')
+      const res = await window.mvTotpCall('POST', '/api/auth/totp/disable', { password, code })
+      if (!flow.isConnected) return
+      btn.disabled = false
+      const o = totpOutcome(res.status, res.body)
+      if (o.kind === 'ok' || o.kind === 'not_on') {
+        passEl.value = ''
+        await again()
+        const st = document.getElementById('authTotpStatus')
+        if (st && o.kind === 'ok') st.textContent = t('auth.totp.turned_off')
+        return
+      }
+      say(totpOutcomeText(o), true)
+      if (o.kind === 'invalid') codeEl.select()
+      else if (o.kind === 'bad_password') passEl.select()
+    })
+    setTimeout(() => flow.querySelector('#authTotpOffPass').focus(), 50)
+  })
+}
+
 // === Dashboard browser login (optional) ===
 // The card in the Settings page lets the operator opt into a username+password
 // login (in addition to the always-available access token). All copy is framed
@@ -17549,6 +18050,8 @@ async function renderAuthCard() {
   if (status.setup_required) { renderCreateLoginForm(body) }
   else if (status.method === 'session') { renderSessionPanel(body, status) }
   else renderTokenModePanel(body, status)
+  // DOCKERHTTPS1119: two-step sign-in, only where the owner's session rides on this window.
+  if (status.owner_session === true && !status.setup_required) renderTotpSection(body)
   // Device keys are managed by token/session operators only (a device key
   // itself gets 403 from the management endpoints, so don't render the panel).
   // Once a login exists, issuing keys and pairing take the owner's session
