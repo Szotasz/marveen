@@ -13,7 +13,7 @@ import {
   chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync,
   symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, isAbsolute, relative, sep } from 'node:path'
 import { logger } from '../../logger.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { writeAgentBase } from '../agent-create.js'
@@ -348,12 +348,32 @@ export function packageDiskFiles(pkg: VerifiedPackage): Array<{ path: string; by
   return out
 }
 
+/**
+ * PRI3HARDEN1118: a recursive mkdir follows a symlink standing on its path, so a same-user process could swap a
+ * folder for a link between step 2 and the write and send the package files elsewhere (e.g. into the global skills
+ * root, past the quarantine). Each folder component is made on its own and checked with lstat, so nothing is created
+ * or written past a link.
+ */
+function mkdirInsideAgentDir(dir: string, folder: string): void {
+  const rel = relative(dir, folder)
+  if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('package folder resolves outside the agent directory')
+  let cur = dir
+  for (const part of rel.split(sep).filter((x) => x !== '')) {
+    cur = join(cur, part)
+    try { mkdirSync(cur, { mode: 0o755 }) } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
+    }
+    // One component at a time, never followed: a link (or anything but a plain folder) stops the write here.
+    if (!lstatSync(cur).isDirectory()) throw new Error('package folder resolves outside the agent directory')
+  }
+}
+
 /** Step 5: the package files (0644; folders 0755). */
 export function step5Files(c: InstallContext): void {
   const dir = agentDirOf(c.name)
   for (const f of packageDiskFiles(c.pkg)) {
     const p = join(dir, f.path)
-    mkdirSync(dirname(p), { recursive: true, mode: 0o755 })
+    mkdirInsideAgentDir(dir, dirname(p))
     atomicWriteFileSync(p, f.bytes, { mode: 0o644 })
   }
 }
@@ -366,7 +386,7 @@ export function step6Local(c: InstallContext): void {
 /** Step 7: the package record. */
 export function step7Manifest(c: InstallContext): void {
   const p = manifestPathOf(agentDirOf(c.name))
-  mkdirSync(dirname(p), { recursive: true, mode: 0o755 })
+  mkdirInsideAgentDir(agentDirOf(c.name), dirname(p))
   atomicWriteFileSync(p, manifestRecordText(c.pkg, c.now.toISOString()), { mode: 0o644 })
 }
 
@@ -775,9 +795,25 @@ export function prepareFallbackClaudeMd(name: string, dir: string, fallbackCwd: 
     // fallback. The layers are scanned joined exactly as they stand in the expanded file, so a shape formed across
     // their boundary is still seen.
     const finding = scanPackageText(Buffer.from(`\n${pkg}\n\n\n${local}\n`, 'utf8'))
+    // The owner is told once per agent and finding, not on every fallback start (Dani 80640, PRI3HARDEN1118): the
+    // last noticed finding is kept in a stamp, and a clean start removes it, so a finding that comes back is told again.
+    const stamp = join(leftoversDir(), 'fallback-scan-noticed', `${name}.txt`)
     if (finding !== null) {
       logger.warn({ name, reason: finding.reason, rule: finding.rule }, 'EPERM fallback: the expanded CLAUDE.md has a package text rule finding; starting anyway (report only)')
-      writePendingNotice('fallback_scan_finding', name, dir, new Date())
+      const key = `${finding.reason}:${finding.rule}`
+      let told: string | null = null
+      try { told = readFileSync(stamp, 'utf8') } catch { /* never told */ }
+      if (told !== key) {
+        writePendingNotice('fallback_scan_finding', name, dir, new Date())
+        try {
+          mkdirSync(dirname(stamp), { recursive: true, mode: 0o700 })
+          atomicWriteFileSync(stamp, key, { mode: 0o600 })
+        } catch (err) {
+          logger.warn({ err, name }, 'EPERM fallback: the finding notice stamp could not be stored; the next start tells again')
+        }
+      }
+    } else {
+      try { unlinkSync(stamp) } catch { /* none */ }
     }
     chmodSync(fallbackCwd, 0o700)
     const target = join(fallbackCwd, 'CLAUDE.md')
