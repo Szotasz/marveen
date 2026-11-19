@@ -24,6 +24,19 @@ import { assertEnvEntry } from '../../env.js'
 import { mainGromzoPrimaryReady } from '../main-gromzo-launch.js'
 import { teamsAllowlistIds, TEAMS_ALLOWLIST_FILE } from '../../owner-chat.js'
 import type { RouteContext } from './types.js'
+import { deployment } from '../deployment.js'
+import { installLang, switchInstallLanguage, type RunResult } from '../install-lang-switch.js'
+
+// DOCKERUX1118: one language switch at a time.
+let langSwitchBusy = false
+/** A program without a shell, with exactly the given environment; never rejects (a failure is a code). */
+function runNoShell(file: string, args: readonly string[], env: Record<string, string>): Promise<RunResult> {
+  return new Promise((resolve) => {
+    execFile(file, [...args], { env, timeout: 120_000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (err, stdout) => {
+      resolve({ code: err === null ? 0 : typeof err.code === 'number' ? err.code : null, stdout: stdout ?? '' })
+    })
+  })
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -352,6 +365,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       needsOnboarding: !claude || !running || !ch || !pr,
       // ONBOARDNOTG1108 (b): the owner closed the wizard (the machine's flag, whatever origin the dashboard is on).
       dismissed: onboardingDismissedOnServer(),
+      // DOCKERUX1118: the wizard shows its language switch in the container only, and compares with the install's.
+      deployment: deployment(),
+      installLang: installLang(readEnvValue),
     })
     return true
   }
@@ -378,6 +394,57 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       return true
     }
     json(res, { ok: true, dismissed: onboardingDismissedOnServer() })
+    return true
+  }
+
+  // DOCKERUX1118 (owner 33327/33329, Samu 80886/80891): the wizard's language switch. Docker only (a native install's
+  // language is the installer's question); the owner session only, never the bare first-run token; only while the
+  // setup is unfinished and the main agent does not run (its CLAUDE.md is in use then). What it rewrites, and the
+  // untouched-only rule: src/web/install-lang-switch.ts.
+  if (path === '/api/onboarding/language' && method === 'POST') {
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing the install language needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
+    const raw = await readBodyOrRefuse(req, res)
+    if (!raw) return true
+    let lang: unknown
+    try { lang = (JSON.parse(raw.toString()) as { lang?: unknown }).lang } catch { /* empty */ }
+    if (lang !== 'en' && lang !== 'hu') { json(res, { error: 'lang must be "en" or "hu".', reason: 'bad-lang' }, 400); return true }
+    if (deployment() !== 'docker') {
+      json(res, { error: 'The install language is switched here only in the Docker container. This install chose its language when it was installed.', reason: 'not_docker' }, 409)
+      return true
+    }
+    if (agentsRunning()) {
+      json(res, { error: 'The main agent is already running, so its files are in use: the install language can only be switched before it starts.', reason: 'agent_running' }, 409)
+      return true
+    }
+    if (channelConfigured() && paired() && (await claudeAuthPresent())) {
+      json(res, { error: 'The setup is finished: the install language can only be switched during the setup.', reason: 'onboarding_done' }, 409)
+      return true
+    }
+    if (langSwitchBusy) { json(res, { error: 'A language switch is already running.', reason: 'busy' }, 409); return true }
+    langSwitchBusy = true
+    try {
+      const result = await switchInstallLanguage(lang, {
+        root: PROJECT_ROOT,
+        dockerDir: process.env.MARVEEN_DOCKER_DIR || '/opt/marveen-docker',
+        home: homedir(),
+        readEnv: readEnvValue,
+        setEnv: setEnvKey,
+        readFile: (p) => { try { return readFileSync(p, 'utf-8') } catch { return null } },
+        writeFile: (p, text) => atomicWriteFileSync(p, text),
+        exists: (p) => existsSync(p),
+        run: runNoShell,
+      })
+      logger.info({ lang, ok: result.ok, files: result.files.length }, 'onboarding: install language switched')
+      json(res, result, result.ok ? 200 : 500)
+    } catch (err) {
+      logger.error({ err: (err as Error).message }, 'onboarding: the install language switch failed')
+      json(res, { error: 'The install language could not be switched.', reason: 'write-failed' }, 500)
+    } finally {
+      langSwitchBusy = false
+    }
     return true
   }
 

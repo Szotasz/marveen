@@ -2289,6 +2289,10 @@ window._i18n.en = {
   'onboarding.login.tab':        'Sign-in',
   'onboarding.login.create_desc': 'First create your dashboard login. You will sign in with this username and password later too, and approve settings with it. The wizard then continues from here.',
   'onboarding.login.create_btn':  'Create and sign in',
+  // DOCKERUX1118: the install language switch
+  'onboarding.lang.done':  'The install language is switched. Files written in the new language: {done}.',
+  'onboarding.lang.kept':  'You customized these, so they are left as they were: {files}.',
+  'onboarding.lang.failed':  'The language switch failed: {error}',
   'onboarding.login.signin_desc': 'This machine already has a dashboard login. Sign in with it, and the wizard continues from here.',
   'onboarding.login.created_signin': 'The login was created, but signing in failed just now. Sign in with it here.',
   'onboarding.login.taken_signin': 'A dashboard login was created on this machine meanwhile. Sign in with it here.',

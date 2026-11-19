@@ -35,7 +35,7 @@ function sliceShellFn(src: string, name: string): string {
 
 // The scheduled-task registry hooks are called from the refresh
 // loop; with no built CLI in the fixture they only print a warning.
-const FUNCS = ['render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'seed_en_file', 'seed_copy_is_untouched_any', 'seed_refresh_dir_lang', 'sched_pre_verify_once',
+const FUNCS = ['_seed_report', 'render_seed_template', 'render_seeded_task_config', 'render_seed_stream', 'seed_copy_is_untouched', 'render_seed_file', 'seed_en_file', 'seed_copy_is_untouched_any', 'seed_refresh_dir_lang', 'sched_pre_verify_once',
   'refresh_one_seed_file', 'refresh_untouched_seeds', 'run_seed_refresh', 'seed_refresh_groups', 'seed_tracked_files',
   'register_seeded_schedules', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
   .map((n) => sliceShellFn(SHELL_SRC, n))
@@ -275,7 +275,7 @@ describe('the shared seed-refresh lib (DOCKERSEEDREFRESH1108)', () => {
     const probe = `set -eu\nb="$(compgen -v | grep -v '^_$' | sort)"\n. ${JSON.stringify(lib)}\na="$(compgen -v | grep -v '^_$' | grep -vx 'b' | sort)"\n[ "$a" = "$b" ] && echo same\ndeclare -F | awk '{print $3}' | sort | tr '\\n' ' '`
     const out = execFileSync('bash', ['-c', probe], { encoding: 'utf-8' })
     expect(out.split('\n')[0]).toBe('same')
-    expect(out.split('\n')[1].trim().split(' ')).toEqual(['refresh_one_seed_file', 'refresh_untouched_seeds', 'register_refreshed_schedule', 'render_persona_file', 'render_seed_file', 'render_seed_stream',
+    expect(out.split('\n')[1].trim().split(' ')).toEqual(['_seed_report' /* DOCKERUX1118: the optional report hook's caller */, 'refresh_one_seed_file', 'refresh_untouched_seeds', 'register_refreshed_schedule', 'render_persona_file', 'render_seed_file', 'render_seed_stream',
       'render_seed_template', 'render_seeded_task_config', 'sched_pre_verify_once', 'sched_task_all_shipped', 'seed_copy_is_untouched_any', 'seed_en_file',
       'seed_refresh_dir_lang', 'seed_refresh_groups'])
   })
