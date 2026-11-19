@@ -329,7 +329,8 @@ type your answer" button, as an answered question keeps its "✓ <label>". The a
 question's send time (the Telegram message's own timestamp), so it holds across a plugin restart.
 An answered question still gets "You already answered this." The buttons change on a tap only,
 never by themselves. The toasts and that label follow `AGENT_TEXT_LANG` (`en` as quoted here;
-unset or `hu`: Hungarian, "⏱ Lejárt, írd be a választ"), like every toast of the button branch.
+any other value or unset: Hungarian, "⏱ Lejárt, írd be a választ"), like every toast of the button
+branch.
 
 **Setting it.** Dashboard: *Settings → Channels → `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`*, or for
 example `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24` in `.env`. Whole hours from 0 to 8760; `0` (the
