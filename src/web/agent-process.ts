@@ -41,7 +41,7 @@ import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-b
 import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
@@ -2504,6 +2504,12 @@ export function rewriteAgentClaudeMdOnStart(name: string, profile: ProfileTempla
   ensurePaneAtEscapeSection(name)
 }
 
+// CODEMODEFLAG1119: the launch piece for the per-agent Code Mode switch. Empty when off: the variable is then only
+// unset (unsetTokens in startAgentProcess), so an agent without codeMode launches exactly as before apart from that.
+export function codeModeLaunchEnv(enabled: boolean): string {
+  return enabled ? 'export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 && ' : ''
+}
+
 export async function startAgentProcess(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
@@ -3334,7 +3340,10 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // channel-less agent, whose tools then reported 'failed to connect' until
     // the agent was restarted. A channel agent
     // re-exports its OWN dir right after this, via channelSetup below.
-    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR'
+    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
+    // CODEMODEFLAG1119: the Code Mode variable is unset above for every launch (an inherited value never switches it
+    // on) and exported again only for an agent whose agent-config.json says codeMode: true.
+    const codeModeEnv = codeModeLaunchEnv(readAgentCodeMode(name))
     // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
     // their environment, not just omitted from the launch export. The parent tmux
     // server carries the fleet OAuth token in its own env, and
@@ -3442,7 +3451,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // FLEETVENV923: the fleet venv's bin/ goes FIRST so its python3 beats the
     // Homebrew one that carries no packages.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${helperTokenEnvPiece}${agentEgressEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${helperTokenEnvPiece}${agentEgressEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}${codeModeEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start

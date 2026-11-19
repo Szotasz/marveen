@@ -58,6 +58,8 @@ import {
   writeAgentClaudePlan,
   readAgentMemoryIsolation,
   writeAgentMemoryIsolation,
+  readAgentCodeMode,
+  writeAgentCodeMode,
   readAgentClaudeConfigDir,
   readAgentRemoteConfig,
   readAgentRunAsUser,
@@ -678,6 +680,7 @@ export interface AgentSummary {
 
 interface AgentDetail extends AgentSummary {
   memoryIsolation: boolean
+  codeMode: boolean
   customProvider: string | null
   claudeMd: string
   soulMd: string
@@ -852,6 +855,7 @@ function getAgentDetail(name: string): AgentDetail {
   return {
     ...summary,
     memoryIsolation: readAgentMemoryIsolation(name),
+    codeMode: readAgentCodeMode(name),
     customProvider: readAgentCustomProvider(name),
     claudeMd,
     soulMd,
@@ -3038,7 +3042,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
-      authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
+      authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean; codeMode?: boolean
       modelProfile?: string | null
       customProvider?: string | null
     }
@@ -3089,6 +3093,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         return true
       }
       writeAgentMemoryIsolation(name, data.memoryIsolation === true)
+    }
+    if (data.codeMode !== undefined) {
+      // CODEMODEFLAG1119: sub-agents only. The switch is read by startAgentProcess's launch command, and the main
+      // agent never starts through it (its lifecycle is service-managed: channels.sh and the channel-monitor respawn).
+      if (isMainChannelsAgent(name)) {
+        json(res, { error: 'codeMode is not applicable to the main agent' }, 400)
+        return true
+      }
+      writeAgentCodeMode(name, data.codeMode === true)
     }
     if (data.claudeMd !== undefined) {
       atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), claudeMdBytes ?? data.claudeMd)
