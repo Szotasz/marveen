@@ -23,7 +23,7 @@ export interface FileResult {
 }
 export type LangSwitchResult =
   | { readonly ok: true; readonly lang: InstallLang; readonly previous: InstallLang; readonly files: readonly FileResult[] }
-  | { readonly ok: false; readonly error: 'seed_refresh_failed' | 'render_failed'; readonly lang: InstallLang; readonly files: readonly FileResult[] }
+  | { readonly ok: false; readonly error: 'seed_refresh_failed' | 'render_failed' | 'agent_running'; readonly lang: InstallLang; readonly files: readonly FileResult[] }
 
 export interface RunResult {
   readonly code: number | null
@@ -45,6 +45,8 @@ export interface LangSwitchDeps {
   readonly exists: (path: string) => boolean
   /** Start a program without a shell, with exactly this environment. */
   readonly run: (file: string, args: readonly string[], env: Record<string, string>) => Promise<RunResult>
+  /** Does the main agent run now? Asked again right before the first write (Dani 80955 n2). */
+  readonly agentRunning: () => boolean
 }
 
 /** The first-boot names, before the wizard's name step. */
@@ -170,6 +172,10 @@ export async function switchInstallLanguage(lang: InstallLang, deps: LangSwitchD
     if (plan === null) return { ok: false, error: 'render_failed', lang, files }
     plans.push([name, plan])
   }
+  // DOCKERUX1118 n2 (Dani 80955, Samu 80960): the route asked before the renders; the main agent may have been started
+  // since (the wizard's launch from another window), and it would load a half-switched CLAUDE.md. Asked again here,
+  // right before the first write: a running agent means nothing is written at all.
+  if (deps.agentRunning()) return { ok: false, error: 'agent_running', lang, files }
   deps.setEnv('AGENT_TEXT_LANG', lang)
   deps.setEnv('DASHBOARD_LANG', lang)
   deps.writeFile(join(deps.root, '.lang'), lang + '\n')

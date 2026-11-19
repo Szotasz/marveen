@@ -36,7 +36,16 @@ writeFileSync(join(dockerDir, 'lang-switch-seeds.sh'), '#!/bin/bash\necho "seed 
 const binDir = join(tmpRoot, 'bin')
 mkdirSync(binDir, { recursive: true })
 const RUNNING = join(tmpRoot, 'agent-running')
-writeFileSync(join(binDir, 'tmux'), `#!/bin/sh\n[ -f '${RUNNING}' ] && cat '${RUNNING}' && exit 0\nexit 1\n`)
+// LATE: the agent "starts" from the second list-sessions on (the route asks first, the switch asks again before writing).
+const LATE = join(tmpRoot, 'agent-starts-late')
+const COUNT = join(tmpRoot, 'tmux-calls')
+writeFileSync(join(binDir, 'tmux'), [
+  '#!/bin/sh',
+  `[ -f '${RUNNING}' ] && cat '${RUNNING}' && exit 0`,
+  `if [ -f '${LATE}' ]; then n=$(cat '${COUNT}' 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > '${COUNT}'; [ "$n" -ge 2 ] && cat '${LATE}' && exit 0; fi`,
+  'exit 1',
+  '',
+].join('\n'))
 chmodSync(join(binDir, 'tmux'), 0o755)
 const origPath = process.env.PATH
 const origDockerDir = process.env.MARVEEN_DOCKER_DIR
@@ -69,6 +78,8 @@ beforeEach(() => {
   writeFileSync(join(tmpRoot, 'CLAUDE.md'), CLAUDE_EN)
   rmSync(join(tmpRoot, 'SOUL.md'), { force: true })
   rmSync(RUNNING, { force: true })
+  rmSync(LATE, { force: true })
+  rmSync(COUNT, { force: true })
 })
 
 async function call(method: string, path: string, auth?: unknown, body?: unknown) {
@@ -121,6 +132,16 @@ describe('POST /api/onboarding/language (DOCKERUX1118)', () => {
     const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
     expect([r.status, r.json.reason]).toEqual([409, 'agent_running'])
     untouched()
+  })
+
+  it('the main agent starts after the route\'s check, before the writes (Dani 80955 n2): 409 agent_running, nothing changes', async () => {
+    writeFileSync(LATE, MAIN_CHANNELS_SESSION + '\n')
+    const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([r.status, r.json.reason]).toEqual([409, 'agent_running'])
+    expect(r.json.error).toContain('nothing was changed')
+    expect(readFileSync(COUNT, 'utf-8').trim()).toBe('2')
+    untouched()
+    expect(existsSync(join(tmpRoot, '.lang'))).toBe(false)
   })
 
   it('the owner, in the container, during the setup: switched; an edited CLAUDE.md is kept and said so', async () => {

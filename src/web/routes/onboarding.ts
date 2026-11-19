@@ -436,9 +436,14 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
         writeFile: (p, text) => atomicWriteFileSync(p, text),
         exists: (p) => existsSync(p),
         run: runNoShell,
+        agentRunning: agentsRunning,
       })
       logger.info({ lang, ok: result.ok, files: result.files.length }, 'onboarding: install language switched')
-      json(res, result, result.ok ? 200 : 500)
+      if (!result.ok && result.error === 'agent_running') {
+        json(res, { error: 'The main agent started while the language was being switched: nothing was changed. The install language can only be switched before it starts.', reason: 'agent_running' }, 409)
+      } else {
+        json(res, result, result.ok ? 200 : 500)
+      }
     } catch (err) {
       logger.error({ err: (err as Error).message }, 'onboarding: the install language switch failed')
       json(res, { error: 'The install language could not be switched.', reason: 'write-failed' }, 500)
