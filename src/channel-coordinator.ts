@@ -33,6 +33,7 @@ import { pathToFileURL } from 'node:url'
 import { execFile, execFileSync } from 'node:child_process'
 import { logger } from './logger.js'
 import { isSettingOn } from './setting-flag.js'
+import { getEffectiveSettingValue } from './settings-store.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './config.js'
 import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
 import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
@@ -500,6 +501,23 @@ export function buildHandoffContent(ev: {
   return `<channel ${attrs}>\n${body}\n</channel>`
 }
 
+// KBDBACKFILLEXP1119: the Telegram plugin answers a tap on a reply button (kbd:) of a question older than
+// TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS with "expired" and delivers nothing (scripts/patch-telegram-plugin.py,
+// _kbd_expiry_line). While the plugin is down the backfill must not deliver it either. The same rule: the age is
+// counted from the question's send time (the callback's message date), 0 = never expire.
+export function isExpiredKbdTap(ev: { kind: string; content: string; tg_date: number | null }, maxAgeHours: number, nowSec: number): boolean {
+  if (ev.kind !== 'callback_query' || !ev.content.startsWith('kbd:')) return false
+  if (!(maxAgeHours > 0) || ev.tg_date == null || !(ev.tg_date > 0)) return false
+  return nowSec - ev.tg_date > maxAgeHours * 3600
+}
+
+function kbdMaxAgeHours(): number {
+  try {
+    const v = Number(getEffectiveSettingValue('TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS'))
+    return Number.isFinite(v) ? v : 0
+  } catch { return 0 }
+}
+
 // ---- backoff -------------------------------------------------------------
 
 // Exponential backoff with full jitter, capped. Math.random is fine here --
@@ -526,6 +544,12 @@ export function processBatch(updates: { update_id: number }[]): { offset: number
     if (!ev) {
       // unhandled update kind: offset still advances past it
       durable = durable == null ? raw.update_id : Math.max(durable, raw.update_id)
+      continue
+    }
+    if (isExpiredKbdTap(ev, kbdMaxAgeHours(), Math.floor(Date.now() / 1000))) {
+      // dropped like an unhandled kind: the offset advances past it, nothing is stored or handed off
+      durable = durable == null ? raw.update_id : Math.max(durable, raw.update_id)
+      logger.info({ update_id: ev.update_id, chat_id: ev.chat_id }, 'channel-coordinator: expired reply-button tap dropped (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)')
       continue
     }
 
