@@ -110,7 +110,7 @@ import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { agentVendorHostsEnv } from './agent-egress-env.js'
 import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetBaseRulesSection, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './agent-scaffold.js'
-import { packageStartRefusal, prepareFallbackClaudeMd } from './agent-package/install.js'
+import { packageStartRefusal, reportPackageLayersAtStart, prepareFallbackClaudeMd } from './agent-package/install.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -2542,6 +2542,9 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     logger.warn({ name, refusal: packageRefusal }, 'agent start refused by the package guard')
     return { ok: false, error: packageRefusal }
   }
+  // PRI3HARDEN1118 point 2 (Samu 81355): PACKAGE.md + LOCAL.md scanned in report mode on every start, as the EPERM
+  // fallback does; nothing is blocked here.
+  reportPackageLayersAtStart(name, dir)
 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.

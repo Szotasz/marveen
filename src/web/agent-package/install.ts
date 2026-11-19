@@ -20,7 +20,7 @@ import { writeAgentBase } from '../agent-create.js'
 import { ensureFleetRosterSection, fleetBaseRulesBlock } from '../agent-scaffold.js'
 import { appendSkillAudit, globalSkillsRoot, quarantineOn, scanSkillDir } from '../skill-quarantine.js'
 import {
-  AVATAR_PATH_RE, TEXT_PATH_RE, scanManifestText, scanPackageText, MANIFEST_TEXT_MAX_CHARS, VerifiedPackage,
+  AVATAR_PATH_RE, IMPORT_TOKEN_RE, TEXT_PATH_RE, scanManifestText, scanPackageText, MANIFEST_TEXT_MAX_CHARS, VerifiedPackage,
 } from './verify.js'
 import {
   PACKAGE_SHELL_PREFIX_TEXT, agentsBaseDir, dirIdentityOf, hasLaunchTrace, hasPackageManifestFile, installMarkerState,
@@ -163,7 +163,7 @@ function isLink(p: string): boolean {
   }
 }
 
-export type PendingNoticeKind = 'set_aside' | 'set_aside_failed' | 'orphan_marker' | 'bad_marker' | 'marker_blocked' | 'fallback_refused' | 'fallback_scan_finding'
+export type PendingNoticeKind = 'set_aside' | 'set_aside_failed' | 'orphan_marker' | 'bad_marker' | 'marker_blocked' | 'fallback_refused' | 'fallback_scan_finding' | 'start_scan_finding'
 
 export function pendingNoticesDir(): string {
   return join(leftoversDir(), 'pending-notices')
@@ -200,6 +200,8 @@ export function noticeText(n: { kind: string; name: string; path: string }): str
       return `Agent "${n.name}" could not be started from its fallback folder: its package files are missing or its shell is broken (${n.path}). Start it again from the dashboard to see the reason.`
     case 'fallback_scan_finding':
       return `Agent "${n.name}" started from its fallback folder, and its combined instructions contain text the package rules would refuse. The agent is running; check its PACKAGE.md and LOCAL.md (${n.path}).`
+    case 'start_scan_finding':
+      return `Agent "${n.name}" started, and its combined instructions contain text the package rules would refuse. The agent is running; check its PACKAGE.md and LOCAL.md (${n.path}).`
     default:
       return `Agent package installer notice for "${n.name}": ${n.path}`
   }
@@ -665,6 +667,76 @@ export function packageStartRefusal(name: string, dir: string): string | null {
   return null
 }
 
+/**
+ * The package layer and the local layer, joined exactly as the EPERM fallback expands them, scanned in REPORT mode:
+ * a finding is logged and the owner told, the start goes on. Both start paths run it, so they behave alike (Samu
+ * 81355, PRI3HARDEN1118 point 2); blocking stays with PACKAGE.md at install. The owner is told once per agent and
+ * finding (Dani 80640): the last told finding is kept in a stamp, a clean start removes it, a different finding is
+ * told again. One stamp for both paths, so a fallback after a normal start does not tell the same finding twice.
+ */
+/**
+ * Whether a LOCAL.md import target stays inside the agent's own folder (Samu 81392). Only a relative path without a
+ * `..` segment, not absolute, not `~`, whose real location (the file, or its nearest existing ancestor) is inside the
+ * folder's real path: a symlink inside the folder that points out is not local. Anything that cannot be told is not.
+ */
+function isAgentLocalImport(dir: string, target: string): boolean {
+  if (target === '' || isAbsolute(target) || target.startsWith('~') || target.split(/[\\/]/).includes('..')) return false
+  let root: string
+  try { root = realpathSync(dir) } catch { return false }
+  let p = join(dir, target)
+  for (;;) {
+    try {
+      const real = realpathSync(p)
+      return real === root || real.startsWith(root + sep)
+    } catch { /* not there yet: check the nearest existing ancestor */ }
+    const up = dirname(p)
+    if (up === p) return false
+    p = up
+  }
+}
+
+function reportLayerFinding(name: string, dir: string, pkg: string, local: string, kind: 'fallback_scan_finding' | 'start_scan_finding'): void {
+  // LOCAL.md is written by the owner AND by the agent itself, and an import there is attached at the next start
+  // with no Read gate or hook seeing it (Dani 81388). So only an import that stays inside the agent's folder is
+  // silent; an absolute, ~ or .. one, or one leaving through a symlink, is reported (Samu 81392). The silent ones
+  // are neutralized in LOCAL.md only, so every other finding there, and an import in PACKAGE.md, is still seen (the
+  // import rule ranks high, so skipping its finding would hide a later one). The regex is the verifier's own.
+  const localImport = new RegExp(`${IMPORT_TOKEN_RE.source}(\\S*)`, 'gu')
+  const localForScan = local.replace(localImport, (m: string, target: string) => (isAgentLocalImport(dir, target) ? `_${target}` : m))
+  const finding = scanPackageText(Buffer.from(`\n${pkg}\n\n\n${localForScan}\n`, 'utf8'))
+  const stamp = join(leftoversDir(), 'layer-scan-noticed', `${name}.txt`)
+  if (finding === null) {
+    try { unlinkSync(stamp) } catch { /* none */ }
+    return
+  }
+  logger.warn({ name, kind, reason: finding.reason, rule: finding.rule }, 'package start: PACKAGE.md + LOCAL.md have a package text rule finding; starting anyway (report only)')
+  const key = `${finding.reason}:${finding.rule}`
+  let told: string | null = null
+  try { told = readFileSync(stamp, 'utf8') } catch { /* never told */ }
+  if (told === key) return
+  writePendingNotice(kind, name, dir, new Date())
+  try {
+    mkdirSync(dirname(stamp), { recursive: true, mode: 0o700 })
+    atomicWriteFileSync(stamp, key, { mode: 0o600 })
+  } catch (err) {
+    logger.warn({ err, name }, 'package start: the finding notice stamp could not be stored; the next start tells again')
+  }
+}
+
+/** The normal start path's report scan (see reportLayerFinding). A package agent only; never throws. */
+export function reportPackageLayersAtStart(name: string, dir: string): void {
+  try {
+    const claude = regularFileBytes(join(dir, 'CLAUDE.md'))
+    if (claude === null || !startsWithPackageShell(claude)) return
+    const pkg = regularFileBytes(join(dir, 'PACKAGE.md'))
+    if (pkg === null) return
+    const local = regularFileBytes(join(dir, 'LOCAL.md'))
+    reportLayerFinding(name, dir, pkg.toString('utf8'), local === null ? '' : local.toString('utf8'), 'start_scan_finding')
+  } catch (err) {
+    logger.warn({ err, name }, 'package start: the report scan failed; starting anyway')
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The EPERM fallback (plan 4.4)
 // ---------------------------------------------------------------------------
@@ -795,27 +867,7 @@ export function prepareFallbackClaudeMd(name: string, dir: string, fallbackCwd: 
     // sections carry an at-sign after white space, e.g. "[Uzenet @..."), which would raise a false notice on every
     // fallback. The layers are scanned joined exactly as they stand in the expanded file, so a shape formed across
     // their boundary is still seen.
-    const finding = scanPackageText(Buffer.from(`\n${pkg}\n\n\n${local}\n`, 'utf8'))
-    // The owner is told once per agent and finding, not on every fallback start (Dani 80640, PRI3HARDEN1118): the
-    // last noticed finding is kept in a stamp, and a clean start removes it, so a finding that comes back is told again.
-    const stamp = join(leftoversDir(), 'fallback-scan-noticed', `${name}.txt`)
-    if (finding !== null) {
-      logger.warn({ name, reason: finding.reason, rule: finding.rule }, 'EPERM fallback: the expanded CLAUDE.md has a package text rule finding; starting anyway (report only)')
-      const key = `${finding.reason}:${finding.rule}`
-      let told: string | null = null
-      try { told = readFileSync(stamp, 'utf8') } catch { /* never told */ }
-      if (told !== key) {
-        writePendingNotice('fallback_scan_finding', name, dir, new Date())
-        try {
-          mkdirSync(dirname(stamp), { recursive: true, mode: 0o700 })
-          atomicWriteFileSync(stamp, key, { mode: 0o600 })
-        } catch (err) {
-          logger.warn({ err, name }, 'EPERM fallback: the finding notice stamp could not be stored; the next start tells again')
-        }
-      }
-    } else {
-      try { unlinkSync(stamp) } catch { /* none */ }
-    }
+    reportLayerFinding(name, dir, pkg, local, 'fallback_scan_finding')
     chmodSync(fallbackCwd, 0o700)
     const target = join(fallbackCwd, 'CLAUDE.md')
     writeFileSync(target, expanded, { mode: 0o600, flag: 'wx' })
