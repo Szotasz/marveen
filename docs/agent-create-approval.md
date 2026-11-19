@@ -28,6 +28,14 @@ An agent can ask for a new agent; only the owner's approval makes one. Off by de
   be created.
 - A secret is never a value in the spec. The bot token is given by its vault id. The stored spec keeps the id and the
   sha256 of the value at request time.
+- The requester may name only a vault entry it may read itself, under the vault's own read rule, applied strictly. SSH
+  material and the vault's sub-resources are never allowed. The agent, named by its own token or by the name a
+  shared-token caller claims, must be listed for that id in the allowlist (`store/vault-acl.json`). A caller with no name
+  gets no entry, and the owner's session may name any entry. An entry the requester may not read gets exactly the answer
+  a missing one gets (400, "cannot be used"), so a spec cannot be used to learn which ids exist. Without this rule, an
+  agent could take out a secret it cannot read, because the owner sees only "set (vault: <id>)".
+- Each request opens an owner approval, so the open ones are capped: at most three per requester and twenty in all. A
+  request over the cap gets 429.
 - Version 1 sets up a Telegram channel only. Slack also needs its app token and Discord a channel id, so both come with a
   later version, together with the team rights, the invite, the pairing and the MCP servers.
 

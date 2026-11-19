@@ -16,7 +16,7 @@ import { setupAgentChannel } from './routes/agents.js'
 import { getDb, createApproval, consumeApproval, registerApprovalConsumer, createAgentMessage, type Approval } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { logger } from '../logger.js'
-import { canonicalAgentSpec, canonicalJson, specHash, renderAgentSpec, recheckStoredSpec, type AgentSpecV1 } from './agent-create-spec.js'
+import { canonicalAgentSpec, canonicalJson, specHash, renderAgentSpec, recheckStoredSpec, type AgentSpecV1, type VaultReadable } from './agent-create-spec.js'
 import { createAgentFromSpec } from './agent-create.js'
 
 export const AGENT_CREATE_CATEGORY = 'agent_create'
@@ -31,11 +31,22 @@ export function agentCreateViaApprovalOn(setting: (key: string) => string): bool
 
 export interface FileResult { status: number; body: Record<string, unknown> }
 
-export async function fileAgentSpecRequest(body: unknown, requestedBy: string, deps: { setting: (k: string) => string; lang: 'hu' | 'en' }): Promise<FileResult> {
+/** Dani #2922 n1: a request opens an owner approval, so the open ones are capped, per requester and in all. */
+export const AGENT_CREATE_MAX_OPEN_PER_REQUESTER = 3
+export const AGENT_CREATE_MAX_OPEN = 20
+
+export async function fileAgentSpecRequest(body: unknown, requestedBy: string, deps: { setting: (k: string) => string; lang: 'hu' | 'en'; vaultReadable: VaultReadable }): Promise<FileResult> {
   if (!agentCreateViaApprovalOn(deps.setting)) {
     return { status: 403, body: { error: 'Agent creation by approval is off (AGENT_CREATE_VIA_APPROVAL).' } }
   }
-  const r = await canonicalAgentSpec(body)
+  const now0 = Math.floor(Date.now() / 1000)
+  const open = getDb().prepare(`
+    SELECT agent_id FROM approvals WHERE category = ? AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
+  `).all(AGENT_CREATE_CATEGORY, now0) as Array<{ agent_id: string }>
+  if (open.length >= AGENT_CREATE_MAX_OPEN || open.filter((o) => o.agent_id === requestedBy).length >= AGENT_CREATE_MAX_OPEN_PER_REQUESTER) {
+    return { status: 429, body: { error: 'Too many open agent_create requests; wait for the owner to decide the open ones.' } }
+  }
+  const r = await canonicalAgentSpec(body, { vaultReadable: deps.vaultReadable })
   if (!r.ok) return { status: r.status, body: { error: r.error } }
   const json = canonicalJson(r.spec)
   const hash = specHash(r.spec)

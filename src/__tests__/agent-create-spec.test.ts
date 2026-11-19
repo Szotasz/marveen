@@ -35,10 +35,12 @@ const TOKEN = ['123456', ':AAH', 'fakefakefakefakefakefake'].join('')
 const base = { spec_version: 1, name: 'Új Ügynök', description: 'Piackutatás', model: 'claude-sonnet-5', profile: 'default' }
 
 beforeEach(() => { h.vault = new Map([['TG-BOT-UJ', TOKEN]]) })
+// the requester may read every id here except the ones named NEM-OLVASHATO (the route builds the real rule)
+const READ = { vaultReadable: (id: string) => id !== 'NEM-OLVASHATO' }
 
 describe('canonicalAgentSpec: validated before anything is stored', () => {
   it('a full spec: the id, the display name, the resolved model, the defaults, and the secret as a reference with its sha256', async () => {
-    const r = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT-UJ' } } })
+    const r = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT-UJ' } } }, READ)
     expect(r).toEqual({ ok: true, spec: {
       spec_version: 1, name: 'uj-ugynok', display_name: 'Új Ügynök', description: 'Piackutatás', model: 'claude-sonnet-5', profile: 'default',
       custom_provider: null, channel: { provider: 'telegram', bot_token: { vault_ref: 'TG-BOT-UJ', value_sha256: sha(TOKEN) } },
@@ -46,7 +48,7 @@ describe('canonicalAgentSpec: validated before anything is stored', () => {
   })
 
   it('no model: the guarded install default is resolved now, so the owner approves the model that will be created', async () => {
-    const r = await canonicalAgentSpec({ spec_version: 1, name: 'x1', description: 'd' })
+    const r = await canonicalAgentSpec({ spec_version: 1, name: 'x1', description: 'd' }, READ)
     expect(r.ok && r.spec.model).toBe('claude-sonnet-5')
   })
 
@@ -61,29 +63,39 @@ describe('canonicalAgentSpec: validated before anything is stored', () => {
     [{ ...base, channel: { provider: 'teams', botToken: { vault_ref: 'TG-BOT-UJ' } } }, 'channel.provider must be one of: telegram'],
     [{ ...base, channel: { provider: 'slack', botToken: { vault_ref: 'TG-BOT-UJ' } } }, 'channel.provider must be one of: telegram'],
     [{ ...base, channel: { provider: 'discord', botToken: { vault_ref: 'TG-BOT-UJ' } } }, 'channel.provider must be one of: telegram'],
-    [{ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'NINCS-ILYEN' } } }, 'channel.botToken.vault_ref does not resolve: NINCS-ILYEN'],
+    [{ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'NINCS-ILYEN' } } }, 'channel.botToken.vault_ref cannot be used: NINCS-ILYEN'],
     [{ ...base, channel: { provider: 'telegram', botToken: { vault_ref: '../x' } } }, 'channel.botToken.vault_ref must be a vault id'],
     [{ ...base, channel: { provider: 'telegram', allowFrom: ['x'], botToken: { vault_ref: 'TG-BOT-UJ' } } }, 'unknown field: channel.allowFrom'],
     [{ ...base, profile: 'nincs-ilyen-profil' }, 'unknown security profile: nincs-ilyen-profil'],
     [{ ...base, description: '' }, 'Description is required'],
     [{ ...base, name: '' }, 'Name is required'],
   ])('refused with 400: %j', async (body, error) => {
-    const r = await canonicalAgentSpec(body)
+    const r = await canonicalAgentSpec(body, READ)
     expect(r.ok).toBe(false)
     if (!r.ok) { expect(r.status).toBe(400); expect(r.error).toBe(error) }
   })
 
   it('a create refusal keeps its own status (the main agent id: 409)', async () => {
     const { MAIN_AGENT_ID } = await import('../config.js')
-    const r = await canonicalAgentSpec({ ...base, name: MAIN_AGENT_ID })
+    const r = await canonicalAgentSpec({ ...base, name: MAIN_AGENT_ID }, READ)
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.status).toBe(409)
   })
 
+  it('an id the requester may not read gets exactly the answer a missing id gets; no reader rule at all refuses every id', async () => {
+    h.vault.set('NEM-OLVASHATO', TOKEN)
+    const r = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'NEM-OLVASHATO' } } }, READ)
+    expect(r).toEqual({ ok: false, status: 400, error: 'channel.botToken.vault_ref cannot be used: NEM-OLVASHATO' })
+    const m = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'NINCS-ILYEN' } } }, READ)
+    expect(m).toEqual({ ok: false, status: 400, error: 'channel.botToken.vault_ref cannot be used: NINCS-ILYEN' })
+    const none = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT-UJ' } } })
+    expect(none.ok).toBe(false)
+  })
+
   it('an empty vault value is refused like a missing one', async () => {
     h.vault.set('URES', '  ')
-    const r = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'URES' } } })
-    expect(r).toEqual({ ok: false, status: 400, error: 'channel.botToken.vault_ref does not resolve: URES' })
+    const r = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'URES' } } }, READ)
+    expect(r).toEqual({ ok: false, status: 400, error: 'channel.botToken.vault_ref cannot be used: URES' })
   })
 })
 
@@ -93,7 +105,7 @@ describe('canonical JSON, the hash and the owner text come from one object', () 
   })
 
   it('every hashed field is in the text; the secret only as "set (vault: <id>)", never its value or sha256', async () => {
-    const r = await canonicalAgentSpec({ ...base, customProvider: null, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT-UJ' } } })
+    const r = await canonicalAgentSpec({ ...base, customProvider: null, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT-UJ' } } }, READ)
     if (!r.ok) throw new Error(r.error)
     const hash = specHash(r.spec)
     for (const lang of ['hu', 'en'] as const) {
@@ -110,14 +122,14 @@ describe('canonical JSON, the hash and the owner text come from one object', () 
   })
 
   it('the text has one line per spec field (a new field without a line fails here)', async () => {
-    const r = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT-UJ' } } })
+    const r = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT-UJ' } } }, READ)
     if (!r.ok) throw new Error(r.error)
     expect(Object.keys(r.spec).sort()).toEqual(['channel', 'custom_provider', 'description', 'display_name', 'model', 'name', 'profile', 'spec_version'])
     expect(renderAgentSpec(r.spec, specHash(r.spec), 'hu').split('\n').filter((l) => l.startsWith('- '))).toHaveLength(Object.keys(r.spec).length + 1)
   })
 
   it('the hash is the sha256 of the canonical JSON; any field change changes it', async () => {
-    const r = await canonicalAgentSpec(base)
+    const r = await canonicalAgentSpec(base, READ)
     if (!r.ok) throw new Error(r.error)
     expect(specHash(r.spec)).toBe(sha(canonicalJson(r.spec)))
     expect(specHash({ ...r.spec, profile: 'other' })).not.toBe(specHash(r.spec))
@@ -126,7 +138,7 @@ describe('canonical JSON, the hash and the owner text come from one object', () 
 
 describe('recheckStoredSpec: the consumer\'s re-check', () => {
   async function stored() {
-    const r = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT-UJ' } } })
+    const r = await canonicalAgentSpec({ ...base, channel: { provider: 'telegram', botToken: { vault_ref: 'TG-BOT-UJ' } } }, READ)
     if (!r.ok) throw new Error(r.error)
     const json = canonicalJson(r.spec)
     return { json, hash: sha(json) }

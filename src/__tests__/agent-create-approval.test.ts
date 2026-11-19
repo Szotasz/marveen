@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   channelSetups: [] as Array<[string, string, Record<string, unknown>]>,
   channelAnswer: { status: 200, body: { ok: true } as Record<string, unknown> },
   onCreate: null as null | (() => void),
+  acl: {} as Record<string, string[]>,
 }))
 h.root = mkdtempSync(join(tmpdir(), 'agent-create-appr-'))
 afterAll(() => { rmSync(h.root, { recursive: true, force: true }) })
@@ -36,6 +37,7 @@ vi.mock('../web/routes/agents.js', async (orig) => ({
   ...(await orig<typeof import('../web/routes/agents.js')>()),
   setupAgentChannel: async (name: string, provider: string, data: Record<string, unknown>) => { h.channelSetups.push([name, provider, data]); return h.channelAnswer },
 }))
+vi.mock('../web/vault-acl.js', async (orig) => ({ ...(await orig<typeof import('../web/vault-acl.js')>()), readVaultAcl: () => h.acl }))
 vi.mock('../settings-store.js', async (orig) => ({ ...(await orig<typeof import('../settings-store.js')>()), getEffectiveSettingValue: (k: string) => h.settings[k] ?? '' }))
 vi.mock('../db.js', async (orig) => {
   const real = await orig<typeof import('../db.js')>()
@@ -53,7 +55,7 @@ const OWNER = { channel: 'teams', mode: 'card' } as const
 
 async function call(method: string, path: string, body: unknown, auth: Record<string, unknown> = { kind: 'token', agent: 'samu' }) {
   const req = Readable.from([Buffer.from(JSON.stringify(body))]) as unknown as http.IncomingMessage
-  req.headers = { 'x-agent-id': 'samu' }
+  req.headers = { 'x-agent-id': String((auth as { agent?: string }).agent ?? 'samu') }
   const out = { status: 200, body: null as any }
   const res: any = { writeHead(s: number) { out.status = s; return res }, setHeader() {}, end(c?: string) { if (c) { try { out.body = JSON.parse(c) } catch { out.body = c } } } }
   const url = new URL(`http://127.0.0.1:3420${path}`)
@@ -74,6 +76,7 @@ beforeEach(() => {
   h.channelSetups.length = 0
   h.channelAnswer = { status: 200, body: { ok: true } }
   h.onCreate = null
+  h.acl = { 'TG-KUTATO': ['samu'] }
 })
 
 describe('POST /api/agent-specs files a request, never an agent', () => {
@@ -85,7 +88,7 @@ describe('POST /api/agent-specs files a request, never an agent', () => {
   })
 
   it('on, with the shared token: 201, a pending agent_create approval bound to the spec hash, the server-rendered text, and NO create', async () => {
-    const r = await call('POST', '/api/agent-specs', SPEC, { kind: 'token', agent: 'shared' })
+    const r = await call('POST', '/api/agent-specs', SPEC, { kind: 'token', agent: 'samu' })
     expect(r.status).toBe(201)
     const a = db.getApproval(r.body.approvalId)!
     expect([a.category, a.status, a.content_hash, a.agent_id]).toEqual(['agent_create', 'pending', r.body.contentHash, 'samu'])
@@ -101,6 +104,52 @@ describe('POST /api/agent-specs files a request, never an agent', () => {
     const r = await call('POST', '/api/agent-specs', { ...SPEC, invite: 'x' })
     expect(r).toEqual({ status: 400, body: { error: 'unknown field: invite' } })
     expect(db.listApprovals({ category: 'agent_create' })).toEqual([])
+  })
+})
+
+describe('the vault entry a spec may name (Dani #2922 B1) and the open-request cap (n1)', () => {
+  const tg = (ref: string) => ({ ...SPEC, channel: { provider: 'telegram', botToken: { vault_ref: ref } } })
+  const UNUSABLE = (ref: string) => ({ status: 400, body: { error: `channel.botToken.vault_ref cannot be used: ${ref}` } })
+
+  it('an id the claimed agent is not listed for: refused with exactly the answer a missing id gets; nothing stored', async () => {
+    h.vault.set('MASIKE', TOKEN); h.acl['MASIKE'] = ['dani']
+    expect(await call('POST', '/api/agent-specs', tg('MASIKE'))).toEqual(UNUSABLE('MASIKE'))
+    expect(await call('POST', '/api/agent-specs', tg('NINCS-ILYEN'))).toEqual(UNUSABLE('NINCS-ILYEN'))
+    h.vault.set('NINCS-LISTAN', TOKEN)
+    expect(await call('POST', '/api/agent-specs', tg('NINCS-LISTAN'))).toEqual(UNUSABLE('NINCS-LISTAN'))
+    expect(db.listApprovals({ category: 'agent_create' })).toEqual([])
+  })
+
+  it('SSH material is never usable, even when the list names the agent', async () => {
+    h.vault.set('ssh-key-1', TOKEN); h.acl['ssh-key-1'] = ['samu']
+    expect(await call('POST', '/api/agent-specs', tg('ssh-key-1'))).toEqual(UNUSABLE('ssh-key-1'))
+  })
+
+  it('the shared token without a claimed name: no vault entry is usable', async () => {
+    expect(await call('POST', '/api/agent-specs', tg('TG-KUTATO'), { kind: 'token' })).toEqual(UNUSABLE('TG-KUTATO'))
+  })
+
+  it('an agent\'s own token is held to its own name; the owner session may name any entry', async () => {
+    expect((await call('POST', '/api/agent-specs', tg('TG-KUTATO'), { kind: 'token', agent: 'dani', tokenAgent: 'samu' })).status).toBe(201)
+    expect(await call('POST', '/api/agent-specs', tg('TG-KUTATO'), { kind: 'token', agent: 'samu', tokenAgent: 'dani' })).toEqual(UNUSABLE('TG-KUTATO'))
+    h.vault.set('GAZDA-BOT', TOKEN)
+    expect((await call('POST', '/api/agent-specs', tg('GAZDA-BOT'), { kind: 'session', user: 'owner' })).status).toBe(201)
+  })
+
+  it('at most twenty open requests in all, whoever asks: the twenty-first is 429', async () => {
+    for (let i = 0; i < 20; i++) {
+      const r = await call('POST', '/api/agent-specs', { ...SPEC, name: `Ossz${i}`, channel: undefined }, { kind: 'token', agent: `ugynok${Math.floor(i / 3)}` })
+      expect(r.status).toBe(201)
+    }
+    expect((await call('POST', '/api/agent-specs', { ...SPEC, name: 'Ossz99', channel: undefined }, { kind: 'token', agent: 'ujkero' })).status).toBe(429)
+  })
+
+  it('at most three open requests per requester: the fourth is 429, and a decided one frees a place', async () => {
+    const ids: string[] = []
+    for (let i = 0; i < 3; i++) ids.push((await call('POST', '/api/agent-specs', { ...SPEC, name: `Kutato${i}` })).body.approvalId)
+    expect((await call('POST', '/api/agent-specs', { ...SPEC, name: 'Kutato9' })).status).toBe(429)
+    db.decideApproval({ approvalId: ids[0], status: 'rejected', evidence: OWNER })
+    expect((await call('POST', '/api/agent-specs', { ...SPEC, name: 'Kutato9' })).status).toBe(201)
   })
 })
 

@@ -52,7 +52,15 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
  * The request body -> the canonical spec, or the refusal. The model is resolved HERE (a request without one gets the
  * guarded install default now), so the owner approves the model that will be created, not one picked later.
  */
-export async function canonicalAgentSpec(body: unknown): Promise<SpecResult> {
+/**
+ * Dani #2922 B1: who may name a vault entry in a spec. The requester must be one who may READ that entry: the floor
+ * (never SSH material or the vault's sub-resources) and the allowlist, read strictly (the agent named by its own token,
+ * or the name a shared-token caller claims, must be listed for the id; no claim, no entry). The owner's session passes.
+ * A refused id and a missing one get the same answer, so the spec is not a way to learn which ids exist.
+ */
+export type VaultReadable = (id: string) => boolean
+
+export async function canonicalAgentSpec(body: unknown, opts: { vaultReadable?: VaultReadable } = {}): Promise<SpecResult> {
   if (!isObj(body)) return bad('the spec must be a JSON object')
   const extra = unknownKey(body, TOP_KEYS)
   if (extra !== undefined) return bad(`unknown field: ${extra}`)
@@ -86,8 +94,10 @@ export async function canonicalAgentSpec(body: unknown): Promise<SpecResult> {
     const te = unknownKey(tok, VAULT_REF_KEYS)
     if (te !== undefined) return bad(`unknown field: channel.botToken.${te}`)
     if (typeof tok.vault_ref !== 'string' || !VAULT_ID_RX.test(tok.vault_ref)) return bad('channel.botToken.vault_ref must be a vault id')
+    const unusable = `channel.botToken.vault_ref cannot be used: ${tok.vault_ref}`
+    if (!(opts.vaultReadable ?? (() => false))(tok.vault_ref)) return bad(unusable)
     const value = getSecret(tok.vault_ref)
-    if (value === null || !value.trim()) return bad(`channel.botToken.vault_ref does not resolve: ${tok.vault_ref}`)
+    if (value === null || !value.trim()) return bad(unusable)
     channel = { provider: provider as SpecProvider, bot_token: { vault_ref: tok.vault_ref, value_sha256: sha256(value.trim()) } }
   }
   return { ok: true, spec: { spec_version: 1, name, display_name: displayName, description, model, profile, custom_provider: customProvider, channel } }

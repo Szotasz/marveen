@@ -26,6 +26,7 @@ import { readTeamsCreds, channelStateDir } from '../../channel-provider.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 import { fileAgentSpecRequest, AGENT_CREATE_CATEGORY } from '../agent-create-approval.js'
+import { readVaultAcl, isAgentReadableDecodedVaultId, claimedAgentOf } from '../vault-acl.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
 // (the born-approved POST and PATCH status=approved) take an owner credential. Measured before:
@@ -519,8 +520,18 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     try { body = JSON.parse(raw.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
     const header = req.headers['x-agent-id']
     const declared = typeof header === 'string' && /^[a-z0-9_-]{1,64}$/i.test(header) ? header : 'unknown'
-    const requestedBy = ctx.auth?.kind === 'token' && ctx.auth.tokenAgent ? ctx.auth.tokenAgent : declared
-    const r = await fileAgentSpecRequest(body, requestedBy, { setting: (k) => String(getEffectiveSettingValue(k) ?? ''), lang: approvalTextLang() })
+    const requestedBy = ctx.auth?.kind === 'token' ? (ctx.auth.tokenAgent ?? claimedAgentOf(ctx.auth) ?? declared) : declared
+    // Dani #2922 B1: the requester may name only a vault entry it may read (the floor and the allowlist, strictly)
+    const auth = ctx.auth
+    const reader = auth?.kind === 'token' ? (auth.tokenAgent ?? claimedAgentOf(auth)) : null
+    const acl = readVaultAcl()
+    const vaultReadable = (id: string): boolean => {
+      if (auth?.kind === 'session') return true
+      if (!reader || !isAgentReadableDecodedVaultId(id)) return false
+      const listed = Object.prototype.hasOwnProperty.call(acl, id) && Array.isArray(acl[id]) ? acl[id] : []
+      return listed.includes(reader)
+    }
+    const r = await fileAgentSpecRequest(body, requestedBy, { setting: (k) => String(getEffectiveSettingValue(k) ?? ''), lang: approvalTextLang(), vaultReadable })
     json(res, r.body, r.status)
     return true
   }
