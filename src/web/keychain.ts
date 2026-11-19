@@ -50,15 +50,32 @@ export function keychainRetrieve(): string | null {
   return keychainRetrieveStatus().value
 }
 
+// VAULTKEYLOG1118: the value travels in the argument list, and a failed execFileSync puts the whole command line in
+// its error message ("Command failed: ... -w <value> ..."), which the caller logs. So the error that leaves this
+// function is a NEW one that names only the outcome (exit status, signal, error code); the original is not kept as
+// its cause, because a logged cause is printed too.
+// VAULTKEYARGV1118: the value is not in the argument list at all. `security -i` reads the command from stdin, so a
+// process listing taken while it runs shows only `security -i` (measured on macOS with a throwaway keychain: the
+// running argv held no value, the stored value read back equal, and a failing command still exits non-zero). The
+// interactive reader splits the line on whitespace, so only a value of base64 characters is passed; every caller
+// stores a base64 key, and anything else is refused before a process starts.
+const STORE_VALUE_SHAPE = /^[A-Za-z0-9+/=]+$/
 export function keychainStore(value: string): void {
-  execFileSync(SECURITY, [
-    'add-generic-password',
-    '-U',
-    '-s', SERVICE,
-    '-a', ACCOUNT,
-    '-w', value,
-    '-A',
-  ], { stdio: ['ignore', 'ignore', 'ignore'], timeout: SECURITY_TIMEOUT_MS })
+  if (!STORE_VALUE_SHAPE.test(value)) {
+    throw new Error('keychainStore: the value is not base64; refused before calling security')
+  }
+  try {
+    execFileSync(SECURITY, ['-i'], {
+      input: `add-generic-password -U -s ${SERVICE} -a ${ACCOUNT} -w ${value} -A\n`,
+      stdio: ['pipe', 'ignore', 'ignore'],
+      timeout: SECURITY_TIMEOUT_MS,
+    })
+  } catch (err: any) {
+    const status = typeof err?.status === 'number' ? err.status : 'none'
+    const signal = typeof err?.signal === 'string' ? err.signal : 'none'
+    const code = typeof err?.code === 'string' ? `, ${err.code}` : ''
+    throw new Error(`security add-generic-password failed (exit status ${status}, signal ${signal}${code})`)
+  }
 }
 
 export function keychainDelete(): boolean {

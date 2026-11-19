@@ -5,18 +5,33 @@ Marveen runs as a single container with Docker Compose, with Ollama next to it f
 ## What you need
 
 - A Linux server with Docker Engine and the Compose plugin (`docker compose version`), x86_64 or arm64.
+  **Installing Docker:** on a fresh Ubuntu or Debian server, Docker's own install script sets up both (measured on Ubuntu 24.04):
+  ```bash
+  curl -fsSL https://get.docker.com -o get-docker.sh
+  sudo sh get-docker.sh
+  ```
+  For other systems, follow [docs.docker.com/engine/install](https://docs.docker.com/engine/install/).
 - **Size:** 2 vCPU and 8 GB RAM is the recommended size, with Ollama. Several Claude Code sessions run at the same time (the main agent, the heartbeat, every sub-agent). Without Ollama a smaller machine may do; measure it on yours.
+- **Disk:** about 12 GB for the two images (Ollama's is about 8.5 GB of it, Marveen's about 3 GB) and about 1 GB for the data at the start. If you build the Marveen image yourself, add about 5 GB of build cache (measured on a clean Ubuntu 24.04 server).
 - A Claude subscription. You log in with a token from `claude setup-token`.
 - A bot for the chat channel you choose: Telegram (default), Discord or Slack.
 
 ## Start
 
+<!-- DOCKERGUIDEBUILD1108 / DOCKERUX1118: this step needs the published image. Until MARVEEN_PUBLISH_IMAGE is on, the
+     pull is denied; since DOCKERUX1118 the compose file has no build:, so "docker compose up -d" stops there with
+     "error from registry: denied" (measured) instead of building on the server silently (Geri 33317). Publishing the
+     image is the owner's decision. -->
 ```bash
-git clone https://github.com/Szotasz/marveen.git
+git clone -b main https://github.com/Szotasz/marveen.git
 cd marveen
 docker compose up -d
 docker compose logs marveen      # prints the dashboard link once it is up
 ```
+
+`-b main` takes the released version; without it, `git clone` takes the development branch.
+
+If the start stops with `error from registry: denied`, the image of this version cannot be downloaded: see [Build the image yourself](#build-the-image-yourself).
 
 **Choosing the channel and other settings:** the channel is chosen **before** the first start, with `MARVEEN_CHANNEL=telegram|discord|slack` in a `.env` file next to `docker-compose.yml` or in your shell. It is fixed for this install. Other optional settings:
 
@@ -39,6 +54,17 @@ The dashboard listens on the server's `127.0.0.1:3420` only. Plain http on a pub
 
 The link carries the install's access token. Set the dashboard password in the wizard's first step; after that you log in with it, and the token link is not needed.
 
+## On a Hostinger VPS
+
+Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/hostinger-compose.yml), the file the "Deploy on Hostinger" button points at. It is the same Marveen and Ollama as `docker-compose.yml`, made for a panel that gets this one file and not the repository: a pinned Marveen version, no `build:`, no Caddy, and a default for every setting (the language is English unless you set `MARVEEN_LANG`).
+
+- **The dashboard link:** in Docker Manager, open the project's **⋮** menu and choose **View logs**; the link is in the `marveen` container's output.
+- **Opening the dashboard:** it listens on the VPS's `127.0.0.1:3420` only, as above. Use the Marveen Bridge, or an SSH tunnel from your computer (Hostinger's Docker VPS template logs you in as `root`):
+  ```bash
+  ssh -L 3420:127.0.0.1:3420 root@<your VPS's IP>
+  ```
+  then open the link from the log on your computer.
+
 ## The setup wizard
 
 1. The dashboard password (the owner's login).
@@ -48,6 +74,22 @@ The link carries the install's access token. Set the dashboard password in the w
 5. Pairing: message your bot, and approve the code in the dashboard.
 
 The main agent starts as soon as the token is saved.
+
+### After the wizard: the name rule of the outgoing-text check
+
+Marveen checks the text of every outgoing message and e-mail before it leaves. One part of that check is yours to set up: the wrong spellings of names that must never go out (your own name, your company's). The rule lives in the install volume, in `/opt/marveen/store/outgoing-copy-gate-rules.json`, and no install creates it, because it names you. Until it exists, the check lets messages through without the name part and **warns on every send** that the name check did not run.
+
+Create it, for example for the name Kovács that must never go out as Kovacs:
+
+```bash
+docker compose exec -T marveen sh -c 'umask 077; cat > /opt/marveen/store/outgoing-copy-gate-rules.json' <<'EOF'
+{"bad_name_patterns": ["\\bKovacs\\b"], "correction": "The correct spelling is Kovács."}
+EOF
+```
+
+`bad_name_patterns` is a list of Python regular expressions for the wrong forms; `correction` is the line the check shows next to a hit. A file that cannot be read as this shape stops outgoing e-mail until it is fixed, so check the JSON before you save it.
+
+If you decide you need no name rule, say so in the file, and the warning stops: `{"bad_name_patterns": [], "no_name_rule": true, "no_name_rule_reason": "<why>"}`.
 
 ## What is where
 
@@ -69,6 +111,21 @@ docker compose up -d
 
 **What a new image changes:** a new image is a new Marveen version and a new `claude` CLI. On start, the container copies the new code into the install volume and checks every file against the image before anything runs; the state is not touched. The dashboard's update button and `update.sh` do nothing in a container, and they say so.
 
+With an image you built yourself, `docker compose pull` cannot download it: update with `git pull`, then build it again as below.
+
+## Build the image yourself
+
+The compose file only downloads the image; it never builds one. To run your own build:
+
+```bash
+git clone -b main https://github.com/Szotasz/marveen.git
+cd marveen
+docker build -t ghcr.io/szotasz/marveen:latest --build-arg MARVEEN_COMMIT="$(git rev-parse HEAD)" .
+docker compose up -d
+```
+
+`docker compose up -d` uses the image you built: it downloads only an image that is not on the server yet. The build takes about 5 GB of build cache on top of the image; `docker builder prune` frees it afterwards.
+
 ## Without Ollama
 
 ```bash
@@ -76,6 +133,42 @@ docker compose up -d marveen
 ```
 
 The memory search falls back to full-text search. Set `MARVEEN_OLLAMA_URL=` (empty) so the dashboard does not look for it.
+
+## Troubleshooting
+
+### A download stops or times out on IPv6
+
+**What you see:** the start (or `docker compose pull`) stops while it downloads a large image layer, with
+`failed to copy: ... read: connection timed out`, and the address in the message is an IPv6 one (in square brackets).
+It happens on servers whose IPv6 route drops long downloads.
+
+**First:** run the same command again. The layers already downloaded are kept, and a second try often gets through.
+
+**If it keeps stopping on IPv6:** let Docker prefer IPv4 for its downloads. IPv6 stays on; only the order in which the
+addresses are tried changes. Both changes are needed: Docker does not read `/etc/gai.conf` on its own, the second file
+makes it use the system's resolver, which does.
+
+```bash
+echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf
+sudo mkdir -p /etc/systemd/system/docker.service.d
+printf '[Service]\nEnvironment=GODEBUG=netdns=cgo\n' | sudo tee /etc/systemd/system/docker.service.d/ipv4-first.conf
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+Then run the start command from [Start](#start) again. Restarting Docker restarts the Marveen containers; their data
+stays in the volumes.
+
+**Side effect:** the `/etc/gai.conf` line makes every program on this server prefer IPv4, not only Docker.
+
+**To undo:**
+
+```bash
+sudo sed -i '/^precedence ::ffff:0:0\/96  100$/d' /etc/gai.conf
+sudo rm /etc/systemd/system/docker.service.d/ipv4-first.conf
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
 
 ## Not in the container
 

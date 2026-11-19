@@ -1,0 +1,56 @@
+# Marveen for the "Deploy on Hostinger" button (DOCKERUX1118; Samu 80873). See docs/docker.md, "On a Hostinger VPS".
+#
+# The button hands Hostinger's Docker Manager THIS FILE ONLY, from its raw URL (compose_url), never the repository.
+# So, unlike ../docker-compose.yml: no build:, no relative path (the tls profile's ./docker/Caddyfile would not exist)
+# and no Caddy. Every variable has a default, so it starts without any input.
+#
+# The image tag is pinned: MARVEEN_VERSION defaults to the release this file ships with. A test fails in CI when the
+# default and package.json's version differ, so the release step updates both.
+#
+# The dashboard is published on the server's 127.0.0.1 only, as in ../docker-compose.yml: reach it with the Marveen
+# Bridge or an SSH tunnel. Never publish port 3420 on a public address: plain http carries the login cookie and the
+# access token unencrypted.
+
+name: marveen
+
+services:
+  marveen:
+    image: ghcr.io/szotasz/marveen:${MARVEEN_VERSION:-1.50.1}
+    restart: unless-stopped
+    environment:
+      MARVEEN_CHANNEL: ${MARVEEN_CHANNEL:-telegram}
+      MARVEEN_AGENT_ID: ${MARVEEN_AGENT_ID:-marveen}
+      MARVEEN_LANG: ${MARVEEN_LANG:-en}
+      MARVEEN_OLLAMA_URL: ${MARVEEN_OLLAMA_URL:-http://ollama:11434}
+      TZ: ${TZ:-UTC}
+      WEB_PORT: "3420"
+    ports:
+      - "127.0.0.1:3420:3420"
+    volumes:
+      - marveen-install:/opt/marveen
+      - marveen-home:/home/marveen
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+
+  # Once: the embedding model the memory search uses (the Linux installer pulls the same one).
+  ollama-pull:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["/bin/sh", "-c", "for i in $$(seq 1 30); do ollama pull nomic-embed-text && exit 0; sleep 5; done; exit 1"]
+    restart: "no"
+
+volumes:
+  marveen-install:
+  marveen-home:
+  ollama-models:

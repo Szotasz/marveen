@@ -59,7 +59,9 @@ if (process.env.PRELOAD_PLATFORM) os.platform = () => process.env.PRELOAD_PLATFO
 const real = cp.execFileSync
 cp.execFileSync = function (file, args, opts) {
   if (file === '/usr/bin/security') {
-    if (process.env.SECURITY_CALL_LOG) fs.appendFileSync(process.env.SECURITY_CALL_LOG, String(args && args[0]) + '\\n')
+    // VAULTKEYARGV1118: a store runs as \`security -i\` with its command on stdin; record that command's name
+    const sub = args && args[0] === '-i' && opts && opts.input ? String(opts.input).split(' ')[0] : String(args && args[0])
+    if (process.env.SECURITY_CALL_LOG) fs.appendFileSync(process.env.SECURITY_CALL_LOG, sub + '\\n')
     const e = new Error('security: stand-in, always fails'); e.status = 1; throw e
   }
   return real.apply(this, arguments)
