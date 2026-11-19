@@ -85,6 +85,8 @@
  "makeScheduleRow::url:src::agent.avatar": "SAFE-PRE [n=1]: scheduleAgents come from /api/schedules/agents built server-side as /api/agents/<encodeURIComponent(n)>/avatar or /api/marveen/avatar (src/web/routes/schedules.ts); fallback literal . Optional hardening: escape",
  "mdInline::concat::c": "SAFE-PRE [n=1]: operates on escapeHtml(text) output; inserts only static tags around already-escaped text",
  "mdInline>cb:s = s.replace(/\\[([^\\]]+)\\]\\(([^)\\s]+)\\)/g, (m, txt, url) => {::concat::txt": "SAFE-PRE [n=1]: txt is a slice of the escapeHtml()ed text plus generated <code>/<strong>/<em> tags from; no raw markup from the source",
+ "mountTotpSetup>renderCodes>cb:host.querySelector('[data-totp=\"downloadCodes\"]').addEventListener('click', () =::.href=::url": "SAFE-CONST [n=1]: url = URL.createObjectURL(blob) of the backup codes text, client-side (DOCKERHTTPS1119)",
+ "mountTotpSetup>renderScan::innerHTML=::qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true })": "SAFE-PRE [n=1]: the same qrcode-generator@2.0.4 as the mobile-login QR (web/index.html:14); createSvgTag gets fixed numeric options only, the otpauth URI goes to addData and is rendered as QR modules (DOCKERHTTPS1119)",
  "openAgentDetail>onclick#2::.href=::objectUrl": "SAFE-CONST [n=1]: objectUrl = URL.createObjectURL(blob)",
  "openBuiltinDetail::innerHTML=::item.detailHtml": "SAFE-PRE [n=1]: item is one of the two fixed BUILTIN entries whose detailHtml getter returns tHtml('connectors.builtin.*_html'): brand tokens and params escaped",
  "openConnectorDetail::style::statusColors[detail.status] || ''": "SAFE-CONST [n=1]: value from fixed map or literal empty string (style attr)",
