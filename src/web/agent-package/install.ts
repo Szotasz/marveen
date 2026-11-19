@@ -674,11 +674,35 @@ export function packageStartRefusal(name: string, dir: string): string | null {
  * finding (Dani 80640): the last told finding is kept in a stamp, a clean start removes it, a different finding is
  * told again. One stamp for both paths, so a fallback after a normal start does not tell the same finding twice.
  */
+/**
+ * Whether a LOCAL.md import target stays inside the agent's own folder (Samu 81392). Only a relative path without a
+ * `..` segment, not absolute, not `~`, whose real location (the file, or its nearest existing ancestor) is inside the
+ * folder's real path: a symlink inside the folder that points out is not local. Anything that cannot be told is not.
+ */
+function isAgentLocalImport(dir: string, target: string): boolean {
+  if (target === '' || isAbsolute(target) || target.startsWith('~') || target.split(/[\\/]/).includes('..')) return false
+  let root: string
+  try { root = realpathSync(dir) } catch { return false }
+  let p = join(dir, target)
+  for (;;) {
+    try {
+      const real = realpathSync(p)
+      return real === root || real.startsWith(root + sep)
+    } catch { /* not there yet: check the nearest existing ancestor */ }
+    const up = dirname(p)
+    if (up === p) return false
+    p = up
+  }
+}
+
 function reportLayerFinding(name: string, dir: string, pkg: string, local: string, kind: 'fallback_scan_finding' | 'start_scan_finding'): void {
-  // An import line in LOCAL.md is the owner's own, legitimate setting: it is not reported (Samu 81367). Only the
-  // at-signs the import rule matches are neutralized, in LOCAL.md only, so every other finding there, and an import
-  // in PACKAGE.md, is still seen (the import rule ranks high, so skipping its finding would hide a later one).
-  const localForScan = local.replace(IMPORT_TOKEN_RE, '_')
+  // LOCAL.md is written by the owner AND by the agent itself, and an import there is attached at the next start
+  // with no Read gate or hook seeing it (Dani 81388). So only an import that stays inside the agent's folder is
+  // silent; an absolute, ~ or .. one, or one leaving through a symlink, is reported (Samu 81392). The silent ones
+  // are neutralized in LOCAL.md only, so every other finding there, and an import in PACKAGE.md, is still seen (the
+  // import rule ranks high, so skipping its finding would hide a later one). The regex is the verifier's own.
+  const localImport = new RegExp(`${IMPORT_TOKEN_RE.source}(\\S*)`, 'gu')
+  const localForScan = local.replace(localImport, (m: string, target: string) => (isAgentLocalImport(dir, target) ? `_${target}` : m))
   const finding = scanPackageText(Buffer.from(`\n${pkg}\n\n\n${localForScan}\n`, 'utf8'))
   const stamp = join(leftoversDir(), 'layer-scan-noticed', `${name}.txt`)
   if (finding === null) {
