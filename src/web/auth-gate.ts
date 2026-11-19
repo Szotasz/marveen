@@ -126,6 +126,9 @@ export function isFederationWireEndpoint(path: string, method: string): boolean 
 export function requiresAuth(path: string, method: string): boolean {
   if (path === '/api/auth/status' && method === 'GET') return false
   if (path === '/api/auth/login' && method === 'POST') return false
+  // DOCKERHTTPS1119: the second step of the login (the code after the password). Public like the login itself: it is
+  // authorised by the pending token the right password returned, and throttled like the login.
+  if (path === '/api/auth/login/totp' && method === 'POST') return false
   // DASHOPERATOR1005: the operator page signs in with its key here, before any
   // cookie exists. The handler checks the key, the scope and the owner switch.
   if (path === '/api/operator/login' && method === 'POST') return false

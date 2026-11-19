@@ -7,6 +7,7 @@
 //   npm run dashboard-user -- remove <username>
 //   npm run dashboard-user -- sessions:clear [<username>]
 //   npm run dashboard-user -- security:reset
+//   npm run dashboard-user -- totp:off <username>
 //
 // THIS IS THE BREAK-GLASS PATH. It talks to SQLite directly -- no HTTP, no
 // auth gate -- so it works even when the web login is misconfigured, throttled
@@ -29,6 +30,7 @@ import { securityReset } from '../src/web/security-reset.js'
 import { notifySecurityEvent } from '../src/notify.js'
 import { takeSupportAccessDown } from '../src/web/support-standby-runtime.js'
 import { promptHidden } from '../src/hidden-prompt.js'
+import { removeTotpRecord } from '../src/web/dashboard-totp.js'
 
 function usage(): never {
   process.stderr.write(
@@ -38,7 +40,8 @@ function usage(): never {
     '  dashboard-user list\n' +
     '  dashboard-user remove <username>\n' +
     '  dashboard-user sessions:clear [<username>]\n' +
-    '  dashboard-user security:reset      # revoke ALL device keys + clear ALL browser sessions\n',
+    '  dashboard-user security:reset      # revoke ALL device keys + clear ALL browser sessions\n' +
+    '  dashboard-user totp:off <username> # turn the two-step sign-in off (lost phone and backup codes)\n',
   )
   process.exit(2)
 }
@@ -137,6 +140,7 @@ async function main(): Promise<void> {
       }
       revokeAllForUser(user.id)
       deleteDashboardUser(username)
+      try { removeTotpRecord(user.id) } catch { process.stderr.write('Warning: the two-step sign-in store could not be updated.\n') }
       // SUPPORTKULCS1109 (terv-v7 3.9): removing a dashboard login takes support access off this machine.
       await takeSupportAccessDown('user_delete')
       const remaining = listDashboardUsers().length
@@ -168,6 +172,25 @@ async function main(): Promise<void> {
         getDb().exec('DELETE FROM auth_sessions')
         process.stdout.write('Cleared ALL dashboard login sessions.\n')
       }
+      break
+    }
+    case 'totp:off': {
+      // DOCKERHTTPS1119: the break-glass of the second factor (the phone and the backup codes both lost). Like
+      // reset-password it skips every proof but being on the machine, so it leaves the same audit line and ping.
+      const username = positional[0]
+      if (!username) usage()
+      const user = getDashboardUser(username)
+      if (!user) {
+        process.stderr.write(`User "${username}" not found.\n`)
+        process.exit(1)
+      }
+      if (!removeTotpRecord(user.id)) {
+        process.stdout.write(`Two-step sign-in was not on for "${username}".\n`)
+        break
+      }
+      logConfigChange('security.break_glass_totp_off', null, user.username, 'cli')
+      await notifySecurityEvent(`🔑 Kétlépcsős belépés kikapcsolva a dashboard CLI-ből (break-glass): "${user.username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
+      process.stdout.write(`Two-step sign-in turned off for "${username}".\n`)
       break
     }
     default:

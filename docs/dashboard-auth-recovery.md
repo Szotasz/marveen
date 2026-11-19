@@ -18,7 +18,12 @@ npm run dashboard-user -- reset-password <felhasznalo>  # új jelszó (elfelejte
 npm run dashboard-user -- remove <felhasznalo>          # user törlése; az utolsó user törlése = vissza token-only módba
 npm run dashboard-user -- sessions:clear [<felhasznalo>] # böngésző-sessionök törlése
 npm run dashboard-user -- security:reset                # VÉSZHELYZETI RESET (lásd lent)
+npm run dashboard-user -- totp:off <felhasznalo>        # kétlépcsős belépés ki (elveszett telefon ÉS biztonsági kódok)
 ```
+
+A `totp:off` a `reset-password`-höz hasonlóan semmilyen bizonyítékot nem kér a gépen futáson kívül, ezért ugyanúgy
+audit-bejegyzést (`security.break_glass_totp_off`) és értesítést hagy. Ha a `store/.dashboard-totp.json` sérült (a
+belépés ilyenkor 503-at ad, sosem enged be csak jelszóval), a gépen a fájl törlése kapcsolja ki mindenkinél.
 
 A `reset-password` nem kéri a régi jelszót (ez a lényege), ezért minden
 futásáról audit-bejegyzés készül és -- ha van bekötött csatorna -- Telegram-
