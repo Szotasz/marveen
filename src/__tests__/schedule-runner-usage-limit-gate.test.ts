@@ -141,6 +141,14 @@ vi.mock('../web/scheduled-tasks-io.js', async (importOriginal) => {
   }
 })
 
+// Hermetic settings: the reader's settings-store fallback answers with the registry default, never this
+// checkout's store overrides or .env file (a saved route made the default-route tests machine-dependent).
+vi.mock('../settings-store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../settings-store.js')>()
+  const { getSettingDefinition } = await import('../config-registry.js')
+  return { ...actual, getEffectiveSettingValue: (key: string) => getSettingDefinition(key)!.default }
+})
+
 vi.mock('../web/agent-process.js', () => ({
   withTmuxBatch: (fn: () => unknown) => fn(),
   clearFeedbackModalAndRecheck: vi.fn(async () => false),
