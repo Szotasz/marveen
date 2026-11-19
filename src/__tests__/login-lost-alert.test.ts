@@ -171,14 +171,20 @@ describe('LOGINKIESES1119: login-lost-alert hook', () => {
     expect(state().marveen).toBeUndefined()
   })
 
-  it('a logged-out session not seen for 15 minutes counts as gone, so the replacement session recovers the agent', () => {
+  it('a logged-out session not seen for an hour counts as gone: the replacement session sends a "probably recovered"', () => {
     turn('marveen', loginEntry(), { session_id: 'old' })
     const p = join(tmp, 'store', 'login-alert-state.json')
     const s = state()
-    s.marveen.sessions.old -= 16 * 60
+    s.marveen.sessions.old -= 59 * 60
     writeFileSync(p, JSON.stringify(s))
+    turn('marveen', normalEntry('még nem'), { session_id: 'new' })
+    expect(notifyLog()).toHaveLength(1)
+    const s2 = state()
+    s2.marveen.sessions.old -= 2 * 60
+    writeFileSync(p, JSON.stringify(s2))
     turn('marveen', normalEntry('új munkamenet, bent vagyok'), { session_id: 'new' })
     expect(notifyLog()).toHaveLength(2)
+    expect(notifyLog()[1]).toMatch(/^VALÓSZÍNŰLEG HELYREÁLLT: /)
     expect(state().marveen).toBeUndefined()
   })
 
@@ -208,6 +214,28 @@ describe('LOGINKIESES1119: login-lost-alert hook', () => {
     expect(state().marveen.failed_turns).toBe(2)
     turn('marveen', loginEntry(), { session_id: 's' })
     expect(state().marveen.failed_turns).toBe(3)
+  })
+
+  it('another API error during an outage is no recovery (E1): transcript line and payload text are the same error', () => {
+    turn('marveen', loginEntry())
+    turn('marveen', { type: 'assistant', isApiErrorMessage: true, error: 'overloaded',
+      message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'API Error: 529 Overloaded' }] } },
+      { last_assistant_message: 'API Error: 529 Overloaded' })
+    turn('marveen', loginEntry(), { last_assistant_message: 'API Error: 500 Internal server error' })
+    expect(notifyLog()).toHaveLength(1)
+    expect(state().marveen).toBeDefined()
+  })
+
+  it('a StopFailure without session_id keys the same session as its transcript file name', () => {
+    const t = transcriptFor('marveen')
+    const sid = 'abc-123'
+    const t2 = join(t, '..', `${sid}.jsonl`)
+    writeFileSync(t2, '')
+    const r = spawnSync('python3', ['-I', '-S', hook], { input: JSON.stringify({ hook_event_name: 'StopFailure', transcript_path: t2, cwd: tmp, error: 'authentication_failed' }), encoding: 'utf-8' })
+    expect(r.status).toBe(0)
+    expect(Object.keys(state().marveen.sessions)).toEqual([sid])
+    turn('marveen', normalEntry('bent vagyok'), { session_id: sid })
+    expect(notifyLog()[1]).toMatch(/^HELYREÁLLT: /)
   })
 
   it('a failed "recovered" send is kept and retried on the next normal turn', () => {

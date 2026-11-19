@@ -13,7 +13,7 @@ What it does, per agent (the id comes from the transcript path, ledger_lib.agent
     every REPEAT_SECONDS (30 minutes);
   - the first normal turn after that: one "recovered" message, and the agent's state is cleared. With two
     sessions under one agent id, a normal turn of one does not recover the other while it is still logged out
-    (a session not seen logged out for 15 minutes counts as gone). A failed "recovered" send is retried.
+    (a session not seen logged out for an hour counts as gone, and that recovery is worded as "probably"). A failed "recovered" send is retried.
     The 30-minute brake is per agent, so two logged-out sessions never double the alert, and a Stop plus a
     StopFailure for the same turn count as one failed turn.
 State: <install>/store/login-alert-state.json (agent -> since, last alert, failed turns), under a lock.
@@ -40,7 +40,7 @@ import ledger_lib  # noqa: E402
 
 STATE_FILE = "login-alert-state.json"
 REPEAT_SECONDS = 30 * 60
-SESSION_STALE_SECONDS = 15 * 60
+SESSION_STALE_SECONDS = 60 * 60
 SAME_TURN_SECONDS = 10
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 AUTH_ERROR = "authentication_failed"
@@ -89,6 +89,9 @@ def last_assistant_entry(transcript_path):
     return None
 
 
+API_ERROR_TEXT = re.compile(r"\s*API Error\b", re.IGNORECASE)
+
+
 def is_login_line(text):
     return bool(text) and len(text) <= 200 and LOGIN_LINE.fullmatch(text) is not None
 
@@ -99,14 +102,22 @@ def verdict(payload):
     if event == "StopFailure" or payload.get("error"):
         return "down" if str(payload.get("error") or "") == AUTH_ERROR else None
     text = payload.get("last_assistant_message")
-    if isinstance(text, str) and text.strip():
-        # The turn's own text decides first: the transcript tail may still end on an earlier error line.
-        return "down" if is_login_line(text) else "up"
+    text = text.strip() if isinstance(text, str) else ""
     entry = last_assistant_entry(payload.get("transcript_path"))
     if entry is not None and entry.get("isApiErrorMessage"):
-        if entry.get("error") == AUTH_ERROR or is_login_line(_text_of((entry.get("message") or {}).get("content"))):
+        etext = _text_of((entry.get("message") or {}).get("content")).strip()
+        # The transcript ends on an API error line. It is THIS turn's line when the payload carries no text or the
+        # same text; a different payload text is a newer turn whose line the transcript does not hold yet.
+        if not text or text == etext:
+            if entry.get("error") == AUTH_ERROR or is_login_line(etext):
+                return "down"
+            return None  # another API error (overload, prompt too long): no news about the login
+    if text:
+        if is_login_line(text):
             return "down"
-        return None  # another API error (overload, prompt too long): no news about the login
+        if API_ERROR_TEXT.match(text):
+            return None  # an API error text with no transcript line yet: no news about the login either
+        return "up"
     text = _text_of((entry.get("message") or {}).get("content")) if entry is not None else ""
     if isinstance(text, str) and is_login_line(text):
         return "down"
@@ -149,7 +160,15 @@ ACTION = "Teendő: a dashboardon az ügynök kártyáján a „Bejelentkezés”
 
 
 def _session_key(payload):
-    return str(payload.get("session_id") or payload.get("transcript_path") or "-")
+    # The transcript file is named after the session id, so a payload without session_id keys the same session.
+    sid = payload.get("session_id")
+    if sid:
+        return str(sid)
+    tp = payload.get("transcript_path")
+    if isinstance(tp, str) and tp:
+        base = os.path.basename(tp)
+        return base[:-len(".jsonl")] if base.endswith(".jsonl") else base
+    return "-"
 
 
 def handle(agent_id, v, now, session="-", event=""):
@@ -190,10 +209,14 @@ def handle(agent_id, v, now, session="-", event=""):
             # Two sessions can share an agent id (the ledger maps every session under the install to the main
             # agent). A normal turn of one session must not "recover" another that is still logged out, or the
             # two would alternate alert / recovered on every turn. A session that has not been seen logged out
-            # for SESSION_STALE_SECONDS counts as gone (replaced after a re-login or a restart).
+            # for SESSION_STALE_SECONDS counts as gone (replaced after a re-login or a restart); a recovery that rests
+            # only on that says so, because the silent session may also just have had nothing to do.
             sessions = st.get("sessions") if isinstance(st.get("sessions"), dict) else {}
+            own = session in sessions
             sessions.pop(session, None)
             sessions = {k: t for k, t in sessions.items() if now - float(t or 0) < SESSION_STALE_SECONDS}
+            if not sessions and own:
+                st["own_recovery"] = True  # kept if the send below fails, so the retry words it the same way
             if sessions:
                 st["sessions"] = sessions
                 data[agent_id] = st
@@ -201,8 +224,14 @@ def handle(agent_id, v, now, session="-", event=""):
                 return
             if st.get("last_alert"):
                 minutes = max(1, int(round((now - float(st.get("since") or now)) / 60)))
-                sent = notify(f"HELYREÁLLT: a(z) {agent_id} ügynök újra rendesen válaszol "
-                              f"(kiesés {_hhmm(st['since'])} és {_hhmm(now)} között, kb. {minutes} perc).")
+                if st.get("own_recovery"):
+                    msg = (f"HELYREÁLLT: a(z) {agent_id} ügynök újra rendesen válaszol "
+                           f"(kiesés {_hhmm(st['since'])} és {_hhmm(now)} között, kb. {minutes} perc).")
+                else:
+                    msg = (f"VALÓSZÍNŰLEG HELYREÁLLT: a(z) {agent_id} ügynök egy munkamenete rendesen válaszol, a kiesett "
+                           f"munkamenet egy órája nem jelzett (kiesés {_hhmm(st['since'])} óta). "
+                           f"Ha még nincs bejelentkezve, a következő köre új riasztást küld.")
+                sent = notify(msg)
                 if not sent:
                     # Keep the outage so the next normal turn sends the "recovered" message again.
                     st["sessions"] = {}
