@@ -61,7 +61,7 @@ import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { agentIsolatedConfigDir, setCodeModeCaveats } from './code-mode-caveats.js'
+import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from './code-mode-caveats.js'
 import { paneTyped } from './pane-text.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
 import {
@@ -3491,6 +3491,8 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     if (codeModeSwitched) {
       try { writeAgentCodeModeLaunched(name, codeModeOn) } catch (err) { logger.warn({ err, name }, 'Code Mode: could not record the launched mode') }
     }
+    // CODEMODEFOLLOW1119: the same mode for scripts/watchdog.sh's relaunch, on every start (see code-mode-caveats.ts).
+    try { syncCodeModeMarker(name, codeModeOn) } catch (err) { logger.error({ err, name }, 'Code Mode: could not update the watchdog marker') }
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
     // APRO920 (c)(2): the --model value actually passed, with the config-chain

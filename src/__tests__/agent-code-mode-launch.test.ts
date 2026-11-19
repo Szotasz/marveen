@@ -3,7 +3,7 @@
 // in that dir's .claude.json; anything else exports =0 (n1: 0 wins over an inherited value and a settings.json env
 // block). A switch since the last launch (agent-config.json codeModeLaunched) makes the start fresh (Q1).
 import { describe, it, expect, vi, afterAll } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -15,6 +15,7 @@ vi.mock('../config.js', async (orig) => ({ ...(await orig<typeof import('../conf
 const { readAgentCodeMode, writeAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched } = await import('../web/agent-config.js')
 const { codeModeLaunchEnv, resolveCodeModeLaunch } = await import('../web/agent-process.js')
 const { decideContinueFlag, CODE_MODE_SWITCH_REASON } = await import('../web/channel-continue-policy.js')
+const { CODE_MODE_MARKER_DIR, codeModeMarkerPath, syncCodeModeMarker } = await import('../web/code-mode-caveats.js')
 
 const SRC = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
 const FN = SRC.slice(SRC.indexOf('export async function startAgentProcess('))
@@ -184,5 +185,78 @@ describe('the launch command (startAgentProcess)', () => {
 
   it('on: the variable is 1', () => {
     expect(seen(true)).toBe('1')
+  })
+})
+
+// CODEMODEFOLLOW1119: scripts/watchdog.sh relaunches with its own command. It follows the dashboard's decision through
+// store/code-mode/<name>.on, which every start keeps in step with the resolved mode and the owner's "off" removes.
+describe('the watchdog marker (CODEMODEFOLLOW1119)', () => {
+  const REPO = join(__dirname, '..', '..')
+  const WD_SRC = readFileSync(join(REPO, 'scripts', 'watchdog.sh'), 'utf-8')
+  const ROUTE = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents.ts'), 'utf-8')
+
+  it('lives under store/code-mode, where the watchdog looks', () => {
+    expect(CODE_MODE_MARKER_DIR.endsWith(join('store', 'code-mode'))).toBe(true)
+    expect(codeModeMarkerPath('abel')).toBe(join(CODE_MODE_MARKER_DIR, 'abel.on'))
+    expect(WD_SRC).toContain('"$INSTALL_DIR/store/code-mode/$1.on"')
+  })
+
+  it('on creates it, off removes it, off without one is fine', () => {
+    const dir = join(tmpRoot, 'marker-unit')
+    syncCodeModeMarker('m', true, dir)
+    expect(existsSync(join(dir, 'm.on'))).toBe(true)
+    syncCodeModeMarker('m', false, dir)
+    expect(existsSync(join(dir, 'm.on'))).toBe(false)
+    expect(() => syncCodeModeMarker('m', false, dir)).not.toThrow()
+  })
+
+  // The dashboard's writer and the watchdog's reader against one fixture install: the real watchdog.sh, its
+  // --code-mode-env self-test, an agent on its own .claude-config with the fleet token present.
+  it('what the dashboard writes is what a watchdog restart exports: on -> 1, off -> 0', () => {
+    const fx = join(tmpRoot, 'wd')
+    mkdirSync(join(fx, 'scripts'), { recursive: true })
+    mkdirSync(join(fx, 'agents', 'abel', '.claude-config'), { recursive: true })
+    mkdirSync(join(fx, 'store'), { recursive: true })
+    writeFileSync(join(fx, 'store', '.claude-oauth-token'), 'fixture-token\n')
+    writeFileSync(join(fx, 'scripts', 'watchdog.sh'), readFileSync(join(REPO, 'scripts', 'watchdog.sh')))
+    const run = () => execFileSync('bash', [join(fx, 'scripts', 'watchdog.sh'), '--code-mode-env', 'abel'], { encoding: 'utf-8' }).trim()
+    const markers = join(fx, 'store', 'code-mode')
+    expect(run()).toBe(`env=export ${VAR}=0 &&`)
+    syncCodeModeMarker('abel', true, markers)
+    expect(run()).toBe(`env=export ${VAR}=1 &&`)
+    // a relaunch that would not run on the agent's own .claude-config (no fleet token: shared config) stays off
+    rmSync(join(fx, 'store', '.claude-oauth-token'))
+    expect(run()).toBe(`env=export ${VAR}=0 &&`)
+    writeFileSync(join(fx, 'store', '.claude-oauth-token'), 'fixture-token\n')
+    expect(run()).toBe(`env=export ${VAR}=1 &&`)
+    syncCodeModeMarker('abel', false, markers)
+    expect(run()).toBe(`env=export ${VAR}=0 &&`)
+  })
+
+  it('every successful start syncs it to the resolved mode, after the session started, not only on a switch', () => {
+    const start = FN.indexOf("runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)]")
+    const sync = FN.indexOf('syncCodeModeMarker(name, codeModeOn)')
+    expect(sync).toBeGreaterThan(start)
+    const between = FN.slice(start, sync)
+    // the switched-only block is closed before the sync
+    expect(between.split('if (codeModeSwitched) {')).toHaveLength(2)
+    expect(FN).toMatch(/\n    \}\n    \/\/ CODEMODEFOLLOW1119[^\n]*\n    try \{ syncCodeModeMarker\(name, codeModeOn\) \}/)
+    expect(between.split('\n').length).toBeLessThan(10)
+  })
+
+  it('the owner\'s off removes it before anything else of the switch is written', () => {
+    const branch = ROUTE.slice(ROUTE.indexOf('if (data.codeMode !== undefined) {'))
+    const rm = branch.indexOf('syncCodeModeMarker(name, false)')
+    expect(rm).toBeGreaterThan(-1)
+    expect(branch.slice(0, rm)).toContain('if (data.codeMode !== true) {')
+    expect(rm).toBeLessThan(branch.indexOf('setCodeModeCaveats('))
+    expect(rm).toBeLessThan(branch.indexOf('writeAgentCodeMode(name, data.codeMode === true)'))
+  })
+
+  it('the watchdog relaunch line carries the piece before cd, and the relaunch never resumes', () => {
+    expect(WD_SRC).toContain('CODE_MODE_ENV="$(agent_code_mode_env "$AGENT_ID" "$AGENT_DIR")"')
+    const cmd = WD_SRC.split('\n').find((l) => l.trimStart().startsWith('CMD="'))!
+    expect(cmd).toContain('${CODE_MODE_ENV}cd \\"$AGENT_DIR\\"')
+    expect(WD_SRC).not.toContain('--continue')
   })
 })

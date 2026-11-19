@@ -75,12 +75,28 @@ agent_sandbox_flag() {
   if [ -f "$F" ]; then printf " --settings '%s'" "$F"; fi
 }
 
+# CODEMODEFOLLOW1119: the dashboard decides whether an agent runs in Code Mode (resolveCodeModeLaunch: the owner's
+# switch AND the agent's own isolated config dir with the caveat keys) and keeps store/code-mode/<id>.on in step on
+# every start; the owner's "off" removes it at once. This restart follows that decision instead of copying the rule:
+# 1 only with the marker AND this launch on the agent's own .claude-config (agent_launch_env), else an explicit 0, so
+# an inherited value never decides. A missing marker is off, the safe direction (see code-mode-caveats.ts).
+agent_code_mode_env() {
+  local ON=0
+  if [ -f "$INSTALL_DIR/store/code-mode/$1.on" ] && [ -n "$(agent_launch_env "$2")" ]; then ON=1; fi
+  printf '%s' "export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=$ON && "
+}
+
 # Self-test hook, mirroring --resolve-provider: print the launch-env prefix
 # for one agent dir and exit, so the isolation contract is testable from
 # fixtures (scripts/__tests__/watchdog-config-isolation.test.sh).
 if [ "${1:-}" = "--sandbox-flag" ]; then
   [ -n "${2:-}" ] || { echo "usage: watchdog.sh --sandbox-flag <agent-id>" >&2; exit 2; }
   echo "flag=$(agent_sandbox_flag "$2")"
+  exit 0
+fi
+if [ "${1:-}" = "--code-mode-env" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --code-mode-env <agent-id>" >&2; exit 2; }
+  echo "env=$(agent_code_mode_env "$2" "$INSTALL_DIR/agents/$2/")"
   exit 0
 fi
 if [ "${1:-}" = "--launch-env" ]; then
@@ -342,8 +358,9 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   # FLEETVENV923: the fleet venv's bin/ first, as in startAgentProcess -- a
   # watchdog restart must not hand the agent a different python3 (#1626 review).
   FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$LOG")"
+  CODE_MODE_ENV="$(agent_code_mode_env "$AGENT_ID" "$AGENT_DIR")"
 
-  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official$(agent_sandbox_flag "$AGENT_ID")"
+  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && ${CODE_MODE_ENV}cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official$(agent_sandbox_flag "$AGENT_ID")"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

@@ -8,10 +8,11 @@
 // missing key right after the top-level "{", "off" removes exactly such a line. Every textual edit is checked by
 // parsing the result; when it does not parse to the expected object (an empty object, a key with another value,
 // a file Claude Code reformatted with the keys elsewhere), the file is rewritten as JSON instead.
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { STORE_DIR } from '../config.js'
 import { agentDir } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
@@ -63,4 +64,27 @@ export function setCodeModeCaveats(dotClaudePath: string, on: boolean, opts: { g
   if (opts.groupShared) mode |= 0o060
   atomicWriteFileSync(dotClaudePath, next, { mode })
   return 'written'
+}
+
+// CODEMODEFOLLOW1119: scripts/watchdog.sh relaunches a missing agent with its own command and cannot run
+// resolveCodeModeLaunch. It reads this marker instead, the way it reads store/bash-sandbox/ (BASHSANDBOX1022): the
+// file exists exactly when the last dashboard start ran the agent in Code Mode and the switch has not gone off since.
+// A missing marker means off, the safe direction: an off launch only waits for the next dashboard start, while an on
+// launch without the caveat keys parks the unattended pane on a confirmation. It lives under store/, outside the
+// agent's own directory.
+export const CODE_MODE_MARKER_DIR = join(STORE_DIR, 'code-mode')
+
+export function codeModeMarkerPath(name: string, dir = CODE_MODE_MARKER_DIR): string {
+  return join(dir, `${name}.on`)
+}
+
+/** Create (on) or remove (off) the agent's marker. Throws when it cannot. */
+export function syncCodeModeMarker(name: string, on: boolean, dir = CODE_MODE_MARKER_DIR): void {
+  const path = codeModeMarkerPath(name, dir)
+  if (on) {
+    mkdirSync(dir, { recursive: true })
+    atomicWriteFileSync(path, '')
+  } else {
+    rmSync(path, { force: true })
+  }
 }
