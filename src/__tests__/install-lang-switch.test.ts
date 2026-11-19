@@ -44,6 +44,7 @@ const deps = (over: Partial<LangSwitchDeps> = {}): LangSwitchDeps => ({
     seedCalls++
     return seedRun
   },
+  agentRunning: () => false,
   ...over,
 })
 
@@ -177,6 +178,29 @@ describe('the persona files', () => {
     expect(r).toMatchObject({ ok: false, error: 'seed_refresh_failed' })
     expect(r.files.map((f) => f.result)).toEqual(['re-rendered', 're-rendered', 're-rendered'])
     expect(env.AGENT_TEXT_LANG).toBe('hu')
+  })
+
+  // Dani 80955 n2: the main agent started between the route's check and the writes (the wizard's launch, another window).
+  it('the main agent runs by the time of the first write: agent_running, and nothing is written at all', async () => {
+    const claude = firstBoot('CLAUDE.md', 'en'); const soul = firstBoot('SOUL.md', 'en')
+    let asked = 0
+    const r = await switchInstallLanguage('hu', deps({ agentRunning: () => { asked++; return true } }))
+    expect(r).toEqual({ ok: false, error: 'agent_running', lang: 'hu', files: [] })
+    expect(asked).toBe(1)
+    expect([env.AGENT_TEXT_LANG, env.DASHBOARD_LANG, read('.lang'), read('CLAUDE.md'), read('SOUL.md')]).toEqual(['en', 'en', 'en\n', claude, soul])
+    expect(seedCalls).toBe(0)
+  })
+
+  it('the second check comes after the renders, right before the first write', async () => {
+    firstBoot('CLAUDE.md', 'en'); firstBoot('SOUL.md', 'en')
+    const order: string[] = []
+    await switchInstallLanguage('hu', deps({
+      agentRunning: () => { order.push('check'); return false },
+      setEnv: (k, v) => { order.push('write'); env[k] = v },
+      run: async (file, args, e) => { order.push(args[0] === '-c' ? 'render' : 'seeds'); return args[0] === '-c' ? realRun(file, args, e) : seedRun },
+    }))
+    expect(order.indexOf('check')).toBe(order.lastIndexOf('render') + 1)
+    expect(order[order.indexOf('check') + 1]).toBe('write')
   })
 
   it('a missing persona file is left missing', async () => {
