@@ -31,7 +31,7 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
+import { accessSync, constants, closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
@@ -72,8 +72,8 @@ const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'
 // SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not
 // only its path. "scripts" is an array of {"path", "sha256"} objects -- at least
 // one entry, no duplicate paths, an absolute path and a sha256 of exactly 64
-// lowercase hex characters -- and the matcher verifies the hash on EVERY
-// invocation, so anything else runnable at the granted path does not qualify.
+// lowercase hex characters. On EVERY invocation the matcher hashes and scans
+// one read, and refuses a writable file or ancestor directory.
 // Keep in sync with valid_agent_send_exception in
 // scripts/hooks/email-approval-gate.py and readAgentSendExceptions in
 // agent-scaffold.ts.
@@ -85,9 +85,9 @@ const SCRIPT_SHA256_RX = /^[0-9a-f]{64}$/
 // 'node' handled in the matcher); every other absolute interpreter path -- a writable
 // fake 'node' at an arbitrary path (/tmp/x/node), /usr/bin/nodejs,
 // /usr/local/bin/nodejs, ... -- leaves the command WITHOUT an exception, so the script
-// token cannot match a granted path. That is the wanted deny: a fake interpreter at an
-// arbitrary path would run instead of the granted, hash-verified script, so the path
-// shape of the interpreter can carry no trust. Keep in sync with
+// token cannot match a granted path. This narrows shapes, not the user trust boundary:
+// PATH, NODE_OPTIONS and shell start-up files are trusted as by the agent process.
+// Keep in sync with
 // agent_script_exception in scripts/hooks/email-approval-gate.py.
 const NODE_INTERPRETERS = ['node', 'nodejs', '/usr/bin/node', '/usr/local/bin/node']
 
@@ -116,6 +116,7 @@ export function validAgentSendException(entry) {
   return validExceptionScripts(entry.scripts)
     && entry.modes.length > 0 && entry.modes.every(m => ['draft', 'send'].includes(m))
     && !entry.repeatableArgs.some(f => NON_REPEATABLE_FLAGS.has(f))
+    && !flags.includes('--envelope-sha256')
     && flags.every(f => /^--[a-z][a-z0-9-]*$/.test(f)) && new Set(flags).size === flags.length
 }
 
@@ -159,16 +160,58 @@ export function agentApprovalGateBound(agentName) {
   } catch { return false }
 }
 
-// SCRIPTBIND: per-call content verification -- the entry script's raw bytes are
-// hashed and compared to the granted sha256. A missing or unreadable file, or a
-// hash mismatch, means the invocation does not qualify (fail-closed: null), so
-// the call falls back to the ordinary send-gate decisions.
-function scriptHashMatches(path, sha256) {
+// Conservative text scan; comments and strings count too. Keep the Python twin in sync.
+export function scriptSourceLoadsOnlyBuiltins(buf) {
+  let text
   try {
-    return createHash('sha256').update(readFileSync(path)).digest('hex') === sha256
-  } catch {
-    return false
+    // ignoreBOM preserves a leading BOM as a character, like Python's utf-8 decoder.
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buf)
+  } catch { return false }
+  if (text.includes('\\u')) return false
+  if (['node:module', 'node:vm', 'node:worker_threads', 'node:child_process', 'node:inspector',
+    'node:wasi', 'node:repl', 'child_process', 'worker_threads', '--require', '--import',
+    '--loader', '--experimental-loader'].some(s => text.includes(s))) return false
+  const wordStart = '(?<![A-Za-z0-9_$])'
+  const wordEnd = '(?![A-Za-z0-9_$])'
+  if (new RegExp(`${wordStart}(?:createRequire|dlopen|eval|Function|arguments|mainModule|binding|WebAssembly|constructor)${wordEnd}`).test(text)) return false
+  const ws = '[ \\t\\r\\n]'
+  const spec = `(?:'node:[a-z0-9_/]+'|"node:[a-z0-9_/]+")`
+  const call = `${ws}*\\(${ws}*${spec}${ws}*\\)`
+  const forms = {
+    require: new RegExp(`require${call}`, 'y'),
+    import: new RegExp(`import(?:${call}|${ws}*${spec}|${ws}+[^'"\x60;()]+?${wordStart}from${wordEnd}${ws}*${spec})`, 'y'),
+    from: new RegExp(`from${ws}*${spec}`, 'y'),
   }
+  const occurrences = new RegExp(`${wordStart}(require|import|from)${wordEnd}`, 'g')
+  for (const m of text.matchAll(occurrences)) {
+    if (m[1] === 'from' && !/^[ \t\r\n]*['"`]/.test(text.slice(m.index + 4))) continue
+    const form = forms[m[1]]
+    form.lastIndex = m.index
+    if (!form.test(text)) return false
+  }
+  return true
+}
+
+export function scriptPathWritable(path) {
+  for (let p = path; ; p = dirname(p)) {
+    try {
+      accessSync(p, constants.W_OK)
+      return true
+    } catch (err) {
+      if (!['EACCES', 'EPERM'].includes(err?.code)) return true
+    }
+    if (dirname(p) === p) return false
+  }
+}
+
+// SCRIPTBIND: read ONCE; hash and scan the same bytes on every invocation.
+// Unknown/unreadable content fails closed; path writability is checked separately.
+function scriptContentMatches(path, sha256) {
+  try {
+    const data = readFileSync(path)
+    return createHash('sha256').update(data).digest('hex') === sha256
+      && scriptSourceLoadsOnlyBuiltins(data)
+  } catch { return false }
 }
 
 // Intentionally small shell subset: whole literal words, optionally wholly quoted.
@@ -195,11 +238,19 @@ export function agentScriptException(cmd, agentName, config) {
   const [script, mode, ...args] = tokens
   const grant = entry.scripts.find(s => s.path === script)
   // SCRIPTBIND: the path alone is not the grant -- the file's content must still
-  // hash to the granted sha256, checked on every invocation.
-  if (!grant || !entry.modes.includes(mode) || !scriptHashMatches(grant.path, grant.sha256)) return null
+  // hash to the grant, pass the loader scan, and have no writable path component.
+  if (!grant || !entry.modes.includes(mode) || !scriptContentMatches(grant.path, grant.sha256)
+    || scriptPathWritable(grant.path)) return null
+  let envelopeSha256
   const values = new Map()
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]
+    if (flag === '--envelope-sha256') {
+      const value = args[++i]
+      if (mode !== 'send' || envelopeSha256 !== undefined || !value || !SCRIPT_SHA256_RX.test(value)) return null
+      envelopeSha256 = value
+      continue
+    }
     if (entry.booleanArgs.includes(flag)) {
       values.set(flag, true)
       continue
@@ -212,7 +263,8 @@ export function agentScriptException(cmd, agentName, config) {
     if (['--body-file', '--attach'].includes(flag) && !isAbsolute(value)) return null
     values.set(flag, [...(values.get(flag) ?? []), value])
   }
-  return { script, mode, to: values.get('--to')?.[0] ?? '', cc: values.get('--cc')?.[0] ?? '',
+  if (mode === 'send' && envelopeSha256 === undefined) return null
+  return { script, mode, ...(mode === 'send' ? { envelopeSha256 } : {}), to: values.get('--to')?.[0] ?? '', cc: values.get('--cc')?.[0] ?? '',
     subject: values.get('--subject')?.[0] ?? '', bodyFile: values.get('--body-file')?.[0] ?? '', attach: values.get('--attach') ?? [] }
 }
 

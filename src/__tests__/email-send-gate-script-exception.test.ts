@@ -6,9 +6,13 @@ import { fileURLToPath } from 'node:url'
 // after node:os / node:path / node:url on purpose: importing node:fs runs the
 // vi.mock factory below, which closes over those -- an earlier position fails
 // with "Cannot access ... before initialization"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import corpus from './fixtures/agent-send-exception-cases.json' with { type: 'json' }
 
+import loaderCorpus from './fixtures/agent-send-exception-loader-cases.json' with { type: 'json' }
+
+const accessProbe = vi.hoisted(() => ({ mode: 'stub', writablePath: null as string | null, errorCode: 'EACCES' }))
+afterEach(() => { accessProbe.mode = 'stub'; accessProbe.writablePath = null; accessProbe.errorCode = 'EACCES' })
 const file = vi.hoisted(() => ({ content: '{invalid json', unreadable: false }))
 // SENDAPPROVALBIND (card f2ccb0bb round 2): the agent-side settings file the
 // gate must consult before honoring a SEND-mode exception. `null` = the file is
@@ -29,7 +33,11 @@ vi.mock('node:fs', async original => {
     if (content === null) throw new Error('ENOENT: no such file')
     return content
   }
-  return { ...fs, readFileSync: (...args: Parameters<typeof fs.readFileSync>) => {
+  return { ...fs, accessSync: (...args: Parameters<typeof fs.accessSync>) => {
+    if (accessProbe.mode === 'real') return fs.accessSync(...args)
+    if (String(args[0]) === accessProbe.writablePath) return
+    throw Object.assign(new Error('permission probe'), { code: accessProbe.errorCode })
+  }, readFileSync: (...args: Parameters<typeof fs.readFileSync>) => {
     if (String(args[0]).endsWith('/store/agent-send-exceptions.json')) {
       if (file.unreadable) throw new Error('unreadable')
       return file.content
@@ -41,7 +49,7 @@ vi.mock('node:fs', async original => {
   } }
 })
 // @ts-expect-error -- plain .mjs hook script, no types
-import { agentScriptException, gateDecision, readAgentSendExceptions, validAgentSendException } from '../../scripts/email-send-gate.mjs'
+import { scriptSourceLoadsOnlyBuiltins, scriptPathWritable, agentScriptException, gateDecision, readAgentSendExceptions, validAgentSendException } from '../../scripts/email-send-gate.mjs'
 // Namespace import: the unbound-binding deny builder arrives with the fix, and a
 // named import of a missing export would break the whole file at link time.
 // @ts-expect-error -- plain .mjs hook script, no types
@@ -63,6 +71,7 @@ const entry = { ...corpus.entry, scripts: [{ path: scriptFile, sha256: scriptSha
 const cases = corpus.cases.map(c => ({ ...c, command: bind(c.command) }))
 const config = { agents: { [agentName]: entry } }
 const command = cases[0].command
+const draftCommand = cases.find(c => c.name === 'draft')!.command
 const verify = (address: string) => ['verified@example.invalid', 'copy@example.invalid'].includes(address)
 const decide = (cmd = command, agent: string | null = agentName, cfg: unknown = config) =>
   gateDecision('Bash', { command: cmd }, verify, process.cwd(), agent, () => cfg)
@@ -81,15 +90,15 @@ describe('named-script exception', () => {
   it('allows the exact send with verified recipients', () => {
     expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
     expect(agentScriptException(command, agentName, config)).toEqual({
-      script: entry.scripts[0].path, mode: 'send', to: 'verified@example.invalid', cc: 'copy@example.invalid',
+      script: entry.scripts[0].path, mode: 'send', envelopeSha256: 'a'.repeat(64), to: 'verified@example.invalid', cc: 'copy@example.invalid',
       subject: 'Example subject', bodyFile: '/absolute/path/to/body.txt', attach: ['/absolute/path/to/attachment.bin'],
     })
   })
   it('allows a draft with verified recipients', () => {
-    expect(decide(command.replace(' send ', ' draft '))).toEqual({ deny: false, kind: 'script-exception' })
+    expect(decide(draftCommand)).toEqual({ deny: false, kind: 'script-exception' })
   })
   it('denies an unverified draft recipient', () => {
-    expect(decide(command.replace(' send ', ' draft ').replace('verified@', 'unknown@')))
+    expect(decide(draftCommand.replace('verified@', 'unknown@')))
       .toMatchObject({ deny: true, kind: 'unverified-recipient' })
   })
   it('checks cc as well as to', () => {
@@ -215,7 +224,7 @@ describe('send exception requires the bound approval gate (SEND mode only)', () 
   it('drafts are untouched by the binding check', () => {
     for (const content of [null, '{invalid json', boundSettings]) {
       agentSettings.content = content
-      expect(decide(command.replace(' send ', ' draft '))).toEqual({ deny: false, kind: 'script-exception' })
+      expect(decide(draftCommand)).toEqual({ deny: false, kind: 'script-exception' })
     }
   })
 
@@ -340,5 +349,63 @@ describe('the grant binds the script content (sha256, checked per invocation)', 
     // the reader drops a shape-invalid scripts entry and keeps valid siblings
     file.content = JSON.stringify({ agents: { [agentName]: withScripts(['runner.ext']).agents[agentName], '<other-agent>': entry } })
     expect(readAgentSendExceptions()).toEqual({ agents: { '<other-agent>': entry } })
+  })
+})
+
+
+describe('loader scan shared corpus', () => {
+  for (const c of loaderCorpus.cases) it(c.name, () => {
+    expect(scriptSourceLoadsOnlyBuiltins(Buffer.from(c.source, 'utf8'))).toBe(c.allowed)
+  })
+  it('rejects invalid UTF-8', () => {
+    expect(scriptSourceLoadsOnlyBuiltins(Uint8Array.from([0xff, 0xfe]))).toBe(false)
+  })
+})
+
+describe('script path writability', () => {
+  it('finds a real writable temp file', () => {
+    accessProbe.mode = 'real'
+    expect(scriptPathWritable(scriptFile)).toBe(true)
+  })
+  it('checks root itself exactly once', () => {
+    accessProbe.mode = 'real'
+    let writable = true
+    try { accessSync('/', constants.W_OK) } catch { writable = false }
+    expect(scriptPathWritable('/')).toBe(writable)
+  })
+  it.skipIf(process.getuid?.() === 0)('accepts an unwritable system path on Linux', () => {
+    accessProbe.mode = 'real'
+    expect(scriptPathWritable('/usr/bin/env')).toBe(false)
+  })
+  if (process.getuid?.() === 0) console.log('SKIP: unwritable system path check runs as root')
+  it('fails closed on an unknown permission probe error', () => {
+    accessProbe.errorCode = 'ENOENT'
+    expect(scriptPathWritable(scriptFile)).toBe(true)
+    expect(agentScriptException(command, agentName, config)).toBeNull()
+  })
+  for (const path of [scriptFile, scriptDir]) it(`refuses writable path component: ${path}`, () => {
+    accessProbe.writablePath = path
+    expect(agentScriptException(command, agentName, config)).toBeNull()
+  })
+})
+
+describe('loader and reserved envelope digest enforcement', () => {
+  it('refuses hash-matching content that loads a local module', () => {
+    const source = "require('./lib.js');"
+    try {
+      writeFileSync(scriptFile, source)
+      const unsafe = { agents: { [agentName]: { ...entry, scripts: [{ path: scriptFile,
+        sha256: createHash('sha256').update(source).digest('hex') }] } } }
+      expect(agentScriptException(command, agentName, unsafe)).toBeNull()
+    } finally { writeFileSync(scriptFile, scriptBody) }
+  })
+  for (const list of ['valueArgs', 'repeatableArgs', 'booleanArgs'] as const) {
+    it(`rejects the reserved flag in ${list}`, () => {
+      expect(validAgentSendException({ ...entry, [list]: [...entry[list], '--envelope-sha256'] })).toBe(false)
+    })
+  }
+  it('returns the valid send digest and keeps drafts unbound', () => {
+    expect(agentScriptException(command, agentName, config).envelopeSha256).toBe('a'.repeat(64))
+    expect(agentScriptException(draftCommand, agentName, config)).not.toHaveProperty('envelopeSha256')
   })
 })

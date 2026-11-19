@@ -141,8 +141,8 @@ _NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
 # SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not only its
 # path. "scripts" is an array of {"path", "sha256"} objects -- at least one entry, no
 # duplicate paths, an absolute path and a sha256 of exactly 64 lowercase hex characters --
-# and the matcher verifies the hash on EVERY invocation, so anything else runnable at the
-# granted path does not qualify. Keep in sync with validAgentSendException in
+# and on EVERY invocation the matcher hashes and scans one read, and refuses a
+# writable file or ancestor directory. Keep in sync with validAgentSendException in
 # email-send-gate.mjs and readAgentSendExceptions in agent-scaffold.ts.
 _SCRIPT_SHA256_RX = re.compile(r"[0-9a-f]{64}")
 
@@ -152,9 +152,9 @@ _SCRIPT_SHA256_RX = re.compile(r"[0-9a-f]{64}")
 # "/usr/bin/env" + "node" handled in the matcher): every other absolute interpreter
 # path -- a writable fake "node" at an arbitrary path (/tmp/x/node), /usr/bin/nodejs,
 # /usr/local/bin/nodejs, ... -- leaves the command WITHOUT an exception, so the script
-# token cannot match a granted path. That is the wanted deny: a fake interpreter at
-# an arbitrary path would run instead of the granted, hash-verified script, so the
-# path shape of the interpreter can carry no trust. Keep in sync with
+# token cannot match a granted path. This narrows shapes, not the user trust boundary:
+# PATH, NODE_OPTIONS and shell start-up files are trusted as by the agent process.
+# Keep in sync with
 # agentScriptException in email-send-gate.mjs.
 _NODE_INTERPRETERS = frozenset({"node", "nodejs", "/usr/bin/node", "/usr/local/bin/node"})
 
@@ -192,6 +192,7 @@ def valid_agent_send_exception(entry):
     return (_valid_exception_scripts(entry.get("scripts"))
             and bool(entry["modes"]) and all(m in ("draft", "send") for m in entry["modes"])
             and not any(f in _NON_REPEATABLE_FLAGS for f in entry["repeatableArgs"])
+            and "--envelope-sha256" not in flags
             and all(re.fullmatch(r"--[a-z][a-z0-9-]*", f) for f in flags)
             and len(set(flags)) == len(flags))
 
@@ -208,18 +209,64 @@ def read_agent_send_exceptions():
         return {}
 
 
-def _script_sha256_matches(path, sha256):
-    """SCRIPTBIND (card f2ccb0bb, round 3): per-call content verification -- the entry
-    script's raw bytes are hashed and compared to the granted value. A missing or
-    unreadable file, or a hash mismatch, means no exception (fail-closed: False), so
-    the call falls back to the ordinary gate decisions. Twin of scriptHashMatches in
-    email-send-gate.mjs."""
+def script_source_loads_only_builtins(data):
+    """Conservative text scan; comments and strings count. Twin of the JS scan."""
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return False
+    if "\\u" in text:
+        return False
+    if any(s in text for s in (
+            "node:module", "node:vm", "node:worker_threads", "node:child_process", "node:inspector",
+            "node:wasi", "node:repl", "child_process", "worker_threads", "--require", "--import",
+            "--loader", "--experimental-loader")):
+        return False
+    word_start, word_end = r"(?<![A-Za-z0-9_$])", r"(?![A-Za-z0-9_$])"
+    if re.search(word_start + r"(?:createRequire|dlopen|eval|Function|arguments|mainModule|binding|WebAssembly|constructor)" + word_end, text):
+        return False
+    ws = r"[ \t\r\n]"
+    spec = r"(?:'node:[a-z0-9_/]+'|\"node:[a-z0-9_/]+\")"
+    call = ws + r"*\(" + ws + "*" + spec + ws + r"*\)"
+    forms = {
+        "require": re.compile("require" + call),
+        "import": re.compile("import(?:" + call + "|" + ws + "*" + spec + "|" + ws
+                             + r"+[^'\"`;()]+?" + word_start + "from" + word_end + ws + "*" + spec + ")"),
+        "from": re.compile("from" + ws + "*" + spec),
+    }
+    for match in re.finditer(word_start + r"(require|import|from)" + word_end, text):
+        word = match[1]
+        if word == "from" and not re.match(r"[ \t\r\n]*['\"`]", text[match.end():]):
+            continue
+        if not forms[word].match(text, match.start()):
+            return False
+    return True
+
+
+def script_path_writable(path):
+    try:
+        p = os.fspath(path)
+        while True:
+            if os.access(p, os.W_OK):
+                return True
+            parent = os.path.dirname(p)
+            if parent == p:
+                return False
+            p = parent
+    except Exception:
+        return True
+
+
+def _script_content_matches(path, sha256):
+    """SCRIPTBIND: read ONCE; hash and scan the same bytes on every invocation.
+    Unknown/unreadable content fails closed; path writability is checked separately.
+    Twin of scriptContentMatches in email-send-gate.mjs.
+    """
     try:
         with open(path, "rb") as fh:
-            return hashlib.sha256(fh.read()).hexdigest() == sha256
+            data = fh.read()
+        return hashlib.sha256(data).hexdigest() == sha256 and script_source_loads_only_builtins(data)
     except (OSError, ValueError):
-        # ValueError: a NUL byte in the path -- open() raises it, not OSError, and
-        # an uncaught one would crash the hook instead of failing closed (False).
         return False
 
 
@@ -227,7 +274,7 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
     """Literal whole-word shell subset; twin of agentScriptException in email-send-gate.mjs.
 
     check_paths=False is used only to DENY a recognized invocation with relative files.
-    The SCRIPTBIND hash check runs on EVERY invocation, on both paths.
+    The SCRIPTBIND content and path checks run on EVERY invocation, on both paths.
     """
     agents = config.get("agents", {}) if isinstance(config, dict) else {}
     if not agent_name or not isinstance(agents, dict) or agent_name not in agents:
@@ -254,15 +301,24 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
         return None
     script, mode, *args = tokens
     grant = next((s for s in entry["scripts"] if s["path"] == script), None)
-    # SCRIPTBIND: the path alone is not the grant -- the file's content must still hash
-    # to the granted sha256, checked on every invocation (also with check_paths=False).
+    # SCRIPTBIND: hash and scan the same bytes, and refuse writable path components
+    # on every invocation (also with check_paths=False).
     if (grant is None or mode not in entry["modes"]
-            or not _script_sha256_matches(grant["path"], grant["sha256"])):
+            or not _script_content_matches(grant["path"], grant["sha256"])
+            or script_path_writable(grant["path"])):
         return None
+    envelope_sha256 = None
     values, i = {}, 0
     while i < len(args):
         flag = args[i]
         i += 1
+        if flag == "--envelope-sha256":
+            if (mode != "send" or envelope_sha256 is not None or i >= len(args)
+                    or not _SCRIPT_SHA256_RX.fullmatch(args[i])):
+                return None
+            envelope_sha256 = args[i]
+            i += 1
+            continue
         if flag in entry["booleanArgs"]:
             values[flag] = True
             continue
@@ -278,23 +334,35 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
         if check_paths and flag in ("--body-file", "--attach") and not os.path.isabs(value):
             return None
         values.setdefault(flag, []).append(value)
-    return {"script": script, "mode": mode, "to": values.get("--to", [""])[0],
+    if mode == "send" and envelope_sha256 is None:
+        return None
+    return {"script": script, "mode": mode, **({"envelopeSha256": envelope_sha256} if mode == "send" else {}), "to": values.get("--to", [""])[0],
             "cc": values.get("--cc", [""])[0], "subject": values.get("--subject", [""])[0],
             "bodyFile": values.get("--body-file", [""])[0], "attach": values.get("--attach", [])}
 
 
 def script_exception_envelope(ex):
     try:
-        # Preserve file content, including CRLF, in the approval anchor.
-        with open(ex["bodyFile"], encoding="utf-8", newline="") as fh:
-            body = fh.read()
+        # Decode and hash the SAME bytes, preserving CRLF in the approval anchor.
+        with open(ex["bodyFile"], "rb") as fh:
+            body_data = fh.read()
+        body = body_data.decode("utf-8", errors="strict")
+        digest_lines = ["marveen-script-envelope-v1", "to=" + ex["to"], "cc=" + ex["cc"],
+                        "subject=" + ex["subject"], "body=" + hashlib.sha256(body_data).hexdigest()]
         env = _load_collect_email_envelope()("send_email", {
             "to": ex["to"], "cc": ex["cc"], "subject": ex["subject"], "body": body})
         attachments = []
         for path in ex["attach"]:
             with open(path, "rb") as fh:
                 data = fh.read()
-            attachments.append({"name": os.path.basename(path), "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+            sha256 = hashlib.sha256(data).hexdigest()
+            digest_lines.append("attach=" + sha256)
+            attachments.append({"name": os.path.basename(path), "sha256": sha256, "size": len(data)})
+        digest = hashlib.sha256(("\n".join(digest_lines) + "\n").encode("utf-8")).hexdigest()
+        if digest != ex["envelopeSha256"]:
+            deny("Named-script send: --envelope-sha256 does not match the body and attachments as they are now. "
+                 "Compute the digest over the files you will send (docs/agent-send-exceptions.md, "
+                 "\"Envelope digest\") and run the command again.")
         attachments.sort(key=lambda a: (a["name"], a["sha256"]))
         if attachments:
             env["attachments"] = attachments

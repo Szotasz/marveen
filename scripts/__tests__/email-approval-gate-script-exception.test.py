@@ -3,6 +3,8 @@
 import hashlib
 import importlib.util
 import json
+import os
+from unittest.mock import patch
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -12,12 +14,14 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = json.loads((ROOT / 'src/__tests__/fixtures/agent-send-exception-cases.json').read_text())
+LOADER_CORPUS = json.loads((ROOT / 'src/__tests__/fixtures/agent-send-exception-loader-cases.json').read_text())
 
 
 def load_gate(path):
     spec = importlib.util.spec_from_file_location('script_exception_gate', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.script_path_writable = lambda path: False
     return module
 
 
@@ -30,6 +34,37 @@ def main():
         store.mkdir()
         gate_path = install / 'scripts/hooks/email-approval-gate.py'
         gate = load_gate(gate_path)
+        # Test-only subprocess wrapper; production has no bypass switch.
+        wrapper = install / 'run-gate.py'
+        wrapper.write_text(
+            "import importlib.util\n"
+            f"spec = importlib.util.spec_from_file_location('gate', {str(gate_path)!r})\n"
+            "gate = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(gate)\n"
+            "gate.script_path_writable = lambda path: False\n"
+            "gate.main()\n")
+        for case in LOADER_CORPUS['cases']:
+            assert gate.script_source_loads_only_builtins(case['source'].encode('utf-8')) == case['allowed'], case['name']
+        assert gate.script_source_loads_only_builtins(b'\xff\xfe') is False
+        print('PASS: shared loader corpus and strict UTF-8')
+        # A separate, unpatched module exercises actual filesystem permissions.
+        spec = importlib.util.spec_from_file_location('real_gate', gate_path)
+        real_gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real_gate)
+        probe_file = install / 'probe-file'
+        probe_file.write_bytes(b'probe')
+        assert real_gate.script_path_writable(str(probe_file)) is True
+        assert real_gate.script_path_writable('/') == os.access('/', os.W_OK)
+        if os.getuid() == 0:
+            print('SKIP: unwritable system path check runs as root')
+        else:
+            assert real_gate.script_path_writable('/usr/bin/env') is False
+        with patch.object(real_gate.os, 'access', side_effect=OSError('unknown state')):
+            assert real_gate.script_path_writable(str(probe_file)) is True
+        # Only one ancestor writable also fails, even when the file itself is not.
+        with patch.object(real_gate.os, 'access', side_effect=lambda path, mode: path == str(install)):
+            assert real_gate.script_path_writable(str(probe_file)) is True
+        print('PASS: real path writability and fail-closed probe')
         # SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT.
         # The corpus entry carries the SHAPE only (a placeholder path and sha256);
         # it is bound here to a real temp script, the expected sha256 computed from
@@ -76,7 +111,7 @@ def main():
         # for it, not OSError, so an `except OSError` alone let the hook crash
         # instead of failing closed; the check must return False like any
         # unreadable file.
-        assert gate._script_sha256_matches('/x\x00y', '0' * 64) is False
+        assert gate._script_content_matches('/x\x00y', '0' * 64) is False
         for bad_scripts in ([], ['runner.ext'], [{'path': str(script)}],
                             [{'path': 'runner.ext', 'sha256': script_sha}],
                             [{'path': str(script), 'sha256': '0A' * 32}],  # uppercase hex
@@ -86,6 +121,22 @@ def main():
                              {'path': str(script), 'sha256': '0' * 64}]):
             assert gate.valid_agent_send_exception({**entry, 'scripts': bad_scripts}) is False, bad_scripts
         assert gate.valid_agent_send_exception(entry) is True
+        unsafe_source = b"require('./lib.js');"
+        script.write_bytes(unsafe_source)
+        unsafe_entry = dict(entry, scripts=[{'path': str(script), 'sha256': hashlib.sha256(unsafe_source).hexdigest()}])
+        for check_paths in (True, False):
+            assert gate.agent_script_exception(cmd, CORPUS['agentName'], {'agents': {CORPUS['agentName']: unsafe_entry}},
+                                               check_paths=check_paths) is None
+        script.write_bytes(script_body)
+        with patch.object(gate, 'script_path_writable', return_value=True):
+            for check_paths in (True, False):
+                assert gate.agent_script_exception(cmd, CORPUS['agentName'], config, check_paths=check_paths) is None
+        for key in ('valueArgs', 'repeatableArgs', 'booleanArgs'):
+            assert gate.valid_agent_send_exception({**entry, key: entry[key] + ['--envelope-sha256']}) is False
+        parsed = gate.agent_script_exception(cmd, CORPUS['agentName'], config)
+        assert parsed['envelopeSha256'] == 'a' * 64
+        draft = bind(next(c['command'] for c in CORPUS['cases'] if c['name'] == 'draft'))
+        assert 'envelopeSha256' not in gate.agent_script_exception(draft, CORPUS['agentName'], config)
         print('PASS: script content binding (sha256 verified per invocation, fail-closed)')
 
         # REPEATENVELOPE (card f2ccb0bb, round 2): the mjs argument parser
@@ -135,6 +186,13 @@ def main():
         attachment.write_bytes(b'Example attachment\x00\xff')
         command = bind(CORPUS['cases'][0]['command']).replace('/absolute/path/to/body.txt', str(body)).replace(
             '/absolute/path/to/attachment.bin', str(attachment))
+        # Independent script envelope v1 canon: command values, raw file bytes, CLI attachment order.
+        digest_text = ("marveen-script-envelope-v1\n"
+                       "to=verified@example.invalid\ncc=copy@example.invalid\nsubject=Example subject\n"
+                       f"body={hashlib.sha256(body.read_bytes()).hexdigest()}\n"
+                       f"attach={hashlib.sha256(attachment.read_bytes()).hexdigest()}\n")
+        envelope_digest = hashlib.sha256(digest_text.encode('utf-8')).hexdigest()
+        command = command.replace('a' * 64, envelope_digest)
         (store / 'agent-send-exceptions.json').write_text(json.dumps(config))
         autonomy = store / 'autonomy-config.json'
         def level(value):
@@ -149,7 +207,7 @@ def main():
             content_hash TEXT, consumed_at INTEGER)''')
         con.commit()
         def run(cmd=command):
-            result = subprocess.run([sys.executable, str(gate_path)], input=json.dumps({
+            result = subprocess.run([sys.executable, str(wrapper)], input=json.dumps({
                 'tool_name': 'Bash', 'tool_input': {'command': cmd}, 'cwd': str(install),
             }), text=True, capture_output=True)
             assert result.returncode in (0, 2), result.stderr
@@ -171,17 +229,21 @@ def main():
         rc, error = run()
         assert rc == 2 and anchor in error, error
         approve(anchor)
+        rc, error = run(command.replace(envelope_digest, '0' * 64))
+        assert rc == 2 and '--envelope-sha256 does not match' in error, error
         assert run()[0] == 0, 'matching one-shot approval'
         assert run()[0] == 2, 'one-shot consumption'
         approve(anchor)
         body.write_text('Changed body.\n')
-        assert run()[0] == 2, 'different body'
+        # Pins the envelope-digest deny, which now fires before the approval-hash deny.
+        rc, error = run()
+        assert rc == 2 and '--envelope-sha256 does not match' in error, error
         body.write_bytes('Example body.\r\nSecond line.\n'.encode())
         con.execute('DELETE FROM approvals')
         con.commit()
         approve(anchor, age=1801)
         assert run()[0] == 2, 'expired approval'
-        assert run(command.replace(' send ', ' draft '))[0] == 0, 'draft'
+        assert run(command.replace(' send ', ' draft ').replace(' --envelope-sha256 ' + envelope_digest, ''))[0] == 0, 'draft'
         rc, error = run(command.replace(str(body), 'body.txt'))
         assert rc == 2 and 'sanctioned form' in error, error
         assert run(command.replace(str(attachment), 'attachment.bin'))[0] == 2, 'relative attachment'
