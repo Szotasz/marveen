@@ -324,11 +324,12 @@ session brings it to them.
 
 **What it is for.** A button on an old question can still be tapped long after the conversation
 moved on. With a max age set (say `24`), a tap on a question older than that does not reach the
-agent: the toast asks to type the answer, and the question's buttons give way to a single "⏱ Lejárt, írd be a
-választ" ("expired, type the answer") button, as an answered question keeps its "✓ <label>". The
-age counts from the question's send time (the Telegram message's own timestamp), so it holds
-across a plugin restart. An answered question still gets "Erre már válaszoltál." ("already
-answered"). The buttons change on a tap only, never by themselves.
+agent: the toast asks to type the answer, and the question's buttons give way to a single "⏱ Expired,
+type your answer" button, as an answered question keeps its "✓ <label>". The age counts from the
+question's send time (the Telegram message's own timestamp), so it holds across a plugin restart.
+An answered question still gets "You already answered this." The buttons change on a tap only,
+never by themselves. The toasts and that label follow `AGENT_TEXT_LANG` (`en` as quoted here;
+unset or `hu`: Hungarian, "⏱ Lejárt, írd be a választ"), like every toast of the button branch.
 
 **Setting it.** Dashboard: *Settings → Channels → `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`*, or for
 example `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24` in `.env`. Whole hours from 0 to 8760; `0` (the

@@ -197,37 +197,65 @@ KBD_CALLBACK_RX = re.compile(
 # the setting. The value goes into the file as seconds, so changing it is the usual in-place rebuild (apply_kbd).
 KBD_MAX_AGE_SETTING = "TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS"
 KBD_MAX_AGE_HOURS_MAX = 8760  # a year; the registry has the same bound
-KBD_EXPIRED_TOAST = "Ez a kérdés lejárt, írd be a választ."
-KBD_EXPIRED_BUTTON = "⏱ Lejárt, írd be a választ"
+# The toasts and the one "expired" label a tap can get, in the install's language (AGENT_TEXT_LANG, read the way the
+# pairtext patch reads it: en or hu, anything else hu). Hungarian is the text the branch always had, so an hu install's
+# file stays byte-identical; a language change is the usual in-place rebuild (apply_kbd). Each goes between single
+# quotes in the plugin source: no apostrophe, no backslash (a test checks).
+KBD_TEXT = {
+    "hu": {
+        "not_allowed": "Nem engedélyezett.",
+        "answered": "Erre már válaszoltál.",
+        "dead": "Ez a gomb már nem él, írd be a választ.",
+        "failed": "Nem sikerült rögzíteni, írd be a választ.",
+        "expired": "Ez a kérdés lejárt, írd be a választ.",
+        "expired_button": "⏱ Lejárt, írd be a választ",
+    },
+    "en": {
+        "not_allowed": "Not allowed.",
+        "answered": "You already answered this.",
+        "dead": "This button no longer works, type your answer.",
+        "failed": "Could not record it, type your answer.",
+        "expired": "This question has expired, type your answer.",
+        "expired_button": "⏱ Expired, type your answer",
+    },
+}
+KBD_EXPIRED_TOAST = KBD_TEXT["hu"]["expired"]
+KBD_EXPIRED_BUTTON = KBD_TEXT["hu"]["expired_button"]
 
 
-def _kbd_expiry_line(max_age_hours):
+def _kbd_text(lang):
+    return KBD_TEXT[lang if lang in KBD_TEXT else "hu"]
+
+
+def _kbd_expiry_line(max_age_hours, lang="hu"):
+    t = _kbd_text(lang)
     return ("  if ('date' in kbdMsg && kbdMsg.date > 0 && Math.floor(Date.now() / 1000) - kbdMsg.date > "
             + str(int(max_age_hours) * 3600) + ") { "
             "marveenKbdOpen.get(kbdMsg.chat.id + ('is_topic_message' in kbdMsg && kbdMsg.is_topic_message "
             "&& kbdMsg.message_thread_id != null ? '#' + kbdMsg.message_thread_id : ''))?.delete(kbdMsg.message_id); "
-            "await kbdToast('" + KBD_EXPIRED_TOAST + "'); "
-            "void ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [[{ text: '" + KBD_EXPIRED_BUTTON + "', "
+            "await kbdToast('" + t["expired"] + "'); "
+            "void ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [[{ text: '" + t["expired_button"] + "', "
             "callback_data: 'kbd:x' }]] } }).catch(() => {}); return }")
 
 
-def _kbd_callback(max_age_hours=0):
-    expiry = [_kbd_expiry_line(max_age_hours)] if max_age_hours > 0 else []
+def _kbd_callback(max_age_hours=0, lang="hu"):
+    t = _kbd_text(lang)
+    expiry = [_kbd_expiry_line(max_age_hours, lang)] if max_age_hours > 0 else []
     return ("callback perm regex", KBD_CALLBACK_RX, "insert-after", _kbd_lines([
         "if (data.startsWith('kbd:')) {",
         "  const kbdMsg = ctx.callbackQuery.message",
         "  const kbdToast = (text: string) => ctx.answerCallbackQuery({ text }).catch(() => {})",
         "  if (!kbdMsg || !ctx.from || kbdMsg.chat.type !== 'private' || kbdMsg.chat.id !== ctx.from.id "
-        "|| !loadAccess().allowFrom.includes(String(ctx.from.id))) { await kbdToast('Nem engedélyezett.'); return }",
+        "|| !loadAccess().allowFrom.includes(String(ctx.from.id))) { await kbdToast('" + t["not_allowed"] + "'); return }",
         "  const kbdRows = 'reply_markup' in kbdMsg ? kbdMsg.reply_markup?.inline_keyboard : undefined",
         "  const kbdButton = /^kbd:(0|[1-9]|1[01])$/.test(data) "
         "? kbdRows?.flat().find(b => 'callback_data' in b && b.callback_data === data) : undefined",
-        "  if (!kbdButton) { await kbdToast(data === 'kbd:-' ? 'Erre már válaszoltál.' "
-        ": 'Ez a gomb már nem él, írd be a választ.'); return }",
+        "  if (!kbdButton) { await kbdToast(data === 'kbd:-' ? '" + t["answered"] + "' "
+        ": '" + t["dead"] + "'); return }",
         "  if (/^[^\\p{L}\\p{N}]*\\//u.test(kbdButton.text) || /[\\u0000-\\u001f\\u007f-\\u009f]/.test(kbdButton.text) "
-        "|| PERMISSION_REPLY_RE.test(kbdButton.text)) { await kbdToast('Ez a gomb már nem él, írd be a választ.'); return }",
+        "|| PERMISSION_REPLY_RE.test(kbdButton.text)) { await kbdToast('" + t["dead"] + "'); return }",
         "  const kbdKey = kbdMsg.chat.id + ':' + kbdMsg.message_id",
-        "  if (marveenKbdAnswered.has(kbdKey)) { await kbdToast('Erre már válaszoltál.'); return }",
+        "  if (marveenKbdAnswered.has(kbdKey)) { await kbdToast('" + t["answered"] + "'); return }",
     ] + expiry + [
         "  if (marveenKbdAnswered.size >= 1000) marveenKbdAnswered.clear()",
         "  marveenKbdAnswered.add(kbdKey)",
@@ -235,7 +263,7 @@ def _kbd_callback(max_age_hours=0):
         "&& kbdMsg.message_thread_id != null ? '#' + kbdMsg.message_thread_id : ''))?.delete(kbdMsg.message_id)",
         "  try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: "
         "[[{ text: '✓ ' + kbdButton.text, callback_data: 'kbd:-' }]] } }) } "
-        "catch { marveenKbdAnswered.delete(kbdKey); await kbdToast('Nem sikerült rögzíteni, írd be a választ.'); return }",
+        "catch { marveenKbdAnswered.delete(kbdKey); await kbdToast('" + t["failed"] + "'); return }",
         "  await kbdToast('✓ ' + kbdButton.text)",
         "  await handleInbound(ctx, kbdButton.text, undefined)",
         "  return",
@@ -298,7 +326,7 @@ KBD_TYPED = ("inbound typing indicator", re.compile(r"^( *)// Typing indicator[^
     ]))
 KBD_ANCHORS = [KBD_SCHEMA, KBD_CHECK, KBD_SEND, KBD_SET, KBD_CALLBACK, KBD_TS, KBD_OPEN, KBD_TYPED]
 KBD_PATCH = {"name": "kbd", "marker": KBD_MARKER, "anchors": KBD_ANCHORS, "mode": "insert-after",
-             "apply": lambda text, buttons=True, max_age_hours=0: apply_kbd(text, buttons, max_age_hours),  # defined below
+             "apply": lambda text, buttons=True, max_age_hours=0, lang="hu": apply_kbd(text, buttons, max_age_hours, lang),  # defined below
              "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"}
 
 # TELEGRAM_REPLY_BUTTONS off: an owner may not want answer buttons at all (owner request, 2026-11-03: no buttons
@@ -583,14 +611,15 @@ def strip_kbd(text):
     return "".join(line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(" " + KBD_MARKER))
 
 
-def apply_kbd(text, buttons=True, max_age_hours=0):
+def apply_kbd(text, buttons=True, max_age_hours=0, lang="hu"):
     """Returns (new_text, status) like apply_patch, but a file that already carries kbd lines is not skipped:
     the lines are taken out and rebuilt, so an older version (the reply keyboard), or the other side of the
     TELEGRAM_REPLY_BUTTONS switch, is replaced in place and a current one comes out byte-identical ('already').
     Status also: 'damaged:kbd markers' (a marker that is not at the end of a line; the file is left alone)."""
     patch = KBD_PATCH if buttons else KBD_OFF_PATCH
-    if max_age_hours > 0:
-        patch = {**patch, "anchors": [_kbd_callback(max_age_hours) if a is KBD_CALLBACK else a for a in patch["anchors"]]}
+    if max_age_hours > 0 or _kbd_text(lang) is not KBD_TEXT["hu"]:
+        callback = _kbd_callback(max_age_hours, lang)
+        patch = {**patch, "anchors": [callback if a is KBD_CALLBACK else a for a in patch["anchors"]]}
     if KBD_MARKER not in text:
         return apply_patch(text, patch)
     base = strip_kbd(text)
@@ -601,8 +630,8 @@ def apply_kbd(text, buttons=True, max_age_hours=0):
         return text, status  # the old lines stay: they still work
     if new == text:
         return text, "already"
-    log("kbd lines rebuilt (an older or edited version, the other side of TELEGRAM_REPLY_BUTTONS, or another "
-        "TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)")
+    log("kbd lines rebuilt (an older or edited version, the other side of TELEGRAM_REPLY_BUTTONS, another "
+        "TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS, or another AGENT_TEXT_LANG)")
     return new, "patched"
 
 
@@ -646,11 +675,12 @@ TOPICS_PATCH = {"name": "topics", "fallback": TOPICS_FALLBACK}
 def patch_text(text, topics=False, buttons=True, lang="hu", max_age_hours=0):
     """Returns (new_text, [(patch, status), ...]). The topics entry is there
     when the switch is on, or when switching it off took the patch out.
-    `buttons` picks the side of the kbd patch (TELEGRAM_REPLY_BUTTONS); `lang` the pairtext language;
+    `buttons` picks the side of the kbd patch (TELEGRAM_REPLY_BUTTONS); `lang` the language of the pairtext lines and
+    of the button toasts;
     `max_age_hours` the age past which a button tap delivers nothing (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS, 0 = never)."""
     results = []
     for patch in PATCHES:
-        text, status = patch["apply"](text, buttons, max_age_hours) if "apply" in patch else apply_patch(text, patch)
+        text, status = patch["apply"](text, buttons, max_age_hours, lang) if "apply" in patch else apply_patch(text, patch)
         results.append((patch, status))
     # pairtext last: independent of the others (its own marker and anchors), all-or-nothing on its own.
     text, status = apply_pairtext(text, lang)

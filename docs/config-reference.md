@@ -338,7 +338,9 @@ már rég továbblépett. Beállítva (például `24`) egy ennél régebbi kérd
 jut el az ügynökhöz: a felugró üzenet azt kéri, hogy a választ írd be, és a kérdés gombjai helyére
 egyetlen „⏱ Lejárt, írd be a választ” gomb kerül (mint a megválaszolt kérdésnél a „✓ <felirat>”). A kor a kérdés elküldési idejétől számít (a Telegram-üzenet saját időbélyege),
 így a plugin újraindítása után is érvényes. Egy már megválaszolt kérdésnél továbbra is az „Erre
-már válaszoltál.” üzenet jön. A gombokat csak koppintáskor cseréli, magától nem.
+már válaszoltál.” üzenet jön. A gombokat csak koppintáskor cseréli, magától nem. A felugró
+üzenetek és ez a felirat a gombág többi felugró üzenetével együtt az `AGENT_TEXT_LANG` nyelvén
+szólnak (nincs beállítva vagy `hu`: magyarul, ahogy itt; `en`: angolul, „⏱ Expired, type your answer”).
 
 **Beállítás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`*, vagy
 `.env`-ben például `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24`. Egész óra 0 és 8760 között; a `0`

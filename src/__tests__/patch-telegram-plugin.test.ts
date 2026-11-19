@@ -1858,3 +1858,121 @@ describe("the install's own settings reach the patch (no switch, as channels.sh 
     expect(got.state.topics).toBe('on')
   })
 })
+
+// Geri on #2897 (note 3): the toasts and the "expired" label of the button branch were Hungarian on every install.
+// They follow AGENT_TEXT_LANG now, read the way the pairtext patch reads it (en or hu, anything else hu); Hungarian is
+// the text the branch always had, so an hu install's file does not change.
+describe('kbd: the button toasts follow AGENT_TEXT_LANG', () => {
+  const EN = {
+    notAllowed: 'Not allowed.',
+    answered: 'You already answered this.',
+    dead: 'This button no longer works, type your answer.',
+    failed: 'Could not record it, type your answer.',
+    expired: 'This question has expired, type your answer.',
+    expiredButton: '⏱ Expired, type your answer',
+  }
+  const now = () => Math.floor(Date.now() / 1000)
+  // patch_text on the given text; lang null = the call without a language (the default)
+  function patchText(text: string, lang: string | null, maxAge = 0, buttons = true): string {
+    const code = [
+      'import importlib.util, sys',
+      "spec = importlib.util.spec_from_file_location('ptp', sys.argv[1])",
+      'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      "kw = {} if sys.argv[2] == '-' else {'lang': sys.argv[2]}",
+      "sys.stdout.write(m.patch_text(sys.stdin.read(), False, sys.argv[4] == 'on', max_age_hours=int(sys.argv[3]), **kw)[0])",
+    ].join('\n')
+    const r = spawnSync('python3', ['-c', code, SCRIPT, lang ?? '-', String(maxAge), buttons ? 'on' : 'off'],
+      { input: text, encoding: 'utf-8', timeout: 30_000 })
+    expect(r.status, r.stderr).toBe(0)
+    return r.stdout
+  }
+  const fixture = () => readFileSync(FIXTURE, 'utf-8')
+
+  it('hu, and any value but en, gives the file patched without a language, byte for byte', () => {
+    for (const maxAge of [0, 24]) {
+      const plain = patchText(fixture(), null, maxAge)
+      expect(plain).toContain("await kbdToast('Erre már válaszoltál.')")
+      for (const lang of ['hu', 'de', '']) expect(patchText(fixture(), lang, maxAge), `${lang}/${maxAge}`).toBe(plain)
+    }
+  })
+
+  it('en: no Hungarian left in the kbd lines, with and without a max age, on either side of TELEGRAM_REPLY_BUTTONS; the file parses', () => {
+    for (const maxAge of [0, 24]) {
+      for (const buttons of [true, false]) {
+        const text = patchText(fixture(), 'en', maxAge, buttons)
+        const kbd = kbdLines(text).join('\n')
+        expect(kbd, `${maxAge}/${buttons}`).not.toMatch(/[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/)
+        expect(kbd, `${maxAge}/${buttons}`).toContain(`await kbdToast('${EN.notAllowed}')`)
+        expect(kbd.includes(EN.expiredButton), `${maxAge}/${buttons}`).toBe(maxAge > 0)
+        expect(syntaxErrors(text)).toEqual([])
+      }
+    }
+  })
+
+  it('en, through the real callback branch: every toast and the expired label', async () => {
+    const patched = patchText(fixture(), 'en', 24)
+    const h = callbackHarness(patched)
+    expect((await h.press({ data: 'kbd:0', fromId: 7 })).answers).toEqual([{ text: EN.notAllowed }])
+    expect((await h.press({ data: 'kbd:9' })).answers).toEqual([{ text: EN.dead }])
+    expect((await h.press({ data: 'kbd:x' })).answers).toEqual([{ text: EN.dead }])
+    expect((await h.press({ data: 'kbd:-' })).answers).toEqual([{ text: EN.answered }])
+    const old = await h.press({ data: 'kbd:1', messageId: 903, extra: { date: now() - 25 * 3600 } })
+    expect(old.answers).toEqual([{ text: EN.expired }])
+    expect(old.edits).toEqual([{ reply_markup: { inline_keyboard: [[{ text: EN.expiredButton, callback_data: 'kbd:x' }]] } }])
+    const failed = await h.press({ data: 'kbd:1', messageId: 904, edit: 'fail' })
+    expect(failed.answers).toEqual([{ text: EN.failed }])
+    const ok = await h.press({ data: 'kbd:1', messageId: 905 })
+    expect(ok.answers).toEqual([{ text: '✓ Béta' }])
+    expect((await h.press({ data: 'kbd:1', messageId: 905 })).answers).toEqual([{ text: EN.answered }])
+    expect(h.delivered.map(d => d.text)).toEqual(['Béta'])
+  })
+
+  it('switching the language is the in-place rebuild: hu -> en -> hu gives the fresh file each time', () => {
+    for (const [maxAge, buttons] of [[0, true], [24, true], [24, false]] as const) {
+      const hu = patchText(fixture(), 'hu', maxAge, buttons)
+      const en = patchText(fixture(), 'en', maxAge, buttons)
+      // the kbd lines themselves differ (the pairtext lines differ anyway)
+      expect(kbdLines(en)).not.toEqual(kbdLines(hu))
+      expect(patchText(hu, 'en', maxAge, buttons)).toBe(en)
+      expect(patchText(en, 'hu', maxAge, buttons)).toBe(hu)
+      expect(patchText(en, 'en', maxAge, buttons)).toBe(en)
+    }
+  })
+
+  it('both languages have the same texts, each safe between single quotes in the plugin source', () => {
+    const code = [
+      'import importlib.util, json, sys',
+      "spec = importlib.util.spec_from_file_location('ptp', sys.argv[1])",
+      'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      'print(json.dumps(m.KBD_TEXT))',
+    ].join('\n')
+    const r = spawnSync('python3', ['-c', code, SCRIPT], { encoding: 'utf-8' })
+    const texts = JSON.parse(r.stdout) as Record<string, Record<string, string>>
+    expect(Object.keys(texts).sort()).toEqual(['en', 'hu'])
+    expect(Object.keys(texts.en).sort()).toEqual(Object.keys(texts.hu).sort())
+    expect(texts.en).toEqual({ not_allowed: EN.notAllowed, answered: EN.answered, dead: EN.dead, failed: EN.failed,
+      expired: EN.expired, expired_button: EN.expiredButton })
+    for (const t of [...Object.values(texts.hu), ...Object.values(texts.en)]) {
+      expect(t, t).not.toMatch(/['\\\n]/)
+      expect(t.trim(), t).not.toBe('')
+    }
+  })
+
+  it("the install's AGENT_TEXT_LANG=en reaches the toasts with no switch, as channels.sh runs it", () => {
+    const install = mkdtempSync(join(tmpdir(), 'tg-install-lang-'))
+    try {
+      mkdirSync(join(install, 'scripts'))
+      mkdirSync(join(install, 'store'))
+      copyFileSync(SCRIPT, join(install, 'scripts', 'patch-telegram-plugin.py'))
+      writeFileSync(join(install, '.env'), 'AGENT_TEXT_LANG=en\n')
+      const state = join(install, 'store', 'telegram-plugin-patch.json')
+      const r = spawnSync('python3', [join(install, 'scripts', 'patch-telegram-plugin.py'), '--state', state, cache],
+        { encoding: 'utf-8', timeout: 30_000 })
+      expect(r.status, r.stderr).toBe(0)
+      expect(readFileSync(server, 'utf-8')).toBe(patchText(fixture(), 'en'))
+      expect(JSON.parse(readFileSync(state, 'utf-8')).lang).toBe('en')
+    } finally {
+      rmSync(install, { recursive: true, force: true })
+    }
+  })
+})
