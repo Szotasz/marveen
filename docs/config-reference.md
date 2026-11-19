@@ -191,7 +191,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
 | `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
-| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (0–8760) | `0` (nem jár le) | mind | igen (csatorna-indítás) |
+| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (min 0, max 8760) | `0` (nem jár le) | mind | igen (csatorna-indítás) |
 | `DISCORD_PLUGIN_EXT` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
 | `DISCORD_OWNER_USER_ID` | string | üres | mind | igen (csatorna-indítás) |
 | `DISCORD_BACKFILL` | boolean | `1` (be) | mind | igen (csatorna-indítás) |

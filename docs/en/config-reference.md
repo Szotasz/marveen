@@ -185,7 +185,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (off) | macOS only | yes |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (off) | all | yes (channel start) |
 | `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (on) | all | yes (channel start) |
-| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (0–8760) | `0` (never expire) | all | yes (channel start) |
+| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (min 0, max 8760) | `0` (never expire) | all | yes (channel start) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- main-agent config isolation (macOS)
 
