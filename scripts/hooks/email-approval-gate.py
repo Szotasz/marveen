@@ -102,7 +102,9 @@ EVERY malformed input (unparseable stdin included) blocks: unlike the copy
 gate, which audits and stays alive on harness faults, this gate authorizes,
 so "cannot decide" is always a deny.
 """
+import ctypes
 import email.utils
+import errno
 import hashlib
 import importlib.util
 import json
@@ -143,7 +145,9 @@ _NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
 # duplicate paths, an absolute path and a sha256 of exactly 64 lowercase hex characters --
 # and on EVERY invocation the matcher hashes and scans one read, and refuses a
 # writable file or ancestor directory; the path must be its own real path (no
-# symlink anywhere in it), and a path that cannot be resolved fails closed. Keep in sync with
+# symlink anywhere in it), and a path that cannot be resolved fails closed.
+# A read-only file system (EROFS) counts as unwritable, as EACCES/EPERM do; any other
+# probe error fails closed. A gate running as effective uid 0 never grants. Keep in sync with
 # validAgentSendException in email-send-gate.mjs and readAgentSendExceptions in agent-scaffold.ts.
 _SCRIPT_SHA256_RX = re.compile(r"[0-9a-f]{64}")
 
@@ -244,9 +248,30 @@ def script_source_loads_only_builtins(data):
     return True
 
 
+_ACCESS_LIBC = None
+
+
+def _access_w_errno(p):
+    """0 when p is writable for the effective probe, else the errno of access(2) (W_OK).
+    os.access hides the errno, so call libc access(2) directly. Any failure to make the call
+    raises, and the callers treat that as writable (fail closed)."""
+    global _ACCESS_LIBC
+    if _ACCESS_LIBC is None:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.access.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        libc.access.restype = ctypes.c_int
+        _ACCESS_LIBC = libc
+    ctypes.set_errno(0)
+    rc = _ACCESS_LIBC.access(os.fsencode(p), os.W_OK)
+    return 0 if rc == 0 else (ctypes.get_errno() or errno.EIO)
+
+
 def _any_path_component_writable(p):
     while True:
-        if os.access(p, os.W_OK):
+        err = _access_w_errno(p)
+        if err == 0:
+            return True
+        if err not in (errno.EACCES, errno.EPERM, errno.EROFS):
             return True
         parent = os.path.dirname(p)
         if parent == p:
@@ -255,6 +280,9 @@ def _any_path_component_writable(p):
 
 
 def script_path_writable(path):
+    geteuid = getattr(os, 'geteuid', None)
+    if geteuid is not None and geteuid() == 0:
+        return True
     try:
         p = os.fspath(path)
         if os.path.realpath(p, strict=True) != p:

@@ -50,8 +50,10 @@ also be unwritable by the gate's own uid. The configured path must be its own
 real path: a path with a symlink anywhere in it is refused even when every
 directory is unwritable (configure the output of `realpath <file>` instead), and
 a path that cannot be resolved fails closed. Unknown permission states fail closed.
-Sticky writable directories such as `/tmp` count as writable; a gate running
-as root never matches. A failed content or path check falls back to the
+A read-only file system counts as unwritable (EROFS, like EACCES and EPERM); any other error from the
+permission probe fails closed, and both gates apply the same rule. A gate running as root (effective uid 0)
+never grants the exception.
+Sticky writable directories such as `/tmp` count as writable. A failed content or path check falls back to the
 ordinary gate decisions.
 
 The whole command must be one literal invocation: an optional interpreter

@@ -75,7 +75,8 @@ const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'
 // lowercase hex characters. On EVERY invocation the matcher hashes and scans
 // one read, and refuses a writable file or ancestor directory; the path must be
 // its own real path (no symlink anywhere in it), and a path that cannot be resolved
-// fails closed.
+// fails closed. A read-only file system (EROFS) counts as unwritable, as
+// EACCES/EPERM do; any other probe error fails closed. A gate running as effective uid 0 never grants.
 // Keep in sync with valid_agent_send_exception in
 // scripts/hooks/email-approval-gate.py and readAgentSendExceptions in
 // agent-scaffold.ts.
@@ -200,13 +201,14 @@ function anyPathComponentWritable(p) {
       accessSync(p, constants.W_OK)
       return true
     } catch (err) {
-      if (!['EACCES', 'EPERM'].includes(err?.code)) return true
+      if (!['EACCES', 'EPERM', 'EROFS'].includes(err?.code)) return true
     }
     if (dirname(p) === p) return false
   }
 }
 
 export function scriptPathWritable(path) {
+  if (process.geteuid?.() === 0) return true
   try {
     if (realpathSync(path) !== path) return true
     return anyPathComponentWritable(path)

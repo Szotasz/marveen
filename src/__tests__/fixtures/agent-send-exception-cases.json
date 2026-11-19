@@ -37,52 +37,52 @@
     },
     {
       "name": "different script",
-      "command": "node /absolute/path/to/other.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "node /absolute/path/to/other.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
       "name": "extra html",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --html /absolute/path/to/body.html",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --html /absolute/path/to/body.html",
       "match": false
     },
     {
       "name": "unknown flag",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --unknown value",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --unknown value",
       "match": false
     },
     {
       "name": "missing value",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --subject",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --subject",
       "match": false
     },
     {
       "name": "positional",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send unexpected",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa unexpected",
       "match": false
     },
     {
       "name": "cd prefix",
-      "command": "cd /absolute/path && node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "cd /absolute/path && node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
       "name": "pipe",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send | cat",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | cat",
       "match": false
     },
     {
       "name": "substitution",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject $(echo subject) --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject $(echo subject) --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
       "name": "relative body",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
       "name": "relative attachment",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach attachment.bin --confirm-send",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
@@ -92,37 +92,37 @@
     },
     {
       "name": "duplicate value",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --to other@example.invalid",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --to other@example.invalid",
       "match": false
     },
     {
       "name": "assignment",
-      "command": "EXAMPLE=1 node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "EXAMPLE=1 node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
       "name": "quote concatenation",
-      "command": "node /absolute/path/to/run'ner'.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "node /absolute/path/to/run'ner'.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
       "name": "redirection",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send > /absolute/path/to/output",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > /absolute/path/to/output",
       "match": false
     },
     {
       "name": "newline",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send\necho done",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\necho done",
       "match": false
     },
     {
       "name": "semicolon",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send; echo done",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; echo done",
       "match": false
     },
     {
       "name": "backtick",
-      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject `echo subject` --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject `echo subject` --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
@@ -147,12 +147,12 @@
     },
     {
       "name": "interpreter /usr/bin/nodejs",
-      "command": "/usr/bin/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "/usr/bin/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
       "name": "interpreter /usr/local/bin/nodejs",
-      "command": "/usr/local/bin/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "/usr/local/bin/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
@@ -162,17 +162,17 @@
     },
     {
       "name": "interpreter /absolute/path/to/node",
-      "command": "/absolute/path/to/node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "/absolute/path/to/node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
       "name": "interpreter /absolute/path/to/nodejs",
-      "command": "/absolute/path/to/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "/absolute/path/to/nodejs /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {
       "name": "interpreter /tmp/x/node",
-      "command": "/tmp/x/node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "command": "/tmp/x/node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "match": false
     },
     {

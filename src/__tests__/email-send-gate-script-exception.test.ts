@@ -169,6 +169,12 @@ describe('named-script exception', () => {
 })
 
 describe('parser conformance (also read by email-approval-gate-script-exception.test.py)', () => {
+  it('every negative send case carries one well-formed digest, so it fails for its own reason', () => {
+    for (const c of cases.filter(c => !c.match && c.command.split(/\s+/).includes('send')
+      && !c.name.includes('envelope digest'))) {
+      expect(c.command.match(/--envelope-sha256 [0-9a-f]{64}(?![0-9a-f])/g)).toHaveLength(1)
+    }
+  })
   for (const c of cases) it(c.name, () => {
     expect(Boolean(agentScriptException(c.command, agentName, config))).toBe(c.match)
   })
@@ -382,6 +388,30 @@ describe('script path writability', () => {
     accessProbe.errorCode = 'ENOENT'
     expect(scriptPathWritable(scriptFile)).toBe(true)
     expect(agentScriptException(command, agentName, config)).toBeNull()
+  })
+  it('treats EACCES, EPERM and EROFS as unwritable and fails closed on any other probe error', () => {
+    for (const [code, expected] of [
+      ['EACCES', false], ['EPERM', false], ['EROFS', false],
+      ['ENOENT', true], ['EIO', true], ['ELOOP', true],
+    ] as const) {
+      accessProbe.errorCode = code
+      expect(scriptPathWritable(scriptFile)).toBe(expected)
+    }
+  })
+  it('a root runner never gets the exception', () => {
+    accessProbe.mode = 'stub'
+    accessProbe.writablePath = null
+    accessProbe.errorCode = 'EACCES'
+    const geteuid = vi.spyOn(process, 'geteuid').mockReturnValue(1000)
+    try {
+      expect(scriptPathWritable(scriptFile)).toBe(false)
+      expect(agentScriptException(command, agentName, config)).not.toBeNull()
+      geteuid.mockReturnValue(0)
+      expect(scriptPathWritable(scriptFile)).toBe(true)
+      expect(agentScriptException(command, agentName, config)).toBeNull()
+    } finally {
+      geteuid.mockRestore()
+    }
   })
   it('refuses a symlinked path even when nothing is writable', () => {
     const targetParent = mkdtempSync(join(tmpdir(), 'agent-send-target-'))

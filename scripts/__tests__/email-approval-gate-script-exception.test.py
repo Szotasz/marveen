@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Named-script approval and parser conformance. Run with python3; exit 0 = pass."""
+import errno
 import hashlib
 import importlib.util
 import json
@@ -59,10 +60,10 @@ def main():
             print('SKIP: unwritable system path check runs as root')
         else:
             assert real_gate.script_path_writable(os.path.realpath('/usr/bin/env')) is False
-        with patch.object(real_gate.os, 'access', side_effect=OSError('unknown state')):
+        with patch.object(real_gate, '_access_w_errno', side_effect=OSError('unknown state')):
             assert real_gate.script_path_writable(str(probe_file)) is True
         # Only one ancestor writable also fails, even when the file itself is not.
-        with patch.object(real_gate.os, 'access', side_effect=lambda path, mode: path == str(install)):
+        with patch.object(real_gate, '_access_w_errno', side_effect=lambda path: 0 if path == str(install) else errno.EACCES):
             assert real_gate.script_path_writable(str(probe_file)) is True
         print('PASS: real path writability and fail-closed probe')
         target_parent = install / 'target-parent'
@@ -73,11 +74,21 @@ def main():
         link_dir.mkdir()
         (link_dir / 'via').symlink_to(target, target_is_directory=True)
         via_path = str(link_dir / 'via' / 'runner.ext')
-        with patch.object(real_gate.os, 'access', side_effect=lambda path, mode: False):
+        with patch.object(real_gate, '_access_w_errno', side_effect=lambda path: errno.EACCES):
             assert real_gate.script_path_writable(str(target / 'runner.ext')) is False
             assert real_gate.script_path_writable(via_path) is True
             assert real_gate.script_path_writable(str(install / 'missing-dir' / 'x.ext')) is True
         print('PASS: symlinked path refused, real path accepted, unresolvable path fails closed')
+        for code, expected in [(errno.EACCES, False), (errno.EPERM, False), (errno.EROFS, False),
+                               (errno.ENOENT, True), (errno.EIO, True), (errno.ELOOP, True)]:
+            with patch.object(real_gate, '_access_w_errno', side_effect=lambda path: code):
+                assert real_gate.script_path_writable(str(target / 'runner.ext')) is expected
+        with patch.object(real_gate, '_access_w_errno', side_effect=lambda path: errno.EACCES):
+            with patch.object(real_gate.os, 'geteuid', return_value=1000):
+                assert real_gate.script_path_writable(str(target / 'runner.ext')) is False
+            with patch.object(real_gate.os, 'geteuid', return_value=0):
+                assert real_gate.script_path_writable(str(target / 'runner.ext')) is True
+        print('PASS: errno parity with the JS gate (EACCES/EPERM/EROFS unwritable, other errors fail closed); root never grants')
         # SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT.
         # The corpus entry carries the SHAPE only (a placeholder path and sha256);
         # it is bound here to a real temp script, the expected sha256 computed from
