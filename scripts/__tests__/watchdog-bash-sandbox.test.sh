@@ -248,7 +248,8 @@ fi
 # ── Part 4: an install without the sandbox list, and the nightly backup (Dani 81206 B1) ─
 # The recorded node used to live in store/bash-sandbox/, which the dashboard then created (0555) on EVERY install;
 # scripts/backup.sh copies the store with `cp -pR`, so its EXIT trap's `rm -rf` could not remove the staged copy and a
-# .stage.* directory stayed in BACKUP_DIR after every run, with exit 0. A fresh install with no BASH_SANDBOX_AGENTS
+# .stage.* directory stayed in BACKUP_DIR after every run, and the run exited 1 (set -euo pipefail: the failing rm in the
+# EXIT trap sets the exit code). A fresh install with no BASH_SANDBOX_AGENTS
 # anywhere: the dashboard start's two store writers from its own dist (the node record, the sandbox sync of an
 # unlisted agent), then one backup.sh run.
 echo "install without the sandbox list:"
