@@ -253,6 +253,9 @@ KBD_CALLBACK = _kbd_callback()
 # most 300 code points; its caption when the question is a captioned file). Before, a tap arrived as the bare label
 # ("Egyik sem"), and once the session had moved on (a restart, a tap days later) nothing said which question it
 # answered (owner report, 2026-11-08). No reply_to_selected: the excerpt is never the owner's own selection.
+# So for a tap reply_to_message_id equals the row's own message_id: the ledger row points at itself. Nothing follows
+# reply chains today (only the column is stored); a reader that ever does must stop at a self-reference, and must not
+# attribute the excerpt to the owner (it is the bot's question).
 KBD_TS = ("inbound meta imagePath", re.compile(
     r"^( *)\.\.\.\(imagePath \? \{ image_path: imagePath \} : \{\}\),\n", re.MULTILINE), "insert-before",
     _kbd_lines([

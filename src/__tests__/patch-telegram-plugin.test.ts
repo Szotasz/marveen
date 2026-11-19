@@ -1783,7 +1783,78 @@ describe('kbd: answer buttons expire (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)', ()
     expect(entry.slice(0, 200)).toMatch(/type: 'int',\s+default: 0,\s+min: 0,\s+max: 8760,/)
     expect(readFileSync(SCRIPT, 'utf-8')).toContain('KBD_MAX_AGE_HOURS_MAX = 8760')
     for (const doc of ['docs/config-reference.md', 'docs/en/config-reference.md']) {
-      expect(readFileSync(join(ROOT, doc), 'utf-8'), doc).toContain('#### `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`')
+      const text = readFileSync(join(ROOT, doc), 'utf-8')
+      expect(text, doc).toContain('#### `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`')
+      // the table row writes the bounds the way the rest of both files does for an int
+      const row = text.split('\n').find(l => l.startsWith('| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` |')) ?? ''
+      expect(row, doc).toContain('int (min 0, max 8760)')
+      expect(row, doc).not.toMatch(/\d\u2013\d/)
     }
+  })
+})
+
+// channels.sh runs the patcher with no switch at all, so the install's own settings are the path every real install
+// takes: main() reads them from <install>/store/config-overrides.json, then <install>/.env, where <install> is the
+// folder above the script. Run here from a copy of the script in a scratch install, and compared byte for byte with
+// the run that passes the same value as an explicit switch (Geri on #2897: with the setting line in main() replaced
+// by a constant, every other test stayed green).
+describe("the install's own settings reach the patch (no switch, as channels.sh runs it)", () => {
+  let install = ''
+  beforeEach(() => {
+    install = mkdtempSync(join(tmpdir(), 'tg-install-'))
+    mkdirSync(join(install, 'scripts'))
+    mkdirSync(join(install, 'store'))
+    copyFileSync(SCRIPT, join(install, 'scripts', 'patch-telegram-plugin.py'))
+  })
+  afterEach(() => rmSync(install, { recursive: true, force: true }))
+
+  function runInstall(env: string | null, overrides: Record<string, unknown> | null) {
+    if (env !== null) writeFileSync(join(install, '.env'), env)
+    if (overrides !== null) writeFileSync(join(install, 'store', 'config-overrides.json'), JSON.stringify(overrides))
+    copyFileSync(FIXTURE, server)
+    const state = join(install, 'store', 'telegram-plugin-patch.json')
+    const r = spawnSync('python3', [join(install, 'scripts', 'patch-telegram-plugin.py'), '--state', state, cache],
+      { encoding: 'utf-8', timeout: 30_000 })
+    expect(r.status, r.stderr).toBe(0)
+    return { text: readFileSync(server, 'utf-8'), state: JSON.parse(readFileSync(state, 'utf-8')) }
+  }
+  // The explicit-switch run, all three switches given, so the repo's own .env never decides anything.
+  function withSwitches({ topics = 'off', buttons = 'on', maxAge = '0' } = {}) {
+    copyFileSync(FIXTURE, server)
+    expect(run(['--topics', topics, '--buttons', buttons, '--buttons-max-age', maxAge]).status).toBe(0)
+    return readFileSync(server, 'utf-8')
+  }
+
+  it('nothing set: the registry defaults (topics off, buttons on, no expiry)', () => {
+    const got = runInstall(null, null)
+    expect(got.text).toBe(withSwitches())
+    expect(got.state).toMatchObject({ topics: 'off', buttons: 'on', buttons_max_age_hours: 0 })
+  })
+
+  it('TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS from .env, and config-overrides.json winning over it', () => {
+    const fromEnv = runInstall('TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24\n', null)
+    expect(fromEnv.text).toBe(withSwitches({ maxAge: '24' }))
+    expect(fromEnv.text).toContain('kbdMsg.date > 86400)')
+    expect(fromEnv.state.buttons_max_age_hours).toBe(24)
+    const fromStore = runInstall('TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24\n', { TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS: '48' })
+    expect(fromStore.text).toBe(withSwitches({ maxAge: '48' }))
+    expect(fromStore.state.buttons_max_age_hours).toBe(48)
+  })
+
+  it('TELEGRAM_REPLY_BUTTONS off from .env, and config-overrides.json turning it back on', () => {
+    const off = runInstall('TELEGRAM_REPLY_BUTTONS=0\n', null)
+    expect(off.text).toBe(withSwitches({ buttons: 'off' }))
+    expect(off.text).not.toBe(withSwitches())
+    expect(off.state.buttons).toBe('off')
+    const on = runInstall('TELEGRAM_REPLY_BUTTONS=0\n', { TELEGRAM_REPLY_BUTTONS: '1' })
+    expect(on.text).toBe(withSwitches())
+    expect(on.state.buttons).toBe('on')
+  })
+
+  it('TELEGRAM_TOPICS_ENABLED on from .env', () => {
+    const got = runInstall('TELEGRAM_TOPICS_ENABLED=1\n', null)
+    expect(got.text).toBe(withSwitches({ topics: 'on' }))
+    expect(got.text).not.toBe(withSwitches())
+    expect(got.state.topics).toBe('on')
   })
 })
