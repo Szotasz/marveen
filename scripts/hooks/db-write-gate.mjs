@@ -1044,10 +1044,31 @@ const COPY_PROGRAMS = new Set(['cp', 'mv', 'install', 'ln', 'rsync', 'ditto', 'g
 const TEXT_PASS = new Set(['cat', 'tac', 'head', 'tail', 'tee', 'dd', 'sed', 'gsed', 'awk', 'gawk', 'mawk', 'nawk', 'tr',
   'sort', 'uniq', 'cut', 'paste', 'fold', 'expand', 'unexpand', 'iconv'])
 // (a) the file's names, grown by every copy a later segment makes of it (to a fixpoint)
-export function copiedNames(segs, k, targets) {
+// GATEPATHNORM1118 (a): beyond the text tools, ANY program that is fed the file (an operand, its stdin, a carrying pipe,
+// or a command substitution that reads it, [subs]) and writes a redirect makes a copy, and passes the text on down a
+// pipe; tar extracting a carried archive into a directory writes the file's last part there; split writes its pieces
+// under its prefix; a copier's brace source is expanded, and a glob source that matches the file is the file.
+// A segment the shell-word parser cannot read (a brace pattern, find's `{} \;`) is read loosely, by whitespace, so the
+// file reaches the rules above instead of the segment being skipped. Loose words only add matches.
+function looseWords(own) {
+  const toks = String(own).trim().split(/\s+/).filter(Boolean).map((t) => t.replace(/^['"]|['"]$/g, '').replace(/\\$/, ''))
+  const words = []
+  const redirects = []
+  for (let i = 0; i < toks.length; i++) {
+    const m = /^(\d?)(>>?|<)(.*)$/.exec(toks[i])
+    if (m) { const target = m[3] || toks[++i]; if (m[2] !== '<' && target) redirects.push({ value: target }); continue }
+    words.push({ value: toks[i] })
+  }
+  return Object.assign(words, { redirects })
+}
+const wordsOf = (own) => shellWords(own) ?? looseWords(own)
+const SPLIT_SUFFIXES = [...'abcdefghijklmnopqrstuvwxyz'].map((c) => `a${c}`).concat([...'0123456789'].map((d) => `0${d}`))
+export function copiedNames(segs, k, targets, subs = []) {
   const names = [...targets]
   const add = (v) => { if (v && v !== '/dev/null' && !names.includes(v)) { names.push(v); return true } return false }
   const stdinOf = (own) => names.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}(?:['"\\s;|&)]|$)`).test(own))
+  const isTheFile = (src) => names.includes(src) || (GLOB_CHAR_RX.test(src) && !src.includes('{')
+    && names.some((t) => dirname(t) === dirname(src) && globMatchesName(basename(src), basename(t))))
   for (let grew = true; grew;) {
     grew = false
     // carries[j]: segment j passes the file's text on unchanged (a text tool or copier that read it, as an operand, on
@@ -1055,11 +1076,20 @@ export function copiedNames(segs, k, targets) {
     const carries = []
     for (let j = k + 1; j < segs.length; j++) {
       const s = segs[j]
-      const all = shellWords(s.own)
+      const all = wordsOf(s.own)
       if (!all || !all.length) continue
       const { rest } = unwrapRun(all)
       const prog = segCommand(rest)
       const vals = rest.slice(1).map((w) => w.value)
+      // a copier's brace word (cp /tmp/{f,g}): when one of its expansions is the file, every expansion is a name of it
+      // (the expansion order is not relied on)
+      if (COPY_PROGRAMS.has(prog)) {
+        for (const v of vals) {
+          if (!v.includes('{')) continue
+          const parts = expandBraces(v, 16) ?? []
+          if (parts.some((p) => names.includes(p))) for (const p of parts) if (add(p)) grew = true
+        }
+      }
       const piped = j > k + 1 && (segs[j - 1].sep === '|' || segs[j - 1].sep === '|&') && carries[j - 1] === true
       if (TEXT_PASS.has(prog)) {
         const fed = piped || stdinOf(s.own) || vals.some((v) => names.includes(v) || (v.startsWith('if=') && names.includes(v.slice(3))))
@@ -1070,7 +1100,33 @@ export function copiedNames(segs, k, targets) {
         if (prog === 'dd') for (const v of vals) if (v.startsWith('of=') && add(v.slice(3))) grew = true
         continue
       }
-      if (!COPY_PROGRAMS.has(prog)) continue
+      if (!COPY_PROGRAMS.has(prog)) {
+        // an interpreter or jq builds new text (the stated limit), and a sender's output is the reply: neither is a copy
+        if (LATER_RUNS_DECIDES_RX.test(prog) || SENDERS.has(prog) || prog === 'jq') continue
+        // the caller's own scripts and functions (a path, a .sh name) and the remote/container runners make output of
+        // their own (a query result, a remote reply), not a copy of what they read
+        const w0 = rest[0]?.value ?? ''
+        if (w0.includes('/') || /\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|php)$/.test(w0) || CONTAINER_RUNNERS.has(prog) || prog === 'ssh') continue
+        // a command substitution reading the file feeds a copy only through a printer (echo/printf print its text)
+        const subFed = PRINTERS.has(prog) && s.own.includes(SUBST_MARK) && subs.some((x) => names.some((t) => x.includes(t)))
+        const cDir = prog === 'tar' ? vals[vals.findIndex((v) => v === '-C' || v === '--directory') + 1] : undefined
+        const tarMember = !!cDir && vals.some((v) => !v.startsWith('-') && v !== cDir && names.includes(join(cDir, v)))
+        const fed = piped || stdinOf(s.own) || subFed || tarMember || vals.some((v) => names.includes(v))
+        if (!fed) continue
+        carries[j] = true
+        for (const r of all.redirects) if (add(r.value)) grew = true
+        if (prog === 'tar' && (piped || vals.some((v) => names.includes(v))) && vals.some((v) => /^-?[A-Za-z]*x/.test(v) || v === '--extract')) {
+          const cIdx = vals.findIndex((v) => v === '-C' || v === '--directory')
+          const dir = cIdx >= 0 ? vals[cIdx + 1] : null
+          if (dir) for (const t of [...names]) if (add(dir.replace(/\/+$/, '') + '/' + basename(t))) grew = true
+        }
+        if (prog === 'split') {
+          const ops = vals.filter((v, x) => !v.startsWith('-') && !/^-[A-Za-z]$/.test(vals[x - 1] ?? ''))
+          const prefix = ops.length >= 2 ? ops[ops.length - 1] : 'x'
+          for (const sfx of SPLIT_SUFFIXES) if (add(prefix + sfx)) grew = true
+        }
+        continue
+      }
       const operands = []
       let dest = null
       for (let x = 0; x < vals.length; x++) {
@@ -1081,9 +1137,9 @@ export function copiedNames(segs, k, targets) {
       }
       if (dest === null) dest = operands.length >= 2 ? operands.pop() : null
       // a copier writes its destination, and a source's name inside it when that is a directory, only when a source is the file
-      if (dest === null || !operands.some((src) => names.includes(src))) continue
+      if (dest === null || !operands.some(isTheFile)) continue
       if (add(dest)) grew = true
-      for (const src of operands) if (names.includes(src) && add(dest.replace(/\/+$/, '') + '/' + basename(src))) grew = true
+      for (const src of operands) if (isTheFile(src) && add(dest.replace(/\/+$/, '') + '/' + basename(src))) grew = true
     }
   }
   return names
@@ -1117,20 +1173,109 @@ function substAsCode(rest, name) {
   if (!CODE_RUNNER_RX.test(name)) return false
   return rest.some((w, i) => i > 0 && /^-[A-Za-z]*[ceE]$/.test(w.value) && (rest[i + 1]?.value ?? '').includes(SUBST_MARK))
 }
+// GATEPATHNORM1118 (b)(c)(d): the rule turned around. A later program that names the written file runs it, unless it is
+// known not to: a reader, a copier or text tool (its copies are followed in copiedNames), a data transformer, a file
+// handler, or a sender. Interpreters are left to laterRuns (their script word, stdin and code decide). Two named
+// exceptions inside the known programs: an awk/sed program text that names the file runs it, and find with an -exec
+// action whose path or -name pattern reaches the file runs it. chmod stays a runner (laterRuns), as before.
+const DATA_TRANSFORMERS = new Set(['base64', 'xxd', 'od', 'hexdump', 'rev', 'strings', 'column', 'fmt', 'nl', 'pr', 'gzip',
+  'gunzip', 'zcat', 'bzip2', 'bunzip2', 'bzcat', 'xz', 'unxz', 'xzcat', 'zstd', 'tar', 'zip', 'unzip', 'split', 'csplit',
+  'comm', 'join', 'look', 'cksum', 'b2sum', 'sha512sum', 'sha384sum', 'sha224sum', 'xattr', 'lsattr', 'getfacl'])
+const FILE_HANDLERS = new Set(['touch', 'mkdir', 'rm', 'rmdir', 'unlink', 'chown', 'chgrp', 'truncate', 'find', 'read', 'mapfile', 'readarray'])
+const SENDERS = new Set(['curl', 'gh', 'glab'])
+const PROGRAM_TEXT_TOOLS = new Set(['awk', 'gawk', 'mawk', 'nawk', 'sed', 'gsed'])
+const FIND_ACTIONS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+// the programs laterRuns already decides for (the interpreters by their script word, stdin and code; the runners always)
+const LATER_RUNS_DECIDES_RX = /^(?:(?:ba|z|da|k)?sh|ash|fish|node|nodejs|deno|bun|ruby|perl|php|osascript|tsx|python[\d.]*|sqlite3?|source|\.|chmod|env|xargs|exec|eval|npx)$/
+const NAME_EDGE = `['"=!|:@(\\s,;]`
+/** Does word [v] name [t]: the whole word, or [t] after =, !, |, :, @, a quote or a space, up to a word end. */
+export function wordNamesFile(v, t) {
+  if (!v || !t) return false
+  if (v === t) return true
+  return new RegExp(`(?:^|${NAME_EDGE})${escapeRx(t)}(?=$|['")|;&:,\\s])`).test(v)
+}
+// Containers and VMs run a file's text over there, not against this install (the container rules judge their own text).
+const CONTAINER_RUNNERS = new Set(['docker', 'podman', 'nerdctl', 'kubectl', 'colima', 'lima', 'limactl', 'tart', 'orb', 'multipass'])
+const LOCAL_HOST_RX = /^(?:[^@\s]+@)?(?:localhost|127\.\d+\.\d+\.\d+|::1|\[::1\]|0\.0\.0\.0)$/
+const SSH_ARG_OPTS = new Set(['-b', '-c', '-D', '-E', '-e', '-F', '-I', '-i', '-J', '-L', '-l', '-m', '-O', '-o', '-p', '-Q', '-R', '-S', '-W', '-w'])
+function namedByUnknownProgram(name, rest, own, names, fns = new Set()) {
+  if (!rest.length || !name) return false
+  // a program given by its path, or a shell function the command defines, is the caller's own code: what it does with
+  // a file it is handed is the stated limit (like an interpreter's script arguments), not a run read from its name
+  const word0 = rest[0].value
+  if (word0.includes('/') || fns.has(word0) || /\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|rb|pl|php)$/.test(word0)) return false
+  if (CONTAINER_RUNNERS.has(name)) return false
+  const vals = rest.slice(1).map((w) => w.value)
+  const stdin = names.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}(?:['"\\s;|&)]|$)`).test(own))
+  if (name === 'find') {
+    if (!vals.some((v) => FIND_ACTIONS.has(v))) return false
+    return vals.some((v, x) => names.includes(v) || (/^-(?:i?name|i?path|regex)$/.test(vals[x - 1] ?? '') && names.some((t) => globMatchesName(v, lastPart(t)))))
+  }
+  const named = stdin || vals.some((v) => names.some((t) => wordNamesFile(v, t)))
+  if (!named) return false
+  if (PROGRAM_TEXT_TOOLS.has(name)) return vals.some((v) => !names.includes(v) && !v.startsWith('if=') && names.some((t) => wordNamesFile(v, t)))
+  // git runs a file named in a -c value (a pager, an editor, an external diff, an alias with !); a path it diffs, shows,
+  // adds or takes as a message is not run
+  if (name === 'git') return vals.some((v, x) => vals[x - 1] === '-c' && names.some((t) => wordNamesFile(v, t)))
+  // ssh runs a file it reads as its config (-F, -o), and a file it hands to a shell on this machine; on another host the
+  // text runs over there
+  if (name === 'ssh') {
+    if (vals.some((v, x) => ['-F', '-o'].includes(vals[x - 1] ?? '') && names.some((t) => wordNamesFile(v, t)))) return true
+    let host = null
+    for (let x = 0; x < vals.length; x++) {
+      if (SSH_ARG_OPTS.has(vals[x])) { x++; continue }
+      if (vals[x].startsWith('-')) continue
+      host = vals[x]
+      break
+    }
+    return !!host && LOCAL_HOST_RX.test(host)
+  }
+  if (name === 'curl') return vals.some((v, x) => ['-K', '--config'].includes(vals[x - 1] ?? '') && names.includes(v))
+  if (READERS.has(name) || COPY_PROGRAMS.has(name) || TEXT_PASS.has(name) || DATA_TRANSFORMERS.has(name)
+    || FILE_HANDLERS.has(name) || SENDERS.has(name) || LATER_RUNS_DECIDES_RX.test(name)) return false
+  return true
+}
+
 // Does a later segment run (or feed as code) a file segment [k] writes? laterRuns, plus the forms above.
 export function runsWrittenFile(segs, k, targets, cmd) {
   if (!targets.length) return false
-  const names = copiedNames(segs, k, targets)
+  // a substitution's text with the command's own literal assignments spelled out (S=/abs; ... "$(cat $S/a.sh)")
+  const lits = new Map([...String(cmd).matchAll(/(?:^|[;&|\s])([A-Za-z_]\w*)=([^\s;&|'"$`()<>]+)/g)].map((m) => [m[1], m[2]]))
+  const subs = liveSubstitutions(cmd).flatMap((x) => {
+    const e = x.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g, (m, a, b) => lits.get(a ?? b) ?? m)
+    return e === x ? [x] : [x, e]
+  })
+  const names = copiedNames(segs, k, targets, subs)
   if (laterRuns(segs, k, names)) return true
-  const subsName = liveSubstitutions(cmd).some((s) => namesAny(s, names))
+  const subsName = subs.some((s) => namesAny(s, names))
   const startup = (a) => STARTUP_VARS.has(a.name) && (namesAny(a.value, names)
     || names.some((t) => t.startsWith(a.value.replace(/\/+$/, '') + '/')))
+  // GATEPATHNORM1118 (e): a variable that holds the file's text (X=$(cat f), export X=$(<f), read/mapfile X < f) is code
+  // where a shell takes it as code: eval, source, a shell's -c, a here-string to a shell, or the command word
+  const fns = new Set([...String(cmd).matchAll(/(?:^|[;&|{(\s])(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)\s*\{/g)].map((m) => m[1]))
+  const tainted = new Set()
+  const stdinNames = (own) => names.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}(?:['"\\s;|&)]|$)`).test(own))
+  const refs = (v) => [...tainted].some((x) => new RegExp(`\\$\\{?${escapeRx(x)}(?![A-Za-z0-9_])`).test(v))
   for (let j = k + 1; j < segs.length; j++) {
     const s = segs[j]
-    const all = shellWords(s.own)
+    const all = wordsOf(s.own)
     if (!all || !all.length) continue
     const { rest, assigns, splits, wrapped } = unwrapRun(all)
     const name = segCommand(rest)
+    {
+      const decl = DECLARERS.has(name) ? rest.slice(1).filter((w) => ASSIGN_RX.test(w.value)).map((w) => ({ name: w.value.slice(0, w.value.indexOf('=')), value: w.value.slice(w.value.indexOf('=') + 1) })) : []
+      for (const a of [...assigns, ...decl]) if (subsName && a.value.includes(SUBST_MARK)) tainted.add(a.name)
+      if ((name === 'read' || name === 'mapfile' || name === 'readarray') && stdinNames(s.own)) {
+        for (const w of rest.slice(1)) if (!w.value.startsWith('-') && /^[A-Za-z_]\w*$/.test(w.value)) tainted.add(w.value)
+      }
+      if (tainted.size) {
+        const vals = rest.map((w) => w.value)
+        if (vals.length && refs(vals[0])) return true
+        if ((name === 'eval' || name === 'source' || name === '.') && vals.slice(1).some(refs)) return true
+        if (CODE_RUNNER_RX.test(name) && vals.some((v, i) => i > 0 && /^-[A-Za-z]*[ceE]$/.test(v) && refs(vals[i + 1] ?? ''))) return true
+        if (CODE_RUNNER_RX.test(name) && s.own.includes('<<<') && refs(s.own.slice(s.own.indexOf('<<<')))) return true
+      }
+    }
     const declared = DECLARERS.has(name)
       ? rest.slice(1).filter((w) => ASSIGN_RX.test(w.value)).map((w) => ({ name: w.value.slice(0, w.value.indexOf('=')), value: w.value.slice(w.value.indexOf('=') + 1) }))
       : []
@@ -1142,7 +1287,13 @@ export function runsWrittenFile(segs, k, targets, cmd) {
       if (laterRuns([segs[k], { ...s, own: rest.map((w) => q(w.value)).join(' ') + stdin }], 0, names)) return true
     }
     if (rest.length && optionProgramRuns(name, rest, names)) return true
+    // GATEPATHNORM1118 (b)(c)(d): any other program naming it, and an assignment before the command that names it
+    if (rest.length && namedByUnknownProgram(name, rest, s.own, names, fns)) return true
+    if (rest.length && assigns.some((a) => names.some((t) => wordNamesFile(a.value, t)))) return true
     if (subsName && substAsCode(rest, name)) return true
+    // (e) a here-string to a shell holding a substitution that reads the file (bash <<< "$(cat f)") needs no rule here:
+    // the gate denies it without one (on develop too); a dedicated check here survived as a mutant every gate test and
+    // five probe forms (sh -s, zsh with a backtick, python3, $(<f), the path in a variable).
   }
   return false
 }
@@ -1171,22 +1322,39 @@ export function writtenFileSpellings(segs, k, targets, ctx) {
     if (a) abs.add(a)
     else if (!n.startsWith('-') && lastPart(n)) lostParts.add(lastPart(n))
   }
-  for (const t of targets) add(t, ctx.cwd)
+  // a literal value the command assigns itself (S=/abs/dir) stands for its $S and ${S}, in the names and in the cds
+  const lit = new Map()
+  const learn = (own) => {
+    const ws = shellWords(own)
+    if (!ws || !ws.length) return
+    const { assigns, rest } = unwrapRun(ws)
+    if (rest.length) return
+    for (const a of assigns) if (a.value && !/[$`*?\s]/.test(a.value)) lit.set(a.name, a.value)
+  }
+  const expand = (w) => String(w).replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g, (m, x, y) => lit.get(x ?? y) ?? m)
+  for (let i = 0; i <= k; i++) learn(segs[i].own)
+  for (const t of targets) { add(t, ctx.cwd); if (expand(t) !== t) add(expand(t), ctx.cwd) }
   // the directory each later segment's command runs in (its wrapper's chdir included); null where it cannot be followed
   // (a later absolute cd makes it known again)
   const where = []
   const c = { ...ctx }
   const segWords = []
   for (let j = k + 1; j < segs.length; j++) {
+    learn(segs[j].own)
     const body = subshellParts(segs[j].own).body
     const ws = shellWords(body)
+    const wsx = shellWords(expand(body))
     let here = c.cwd ?? null
-    for (const d of ws ? unwrapRun(ws).chdirs : []) here = here === null ? null : resolvedAt(d, here)
+    for (const d of wsx ? unwrapRun(wsx).chdirs : []) here = here === null ? null : resolvedAt(d, here)
     where[j] = here
-    segWords[j] = ws ? [...ws.map((w) => w.value), ...(ws.redirects ?? []).map((r) => r.value)] : []
-    cwdAfterSegment(body, c)
+    // the words, the write redirects, and the stdin redirects (sh < "$F": the spelling is only in the input redirect;
+    // a heredoc, a here-string, an fd duplication and a process substitution are not a file read)
+    const stdinWords = [...body.matchAll(/(?:^|[^<])<(?![<&(])\s*(['"]?)([^\s;&|'"<>()`]+)\1/g)].map((m) => m[2])
+    segWords[j] = ws ? [...ws.map((w) => w.value), ...(ws.redirects ?? []).map((r) => r.value), ...stdinWords] : []
+    cwdAfterSegment(expand(body), c)
   }
-  const matches = (w, j) => {
+  const matches = (w0, j) => {
+    const w = expand(w0)
     const a = resolvedAt(w, where[j])
     if (a && abs.has(a)) return true
     if (!lostParts.size && where[j] !== null) return false
@@ -1199,6 +1367,20 @@ export function writtenFileSpellings(segs, k, targets, ctx) {
   for (let round = 0; round <= segs.length; round++) {
     let grew = false
     for (let j = k + 1; j < segs.length; j++) {
+      const ws = segWords[j].map(expand)
+      // (a) a symlink made to a directory that holds the file: the file's path through the link is one more path of it
+      if (lastPart(ws[0] ?? '') === 'ln' && ws.some((v) => /^-[A-Za-z]*s/.test(v))) {
+        const ops = ws.slice(1).filter((v) => !v.startsWith('-'))
+        const src = ops.length === 2 ? resolvedAt(ops[0], where[j]) : null
+        const link = ops.length === 2 ? resolvedAt(ops[1], where[j]) : null
+        if (src && link) for (const a of [...abs]) if (a.startsWith(src + '/') && !abs.has(link + a.slice(src.length))) { abs.add(link + a.slice(src.length)); grew = true }
+      }
+      // (d) python -m MOD runs MOD.py (or MOD/__main__.py) from the directory it runs in: MOD is a spelling of the file
+      const m = ws.indexOf('-m')
+      if (m > 0 && /^python[\d.]*$/.test(lastPart(ws[0])) && ws[m + 1] && !names.has(segWords[j][m + 1])) {
+        const mod = ws[m + 1].replace(/\./g, '/')
+        if ([`${mod}.py`, `${mod}/__main__.py`].some((c) => { const a = resolvedAt(c, where[j]); return !!a && abs.has(a) })) { names.add(segWords[j][m + 1]); grew = true }
+      }
       for (const w of segWords[j]) if (!names.has(w) && matches(w, j)) { names.add(w); grew = true }
     }
     for (const n of copiedNames(segs, k, [...names])) {
@@ -1815,6 +1997,16 @@ export function installFileDeny(command, opts = {}) {
     // a substitution is not lost.
     const hits = hitsIn(cmd, ctx)
     if (hits.some((h) => h.kind !== 'ancestor') || (hits.length && !ancestorOnlyHolds(cmd))) return true
+    // GATEPATHNORM1118 (e): a file written by a redirect and named again later, in a command the segmenter cannot read
+    // (a quoted substitution with an expansion inside: bash <<< "$(cat $S/a.sh)", eval "`cat $S/a.sh`"). The written
+    // text cannot be told apart from its run here, so it is read as commands: quotes and printf/echo escapes undone, a
+    // protected name in it is denied.
+    const written = [...cmd.matchAll(/>>?\s*['"]?([^\s;&|'"()<>`]+)/g)].map((m) => ({ t: m[1], at: m.index + m[0].length }))
+      .filter(({ t }) => t !== '/dev/null' && !/^&\d*-?$/.test(t) && lastPart(t))
+    if (written.some(({ t, at }) => cmd.slice(at).includes(lastPart(t)))) {
+      const asCommands = cmd.replace(/\\[nr]/g, '\n').replace(/['"`]/g, ' ')
+      if (hitsIn(asCommands, ctx).some((h) => h.kind !== 'ancestor')) return true
+    }
     for (const words of roughCommands(cmd)) {
       const git = gitWords(words)
       if (git && gitDecision(git, ctx) === 'deny') return 'git'
