@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, chmodSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, chmodSync, readdirSync, symlinkSync, lstatSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -129,7 +129,10 @@ describe('tryAcquirePidLock', () => {
     expect(d.isAlive).toHaveBeenCalledTimes(3)
   })
 
-  it.skipIf(process.getuid?.() === 0)('T8 does not swallow an unlink failure other than ENOENT', () => {
+  // Since CHCOORDRACE1118 a read-only dir already fails at the temp-file write,
+  // before any unlink: the point kept here is that the failure is thrown, not
+  // swallowed, and the existing lock is left as it was.
+  it.skipIf(process.getuid?.() === 0)('T8 does not swallow a write or unlink failure other than ENOENT', () => {
     writeFileSync(file, String(PREV))
     chmodSync(dir, 0o500)
     try {
@@ -137,17 +140,38 @@ describe('tryAcquirePidLock', () => {
     } finally {
       chmodSync(dir, 0o700)
     }
+    expect(readFileSync(file, 'utf-8')).toBe(String(PREV))
   })
 
   it('T9 rethrows a non-EEXIST write error', () => {
     expect(() => tryAcquirePidLock(join(dir, 'missing', 'x.pid'), SELF, deps(false, null))).toThrow()
   })
 
-  it('T10 acquireSingleInstanceLock uses tryAcquirePidLock with O_EXCL', () => {
+  it('T10 acquireSingleInstanceLock uses tryAcquirePidLock, which links the lock into place', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'channel-coordinator.ts'), 'utf-8')
     const body = src.slice(src.indexOf('function acquireSingleInstanceLock'))
     expect(body.slice(0, body.indexOf('function releaseLock'))).toContain('tryAcquirePidLock(')
-    expect(src).toContain("flag: 'wx'")
+    expect(src).toContain('linkSync(tmp, pidFile)')
+  })
+
+  // CHCOORDRACE1118: the lock is written to a temp file and linked into place, so
+  // it never exists without its content. The temp file must not outlive the call.
+  it('T11 leaves no temp file behind, on success and on a held lock', () => {
+    expect(tryAcquirePidLock(file, SELF, deps(false, null))).toEqual({ ok: true, reclaimed: null })
+    expect(readdirSync(dir)).toEqual(['coordinator.pid'])
+    expect(tryAcquirePidLock(file, PREV, deps(true, 'node /x/dist/channel-coordinator.js'))).toEqual({ ok: false, holder: SELF, reason: 'held' })
+    expect(readdirSync(dir)).toEqual(['coordinator.pid'])
+    expect(readFileSync(file, 'utf-8')).toBe(String(SELF))
+  })
+
+  it('T12 a symlink planted at the temp path is replaced, its target is never written', () => {
+    const target = join(dir, 'victim')
+    writeFileSync(target, 'untouched')
+    symlinkSync(target, `${file}.${SELF}.tmp`)
+    expect(tryAcquirePidLock(file, SELF, deps(false, null))).toEqual({ ok: true, reclaimed: null })
+    expect(readFileSync(target, 'utf-8')).toBe('untouched')
+    expect(readFileSync(file, 'utf-8')).toBe(String(SELF))
+    expect(lstatSync(file).isSymbolicLink()).toBe(false)
   })
 })
 

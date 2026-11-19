@@ -26,7 +26,7 @@
 // Lifecycle: launchd (com.<SERVICE_ID>.channel-coordinator, #1873) with KeepAlive. SIGTERM
 // drains, persists offset, exits cleanly.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, linkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
@@ -301,19 +301,30 @@ function verdictForExisting(lock: ParsedLock | null, selfPid: number, deps: PidL
 // equality on it reclaimed a LIVE holder's lock. The holder's command line is
 // read from /proc/<pid>/cmdline first and from ps only when /proc cannot tell;
 // a live holder neither can read is refused, whatever the clocks say (round 4).
-// O_EXCL makes the create exclusive;
-// reclaiming a stale file re-reads it right before unlinking, which narrows but
+// The lock appears WITH its content: it is written to a pid-unique temp file and
+// hard-linked into place, and link() fails with EEXIST like O_EXCL. A plain
+// O_EXCL create exposed an empty file between the create and the write; a second
+// starter read it as garbage, reclaimed it, and both won (CHCOORDRACE1118:
+// 3 of 20 simultaneous starts on an earlier develop; a reader process saw the
+// O_EXCL-created file empty 307 times in 85004 reads, the linked one never).
+// Reclaiming a stale file re-reads it right before unlinking, which narrows but
 // cannot fully close the window in which two starters act on the same stale file
 // (Node has no flock). Attempts are bounded; if another starter keeps winning we
 // refuse (the safe side).
 export function tryAcquirePidLock(pidFile: string, selfPid: number, deps: PidLockDeps): PidLockResult {
   let reclaimed: number | null = null
+  const tmp = `${pidFile}.${selfPid}.tmp`
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      writeFileSync(pidFile, ownLockContent(selfPid, deps), { flag: 'wx', mode: 0o600 })
+      // wx on the temp file too: a leftover (or planted symlink) is removed, never written through.
+      try { unlinkSync(tmp) } catch { /* absent */ }
+      writeFileSync(tmp, ownLockContent(selfPid, deps), { flag: 'wx', mode: 0o600 })
+      linkSync(tmp, pidFile)
       return { ok: true, reclaimed }
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
+    } finally {
+      try { unlinkSync(tmp) } catch { /* absent */ }
     }
     let content: string
     try { content = readFileSync(pidFile, 'utf-8') } catch (err) {
