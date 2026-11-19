@@ -201,6 +201,15 @@ describe('the setup session reaches only the closed list among gated paths', () 
     }
   })
 
+  // Dani n1 (81264): the setup session counts as no principal for the closed public list too.
+  it('the self-authenticating public routes: 404 for a setup session, as for no cookie', async () => {
+    for (const [method, path] of [['POST', '/api/approvals/teams-card-action'], ['POST', '/api/operator/login'], ['GET', '/api/agents/zara/avatar'], ['GET', '/api/video-review/file']] as const) {
+      expect(requiresAuth(path, method), path).toBe(false)
+      const r = await gateSetup(path, method)
+      expect([r.auth, r.status], path).toEqual([null, 404])
+    }
+  })
+
   it('the wizard state and creating the first login pass the gate', async () => {
     // the list itself is pinned: widening it is a review decision, not a quiet edit
     expect(SETUP_SESSION_PATHS).toEqual([['GET', '/api/onboarding/status'], ['POST', '/api/auth/users']])
