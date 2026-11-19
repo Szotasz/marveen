@@ -92,7 +92,8 @@ describe('POST /api/agent-specs files a request, never an agent', () => {
     expect(r.status).toBe(201)
     const a = db.getApproval(r.body.approvalId)!
     expect([a.category, a.status, a.content_hash, a.agent_id]).toEqual(['agent_create', 'pending', r.body.contentHash, 'samu'])
-    expect(a.action_description).toBe(r.body.text)
+    // Dani #2940 B1: the owner's text stays with the approval, the requester gets the id and the hash only
+    expect(Object.keys(r.body).sort()).toEqual(['approvalId', 'contentHash', 'ok'])
     expect(a.action_description).toContain('bot-token: beállítva (vault: TG-KUTATO)')
     expect(a.action_description).not.toContain(TOKEN)
     expect(specRow(a.id)!.content_hash).toBe(a.content_hash)
