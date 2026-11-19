@@ -41,6 +41,8 @@ import {
   MAX_ABANDON_WINDOW_MINUTES,
   FEDERATION_ROUTING_MODES,
   DEFAULT_ROUTING_MODE,
+  parseAllowedAgents,
+  isPeerAgentAllowed,
   type FederationConfig,
   type FederationPeer,
   type FederationRoutingMode,
@@ -160,6 +162,13 @@ export function validateInboxPayload(
     }
   }
 
+  // Owner-set agent allowlist for the sending peer: only listed agents of that
+  // peer may write to us (the same list hides the rest from status/directory).
+  const senderPeer = cfg.peers.find((peer) => peer.id === fromSystem)
+  if (!isPeerAgentAllowed(senderPeer, from.agent)) {
+    return { status: 403, error: 'sender agent is not in this peer\'s allowedAgents list' }
+  }
+
   if (typeof p.to !== 'string' || p.to.includes('/')) {
     return { status: 403, error: 'to must be a local (unqualified) agent id' }
   }
@@ -252,6 +261,7 @@ function peerView(p: FederationPeer): unknown {
     hasInboundToken: p.inboundToken.length > 0,
     shareCapabilitySummaries: p.shareCapabilitySummaries === true,
     ...(p.abandonWindowMinutes !== undefined ? { abandonWindowMinutes: p.abandonWindowMinutes } : {}),
+    ...(p.allowedAgents ? { allowedAgents: p.allowedAgents } : {}),
   }
 }
 
@@ -668,6 +678,8 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (p.shareCapabilitySummaries !== undefined && typeof p.shareCapabilitySummaries !== 'boolean') {
       json(res, { error: 'invalid shareCapabilitySummaries (boolean)' }, 400); return true
     }
+    const addAllowed = parseAllowedAgents(p.allowedAgents)
+    if (typeof addAllowed === 'string') { json(res, { error: `invalid allowedAgents: ${addAllowed}` }, 400); return true }
     const inboundToken = generatePeerInboundToken()
     const peer: FederationPeer = {
       id,
@@ -677,6 +689,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       trust: 'untrusted',
       ...(addWindow !== undefined ? { abandonWindowMinutes: addWindow } : {}),
       ...(p.shareCapabilitySummaries === true ? { shareCapabilitySummaries: true } : {}),
+      ...(addAllowed ? { allowedAgents: addAllowed } : {}),
     }
     // Carry routingMode forward: validateFederationConfig defaults an absent
     // routingMode to catalog-first, so omitting it here would silently reset
@@ -735,6 +748,14 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
         if (typeof p.shareCapabilitySummaries !== 'boolean') { json(res, { error: 'invalid shareCapabilitySummaries (boolean)' }, 400); return true }
         if (p.shareCapabilitySummaries) updated.shareCapabilitySummaries = true
         else delete updated.shareCapabilitySummaries
+      }
+      // allowedAgents: an array sets the list, null clears it (every agent of
+      // the peer visible again), absent leaves it unchanged.
+      if (p.allowedAgents !== undefined) {
+        const parsedAllowed = parseAllowedAgents(p.allowedAgents)
+        if (typeof parsedAllowed === 'string') { json(res, { error: `invalid allowedAgents: ${parsedAllowed}` }, 400); return true }
+        if (parsedAllowed) updated.allowedAgents = parsedAllowed
+        else delete updated.allowedAgents
       }
       const next: FederationConfig = { ...cfg, peers: cfg.peers.map((peer) => (peer.id === id ? updated : peer)) }
       const validated = validateFederationConfig(next)

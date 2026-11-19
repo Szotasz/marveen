@@ -17,7 +17,7 @@
 // 'ok' visible for hours exactly when visibility matters most.
 import { logger } from '../../logger.js'
 import { scrubSecurityTags } from '../../prompt-safety.js'
-import { getFederationConfig, FEDERATION_MIN_TOKEN_LENGTH, type FederationPeer } from './config.js'
+import { getFederationConfig, FEDERATION_MIN_TOKEN_LENGTH, isPeerAgentAllowed, type FederationPeer } from './config.js'
 import { isValidIdSegment } from './address.js'
 import { readBoundedBody, PeerResponseTooLargeError } from './http.js'
 import { FEDERATION_REQUEST_TIMEOUT_MS } from './bridge.js'
@@ -247,13 +247,32 @@ export function refreshFederationStatus(fetchImpl: typeof fetch = fetch): Promis
  *  for not-yet-polled peers so the UI always sees every configured peer. */
 export function getFederationStatus(): PeerStatus[] {
   const cfg = getFederationConfig()
-  return cfg.peers.map((peer) => statusCache.get(peer.id) ?? {
-    id: peer.id,
-    baseUrl: peer.baseUrl,
-    state: (!peer.outboundToken ? 'unpaired' : 'unknown') as PeerPollState,
-    lastChecked: 0,
-    lastOkAt: 0,
+  return cfg.peers.map((peer) => {
+    const st = statusCache.get(peer.id)
+    if (!st) {
+      return {
+        id: peer.id,
+        baseUrl: peer.baseUrl,
+        state: (!peer.outboundToken ? 'unpaired' : 'unknown') as PeerPollState,
+        lastChecked: 0,
+        lastOkAt: 0,
+      }
+    }
+    return st.manifest ? { ...st, manifest: filterManifestForPeer(st.manifest, peer) } : st
   })
+}
+
+/** Apply the peer's owner-set agent allowlist to a cached manifest. Done at
+ *  READ time, not at ingest: an allowlist edit then takes effect on the very
+ *  next status/directory read instead of after the next 10-minute poll, and
+ *  widening the list again needs no re-fetch. */
+export function filterManifestForPeer(manifest: PeerManifest, peer: FederationPeer): PeerManifest {
+  if (!peer.allowedAgents) return manifest
+  return {
+    ...manifest,
+    agents: manifest.agents.filter((a) => isPeerAgentAllowed(peer, a.id)),
+    skills: manifest.skills.filter((sk) => isPeerAgentAllowed(peer, sk.agent)),
+  }
 }
 
 /** Production reset (peer removal / full removal). */
