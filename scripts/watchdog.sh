@@ -68,11 +68,22 @@ agent_launch_env() {
 # BASHSANDBOX1022: an agent on the owner's BASH_SANDBOX_AGENTS list runs its Bash in Claude
 # Code's sandbox, from a --settings file the dashboard writes on every start of it (and removes
 # for an agent the switch does not list). A restart from here must carry the same file, or the
-# first auto-recovery would bring the agent back unsandboxed. The file's presence decides: this
-# script cannot read the dashboard's settings, and a stale file errs on the restrictive side.
+# first auto-recovery would bring the agent back unsandboxed.
+# WDSANDBOXMARKER1119: the file on disk does not decide (any process of this user can delete or
+# edit it). The restart writes it the way the dashboard's start does, through the same function
+# (scripts/bash-sandbox-sync.mjs -> dist/web/bash-sandbox.js), from the owner's list and sources.
+# Prints the flag (empty for an unlisted agent); returns 1 when the file cannot be produced (no
+# node or dist, an unreadable owner source, a write failure, an unexpected answer): the caller
+# then does not start the agent, as the dashboard refuses it (fail closed).
 agent_sandbox_flag() {
-  local F="$INSTALL_DIR/store/bash-sandbox/$1.settings.json"
-  if [ -f "$F" ]; then printf " --settings '%s'" "$F"; fi
+  local OUT
+  OUT="$(node "$INSTALL_DIR/scripts/bash-sandbox-sync.mjs" "$1" 2>>"$LOG")" || return 1
+  case "$OUT" in
+    "settings=") return 0 ;;
+    *"'"*|*$'\n'*) return 1 ;;
+    "settings=/"*"/store/bash-sandbox/$1.settings.json") printf " --settings '%s'" "${OUT#settings=}" ;;
+    *) return 1 ;;
+  esac
 }
 
 # CODEMODEFOLLOW1119: the dashboard decides whether an agent runs in Code Mode (resolveCodeModeLaunch: the owner's
@@ -91,7 +102,7 @@ agent_code_mode_env() {
 # fixtures (scripts/__tests__/watchdog-config-isolation.test.sh).
 if [ "${1:-}" = "--sandbox-flag" ]; then
   [ -n "${2:-}" ] || { echo "usage: watchdog.sh --sandbox-flag <agent-id>" >&2; exit 2; }
-  echo "flag=$(agent_sandbox_flag "$2")"
+  if FLAG="$(agent_sandbox_flag "$2")"; then echo "flag=$FLAG"; else echo "flag=REFUSED"; fi
   exit 0
 fi
 if [ "${1:-}" = "--code-mode-env" ]; then
@@ -359,8 +370,12 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   # watchdog restart must not hand the agent a different python3 (#1626 review).
   FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$LOG")"
   CODE_MODE_ENV="$(agent_code_mode_env "$AGENT_ID" "$AGENT_DIR")"
+  if ! SANDBOX_FLAG="$(agent_sandbox_flag "$AGENT_ID")"; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: not started: bash-sandbox settings could not be produced (fail-closed, BASH_SANDBOX_AGENTS)" >> "$LOG"
+    continue
+  fi
 
-  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && ${CODE_MODE_ENV}cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official$(agent_sandbox_flag "$AGENT_ID")"
+  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && ${CODE_MODE_ENV}cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official${SANDBOX_FLAG}"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

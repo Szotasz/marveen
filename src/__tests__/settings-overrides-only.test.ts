@@ -512,15 +512,18 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     'scripts/lib/owner_chat.py', // OWNER_ALERT_CHAT_ID mirror, parity-tested above
     'scripts/hooks/marveen-commands.py', // TELEGRAM_OWNER_USER_ID mirror, parity-tested above
     'scripts/patch-discord-plugin.py', // DISCORD_PLUGIN_EXT / DISCORD_OWNER_USER_ID mirror, parity-tested above
+    'scripts/bash-sandbox-sync.mjs', // BASH_SANDBOX_AGENTS through dist/web/bash-sandbox.js (WDSANDBOXMARKER1119)
   ])
   // file -> pinned mention count (comments and messages only, measured 2026-11-04)
   const MENTION_ONLY: Record<string, number> = {
     'scripts/vault-headers-helper.mjs': 1,
     'scripts/vault-resolve.mjs': 1,
-    'scripts/watchdog.sh': 1,
+    // WDSANDBOXMARKER1119: + a log line naming BASH_SANDBOX_AGENTS; the list is read by scripts/bash-sandbox-sync.mjs
+    'scripts/watchdog.sh': 2,
     'scripts/self-pace-gate.mjs': 1,
     'scripts/notify.sh': 1,
-    'scripts/hooks/db-write-gate.mjs': 2,
+    // WDSANDBOXMARKER1119: + a comment on the protected store/bash-sandbox directory
+    'scripts/hooks/db-write-gate.mjs': 3,
     // ISSUE2556X: a comment and a log line; both read through owner-chat.sh / owner_chat.py (the mirrors above)
     'scripts/main-inbox-observer.sh': 2,
     'scripts/hooks/persona-change-notify.py': 1,

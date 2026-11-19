@@ -228,11 +228,13 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     // GATEFILES1110: the owner-gated agent settings (a provider's baseUrl, the context-guard values)
     'store/custom-providers.json', 'store/context-guard.json',
     // DOCKERHTTPS1119 (Dani 81107 B2): the dashboard login's TOTP secrets and replay state
-    'store/.dashboard-totp.json']
+    'store/.dashboard-totp.json',
+    // WDSANDBOXMARKER1119: the per-agent launch files every restart path reads (a file under each directory)
+    'store/bash-sandbox/soma.settings.json', 'store/code-mode/soma.on']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/bash-sandbox', 'store/code-mode', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json',
       // SUPPORTKULCS1109 D5: the support state of this machine, one folder
@@ -279,6 +281,37 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     expect(bash(`: > ${p}`)).toEqual(DENY_FILE)
     expect(bash(`mv /tmp/x.json ${p}`)).toEqual(DENY_FILE)
     expect(bash(`cat ${p}`)).toEqual(ALLOW)
+  })
+  // WDSANDBOXMARKER1119: an agent deleting or editing its own sandbox settings or Code Mode marker would change how it
+  // comes back at the next restart; reading them stays free.
+  it.each([
+    ['store/bash-sandbox', 'soma.settings.json'],
+    ['store/code-mode', 'soma.on'],
+  ])('WDSANDBOXMARKER1119: writes under %s are denied; reads pass', (dir, name) => {
+    mkdirSync(join(root, dir), { recursive: true })
+    writeFileSync(join(root, dir, name), '{}')
+    const p = join(root, dir, name)
+    const bare = dir.split('/')[1]
+    for (const tool of ['Write', 'Edit']) expect(file(tool, p)).toEqual(DENY_FILE)
+    expect(file('Write', join(root, dir, 'zara.new'))).toEqual(DENY_FILE)
+    expect(bash(`rm ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -f ${dir}/${name}`)).toEqual(DENY_FILE)
+    expect(bash(`: > ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`echo '{"sandbox":{"enabled":false}}' > ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`mv /tmp/x.json ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`truncate -s 0 ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`chmod 755 ${join(root, dir)}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -rf ${join(root, dir)}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -rf ${bare}`, join(root, 'store'))).toEqual(DENY_FILE)
+    // the agent the switch is about is a sub-agent: the same verdict in that mode
+    const asSub = (command: string) => gateDecision('Bash', { command }, { cwd: join(root, 'agents', 'soma'), root, subAgent: true })
+    expect(asSub(`rm ${p}`)).toEqual(DENY_FILE)
+    expect(asSub(`echo '{}' > ${p}`)).toEqual(DENY_FILE)
+    expect(asSub(`cat ${p}`)).toEqual(ALLOW)
+    expect(bash(`cat ${p}`)).toEqual(ALLOW)
+    expect(bash(`ls ${join(root, dir)}`)).toEqual(ALLOW)
+    // a worktree's own copy is free
+    expect(file('Write', join(wt, dir, name), wt)).toEqual(ALLOW)
   })
   it('another file of the install is not protected', () => {
     expect(file('Write', join(root, 'scripts', 'other.py'))).toEqual(ALLOW)

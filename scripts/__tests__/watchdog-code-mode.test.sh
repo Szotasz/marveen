@@ -83,6 +83,9 @@ EOF
 printf '#!/bin/bash\necho "501 4242 1 0 0:00 ?? 0:00.00 node dist/index.js"\n' > "$STUBS/ps"
 printf '#!/bin/bash\nexit 0\n' > "$STUBS/claude"
 printf '#!/bin/bash\nexit 0\n' > "$STUBS/sleep"
+# node: the Bash sandbox helper's answer for an agent the owner's list does not name (WDSANDBOXMARKER1119); without
+# it the watchdog refuses every start, since it cannot read the list.
+printf '#!/bin/bash\necho settings=\n' > "$STUBS/node"
 chmod +x "$STUBS"/*
 
 # Guard: the stubs must be what the script resolves, or the run would reach a real tmux.
