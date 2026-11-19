@@ -149,19 +149,14 @@ export function syncBashSandboxSettings(name: string, opts: { dir?: string; vend
 // PATH (Homebrew, Linuxbrew, /usr/local/bin). A host whose node comes from elsewhere (nvm) has none there, and the
 // fail-closed restart then refused every sub-agent. The dashboard records the node it runs on here, one absolute path
 // and a newline; the watchdog uses it first and falls back to PATH only when the file is missing or not that shape.
-// The same directory and modes as the settings files (dir 0555, file 0444 between writes), under the same db-write
-// gate; written only when the path changed, so a normal restart does not touch the directory.
-export const DASHBOARD_NODE_FILE = '.node'
-export function recordDashboardNode(execPath = process.execPath, dir = BASH_SANDBOX_DIR): boolean {
-  const file = join(dir, DASHBOARD_NODE_FILE)
+// A read-only (0444) file directly in the store, under the db-write gate; written atomically and only when the path
+// changed. NOT under store/bash-sandbox/: that directory is kept 0555, and creating it on every install left a
+// directory scripts/backup.sh's cleanup cannot remove (Dani 81206 B1); an install without the sandbox list still
+// never gets one.
+export const DASHBOARD_NODE_PATH = join(STORE_DIR, '.dashboard-node')
+export function recordDashboardNode(execPath = process.execPath, file = DASHBOARD_NODE_PATH): boolean {
   const data = `${execPath}\n`
   try { if (readFileSync(file, 'utf-8') === data) return false } catch { /* missing or unreadable: write it */ }
-  mkdirSync(dir, { recursive: true })
-  chmodSync(dir, 0o755)
-  try {
-    atomicWriteFileSync(file, data, { mode: 0o444 })
-  } finally {
-    chmodSync(dir, 0o555)
-  }
+  atomicWriteFileSync(file, data, { mode: 0o444 })
   return true
 }

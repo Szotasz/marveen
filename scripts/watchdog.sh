@@ -67,11 +67,11 @@ agent_launch_env() {
 
 # WDSANDBOXNODE1119: the node to run the dashboard's code with. This script's PATH (below) has the Homebrew,
 # Linuxbrew and /usr/local bins, not a node from nvm or elsewhere, so the dashboard records the one it runs on
-# (process.execPath) in store/bash-sandbox/.node at start. It is taken only as one line holding an absolute path to an
+# (process.execPath) in store/.dashboard-node at start. It is taken only as one line holding an absolute path to an
 # existing executable file, with no quote and no colon (it also goes in front of PATH for npm start); anything else is
 # ignored and never run. Otherwise the node on PATH, and a log line says so. Prints nothing when there is neither.
 dashboard_node() {
-  local F="$INSTALL_DIR/store/bash-sandbox/.node" N=""
+  local F="$INSTALL_DIR/store/.dashboard-node" N=""
   if [ -f "$F" ]; then N="$(cat "$F" 2>/dev/null; printf x)"; N="${N%x}"; N="${N%$'\n'}"; fi
   case "$N" in
     *"'"*|*'"'*|*:*|*$'\n'*) ;;
