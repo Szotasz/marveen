@@ -2178,6 +2178,22 @@ const FILE_RUNNERS = new Set(['sqlite3', 'sqlite', 'source', '.', 'chmod', 'env'
 const isInterpreter = (name) => FILE_INTERPRETERS.has(name) || /^python[0-9.]*$/.test(name)
 const isFileRunner = (name) => FILE_RUNNERS.has(name) || isInterpreter(name)
 const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const SHELL_NAME_RX = /^(?:(?:ba|z|da|k)?sh|ash)$/
+/** GATEPATHNORM1118 F5: the script word of a shell run, given the words after the program: options start with - or +,
+ *  an option cluster ending in o or O (-o, +o, -eo, -O, +O) takes the next word as its argument, -- ends the options.
+ *  null for another program, or when no script word is left (the shell reads stdin, or -c gives the code). */
+export function shellScriptWord(name, args) {
+  if (!SHELL_NAME_RX.test(name)) return null
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i]
+    if (v === '--') return args[i + 1] ?? null
+    if (v === '-' || !/^[-+]/.test(v)) return v === '-' ? null : v
+    if (/^[-+][A-Za-z]*c[A-Za-z]*$/.test(v)) return null
+    if (/^[-+][A-Za-z]*[oO]$/.test(v)) i++
+  }
+  return null
+}
+
 export function laterRuns(segs, k, targets) {
   if (!targets.length) return false
   for (let j = k + 1; j < segs.length; j++) {
@@ -2192,7 +2208,10 @@ export function laterRuns(segs, k, targets) {
       const stdin = targets.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}`).test(s.own))
       const code = words.some((w, i) => /^-[A-Za-z]*[ceE]$/.test(w.value) && targets.some((t) => (words[i + 1]?.value ?? '').includes(t)))
       const script = words.slice(1).find((w) => !w.value.startsWith('-'))
-      if (stdin || code || (script && targets.includes(script.value))) return true
+      // GATEPATHNORM1118 F5: a shell option that takes an argument (-o NAME, +o NAME, -O NAME, +O NAME) is not the script
+      // word. Read in addition to the word above, never instead of it, so no run read before is lost.
+      const optScript = shellScriptWord(name, words.slice(1).map((w) => w.value))
+      if (stdin || code || (script && targets.includes(script.value)) || (optScript !== null && targets.includes(optScript))) return true
       continue
     }
     if (FILE_RUNNERS.has(name)) return true
