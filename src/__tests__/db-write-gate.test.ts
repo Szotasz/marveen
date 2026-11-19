@@ -313,6 +313,16 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     // a worktree's own copy is free
     expect(file('Write', join(wt, dir, name), wt)).toEqual(ALLOW)
   })
+  // WDSANDBOXNODE1119: the dashboard's node, which the watchdog runs, sits in the same directory and is denied the same way.
+  it('WDSANDBOXNODE1119: writing the recorded node file is denied; reading it passes', () => {
+    mkdirSync(join(root, 'store', 'bash-sandbox'), { recursive: true })
+    const p = join(root, 'store', 'bash-sandbox', '.node')
+    writeFileSync(p, '/usr/bin/node\n')
+    for (const tool of ['Write', 'Edit']) expect(file(tool, p)).toEqual(DENY_FILE)
+    expect(bash(`printf '/tmp/x/node' > ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -f store/bash-sandbox/.node`)).toEqual(DENY_FILE)
+    expect(bash(`cat ${p}`)).toEqual(ALLOW)
+  })
   it('another file of the install is not protected', () => {
     expect(file('Write', join(root, 'scripts', 'other.py'))).toEqual(ALLOW)
     expect(file('Write', join(root, '.claude', 'agents', 'x.md'))).toEqual(ALLOW)

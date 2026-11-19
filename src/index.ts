@@ -23,6 +23,7 @@ import { DECAY_SWEEP_INTERVAL_MS } from './db.js'
 import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
+import { recordDashboardNode } from './web/bash-sandbox.js'
 import { runLogRotationSweep, LOG_ROTATION_SWEEP_MS } from './web/log-rotation.js'
 import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
@@ -503,6 +504,14 @@ async function main(): Promise<void> {
   // Database
   initDatabase()
   logger.info('Adatbazis inicializalva')
+
+  // WDSANDBOXNODE1119: the node this dashboard runs on, for scripts/watchdog.sh (its PATH may not hold it, e.g. nvm).
+  // A failure is only logged: the watchdog then falls back to the node on its PATH, as before.
+  try {
+    if (recordDashboardNode()) logger.info({ node: process.execPath }, 'dashboard node recorded for the watchdog')
+  } catch (err) {
+    logger.warn({ err }, 'dashboard node not recorded; the watchdog uses the node on its PATH')
+  }
 
   // MIOAGENTINSTALL1114 T3: an atomic write of the agent package credential interrupted between write and rename
   // leaves its tmp file (holding the token) in the store; nothing else ever removes it.

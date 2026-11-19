@@ -22,7 +22,7 @@ vi.mock('../web/agent-config.js', () => ({ agentDir: (n: string) => join(tmpRoot
 
 const {
   parseSandboxAgents, bashSandboxEnabledFor, sandboxAllowedDomains, sandboxWritePaths,
-  buildBashSandboxSettings, syncBashSandboxSettings, bashSandboxSettingsPath,
+  buildBashSandboxSettings, syncBashSandboxSettings, bashSandboxSettingsPath, recordDashboardNode,
 } = await import('../web/bash-sandbox.js')
 
 const REPO = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..')
@@ -112,6 +112,39 @@ describe('syncBashSandboxSettings', () => {
   })
 })
 
+// WDSANDBOXNODE1119: the dashboard records the node it runs on for scripts/watchdog.sh, whose PATH may not hold it
+// (nvm). The full watchdog side is scripts/__tests__/watchdog-bash-sandbox.test.sh.
+describe('recordDashboardNode', () => {
+  const dir = join(tmpRoot, 'node-rec')
+  const file = join(dir, '.node')
+  it('writes the path and one newline, read-only, in the read-only directory; rewrites only on a change', () => {
+    expect(recordDashboardNode('/opt/x/bin/node', dir)).toBe(true)
+    expect(readFileSync(file, 'utf-8')).toBe('/opt/x/bin/node\n')
+    expect(statSync(file).mode & 0o777).toBe(0o444)
+    expect(statSync(dir).mode & 0o777).toBe(0o555)
+    const before = statSync(file).ino
+    expect(recordDashboardNode('/opt/x/bin/node', dir)).toBe(false)
+    expect(statSync(file).ino).toBe(before)
+    expect(recordDashboardNode('/home/u/.nvm/versions/node/v22/bin/node', dir)).toBe(true)
+    expect(readFileSync(file, 'utf-8')).toBe('/home/u/.nvm/versions/node/v22/bin/node\n')
+    expect(statSync(dir).mode & 0o777).toBe(0o555)
+  })
+  it('defaults to this process\'s own node', () => {
+    const d2 = join(tmpRoot, 'node-rec-default')
+    recordDashboardNode(undefined, d2)
+    expect(readFileSync(join(d2, '.node'), 'utf-8')).toBe(`${process.execPath}\n`)
+  })
+  it('the dashboard records it at start, under the store\'s bash-sandbox directory', () => {
+    const idx = readFileSync(join(REPO, 'src', 'index.ts'), 'utf-8')
+    const main = idx.slice(idx.indexOf('async function main()'))
+    expect(main).toMatch(/if \(recordDashboardNode\(\)\) logger\.info/)
+    expect(main.indexOf('recordDashboardNode()')).toBeLessThan(main.indexOf('startAgentProcess('))
+    const src = readFileSync(join(REPO, 'src', 'web', 'bash-sandbox.ts'), 'utf-8')
+    expect(src).toMatch(/export const DASHBOARD_NODE_FILE = '\.node'/)
+    expect(src).toMatch(/recordDashboardNode\(execPath = process\.execPath, dir = BASH_SANDBOX_DIR\)/)
+  })
+})
+
 // startAgentProcess is too wide to run here; its sandbox contract is pinned on the source, like
 // writeMainModel's guard (model-id-injection.test.ts).
 describe('the launch paths carry the file', () => {
@@ -167,7 +200,7 @@ describe('the launch paths carry the file', () => {
   it('watchdog.sh: the restart refuses before building the command, and the command carries the produced flag', () => {
     const wd = readFileSync(join(REPO, 'scripts', 'watchdog.sh'), 'utf-8')
     expect(wd).not.toMatch(/if \[ -f "\$F" \]; then printf " --settings/)
-    expect(wd).toMatch(/OUT="\$\(node "\$INSTALL_DIR\/scripts\/bash-sandbox-sync\.mjs" "\$1" 2>>"\$LOG"\)" \|\| return 1/)
+    expect(wd).toMatch(/NODE="\$\(dashboard_node\)"\n\s*\[ -n "\$NODE" \] \|\| return 1\n\s*OUT="\$\("\$NODE" "\$INSTALL_DIR\/scripts\/bash-sandbox-sync\.mjs" "\$1" 2>>"\$LOG"\)" \|\| return 1/)
     const loop = wd.slice(wd.indexOf('for AGENT_DIR in'))
     expect(loop).toMatch(/if ! SANDBOX_FLAG="\$\(agent_sandbox_flag "\$AGENT_ID"\)"; then\n\s*echo "[^\n]*not started: bash-sandbox settings could not be produced[^\n]*\n\s*continue\n\s*fi/)
     expect(loop.indexOf('if ! SANDBOX_FLAG=')).toBeLessThan(loop.indexOf('CMD="'))

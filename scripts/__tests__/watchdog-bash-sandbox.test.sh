@@ -152,5 +152,94 @@ else
   dashboard_shape "$SB/sbx.settings.json" && pass "relaunch: the file it names is the dashboard's shape" || fail "relaunch: the file it names is the dashboard's shape" "$(cat "$SB/sbx.settings.json" 2>&1)"
 fi
 
+# ── Part 3: which node (WDSANDBOXNODE1119) ──────────────────────────────
+# The dashboard records the node it runs on in store/bash-sandbox/.node; the watchdog uses it first, falls back to the
+# node on PATH (logged) when it is missing or not one line holding an absolute path to an executable file with no quote
+# or colon, and never runs a value it did not accept. A recorded value that would be accepted points at a wrapper that
+# marks its use and runs the real node; each rejected value points at a trap that marks if it is ever run.
+echo "watchdog node resolution:"
+REAL_NODE="$(node -p process.execPath)"
+NONODE_PATH="/usr/bin:/bin"
+LOGF="$FX/logs/watchdog.log"
+USED="$TMP/recorded-node.used"; TRAPPED="$TMP/trap-node.ran"; POISONED="$TMP/path-node.ran"
+mkdir -p "$TMP/nvm/bin" "$TMP/it's" "$TMP/two"$'\n'"lines" "$TMP/co:lon" "$TMP/rel/bin"
+printf '#!/bin/bash\necho used >> %q\nexec %q "$@"\n' "$USED" "$REAL_NODE" > "$TMP/nvm/bin/node"
+for t in "$TMP/it's/node" "$TMP/two"$'\n'"lines/node" "$TMP/co:lon/node" "$TMP/rel/bin/node"; do
+  printf '#!/bin/bash\necho ran >> %q\nexec %q "$@"\n' "$TRAPPED" "$REAL_NODE" > "$t"
+done
+chmod +x "$TMP/nvm/bin/node" "$TMP/it's/node" "$TMP/two"$'\n'"lines/node" "$TMP/co:lon/node" "$TMP/rel/bin/node"
+# record VALUE: written as the dashboard writes it (the value and one newline); "-" removes the file.
+record() { mkdir -p "$SB"; chmod 755 "$SB"; rm -f "$SB/.node"; [ "$1" = - ] || printf '%s\n' "$1" > "$SB/.node"; chmod 555 "$SB"; }
+# flag_in PATH ID: --sandbox-flag from inside $TMP/rel (a relative value would resolve there), under the given PATH.
+flag_in() { ( cd "$TMP/rel" && HOME="$FH" PATH="$1" bash "$WD" --sandbox-flag "$2" ); }
+reset_marks() { rm -f "$USED" "$TRAPPED" "$POISONED"; : > "$LOGF"; }
+FALLBACK_LINE="dashboard node not recorded or not usable"
+
+if [ -n "$(env PATH="$NONODE_PATH" /bin/bash -c 'command -v node')" ]; then
+  fail "a PATH without node can be built here (refusing to run part 3)" "$(env PATH="$NONODE_PATH" /bin/bash -c 'command -v node')"
+else
+  reset_marks; record "$TMP/nvm/bin/node"
+  OUT="$(flag_in "$NONODE_PATH" sbx)"
+  [ "$OUT" = "$WANT" ] && [ -f "$USED" ] && ! grep -q "$FALLBACK_LINE" "$LOGF" \
+    && pass "no node on PATH, the dashboard's node recorded: it runs the helper, --settings" \
+    || fail "no node on PATH, the dashboard's node recorded: it runs the helper, --settings" "$OUT / used=$([ -f "$USED" ] && echo y || echo n) / $(cat "$LOGF")"
+
+  reset_marks; record -
+  OUT="$(flag_in "$NODE_DIR:$NONODE_PATH" sbx)"
+  [ "$OUT" = "$WANT" ] && grep -q "$FALLBACK_LINE.*using the node on PATH: $NODE_DIR/node" "$LOGF" \
+    && pass "nothing recorded: the node on PATH, and the log says so" \
+    || fail "nothing recorded: the node on PATH, and the log says so" "$OUT / $(cat "$LOGF")"
+
+  # Each trap exists and is executable: only the shape check stands between it and a run.
+  for bad in "bin/node|relative" "$TMP/it's/node|a quote" "$TMP/two"$'\n'"lines/node|two lines" "$TMP/co:lon/node|a colon" "$TMP/nope/node|nonexistent" "$TMP/nvm/bin|a directory"; do
+    val="${bad%|*}"; what="${bad##*|}"
+    reset_marks; record "$val"
+    OUT="$(flag_in "$NODE_DIR:$NONODE_PATH" sbx)"
+    [ "$OUT" = "$WANT" ] && [ ! -f "$TRAPPED" ] && [ ! -f "$USED" ] && grep -q "$FALLBACK_LINE.*using the node on PATH: $NODE_DIR/node" "$LOGF" \
+      && pass "recorded value $what: never run, the node on PATH (logged)" \
+      || fail "recorded value $what: never run, the node on PATH (logged)" "$OUT / trapped=$([ -f "$TRAPPED" ] && echo y || echo n) used=$([ -f "$USED" ] && echo y || echo n) / $(cat "$LOGF")"
+  done
+
+  reset_marks; record "$TMP/it's/node"
+  OUT="$(flag_in "$NONODE_PATH" sbx)"
+  [ "$OUT" = "flag=REFUSED" ] && [ ! -f "$TRAPPED" ] && grep -q "using the node on PATH: none" "$LOGF" \
+    && pass "a rejected value and no node on PATH: refused, as today" \
+    || fail "a rejected value and no node on PATH: refused, as today" "$OUT / $(cat "$LOGF")"
+  reset_marks; record -
+  OUT="$(flag_in "$NONODE_PATH" sbx)"
+  [ "$OUT" = "flag=REFUSED" ] && grep -q "using the node on PATH: none" "$LOGF" \
+    && pass "nothing recorded and no node on PATH: refused, as today" \
+    || fail "nothing recorded and no node on PATH: refused, as today" "$OUT / $(cat "$LOGF")"
+fi
+
+# The whole run. Its own PATH puts $HOME/.local/bin first, so a node there that fails and marks stands in for "the
+# node on PATH is not the dashboard's" on any host (here Homebrew's node would otherwise be found).
+if [ "$RESOLVED" = "$STUBS/tmux:$STUBS/claude" ]; then
+  printf '#!/bin/bash\necho ran >> %q\nexit 1\n' "$POISONED" > "$STUBS/node"; chmod +x "$STUBS/node"
+  run_all() { : > "$CMDS"; env -u TMUX HOME="$FH" TMUX_TMPDIR="$TMP/tmux-sock" PATH="$STUBS:$NONODE_PATH" bash "$WD" >/dev/null 2>&1; }
+  chmod 755 "$SB"; rm -f "$SB/sbx.settings.json"
+  reset_marks; record "$TMP/nvm/bin/node"; run_all
+  case "$(cmd_of sbx)" in
+    *"--channels plugin:telegram@claude-plugins-official --settings '$SB/sbx.settings.json'")
+      [ -f "$USED" ] && [ ! -f "$POISONED" ] && pass "relaunch: the recorded node is used, the listed agent starts with --settings" \
+        || fail "relaunch: the recorded node is used, the listed agent starts with --settings" "used=$([ -f "$USED" ] && echo y || echo n) poisoned=$([ -f "$POISONED" ] && echo y || echo n)" ;;
+    *) fail "relaunch: the recorded node is used, the listed agent starts with --settings" "$(cmd_of sbx) / $(cat "$LOGF")" ;;
+  esac
+
+  reset_marks; record -; run_all
+  [ -z "$(cmd_of sbx)" ] && [ -f "$POISONED" ] && grep -q "sbx: not started: bash-sandbox settings could not be produced" "$LOGF" && grep -q "$FALLBACK_LINE" "$LOGF" \
+    && pass "relaunch: nothing recorded -> the node on PATH (logged); it fails here, so the listed agent is refused" \
+    || fail "relaunch: nothing recorded -> the node on PATH (logged); it fails here, so the listed agent is refused" "$(cmd_of sbx) / $(cat "$LOGF")"
+
+  # The dashboard down: npm start runs with the recorded node's directory first, so npm and its node are that one.
+  printf '#!/bin/bash\nexit 0\n' > "$STUBS/ps"
+  printf '#!/bin/bash\ncommand -v node > %q\n' "$TMP/npm.node" > "$TMP/nvm/bin/npm"; chmod +x "$TMP/nvm/bin/npm"
+  reset_marks; record "$TMP/nvm/bin/node"; rm -f "$TMP/npm.node"; run_all
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$TMP/npm.node" ] && break; /bin/sleep 0.2; done
+  [ "$(cat "$TMP/npm.node" 2>/dev/null)" = "$TMP/nvm/bin/node" ] \
+    && pass "dashboard down: npm start runs from the recorded node's directory" \
+    || fail "dashboard down: npm start runs from the recorded node's directory" "$(cat "$TMP/npm.node" 2>&1)"
+fi
+
 echo "watchdog-bash-sandbox: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
