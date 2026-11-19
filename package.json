@@ -13,6 +13,7 @@
     "remote-enroll": "tsx scripts/remote-access-enroll.ts",
     "bridge-device-key": "tsx scripts/bridge-device-key.ts",
     "dashboard-user": "tsx scripts/dashboard-user.ts",
+    "colleague-account": "tsx scripts/colleague-account.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "syntax-check": "node --check web/app.js web/sw.js",

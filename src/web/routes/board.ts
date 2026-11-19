@@ -1,6 +1,7 @@
 // The scoped board: /api/board/* (see src/web/board-access.ts, docs/board-access.md).
 //
-// Only a sub-agent token that board-access.json lists reaches these routes
+// Only a sub-agent token that board-access.json lists, or a colleague board
+// session (colleague-sessions.ts, acting as its account's person), reaches these routes
 // (the gate in web.ts refuses everyone else before any handler runs; the
 // check is repeated here so a route never trusts its position in the chain).
 // Every read is filtered to the cards the resolved person may see, and every
@@ -51,8 +52,25 @@ function header(ctx: RouteContext, name: string): string | undefined {
 
 interface Principal { agent: string; person: BoardPerson; visible: VisibleAssignees }
 
-/** Resolves the caller to one person, or writes the refusal and returns null. */
+/**
+ * Resolves the caller to one person, or writes the refusal and returns null.
+ *
+ * A colleague board session acts as the person its ACCOUNT names (resolved by
+ * the gate from the server-side session); X-Board-Person / X-Board-Sender are
+ * ignored for it, so no request can pick another person. A sub-agent token
+ * resolves through board-access.json's agent mapping and those headers.
+ */
 function principal(ctx: RouteContext): Principal | null {
+  if (ctx.auth?.kind === 'colleague') {
+    const cfg = readBoardAccess()
+    const personId = ctx.auth.person
+    const person = personId ? cfg.people.get(personId) : undefined
+    if (cfg.broken || !cfg.enabled || !ctx.auth.colleague || !person) {
+      json(ctx.res, { error: 'the board is not available for this account', rule: 'board-scope' }, 403)
+      return null
+    }
+    return { agent: `colleague:${ctx.auth.colleague}`, person, visible: visibleAssignees(cfg, person.id) }
+  }
   const agent = ctx.auth?.kind === 'token' ? ctx.auth.tokenAgent : undefined
   const cfg = readBoardAccess()
   if (!agent || cfg.broken || !isScopedBoardAgent(cfg, agent)) {

@@ -10,9 +10,15 @@ the owner decide, server-side, which cards such an agent may see:
 - an executive sees every card (`all`),
 - every person can ask for a daily report of today's and planned cards.
 
+Two kinds of caller use the scoped board:
+
+- a colleague-facing **sub-agent**, with its own dashboard token (below);
+- a **colleague in a browser**, with an owner-made login (see
+  [Colleague login](#colleague-login)).
+
 Code: `src/web/board-access.ts` (config, visibility, gate),
 `src/web/routes/board.ts` (routes), wired in `src/web.ts`. Tests:
-`src/__tests__/board-access.test.ts`.
+`src/__tests__/board-access.test.ts`, `src/__tests__/colleague-login.test.ts`.
 
 ## Prerequisite: per-agent tokens
 
@@ -81,14 +87,18 @@ Runs in `web.ts` after authentication and before any route handler:
   (`rule: "board-scope"`) on every path that starts with `/api/kanban`,
   including `/api/kanban-projects` and any kanban route added in the future
   (prefix match on the decoded, lower-cased path, no list to maintain);
-- `/api/board/*` is allowed only for a scoped agent; everyone else (main token,
-  browser sessions, device keys, federation, unlisted sub-agents) gets 403, so
-  each endpoint has exactly one meaning;
+- `/api/board/*` is allowed only for a scoped agent and for a colleague board
+  session (while the board is `enabled` and the file is readable); everyone
+  else (main token, owner sessions, device keys, federation, unlisted
+  sub-agents) gets 403, so each endpoint has exactly one meaning;
 - everything else is unchanged; the sub-agent allowlist
   (`AGENT_TOKEN_ALLOWLIST`) still applies to the scoped agent's other calls.
 
 ## Which person
 
+- A colleague board session acts as the person its account names. The
+  `X-Board-Person` / `X-Board-Sender` headers are ignored for it: the session,
+  not the request, decides the person.
 - An agent mapped to exactly one person acts for that person. A header, if
   sent, must name the same person.
 - An agent mapped to several people must send `X-Board-Person: <personId>` or
@@ -177,3 +187,132 @@ of the colleague's agent that calls this endpoint and sends `text`.
   chosen by the agent. They only select among the people the owner mapped to
   that agent; an agent serving several people can therefore read any of their
   boards. Map an agent to several people only when that is acceptable.
+
+## Colleague login
+
+A colleague (for example an office assistant) can sign in to the dashboard in
+a browser and see only the board cards their `board-access.json` person may
+see, with read and write: list, create a card, comment, change status. Nothing
+else of the dashboard is reachable with that login: no agents, memory,
+settings, schedules, messages, owner kanban, or other people's cards.
+
+Code: `src/web/colleague-accounts.ts` (accounts), `src/web/colleague-sessions.ts`
+(sessions), `src/web/colleague-gate.ts` (the path fence),
+`src/web/routes/colleague.ts` (login and owner admin routes),
+`web/colleague.html` + `web/colleague.js` (the page),
+`scripts/colleague-account.ts` (CLI).
+
+### Setup
+
+1. Make sure the person exists in `store/board-access.json` and the file has
+   `"enabled": true`. For "own cards only", give the person `"role": "self"`.
+   A colleague login honours the person's role exactly as written: a `lead`
+   or `all` person sees more than their own cards.
+2. Create the account on the machine (the password is asked twice, muted):
+
+   ```bash
+   npm run colleague-account -- add alice alice     # <username> <personId>
+   npm run colleague-account -- list
+   npm run colleague-account -- reset-password alice
+   npm run colleague-account -- disable alice       # ends its open sessions
+   npm run colleague-account -- enable alice
+   npm run colleague-account -- remove alice
+   ```
+
+   Or, with the owner's dashboard login (an owner session; the access token
+   alone is refused, as is every other credential):
+
+   | Method and path | Body | Result |
+   |---|---|---|
+   | `GET /api/colleague-accounts` | | `{ accounts: [{ username, person, disabled, createdAt, updatedAt }] }` (never a hash) |
+   | `POST /api/colleague-accounts` | `{ username, person, password }` | creates; the person must exist in `board-access.json` |
+   | `POST /api/colleague-accounts/:username/password` | `{ password }` | new password; ends the account's sessions |
+   | `POST /api/colleague-accounts/:username/disable` | | disables; ends the account's sessions |
+   | `POST /api/colleague-accounts/:username/enable` | | enables (old sessions stay ended) |
+   | `DELETE /api/colleague-accounts/:username` | | removes; ends the account's sessions |
+
+   Usernames are lower case (`a-z 0-9 . _ -`, at most 64), and the login is
+   case-insensitive. Passwords follow the owner login's policy (10 to 128
+   characters).
+3. The colleague opens `http://<dashboard host>:<port>/colleague` and signs in.
+   The page is in Hungarian or English (the dashboard's `marveen.lang` choice
+   in that browser, Hungarian by default).
+
+Accounts live in `store/colleague-accounts.json` (gitignored, written `0600`):
+the username, the person id, a scrypt hash in PHC format (the owner login's own
+`password-hash.ts`), a `disabled` flag and a `generation` counter. A file that
+exists but cannot be read signs nobody in, ends every colleague session and is
+never overwritten by the CLI or the API; fix or remove it by hand. In an entry,
+only a literal `"disabled": false` keeps an account usable.
+
+### How a colleague session is kept apart from the owner
+
+- **Its own cookie, table and principal.** The login sets `mv_colleague`
+  (HttpOnly, SameSite=Strict, Secure when the request came over HTTPS), not the
+  owner's `mv_session`. Only `sha256` of the cookie is stored, in the SQLite
+  table `colleague_sessions`. The gate resolves it to the principal kind
+  `colleague`, never `session`, so `mayActAsOwner` and every other owner check
+  refuse it. In a browser that also holds the owner's session, the owner's
+  session wins.
+- **The path fence** (`colleague-gate.ts`), in `web.ts` right after
+  authentication and before any handler, for every path, public ones included:
+  only `/api/board*`, `/api/colleague/*` and the page's own static files
+  (`/colleague`, `/colleague.js`, `/style.css`, `/lang/hu.js`, `/lang/en.js`)
+  pass. Any other `/api/*` path is 403 (`rule: "colleague-scope"`), any other
+  page is a redirect to `/colleague`, any other write is 403. It is a prefix
+  deny-by-default, so a route added later is closed without editing a list. A
+  path is allowed only when its raw form is already canonical (decoded, lower
+  case, single slashes), so a spelling variant cannot pass the fence and then
+  reach some other handler.
+- **The person is the session's.** `/api/board/*` resolves a colleague session
+  to its account's person on every request; headers are ignored.
+- **Every request re-checks the account.** A disabled, deleted or
+  password-reset account (the `generation` moves on) ends its open sessions on
+  the next request, also when the change came from the CLI. Removing the
+  person from `board-access.json`, or turning the board off, closes the board
+  to the session (403) and refuses new logins.
+- **Lifetimes:** 12 hours idle, 7 days absolute, enforced server-side. Sessions
+  survive a dashboard restart. `npm run dashboard-user -- security:reset`
+  clears colleague sessions too (the accounts stay).
+- **Login throttling** is the owner login's policy (5 failures lock the
+  username for 30 s, doubling to 15 min; 50 failures an hour lock every
+  colleague login), on its OWN counter: colleague failures never lock the
+  owner out. An unknown username costs the same password check as a wrong
+  password, and a disabled account answers like a wrong password.
+- **CSRF**: the dashboard's Origin check for every state-changing request runs
+  before authentication and covers these requests too; the cookie is
+  SameSite=Strict.
+
+### Reaching it from the office network
+
+The dashboard listens on `WEB_HOST` (default `127.0.0.1`, this machine only).
+For colleagues on the company LAN, set `WEB_HOST` in `.env` to the machine's
+LAN address (for example `WEB_HOST=192.168.1.10`), or `0.0.0.0` for every
+interface, and restart the dashboard. Know what that means:
+
+- **The whole dashboard becomes reachable from the LAN**, not only the
+  colleague page: the owner login page, and the API for anyone holding the
+  access token. The colleague fence limits what a colleague LOGIN can do; it
+  does not hide the rest of the server from the network. Prefer the specific
+  LAN address over `0.0.0.0`, restrict the port to the office subnet in the
+  host firewall, and keep using `http://localhost:<port>` yourself on the
+  machine.
+- **LAN HTTP is unencrypted.** Passwords and session cookies cross the
+  network in clear text. Anyone who can sniff that network segment can take a
+  colleague's session or password. Do not reuse a password that matters
+  elsewhere, and put the dashboard behind HTTPS (a reverse proxy) if the
+  segment is not trusted. Never sign in as the owner over plain LAN HTTP.
+
+### Threat model of the colleague login (honest)
+
+- **What it protects against: a curious colleague on the LAN.** With their
+  own login they see and change only their own cards; every other API answers
+  403, other people's cards answer 404 (the same as a card that does not
+  exist), and they cannot pick another person.
+- **What it does NOT protect against: anything running on the dashboard
+  machine as the same OS user.** Such a process can read the access token, the
+  account file and the database, so it is not confined by any of this. The
+  colleague login is a network-facing permission layer, not an OS boundary.
+- **Not protected: the network path.** See "LAN HTTP is unencrypted" above.
+- **Not in the pilot:** a second factor for colleague logins, and a
+  self-service password change (the owner resets passwords).
