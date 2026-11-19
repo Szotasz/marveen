@@ -76,21 +76,16 @@ const GREEN_P = (tail: string) =>
 
 describe('db-write-gate: written file + later chmod / env assignment (47eeb016)', () => {
   const green: Record<string, string> = {
-    E0: WRITE + '; chmod 700 $S/askpass.sh; env -u GIT_DIR -u GIT_WORK_TREE GIT_ASKPASS=$S/askpass.sh GIT_TERMINAL_PROMPT=0 git -C @S@ push https://github.com/o/r.git aefc6054:refs/heads/feat/x 2>&1 | tail -3; shred -u $S/askpass.sh',
     E1: WRITE,
     E2: WRITE + '; chmod 700 $S/askpass.sh',
     E3: WRITE_SAFE + '; chmod 700 $S/askpass.sh',
     E4: 'S=@S@; chmod 700 $S/askpass.sh',
-    P3: String.raw`S=@S@; printf 'echo hi > @ROOT@/.claude/settings.json\n' > $S/a.sh; env X="$S/a.sh" true`,
     P4: GREEN_P('env -S "echo hi"'),
     P5: GREEN_P('env -u X true'),
     P6: GREEN_P('env -uS true'),
     P7: GREEN_P('env -C /tmp true'),
     P8: GREEN_P('env -S "A=1" true'),
-    P9: GREEN_P('env GIT_ASKPASS=$S/a.sh env -u X git status'),
     P10: GREEN_P('env -S "echo hi" true'),
-    P11: GREEN_P('env X=$S/a.sh nice true'),
-    P12: GREEN_P('env X=$S/a.sh timeout 5 git status'),
     P15: GREEN_P('env nice cat < $S/a.sh'),
     P16: GREEN_P(`env nice cat < ''$S/a.sh`),
     CTRL1: String.raw`S=@S@; printf 'cat @ROOT@/store/github-token.token\n' > $S/a.sh; $S/a.sh`,
@@ -98,19 +93,13 @@ describe('db-write-gate: written file + later chmod / env assignment (47eeb016)'
     G1: GREEN_P('chmod +x $S/a.sh; cd $S && cat a.sh'),
     G2: GREEN_P('chmod +x $S/a.sh; find $S -name a.sh'),
     G3: GREEN_P('chmod 700 $S/a.sh; printf done'),
-    // A leading assignment is not a run position: the value only names the file.
-    G4: GREEN_P('chmod +x $S/a.sh; X=$S/a.sh true'),
     // R2 (dual review round 1, B1+B2): the file's name as a wrapper's or a find action's DATA argument is
-    // not a run -- the wrapper starts `cat`, find's -exec starts `echo`/`cat`; the written file is only read.
+    // not a run -- the wrapper starts `cat`, find's -exec starts `cat`; the written file is only read.
     G5: GREEN_P('chmod +x $S/a.sh; cd $S && timeout 5 cat ./a.sh'),
-    G6: GREEN_P(String.raw`chmod +x $S/a.sh; find $S -name a.sh -exec echo found \;`),
     G7: GREEN_P('chmod +x $S/a.sh; find $S -type f -exec cat {} +'),
     G8: GREEN_P('chmod +x $S/a.sh; cd $S && stdbuf -o0 cat ./a.sh'),
     G9: GREEN_P('chmod +x $S/a.sh; cd $S && time cat ./a.sh'),
     G10: GREEN_P('chmod +x $S/a.sh; cd $S && nohup cat ./a.sh'),
-    // R3 (dual review round 1, a1 B2): {} as an interpreter's ARGUMENT inside a find action is data -- the
-    // interpreter's script operand (/dev/null) is the run position, the found file is only $1.
-    G11: GREEN_P('chmod +x $S/a.sh; find $S -name a.sh -exec sh /dev/null {} +'),
     // R3: a -c interpreter has no script operand (the code word consumed it); later words are argv, not scripts.
     G12: GREEN_P("chmod +x $S/a.sh; cd $S && python3 -c 'pass' ./a.sh"),
     // R3: a load option's value that is NOT the written file is not a run; the written file as a later
@@ -248,6 +237,18 @@ describe('db-write-gate: written file + later chmod / env assignment (47eeb016)'
     P13: GREEN_P('env NODE_OPTIONS=--require=$S/a.sh nice true'),
     P14: GREEN_P('env BASH_ENV=$S/a.sh nice true'),
     P17: GREEN_P('env ENV=$S/a.sh timeout 5 true'),
+    // R5 (moved from green): develop's #2934 (GATEPATHNORM1118 b-d) reads an assignment value that names the written
+    // file as a run (GIT_ASKPASS, PAGER, EDITOR and the like do run it), and a find -exec action whose -name or path
+    // reaches the file as a run, whatever the action is. We follow the maintainer's merged direction (47eeb016 R5).
+    // E0 is the askpass push the card started from: git really runs the askpass, and its text names the token file.
+    E0: WRITE + '; chmod 700 $S/askpass.sh; env -u GIT_DIR -u GIT_WORK_TREE GIT_ASKPASS=$S/askpass.sh GIT_TERMINAL_PROMPT=0 git -C @S@ push https://github.com/o/r.git aefc6054:refs/heads/feat/x 2>&1 | tail -3; shred -u $S/askpass.sh',
+    P3: String.raw`S=@S@; printf 'echo hi > @ROOT@/.claude/settings.json\n' > $S/a.sh; env X="$S/a.sh" true`,
+    P9: GREEN_P('env GIT_ASKPASS=$S/a.sh env -u X git status'),
+    P11: GREEN_P('env X=$S/a.sh nice true'),
+    P12: GREEN_P('env X=$S/a.sh timeout 5 git status'),
+    G4: GREEN_P('chmod +x $S/a.sh; X=$S/a.sh true'),
+    G6: GREEN_P(String.raw`chmod +x $S/a.sh; find $S -name a.sh -exec echo found \;`),
+    G11: GREEN_P('chmod +x $S/a.sh; find $S -name a.sh -exec sh /dev/null {} +'),
   }
   for (const [id, cmd] of Object.entries(red)) it(`${id} is denied`, () => { expect(isDeny(bash(cmd))).toBe(true) })
 

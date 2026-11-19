@@ -1403,7 +1403,8 @@ export function runsWrittenFile(segs, k, targets, cmd) {
     return e === x ? [x] : [x, e]
   })
   const names = copiedNames(segs, k, targets, subs)
-  if (laterRuns(segs, k, names)) return true
+  // names are writtenFileSpellings' per-directory spellings: laterRuns matches them exactly (47eeb016 R5)
+  if (laterRuns(segs, k, names, { exactNames: true })) return true
   const subsName = subs.some((s) => namesAny(s, names))
   const startup = (a) => STARTUP_VARS.has(a.name) && (namesAny(a.value, names)
     || names.some((t) => t.startsWith(a.value.replace(/\/+$/, '') + '/')))
@@ -1441,7 +1442,7 @@ export function runsWrittenFile(segs, k, targets, cmd) {
     if (rest.length && wrapped) {
       const q = (v) => `'${v.replace(/'/g, `'\\''`)}'`
       const stdin = names.filter((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}`).test(s.own)).map((t) => ` < ${q(t)}`).join('')
-      if (laterRuns([segs[k], { ...s, own: rest.map((w) => q(w.value)).join(' ') + stdin }], 0, names)) return true
+      if (laterRuns([segs[k], { ...s, own: rest.map((w) => q(w.value)).join(' ') + stdin }], 0, names, { exactNames: true })) return true
     }
     if (rest.length && optionProgramRuns(name, rest, names)) return true
     // GATEPATHNORM1118 (b)(c)(d): any other program naming it, and an assignment before the command that names it

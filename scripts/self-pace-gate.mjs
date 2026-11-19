@@ -2400,11 +2400,13 @@ function envExecIndex(ws) {
 // reading options after a code value (`node -e 0 -r ./x.js` loads and runs x.js too), so the walk goes on and
 // only the script POSITION is consumed: the first word after a CODE value that is no option is that program's
 // argv, data, and never a run.
-// DATA: the value only configures the interpreter (python's -m/-W): exactly ONE word is skipped while searching
+// DATA: the value only configures the interpreter (python's -W): exactly ONE word is skipped while searching
 // for the script operand and is NOT a run. Attached (`-Werror`): the remainder of the option word is the value,
 // no extra word is consumed.
-// LOAD: the value is loaded AND run (`node -r/--require`, `ruby -r`, attached too): one word (or the attached
-// remainder) is skipped and checked as a run.
+// LOAD: the value is loaded AND run (`node -r/--require`, `ruby -r`, python's `-m`: the module runs, attached
+// too): one word (or the attached remainder) is skipped and checked as a run.
+// python -m MOD: db-write-gate's writtenFileSpellings adds MOD as a spelling of a written MOD.py, so the LOAD value
+// is checked against it (develop #2934 (d)).
 // sh: the table of the SHELL family (bash, sh, zsh, dash, ksh, ash), which the real bash reads its own way:
 // -c is a FLAG that never takes a value (a `c` anywhere in a cluster is the flag: `-ce`, `-co`), and a short
 // cluster is read CHARACTER BY CHARACTER -- every o/O in it takes the NEXT word as its option name, and an
@@ -2413,7 +2415,7 @@ function envExecIndex(ws) {
 // run position -- the command string with -c, the script operand without -- and the walk stops right there.
 const SH_VALUE_OPTIONS = { sh: true, short: { c: 'flag', o: 'data', O: 'data' } }
 const NODE_VALUE_OPTIONS = { short: { e: 'code', p: 'code', r: 'load' }, long: { eval: 'code', print: 'code', require: 'load' } }
-const PY_VALUE_OPTIONS = { short: { c: 'code', m: 'data', W: 'data' } }
+const PY_VALUE_OPTIONS = { short: { c: 'code', m: 'load', W: 'data' } }
 const INTERPRETER_VALUE_OPTIONS = new Map([
   ['bash', SH_VALUE_OPTIONS], ['sh', SH_VALUE_OPTIONS], ['zsh', SH_VALUE_OPTIONS], ['dash', SH_VALUE_OPTIONS],
   ['ksh', SH_VALUE_OPTIONS], ['ash', SH_VALUE_OPTIONS],
@@ -2557,12 +2559,17 @@ function execWordsRun(ws, targets, own, relRun, depth) {
   if (name === 'find' && ws.some((w) => FIND_RUN_ACTIONS.has(w.value))) return findRunsTarget(ws, targets, relRun)
   return false // a plain command: its arguments are data
 }
-function runsByName(words, targets, own) {
+function runsByName(words, targets, own, exact = false) {
   let i = 0
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i].value)) i++
   if (i >= words.length) return false
   const ws = words.slice(i)
-  const relRun = (v) => v.includes('/') && targets.some((t) => targetBase(t) !== '' && baseName(v) === targetBase(t))
+  // exact: the caller passed every spelling of the file already resolved per directory (db-write-gate's
+  // writtenFileSpellings), so only those words are the file; otherwise a path with the file's last part is
+  // taken for it (fail closed: the directory it runs in is not followed here)
+  const relRun = exact
+    ? (v) => targets.includes(v)
+    : (v) => v.includes('/') && targets.some((t) => targetBase(t) !== '' && baseName(v) === targetBase(t))
   if (relRun(ws[0].value)) return true
   return execWordsRun(ws, targets, own, relRun, 0)
 }
@@ -2591,8 +2598,9 @@ function findClauseWords(own, sep) {
     : w))
 }
 
-export function laterRuns(segs, k, targets) {
+export function laterRuns(segs, k, targets, opts = {}) {
   if (!targets.length) return false
+  const exact = opts.exactNames === true
   for (let j = k + 1; j < segs.length; j++) {
     const s = segs[j]
     const text = [s.own, ...s.bodies].join('\n')
@@ -2608,10 +2616,10 @@ export function laterRuns(segs, k, targets) {
       // splittable segment, and every shape the re-split refuses keeps the deny.
       if (near && !w) {
         const fw = findClauseWords(s.own, s.sep)
-        if (!fw || runsByName(fw, targets, s.own)) return true
+        if (!fw || runsByName(fw, targets, s.own, exact)) return true
         continue
       }
-      if (w && w.length && runsByName(w, targets, s.own)) return true
+      if (w && w.length && runsByName(w, targets, s.own, exact)) return true
       continue
     }
     const words = shellWords(s.own)
@@ -2619,7 +2627,7 @@ export function laterRuns(segs, k, targets) {
     const first = words[0].value
     if (targets.includes(first)) return true
     const name = commandName(words) || first.slice(first.lastIndexOf('/') + 1)
-    if (runsByName(words, targets, s.own)) return true
+    if (runsByName(words, targets, s.own, exact)) return true
     if (isInterpreter(name)) {
       const stdin = stdinFromTarget(s.own, targets)
       const code = words.some((w, i) => /^-[A-Za-z]*[ceE]$/.test(w.value) && targets.some((t) => (words[i + 1]?.value ?? '').includes(t)))
