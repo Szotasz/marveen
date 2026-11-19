@@ -4085,11 +4085,19 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
 })
 
 // === Toast ===
+// The second argument is the duration in ms, a kind, or both: showToast(msg, 8000), showToast(msg, 'error'),
+// showToast(msg, { kind: 'error', duration: 8000 }). The kind colours the toast (.toast-error / .toast-success /
+// .toast-warn in style.css); without one, or with an unknown one, it stays the neutral toast. Anything but a
+// finite duration means the default (a type word where the duration went once made the delay NaN, and the toast was
+// gone at once).
 function showToast(msg, duration = 3000) {
-  // Some callers pass a type word ('error') where the duration goes. The delay was then NaN, which setTimeout runs
-  // at once: the toast was gone before it could be seen. Anything but a finite number means the default.
+  const TOAST_KINDS = ['error', 'success', 'warn']
+  let kind = ''
+  if (typeof duration === 'string') { kind = duration; duration = 3000 }
+  else if (duration && typeof duration === 'object') { kind = duration.kind; duration = duration.duration }
   if (typeof duration !== 'number' || !Number.isFinite(duration)) duration = 3000
   toast.textContent = msg
+  for (const k of TOAST_KINDS) toast.classList.toggle('toast-' + k, k === kind)
   toast.classList.add('visible')
   setTimeout(() => toast.classList.remove('visible'), toastDuration(msg, duration))
 }
@@ -5985,7 +5993,7 @@ async function toggleCuratedModel(id, name, checked) {
     // OWNERGATE3-1104: the server may refuse (403 owner_session_required); say why before the rollback below.
     const reply = await readActionReply(res)
     if (!reply.ok) {
-      showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
+      showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error')
       throw new Error('save failed')
     }
     const data = reply.body
@@ -6349,7 +6357,7 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
     })
     // OWNERGATE3-1104: the server may refuse (403 owner_session_required); show why instead of a generic error.
     const reply = await readActionReply(res)
-    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) })); return }
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error'); return }
     if (currentAgent) currentAgent.autoRestart = reply.body.autoRestart
     showToast(t('agents.toast.auto_restart_saved'))
   } catch { showToast(t('common.error_save')) }
@@ -6517,7 +6525,7 @@ document.getElementById('saveVoiceConfigBtn').addEventListener('click', async ()
     })
     // OWNERGATE3-1104: the server may refuse (403 owner_session_required); show why instead of a generic error.
     const reply = await readActionReply(r)
-    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(r, reply.body) })); return }
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }), 'error'); return }
     showToast(t('agents.voice.saved'))
   } catch { showToast(t('common.error_save')) }
 })
@@ -7474,7 +7482,7 @@ document.getElementById('chDisconnectBtn').addEventListener('click', async () =>
     // OWNERGATE2-1104: the server may refuse (403 owner_session_required); a refusal is never shown as done.
     const res = await fetch(`${channelApiBase()}`, { method: 'DELETE' })
     const reply = await readActionReply(res)
-    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) })); return }
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error'); return }
     showToast(t('channel.toast.disconnected', { provider: provLabel }))
     // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
     if (currentAgent.name === mainAgentId()) await refreshMainChannelUnconfBanner()
@@ -8139,7 +8147,7 @@ function makeScheduleRow(task) {
         const r = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/run`, { method: 'POST' })
         const data = await r.json().catch(() => ({}))
         if (r.ok) showToast(t('tasks.toast.run_started') + (data.result ? ': ' + data.result : ''))
-        else showToast(t('common.not_done', { msg: refusalReason(r, data) }))
+        else showToast(t('common.not_done', { msg: refusalReason(r, data) }), 'error')
         loadSchedules()
       } catch { showToast(t('tasks.toast.run_error')) }
     })
@@ -8150,7 +8158,7 @@ function makeScheduleRow(task) {
         const res = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/toggle`, { method: 'POST' })
         const reply = await readActionReply(res)
         if (reply.ok) showToast(task.enabled ? t('tasks.toast.toggled_paused') : t('tasks.toast.toggled_resumed'))
-        else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
+        else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error')
         loadSchedules()
       } catch { showToast(t('common.error')) }
     })
@@ -8168,7 +8176,7 @@ function makeScheduleRow(task) {
         const res = await fetch(`/api/schedules/${encodeURIComponent(task.name)}`, { method: 'DELETE' })
         const reply = await readActionReply(res)
         if (reply.ok) showToast(t('tasks.toast.deleted'))
-        else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
+        else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error')
         loadSchedules()
       } catch { showToast(t('common.error_delete')) }
     })
@@ -8793,7 +8801,7 @@ async function saveMemoryFromModal() {
       const b = reply.body
       showToast(b.error === 'destructive_memory_write' && Number.isFinite(b.old_len) && Number.isFinite(b.new_len)
         ? t('memories.toast.destructive_refused', { old_len: b.old_len, new_len: b.new_len })
-        : t('memories.toast.save_refused', { msg: refusalReason(res, b) }), 6000)
+        : t('memories.toast.save_refused', { msg: refusalReason(res, b) }), { kind: 'error', duration: 6000 })
       return
     }
     showToast(t(editId ? 'memories.toast.updated' : 'memories.toast.created'))
@@ -10218,7 +10226,7 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
     loadCatalog()
     loadConnectors()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
@@ -10244,7 +10252,7 @@ async function catalogUninstall(item) {
     loadCatalog()
     loadConnectors()
   } catch (err) {
-    showToast(`${t('common.error')}: ${err.message}`)
+    showToast(`${t('common.error')}: ${err.message}`, 'error')
   }
 }
 
@@ -13681,7 +13689,7 @@ function renderPendingSkills(box, list) {
         showToast(t('skills.pending.approved', { name: p.name }))
         loadGlobalSkills()
       } catch (err) {
-        showToast(`${t('skills.pending.error')}: ${err.message}`)
+        showToast(`${t('skills.pending.error')}: ${err.message}`, 'error')
         loadPendingSkills()
       } finally { approve.disabled = !p.approvable }
     })
@@ -13699,7 +13707,7 @@ function renderPendingSkills(box, list) {
         if (!res.ok) throw new Error(refusalReason(res, await res.json().catch(() => ({}))))
         showToast(t('skills.pending.rejected', { name: p.name }))
       } catch (err) {
-        showToast(`${t('skills.pending.error')}: ${err.message}`)
+        showToast(`${t('skills.pending.error')}: ${err.message}`, 'error')
       } finally { reject.disabled = false; loadPendingSkills() }
     })
     actions.append(approve, reject)
@@ -14875,7 +14883,7 @@ async function sendChatMessage(toAgent) {
     await loadChatThread(toAgent)
     await loadChatAgentList()
   } catch (e) {
-    showToast(t('messages.error_send', { msg: e.message || e }))
+    showToast(t('messages.error_send', { msg: e.message || e }), 'error')
   } finally {
     if (btn) btn.disabled = false
   }
@@ -17646,7 +17654,7 @@ async function _resolveApproval(id, decision) {
       body: JSON.stringify(payload),
     })
     const data = await res.json()
-    if (!res.ok) { showToast(t('approvals.toast.error', { msg: refusalReason(res, data) })); return }
+    if (!res.ok) { showToast(t('approvals.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
     showToast(t(decision === 'approved' ? 'approvals.toast.approved' : 'approvals.toast.rejected'))
     // Update in-place to avoid full reload flicker
     const idx = _approvalsAll.findIndex(a => a.id === id)
@@ -19490,12 +19498,12 @@ async function deleteClaudePlan(plan, rotationUsers = []) {
     const res = await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
     const reply = await readActionReply(res)
     if (!reply.ok) {
-      showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }))
+      showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error')
     } else if (claudePlanFormEditing?.id === id) {
       resetClaudePlanForm()
     }
   } catch {
-    showToast(t('common.not_done', { msg: t('common.error') }))
+    showToast(t('common.not_done', { msg: t('common.error') }), 'error')
   }
   await loadClaudePlansList()
 }
@@ -22190,7 +22198,7 @@ async function handleAgentLogin(agentName, btn) {
       setTimeout(() => loadAgents(), 1500)
     }
   } catch (e) {
-    showToast(`${t('common.error')}: ${e.message || e}`)
+    showToast(`${t('common.error')}: ${e.message || e}`, 'error')
     btn.textContent = origText
     btn.dataset.phase = 'start'
     btn.disabled = false
@@ -22332,7 +22340,7 @@ function openTerminalModal(agentName) {
       const now = Date.now()
       if (now - terminalKeysRefusalToastAt < 5000) return
       terminalKeysRefusalToastAt = now
-      showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }))
+      showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }), 'error')
     }).catch(() => {})
   })
 
@@ -22367,7 +22375,7 @@ document.getElementById('terminalInputToggle')?.addEventListener('change', (e) =
     .then(async r => {
       const reply = await readActionReply(r)
       if (!reply.ok) {
-        showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }))
+        showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }), 'error')
         const cur = await fetch('/api/terminal-input').then(g => (g.ok ? g.json() : null)).catch(() => null)
         terminalInputEnabled = cur ? cur.enabled === true : false
         syncTerminalInputToggleUI()
@@ -22601,7 +22609,7 @@ function renderFederationPage() {
     try {
       const res = await fetch('/api/federation/enabled', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); e.target.checked = !enabled; return }
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); e.target.checked = !enabled; return }
       showToast(enabled ? t('federation.toast.enabled') : t('federation.toast.disabled'))
       fedRefreshAndReload()
     } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); e.target.checked = !enabled }
@@ -22612,7 +22620,7 @@ function renderFederationPage() {
       try {
         const res = await fetch('/api/federation/routing-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
         const data = await res.json().catch(() => ({}))
-        if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
+        if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
         showToast(t('federation.routing.toast_set', { mode: t('federation.routing.mode.' + mode + '.label') }))
       } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
     })
@@ -22668,7 +22676,7 @@ async function fedRevealToken(peerId, card) {
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/inbound-token`)
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
     box.textContent = data.inboundToken
     box.hidden = false
     navigator.clipboard?.writeText(data.inboundToken).then(
@@ -22712,7 +22720,7 @@ async function fedRotateToken(peerId) {
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/rotate-inbound-token`, { method: 'POST' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
     showToast(t('federation.toast.rotated'))
     loadFederationPage()
     // The answer carries the new token: shown right away, like at pairing.
@@ -22727,7 +22735,7 @@ async function fedToggleShareCap(peerId, share) {
       body: JSON.stringify({ shareCapabilitySummaries: share }),
     })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); loadFederationPage(); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); loadFederationPage(); return }
     showToast(share ? t('federation.toast.share_cap_on') : t('federation.toast.share_cap_off'))
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); loadFederationPage() }
 }
@@ -22743,7 +22751,7 @@ async function fedDeletePeer(peerId) {
   try {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}`, { method: 'DELETE' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
     // Sweep browser leftovers scoped to the removed peer.
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i)
@@ -22791,7 +22799,7 @@ async function fedApplyToMainAgent() {
       res = await apply(true)
       data = await res.json().catch(() => ({}))
     }
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
     showToast(t('federation.toast.applied'))
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
 }
@@ -22835,14 +22843,14 @@ async function fedSavePeerModal() {
       else body.abandonWindowMinutes = null
       res = await fetch(`/api/federation/peers/${encodeURIComponent(fedPeerModalEditId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
       showToast(t('federation.toast.peer_saved'))
     } else {
       const body = { id, baseUrl }
       if (outbound) body.outboundToken = outbound
       res = await fetch('/api/federation/peers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
       // The minted inbound token is shown ONCE right away: the owner hands it
       // to the peer's operator during pairing.
       await fedShowInboundTokenDialog(id, data.inboundToken, 'federation.modal.minted_token_hint')
@@ -22864,7 +22872,7 @@ async function fedRemoveAll() {
   try {
     const res = await fetch('/api/federation/remove', { method: 'POST' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) })); return }
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
     federatedPeerStatus = []
     // Sweep browser leftovers for ALL federated (qualified) threads -- the
     // per-peer DELETE path does this per peer, full removal must do it wholesale.
