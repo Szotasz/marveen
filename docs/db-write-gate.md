@@ -3,7 +3,7 @@
 `scripts/hooks/db-write-gate.mjs` is a PreToolUse gate for every agent, the main agent included. It denies:
 
 1. an SQL write on the dashboard database's security tables (`approvals`, `approval_events`, `approval_slack_posts`,
-   `auth_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
+   `approval_teams_cards`, `agent_create_specs`, `auth_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
    `support_consents` and `support_password_state`), `PRAGMA writable_schema`, and any write on `sqlite_master` /
    `sqlite_schema`;
 2. a file-level write of `store/claudeclaw.db` (and its `-wal`, `-shm`, `-journal`);

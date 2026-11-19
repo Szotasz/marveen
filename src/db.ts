@@ -1816,6 +1816,22 @@ export function initDatabase(dbPathOverride?: string): void {
   // TEAMS_OWNER_AAD_OBJECT_ID at posting; content_hash is the request's anchor the card showed; nonce_sha256 is the hash
   // of the one-time value only the card carries. decided_at closes the row once; decided_activity_id / decided_by_aad
   // are the audit of the click that decided (the request itself gets resolved_by = 'teams_card').
+  // AGENTCREATEPR2-1119: the stored spec behind an agent_create approval. spec_json is the canonical JSON the owner was
+  // shown (the text is rendered from it) and content_hash its sha256, equal to the approvals row's. The consumer stamps
+  // consumed_at in the same transaction as the approval's consume, then the outcome. A security table.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_create_specs (
+      approval_id TEXT PRIMARY KEY,
+      spec_json TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      requested_by TEXT NOT NULL,
+      requested_at INTEGER NOT NULL,
+      consumed_at INTEGER,
+      created_agent TEXT,
+      outcome TEXT,
+      outcome_at INTEGER
+    )
+  `)
   // A security table: the db-write-gate denies an agent's write on it, like approvals.
   db.exec(`
     CREATE TABLE IF NOT EXISTS approval_teams_cards (
@@ -8075,14 +8091,24 @@ export type ApprovalDecideOutcome = 'decided' | 'not_pending' | 'content_changed
  * adapter showed the owner a content hash, the request must still carry exactly that hash; an approval must come before
  * the timeout (a rejection may land after it). Only then is the request resolved, and the UPDATE repeats every condition.
  */
+/**
+ * AGENTCREATEPR2-1119: categories whose approval is bound to content the server stored (agent_create: the spec). Such a
+ * request is approved only when it carries a content hash AND the adapter showed the owner exactly that hash; a missing
+ * hash on either side is never an approval. A rejection needs neither.
+ */
+export const HASH_BOUND_APPROVAL_CATEGORIES: ReadonlySet<string> = new Set(['agent_create'])
+
 function decideApprovalInTx(p: {
-  approvalId: string; status: 'approved' | 'rejected'; resolvedBy: string; expectedContentHash?: string | null; now: number
+  approvalId: string; status: 'approved' | 'rejected'; resolvedBy: string; expectedContentHash?: string; now: number
 }): ApprovalDecideOutcome {
-  const before = db.prepare('SELECT status, content_hash, timeout_at FROM approvals WHERE id = ?').get(p.approvalId) as
-    Pick<Approval, 'status' | 'content_hash' | 'timeout_at'> | undefined
+  const before = db.prepare('SELECT status, category, content_hash, timeout_at FROM approvals WHERE id = ?').get(p.approvalId) as
+    Pick<Approval, 'status' | 'category' | 'content_hash' | 'timeout_at'> | undefined
   if (!before || before.status !== 'pending') return 'not_pending'
   const checksHash = p.expectedContentHash !== undefined
-  if (checksHash && before.content_hash !== p.expectedContentHash) return 'content_changed'
+  // A null is never a hash the owner was shown (a JS caller can still pass one): it matches nothing.
+  if (checksHash && (p.expectedContentHash === null || before.content_hash !== p.expectedContentHash)) return 'content_changed'
+  if (p.status === 'approved' && HASH_BOUND_APPROVAL_CATEGORIES.has(before.category)
+    && (!checksHash || typeof before.content_hash !== 'string' || !before.content_hash)) return 'content_changed'
   if (p.status === 'approved' && before.timeout_at != null && before.timeout_at <= p.now) return 'expired'
   const changed = db.prepare(`
     UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?
@@ -8106,6 +8132,9 @@ export function registerApprovalConsumer(category: string, consumer: ApprovalCon
 
 /** Call only for a decision the core recorded ('decided'); runs the consumer of an approved request's category. */
 function runApprovalConsumer(approvalId: string): void {
+  // The consumer runs after the decision committed (Dani, #2903): inside a caller's transaction a consumer's own write
+  // would commit or roll back with the caller's, and a consumer that creates something must not.
+  if (db.inTransaction) throw new Error('approval consumer called inside a transaction; it runs after the commit')
   const approval = getApproval(approvalId)
   if (!approval || approval.status !== 'approved') return
   const consumer = approvalConsumers.get(approval.category)
@@ -8123,7 +8152,7 @@ function runApprovalConsumer(approvalId: string): void {
  * decideApprovalFromTeams).
  */
 export function decideApproval(p: {
-  approvalId: string; status: 'approved' | 'rejected'; evidence: ApprovalEvidence; expectedContentHash?: string | null
+  approvalId: string; status: 'approved' | 'rejected'; evidence: ApprovalEvidence; expectedContentHash?: string
 }): { outcome: ApprovalDecideOutcome; approval: Approval | undefined } {
   const outcome = db.transaction(() => decideApprovalInTx({
     approvalId: p.approvalId, status: p.status, resolvedBy: approvalResolvedBy(p.evidence),

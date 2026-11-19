@@ -17619,10 +17619,29 @@ function _renderApprovalsPagination(total) {
 
 async function _resolveApproval(id, decision) {
   try {
+    const payload = { status: decision, resolved_by: 'dashboard' }
+    // AGENTCREATEPR2-1119: a new agent is approved on the WHOLE server-rendered spec (the table shows 80 characters),
+    // and the click sends back the hash the owner was shown; the server decides with it.
+    const row = _approvalsAll.find(a => a.id === id)
+    if (row && row.category === 'agent_create' && decision === 'approved') {
+      const pre = document.createElement('pre')
+      pre.className = 'approval-spec-text'
+      pre.style.whiteSpace = 'pre-wrap'
+      pre.textContent = row.action_description
+      const ok = await confirmDialog({
+        title: t('approvals.agent_create.confirm_title'),
+        message: t('approvals.agent_create.confirm_message', { code: String(row.content_hash || '').slice(0, 8) }),
+        okLabel: t('approvals.agent_create.confirm_ok'),
+        content: pre,
+        wide: true,
+      })
+      if (!ok) return
+      payload.content_hash = row.content_hash
+    }
     const res = await fetch(`/api/approvals/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: decision, resolved_by: 'dashboard' }),
+      body: JSON.stringify(payload),
     })
     const data = await res.json()
     if (!res.ok) { showToast(t('approvals.toast.error', { msg: refusalReason(res, data) })); return }
