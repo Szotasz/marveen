@@ -185,8 +185,12 @@ KBD_SET = ("permission reply regex", re.compile(r"^( *)const PERMISSION_REPLY_RE
 KBD_CALLBACK_RX = re.compile(
     r"^( *)const m = /\^perm:\(allow\|deny\|more\):\(\[a-km-z\]\{5\}\)\$/\.exec\(data\)\n", re.MULTILINE)
 # TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS (owner request, 2026-11-08): a button on an old question can be tapped long
-# after the conversation moved on. With a max age set, a tap on a question older than that delivers nothing: its
-# keyboard is taken off (fire and forget, a message too old to edit keeps it) and the toast says to type the answer.
+# after the conversation moved on. With a max age set, a tap on a question older than that delivers nothing: the
+# toast says to type the answer, and the keyboard becomes ONE button saying the same (fire and forget, a message too
+# old to edit keeps its buttons), the way an answered question keeps its "✓ label". Not an empty keyboard: measured
+# on the owner's clients (2026-11-19), Telegram Desktop drops the toast when the whole keyboard goes (the phone showed
+# it), and a bare question without buttons said nothing about what happened to them. The button's data, kbd:x, is
+# no answer: a tap on it gets the existing dead-button toast and delivers nothing.
 # The age is the question's own send time (Message.date), so it holds across a plugin restart without any list kept
 # in memory. It runs after the "already answered" check (that toast stays the right one for an answered question)
 # and before the tap is recorded. 0, the default, leaves the line out: the file is byte-identical to the one without
@@ -194,6 +198,7 @@ KBD_CALLBACK_RX = re.compile(
 KBD_MAX_AGE_SETTING = "TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS"
 KBD_MAX_AGE_HOURS_MAX = 8760  # a year; the registry has the same bound
 KBD_EXPIRED_TOAST = "Ez a kérdés lejárt, írd be a választ."
+KBD_EXPIRED_BUTTON = "⏱ Lejárt, írd be a választ"
 
 
 def _kbd_expiry_line(max_age_hours):
@@ -201,8 +206,9 @@ def _kbd_expiry_line(max_age_hours):
             + str(int(max_age_hours) * 3600) + ") { "
             "marveenKbdOpen.get(kbdMsg.chat.id + ('is_topic_message' in kbdMsg && kbdMsg.is_topic_message "
             "&& kbdMsg.message_thread_id != null ? '#' + kbdMsg.message_thread_id : ''))?.delete(kbdMsg.message_id); "
-            "void ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }).catch(() => {}); "
-            "await kbdToast('" + KBD_EXPIRED_TOAST + "'); return }")
+            "await kbdToast('" + KBD_EXPIRED_TOAST + "'); "
+            "void ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [[{ text: '" + KBD_EXPIRED_BUTTON + "', "
+            "callback_data: 'kbd:x' }]] } }).catch(() => {}); return }")
 
 
 def _kbd_callback(max_age_hours=0):

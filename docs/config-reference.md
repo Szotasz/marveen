@@ -335,10 +335,10 @@ plugin forrását. Az ügynökök viszont addig a régi kóddal futnak, amíg a 
 
 **Mire szolgál.** Egy régi kérdés gombjára akkor is rá lehet koppintani, amikor a beszélgetés
 már rég továbblépett. Beállítva (például `24`) egy ennél régebbi kérdés gombjára koppintás nem
-jut el az ügynökhöz: a csatorna leveszi a kérdés gombjait, és a felugró üzenet azt kéri, hogy a
-választ írd be. A kor a kérdés elküldési idejétől számít (a Telegram-üzenet saját időbélyege),
+jut el az ügynökhöz: a felugró üzenet azt kéri, hogy a választ írd be, és a kérdés gombjai helyére
+egyetlen „⏱ Lejárt, írd be a választ” gomb kerül (mint a megválaszolt kérdésnél a „✓ <felirat>”). A kor a kérdés elküldési idejétől számít (a Telegram-üzenet saját időbélyege),
 így a plugin újraindítása után is érvényes. Egy már megválaszolt kérdésnél továbbra is az „Erre
-már válaszoltál.” üzenet jön. A gombokat csak koppintáskor veszi le, magától nem.
+már válaszoltál.” üzenet jön. A gombokat csak koppintáskor cseréli, magától nem.
 
 **Beállítás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`*, vagy
 `.env`-ben például `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24`. Egész óra 0 és 8760 között; a `0`

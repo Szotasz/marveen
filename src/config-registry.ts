@@ -1275,7 +1275,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: 0,
     min: 0,
     max: 8760,
-    description: 'Válasz-gombok lejárata órában. Ha be van állítva (például 24), egy ennél régebbi kérdés gombjára koppintás nem jut el az ügynökhöz: a csatorna leveszi a kérdés gombjait, és a felugró üzenet azt kéri, hogy a választ írd be. A kor a kérdés elküldési idejétől számít, így a plugin újraindítása után is érvényes. 0 = a gombok nem járnak le (a mai működés). A beállítást a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: 0. A módosítás a csatorna következő indításakor lép életbe.',
+    description: 'Válasz-gombok lejárata órában. Ha be van állítva (például 24), egy ennél régebbi kérdés gombjára koppintás nem jut el az ügynökhöz: a felugró üzenet azt kéri, hogy a választ írd be, és a kérdés gombjai helyére egyetlen „⏱ Lejárt, írd be a választ” gomb kerül. A kor a kérdés elküldési idejétől számít, így a plugin újraindítása után is érvényes. 0 = a gombok nem járnak le (a mai működés). A beállítást a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: 0. A módosítás a csatorna következő indításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,

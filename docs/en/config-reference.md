@@ -324,10 +324,11 @@ session brings it to them.
 
 **What it is for.** A button on an old question can still be tapped long after the conversation
 moved on. With a max age set (say `24`), a tap on a question older than that does not reach the
-agent: the channel takes the question's buttons off and the toast asks to type the answer. The
+agent: the toast asks to type the answer, and the question's buttons give way to a single "⏱ Lejárt, írd be a
+választ" ("expired, type the answer") button, as an answered question keeps its "✓ <label>". The
 age counts from the question's send time (the Telegram message's own timestamp), so it holds
 across a plugin restart. An answered question still gets "Erre már válaszoltál." ("already
-answered"). The buttons come off on a tap only, never by themselves.
+answered"). The buttons change on a tap only, never by themselves.
 
 **Setting it.** Dashboard: *Settings → Channels → `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`*, or for
 example `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24` in `.env`. Whole hours from 0 to 8760; `0` (the

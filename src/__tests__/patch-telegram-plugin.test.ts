@@ -1665,11 +1665,13 @@ describe('kbd: answer buttons expire (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)', ()
       patched = readFileSync(server, 'utf-8')
     })
 
-    it('on a question older than the max age: the toast, the keyboard taken off, nothing delivered, nothing recorded', async () => {
+    it('on a question older than the max age: the toast, then ONE "expired" button in place of the keyboard, nothing delivered, nothing recorded', async () => {
       const h = callbackHarness(patched)
       const r = await h.press({ data: 'kbd:1', extra: { date: now() - 24 * 3600 - 60 } })
       expect(r.answers).toEqual([{ text: EXPIRED }])
-      expect(r.edits).toEqual([{ reply_markup: { inline_keyboard: [] } }])
+      // not an empty keyboard: Telegram Desktop dropped the toast when the whole keyboard went (2026-11-19)
+      expect(r.edits).toEqual([{ reply_markup: { inline_keyboard: [[{ text: '⏱ Lejárt, írd be a választ', callback_data: 'kbd:x' }]] } }])
+      expect(h.events).toEqual(['answer', 'edit'])
       expect(h.delivered).toHaveLength(0)
       expect(h.set.size).toBe(0)
       expect(h.gateCalls).toHaveLength(0)
@@ -1701,6 +1703,12 @@ describe('kbd: answer buttons expire (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)', ()
       const h = callbackHarness(patched, { state })
       await h.press({ data: 'kbd:1', messageId: 901, extra: { date: now() - 25 * 3600 } })
       expect([...state.open.get('42')!]).toEqual([905])
+    })
+
+    it('a tap on the "expired" button itself: the dead-button toast only, nothing delivered', async () => {
+      const h = callbackHarness(patched)
+      const r = await h.press({ data: 'kbd:x', markup: [[{ text: '⏱ Lejárt, írd be a választ', callback_data: 'kbd:x' }]], extra: { date: now() - 48 * 3600 } })
+      expectToastOnly(h, r, 'Ez a gomb már nem él, írd be a választ.', 'kbd:x')
     })
 
     it('a keyboard Telegram refuses to edit (too old) still gets the toast and delivers nothing', async () => {
