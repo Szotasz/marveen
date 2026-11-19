@@ -1,43 +1,43 @@
 ---
 name: retrospective
-description: Analyze the current session for improvement opportunities in skills, memory, and workflow. Spawns a sub-agent for unbiased analysis. Use when a session involved complex problem-solving, error recovery, user corrections, or multi-step workflows. Trigger on "/retrospective" command or at session end after significant work.
+description: Elemezd a jelenlegi sessiont, hol lehet javítani a skilleken, a memórián és a munkafolyamaton. Elfogulatlan elemzéshez sub-agentet indít. Akkor használd, ha a session összetett problémamegoldással, hibából való helyreállással, felhasználói javításokkal vagy többlépéses munkafolyamattal járt. A "/retrospective" parancsra vagy jelentős munka után a session végén indul.
 ---
 
-# Retrospective -- Session Analysis & Improvement
+# Retrospektív: a session elemzése és javítása
 
-## When to use
+## Mikor használd
 
-- After a complex session (5+ tool calls, error recovery, multi-step workflow)
-- When the user corrected your approach ("no, do it this way")
-- After a failed attempt that required a different strategy
-- Before context window exhaustion on a productive session
-- Explicitly via `/retrospective` command
+- Egy összetett session után (5+ tool-hívás, hibából való helyreállás, többlépéses munkafolyamat)
+- Ha a felhasználó kijavította a megközelítésedet ("nem, csináld így")
+- Egy sikertelen kísérlet után, amely más stratégiát kívánt
+- Egy termékeny sessionben, mielőtt a kontextusablak elfogy
+- Kifejezetten a `/retrospective` paranccsal
 
-## Arguments
+## Argumentumok
 
-| Argument | Required | Description |
+| Argumentum | Kötelező | Leírás |
 |----------|----------|-------------|
-| `scope` | no | What to analyze: `session` (default), `last-task`, `last-hour` |
-| `focus` | no | Narrow analysis: `skills`, `memory`, `workflow`, or `all` (default) |
+| `scope` | nem | Mit elemezz: `session` (alapértelmezés), `last-task`, `last-hour` |
+| `focus` | nem | Szűkített elemzés: `skills`, `memory`, `workflow` vagy `all` (alapértelmezés) |
 
-Examples:
-- `/retrospective` -- full session analysis
-- `/retrospective scope=last-task focus=skills` -- only skill improvements for the last task
-- `/retrospective focus=memory` -- only memory tier/content suggestions
+Példák:
+- `/retrospective`: a teljes session elemzése
+- `/retrospective scope=last-task focus=skills`: csak skill-javítások az utolsó feladatra
+- `/retrospective focus=memory`: csak a memória tierjére és tartalmára vonatkozó javaslatok
 
-## Procedure
+## Eljárás
 
-### 1. Gather session data
+### 1. Gyűjtsd össze a session adatait
 
-Collect from the current conversation context:
-- What tasks were attempted
-- Which approaches succeeded vs failed
-- User corrections and their reasoning
-- Tools/skills used and their effectiveness
-- Errors encountered and how they were resolved
-- Time spent on dead ends vs productive work
+A jelenlegi beszélgetés kontextusából gyűjtsd össze:
+- Milyen feladatokba fogtál bele
+- Mely megközelítések sikerültek, és melyek buktak el
+- A felhasználói javításokat és az indoklásukat
+- A használt toolokat és skilleket, és hogy mennyire voltak hatékonyak
+- A felmerült hibákat, és hogyan oldódtak meg
+- Mennyi idő ment zsákutcákra, és mennyi a termékeny munkára
 
-Also pull external state:
+Húzd be a külső állapotot is:
 
 ```bash
 AGENT_ID="$(echo $BOT_NAME | tr '[:upper:]' '[:lower:]')"
@@ -56,25 +56,25 @@ curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
 ls ~/.claude/skills/ | head -30
 ```
 
-### 2. Analyze with A/B/C framework
+### 2. Elemezz az A/B/C keretrendszerrel
 
-For each significant event in the session, evaluate:
+A session minden jelentős eseményére értékeld:
 
-**A -- What happened?**
-State the fact: what was attempted, what was the outcome.
+**A: Mi történt?**
+Rögzítsd a tényt: mivel próbálkoztál, mi lett az eredmény.
 
-**B -- Why did it happen that way?**
-Root cause: was it a missing skill, wrong memory tier, incorrect assumption, tooling gap, or communication issue?
+**B: Miért történt így?**
+Gyökérok: hiányzó skill, rossz memória-tier, téves feltételezés, eszközhiány vagy kommunikációs gond volt?
 
-**C -- What should change?**
-Concrete action: new skill, skill patch, memory write/update, workflow change, or nothing (if the outcome was correct).
+**C: Min kell változtatni?**
+Konkrét lépés: új skill, skill-patch, memória írása vagy frissítése, munkafolyamat-változás, vagy semmi (ha az eredmény helyes volt).
 
-### 3. Generate improvement proposals
+### 3. Készíts javító javaslatokat
 
-Organize findings into categories:
+Rendezd kategóriákba a megállapításokat:
 
-#### Skill proposals
-For each skill-related finding:
+#### Skill-javaslatok
+Minden skillhez kapcsolódó megállapításra:
 ```
 SKILL_ACTION: create | patch | delete
 SKILL_NAME: name-of-skill
@@ -82,13 +82,13 @@ REASON: why this change helps
 CHANGE: what specifically to add/modify/remove
 ```
 
-Rules:
-- Only propose a NEW skill if the pattern appeared 2+ times or was complex enough (5+ steps)
-- Prefer PATCH over CREATE -- check if an existing skill covers 80% of the case
-- Check `~/.claude/skills/.skill-index.md` before proposing duplicates
+Szabályok:
+- ÚJ skillt csak akkor javasolj, ha a minta 2+ alkalommal előfordult, vagy elég összetett volt (5+ lépés)
+- A PATCH-et részesítsd előnyben a CREATE-tel szemben: nézd meg, lefedi-e egy meglévő skill az eset 80%-át
+- Duplikátum javaslása előtt nézd meg a `~/.claude/skills/.skill-index.md` fájlt
 
-#### Memory proposals
-For each memory-related finding:
+#### Memória-javaslatok
+Minden memóriához kapcsolódó megállapításra:
 ```
 MEMORY_ACTION: save | update | delete | retier
 MEMORY_TIER: hot | warm | cold | shared
@@ -96,23 +96,23 @@ CONTENT: what to remember
 REASON: why this tier, why now
 ```
 
-Rules:
-- User corrections -> always save as warm (stable preference)
-- Task-specific findings -> hot (will decay naturally)
-- Architectural decisions -> cold (long-term reference)
-- Cross-agent learnings -> shared
+Szabályok:
+- Felhasználói javítások -> mindig warm (stabil preferencia)
+- Feladatspecifikus megállapítások -> hot (magától lecseng)
+- Architekturális döntések -> cold (hosszú távú referencia)
+- Ágensek közötti tanulságok -> shared
 
-#### Workflow proposals
-For process improvements that don't fit skills or memory:
+#### Munkafolyamat-javaslatok
+Azokra a folyamatjavításokra, amelyek sem skillbe, sem memóriába nem illenek:
 ```
 WORKFLOW_CHANGE: description of the process change
 APPLIES_TO: this agent | all agents | specific agent
 REASON: what problem it solves
 ```
 
-### 4. Present to user for approval
+### 4. Mutasd be a felhasználónak jóváhagyásra
 
-Format the output as a concise action list:
+Tömör teendőlistaként formázd a kimenetet:
 
 ```
 ## Retrospective Summary
@@ -137,14 +137,14 @@ Key events: [count] tasks, [count] corrections, [count] errors
 Apply all? (y/n/select)
 ```
 
-### 5. Execute approved changes
+### 5. Hajtsd végre a jóváhagyott változásokat
 
-On user approval:
-- Skills: create/patch SKILL.md files, regenerate `.skill-index.md`
-- Memory: write/update via the memory API
-- Workflow: update CLAUDE.md or inter-agent message to affected agents
+A felhasználó jóváhagyása után:
+- Skillek: hozd létre vagy patcheld a SKILL.md fájlokat, generáld újra a `.skill-index.md`-t
+- Memória: írás vagy frissítés a memória API-n
+- Munkafolyamat: frissítsd a CLAUDE.md-t, vagy küldj inter-agent üzenetet az érintett ágenseknek
 
-After execution, log the retrospective to the daily log:
+A végrehajtás után naplózd a retrospektívet a napi naplóba:
 ```bash
 PORT="$(sed -n 's/^WEB_PORT=//p' .env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
 curl -s -X POST -H "Authorization: Bearer $(cat store/.dashboard-token)" \
@@ -153,19 +153,19 @@ curl -s -X POST -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d "{\"agent_id\":\"$AGENT_ID\",\"content\":\"## $(date +%H:%M) -- Retrospective\n[count] skill changes, [count] memory updates, [count] workflow changes applied.\"}"
 ```
 
-## Pitfalls
+## Buktatók
 
-- Do NOT auto-apply changes without user approval -- always present first
-- Do NOT create skills for one-off tasks that won't repeat
-- Do NOT save ephemeral debugging context as cold memory
-- If the session was straightforward with no issues, say so and skip -- not every session needs changes
-- Keep proposals actionable and specific -- "be better at X" is not a proposal
+- NE alkalmazz változást automatikusan a felhasználó jóváhagyása nélkül: mindig előbb mutasd be
+- NE hozz létre skillt egyszeri, nem ismétlődő feladatra
+- NE ments múló hibakeresési kontextust cold memóriába
+- Ha a session egyszerű volt, gond nélkül, mondd ki, és hagyd ki: nem minden session igényel változtatást
+- A javaslatok legyenek végrehajthatók és konkrétak: a "legyél jobb X-ben" nem javaslat
 
-## Relation to existing mechanisms
+## Kapcsolat a meglévő mechanizmusokkal
 
-| Mechanism | Retrospective's role |
+| Mechanizmus | A retrospektív szerepe |
 |-----------|---------------------|
-| memoria-heartbeat | Retrospective is the dedicated, deeper version. Heartbeat does inline A/B/C; retrospective does it thoroughly with user approval |
-| skill-factory | Retrospective proposes skills; skill-factory creates them. Retrospective may invoke skill-factory for CREATE actions |
-| DREAM.md | Nightly consolidation. Retrospective is on-demand, immediate |
-| /handoff | Retrospective analyzes; handoff transfers. Different purposes |
+| memoria-heartbeat | A retrospektív ennek a célzott, mélyebb változata. A heartbeat soron belül végzi az A/B/C-t; a retrospektív alaposan, a felhasználó jóváhagyásával |
+| skill-factory | A retrospektív javasolja a skilleket; a skill-factory hozza létre őket. CREATE lépéshez a retrospektív meghívhatja a skill-factoryt |
+| DREAM.md | Éjszakai konszolidáció. A retrospektív igény szerinti és azonnali |
+| /handoff | A retrospektív elemez; a handoff átad. Eltérő célok |

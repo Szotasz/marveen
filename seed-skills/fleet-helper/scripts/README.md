@@ -1,17 +1,17 @@
 # fleet-helper
 
-Shared, dependency-free Python helpers for a ClaudeClaw-style agent fleet. The
-goal: do deterministic work (fetch / filter / SQL / format / escape) in Python
-instead of burning model tokens doing it inside the LLM turn. Python 3 stdlib
-only.
+Közös, függőség nélküli Python-segédek egy ClaudeClaw-típusú ágensflottához. A
+cél: a determinisztikus munkát (lekérés, szűrés, SQL, formázás, escape) Pythonban végezd el,
+ne az LLM-körön belül égesd rá a modell tokenjeit. Csak Python 3
+stdlib.
 
-No secrets or personal data are baked in: the dashboard token is read from
-`store/.dashboard-token` at call time, paths come from `CLAW_DIR` (or are
-auto-detected), and any personal sender/keyword lists live in a gitignored
-`mail_rules.json` (see `mail_rules.example.json`).
+Nincs beégetett titok vagy személyes adat: a dashboard-tokent hívásidőben olvassa a
+`store/.dashboard-token` fájlból, az utak a `CLAW_DIR` változóból jönnek (vagy automatikusan
+felismeri őket), a személyes feladó- és kulcsszólisták pedig egy gitignore-olt
+`mail_rules.json` fájlban élnek (lásd `mail_rules.example.json`).
 
-## fleet.py - dashboard API + kanban + MarkdownV2
-CLI (fewer tokens than a curl block) or import as a module:
+## fleet.py: dashboard API, kanban és MarkdownV2
+CLI (kevesebb token, mint egy curl-blokk), vagy importáld modulként:
 
 ```bash
 python3 fleet.py mdv2 "Tomorrow (8:00) - report!"   # escaped MarkdownV2
@@ -25,59 +25,59 @@ python3 fleet.py kanban-move <id> <status> <actor>
 python3 fleet.py kanban-set <id> <field> <value> <actor>
 ```
 
-MarkdownV2: `escape_mdv2()` escapes literal text. Escape the dynamic text first,
-then add your own `*...*` bold markers around the escaped pieces.
+MarkdownV2: az `escape_mdv2()` a literál szöveget escape-eli. Előbb a dinamikus szöveget escape-eld,
+aztán tedd a saját `*...*` félkövér jelölőidet az escape-elt darabok köré.
 
-## mail_triage.py - rule-based unread-mail filter (macOS Mail.app)
-Auth-free (osascript), returns JSON, never sends and never marks read. Buckets:
-`important` / `review` / `dropped`. Real senders/keywords go in `mail_rules.json`.
+## mail_triage.py: szabályalapú szűrő az olvasatlan levelekre (macOS Mail.app)
+Hitelesítés nélküli (osascript), JSON-t ad, sosem küld, és sosem jelöl olvasottnak. Kosarak:
+`important` / `review` / `dropped`. A valódi feladók és kulcsszavak a `mail_rules.json` fájlba kerülnek.
 
-## The heartbeat gate pattern (the interesting part)
+## A heartbeat-kapu minta (az érdekes rész)
 
-Frequent agent "heartbeats" (periodic checks every N minutes) often wake the LLM
-just to run deterministic checks (read mail, query a DB, scan a calendar) and
-then decide there's nothing to report. That is mostly wasted tokens.
+A sűrű ágens-"heartbeatek" (N percenkénti rendszeres ellenőrzések) gyakran csak azért ébresztik fel az LLM-et,
+hogy determinisztikus ellenőrzéseket futtasson (levél olvasása, DB-lekérdezés, naptár átnézése), és
+aztán eldöntse, hogy nincs mit jelenteni. Ez nagyrészt elpazarolt token.
 
-The naive fix - "skip the LLM turn when nothing changed" - can be unsafe: if your
-channel transport (e.g. a Telegram MCP server over a stdio pipe) relies on the
-agent making a periodic local tool call to stay connected, skipping the turn
-entirely lets the pipe go idle and disconnect (losing inbound messages).
+A naiv javítás ("hagyd ki az LLM-kört, ha semmi nem változott") veszélyes lehet: ha a
+csatorna-transzportod (pl. egy stdio-csövön futó Telegram MCP szerver) arra támaszkodik, hogy az
+ágens rendszeresen helyi tool-hívást végez, és így marad kapcsolatban, akkor a kör teljes
+kihagyása miatt a cső tétlenné válik és lekapcsol (a bejövő üzenetek elvesznek).
 
-The pattern that captures the savings WITHOUT that risk:
+A minta, amely EZ a kockázat NÉLKÜL hozza a megtakarítást:
 
-1. Keep the heartbeat turn, but make it cheap. The heartbeat's mandatory first
-   action is to run a single `gate.py` via the shell. **That one Bash call IS the
-   keep-alive local tool call** - the transport stays warm.
-2. `gate.py` does all the deterministic checks (mail filter, kanban SQL, calendar
-   scan) outside the model and prints a compact JSON with a `has_signal` flag.
-3. If `has_signal == false`: the model writes one short line and stops. No
-   external message, and crucially no in-model AppleScript / SQL / filtering.
-4. If `has_signal == true`: the model only does the judgment (is this worth
-   surfacing? phrase it) and sends the notification.
+1. Tartsd meg a heartbeat-kört, de tedd olccsá. A heartbeat kötelező első
+   lépése egyetlen `gate.py` futtatása shellből. **Ez az egy Bash-hívás MAGA a
+   keep-alive helyi tool-hívás**, így a transzport melegen marad.
+2. A `gate.py` minden determinisztikus ellenőrzést (levélszűrés, kanban-SQL,
+   naptár-átnézés) a modellen kívül végez el, és kiír egy tömör JSON-t egy `has_signal` jelzővel.
+3. Ha `has_signal == false`: a modell egy rövid sort ír és megáll. Nincs
+   külső üzenet, és ami a lényeg, nincs modellen belüli AppleScript, SQL vagy szűrés.
+4. Ha `has_signal == true`: a modell csak a mérlegelést végzi (megéri-e
+   felszínre hozni? hogyan fogalmazza meg), és elküldi az értesítést.
 
-The token saving does not come from skipping the turn (the keep-alive call was
-already mandatory) - it comes from replacing "LLM reasons through
-AppleScript+SQL+filtering each cycle" with "LLM runs one gate + reads a tiny
-JSON". Zero changes to the scheduler/runner core are required: it is purely a
-heartbeat-prompt rewrite plus the gate script.
+A tokenmegtakarítás nem a kör kihagyásából jön (a keep-alive hívás eddig is
+kötelező volt), hanem abból, hogy a "minden ciklusban az LLM gondolja végig az
+AppleScript+SQL+szűrés láncot" helyébe az lép, hogy "az LLM lefuttat egy kaput és elolvas egy apró
+JSON-t". Az ütemező és a runner magjához egyáltalán nem kell nyúlni: ez csupán a
+heartbeat-prompt átírása és a kapu-szkript.
 
-Scheduling caveats (learned the hard way in a live test):
+Ütemezési buktatók (élő teszten, keserves úton tanulva):
 
-1. **Avoid cron collisions with other heartbeats.** If two heartbeats land in the
-   same minute in the same session, one consistently loses (gets absorbed by the
-   other's turn) and its cycle silently never runs. A `*/30` task (:00,:30)
-   always collides with a `*/15` task (:00,:15,:30,:45). Do NOT schedule a gated
-   heartbeat on :00/:15/:30/:45 (or any minute another heartbeat uses) - pick
-   offset minutes, e.g. `7,23,37,53 * * * *`. This was the actual reason our
-   first three live cycles never fired - not `skipIfBusy`.
-2. **`skipIfBusy`:** a gated heartbeat still needs its turn to run for the
-   keep-alive to fire. With `skipIfBusy:true`, a busy session can drop the cycle
-   entirely. Where the keep-alive matters, prefer `skipIfBusy:false` (queue the
-   prompt); the per-cycle work is cheap by design, so queuing is harmless.
+1. **Kerüld a cron-ütközést más heartbeatekkel.** Ha két heartbeat ugyanabba a
+   percbe esik ugyanabban a sessionben, az egyik következetesen veszít (elnyeli a
+   másik köre), és a ciklusa csendben soha nem fut le. Egy `*/30` feladat (:00,:30)
+   mindig ütközik egy `*/15` feladattal (:00,:15,:30,:45). NE ütemezz kapuzott
+   heartbeatet :00/:15/:30/:45 percre (vagy bármely percre, amit más heartbeat használ): válassz
+   eltolt perceket, pl. `7,23,37,53 * * * *`. Valójában ez volt az oka annak, hogy
+   az első három élő ciklusunk soha nem indult el, nem a `skipIfBusy`.
+2. **`skipIfBusy`:** a kapuzott heartbeatnek is le kell futnia a körének, hogy a
+   keep-alive elsüljön. `skipIfBusy:true` mellett egy foglalt session teljesen elejtheti
+   a ciklust. Ahol a keep-alive számít, inkább `skipIfBusy:false` (sorba állítja a
+   promptot); a ciklusonkénti munka eleve olcsó, így a sorba állítás ártalmatlan.
 
-`gate_example.py` is a reference gate (mail + kanban + calendar) you can adapt.
+A `gate_example.py` egy referencia-kapu (levél, kanban, naptár), amelyet átalakíthatsz.
 
-## Layout
+## Felépítés
 ```
 fleet.py                 # shared lib + CLI
 mail_triage.py           # unread-mail filter
@@ -85,10 +85,10 @@ gate_example.py          # reference heartbeat gate (keep-alive == the gate call
 mail_rules.example.json  # copy to mail_rules.json (gitignored) with real values
 ```
 
-## Safety notes
-- Token is read from `store/.dashboard-token` at call time. Never print or commit it.
-- The kanban read helpers are read-only SQL; the three write commands (kanban-comment / kanban-move / kanban-set) go through the dashboard API, see SKILL.md "Kanban writes" (actor required on move and set).
-- `mail_rules.json` (your real senders) must be gitignored (see `.gitignore`).
+## Biztonsági megjegyzések
+- A tokent hívásidőben olvassa a `store/.dashboard-token` fájlból. Sosem írd ki, és sosem commitold.
+- A kanban-olvasó segédek csak olvasó SQL-t futtatnak; a három író parancs (kanban-comment / kanban-move / kanban-set) a dashboard API-n megy, lásd a SKILL.md "Kanban-írás" részét (a move és a set esetén az actor kötelező).
+- A `mail_rules.json` (a valódi feladóid) legyen gitignore-olt (lásd `.gitignore`).
 
-## License
-MIT, consistent with the parent project (ClaudeClaw / marveen).
+## Licenc
+MIT, összhangban a szülőprojekttel (ClaudeClaw / marveen).

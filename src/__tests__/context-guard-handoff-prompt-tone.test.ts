@@ -189,11 +189,17 @@ describe('every first-write handoff request asks for a card id or the no-card ma
   }
 
   it('the seed handoff skill asks for the same marker in its Next Steps template', () => {
-    const skill = readFileSync(join(process.cwd(), 'seed-skills/handoff/SKILL.md'), 'utf-8')
+    // DOCKERI18N1119: the base path is the Hungarian text, i18n/en/ the English one; both carry the marker.
+    const skill = readFileSync(join(process.cwd(), 'i18n/en/seed-skills/handoff/SKILL.md'), 'utf-8')
     const nextSteps = skill.slice(skill.indexOf('## Next Steps'), skill.indexOf('### 3. Deliver'))
     expect(nextSteps.length).toBeGreaterThan(0)
     expect(nextSteps).toContain('kanban card ID or the marker `KÁRTYA NÉLKÜL` (no card)')
     // and the closing paragraph no longer reads as "the kanban is the full list"
     expect(skill).toContain('the kanban is not the full to-do list either')
+    const hu = readFileSync(join(process.cwd(), 'seed-skills/handoff/SKILL.md'), 'utf-8')
+    const huNextSteps = hu.slice(hu.indexOf('## Next Steps'), hu.indexOf('### 3. Kézbesítés'))
+    expect(huNextSteps.length).toBeGreaterThan(0)
+    expect(huNextSteps).toContain(`\`${MARKER}\``)
+    expect(hu).toContain('A kanban viszont nem is a teljes teendőlista')
   })
 })

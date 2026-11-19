@@ -777,6 +777,9 @@ function renderStaticI18n() {
   // if loadUpdates' refetch is slow or fails.
   if (typeof renderUpdatesVersion === 'function') renderUpdatesVersion(window._updatesStatus)
   if (typeof applyOnboardingProviderTab === 'function') applyOnboardingProviderTab()
+  // DOCKERI18N1119: the "no channel configured" banner's text is drawn from /api/marveen with the language of that
+  // moment; on a fresh install that answer can come before DASHBOARD_LANG (Geri, v1.50.1: Hungarian on an en install).
+  if (typeof updateMainChannelUnconfBanner === 'function' && mainChannelUnconfLast) updateMainChannelUnconfBanner(mainChannelUnconfLast)
 }
 
 // Initial render on page load.
@@ -15549,7 +15552,11 @@ function wireBranchDriftBanner() {
 // runs WITHOUT its channel (channels.sh), so nobody can message the main agent; the dashboard, the scheduled tasks and
 // the other agents keep working. One sentence plus the way to the main agent's Channel tab. Not dismissible.
 const MAIN_CHANNEL_PROVIDER_LABELS = { telegram: 'Telegram', discord: 'Discord', slack: 'Slack', teams: 'Microsoft Teams' }
+// DOCKERI18N1119: the last /api/marveen payload the banner was drawn from, so a language change redraws it
+// (renderStaticI18n). `var`: renderStaticI18n is defined earlier in the file.
+var mainChannelUnconfLast = null
 function updateMainChannelUnconfBanner(m) {
+  mainChannelUnconfLast = m || null
   const banner = document.getElementById('mainChannelUnconfBanner')
   if (!banner) return
   const provider = m && typeof m.mainChannelUnconfigured === 'string' ? m.mainChannelUnconfigured : null

@@ -1,50 +1,50 @@
 ---
 name: skill-factory
-description: Turn any workflow, conversation, or demonstrated process into a reusable SKILL.md. Use when the user says "turn this into a skill", "make a skill from this", "save this workflow", "remember how to do this", or after completing a complex multi-step task that should be repeatable. Also triggers on "tanítsd meg magad", "jegyezd meg ezt a folyamatot", "csinálj ebből skill-t".
+description: Bármely munkafolyamatból, beszélgetésből vagy bemutatott folyamatból újrahasznosítható SKILL.md-t készít. Akkor használd, ha a felhasználó azt mondja: "turn this into a skill" (alakítsd skillé), "make a skill from this" (csinálj ebből skillt), "save this workflow" (mentsd el ezt a munkafolyamatot), "remember how to do this" (jegyezd meg, hogyan kell ezt csinálni), vagy egy összetett, többlépéses feladat befejezése után, amelynek megismételhetőnek kell lennie. Ezekre is indul: "tanítsd meg magad", "jegyezd meg ezt a folyamatot", "csinálj ebből skill-t".
 ---
 
 # Skill Factory
 
-Convert demonstrated workflows into reusable skills. This is a meta-skill: it creates other skills.
+Alakítsd a bemutatott munkafolyamatokat újrahasznosítható skillekké. Ez egy meta-skill: más skilleket hoz létre.
 
-## When to Use
+## Mikor használd
 
-- User explicitly asks to create a skill from a workflow
-- User says "remember how to do this" or "save this process"
-- After a complex task (5+ tool calls) that could be reusable
-- When user corrects your approach and the correction is generalizable
-- Hungarian triggers: "tanítsd meg magad", "csinálj skill-t", "jegyezd meg"
+- A felhasználó kifejezetten azt kéri, hogy egy munkafolyamatból készíts skillt
+- A felhasználó azt mondja: "remember how to do this" vagy "save this process"
+- Egy összetett feladat (5+ tool-hívás) után, amely újrahasznosítható lehet
+- Ha a felhasználó kijavítja a megközelítésedet, és a javítás általánosítható
+- Magyar indító kifejezések: "tanítsd meg magad", "csinálj skill-t", "jegyezd meg"
 
-## Procedure
+## Eljárás
 
-### Step 1: Extract the Workflow
+### 1. lépés: Bontsd ki a munkafolyamatot
 
-Analyze the current conversation (or specified workflow) and identify:
+Elemezd a jelenlegi beszélgetést (vagy a megadott munkafolyamatot), és azonosítsd:
 
-1. **Trigger conditions**: When should this skill activate?
-2. **Input**: What does the skill need to start?
-3. **Steps**: What are the concrete steps (in order)?
-4. **Tools used**: Which tools/commands were involved?
-5. **Decision points**: Where did you need to make choices?
-6. **Error handling**: What went wrong and how was it fixed?
-7. **Output**: What's the expected result?
+1. **Indító feltételek**: Mikor kapcsoljon be ez a skill?
+2. **Bemenet**: Mire van szüksége a skillnek az induláshoz?
+3. **Lépések**: Melyek a konkrét lépések (sorrendben)?
+4. **Használt eszközök**: Mely toolok és parancsok vettek részt benne?
+5. **Döntési pontok**: Hol kellett választanod?
+6. **Hibakezelés**: Mi romlott el, és hogyan javítottad?
+7. **Kimenet**: Mi a várt eredmény?
 
-### Step 2: Generalize
+### 2. lépés: Általánosíts
 
-Don't just copy the specific instance. Abstract it:
+Ne csak az adott esetet másold le. Absztraháld:
 
-- Replace specific file names with `[input-file]` patterns
-- Replace specific URLs with `[target-url]` patterns
-- Identify which parts are constant vs. variable
-- Note any prerequisites or dependencies
-- Think about edge cases the original workflow didn't cover
+- A konkrét fájlneveket cseréld `[input-file]` mintákra
+- A konkrét URL-eket cseréld `[target-url]` mintákra
+- Azonosítsd, mely részek állandók és melyek változók
+- Jegyezd fel az előfeltételeket és a függőségeket
+- Gondold végig azokat a szélső eseteket, amelyeket az eredeti munkafolyamat nem fedett le
 
-### Step 3: Write SKILL.md
+### 3. lépés: Írd meg a SKILL.md-t
 
-**Where first.** The block below writes into YOUR OWN folder, for a skill only you use. Do NOT run it for a skill
-meant for every agent, for a fix to a global skill, or if you are the main agent (its working directory is the
-project root, whose `.claude/skills` every sub-agent loads): draft those outside every skills folder and propose
-them, as the note after the block says.
+**Előbb a hely.** Az alábbi blokk a SAJÁT mappádba ír, egy csak általad használt skill számára. NE futtasd olyan skillhez,
+amely minden ágensnek szól, egy globális skill javításához, vagy ha te vagy a fő ágens (a munkakönyvtára a
+projekt gyökere, amelynek `.claude/skills` mappáját minden sub-agent betölti): ezeket minden skill-mappán kívül írd meg piszkozatban, és
+javaslatként küldd be, ahogy a blokk utáni megjegyzés mondja.
 
 ```bash
 SKILL_NAME="[kebab-case-name]"
@@ -82,73 +82,73 @@ Output: [what was produced]
 EOF
 ```
 
-This writes the skill into YOUR OWN folder (your working directory's `.claude/skills`), which only you load. A skill
-for every agent, or a fix to an existing global skill (`~/.claude/skills`), is never written there directly: send the
-complete SKILL.md to `POST /api/skills/propose` (body `{"name": ..., "skill_md": ..., "reason": ...}`, with the dashboard
-token). It waits in quarantine until the owner approves it; an existing name becomes a replacement, and the approval backs
-the old version up; on a replacement the live skill's other files are kept. A proposal carries the SKILL.md only: a NEW
-global skill that needs scripts or references is the owner's call (ask them; they can import an archive on the
-dashboard's Skills page, which is quarantined too). The main agent has no private folder, so it always proposes.
+Ez a SAJÁT mappádba írja a skillt (a munkakönyvtárad `.claude/skills` mappájába), amelyet csak te töltesz be. A minden
+ágensnek szóló skillt, vagy egy meglévő globális skill (`~/.claude/skills`) javítását soha nem írod oda közvetlenül: küldd a
+teljes SKILL.md-t a `POST /api/skills/propose` végpontra (törzs: `{"name": ..., "skill_md": ..., "reason": ...}`, a
+dashboard-tokennel). Karanténban vár, amíg a gazda jóvá nem hagyja; egy már létező név cserévé válik, és a jóváhagyás elmenti
+a régi változatot; csere esetén az élő skill többi fájlja megmarad. A javaslat csak a SKILL.md-t viszi: egy ÚJ
+globális skill, amelynek szkriptek vagy referenciák kellenek, a gazda döntése (kérdezd meg; ő be tud importálni egy archívumot a
+dashboard Skills oldalán, ami szintén karanténba kerül). A fő ágensnek nincs privát mappája, ezért mindig javaslatot küld.
 
-### Step 4: Add Supporting Files (if needed)
+### 4. lépés: Adj hozzá kiegészítő fájlokat (ha kell)
 
-If the workflow involves scripts or templates:
+Ha a munkafolyamat szkripteket vagy sablonokat is tartalmaz:
 
 ```bash
 mkdir -p .claude/skills/$SKILL_NAME/scripts
 mkdir -p .claude/skills/$SKILL_NAME/references
 ```
 
-- `scripts/`: Executable code for deterministic/repetitive tasks
-- `references/`: Documentation loaded into context as needed
-- `assets/`: Templates, icons, or other static files
+- `scripts/`: futtatható kód determinisztikus vagy ismétlődő feladatokhoz
+- `references/`: dokumentáció, amely szükség szerint töltődik be a kontextusba
+- `assets/`: sablonok, ikonok vagy más statikus fájlok
 
-### Step 5: Run the Linter (required)
+### 5. lépés: Futtasd a lintert (kötelező)
 
-Check the new or changed skill against Anthropic's "Skill authoring best practices" (https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices):
+Ellenőrizd az új vagy módosított skillt az Anthropic "Skill authoring best practices" útmutatója alapján (https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices):
 
 ```bash
 L=../../scripts/skill-lint.mjs; [ -f "$L" ] || L=scripts/skill-lint.mjs   # sub-agent cwd: agents/<name>/; main agent: the install root
 node "$L" .claude/skills/$SKILL_NAME
 ```
 
-If it reports a finding (non-zero exit), fix it and run it again until it is clean. The rules it checks:
-- "Keep SKILL.md body under 500 lines for optimal performance" (the body after the frontmatter).
-- "For reference files longer than 100 lines, include a table of contents at the top" (a `references/` file over 100 lines).
-- "Keep references one level deep from SKILL.md": every supporting file is linked from SKILL.md itself, not only from another supporting file.
-- Every relative markdown link in SKILL.md points to a file that exists.
+Ha megállapítást jelez (nem nulla kilépési kód), javítsd, és futtasd újra, amíg tiszta nem lesz. Az általa ellenőrzött szabályok:
+- "Keep SKILL.md body under 500 lines for optimal performance" (a frontmatter utáni törzs).
+- "For reference files longer than 100 lines, include a table of contents at the top" (egy 100 sornál hosszabb `references/` fájl).
+- "Keep references one level deep from SKILL.md": minden kiegészítő fájlra maga a SKILL.md hivatkozik, nem csak egy másik kiegészítő fájl.
+- A SKILL.md minden relatív markdown-hivatkozása létező fájlra mutat.
 
-The linter only reports; it never rewrites. Do not rewrite a skill installed from an outside source because of it.
+A linter csak jelez, sosem ír át semmit. Külső forrásból telepített skillt ne írj át miatta.
 
-### Step 6: Update Skill Index
+### 6. lépés: Frissítsd a skill-indexet
 
 ```bash
 bash scripts/skill-index.sh
 ```
 
-### Step 7: Validate
+### 7. lépés: Ellenőrizd
 
-Test the skill mentally:
-- Would the description trigger on a realistic user message?
-- Are the steps clear enough to follow without the original context?
-- Are edge cases covered in Pitfalls?
-- Is the SKILL.md body under 500 lines, and does the linter (Step 5) pass?
+Teszteld fejben a skillt:
+- Elindulna a leírás egy valószerű felhasználói üzenetre?
+- Elég világosak a lépések ahhoz, hogy az eredeti kontextus nélkül is követni lehessen őket?
+- Le vannak fedve a szélső esetek a Pitfalls szakaszban?
+- 500 sor alatt van a SKILL.md törzse, és átmegy a linteren (5. lépés)?
 
-## Pitfalls
+## Buktatók
 
-- **Overfitting to one example**: Don't just save the exact steps you did. Generalize so it works for similar but different inputs.
-- **Too vague descriptions**: The description field is the primary trigger. Be specific and include multiple phrasings.
-- **Missing error handling**: If you hit errors during the original workflow, document them in Pitfalls.
-- **Too long**: Keep SKILL.md under 500 lines. Move large content to `references/` subdirectory.
-- **Duplicate skills**: Before creating, check `~/.claude/skills/.skill-index.md` for existing similar skills. Patch instead of creating a new one.
+- **Túlillesztés egyetlen példára**: Ne csak a pontosan végrehajtott lépéseidet mentsd el. Általánosíts, hogy hasonló, de eltérő bemenetekre is működjön.
+- **Túl homályos leírás**: A leírás mező az elsődleges indító. Légy konkrét, és adj meg több megfogalmazást.
+- **Hiányzó hibakezelés**: Ha az eredeti munkafolyamat közben hibákba futottál, dokumentáld őket a Pitfalls szakaszban.
+- **Túl hosszú**: A SKILL.md maradjon 500 sor alatt. A nagy tartalmat tedd a `references/` alkönyvtárba.
+- **Duplikált skillek**: Létrehozás előtt nézd meg a `~/.claude/skills/.skill-index.md` fájlban, van-e már hasonló skill. Új létrehozása helyett patcheld azt.
 
-## Skill Quality Checklist
+## Skill-minőségi ellenőrzőlista
 
-Before finalizing, verify:
-- [ ] Description includes multiple trigger phrases
-- [ ] Steps are numbered and concrete
-- [ ] Commands are copy-pasteable (no pseudocode)
-- [ ] Variables are clearly marked with `[brackets]`
-- [ ] Pitfalls section has at least one entry
-- [ ] Verification section explains how to confirm success
-- [ ] Under 500 lines, and `skill-lint` reports no finding
+Véglegesítés előtt ellenőrizd:
+- [ ] A leírás több indító kifejezést tartalmaz
+- [ ] A lépések számozottak és konkrétak
+- [ ] A parancsok bemásolhatók (nincs pszeudokód)
+- [ ] A változók egyértelműen `[brackets]` jelöléssel szerepelnek
+- [ ] A Pitfalls szakaszban legalább egy bejegyzés van
+- [ ] A Verification szakasz elmondja, hogyan igazold a sikert
+- [ ] 500 sor alatt van, és a `skill-lint` semmit nem jelez
