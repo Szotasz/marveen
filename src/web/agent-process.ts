@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync, openSync, fstatSync, readSync, closeSync, constants as fsConstants } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync, openSync, fstatSync, readSync, closeSync, fchmodSync, constants as fsConstants } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
@@ -562,6 +562,9 @@ function scrubIsolatedCredentialsFile(path: string, name: string): void {
   let raw: string | null = null
   try {
     const st = fstatSync(fd)
+    // A clean file is now kept across spawns (before, every spawn deleted it), and it holds refresh tokens:
+    // narrow a wider mode here, on the descriptor, which cannot follow a link swapped in at the path.
+    if (st.isFile() && (st.mode & 0o077)) fchmodSync(fd, 0o600)
     if (st.isFile() && st.size <= ISOLATED_CREDENTIALS_MAX_BYTES) {
       const buf = Buffer.alloc(ISOLATED_CREDENTIALS_MAX_BYTES + 1)
       let n = 0

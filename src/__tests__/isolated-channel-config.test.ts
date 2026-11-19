@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   mkdtempSync, mkdirSync, writeFileSync, rmSync, lstatSync, readlinkSync, readFileSync, existsSync,
-  symlinkSync, statSync, utimesSync, readdirSync,
+  symlinkSync, statSync, utimesSync, readdirSync, chmodSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -12,9 +12,27 @@ import { tmpdir } from 'node:os'
 let SANDBOX = ''
 let AUTH_MODE: Record<string, string> = {}
 let RUN_AS: Record<string, string> = {}
+// Failure injection for the scrub's rewrite (MCPOAUTHWIPE1119 review): only the temp-file write or the rename of
+// a `.credentials.json.tmp-` path throws, and only while the flag is set; every other call is the real one.
+let FAIL_TMP: 'write' | 'rename' | null = null
 vi.mock('node:os', async (orig) => {
   const actual = await orig<typeof import('node:os')>()
   return { ...actual, homedir: () => join(SANDBOX, 'home') }
+})
+vi.mock('node:fs', async (orig) => {
+  const actual = await orig<typeof import('node:fs')>()
+  const isTmp = (p: unknown) => String(p).includes('.credentials.json.tmp-')
+  return {
+    ...actual,
+    writeFileSync: ((...args: Parameters<typeof actual.writeFileSync>) => {
+      if (FAIL_TMP === 'write' && isTmp(args[0])) throw Object.assign(new Error('injected write failure'), { code: 'EIO' })
+      return actual.writeFileSync(...args)
+    }) as typeof actual.writeFileSync,
+    renameSync: ((...args: Parameters<typeof actual.renameSync>) => {
+      if (FAIL_TMP === 'rename' && isTmp(args[0])) throw Object.assign(new Error('injected rename failure'), { code: 'EIO' })
+      return actual.renameSync(...args)
+    }) as typeof actual.renameSync,
+  }
 })
 vi.mock('../web/agent-config.js', async (orig) => {
   const actual = await orig<typeof import('../web/agent-config.js')>()
@@ -60,6 +78,7 @@ beforeEach(() => {
   SANDBOX = mkdtempSync(join(tmpdir(), 'isocfg-'))
   AUTH_MODE = {}
   RUN_AS = {}
+  FAIL_TMP = null
   seedSharedClaude(join(SANDBOX, 'home'))
   mkdirSync(join(SANDBOX, 'agents', 'testagent'), { recursive: true })
 })
@@ -203,6 +222,50 @@ describe('ensureIsolatedChannelConfigDir', () => {
       utimesSync(file, 1_600_000_000, 1_600_000_000)
       ensureIsolatedChannelConfigDir('testagent', 'telegram')
       ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(readFileSync(file, 'utf-8')).toBe(clean)
+      expect(statSync(file).mtimeMs).toBe(1_600_000_000_000)
+    })
+
+    it('keeps only the allow-listed keys: an unknown account key and a case variant are dropped too', () => {
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      writeFileSync(file, JSON.stringify({
+        claudeAiOauth: ANTHROPIC,
+        mcpOAuth: MCP,
+        someOtherOauth: { accessToken: 'fake-other', refreshToken: 'fake-other-refresh' },
+        ClaudeAiOauth: { accessToken: 'fake-case-variant' },
+      }))
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      const raw = readFileSync(file, 'utf-8')
+      expect(JSON.parse(raw)).toEqual({ mcpOAuth: MCP })
+      expect(raw).not.toContain('fake-other')
+      expect(raw).not.toContain('fake-case-variant')
+      expect(raw).not.toContain('fake-anthropic')
+    })
+
+    it.each(['write', 'rename'] as const)('a failed rewrite (%s) removes the file and leaves no temp file', (where) => {
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: ANTHROPIC, mcpOAuth: MCP }))
+      FAIL_TMP = where
+      try {
+        ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      } finally {
+        FAIL_TMP = null
+      }
+      expect(existsSync(file)).toBe(false)
+      expect(readdirSync(cfg).filter((e) => e.includes('.credentials.json.tmp-'))).toEqual([])
+    })
+
+    it('narrows an already-clean 0644 file to 0600 without rewriting it', () => {
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      const clean = JSON.stringify({ mcpOAuth: MCP })
+      writeFileSync(file, clean, { mode: 0o644 })
+      chmodSync(file, 0o644)
+      utimesSync(file, 1_600_000_000, 1_600_000_000)
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(statSync(file).mode & 0o777).toBe(0o600)
       expect(readFileSync(file, 'utf-8')).toBe(clean)
       expect(statSync(file).mtimeMs).toBe(1_600_000_000_000)
     })
