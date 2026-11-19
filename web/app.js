@@ -172,6 +172,10 @@ function mainAgentId() {
       showLoginOverlay()
       return
     }
+    if (status && status.setup_code) {
+      showSetupCodeOverlay()
+      return
+    }
     // An installed (home-screen) PWA has its own localStorage, separate from
     // Safari's, and the manifest start_url has no ?token=, so the very first
     // standalone launch is token-less and 401s. There is no address bar to paste
@@ -213,6 +217,62 @@ function mainAgentId() {
     overlay.appendChild(box)
     document.body.appendChild(overlay)
     setTimeout(() => close.focus(), 50)
+  }
+
+  // DOCKERHTTPS1119: the public (HTTPS) address before the first login: no token reaches it, so the page asks for the
+  // one-time setup code from the container log. Redeemed in the body (never the URL); the server answers with a short
+  // setup-session cookie that lets the wizard create the dashboard password, then the page reloads into the wizard.
+  function showSetupCodeOverlay() {
+    if (document.getElementById('mv-setup-code-overlay')) return
+    const tr = (k, fallback) => (typeof window.t === 'function' ? window.t(k) : fallback) || fallback
+    const overlay = document.createElement('div')
+    overlay.id = 'mv-setup-code-overlay'
+    overlay.setAttribute('role', 'dialog')
+    overlay.setAttribute('aria-modal', 'true')
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#1a1917;color:#faf9f5;' +
+      'display:flex;align-items:center;justify-content:center;padding:24px;' +
+      'font-family:system-ui,-apple-system,sans-serif'
+    const form = document.createElement('form')
+    form.style.cssText = 'max-width:420px;width:100%;display:flex;flex-direction:column;gap:14px'
+    const title = document.createElement('h2')
+    title.style.cssText = 'margin:0;font-size:18px;text-align:center'
+    title.textContent = tr('auth.setup_code.title', 'Enter the setup code')
+    const desc = document.createElement('p')
+    desc.style.cssText = 'margin:0;font-size:14px;opacity:0.8;line-height:1.5;text-align:center'
+    desc.textContent = tr('auth.setup_code.desc', 'Find the "Marveen setup code" line in the server log (on Hostinger: Docker Manager, View logs) and type the code here. It works once; a restart of the container gives a new one.')
+    const input = document.createElement('input')
+    input.type = 'text'
+    input.autocomplete = 'one-time-code'
+    input.spellcheck = false
+    input.setAttribute('aria-label', tr('auth.setup_code.title', 'Enter the setup code'))
+    input.style.cssText = 'padding:12px;border-radius:8px;border:1px solid #3a3936;background:#262522;color:#faf9f5;font-size:15px;font-family:ui-monospace,monospace'
+    const msg = document.createElement('div')
+    msg.setAttribute('role', 'alert')
+    msg.style.cssText = 'min-height:18px;font-size:13px;color:#f0a58f;text-align:center'
+    const submit = document.createElement('button')
+    submit.type = 'submit'
+    submit.style.cssText = 'padding:12px;border:0;border-radius:8px;background:#d97757;color:#1a1917;font-size:15px;font-weight:600'
+    submit.textContent = tr('auth.setup_code.submit', 'Continue')
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const code = (input.value || '').trim()
+      if (!code) return
+      submit.disabled = true
+      msg.textContent = ''
+      try {
+        const r = await originalFetch('/api/auth/setup-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) })
+        if (r.ok) { location.reload(); return }
+        if (r.status === 409) { location.reload(); return }
+        msg.textContent = r.status === 429 ? tr('auth.setup_code.throttled', 'Too many attempts. Wait a minute and try again.') : tr('auth.setup_code.wrong', 'This code is wrong, used or expired. Check the log, or restart the container for a new one.')
+      } catch {
+        msg.textContent = tr('auth.login.err_network', 'Network error')
+      }
+      submit.disabled = false
+    })
+    form.append(title, desc, input, msg, submit)
+    overlay.appendChild(form)
+    document.body.appendChild(overlay)
+    setTimeout(() => input.focus(), 50)
   }
 
   // Full-screen username+password login overlay. Posts to /api/auth/login; on

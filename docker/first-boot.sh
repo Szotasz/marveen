@@ -53,6 +53,9 @@ set_env_key CLAUDE_NATIVE_AUTOUPDATE 0
 if [ -n "${MARVEEN_DOMAIN:-}" ]; then
   printf '%s' "$MARVEEN_DOMAIN" | grep -Eqx '[A-Za-z0-9.-]{1,253}' || { say "MARVEEN_DOMAIN is not a host name: $MARVEEN_DOMAIN"; exit 2; }
   set_env_key DASHBOARD_PUBLIC_URL "https://$MARVEEN_DOMAIN"
+  # DOCKERHTTPS1119: the public listener Caddy proxies to (cookies only, the one-time setup code; src/web/public-access.ts).
+  # The compose file does not publish it to the host.
+  set_env_key WEB_PUBLIC_PORT 3421
 fi
 chmod 0600 .env
 

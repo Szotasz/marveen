@@ -92,10 +92,13 @@ import {
   hashBackupCode,
   otpauthUri,
 } from '../totp.js'
+import { isPublicRequest, redeemSetupCode, setupCodeAvailable, setupSessionCookie } from '../public-access.js'
 import { takeSupportAccessDown } from '../support-standby-runtime.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
+/** DOCKERHTTPS1119: the login throttle's key for setup-code attempts (no username can contain a space). */
+const SETUP_CODE_THROTTLE_KEY = 'setup code'
 const USERNAME_RE = /^[a-zA-Z0-9._-]{1,64}$/
 const INVALID_CREDENTIALS = { error: 'Invalid credentials' }
 
@@ -104,6 +107,8 @@ const INVALID_CREDENTIALS = { error: 'Invalid credentials' }
 // unconditional Secure attribute would make Safari drop the cookie (Chrome
 // exempts 127.0.0.1 as trustworthy; Safari's behavior there is inconsistent).
 export function isHttps(req: http.IncomingMessage): boolean {
+  // DOCKERHTTPS1119: the public listener sits behind Caddy's HTTPS only, so its cookies are always Secure.
+  if (isPublicRequest(req)) return true
   const xf = req.headers['x-forwarded-proto']
   const v = Array.isArray(xf) ? xf[0] : xf
   return typeof v === 'string' && v.split(',')[0]!.trim().toLowerCase() === 'https'
@@ -254,6 +259,10 @@ function firstRunSharedToken(auth: RouteContext['auth']): boolean {
 export function mayActAsOwnerOrFirstRun(auth: RouteContext['auth'], req: http.IncomingMessage | undefined, why: FirstRunPath): boolean {
   if (mayActAsOwner(auth, req)) return true
   let firstRun = firstRunSharedToken(auth)
+  // DOCKERHTTPS1119: a redeemed setup code (public listener) creates the FIRST LOGIN only, while no dashboard user
+  // exists (the gate checked both, the count is repeated so this never outlives the first login). The wizard signs in
+  // right after it, and every later step runs on that session; the other first-run paths refuse a setup session.
+  if (!firstRun && auth?.kind === 'setup' && why === 'first-login') firstRun = countDashboardUsers(true) === 0
   if (!firstRun && why === 'first-login') {
     firstRun = auth?.kind === 'device' && auth.scope === 'full' && countDashboardUsers(true) === 0
   }
@@ -318,7 +327,7 @@ const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
 // that could hold one: absent for an anonymous caller, an operator key and a sub-agent token. The Bridge reads it to
 // offer the password login once per run.
 function statusPayload(auth: RouteContext['auth'], req?: http.IncomingMessage) {
-  const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device'
+  const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device' || auth?.kind === 'setup'
   const method = authenticated ? auth!.kind : null
   const user = auth?.kind === 'session' ? auth.user ?? null : null
   const device = auth?.kind === 'device' ? auth.device ?? null : null
@@ -331,6 +340,8 @@ function statusPayload(auth: RouteContext['auth'], req?: http.IncomingMessage) {
     ...(mayHoldOwner ? { owner_session: auth?.kind === 'session' || ownerCookieSession(req) !== null } : {}),
     login_available: countDashboardUsers(false) >= 1,
     setup_required: countDashboardUsers(true) === 0,
+    // DOCKERHTTPS1119: the public listener before the first login: the page asks for the one-time setup code.
+    ...(isPublicRequest(req) ? { setup_code: auth?.kind !== 'setup' && countDashboardUsers(true) === 0 && setupCodeAvailable() } : {}),
   }
 }
 
@@ -413,6 +424,34 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/auth/status' && method === 'GET') {
     json(res, statusPayload(auth, req))
+    return true
+  }
+
+  // DOCKERHTTPS1119: redeem the one-time setup code (public-access.ts), on the public listener only, before the first
+  // login exists. The code rides in the body, never in a URL. Throttled like the login, under its own key.
+  if (path === '/api/auth/setup-code' && method === 'POST') {
+    if (!isPublicRequest(req)) { json(res, { error: 'Not found' }, 404); return true }
+    if (countDashboardUsers(true) > 0) { json(res, { error: 'The dashboard password is already set: log in with it.', code: 'setup_done' }, 409); return true }
+    const throttle = checkThrottle(SETUP_CODE_THROTTLE_KEY)
+    if (throttle.locked) {
+      res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(throttle.retryAfterS), 'Cache-Control': 'private, no-store' })
+      res.end(JSON.stringify({ error: 'Too many attempts', retry_after_s: throttle.retryAfterS }))
+      return true
+    }
+    let body: Record<string, unknown>
+    try { body = await parseJsonBody(req) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    const code = typeof body.code === 'string' ? body.code.slice(0, 128) : ''
+    const session = code ? redeemSetupCode(code) : null
+    if (!session) {
+      recordFailure(SETUP_CODE_THROTTLE_KEY)
+      logger.warn('setup code: refused')
+      json(res, { error: 'Wrong or expired setup code. Restart the container for a new one.', code: 'setup_code_invalid' }, 401)
+      return true
+    }
+    recordSuccess(SETUP_CODE_THROTTLE_KEY)
+    logger.info('setup code: redeemed, setup session started')
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': setupSessionCookie(session), 'Cache-Control': 'private, no-store' })
+    res.end(JSON.stringify({ ok: true }))
     return true
   }
 
@@ -833,7 +872,9 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // OWNERGATE4-1104: before the first login a FULL device key may create it (the Bridge window the first pairing
     // opened holds no token); the kind check lets it through to the owner gate, which decides ('first-login').
     const firstLoginKey = auth?.kind === 'device' && auth.scope === 'full' && countDashboardUsers(true) === 0
-    if (!kindAllowed(auth, USER_ADMIN_KINDS) && !bridgeOwner(auth, req) && !firstLoginKey) {
+    // DOCKERHTTPS1119: the public listener's setup session creates the first login the same way (the owner gate decides).
+    const firstLoginSetup = auth?.kind === 'setup'
+    if (!kindAllowed(auth, USER_ADMIN_KINDS) && !bridgeOwner(auth, req) && !firstLoginKey && !firstLoginSetup) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }

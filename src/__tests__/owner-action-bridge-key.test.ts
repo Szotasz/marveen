@@ -219,7 +219,8 @@ describe('which call site asks which predicate (source pin, every route file)', 
   it('the kind gates in front of issuance let only the Bridge owner through as a device (and a full key for the first login)', () => {
     expect((src('auth.ts').match(/kindAllowed\(auth, (?:USER|DEVICE_KEY)_ADMIN_KINDS\) && !bridgeOwner\(auth, req\)/g) ?? []).length).toBe(6)
     expect((src('auth.ts').match(/kindAllowed\(auth, (?:USER|DEVICE_KEY)_ADMIN_KINDS\)\) \{/g) ?? []).length).toBe(0)
-    expect(src('auth.ts')).toContain('!bridgeOwner(auth, req) && !firstLoginKey)')
+    // DOCKERHTTPS1119: and the public listener's setup session for the first login (the owner gate decides)
+    expect(src('auth.ts')).toContain('!bridgeOwner(auth, req) && !firstLoginKey && !firstLoginSetup)')
     expect(src('security.ts')).toContain('!bridgeOwner(auth, req)')
     expect(src('operator-access.ts')).toContain('!bridgeOwner(auth, req)')
   })

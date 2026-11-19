@@ -8,6 +8,7 @@ import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { gateRequest, requiresAuth, type AuthResult } from './web/auth-gate.js'
+import { isPublicRequest, issueSetupCode, markPublicRequest, publicListenerPort, SETUP_CODE_TTL_MS } from './web/public-access.js'
 import { createAgentTokenResolver } from './web/agent-tokens.js'
 import { operatorGateDecision } from './web/operator-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
@@ -30,7 +31,7 @@ import { shouldRegisterHooks, shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
-import { createAgentMessage } from './db.js'
+import { countDashboardUsers, createAgentMessage } from './db.js'
 import { setOwnerChatMissingSink, setOwnerRelayLang, setOwnerRelaySink } from './notify.js'
 import { approvalTextLang } from './web/agent-text-lang.js'
 import { startUpdateChecker } from './web/update-checker.js'
@@ -207,6 +208,7 @@ export function startWebServer(port = 3420): http.Server {
       dashboardToken: DASHBOARD_TOKEN,
       resolveAgentToken,
       mainAgentId: MAIN_AGENT_ID,
+      publicListener: isPublicRequest(req),
     })
     if (auth === null) return
     // DASHOPERATOR1005: an operator-scoped key reaches /api/operator/* only,
@@ -226,6 +228,7 @@ export function startWebServer(port = 3420): http.Server {
       : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId, scope: auth.scope }
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
+      : auth.kind === 'setup' ? { kind: 'setup' as const }
       : undefined
 
     // The mobile-login QR needs a URL the phone can actually reach. When the
@@ -391,6 +394,31 @@ export function startWebServer(port = 3420): http.Server {
       logger.error({ err }, 'Web szerver hiba')
     }
   })
+
+  // DOCKERHTTPS1119: the public listener (public-access.ts). Same handler; each of its requests is marked public
+  // first, so the gate accepts only browser cookies on it. Only when WEB_PUBLIC_PORT is set (first-boot, with
+  // MARVEEN_DOMAIN); the compose file never publishes this port to the host, Caddy reaches it on the compose network.
+  const publicPort = publicListenerPort()
+  if (publicPort !== null && publicPort !== port) {
+    const publicServer = http.createServer((req, res) => {
+      markPublicRequest(req)
+      server.emit('request', req, res)
+    })
+    publicServer.on('error', (err) => logger.error({ err, port: publicPort }, 'public listener error'))
+    publicServer.listen(publicPort, WEB_HOST, () => {
+      logger.info({ port: publicPort }, 'Web dashboard: public listener (cookies only)')
+      // The one-time setup code, while no dashboard login exists: to stdout (the container log), never to the
+      // structured log, and only its hash is kept.
+      if (countDashboardUsers(true) === 0) {
+        const code = issueSetupCode()
+        const site = DASHBOARD_PUBLIC_URL || 'your HTTPS address'
+        process.stdout.write(
+          `\n  Marveen setup code (one use, valid ${SETUP_CODE_TTL_MS / 3600000} hours): ${code}\n` +
+          `  Open ${site} and enter it to set the dashboard password. Restart the container for a new code.\n\n`,
+        )
+      }
+    })
+  }
 
   server.listen(port, WEB_HOST, () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
