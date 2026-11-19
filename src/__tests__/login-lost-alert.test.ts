@@ -158,6 +158,50 @@ describe('LOGINKIESES1119: login-lost-alert hook', () => {
     expect(notifyLog()[0]).toMatch(/^RIASZTÁS: /)
   })
 
+  it('two sessions under one agent id: a good session does not "recover" a logged-out one (no alert / recovered flood)', () => {
+    for (let i = 0; i < 3; i++) {
+      turn('marveen', loginEntry(), { session_id: 'channels' })
+      turn('marveen', normalEntry('rendes válasz'), { session_id: 'worker' })
+    }
+    expect(notifyLog()).toHaveLength(1)
+    turn('marveen', normalEntry('újra bent'), { session_id: 'channels' })
+    const log = notifyLog()
+    expect(log).toHaveLength(2)
+    expect(log[1]).toMatch(/^HELYREÁLLT: /)
+    expect(state().marveen).toBeUndefined()
+  })
+
+  it('a logged-out session not seen for 15 minutes counts as gone, so the replacement session recovers the agent', () => {
+    turn('marveen', loginEntry(), { session_id: 'old' })
+    const p = join(tmp, 'store', 'login-alert-state.json')
+    const s = state()
+    s.marveen.sessions.old -= 16 * 60
+    writeFileSync(p, JSON.stringify(s))
+    turn('marveen', normalEntry('új munkamenet, bent vagyok'), { session_id: 'new' })
+    expect(notifyLog()).toHaveLength(2)
+    expect(state().marveen).toBeUndefined()
+  })
+
+  it('a failed "recovered" send is kept and retried on the next normal turn', () => {
+    turn('marveen', loginEntry())
+    writeFileSync(join(tmp, 'notify-fail'), '')
+    turn('marveen', normalEntry('vissza'))
+    expect(state().marveen).toBeDefined()
+    rmSync(join(tmp, 'notify-fail'))
+    turn('marveen', normalEntry('vissza megint'))
+    const log = notifyLog()
+    expect(log).toHaveLength(2)
+    expect(log[1]).toMatch(/^HELYREÁLLT: /)
+    expect(state().marveen).toBeUndefined()
+  })
+
+  it('the turn\'s own last_assistant_message wins over a transcript tail that still ends on the error line', () => {
+    turn('marveen', loginEntry())
+    turn('marveen', loginEntry(), { last_assistant_message: 'Megvan, itt az eredmény.' })
+    expect(notifyLog()).toHaveLength(2)
+    expect(notifyLog()[1]).toMatch(/^HELYREÁLLT: /)
+  })
+
   it('the bot token never reaches the hook output or the state file; a broken payload is a silent exit 0', () => {
     const r = turn('marveen', loginEntry())
     expect(r.stdout + r.stderr).not.toContain(TOKEN)

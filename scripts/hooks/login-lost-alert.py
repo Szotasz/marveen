@@ -11,7 +11,9 @@ What it does, per agent (the id comes from the transcript path, ledger_lib.agent
   - a turn that ended logged out: the first one sends an alert through scripts/notify.sh (the install's own
     bot token, Bot API, independent of any channel plugin); while the login stays gone, at most one reminder
     every REPEAT_SECONDS (30 minutes);
-  - the first normal turn after that: one "recovered" message, and the agent's state is cleared.
+  - the first normal turn after that: one "recovered" message, and the agent's state is cleared. With two
+    sessions under one agent id, a normal turn of one does not recover the other while it is still logged out
+    (a session not seen logged out for 15 minutes counts as gone). A failed "recovered" send is retried.
 State: <install>/store/login-alert-state.json (agent -> since, last alert, failed turns), under a lock.
 A notify.sh that fails does not count as sent, so the next logged-out turn tries again.
 
@@ -36,6 +38,7 @@ import ledger_lib  # noqa: E402
 
 STATE_FILE = "login-alert-state.json"
 REPEAT_SECONDS = 30 * 60
+SESSION_STALE_SECONDS = 15 * 60
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 AUTH_ERROR = "authentication_failed"
 # The whole last assistant text, end to end: "Not logged in · Please run /login",
@@ -92,14 +95,16 @@ def verdict(payload):
     event = payload.get("hook_event_name") or ""
     if event == "StopFailure" or payload.get("error"):
         return "down" if str(payload.get("error") or "") == AUTH_ERROR else None
+    text = payload.get("last_assistant_message")
+    if isinstance(text, str) and text.strip():
+        # The turn's own text decides first: the transcript tail may still end on an earlier error line.
+        return "down" if is_login_line(text) else "up"
     entry = last_assistant_entry(payload.get("transcript_path"))
     if entry is not None and entry.get("isApiErrorMessage"):
         if entry.get("error") == AUTH_ERROR or is_login_line(_text_of((entry.get("message") or {}).get("content"))):
             return "down"
         return None  # another API error (overload, prompt too long): no news about the login
-    text = payload.get("last_assistant_message")
-    if not isinstance(text, str) and entry is not None:
-        text = _text_of((entry.get("message") or {}).get("content"))
+    text = _text_of((entry.get("message") or {}).get("content")) if entry is not None else ""
     if isinstance(text, str) and is_login_line(text):
         return "down"
     if isinstance(text, str) and text.strip():
@@ -140,7 +145,11 @@ def _save(f, data):
 ACTION = "Teendő: a dashboardon az ügynök kártyáján a „Bejelentkezés” gomb."
 
 
-def handle(agent_id, v, now):
+def _session_key(payload):
+    return str(payload.get("session_id") or payload.get("transcript_path") or "-")
+
+
+def handle(agent_id, v, now, session="-"):
     path = state_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -152,6 +161,9 @@ def handle(agent_id, v, now):
             if not isinstance(st, dict):
                 st = {"since": now, "last_alert": 0, "failed_turns": 0}
             st["failed_turns"] = int(st.get("failed_turns") or 0) + 1
+            sessions = st.get("sessions") if isinstance(st.get("sessions"), dict) else {}
+            sessions[session] = now
+            st["sessions"] = sessions
             if now - float(st.get("last_alert") or 0) >= REPEAT_SECONDS:
                 first = not st.get("last_alert")
                 if first:
@@ -166,10 +178,28 @@ def handle(agent_id, v, now):
             data[agent_id] = st
             _save(f, data)
         elif v == "up" and isinstance(st, dict):
+            # Two sessions can share an agent id (the ledger maps every session under the install to the main
+            # agent). A normal turn of one session must not "recover" another that is still logged out, or the
+            # two would alternate alert / recovered on every turn. A session that has not been seen logged out
+            # for SESSION_STALE_SECONDS counts as gone (replaced after a re-login or a restart).
+            sessions = st.get("sessions") if isinstance(st.get("sessions"), dict) else {}
+            sessions.pop(session, None)
+            sessions = {k: t for k, t in sessions.items() if now - float(t or 0) < SESSION_STALE_SECONDS}
+            if sessions:
+                st["sessions"] = sessions
+                data[agent_id] = st
+                _save(f, data)
+                return
             if st.get("last_alert"):
                 minutes = max(1, int(round((now - float(st.get("since") or now)) / 60)))
-                notify(f"HELYREÁLLT: a(z) {agent_id} ügynök újra rendesen válaszol "
-                       f"(kiesés {_hhmm(st['since'])} és {_hhmm(now)} között, kb. {minutes} perc).")
+                sent = notify(f"HELYREÁLLT: a(z) {agent_id} ügynök újra rendesen válaszol "
+                              f"(kiesés {_hhmm(st['since'])} és {_hhmm(now)} között, kb. {minutes} perc).")
+                if not sent:
+                    # Keep the outage so the next normal turn sends the "recovered" message again.
+                    st["sessions"] = {}
+                    data[agent_id] = st
+                    _save(f, data)
+                    return
             data.pop(agent_id, None)
             _save(f, data)
 
@@ -195,7 +225,7 @@ def main():
                     return
         except (OSError, ValueError):
             return
-    handle(agent_id, v, time.time())
+    handle(agent_id, v, time.time(), _session_key(payload))
 
 
 if __name__ == "__main__":
