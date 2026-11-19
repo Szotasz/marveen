@@ -222,6 +222,8 @@ answer's `live` field tells which. An existing name becomes a replacement, and t
 
 - Do NOT write `~/.claude/skills/`, another agent's `.claude/skills/` or the install root's `.claude/skills/`: every
   one of them is loaded by sessions other than yours, and a sub-agent's write gate denies them. Your own folder is free.
+- The main agent has no private skill folder: its working directory is the install root, so its `./.claude/skills` is
+  loaded by every sub-agent too. The main agent therefore proposes every new or changed skill as well.
 - Do NOT auto-delete skills without user confirmation
 - Do NOT create skills for one-off tasks (check the 2+ occurrence rule)
 - Audit results are advisory, not auto-executed

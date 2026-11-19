@@ -222,6 +222,8 @@ válasz `live` mezője megmondja. Egy létező név cserének számít, a régi 
 
 - NE írj a `~/.claude/skills/`, egy másik ágens `.claude/skills/` vagy a telepítés gyökerének `.claude/skills/` mappájába:
   ezeket mind a tiédtől eltérő sessionök töltik be, és a sub-ágens írási kapuja tiltja őket. A saját mappád szabad.
+- A fő ágensnek nincs privát skill-mappája: a munkakönyvtára a telepítés gyökere, így a `./.claude/skills` mappáját
+  minden sub-ágens is betölti. A fő ágens ezért minden új vagy módosított skillt szintén javaslatként küld.
 - NE törölj skillt automatikusan a felhasználó megerősítése nélkül
 - NE hozz létre skillt egyszeri feladatra (nézd meg a 2+ előfordulás szabályát)
 - Az audit eredménye tanácsadó jellegű, nem hajtódik végre automatikusan
