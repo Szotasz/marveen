@@ -59,6 +59,7 @@ import {
   globMatchesName,
   isReadOnlyFsCommand,
   laterRuns,
+  shellScriptWord,
   nameForms,
   normalizePathSegments,
   pathKey,
@@ -961,7 +962,10 @@ function shellRunsOnly(segs, k, targets, text) {
       const script = words.slice(words.indexOf(runner) + 1).find((w) => !w.value.startsWith('-'))
       const stdin = targets.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}`).test(s.own))
       if (words.slice(1).some((w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w.value))) return false
-      if ((script && targets.includes(script.value)) || stdin) { seen = true; continue }
+      // F5: the script word after a shell option's argument (sh -o errexit FILE) is a shell run of FILE too, as laterRuns
+      // now reads it
+      const sw = shellScriptWord(name, words.slice(words.indexOf(runner) + 1).map((w) => w.value))
+      if ((script && targets.includes(script.value)) || (sw !== null && targets.includes(sw)) || stdin) { seen = true; continue }
       return false
     }
     return false
@@ -1253,8 +1257,11 @@ function namedByUnknownProgram(name, rest, own, names, fns = new Set(), made = n
 // segment that runs such a program (by its name, or as a shell's script word) and hands it the written file runs it.
 // F4: a braced form with a modifier (${1:-x}, ${1-x}, ${1:=x}, ${@}, ${1#p}, ${1%s}, ${1/a/b}) is the parameter too
 // (${#1} is its length, not it)
-const POSITIONAL = String.raw`["']?\$(?:\{[1-9@*](?:[-:=?+#%/^,][^}]*)?\}|[1-9@*])["']?`
-const RUNNER_PREFIX = String.raw`(?:(?:exec|eval|command|nohup|builtin)\s+)*(?:(?:\S*\/)?(?:ba|z|da|k)?sh(?:\s+-[A-Za-z]+)*\s+|source\s+|\.\s+)?`
+// F5: a braced form may be two digits (${10}) and its modifier may hold one nested braced expansion (${1:-${2}}); the
+// F4 reading ([^}]* up to the first brace) stays as an alternative, so nothing it read is lost. A shell's option may
+// start with + (+x), and an option cluster ending in o or O takes a plain word as its argument (-o errexit, +O extglob).
+const POSITIONAL = String.raw`["']?\$(?:\{(?:[1-9][0-9]*|[@*])(?:[-:=?+#%/^,](?:[^{}]|\{[^{}]*\})*|[-:=?+#%/^,][^}]*)?\}|[1-9@*])["']?`
+const RUNNER_PREFIX = String.raw`(?:(?:exec|eval|command|nohup|builtin)\s+)*(?:(?:\S*\/)?(?:ba|z|da|k)?sh(?:\s+[-+][A-Za-z]*[oO]\s+[A-Za-z_][\w-]*|\s+[-+][A-Za-z]+)*\s+|source\s+|\.\s+)?`
 const POSITIONAL_RUN_RX = new RegExp(String.raw`(?:^|[;&|\n(]|\bthen\b|\bdo\b|\belse\b)\s*${RUNNER_PREFIX}${POSITIONAL}(?=\s|$|[;&|)])`, 'm')
 export function textRunsPositional(text) {
   return POSITIONAL_RUN_RX.test(String(text))
@@ -1273,26 +1280,48 @@ function fnBodiesOf(segs) {
   const out = new Map()
   // the body runs to the closing brace the segmenter leaves on a line of its own (a ${1:-x} inside holds a brace too)
   for (const m of text.matchAll(/(?:^|[;&|{(\s])(?:function\s+([A-Za-z_][\w-]*)\s*(?:\(\s*\))?|([A-Za-z_][\w-]*)\s*\(\s*\))\s*\{([\s\S]*?)\n\s*\}(?=\s*(?:\n|$))/g)) out.set(m[1] ?? m[2], m[3])
-  return out
+  // F5: a body that hands a positional argument to another defined function runs what that function runs: its text
+  // takes that function's text too (followed to a depth of 4; a function already on the path is not read again)
+  const callsWithPositional = (body, g) => new RegExp(String.raw`(?:^|[;&|\n({]|\bthen\b|\bdo\b|\belse\b)\s*(?:(?:exec|command|nohup|builtin)\s+)*${escapeRx(g)}(?=\s)[^\n;&|]*?${POSITIONAL}`, 'm').test(body)
+  const expand = (name, path) => {
+    let text = out.get(name) ?? ''
+    if (path.length >= 4) return text
+    for (const g of out.keys()) {
+      if (path.includes(g) || g === name || !callsWithPositional(out.get(name) ?? '', g)) continue
+      text += '\n' + expand(g, [...path, name])
+    }
+    return text
+  }
+  const expanded = new Map()
+  for (const name of out.keys()) expanded.set(name, expand(name, []))
+  return expanded
 }
 /** The wrapper a segment's words run and the arguments it gets, with the text this command wrote into it (a file an
  *  earlier segment wrote, or F4: a shell function the command defines); null when there is none. */
 function hereWrittenWrapper(segs, j, vals) {
   const body = fnBodiesOf(segs).get(vals[0])
   if (body !== undefined) return { args: vals.slice(1), text: body, viaShell: false, fn: true }
-  // the program word: the command itself, or a shell's / source's script word
-  let at = 0
+  // the program word: the command itself, or a shell's / source's script word (F5: also the word after a shell option's
+  // argument, -o NAME; the first non-option word is still tried first)
+  const ats = [0]
   if (WRAPPER_SHELL_RX.test(vals[0])) {
-    at = vals.findIndex((v, x) => x > 0 && !v.startsWith('-'))
-    if (at < 0) return null
+    ats.length = 0
+    const first = vals.findIndex((v, x) => x > 0 && !v.startsWith('-'))
+    if (first > 0) ats.push(first)
+    const sw = shellScriptWord(lastPart(vals[0]), vals.slice(1))
+    const second = sw === null ? -1 : vals.indexOf(sw, 1)
+    if (second > 0 && second !== first) ats.push(second)
+    if (!ats.length) return null
   }
-  const prog = lastPart(vals[at] ?? '')
-  if (!prog) return null
-  for (let i = j - 1; i >= 0; i--) {
-    const ws = shellWords(segs[i].own)
-    if (!ws || !(ws.redirects ?? []).some((r) => lastPart(r.value) === prog)) continue
-    const writer = lastPart(unwrapRun(ws).rest[0]?.value ?? '')
-    return { args: vals.slice(at + 1), text: scriptTextOf(segs[i].own, segs[i].bodies ?? [], writer), viaShell: at > 0 }
+  for (const at of ats) {
+    const prog = lastPart(vals[at] ?? '')
+    if (!prog) continue
+    for (let i = j - 1; i >= 0; i--) {
+      const ws = shellWords(segs[i].own)
+      if (!ws || !(ws.redirects ?? []).some((r) => lastPart(r.value) === prog)) continue
+      const writer = lastPart(unwrapRun(ws).rest[0]?.value ?? '')
+      return { args: vals.slice(at + 1), text: scriptTextOf(segs[i].own, segs[i].bodies ?? [], writer), viaShell: at > 0 }
+    }
   }
   return null
 }

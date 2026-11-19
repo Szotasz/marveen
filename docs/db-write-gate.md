@@ -75,7 +75,10 @@ wrapper that only reads or prints its argument (`wc -l "$1"`, `echo "$1"`) does 
 modifier (`${1:-x}`, `${1-x}`, `${@}`, `${1#p}`) is the same parameter; a length (`${#1}`) is not. A shell function the
 command defines (`f() { ...; }`, `function g { ...; }`) is such a wrapper, its body read as its text. A wrapper that
 runs `"$@"` as the command, handed `sh FILE`, is a shell run of FILE and is judged as `sh FILE` directly; handed
-`sh -c FILE`, it is not.
+`sh -c FILE`, it is not. The braced form may also be two digits (`${10}`) or hold one nested expansion
+(`${1:-${2}}`). A function that hands a positional argument to another function the command defines runs what that
+function runs (`g() { "$@"; }; f() { g "$@"; }`). A shell option that takes an argument (`-o NAME`, `+o NAME`,
+`-O NAME`, `+O NAME`) is not the script word, so `sh -o errexit FILE` runs FILE, as `sh FILE` does.
 
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file
