@@ -190,6 +190,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 |-------|-------|-----------|----------|-------------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
+| `TELEGRAM_REACTIONS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
 | `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
 | `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (0–8760) | `0` (nem jár le) | mind | igen (csatorna-indítás) |
 | `DISCORD_PLUGIN_EXT` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
@@ -345,6 +346,31 @@ már válaszoltál.” üzenet jön. A gombokat csak koppintáskor cseréli, mag
 (alapértelmezés) kikapcsolja, és ilyenkor a plugin forrása pontosan a mai. Érvénytelen értéknél
 a gombok nem járnak le, és a `store/channels-failures.log` egy sorban jelzi. A csatorna következő
 indításakor lép életbe, a futó ügynököknél a session újraindításával.
+
+#### `TELEGRAM_REACTIONS_ENABLED`: a Telegram-reakciók továbbítása
+
+**Mire szolgál.** Ha a tulajdonos egy üzenetre emoji-reakciót tesz, az eddig nem jutott el az
+ügynökhöz: a plugin a Telegram alapértelmezett frissítés-típusait kéri, és abban a reakció nincs
+benne. Bekapcsolva a plugin a grammY saját alapértelmezett listáját kéri, és mellé a
+`message_reaction`-t. A reakció csak a párosított tulajdonostól, a privát chatjéből megy tovább,
+a plugin saját kapuján át. Az ügynök `(reaction 👍)` alakban kapja meg (mint a matricát:
+`(sticker 😀)`), a `reply_to_message_id` mezőben a reagált üzenet azonosítójával. Ha az üzenetet
+az ügynök küldte a plugin indulása óta, a `reply_to_text` mezőben egy egysoros kivonatot is kap
+belőle (legfeljebb 300 karakter, az utolsó 500 elküldött üzenetből; újraindítás után csak az
+azonosító marad). Csak a hozzáadott reakció megy tovább, a levétel nem; egyedi emoji
+`(custom emoji)`-ként jelenik meg.
+
+A reakciónak nincs saját üzenet-azonosítója, ezért nem kerül a bejövő bizonyíték-naplóba: írási
+parancs (például `/model`) bizonyítéka nem lehet, a bejövő-újraküldés nem látja, és a
+beszélgetés-napló (ledger) sem rögzíti. Választ sem vár rá semmi: a „Dolgozom rajta…” helyőrző
+nem jelenik meg, a Stop hook nem követel rá Telegram-választ, és a kötelező-válasz direktíva
+helyett az ügynök egy rövid jelzést kap, hogy ez reakció, nem kérdés.
+
+**Beállítás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_REACTIONS_ENABLED`*, vagy
+`.env`-ben `TELEGRAM_REACTIONS_ENABLED=1`. Minden reakció egy újabb kör az ügynöknek, ezért
+alapból ki van kapcsolva; kikapcsolva a plugin forrása pontosan a mai, és a Telegram a következő
+indításkor visszaáll az alapértelmezett frissítés-típusokra. A csatorna következő indításakor lép
+életbe, a futó ügynököknél a session újraindításával.
 
 #### `DISCORD_PLUGIN_EXT`, `DISCORD_OWNER_USER_ID`, `DISCORD_BACKFILL`: a Marveen Discord-pluginja
 

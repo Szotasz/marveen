@@ -184,6 +184,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 |-----|------|---------|----------|---------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (off) | macOS only | yes |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (off) | all | yes (channel start) |
+| `TELEGRAM_REACTIONS_ENABLED` | boolean | `0` (off) | all | yes (channel start) |
 | `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (on) | all | yes (channel start) |
 | `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (0–8760) | `0` (never expire) | all | yes (channel start) |
 
@@ -335,6 +336,30 @@ example `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24` in `.env`. Whole hours from 0 
 default) turns it off, and the plugin source is then exactly what it is today. An invalid value
 means no expiry, logged in one line in `store/channels-failures.log`. It takes effect at the next
 channel start, for running agents when their session restarts.
+
+#### `TELEGRAM_REACTIONS_ENABLED`: Telegram reactions reach the agent
+
+**What it is for.** An emoji reaction the owner puts on a message never reached the agent: the
+plugin asks Telegram for its default update types, and reactions are not among them. With the
+switch on, the plugin asks for grammY's own default list plus `message_reaction`. A reaction goes
+on only from the paired owner in their private chat, through the plugin's own gate. The agent
+gets it as `(reaction 👍)` (like a sticker: `(sticker 😀)`), with the message it is on in
+`reply_to_message_id`. When the agent sent that message since the plugin started, `reply_to_text`
+carries a single-line excerpt of it (at most 300 characters, from the last 500 sent messages;
+after a restart only the id is left). Only an added reaction goes on, not a removed one; a custom
+emoji shows as `(custom emoji)`.
+
+A reaction has no message id of its own, so it is not written to the inbound evidence log: it can
+never be the evidence for an owner write command (such as `/model`), the inbound replay does not
+see it, and the conversation ledger does not record it. Nothing waits for an answer to it either:
+no "Dolgozom rajta…" placeholder, the Stop hook does not demand a Telegram reply, and instead of
+the mandatory-reply directive the agent gets a short note that this is a reaction, not a question.
+
+**Setting it.** Dashboard: *Settings → Channels → `TELEGRAM_REACTIONS_ENABLED`*, or
+`TELEGRAM_REACTIONS_ENABLED=1` in `.env`. Every reaction is one more turn for the agent, so it is
+off by default; off, the plugin source is exactly what it is today, and Telegram goes back to the
+default update types at the next start. It takes effect at the next channel start, for running
+agents when their session restarts.
 
 **API endpoints:**
 

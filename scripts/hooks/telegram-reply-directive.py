@@ -35,9 +35,21 @@ def main():
     except Exception:
         sys.exit(0)
     prompt = payload.get("prompt") or ""
-    m = CHANNEL_RX.search(prompt)
-    if not m:
+    blocks = list(CHANNEL_RX.finditer(prompt))
+    if not blocks:
         sys.exit(0)  # not a Telegram message -> stay silent
+    # An owner reaction (TELEGRAM_REACTIONS_ENABLED; the plugin patch tags it reaction="...") is no message: nothing
+    # is owed for it (no placeholder, no ledger row, so neither Stop hook asks for a reply). The first block that is
+    # a message gets the directive; a delivery of reactions only gets a short note instead of "reply is mandatory".
+    messages = [b for b in blocks if _attr(b.group(1), "reaction") is None]
+    if not messages:
+        sys.stdout.write(
+            "[TELEGRAM-REAKCIÓ] Ez egy emoji-reakció egy korábbi üzenetre (reply_to_message_id, és ha megvan, "
+            "reply_to_text), nem kérdés: választ nem vár. Csak akkor írj a reply toollal, ha a reakció miatt "
+            "tenned kell valamit.\n"
+        )
+        sys.exit(0)
+    m = messages[0]
     chat_id = _attr(m.group(1), "chat_id") or "<a bejövő chat_id>"
     # Only a topic message carries this (TELEGRAM_TOPICS_ENABLED, plugin patch);
     # without it the directive is exactly the plain one.
