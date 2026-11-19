@@ -74,9 +74,11 @@ function readAccess(path: string): AccessFile {
   }
 }
 
+// 0600 like the plugin's own access.json writer and the .env next to it: an atomic
+// rewrite without a mode would put a fresh file in place at the process umask (ACCESSMODE1101).
 function writeAccess(path: string, data: AccessFile): void {
   mkdirSync(join(path, '..'), { recursive: true })
-  atomicWriteFileSync(path, JSON.stringify(data, null, 2))
+  atomicWriteFileSync(path, JSON.stringify(data, null, 2), { mode: 0o600 })
 }
 
 function readInvites(path: string): InvitesFile {
@@ -89,7 +91,7 @@ function readInvites(path: string): InvitesFile {
 
 function writeInvites(path: string, data: InvitesFile): void {
   mkdirSync(join(path, '..'), { recursive: true })
-  atomicWriteFileSync(path, JSON.stringify(data, null, 2))
+  atomicWriteFileSync(path, JSON.stringify(data, null, 2), { mode: 0o600 })
 }
 
 function pruneInvites(store: InvitesFile, now: number): boolean {
