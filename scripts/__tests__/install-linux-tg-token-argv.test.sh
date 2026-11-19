@@ -40,10 +40,10 @@ set -e
 DIM= NC=
 warn() { echo "WARN \$*"; }
 $(cat "$TMP/fn.sh")
-probe_telegram_token "$TOKEN"
+probe_telegram_token "\$PTT_TOKEN"
 echo "RC=\$?"
 EOF
-  OUT="$(PATH="$d/bin:/usr/bin:/bin" /bin/bash "$d/run.sh" 2>&1)"
+  OUT="$(PTT_TOKEN="$TOKEN" PATH="$d/bin:/usr/bin:/bin" /bin/bash "$d/run.sh" 2>&1)"
   ARGV="$(cat "$d/argv" 2>/dev/null)"; STDIN="$(cat "$d/stdin" 2>/dev/null)"
   CALLS="$(grep -c . "$d/argv" 2>/dev/null || echo 0)"
 }
@@ -70,6 +70,15 @@ run_case '{"ok":true}' '{"ok":true,"result":{"url":"https://example.invalid/hook
 assert_eq "two curl calls" 2 "$CALLS"
 assert_contains "webhook warning" "$OUT" "WEBHOOKRA"
 assert_not_contains "the token is not in the curl argv" "$ARGV" "$TOKEN"
+
+echo "4. a token that is not a bot token (a quote, a line break): no call at all, the shape warning"
+for bad in 'abc' '123:AA"x' "$(printf '123:AAx\nurl = "http://example.invalid/"')"; do
+  TOKEN="$bad"
+  run_case '{"ok":true}' '{"ok":true,"result":{"url":""}}' 409
+  assert_eq "no curl call" 0 "$CALLS"
+  assert_contains "the shape warning" "$OUT" "alakja ERVENYTELEN"
+done
+TOKEN="123456789:AAFakeTokenForTheArgvProbe_xyz"
 
 echo ""
 echo "Results: $PASS/$((PASS + FAIL)) passed"

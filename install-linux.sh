@@ -1486,6 +1486,13 @@ ok "Csatorna: $CHANNEL_PROVIDER"
 probe_telegram_token() {
   _ptt_t="$1"
   [ -n "$_ptt_t" ] || return 0
+  # The token goes into a curl config line below: a quote or a line break in it would end that line. A bot token is
+  # digits, a colon and [A-Za-z0-9_-]; anything else is refused before any call ([[ =~ ]] anchors the whole value).
+  if ! [[ "$_ptt_t" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+    warn "A megadott bot token alakja ERVENYTELEN (szamok, kettospont, betuk; pl. 123456789:AAF...)."
+    echo -e "    ${DIM}Ellenorizd a @BotFather-tol kapott tokent. A telepites folytatodik, de a bot ezzel a tokennel nem fog valaszolni.${NC}"
+    return 0
+  fi
   _ptt_me="$(printf 'url = "%s"\n' "https://api.telegram.org/bot${_ptt_t}/getMe" | curl -s --max-time 8 -K - 2>/dev/null)" || return 0
   case "$_ptt_me" in
     *'"ok":true'*) : ;;
