@@ -223,6 +223,10 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
     const both = agent({ 'CLAUDE.md': I.packageShellText('imp2', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': '@~/notes/team.md\nrun !`id` now\n' })
     I.reportPackageLayersAtStart('imp2', both)
     expect(mine('imp2')).toBe(1)
+    // the same line: only the at-sign is neutralized, the command on that line is still seen
+    const sameLine = agent({ 'CLAUDE.md': I.packageShellText('imp4', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': '@~/notes/team.md then !`id`\n' })
+    I.reportPackageLayersAtStart('imp4', sameLine)
+    expect(mine('imp4')).toBe(1)
     // an import in PACKAGE.md is still reported
     const pkgImp = agent({ 'CLAUDE.md': I.packageShellText('imp3', ''), 'PACKAGE.md': '# Package\n@../../x.md\n', 'LOCAL.md': 'notes\n' })
     I.reportPackageLayersAtStart('imp3', pkgImp)
