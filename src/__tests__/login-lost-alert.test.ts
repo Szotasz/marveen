@@ -171,21 +171,44 @@ describe('LOGINKIESES1119: login-lost-alert hook', () => {
     expect(state().marveen).toBeUndefined()
   })
 
-  it('a logged-out session not seen for an hour counts as gone: the replacement session sends a "probably recovered"', () => {
+  it('another session never recovers a silent logged-out one; after 24 hours the abandoned state expires with no message', () => {
     turn('marveen', loginEntry(), { session_id: 'old' })
     const p = join(tmp, 'store', 'login-alert-state.json')
     const s = state()
-    s.marveen.sessions.old -= 59 * 60
+    s.marveen.sessions.old -= 23 * 3600
     writeFileSync(p, JSON.stringify(s))
-    turn('marveen', normalEntry('még nem'), { session_id: 'new' })
+    turn('marveen', normalEntry('új munkamenet'), { session_id: 'new' })
     expect(notifyLog()).toHaveLength(1)
+    expect(state().marveen.sessions.old).toBeDefined()
     const s2 = state()
-    s2.marveen.sessions.old -= 2 * 60
+    s2.marveen.sessions.old -= 2 * 3600
     writeFileSync(p, JSON.stringify(s2))
-    turn('marveen', normalEntry('új munkamenet, bent vagyok'), { session_id: 'new' })
-    expect(notifyLog()).toHaveLength(2)
-    expect(notifyLog()[1]).toMatch(/^VALÓSZÍNŰLEG HELYREÁLLT: /)
+    turn('marveen', normalEntry('új munkamenet megint'), { session_id: 'new' })
+    expect(notifyLog()).toHaveLength(1)
     expect(state().marveen).toBeUndefined()
+  })
+
+  it('Revizor case 1: a logged-out session beside a good one, 3 rounds: at most one alert, no recovery until the logged-out one answers', () => {
+    for (let i = 0; i < 3; i++) {
+      turn('marveen', loginEntry(), { session_id: 'kint' })
+      turn('marveen', normalEntry('jó válasz'), { session_id: 'bent' })
+    }
+    expect(notifyLog()).toHaveLength(1)
+    expect(notifyLog()[0]).toMatch(/^RIASZTÁS: /)
+    turn('marveen', normalEntry('vissza'), { session_id: 'kint' })
+    expect(notifyLog()).toHaveLength(2)
+    expect(notifyLog()[1]).toMatch(/^HELYREÁLLT: /)
+  })
+
+  it('Revizor case 2: an overload error of the logged-out session neither alerts nor recovers, the outage stays', () => {
+    turn('marveen', loginEntry(), { session_id: 'kint' })
+    const overload = { type: 'assistant', isApiErrorMessage: true, error: 'overloaded',
+      message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'API Error: 529 Overloaded' }] } }
+    turn('marveen', overload, { session_id: 'kint' })
+    turn('marveen', overload, { session_id: 'kint', last_assistant_message: 'API Error: 529 Overloaded' })
+    stopFailure('marveen', 'overloaded')
+    expect(notifyLog()).toHaveLength(1)
+    expect(Object.keys(state().marveen.sessions)).toContain('kint')
   })
 
   it('two logged-out sessions of one agent share the 30-minute brake: one alert, and recovery only after both are back', () => {
