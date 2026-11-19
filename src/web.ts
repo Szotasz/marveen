@@ -767,7 +767,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         // Self-heal FIRST: drop entries this app previously wrote whose script
         // file no longer exists (e.g. a deleted worktree instance's paths), so
         // the re-registration below lands on a clean, unblocked settings file.
-        pruned.push(...pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName), extraHookNames))
+        pruned.push(...pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName), extraHookNames, PROJECT_ROOT))
         if (ensureAgentHooks(agentName)) patched.push(agentName)
         // HOSTMOVE923: same guard as the hook writes -- a worktree instance must
         // not re-anchor the live fleet's CLAUDE.md onto ITS root.

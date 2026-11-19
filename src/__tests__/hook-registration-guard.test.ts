@@ -9,7 +9,9 @@ import {
   pruneStaleHookEntries,
   pruneStaleHooksFromSettingsFile,
   KNOWN_HOOK_SCRIPTS,
+  FAIL_CLOSED_MARK,
 } from '../web/hook-registration-guard.js'
+import { GATE_FAIL_CLOSED_TAG, failClosedGateRun } from '../web/agent-scaffold.js'
 
 // 2026-07-11 incident: a WEB_ONLY smoke instance running from a git worktree
 // registered UserPromptSubmit/SessionStart hooks into the user-global
@@ -328,6 +330,33 @@ describe('pruneStaleHooksFromSettingsFile', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // #2874 B1: a shipped fail-closed gate missing at the live root is a broken gate that must keep denying, not a stale
+  // entry. The same gate on a gone root, or a moved extra-hook name on the live root, is still pruned.
+  it('keeps a fail-closed gate missing at <live root>/scripts/hooks, prunes it on another root or when moved', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hook-guard-test-'))
+    try {
+      const gate = (path: string, name: string) => `test -x "/usr/bin/node" || { echo "x" >&2; exit 2; }; ${failClosedGateRun(`/usr/bin/node "${path}"`, name, 15)}`
+      const atLive = gate(join(dir, 'scripts', 'hooks', 'db-write-gate.mjs'), 'db-write-gate.mjs')
+      const goneRoot = gate(join(dir, 'gone-worktree', 'scripts', 'hooks', 'db-write-gate.mjs'), 'db-write-gate.mjs')
+      const moved = gate(join(dir, 'scripts', 'hooks', 'post-gate.py'), 'post-gate.py')
+      const settingsPath = join(dir, 'settings.json')
+      writeFileSync(settingsPath, JSON.stringify({
+        hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [atLive, goneRoot, moved].map((command) => ({ type: 'command', command, timeout: 15 })) }] },
+      }, null, 2))
+
+      const removed = pruneStaleHooksFromSettingsFile(settingsPath, ['post-gate.py'], dir)
+      expect(removed).toEqual([goneRoot, moved])
+      const after = JSON.parse(readFileSync(settingsPath, 'utf-8')).hooks.PreToolUse[0].hooks.map((h: { command: string }) => h.command)
+      expect(after).toEqual([atLive])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('the fail-closed mark is the one the scaffold writes', () => {
+    expect(FAIL_CLOSED_MARK).toBe(GATE_FAIL_CLOSED_TAG)
   })
 
   it('leaves a missing or unparseable file untouched', () => {

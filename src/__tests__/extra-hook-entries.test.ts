@@ -605,10 +605,10 @@ describe('extraHookScriptNames: the names the boot prune counts as ours', () => 
     expect(extraHookScriptNames(join(root, 'store', 'bad.json'))).toEqual([])
   })
 
-  it('the boot backfill passes them to the prune', () => {
+  it('the boot backfill passes them and the live root to the prune', () => {
     const web = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
     expect(web).toContain('const extraHookNames = extraHookScriptNames(extraHooksConfigPath())')
-    expect(web).toContain('pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName), extraHookNames)')
+    expect(web).toContain('pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName), extraHookNames, PROJECT_ROOT)')
   })
 })
 
