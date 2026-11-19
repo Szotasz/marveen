@@ -82,10 +82,12 @@
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-guard.py\"", "timeout": 10 } ] },
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram_progress_clear.py\"", "timeout": 15 } ] },
       { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/slack_progress_clear.py\"", "timeout": 15 } ] },
-      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/marveen-commands.py\" --stop", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/marveen-commands.py\" --stop", "timeout": 10 } ] },
+      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/login-lost-alert.py\"", "timeout": 30 } ] }
     ],
     "StopFailure": [
-      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-turn-failure.py\"", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-turn-failure.py\"", "timeout": 10 } ] },
+      { "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/login-lost-alert.py\"", "timeout": 30 } ] }
     ],
     "SessionStart": [
       { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "python3 -I -S \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-replay.py\"", "timeout": 15 } ] },

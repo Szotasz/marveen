@@ -111,8 +111,8 @@ const EXPECTED: Record<string, string[]> = {
     // so it cannot silence the channel or trap a session.
     'googlechat-thread-guard.py @ mcp__plugin_googlechat_googlechat__reply',
   ],
-  Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
-  StopFailure: ['ledger-turn-failure.py'],
+  Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py', 'login-lost-alert.py'],
+  StopFailure: ['ledger-turn-failure.py', 'login-lost-alert.py'],
   SessionStart: [
     'ledger-replay.py @ startup|resume|clear', 'taskstate-replay.py @ compact|resume|clear',
     'clear-replay.py @ clear', 'marveen-commands.py',

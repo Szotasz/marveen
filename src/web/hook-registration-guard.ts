@@ -68,6 +68,8 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'clear-replay.py',
   // Prompt-arrival stub writer that backstops the PreCompact taskstate write.
   'taskstate-stub.py',
+  // LOGINKIESES1119: the owner alert for a lost Claude login (Stop + StopFailure), project settings and template.
+  'login-lost-alert.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept
