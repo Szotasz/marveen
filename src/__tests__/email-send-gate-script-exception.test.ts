@@ -487,6 +487,62 @@ describe('loader and reserved envelope digest enforcement', () => {
 })
 
 describe('Node permission runtime and optional readFiles', () => {
+  it('accepts only regular or missing read grants', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'agent-send-read-grants-')))
+    try {
+      const body = join(dir, 'body.txt')
+      const attachment = join(dir, 'attachment.bin')
+      const extra = join(dir, 'extra.json')
+      const directoryLink = join(dir, 'directory-link')
+      const fileLink = join(dir, 'file-link')
+      writeFileSync(body, 'Example body')
+      writeFileSync(attachment, 'Example attachment')
+      writeFileSync(extra, '{}')
+      symlinkSync(dir, directoryLink)
+      symlinkSync(body, fileLink)
+      const boundDraft = (bodyPath = body, attachmentPath = attachment) => draftCommand
+        .replaceAll('/absolute/path/to/body.txt', bodyPath)
+        .replaceAll('/absolute/path/to/attachment.bin', attachmentPath)
+      expect(agentScriptException(boundDraft(), agentName, config)).not.toBeNull()
+      expect(agentScriptException(boundDraft(dir), agentName, config)).toBeNull()
+      expect(agentScriptException(boundDraft('/'), agentName, config)).toBeNull()
+      expect(agentScriptException(boundDraft(body, directoryLink), agentName, config)).toBeNull()
+      expect(agentScriptException(boundDraft(fileLink), agentName, config)).toBeNull()
+      expect(agentScriptException(boundDraft(join(dir, 'missing.txt')), agentName, config)).not.toBeNull()
+      for (const [readFile, accepted] of [[dir, false], [extra, true]] as const) {
+        const cfg = { agents: { [agentName]: { ...entry, readFiles: [readFile] } } }
+        const cmd = boundDraft().replace(' --permission ', ` --permission --allow-fs-read=${readFile} `)
+        expect(Boolean(agentScriptException(cmd, agentName, cfg))).toBe(accepted)
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+  it('probes the executable selected by the shell PATH without collapsing symlink parents', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'agent-send-node-path-')))
+    const previousPath = process.env.PATH
+    accessProbe.mode = 'real'
+    try {
+      mkdirSync(join(dir, 'bin'))
+      mkdirSync(join(dir, 'real', 'bin'), { recursive: true })
+      mkdirSync(join(dir, 'real', 'sub'))
+      writeFileSync(join(dir, 'bin', 'node'), '#!/bin/sh\necho v22.22.2\n', { mode: 0o755 })
+      writeFileSync(join(dir, 'real', 'bin', 'node'), '#!/bin/sh\necho v20.0.0\n', { mode: 0o755 })
+      symlinkSync(join(dir, 'real', 'sub'), join(dir, 'link'))
+      for (const [path, version] of [
+        [`${dir}/bin`, 'v22.22.2'],
+        [`${dir}/link/../bin`, 'v20.0.0'],
+        [`relative-dir:${dir}/bin`, null],
+        [`:${dir}/bin`, null],
+        [`${dir}/nonexistent:${dir}/bin`, 'v22.22.2'],
+      ] as const) {
+        process.env.PATH = path
+        expect(probeNodeVersion('node')).toBe(version)
+      }
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH
+      else process.env.PATH = previousPath
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
   for (const [version, expected] of [
     ['v22.13.0', true], ['v22.12.9', false], ['v23.5.0', true], ['v23.4.0', false],
     ['v24.0.0', true], ['v21.9.9', false], ['v20.18.0', false], ['22.13.0', false],

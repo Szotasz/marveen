@@ -239,6 +239,11 @@ export function nodePermissionVersionOk(versionText) {
   return major >= 24 || (major === 23 && minor >= 5) || (major === 22 && minor >= 13)
 }
 
+function readGrantPathAcceptable(path) {
+  try { return lstatSync(path).isFile() }
+  catch (err) { return err.code === 'ENOENT' }
+}
+
 export function probeNodeVersion(interp) {
   try {
     if (interp === '/usr/bin/env node') interp = 'node'
@@ -246,14 +251,14 @@ export function probeNodeVersion(interp) {
     if (!isAbsolute(interp)) {
       resolved = null
       for (const dir of (process.env.PATH ?? '').split(':')) {
-        const candidate = join(dir, interp)
+        if (!dir.startsWith('/')) return null
+        const candidate = dir + '/' + interp
         try {
           accessSync(candidate, constants.X_OK)
           if (statSync(candidate).isFile()) { resolved = candidate; break }
         } catch { /* Continue to the next PATH entry. */ }
       }
       if (!resolved) return null
-      resolved = resolve(resolved)
     }
     return execFileSync(resolved, ['--version'], {
       timeout: 2000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
@@ -332,6 +337,8 @@ export function agentScriptException(cmd, agentName, config) {
   const required = new Set([script, ...(values.get('--body-file') ?? []), ...(values.get('--attach') ?? [])])
   const allowed = new Set([...required, ...(entry.readFiles ?? [])])
   if ([...required].some(p => !reads.has(p)) || [...reads].some(p => !allowed.has(p))) return null
+  // A directory or symlink grant opens a whole tree to Node; checked at gate time only (a concurrent swap is out of scope).
+  if ([...reads].some(p => !readGrantPathAcceptable(p))) return null
   // Probe last: all shape, content and path checks must pass before spawning a process.
   if (!nodePermissionVersionOk((nodeVersionProbeOverride ?? probeNodeVersion)(interp))) return null
   return { script, mode, ...(mode === 'send' ? { envelopeSha256 } : {}), to: values.get('--to')?.[0] ?? '', cc: values.get('--cc')?.[0] ?? '',

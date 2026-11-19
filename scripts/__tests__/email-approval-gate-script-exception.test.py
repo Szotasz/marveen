@@ -115,6 +115,27 @@ def main():
             assert re.fullmatch(r'v\d+\.\d+\.\d+', real_gate.probe_node_version('node'))
         else:
             print('SKIP: no node on PATH for real version probe')
+        probe_dir = Path(os.path.realpath(tempfile.mkdtemp(prefix='script-node-path-')))
+        try:
+            (probe_dir / 'bin').mkdir()
+            (probe_dir / 'real/bin').mkdir(parents=True)
+            (probe_dir / 'real/sub').mkdir()
+            for relative, version in (('bin/node', 'v22.22.2'), ('real/bin/node', 'v20.0.0')):
+                executable = probe_dir / relative
+                executable.write_text(f'#!/bin/sh\necho {version}\n')
+                executable.chmod(0o755)
+            (probe_dir / 'link').symlink_to(probe_dir / 'real/sub', target_is_directory=True)
+            for path, expected in (
+                    (f'{probe_dir}/bin', 'v22.22.2'),
+                    (f'{probe_dir}/link/../bin', 'v20.0.0'),
+                    (f'relative-dir:{probe_dir}/bin', None),
+                    (f':{probe_dir}/bin', None),
+                    (f'{probe_dir}/nonexistent:{probe_dir}/bin', 'v22.22.2')):
+                with patch.dict(os.environ, {'PATH': path}):
+                    assert real_gate.probe_node_version('node') == expected, path
+        finally:
+            shutil.rmtree(probe_dir)
+        print('PASS: version probe follows shell PATH resolution and rejects relative or empty entries')
         positive = bind(CORPUS['cases'][0]['command'])
         with patch.object(real_gate, 'script_path_writable', return_value=False):
             for check_paths in (True, False):
@@ -236,6 +257,38 @@ def main():
             json.dumps({'agents': {'a': no_scripts, 'b': entry}}))
         assert gate.read_agent_send_exceptions() == {'agents': {'b': entry}}
         print('PASS: a missing scripts key invalidates only that entry, without a KeyError')
+
+        read_dir = Path(os.path.realpath(tempfile.mkdtemp(prefix='script-read-grants-')))
+        try:
+            read_body = read_dir / 'body.txt'
+            read_attachment = read_dir / 'attachment.bin'
+            read_extra = read_dir / 'extra.json'
+            read_body.write_bytes(b'Example body')
+            read_attachment.write_bytes(b'Example attachment')
+            read_extra.write_bytes(b'{}')
+            directory_link = read_dir / 'directory-link'
+            file_link = read_dir / 'file-link'
+            directory_link.symlink_to(read_dir, target_is_directory=True)
+            file_link.symlink_to(read_body)
+            draft_case = next(c['command'] for c in CORPUS['cases'] if c['name'] == 'draft')
+            def bound_draft(body_path=read_body, attachment_path=read_attachment):
+                return bind(draft_case).replace('/absolute/path/to/body.txt', str(body_path)).replace(
+                    '/absolute/path/to/attachment.bin', str(attachment_path))
+            agent = CORPUS['agentName']
+            assert gate.agent_script_exception(bound_draft(), agent, config) is not None
+            assert gate.agent_script_exception(bound_draft(read_dir), agent, config) is None
+            assert gate.agent_script_exception(bound_draft(read_dir), agent, config, check_paths=False) is not None
+            assert gate.agent_script_exception(bound_draft('/'), agent, config) is None
+            assert gate.agent_script_exception(bound_draft(read_body, directory_link), agent, config) is None
+            assert gate.agent_script_exception(bound_draft(file_link), agent, config) is None
+            assert gate.agent_script_exception(bound_draft(read_dir / 'missing.txt'), agent, config) is not None
+            for read_file, accepted in ((read_dir, False), (read_extra, True)):
+                read_config = {'agents': {agent: dict(entry, readFiles=[str(read_file)])}}
+                cmd = bound_draft().replace(' --permission ', f' --permission --allow-fs-read={read_file} ')
+                assert bool(gate.agent_script_exception(cmd, agent, read_config)) is accepted
+        finally:
+            shutil.rmtree(read_dir)
+        print('PASS: read grants accept regular or missing files and reject directories and symlinks')
 
         body = install / 'body.txt'
         attachment = install / 'attachment.bin'

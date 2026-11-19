@@ -110,9 +110,9 @@ import importlib.util
 import json
 import os
 import re
-import shutil
-import subprocess
 import sqlite3
+import stat
+import subprocess
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -323,11 +323,30 @@ def node_permission_version_ok(version_text):
     return major >= 24 or (major == 23 and minor >= 5) or (major == 22 and minor >= 13)
 
 
+def _read_grant_path_acceptable(path):
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError as err:
+        return err.errno == errno.ENOENT
+
+
 def probe_node_version(interp):
     try:
         if interp == "/usr/bin/env node":
             interp = "node"
-        resolved = interp if os.path.isabs(interp) else shutil.which(interp)
+        resolved = interp
+        if not os.path.isabs(interp):
+            resolved = None
+            for directory in os.environ.get("PATH", "").split(":"):
+                if not directory.startswith("/"):
+                    return None
+                candidate = directory + "/" + interp
+                try:
+                    if os.access(candidate, os.X_OK) and stat.S_ISREG(os.stat(candidate).st_mode):
+                        resolved = candidate
+                        break
+                except OSError:
+                    pass
         if not resolved:
             return None
         result = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=2, check=False)
@@ -423,6 +442,9 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
     required = {script, *values.get("--body-file", []), *values.get("--attach", [])}
     allowed = required | set(entry.get("readFiles", []))
     if not required <= reads or not reads <= allowed:
+        return None
+    # A directory or symlink grant opens a whole tree to Node; checked at gate time only (a concurrent swap is out of scope).
+    if check_paths and not all(_read_grant_path_acceptable(p) for p in reads):
         return None
     # Probe last: all shape, content and path checks pass before spawning a process.
     if not node_permission_version_ok(probe_node_version(interp)):
@@ -1675,7 +1697,7 @@ def main():
             if script_ex:
                 break
             if agent_script_exception(cmd, agent_name, config, check_paths=False):
-                deny("Named-script send: use the sanctioned form with absolute --body-file and --attach paths.")
+                deny("Named-script send: use the sanctioned form with absolute --body-file and --attach paths that are regular files.")
         if script_ex and script_ex["mode"] == "draft":
             sys.exit(0)
         if script_ex:

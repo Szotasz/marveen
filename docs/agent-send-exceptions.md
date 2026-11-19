@@ -76,6 +76,12 @@ and every `--attach` value. Only paths in that required set or the grant's
 optional `readFiles` list may appear. Any subset of `readFiles` may be included.
 The allow flags may appear in any order. Other runtime flags, two-token read
 flags, relative read paths and the old command shape receive no exception.
+Each read path must be a regular file or must not exist yet. A directory, a
+symlink (to a file or a directory) or a path the gate cannot inspect receives
+no exception: Node treats a granted directory, also one reached through a
+symlink, as a grant for its whole tree (measured on v22.22.2). The check runs
+when the gate decides; a swap by a concurrent process afterwards is out of
+scope.
 
 Whole quoted arguments are accepted; expansions, escapes, quote concatenation,
 shell metacharacters, assignments, compound commands, pipes and redirections
@@ -89,6 +95,10 @@ The interpreter prefix remains the exact allowlist: bare `node` or `nodejs`
 `/usr/bin/env node`. Direct script execution and other interpreter paths
 receive no exception. After all other checks pass, the gate resolves the
 interpreter and runs `--version` without a shell, with a two-second timeout.
+A bare name is looked up the way the shell does it: every `PATH` entry up to
+the match must be absolute (an empty or relative entry gives no exception),
+and the candidate is `<entry>/<name>` as written, not normalized, so a `..`
+after a symlinked directory leads to the same file the shell runs.
 A missing interpreter, failed probe or invalid version receives no exception.
 The minimum is **22.13.0 on Node 22, 23.5.0 on Node 23, or any Node 24+**;
 other versions receive no exception. The history tables of the Node docs
