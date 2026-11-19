@@ -935,6 +935,25 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       return [...parseStoreWatchExclude(newValue)].some((n) => !prev.has(n))
     },
   },
+  // GMAILDRAFT1116 review B1: which sub-agents may write a draft into the owner's Gmail through POST /api/gmail/draft.
+  // Empty (the default) = none: the owner's session and the main agent only. Adding a name loosens, so the key is
+  // overrides-only (the owner sets it in Settings; a .env line or the shared token cannot widen it).
+  {
+    key: 'GMAIL_DRAFT_AGENTS',
+    type: 'string',
+    default: '',
+    description: 'Mely al-ügynökök írhatnak piszkozatot a gazda Gmail-fiókjába a dashboardon keresztül (POST /api/gmail/draft). Ügynöknevek vesszővel elválasztva. Üresen (alapértelmezés) csak a gazda bejelentkezett munkamenete és a fő ügynök. A végpont csak piszkozatot ír, levelet nem küld. Egy név felvétele lazítás: csak dashboard-belépéssel állítható, és a .env-ben álló érték nem érvényesül.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => v.split(',').map(s => s.trim()).filter(Boolean).some(s => !/^[a-z0-9][a-z0-9-]{0,63}$/.test(s))
+      ? 'Csak ügynöknevek (kisbetű, szám, kötőjel), vesszővel elválasztva.'
+      : null,
+    loosens: (oldValue, newValue) => {
+      const prev = new Set(oldValue.split(',').map(s => s.trim()).filter(Boolean))
+      return newValue.split(',').map(s => s.trim()).filter(Boolean).some((n) => !prev.has(n))
+    },
+  },
   // --- Token usage module ---
   {
     key: 'TOKEN_USAGE_RETENTION_DAYS',

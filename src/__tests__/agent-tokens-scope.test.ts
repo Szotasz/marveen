@@ -31,6 +31,8 @@ vi.mock('../settings-store.js', async (importOriginal) => {
     getEffectiveSettingValue: (key: string) =>
       key === 'KANBAN_CLAIM_LOCK' ? '1'
         : key === 'AGENT_TOKENS' ? agentTokensSwitch.value
+          // GMAILDRAFT1116: the draft entry is gated on this list; the sample agent is on it here.
+          : key === 'GMAIL_DRAFT_AGENTS' ? 'alfa'
           : real.getEffectiveSettingValue(key),
   }
 })
@@ -1004,6 +1006,7 @@ const ALLOWLIST_SAMPLES: Array<[string, string]> = [
   ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'],
   ['POST', '/api/skills/propose'], ['GET', '/api/updates'],
   ['GET', '/api/updates/rebase-plan'], ['GET', '/api/claude-plans/state'], ['GET', '/api/claude-plans/readiness'],
+  ['POST', '/api/gmail/draft'],
 ]
 
 // MEASURED on one production fleet: every dashboard call five sub-agents issued

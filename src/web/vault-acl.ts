@@ -23,6 +23,7 @@ import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import type { RouteContext } from './routes/types.js'
+import { isReservedVaultId } from './vault-reserved.js'
 
 export const VAULT_ACL_PATH = join(STORE_DIR, 'vault-acl.json')
 
@@ -122,6 +123,8 @@ export function isAgentReadableDecodedVaultId(id: string): boolean {
   if (!lc || lc.includes('/')) return false
   if (['bindings', 'scan', 'sync', 'import', 'resolve'].includes(lc)) return false
   if (lc.startsWith('ssh')) return false
+  // GMAILDRAFT1116 review B1: a reserved entry is nobody's through the API (the routes refuse it for every principal).
+  if (isReservedVaultId(id)) return false
   return true
 }
 

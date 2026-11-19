@@ -26,7 +26,8 @@ import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
 import { getBindings } from './vault-bindings.js'
-import { resolveMasterKeyForExport } from './vault.js'
+import { resolveMasterKeyForExport, reservedEntriesReencryptedFor } from './vault.js'
+import { isReservedVaultId } from './vault-reserved.js'
 import { getDb, backfillEmbeddings } from '../db.js'
 import { logger } from '../logger.js'
 import { isValidModelId } from '../model-id.js'
@@ -743,9 +744,12 @@ function exportVault(): VaultExport | null {
 
   // Raw export: the entire FleetJson will be encrypted, so vault data is safe as plaintext here.
   const vaultStore = safeReadJson(vaultPath)
-  const entries = (vaultStore.entries as Record<string, unknown>[]) ?? []
+  // GMAILDRAFT1116 review round 2 (E1): a reserved entry (vault-reserved.ts: the owner's send-capable gmail.compose
+  // grant) never leaves this machine in a bundle, the owner's export included. On a new machine the owner sets the
+  // credential again (PUT /api/gmail/draft/credentials). A binding on one is dropped with it.
+  const entries = ((vaultStore.entries as Record<string, unknown>[]) ?? []).filter(e => !isReservedVaultId(e?.id))
   const bindingsStore = safeReadJson(bindingsPath)
-  const bindings = (bindingsStore.bindings as Record<string, unknown>[]) ?? []
+  const bindings = ((bindingsStore.bindings as Record<string, unknown>[]) ?? []).filter(b => !isReservedVaultId(b?.vaultSecretId))
 
   // Channel .env (bot tokens) are intentionally NOT exported -- see re-pair model comment in VaultExport.
   return { vaultKey, entries, bindings }
@@ -753,6 +757,11 @@ function exportVault(): VaultExport | null {
 
 // Exposed for unit tests -- exercises the master-key source resolution above.
 export const _exportVaultForTest = exportVault
+
+/** Tests only: the vault part of an applied import, with a throwaway write tracker. */
+export function _importVaultSectionForTest(vault: VaultExport): void {
+  importVaultSection(vault, { files: [], dirs: [] })
+}
 
 // Encrypted export wrapper: {"enc":1,"blob":"<base64-of-encrypted-fleet-json>"}
 // The enc field signals the import side to decrypt before parsing.
@@ -1125,10 +1134,21 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
 }
 
 function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
+  // GMAILDRAFT1116 review round 2 (E1): a reserved id is never written FROM a bundle (an older export, or a crafted
+  // one, could carry one: it would plant or replace the owner's send-capable grant), and a binding on one is dropped.
+  // This machine's own reserved entries are kept: the import swaps the master key for the bundle's, so they are
+  // re-encrypted with it first (vault.ts reservedEntriesReencryptedFor; the plaintext never leaves vault.ts). One the
+  // current key cannot open is dropped with a warn line naming it, and the owner sets that credential again.
+  const fromBundle = (vault.entries ?? []).filter(e => !isReservedVaultId((e as Record<string, unknown>)?.id))
+  const refusedFromBundle = (vault.entries ?? []).length - fromBundle.length
+  const kept = reservedEntriesReencryptedFor(vault.vaultKey)
+  if (refusedFromBundle) logger.warn({ event: 'fleet-import-reserved-refused', count: refusedFromBundle }, 'Fleet import: reserved vault entries in the bundle were not written')
+  if (kept.dropped.length) logger.warn({ event: 'fleet-import-reserved-dropped', ids: kept.dropped }, 'Fleet import: a reserved vault entry of this machine could not be carried to the imported master key and was dropped; the owner sets that credential again (PUT /api/gmail/draft/credentials)')
+  const bindings = (vault.bindings ?? []).filter(b => !isReservedVaultId((b as Record<string, unknown>)?.vaultSecretId))
   // vault.vaultKey is plaintext -- the caller already decrypted the whole JSON with the user password
   trackedWrite(join(STORE_DIR, '.vault-key'), vault.vaultKey, tracker, { mode: 0o600 })
-  trackedWrite(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: vault.entries }, null, 2), tracker, { mode: 0o600 })
-  trackedWrite(join(STORE_DIR, 'vault-bindings.json'), JSON.stringify({ bindings: vault.bindings }, null, 2), tracker)
+  trackedWrite(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: [...fromBundle, ...kept.entries] }, null, 2), tracker, { mode: 0o600 })
+  trackedWrite(join(STORE_DIR, 'vault-bindings.json'), JSON.stringify({ bindings }, null, 2), tracker)
   // Channel .env (bot tokens) are intentionally NOT imported -- target must re-pair channels manually.
 }
 

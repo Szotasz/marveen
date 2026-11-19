@@ -84,6 +84,10 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   daily-log-read <agent> [--date YYYY-MM-DD]
                 (without --date: today on this machine's clock; the server's own default is the UTC day)
   memory-backfill
+  gmail-draft <agent> <json-file>
+                (one draft into the owner's Gmail, never a send: POST /api/gmail/draft; the JSON holds subject, text,
+                 [html], [to], [cc], [bcc], [inReplyTo], [threadId], [attachments], [inline], [alsoAttach]; files are
+                 names under store/outbox/; exit 1 also when the read-back finds a missing recipient or file)
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
 
@@ -560,6 +564,19 @@ def build_request(verb, args):
         if not content.strip():
             fail_usage('kanban-comment: the content is empty')
         return 'POST', f'/api/kanban/{card}/comments', {'author': author, 'content': content}, headers, {}
+    if verb == 'gmail-draft':
+        # GMAILDRAFT1116: the draft is written INSIDE the dashboard (the credential never reaches this process); the
+        # letter comes from a JSON file, never from argv. Parsed here so a broken file fails before anything is sent.
+        agent, json_file = positional(args, 2, verb)
+        check(agent, NAME_RE, 'agent name')
+        try:
+            body = json.loads(read_text(json_file))
+        except ValueError as e:
+            fail_usage(f'gmail-draft: {json_file} is not valid JSON ({e})')
+        if not isinstance(body, dict):
+            fail_usage('gmail-draft: the JSON file holds one object')
+        headers['X-Agent-Id'] = agent
+        return 'POST', '/api/gmail/draft', body, headers, {'timeout': 120, 'readback': True}
     fail_usage(f'unknown verb: {verb!r}')
 
 
@@ -635,15 +652,16 @@ def main(argv):
         req.add_header('Content-Type', 'application/json')
     for k, v in headers.items():
         req.add_header(k, v)
+    timeout = flags.get('timeout', 30)
     try:
-        with OPENER.open(req, timeout=30) as resp:
+        with OPENER.open(req, timeout=timeout) as resp:
             status, text, resp_headers = resp.status, resp.read().decode('utf-8', 'replace'), resp.headers
     except urllib.error.HTTPError as e:
         status, text, resp_headers = e.code, e.read().decode('utf-8', 'replace'), e.headers
     except (urllib.error.URLError, OSError) as e:
         if isinstance(e, TimeoutError) or isinstance(getattr(e, 'reason', None), TimeoutError):
             # The request may have been sent and processed; only the answer is missing.
-            print(f'FAIL: the dashboard at {api_base()} did not answer in 30 s; read back before you retry a write.', file=sys.stderr)
+            print(f'FAIL: the dashboard at {api_base()} did not answer in {timeout} s; read back before you retry a write.', file=sys.stderr)
             return 3
         print(f'FAIL: the dashboard at {api_base()} could not be reached ({getattr(e, "reason", e)}).', file=sys.stderr)
         return 3
@@ -655,6 +673,16 @@ def main(argv):
     if 200 <= status < 300:
         empty_sent_payloads()
         print(text)
+        if flags.get('readback'):
+            # GMAILDRAFT1116: the draft exists, but the read-back is the check that it holds what was asked for.
+            try:
+                rb = json.loads(text).get('readback') or {}
+            except (ValueError, AttributeError):
+                rb = {}
+            if rb.get('ok') is not True:
+                print('READBACK_BAD: ' + '; '.join(rb.get('problems') or ['no read-back in the answer']), file=sys.stderr)
+                return 1
+            print('READBACK_OK', file=sys.stderr)
         return 0
     print(f'FAIL: HTTP {status}: {text[:500]}', file=sys.stderr)
     return 1
