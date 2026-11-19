@@ -13,7 +13,7 @@ import { join } from 'node:path'
 //   (A) sub-agents  -> the code-level floor in writeAgentSettingsFromProfile
 //   (B) main agent  -> the repo's tracked project settings (.claude/settings.json),
 //       which the scaffold deliberately never writes (#1305).
-import { writeAgentSettingsFromProfile, agentSettingsPath, FLEET_BASELINE_DENY, BASH_EGRESS_DENY } from '../web/agent-scaffold.js'
+import { writeAgentSettingsFromProfile, agentSettingsPath, FLEET_BASELINE_DENY, BASH_EGRESS_DENY, SUBAGENT_TOTP_STORE_DENY } from '../web/agent-scaffold.js'
 import { agentDir } from '../web/agent-config.js'
 import { listProfileTemplates, loadProfileTemplate, resolveProfilePlaceholders } from '../web/profiles.js'
 import { PROJECT_ROOT } from '../config.js'
@@ -62,6 +62,17 @@ describe('(A) the baseline reaches EVERY profile, including ones added later', (
     writeAgentSettingsFromProfile(NAME, loadProfileTemplate('default'))
     const deny = readDeny()
     for (const rule of expectedFor(NAME)) expect(deny).toContain(rule)
+  })
+
+  it('DOCKERHTTPS1119: every profile denies the Read tool on the second-factor store, in the measured //**/ form', () => {
+    // A text fence, not an OS boundary. The literal is pinned: the `**/` form was measured NOT to reach the file
+    // from a sub-agent's cwd (it sits in the install root's store/, above agents/<name>).
+    expect(SUBAGENT_TOTP_STORE_DENY).toBe('Read(//**/store/.dashboard-totp.json)')
+    for (const profile of profiles) {
+      writeAgentSettingsFromProfile(NAME, loadProfileTemplate(profile.id))
+      writeAgentSettingsFromProfile(NAME, loadProfileTemplate(profile.id))
+      expect(readDeny().filter(r => r === SUBAGENT_TOTP_STORE_DENY)).toHaveLength(1)
+    }
   })
 
   it('does not duplicate a rule the profile already declares', () => {

@@ -13,6 +13,7 @@ import { _resetThrottleForTest } from '../web/login-throttle.js'
 import { _setTotpStorePathForTest, _resetTotpStateForTest, getTotpRecord, PENDING_LOGIN_TTL_S } from '../web/dashboard-totp.js'
 import { hotp, base32Decode, base32Encode, matchTotp, totpStepAt, hashBackupCode, findBackupCode, otpauthUri } from '../web/totp.js'
 import { logger } from '../logger.js'
+import { notifySecurityEvent } from '../notify.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../notify.js', () => ({
@@ -379,14 +380,19 @@ describe('the secret on the server', () => {
     expect(r.json().code).toBe('totp_required')
   })
 
-  it('a damaged store fails closed even where the database flag is off (a record without the flag still counts)', async () => {
+  it('a damaged store: a user whose flag is OFF signs in with the password; a user whose flag is on gets 503', async () => {
+    // Dani (#2911 review): the flag is the source of truth, so a damaged file no longer locks out every user.
     await seedUser()
+    expect((await call('POST', '/api/auth/users', { auth: ALICE, body: { username: 'bob', password: PW } })).res.statusCode).toBe(201)
     await enableFor()
-    getDb().prepare('UPDATE dashboard_users SET totp_enabled = 0').run()
     writeFileSync(storeFile, '{not json')
-    const r = await passwordStep()
-    expect(r.res.statusCode).toBe(503)
-    expect(r.res.headers['Set-Cookie']).toBeUndefined()
+    const bob = await passwordStep('bob')
+    expect(bob.res.statusCode).toBe(200)
+    expect(cookieOf(bob.res)).not.toBe('')
+    const alice = await passwordStep()
+    expect(alice.res.statusCode).toBe(503)
+    expect(alice.json().code).toBe('totp_store_unavailable')
+    expect(alice.res.headers['Set-Cookie']).toBeUndefined()
   })
 
   it('a damaged store fails closed: the right password gets 503, never a session', async () => {
@@ -541,6 +547,25 @@ describe('turning it off', () => {
     expect(r.json()).toEqual({ ok: true, enabled: false })
     expect(getTotpRecord(getDashboardUser('alice')!.id)).toBeUndefined()
     expect((await passwordStep()).res.statusCode).toBe(200)
+  })
+
+  it('a successful web disable pings the owner exactly once, naming the user', async () => {
+    const { secret } = await setup()
+    vi.mocked(notifySecurityEvent).mockClear()
+    const r = await call('POST', '/api/auth/totp/disable', { auth: ALICE, body: { password: PW, code: codeAt(secret) } })
+    expect(r.res.statusCode).toBe(200)
+    expect(vi.mocked(notifySecurityEvent)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(notifySecurityEvent).mock.calls[0]![0]).toContain('"alice"')
+  })
+
+  it('a refused web disable (wrong code, wrong password, no code) pings no one', async () => {
+    const { secret } = await setup()
+    vi.mocked(notifySecurityEvent).mockClear()
+    expect((await call('POST', '/api/auth/totp/disable', { auth: ALICE, body: { password: PW, code: '000000' } })).res.statusCode).toBe(401)
+    expect((await call('POST', '/api/auth/totp/disable', { auth: ALICE, body: { password: 'wrong-password-x', code: codeAt(secret) } })).res.statusCode).toBe(401)
+    expect((await call('POST', '/api/auth/totp/disable', { auth: ALICE, body: { password: PW } })).res.statusCode).toBe(400)
+    expect(vi.mocked(notifySecurityEvent)).not.toHaveBeenCalled()
+    expect(getTotpRecord(getDashboardUser('alice')!.id)).toBeDefined()
   })
 
   it('with the password and an unused backup code (the lost-phone case): off', async () => {

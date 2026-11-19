@@ -1303,6 +1303,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     if (allowSudo && FLEET_SUDO_DENY.includes(rule)) continue
     if (!denyList.includes(rule)) denyList.push(rule)
   }
+  if (!denyList.includes(SUBAGENT_TOTP_STORE_DENY)) denyList.push(SUBAGENT_TOTP_STORE_DENY)
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
   // on EVERY spawn, because this function replaces the deny list wholesale --
   // a name written straight into settings.json disappears at the next respawn
@@ -1871,6 +1872,15 @@ export const FLEET_BASELINE_DENY = [
   'mcp__Filesystem',
   'mcp__gitnexus__rename',
 ]
+
+// DOCKERHTTPS1119: the dashboard login's second-factor store (src/web/dashboard-totp.ts). No sub-agent reads it, so
+// the Read tool is denied on it for every sub-agent, pushed on every spawn like the floor above (a rule in
+// templates/settings.json.template alone would be dropped by the first spawn, which rebuilds permissions.deny). It is a
+// text fence on the Read tool, not an OS boundary: the agents run as the same OS user, and whether it stops a Bash
+// read (cat) is not measured (see the floor's note on the token files above).
+// The `//**/` form is MEASURED (Claude Code 2.1.326, 2026-11-19, a sub-agent-shaped cwd two levels below the file):
+// `Read(**/store/.dashboard-totp.json)` let the Read tool read the file, this form and an absolute `//` path refused.
+export const SUBAGENT_TOTP_STORE_DENY = 'Read(//**/store/.dashboard-totp.json)'
 
 // The floor's sudo pair, named so the per-agent opt-out (SUDO_AGENTS) lifts
 // exactly these two rules and nothing else of the floor.
