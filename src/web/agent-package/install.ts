@@ -668,8 +668,9 @@ export const FALLBACK_PROJECT_LINKS = ['settings.json', 'settings.local.json', '
  * folder too: CLAUDE_PROJECT_DIR is the /tmp folder in that session, so a project hook written as
  * "$CLAUDE_PROJECT_DIR/.claude/hooks/x.sh" would fail with exit 127, a non-blocking error, and the owner's own gate
  * would drop out silently (C-path re-run, measured). Returns false when an existing settings file or hooks folder could
- * not be linked: the session would then start without the agent's project settings or gates, so the caller does not
- * start it (fail closed).
+ * not be linked, or a project hook names another path under $CLAUDE_PROJECT_DIR that the fallback folder cannot
+ * resolve (unresolvedProjectDirHookPaths): the session would then start without the agent's project settings or
+ * gates, so the caller does not start it (fail closed, with the owner's fallback_refused notice).
  */
 export function linkFallbackProjectConfig(dir: string, fallbackCwd: string): boolean {
   const target = join(fallbackCwd, '.claude')
@@ -686,7 +687,49 @@ export function linkFallbackProjectConfig(dir: string, fallbackCwd: string): boo
       if (name !== 'skills') ok = false
     }
   }
+  const unresolved = unresolvedProjectDirHookPaths(dir, fallbackCwd)
+  if (unresolved.length > 0) {
+    logger.error({ paths: unresolved }, 'EPERM fallback: a project hook names a path under $CLAUDE_PROJECT_DIR that the fallback folder does not have; not started')
+    ok = false
+  }
   return ok
+}
+
+/** "$CLAUDE_PROJECT_DIR/x", "${CLAUDE_PROJECT_DIR}/x", "$CLAUDE_PROJECT_DIR"/x: the path after the variable. */
+const PROJECT_DIR_PATH = /\$(?:\{CLAUDE_PROJECT_DIR\}|CLAUDE_PROJECT_DIR)"?(\/[^\s"'`;|&<>()]+)/g
+
+/**
+ * FALLBACKPROJDIR1118: in the fallback session CLAUDE_PROJECT_DIR is the /tmp folder, which has only the links made
+ * above. A hook command naming another path under it (e.g. "$CLAUDE_PROJECT_DIR/scripts/x.sh") fails there with
+ * exit 127, a non-blocking error for most hook events, so the owner's gate would drop out silently. Returns those
+ * paths that exist in the agent dir but not from the fallback folder; a path missing from the agent dir too is the
+ * hook's own fault and is the same on the normal path, so it does not count.
+ */
+export function unresolvedProjectDirHookPaths(dir: string, fallbackCwd: string): string[] {
+  const out: string[] = []
+  for (const file of ['settings.json', 'settings.local.json']) {
+    let hooks: unknown
+    try {
+      hooks = (JSON.parse(readFileSync(join(dir, '.claude', file), 'utf8')) as { hooks?: unknown }).hooks
+    } catch { continue } // missing or unreadable: there is no hook of this file to check
+    if (typeof hooks !== 'object' || hooks === null) continue
+    for (const groups of Object.values(hooks)) {
+      if (!Array.isArray(groups)) continue
+      for (const group of groups) {
+        const list = (group as { hooks?: unknown })?.hooks
+        if (!Array.isArray(list)) continue
+        for (const h of list) {
+          const cmd = (h as { command?: unknown })?.command
+          if (typeof cmd !== 'string') continue
+          for (const m of cmd.matchAll(PROJECT_DIR_PATH)) {
+            const rel = m[1]
+            if (existsSync(join(dir, rel)) && !existsSync(join(fallbackCwd, rel)) && !out.includes(rel)) out.push(rel)
+          }
+        }
+      }
+    }
+  }
+  return out
 }
 
 export function prepareFallbackClaudeMd(name: string, dir: string, fallbackCwd: string): 'expanded' | 'linked' | 'refused' {
