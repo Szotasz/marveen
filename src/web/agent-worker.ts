@@ -503,7 +503,7 @@ export function withFleetFreezeGate(settings: WorkerSettings): WorkerSettings {
   const hooks = (settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks) ? settings.hooks : {}) as Record<string, unknown>
   const pre = (Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []) as unknown[]
   const preToolUse = [
-    { matcher: '*', hooks: [{ type: 'command', command: WORKER_FREEZE_GATE_CMD, timeout: 5 }] },
+    { matcher: '*', hooks: [{ type: 'command', command: WORKER_FREEZE_GATE_CMD, timeout: 15 }] },
     ...pre.filter((e) => !JSON.stringify(e).includes('fleet-freeze-gate.sh')),
   ]
   return { ...settings, hooks: { ...hooks, PreToolUse: preToolUse } }

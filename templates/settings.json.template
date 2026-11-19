@@ -201,7 +201,7 @@
           {
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/fleet-freeze-gate.sh ] && exec bash {{PROJECT_ROOT}}/scripts/hooks/fleet-freeze-gate.sh; exit 0'",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
