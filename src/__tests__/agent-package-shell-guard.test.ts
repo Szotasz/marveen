@@ -240,6 +240,29 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
       rmSync(fb, { recursive: true, force: true })
     }
   })
+  it('FALLBACKPROJDIR1118: a project hook naming another path under $CLAUDE_PROJECT_DIR refuses the fallback start', () => {
+    const hookSet = (cmd: string) => JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: cmd }] }] } })
+    const cases: Array<[string, Record<string, string>, string, string[]]> = [
+      // [label, files, command, unresolved paths expected]
+      ['plain form, script exists in the agent dir', { 'scripts/gate.sh': '#!/bin/sh\n' }, '$CLAUDE_PROJECT_DIR/scripts/gate.sh', ['/scripts/gate.sh']],
+      ['quoted form', { 'scripts/gate.sh': '#!/bin/sh\n' }, '"$CLAUDE_PROJECT_DIR"/scripts/gate.sh --strict', ['/scripts/gate.sh']],
+      ['braced form, in settings.local.json', { 'scripts/gate.sh': '#!/bin/sh\n' }, 'bash ${CLAUDE_PROJECT_DIR}/scripts/gate.sh', ['/scripts/gate.sh']],
+      ['a path under the linked .claude/hooks resolves', { '.claude/hooks/gate.sh': '#!/bin/sh\n' }, '"$CLAUDE_PROJECT_DIR"/.claude/hooks/gate.sh', []],
+      ['a path missing from the agent dir too is not counted', {}, '$CLAUDE_PROJECT_DIR/scripts/nowhere.sh', []],
+      ['an absolute hook path is not counted', { 'scripts/gate.sh': '#!/bin/sh\n' }, '/usr/bin/true', []],
+    ]
+    for (const [label, files, cmd, want] of cases) {
+      const settingsFile = label.includes('settings.local.json') ? '.claude/settings.local.json' : '.claude/settings.json'
+      const d = agent({ 'CLAUDE.md': '# hand-made\n', ...files, [settingsFile]: hookSet(cmd) })
+      const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+      try {
+        expect(I.prepareFallbackClaudeMd(d.split('/').pop()!, d, fb), label).toBe(want.length > 0 ? 'refused' : 'linked')
+        expect(I.unresolvedProjectDirHookPaths(d, fb), label).toEqual(want)
+      } finally {
+        rmSync(fb, { recursive: true, force: true })
+      }
+    }
+  })
   it('a hooks folder that exists but cannot be linked refuses the fallback start (fail closed)', () => {
     const d = agent({ 'CLAUDE.md': '# hand-made\n', '.claude/hooks/gate.sh': '#!/bin/sh\n' })
     const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
