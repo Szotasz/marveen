@@ -1296,30 +1296,31 @@ function provisionIsolatedConfigDir(
     // an otherwise correctly authenticated agent lands on the login picker
     // (measured on korall, 2026-08-19). It needs a REAL file of its own here.
     const perUserAgent = readAgentRunAsUser(name) != null
-    for (const entry of readdirSync(realClaude)) {
-      if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) {
-        // Defensively drop the Anthropic credential from a .credentials.json that
-        // an older build may have symlinked/copied here, so the env-var token is
-        // the only auth source. Claude Code also keeps remote MCP servers' OAuth
-        // tokens (mcpOAuth) in this file, so only those keys survive: deleting
-        // the whole file logged an agent out of its OAuth MCP servers on every
-        // spawn (MCPOAUTHWIPE1119).
-        // An own_team agent is the exception: its .credentials.json IS its own
-        // /login credential, written here by `claude auth login`, and deleting it
-        // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
-        const stale = join(cfg, entry)
-        if (entry === '.credentials.json' && readAgentAuthMode(name) !== 'own_team') {
-          // A per-user agent runs as another OS user: a rewrite by the router
-          // would hand the file to the router's user at 0600 and lock the agent
-          // out of it (see writeJsonAtomic), so it keeps the whole-file removal.
-          if (perUserAgent) {
-            try { rmSync(stale, { force: true }) } catch { /* absent */ }
-          } else {
-            scrubIsolatedCredentialsFile(stale, name)
-          }
-        }
-        continue
+    // Defensively drop the Anthropic credential from a .credentials.json that
+    // an older build may have symlinked/copied here, so the env-var token is
+    // the only auth source. Claude Code also keeps remote MCP servers' OAuth
+    // tokens (mcpOAuth) in this file, so only those keys survive: deleting
+    // the whole file logged an agent out of its OAuth MCP servers on every
+    // spawn (MCPOAUTHWIPE1119).
+    // An own_team agent is the exception: its .credentials.json IS its own
+    // /login credential, written here by `claude auth login`, and deleting it
+    // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
+    // This runs whether or not the shared dir holds a .credentials.json: the
+    // Linux credentials-guard renames that file, and a macOS host never has one
+    // (ISOCREDSCRUB1119).
+    if (readAgentAuthMode(name) !== 'own_team') {
+      const stale = join(cfg, '.credentials.json')
+      // A per-user agent runs as another OS user: a rewrite by the router
+      // would hand the file to the router's user at 0600 and lock the agent
+      // out of it (see writeJsonAtomic), so it keeps the whole-file removal.
+      if (perUserAgent) {
+        try { rmSync(stale, { force: true }) } catch { /* absent */ }
+      } else {
+        scrubIsolatedCredentialsFile(stale, name)
       }
+    }
+    for (const entry of readdirSync(realClaude)) {
+      if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) continue
       const link = join(cfg, entry)
       let needsLink = true
       try {
