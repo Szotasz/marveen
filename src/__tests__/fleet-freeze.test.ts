@@ -301,11 +301,25 @@ describe("the dashboard's own Claude calls and the worker session", () => {
     const twice = withFleetFreezeGate(once)
     const pre = (twice.hooks as any).PreToolUse
     expect(pre).toHaveLength(2)
-    expect(pre[0]).toEqual({ matcher: '*', hooks: [{ type: 'command', command: WORKER_FREEZE_GATE_CMD, timeout: 5 }] })
+    expect(pre[0]).toEqual({ matcher: '*', hooks: [{ type: 'command', command: WORKER_FREEZE_GATE_CMD, timeout: 15 }] })
     expect(pre[1]).toEqual(other)
     expect((twice.hooks as any).Stop).toEqual([{ hooks: [] }])
     expect(twice.enabledPlugins).toEqual({ x: false })
     expect(WORKER_FREEZE_GATE_CMD).toContain(join('scripts', 'hooks', 'fleet-freeze-gate.sh'))
+  })
+
+  it('the fleet-freeze gate waits 15 s in the project settings and the sub-agent template (owner decision 2026-11-19)', () => {
+    // Code Mode runs many tool calls at once; at 5 s the gate itself timed out under load, and a timed-out gate denies.
+    const repo = join(__dirname, '..', '..')
+    const project = JSON.parse(readFileSync(join(repo, '.claude', 'settings.json'), 'utf8'))
+    const template = JSON.parse(readFileSync(join(repo, 'templates', 'settings.json.template'), 'utf8'))
+    for (const settings of [project, template]) {
+      const gates = (settings.hooks.PreToolUse as Array<{ hooks: Array<{ command: string; timeout?: number }> }>)
+        .flatMap((g) => g.hooks)
+        .filter((h) => h.command.includes('fleet-freeze-gate.sh'))
+      expect(gates).toHaveLength(1)
+      expect(gates[0].timeout).toBe(15)
+    }
   })
 
   it('ensureWorkerCwd writes the worker settings through withWorkerGates, which applies withFleetFreezeGate first', () => {
