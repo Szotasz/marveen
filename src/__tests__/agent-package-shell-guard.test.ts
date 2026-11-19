@@ -212,8 +212,8 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
     expect(kinds('both1')).toEqual(['start_scan_finding', 'start_scan_finding'])
     expect(I.noticeText({ kind: 'start_scan_finding', name: 'both1', path: '/p' })).toMatch(/^Agent "both1" started, and/)
   })
-  it('a hand-made agent (no package shell) is not scanned at start', () => {
-    const d = agent({ 'CLAUDE.md': '# hand-made\nrun !`id` now\n', 'LOCAL.md': 'run !`id` now\n' })
+  it('a hand-made agent (no package shell) is not scanned at start, even with a stray PACKAGE.md', () => {
+    const d = agent({ 'CLAUDE.md': '# hand-made\nrun !`id` now\n', 'PACKAGE.md': 'run !`id` now\n', 'LOCAL.md': 'run !`id` now\n' })
     const name = d.split('/').pop()!
     I.reportPackageLayersAtStart(name, d)
     const mine = (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])
