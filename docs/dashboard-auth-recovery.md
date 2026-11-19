@@ -34,6 +34,21 @@ futásáról audit-bejegyzés készül és -- ha van bekötött csatorna -- Tele
 értesítés megy a gazdának. Csatorna nélküli installon az értesítés csendben
 kimarad; a visszaút sosem függ tőle.
 
+### Docker- és Hostinger-telepítésen
+
+A konténer képében nincs TypeScript-futtató, ezért ott az `npm run dashboard-user` nem fut (`tsx: not found`). Ugyanez
+a CLI lefordítva a konténeren belül fut, `node`-dal, ugyanazokkal a parancsokkal:
+
+```bash
+docker compose exec marveen node dist/dashboard-user-cli.js totp:off <felhasznalo>
+docker compose exec marveen node dist/dashboard-user-cli.js reset-password <felhasznalo>
+docker compose exec marveen node dist/dashboard-user-cli.js list
+```
+
+Hostingeren nincs saját compose-mappa: SSH-val lépj be, a konténer nevét a `docker ps` adja (`-marveen-1`-re végződik),
+és ugyanez a parancs `docker exec -it <a-nev> node dist/dashboard-user-cli.js ...` alakban fut. A részletek a
+[docker.md "Locked out" szakaszában](docker.md#locked-out-lost-password-or-phone) vannak.
+
 ## `security:reset` -- a pánikgomb
 
 Egy lépésben:
