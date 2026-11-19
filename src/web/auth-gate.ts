@@ -42,7 +42,8 @@ import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { isKnownAgent } from './agent-config.js'
 import type { AgentTokenResolver } from './agent-tokens.js'
 import { logger } from '../logger.js'
-import { getAgentMessage, getApproval, getDb } from '../db.js'
+import { countDashboardUsers, getAgentMessage, getApproval, getDb } from '../db.js'
+import { SETUP_COOKIE_NAME, isSetupSession } from './public-access.js'
 import { readBody, stashPreReadBody, RequestBodyTooLargeError } from './http-helpers.js'
 import { agentVaultMode, isAgentReadableVaultId, readVaultAcl, type AgentVaultMode, type VaultAcl } from './vault-acl.js'
 
@@ -51,6 +52,9 @@ export type AuthResult =
   | { kind: 'device'; device: string; deviceId: number; scope: DeviceKeyScope }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string }
+  // DOCKERHTTPS1119: a redeemed one-time setup code, on the public listener, while no dashboard user exists. It opens
+  // the first-run paths only (routes/auth.ts mayActAsOwnerOrFirstRun); every other owner gate refuses it.
+  | { kind: 'setup' }
   | { kind: 'none' }
 
 export const SESSION_COOKIE_NAME = 'mv_session'
@@ -129,6 +133,8 @@ export function requiresAuth(path: string, method: string): boolean {
   // DOCKERHTTPS1119: the second step of the login (the code after the password). Public like the login itself: it is
   // authorised by the pending token the right password returned, and throttled like the login.
   if (path === '/api/auth/login/totp' && method === 'POST') return false
+  // DOCKERHTTPS1119: the one-time setup code is redeemed before any cookie exists (public listener only).
+  if (path === '/api/auth/setup-code' && method === 'POST') return false
   // DASHOPERATOR1005: the operator page signs in with its key here, before any
   // cookie exists. The handler checks the key, the scope and the owner switch.
   if (path === '/api/operator/login' && method === 'POST') return false
@@ -152,7 +158,13 @@ export function resolveAuth(
   method: string,
   dashboardToken: string,
   resolveAgentToken?: AgentTokenResolver,
+  publicListener = false,
 ): AuthResult {
+  // DOCKERHTTPS1119: on the public listener (Caddy's upstream) only browser cookies count. The shared token, a
+  // sub-agent's token, a device key, the SSE ?token= and the federation tokens are local credentials: refused
+  // there whatever the request carries (public-access.ts says why the listener, not a header, decides).
+  if (publicListener) return resolveCookieAuth(req, true)
+
   // 1. Bearer header -- unchanged, highest precedence. The optional agent claim
   //    rides along: it never affects WHETHER the request is authenticated, only
   //    what the routes can say about who asked.
@@ -202,6 +214,11 @@ export function resolveAuth(
     if (peer !== null) return { kind: 'federation', peer }
   }
 
+  return resolveCookieAuth(req, false)
+}
+
+/** Steps 5-6 (and, on the public listener, the setup session): the browser cookies. */
+function resolveCookieAuth(req: http.IncomingMessage, publicListener: boolean): AuthResult {
   // 5. Browser-login session cookie.
   const cookieValue = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   if (cookieValue) {
@@ -216,6 +233,12 @@ export function resolveAuth(
   if (operatorCookie) {
     const op = resolveOperatorSession(operatorCookie)
     if (op) return { kind: 'device', device: op.device, deviceId: op.deviceId, scope: 'operator' }
+  }
+
+  // 7. DOCKERHTTPS1119: the setup session, on the public listener only, and only while no dashboard user exists
+  //    (disabled ones counted: a login that was ever set up ends the first run for good).
+  if (publicListener && isSetupSession(parseCookies(req.headers.cookie)[SETUP_COOKIE_NAME]) && countDashboardUsers(true) === 0) {
+    return { kind: 'setup' }
   }
 
   return { kind: 'none' }
@@ -600,9 +623,9 @@ export async function gateRequest(
   url: URL,
   path: string,
   method: string,
-  opts: { dashboardToken: string; resolveAgentToken?: AgentTokenResolver; mainAgentId: string; identityLookups?: IdentityLookups; agentVaultAcl?: () => VaultAcl },
+  opts: { dashboardToken: string; resolveAgentToken?: AgentTokenResolver; mainAgentId: string; identityLookups?: IdentityLookups; agentVaultAcl?: () => VaultAcl; publicListener?: boolean },
 ): Promise<AuthResult | null> {
-  const auth = resolveAuth(req, url, path, method, opts.dashboardToken, opts.resolveAgentToken)
+  const auth = resolveAuth(req, url, path, method, opts.dashboardToken, opts.resolveAgentToken, opts.publicListener === true)
   if (requiresAuth(path, method) && auth.kind === 'none') {
     if (isFederationWireEndpoint(path, method)) {
       // 401s are otherwise silent; federation-endpoint auth failures are the

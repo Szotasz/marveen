@@ -24,7 +24,7 @@ export interface RouteContext {
    *  against the roster but NOT authenticated -- one shared token means it can
    *  be typed by anyone, so it may warn and attribute, never authorize.
    *  Lets routes distinguish a human session from a token/fleet caller. */
-  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string; deviceId?: number; agent?: string; scope?: 'full' | 'operator'
+  auth?: { kind: 'token' | 'session' | 'federation' | 'device' | 'setup'; user?: string; peer?: string; device?: string; deviceId?: number; agent?: string; scope?: 'full' | 'operator'
     /** Set only for kind 'token' when the bearer was a sub-agent's OWN token
      *  (agents/<name>/.dashboard-token, AGENT_TOKENS; `agent` then carries the
      *  same name). AUTHENTICATED, unlike `agent` on the shared token: by the
