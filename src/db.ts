@@ -6126,8 +6126,13 @@ export function appendTaskRun(name: string, agent: string, status = 'fired'): nu
   return Number(info.lastInsertRowid)
 }
 
-/** How a run ENDED. Distinct from `status`, which is how it was dispatched. */
-export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted'
+/**
+ * How a run ENDED. Distinct from `status`, which is how it was dispatched.
+ * 'unauth' (DOCKERUNAUTHRUN1118): the session took the prompt and went idle, but its only reply was Claude Code's
+ * "Not logged in" authentication error, so nothing ran. Not 'done': duration statistics and once-task success
+ * filter on 'done' and must not count it.
+ */
+export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted' | 'unauth'
 
 /**
  * Close a run. Idempotent by design: the WHERE clause refuses to overwrite an
