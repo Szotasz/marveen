@@ -270,6 +270,9 @@ def main():
             file_link = read_dir / 'file-link'
             directory_link.symlink_to(read_dir, target_is_directory=True)
             file_link.symlink_to(read_body)
+            (read_dir / 'sub' / 'sub2').mkdir(parents=True)
+            (read_dir / 'sub' / 'body.txt').write_bytes(b'Subdirectory body')
+            (read_dir / 'sublink').symlink_to(read_dir / 'sub' / 'sub2', target_is_directory=True)
             draft_case = next(c['command'] for c in CORPUS['cases'] if c['name'] == 'draft')
             def bound_draft(body_path=read_body, attachment_path=read_attachment):
                 return bind(draft_case).replace('/absolute/path/to/body.txt', str(body_path)).replace(
@@ -281,6 +284,11 @@ def main():
             assert gate.agent_script_exception(bound_draft('/'), agent, config) is None
             assert gate.agent_script_exception(bound_draft(read_body, directory_link), agent, config) is None
             assert gate.agent_script_exception(bound_draft(file_link), agent, config) is None
+            assert gate.agent_script_exception(bound_draft(str(read_dir) + '/missing-parent/..'), agent, config) is None
+            assert gate.agent_script_exception(bound_draft(str(read_dir) + '/./body.txt'), agent, config) is None
+            assert gate.agent_script_exception(bound_draft(str(read_dir) + '//body.txt'), agent, config) is None
+            assert gate.agent_script_exception(bound_draft(str(read_body) + '/'), agent, config) is None
+            assert gate.agent_script_exception(bound_draft(str(read_dir) + '/sublink/../body.txt'), agent, config) is None
             assert gate.agent_script_exception(bound_draft(read_dir / 'missing.txt'), agent, config) is not None
             for read_file, accepted in ((read_dir, False), (read_extra, True)):
                 read_config = {'agents': {agent: dict(entry, readFiles=[str(read_file)])}}
@@ -288,7 +296,7 @@ def main():
                 assert bool(gate.agent_script_exception(cmd, agent, read_config)) is accepted
         finally:
             shutil.rmtree(read_dir)
-        print('PASS: read grants accept regular or missing files and reject directories and symlinks')
+        print('PASS: read grants accept canonical regular or missing files and reject directories, symlinks and non-canonical paths')
 
         body = install / 'body.txt'
         attachment = install / 'attachment.bin'

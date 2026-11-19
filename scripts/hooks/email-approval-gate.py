@@ -324,6 +324,8 @@ def node_permission_version_ok(version_text):
 
 
 def _read_grant_path_acceptable(path):
+    if any(s in ("", ".", "..") for s in path.split("/")[1:]):
+        return False
     try:
         return stat.S_ISREG(os.lstat(path).st_mode)
     except OSError as err:
@@ -443,7 +445,7 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
     allowed = required | set(entry.get("readFiles", []))
     if not required <= reads or not reads <= allowed:
         return None
-    # A directory or symlink grant opens a whole tree to Node; checked at gate time only (a concurrent swap is out of scope).
+    # A directory, symlink or non-canonical grant (Node resolves it lexically) opens more than itself; checked at gate time only (a concurrent swap is out of scope).
     if check_paths and not all(_read_grant_path_acceptable(p) for p in reads):
         return None
     # Probe last: all shape, content and path checks pass before spawning a process.

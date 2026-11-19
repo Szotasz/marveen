@@ -500,6 +500,9 @@ describe('Node permission runtime and optional readFiles', () => {
       writeFileSync(extra, '{}')
       symlinkSync(dir, directoryLink)
       symlinkSync(body, fileLink)
+      mkdirSync(join(dir, 'sub', 'sub2'), { recursive: true })
+      writeFileSync(join(dir, 'sub', 'body.txt'), 'Subdirectory body')
+      symlinkSync(join(dir, 'sub', 'sub2'), join(dir, 'sublink'))
       const boundDraft = (bodyPath = body, attachmentPath = attachment) => draftCommand
         .replaceAll('/absolute/path/to/body.txt', bodyPath)
         .replaceAll('/absolute/path/to/attachment.bin', attachmentPath)
@@ -508,6 +511,11 @@ describe('Node permission runtime and optional readFiles', () => {
       expect(agentScriptException(boundDraft('/'), agentName, config)).toBeNull()
       expect(agentScriptException(boundDraft(body, directoryLink), agentName, config)).toBeNull()
       expect(agentScriptException(boundDraft(fileLink), agentName, config)).toBeNull()
+      expect(agentScriptException(boundDraft(dir + '/missing-parent/..'), agentName, config)).toBeNull()
+      expect(agentScriptException(boundDraft(dir + '/./body.txt'), agentName, config)).toBeNull()
+      expect(agentScriptException(boundDraft(dir + '//body.txt'), agentName, config)).toBeNull()
+      expect(agentScriptException(boundDraft(body + '/'), agentName, config)).toBeNull()
+      expect(agentScriptException(boundDraft(dir + '/sublink/../body.txt'), agentName, config)).toBeNull()
       expect(agentScriptException(boundDraft(join(dir, 'missing.txt')), agentName, config)).not.toBeNull()
       for (const [readFile, accepted] of [[dir, false], [extra, true]] as const) {
         const cfg = { agents: { [agentName]: { ...entry, readFiles: [readFile] } } }

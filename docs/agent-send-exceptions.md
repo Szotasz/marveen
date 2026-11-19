@@ -76,10 +76,14 @@ and every `--attach` value. Only paths in that required set or the grant's
 optional `readFiles` list may appear. Any subset of `readFiles` may be included.
 The allow flags may appear in any order. Other runtime flags, two-token read
 flags, relative read paths and the old command shape receive no exception.
-Each read path must be a regular file or must not exist yet. A directory, a
-symlink (to a file or a directory) or a path the gate cannot inspect receives
-no exception: Node treats a granted directory, also one reached through a
-symlink, as a grant for its whole tree (measured on v22.22.2). The check runs
+Each read path must be a regular file or must not exist yet, and must be
+written in canonical form: no `.`, `..` or empty segment and no trailing
+slash. A directory, a symlink (to a file or a directory), a non-canonical
+spelling or a path the gate cannot inspect receives no exception: Node
+treats a granted directory, also one reached through a symlink, as a grant
+for its whole tree, and it resolves a grant path lexically, so a missing
+parent followed by `..` becomes a grant for the directory above it (both
+measured on v22.22.2). The check runs
 when the gate decides; a swap by a concurrent process afterwards is out of
 scope.
 

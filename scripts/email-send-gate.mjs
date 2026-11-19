@@ -240,6 +240,7 @@ export function nodePermissionVersionOk(versionText) {
 }
 
 function readGrantPathAcceptable(path) {
+  if (path.split('/').slice(1).some(s => s === '' || s === '.' || s === '..')) return false
   try { return lstatSync(path).isFile() }
   catch (err) { return err.code === 'ENOENT' }
 }
@@ -337,7 +338,7 @@ export function agentScriptException(cmd, agentName, config) {
   const required = new Set([script, ...(values.get('--body-file') ?? []), ...(values.get('--attach') ?? [])])
   const allowed = new Set([...required, ...(entry.readFiles ?? [])])
   if ([...required].some(p => !reads.has(p)) || [...reads].some(p => !allowed.has(p))) return null
-  // A directory or symlink grant opens a whole tree to Node; checked at gate time only (a concurrent swap is out of scope).
+  // A directory, symlink or non-canonical grant (Node resolves it lexically) opens more than itself; checked at gate time only (a concurrent swap is out of scope).
   if ([...reads].some(p => !readGrantPathAcceptable(p))) return null
   // Probe last: all shape, content and path checks must pass before spawning a process.
   if (!nodePermissionVersionOk((nodeVersionProbeOverride ?? probeNodeVersion)(interp))) return null
