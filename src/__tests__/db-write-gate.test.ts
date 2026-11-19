@@ -226,11 +226,13 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     // NETTARGETENV1104, Dani 68849: the network-target origins recorded at the last boot.
     'store/.net-target-hosts.json',
     // GATEFILES1110: the owner-gated agent settings (a provider's baseUrl, the context-guard values)
-    'store/custom-providers.json', 'store/context-guard.json']
+    'store/custom-providers.json', 'store/context-guard.json',
+    // DOCKERHTTPS1119 (Dani 81107 B2): the dashboard login's TOTP secrets and replay state
+    'store/.dashboard-totp.json']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json',
       // SUPPORTKULCS1109 D5: the support state of this machine, one folder
@@ -269,6 +271,14 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   it('the root comes from the gate\'s own place, not from the cwd: a worktree cwd does not move it', () => {
     expect(file('Write', join(root, 'store', 'autonomy-config.json'), wt)).toEqual(DENY_FILE)
     expect(file('Write', join(wt, 'store', 'autonomy-config.json'), root)).toEqual(ALLOW)
+  })
+  it('DOCKERHTTPS1119 (Dani 81107 B2): deleting, emptying or replacing the TOTP store is denied; reading it passes', () => {
+    const p = join(root, 'store', '.dashboard-totp.json')
+    expect(bash(`rm ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -f store/.dashboard-totp.json`)).toEqual(DENY_FILE)
+    expect(bash(`: > ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`mv /tmp/x.json ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`cat ${p}`)).toEqual(ALLOW)
   })
   it('another file of the install is not protected', () => {
     expect(file('Write', join(root, 'scripts', 'other.py'))).toEqual(ALLOW)

@@ -2,13 +2,16 @@
 //
 // Durable: store/.dashboard-totp.json, mode 0600, written atomically, one entry per dashboard user id:
 //   { "users": { "<id>": { "secret": <base32>, "last_step": <n>, "backup": [<sha256 hex>...], "enabled_at": <unix s> } } }
-// No entry for a user = the second factor is off for that user (the default). The secret is never logged and never in
-// an API response after the setup step; the backup codes are stored hashed only.
+// Whether it is ON is also recorded in the database (dashboard_users.totp_enabled, Dani 81107 B2): the file alone would
+// let any process of the same OS user turn the second factor off by deleting it. On = the flag or a record; off (the
+// default) = neither. The secret is never logged and never in an API response after the setup step; the backup codes
+// are stored hashed only. The agent DB-write gate protects both the file (writes) and the table.
 //
-// Fail closed: a file that exists but cannot be read or parsed THROWS (TotpStoreError). Reading it as "nobody has the
-// second factor" would turn a damaged file into a password-only login; the login answers 503 instead. The way back is on
-// the machine: repair or remove the file (removing it turns the second factor off for every user); the bearer token
-// keeps working meanwhile. A readable file and one lost phone: npm run dashboard-user -- totp:off <username>.
+// Fail closed: a file that exists but cannot be read or parsed THROWS (TotpStoreError), and so does a user whose flag is
+// on with no record in the file (getTotpForUser). Reading either as "off" would turn a damaged or deleted file into a
+// password-only login; the login answers 503 instead. The way back is on the machine: npm run dashboard-user --
+// totp:off <username> clears the flag and the record (with a damaged file, repair or remove the file after it); the
+// bearer token keeps working meanwhile.
 //
 // In memory only (a dashboard restart drops them, which costs the owner one more password or one more setup):
 //   - the pending sign-in: the password was right, the code is still due (PENDING_LOGIN_TTL_S);
@@ -73,6 +76,16 @@ export function getTotpRecord(userId: number): TotpRecord | undefined {
   if (typeof rec.secret !== 'string' || !Number.isInteger(rec.last_step) || !Array.isArray(rec.backup)) {
     throw new TotpStoreError('the two-step sign-in store is malformed')
   }
+  return rec
+}
+
+/** The second factor of this dashboard user, the ONE reading every login and owner route uses (Dani 81107 B2): the
+ *  record when it is on, undefined when it is off. On = the database flag (dashboard_users.totp_enabled, a table the
+ *  agent DB-write gate protects) OR a record in the file. The flag set with no record in the file (the file deleted,
+ *  emptied or the entry removed) THROWS TotpStoreError: fail closed, never a password-only login. */
+export function getTotpForUser(user: { id: number; totp_enabled?: number }): TotpRecord | undefined {
+  const rec = getTotpRecord(user.id)
+  if (user.totp_enabled && rec === undefined) throw new TotpStoreError('the two-step sign-in is on, but its record is missing from the store')
   return rec
 }
 

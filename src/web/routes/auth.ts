@@ -65,11 +65,12 @@ import {
   countDashboardUsers,
   updateDashboardUserPassword,
   deleteDashboardUser,
+  setDashboardUserTotpEnabled,
   logConfigChange,
 } from '../../db.js'
 import { supportPasswordGate } from '../support-password.js'
 import {
-  getTotpRecord,
+  getTotpForUser,
   saveTotpRecord,
   removeTotpRecord,
   createPendingLogin,
@@ -451,7 +452,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // password alone.
     let totp: TotpRecord | undefined
     try {
-      totp = getTotpRecord(user.id)
+      totp = getTotpForUser(user)
     } catch (err) {
       logger.error({ err: (err as Error).message }, 'login: the two-step sign-in store is unreadable, login refused')
       noStoreJson(res, TOTP_STORE_UNAVAILABLE, 503)
@@ -492,7 +493,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const user = getDashboardUser(pending.username)
     let rec: TotpRecord | undefined
     try {
-      rec = user && !user.disabled && user.id === pending.userId ? getTotpRecord(user.id) : undefined
+      rec = user && !user.disabled && user.id === pending.userId ? getTotpForUser(user) : undefined
     } catch (err) {
       logger.error({ err: (err as Error).message }, 'login code: the two-step sign-in store is unreadable, login refused')
       noStoreJson(res, TOTP_STORE_UNAVAILABLE, 503)
@@ -526,7 +527,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     if (!user) return true
     let rec: TotpRecord | undefined
     try {
-      rec = getTotpRecord(user.id)
+      rec = getTotpForUser(user)
     } catch {
       noStoreJson(res, TOTP_STORE_UNAVAILABLE, 503)
       return true
@@ -539,7 +540,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const user = totpOwner(auth, req, res)
     if (!user) return true
     try {
-      if (getTotpRecord(user.id)) {
+      if (getTotpForUser(user)) {
         noStoreJson(res, TOTP_ALREADY_ENABLED, 409)
         return true
       }
@@ -566,7 +567,36 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     try {
-      if (getTotpRecord(user.id)) {
+      if (getTotpForUser(user)) {
+        noStoreJson(res, TOTP_ALREADY_ENABLED, 409)
+        return true
+      }
+    } catch {
+      noStoreJson(res, TOTP_STORE_UNAVAILABLE, 503)
+      return true
+    }
+    if (!getPendingSetup(user.id)) {
+      noStoreJson(res, TOTP_SETUP_MISSING, 409)
+      return true
+    }
+    // Dani 81107 B1: the current password too, under the login's own bucket (as disable and the password change do).
+    // A stolen session cookie alone must not turn the second factor on with the thief's secret: enabling signs out the
+    // owner's other sessions, and the owner could not sign in again without the thief's code.
+    const usernameLc = user.username.toLowerCase()
+    const pwThrottle = checkThrottle(usernameLc)
+    if (pwThrottle.locked) {
+      tooManyAttempts(res, pwThrottle.retryAfterS)
+      return true
+    }
+    if (!(await verifyPassword(str(body.password), user.password_hash))) {
+      recordFailure(usernameLc)
+      noStoreJson(res, INVALID_CREDENTIALS, 401)
+      return true
+    }
+    recordSuccess(usernameLc)
+    // Read again after the KDF await: a parallel enable may have finished, or the pending setup expired meanwhile.
+    try {
+      if (getTotpForUser(getDashboardUser(user.username) ?? user)) {
         noStoreJson(res, TOTP_ALREADY_ENABLED, 409)
         return true
       }
@@ -585,7 +615,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const backupCodes = generateBackupCodes()
+    // The file first, then the database flag: a failure between them leaves a record without the flag, which still
+    // reads as ON (getTotpForUser), never as off.
     saveTotpRecord(user.id, { secret, last_step: step, backup: backupCodes.map(hashBackupCode), enabled_at: Math.floor(Date.now() / 1000) })
+    setDashboardUserTotpEnabled(user.id, true)
     clearPendingSetup(user.id)
     // The sessions signed in before the second factor existed did not pass it: end them, keep the caller's own.
     revokeAllForUser(user.id, parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] ?? undefined)
@@ -608,7 +641,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     let rec: TotpRecord | undefined
     try {
-      rec = getTotpRecord(user.id)
+      rec = getTotpForUser(user)
     } catch {
       noStoreJson(res, TOTP_STORE_UNAVAILABLE, 503)
       return true
@@ -643,7 +676,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     // Re-read after the KDF await: a concurrent sign-in may have moved last_step or used a backup code.
     try {
-      rec = getTotpRecord(user.id)
+      rec = getTotpForUser(user)
     } catch {
       noStoreJson(res, TOTP_STORE_UNAVAILABLE, 503)
       return true
@@ -658,6 +691,9 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     recordSuccess(totpKey)
+    // The flag first, then the record: a failure between them leaves a record without the flag, which still reads as
+    // ON, never a flag without a record (that would be a 503 lockout).
+    setDashboardUserTotpEnabled(user.id, false)
     removeTotpRecord(user.id)
     logConfigChange('security.totp_disable', null, user.username, auth!.kind)
     logger.info({ username: user.username }, 'two-step sign-in: disabled')

@@ -88,7 +88,7 @@ async function enableFor(auth: RouteContext['auth'] = ALICE, headers?: Record<st
   const s = await call('POST', '/api/auth/totp/setup', { auth, headers })
   expect(s.res.statusCode).toBe(200)
   const secret = String(s.json().secret)
-  const e = await call('POST', '/api/auth/totp/enable', { auth, headers, body: { code: codeAt(secret) } })
+  const e = await call('POST', '/api/auth/totp/enable', { auth, headers, body: { code: codeAt(secret), password: PW } })
   expect(e.res.statusCode).toBe(200)
   return { secret, backup: e.json().backup_codes as string[] }
 }
@@ -241,13 +241,43 @@ describe('who may turn it on', () => {
     expect((await call('POST', '/api/auth/totp/enable', { auth: ALICE, body: { code: '000000' } })).json().code).toBe('totp_setup_missing')
     const s = await call('POST', '/api/auth/totp/setup', { auth: ALICE })
     const secret = String(s.json().secret)
-    const bad = await call('POST', '/api/auth/totp/enable', { auth: ALICE, body: { code: codeAt(secret, 2) } })
+    const bad = await call('POST', '/api/auth/totp/enable', { auth: ALICE, body: { code: codeAt(secret, 2), password: PW } })
     expect(bad.res.statusCode).toBe(400)
     expect(bad.json().code).toBe('totp_invalid')
     expect(existsSync(storeFile)).toBe(false)
-    const ok = await call('POST', '/api/auth/totp/enable', { auth: ALICE, body: { code: codeAt(secret) } })
+    const ok = await call('POST', '/api/auth/totp/enable', { auth: ALICE, body: { code: codeAt(secret), password: PW } })
     expect(ok.res.statusCode).toBe(200)
     expect((await call('POST', '/api/auth/totp/setup', { auth: ALICE })).res.statusCode).toBe(409)
+  })
+
+  it('B1 (Dani 81107): enable without the password or with a wrong one is refused, and nothing changes', async () => {
+    await seedUser()
+    const other = cookieOf((await passwordStep()).res)
+    const s = await call('POST', '/api/auth/totp/setup', { auth: ALICE })
+    const secret = String(s.json().secret)
+    for (const body of [{ code: codeAt(secret) }, { code: codeAt(secret), password: '' }, { code: codeAt(secret), password: 'wrong-password-x' }]) {
+      const r = await call('POST', '/api/auth/totp/enable', { auth: ALICE, body })
+      expect(r.res.statusCode).toBe(401)
+      expect(r.json()).toEqual({ error: 'Invalid credentials' })
+      expect(r.json().backup_codes).toBeUndefined()
+    }
+    expect(existsSync(storeFile)).toBe(false)
+    expect(getDashboardUser('alice')!.totp_enabled).toBe(0)
+    expect(resolveSession(other)?.username).toBe('alice')
+    expect((await passwordStep()).res.statusCode).toBe(200)
+    // The pending setup survived the refusals: the right password and code still finish it.
+    const ok = await call('POST', '/api/auth/totp/enable', { auth: ALICE, body: { code: codeAt(secret), password: PW } })
+    expect(ok.res.statusCode).toBe(200)
+  })
+
+  it('B1: wrong passwords at enable count in the login bucket (5 lock the 6th, even with the right password)', async () => {
+    await seedUser()
+    const s = await call('POST', '/api/auth/totp/setup', { auth: ALICE })
+    const secret = String(s.json().secret)
+    for (let i = 0; i < 5; i++) await call('POST', '/api/auth/totp/enable', { auth: ALICE, body: { code: codeAt(secret), password: 'wrong-password-x' } })
+    const r = await call('POST', '/api/auth/totp/enable', { auth: ALICE, body: { code: codeAt(secret), password: PW } })
+    expect(r.res.statusCode).toBe(429)
+    expect(getDashboardUser('alice')!.totp_enabled).toBe(0)
   })
 
   it('enabling ends the owner\'s OTHER sessions (signed in without the second factor), keeps the caller\'s', async () => {
@@ -302,6 +332,61 @@ describe('the secret on the server', () => {
     const audit = getDb().prepare("SELECT key, new_value FROM config_change_log WHERE key LIKE 'security.totp%'").all() as Array<{ key: string; new_value: string }>
     expect(audit.map((a) => a.key)).toEqual(['security.totp_enable', 'security.totp_disable'])
     for (const a of audit) expect(a.new_value).toBe('alice')
+  })
+
+  it('B2 (Dani 81107): enable sets the database flag, disable clears it', async () => {
+    await seedUser()
+    const { secret } = await enableFor()
+    expect(getDashboardUser('alice')!.totp_enabled).toBe(1)
+    vi.setSystemTime(T0 + 30_000)
+    await call('POST', '/api/auth/totp/disable', { auth: ALICE, body: { password: PW, code: codeAt(secret) } })
+    expect(getDashboardUser('alice')!.totp_enabled).toBe(0)
+  })
+
+  it('B2: the store file DELETED while the factor is on: the right password gets 503, never a session', async () => {
+    await seedUser()
+    await enableFor()
+    rmSync(storeFile)
+    const r = await passwordStep()
+    expect(r.res.statusCode).toBe(503)
+    expect(r.json().code).toBe('totp_store_unavailable')
+    expect(r.res.headers['Set-Cookie']).toBeUndefined()
+    // And the owner routes cannot report it as off either.
+    expect((await call('GET', '/api/auth/totp', { auth: ALICE })).res.statusCode).toBe(503)
+    expect((await call('POST', '/api/auth/totp/setup', { auth: ALICE })).res.statusCode).toBe(503)
+  })
+
+  it('B2: the user\'s record removed from the file (the file still there): 503 at the password and at the code step', async () => {
+    await seedUser()
+    const { secret } = await enableFor()
+    const p = await passwordStep()
+    writeFileSync(storeFile, JSON.stringify({ users: {} }))
+    const r = await passwordStep()
+    expect(r.res.statusCode).toBe(503)
+    expect(r.res.headers['Set-Cookie']).toBeUndefined()
+    const c = await call('POST', '/api/auth/login/totp', { body: { pending: p.json().pending, code: codeAt(secret, 1) } })
+    expect(c.res.statusCode).toBe(503)
+    expect(c.res.headers['Set-Cookie']).toBeUndefined()
+  })
+
+  it('B2: a record in the file without the flag still reads as ON (never off)', async () => {
+    await seedUser()
+    await enableFor()
+    // The flag lost, the record kept (the order enable writes in makes this the only partial state).
+    getDb().prepare('UPDATE dashboard_users SET totp_enabled = 0').run()
+    const r = await passwordStep()
+    expect(r.res.statusCode).toBe(401)
+    expect(r.json().code).toBe('totp_required')
+  })
+
+  it('a damaged store fails closed even where the database flag is off (a record without the flag still counts)', async () => {
+    await seedUser()
+    await enableFor()
+    getDb().prepare('UPDATE dashboard_users SET totp_enabled = 0').run()
+    writeFileSync(storeFile, '{not json')
+    const r = await passwordStep()
+    expect(r.res.statusCode).toBe(503)
+    expect(r.res.headers['Set-Cookie']).toBeUndefined()
   })
 
   it('a damaged store fails closed: the right password gets 503, never a session', async () => {

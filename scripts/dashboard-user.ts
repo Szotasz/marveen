@@ -23,7 +23,7 @@
 // or from stdin with --password-stdin for automation. No new dependencies:
 // node:readline for the prompt (src/hidden-prompt.ts), the app's own db + password-hash modules.
 
-import { initDatabase, getDb, createDashboardUser, getDashboardUser, listDashboardUsers, deleteDashboardUser, updateDashboardUserPassword, logConfigChange } from '../src/db.js'
+import { initDatabase, getDb, createDashboardUser, getDashboardUser, listDashboardUsers, deleteDashboardUser, updateDashboardUserPassword, setDashboardUserTotpEnabled, logConfigChange } from '../src/db.js'
 import { hashPassword, assertPasswordPolicy, PasswordPolicyError } from '../src/web/password-hash.js'
 import { revokeAllForUser } from '../src/web/auth-sessions.js'
 import { securityReset } from '../src/web/security-reset.js'
@@ -184,7 +184,17 @@ async function main(): Promise<void> {
         process.stderr.write(`User "${username}" not found.\n`)
         process.exit(1)
       }
-      if (!removeTotpRecord(user.id)) {
+      // The database flag first (Dani 81107 B2: it is what keeps the second factor on when the file is gone), then the
+      // record. With a damaged file the flag is cleared and the file must be repaired or removed by hand.
+      const flagWasOn = user.totp_enabled === 1
+      setDashboardUserTotpEnabled(user.id, false)
+      let recordRemoved = false
+      try {
+        recordRemoved = removeTotpRecord(user.id)
+      } catch {
+        process.stderr.write('The two-step sign-in store (store/.dashboard-totp.json) is damaged: the flag is cleared, now repair or remove that file.\n')
+      }
+      if (!flagWasOn && !recordRemoved) {
         process.stdout.write(`Two-step sign-in was not on for "${username}".\n`)
         break
       }
