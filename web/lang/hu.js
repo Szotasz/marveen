@@ -2730,6 +2730,7 @@ window._i18n.hu = {
   'auth.operator.mint':            'Üzemeltetői kulcs létrehozása',
   'auth.operator.minted_hint':     'Ez a kulcs csak most látható. Lejár: {date}. Az üzemeltető itt lép be vele: {url}',
   'auth.operator.badge':           'Üzemeltető',
+  'auth.messenger.badge':          'Üzenetküldő',
 
   'auth.bridge.title':             'Bridge-párosítás',
   'auth.bridge.desc':              'Illeszd be a Bridge alkalmazásban megjelenő kulcs-sort (ssh-ed25519 ... marveen-remote:...), adj nevet az eszköznek, és a kapott csomagot másold vissza a Bridge-be. Az eszköz saját, külön visszavonható kulcsot kap.',

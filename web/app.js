@@ -18275,6 +18275,7 @@ async function refreshDeviceKeyList() {
       const expires = k.expiresAt ? ` &middot; ${t('auth.devices.expires', { date: new Date(k.expiresAt * 1000).toLocaleDateString() })}` : ''
       const bridge = k.installId ? ` <span class="auth-device-bridge-badge">${t('auth.devices.bridge_badge')}</span>` : ''
         + (k.scope === 'operator' ? ` <span class="auth-device-bridge-badge">${t('auth.operator.badge')}</span>` : '')
+        + (k.scope === 'messenger' ? ` <span class="auth-device-bridge-badge">${t('auth.messenger.badge')}</span>` : '')
       return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
         `<span class="auth-device-name">${escapeHtml(k.name)}${bridge}</span>` +
         `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +

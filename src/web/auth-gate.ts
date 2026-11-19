@@ -36,7 +36,7 @@ import type http from 'node:http'
 import { checkBearerToken } from './dashboard-auth.js'
 import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
-import { resolveDeviceKey, type DeviceKeyScope } from './auth-device-keys.js'
+import { resolveDeviceKey, MESSENGER_ORIGIN_NOTE, type DeviceKeyScope } from './auth-device-keys.js'
 import { OPERATOR_COOKIE_NAME, resolveOperatorSession } from './operator-sessions.js'
 import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { isKnownAgent } from './agent-config.js'
@@ -45,6 +45,7 @@ import { logger } from '../logger.js'
 import { countDashboardUsers, getAgentMessage, getApproval, getDb } from '../db.js'
 import { SETUP_COOKIE_NAME, isSetupSession } from './public-access.js'
 import { readBody, stashPreReadBody, RequestBodyTooLargeError } from './http-helpers.js'
+import { OWNER_NAME, VOICE_CHANNEL_ID, DEFAULT_VOICE_CHANNEL_ID } from '../config.js'
 import { agentVaultMode, isAgentReadableVaultId, readVaultAcl, type AgentVaultMode, type VaultAcl } from './vault-acl.js'
 
 export type AuthResult =
@@ -462,6 +463,8 @@ export function agentScopeDenial(
 export interface IdentityLookups {
   /** to_agent of message <id>, or null when the row does not exist. */
   messageRecipient(id: number): string | null
+  /** MVDKSCOPE917: from_agent and to_agent of message <id>, or null when the row does not exist. */
+  messageParties(id: number): { from: string; to: string } | null
   /** agent_id owning memory <id>, or null when the row does not exist. */
   memoryOwner(id: number): string | null
   /** The agent that may consume approval <id> with its own token: the row's
@@ -472,6 +475,10 @@ export interface IdentityLookups {
 
 export const dbIdentityLookups: IdentityLookups = {
   messageRecipient: (id) => getAgentMessage(id)?.to_agent ?? null,
+  messageParties: (id) => {
+    const row = getAgentMessage(id)
+    return row ? { from: row.from_agent, to: row.to_agent } : null
+  },
   approvalGrantee: (id) => approvalGranteeOf(getApproval(id)),
   memoryOwner: (id) => {
     const row = getDb().prepare('SELECT agent_id FROM memories WHERE id = ?').get(id) as { agent_id: string } | undefined
@@ -633,6 +640,168 @@ function writeIdentityDenial(res: http.ServerResponse, agent: string, mainAgentI
   res.end(JSON.stringify(identityDenialBody(agent, mainAgentId, reason)))
 }
 
+// ---- Messenger device key (MVDKSCOPE917) ------------------------------------------
+//
+// A 'messenger' scoped device key (the voice-robot relay) may send a message as itself to the main agent, marked
+// MESSENGER_ORIGIN_NOTE, and read its own conversation. Nothing else, on ANY path (static files and the paths
+// requiresAuth leaves open included), so a route added later is closed to it without anyone closing it. Exact
+// method (HEAD is not GET), patterns anchored on the RAW url.pathname, and a check on every entry.
+
+/** Fields that change how a row is delivered (urgent, priority, the busy-pane exception, an authorised STOP): a
+ *  messenger key sends none of them, whatever the value. */
+const MESSENGER_REFUSED_FIELDS = ['urgent', 'priority', 'affects_current_work', 'stop_authorized'] as const
+
+export interface MessengerAllowEntry {
+  method: string
+  pattern: RegExp
+  why: string
+  /** The body is read (and stashed for the route) only for an entry that asks for it. */
+  needsBody?: boolean
+  check: (m: RegExpExecArray, ctx: { device: string; mainAgentId: string; url: URL; body: unknown; lookups: IdentityLookups }) => boolean
+}
+
+export const MESSENGER_ALLOWLIST: readonly MessengerAllowEntry[] = [
+  {
+    method: 'POST', pattern: /^\/api\/messages$/, needsBody: true,
+    why: 'send a message as itself, marked hang-robot, to the main agent only, with no delivery-changing field',
+    check: (_m, c) => {
+      const b = c.body
+      if (b === null || typeof b !== 'object' || Array.isArray(b)) return false
+      const o = b as Record<string, unknown>
+      if (o.from !== c.device) return false
+      if (o.origin_note !== MESSENGER_ORIGIN_NOTE) return false
+      if (o.to !== c.mainAgentId) return false
+      if (typeof o.content !== 'string') return false // the length cap below measures a string (review on #2957)
+      return MESSENGER_REFUSED_FIELDS.every((f) => !Object.prototype.hasOwnProperty.call(o, f))
+    },
+  },
+  {
+    method: 'GET', pattern: /^\/api\/messages$/,
+    why: 'its own conversation: exactly one agent parameter, naming itself (without it the route lists the whole fleet)',
+    check: (_m, c) => {
+      const agents = c.url.searchParams.getAll('agent')
+      return agents.length === 1 && agents[0] === c.device
+    },
+  },
+  {
+    method: 'GET', pattern: /^\/api\/messages\/(\d+)$/,
+    why: 'one message it sent or that is addressed to it; a missing row is refused',
+    check: (m, c) => {
+      const parties = c.lookups.messageParties(Number(m[1]))
+      return parties !== null && (parties.from === c.device || parties.to === c.device)
+    },
+  },
+]
+
+/** R1 (review on #2957, Samu's decision 81668): a messenger key sends at most this many messages per rolling hour;
+ *  more is a 429, so a stolen key, or a TV talking in the robot's room, cannot flood the main agent's queue. Per key
+ *  name, in memory (a dashboard restart resets it), counting only POSTs that passed every other check. */
+export const MESSENGER_POSTS_PER_HOUR = 3
+const MESSENGER_RATE_WINDOW_MS = 3_600_000
+/** And at most this many characters (code points) of content per message; longer is a 413 (Samu 81668). */
+export const MESSENGER_MAX_CONTENT_CHARS = 500
+const messengerPostTimes = new Map<string, number[]>()
+/** Tests only: forget every key's window. */
+export function resetMessengerRateLimit(): void { messengerPostTimes.clear() }
+function messengerPostAllowed(device: string, nowMs: number): boolean {
+  const recent = (messengerPostTimes.get(device) ?? []).filter((t) => nowMs - t < MESSENGER_RATE_WINDOW_MS)
+  const allowed = recent.length < MESSENGER_POSTS_PER_HOUR
+  if (allowed) recent.push(nowMs)
+  messengerPostTimes.set(device, recent)
+  return allowed
+}
+
+/** Why a messenger key's name is unusable, or null. A key named like an agent, the owner, the main agent or the
+ *  voice channel id is refused on every request: an agents/<name> directory made later must not turn the key into
+ *  that agent. The mint (routes/auth.ts) refuses these names too. */
+export function messengerNameTaken(name: string, mainAgentId: string): string | null {
+  const id = sanitizeAgentIdent(name)
+  if (id === sanitizeAgentIdent(mainAgentId)) return 'the main agent id'
+  if (isKnownAgent(id)) return 'a fleet agent'
+  if (id === sanitizeAgentIdent(OWNER_NAME)) return "the owner's name"
+  if (id === (VOICE_CHANNEL_ID ?? DEFAULT_VOICE_CHANNEL_ID)) return 'the voice channel id'
+  return null
+}
+
+/** Read the request body once and stash it for the route; null once a 413/400 has been written. */
+async function readAndStashBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<{ buf: Buffer } | null> {
+  let buf: Buffer
+  try {
+    buf = await readBody(req)
+  } catch (err) {
+    const tooLarge = err instanceof RequestBodyTooLargeError
+    res.writeHead(tooLarge ? 413 : 400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: tooLarge ? (err as Error).message : 'request body could not be read' }))
+    return null
+  }
+  stashPreReadBody(req, buf)
+  return { buf }
+}
+
+function parseJsonOrUndefined(buf: Buffer): unknown {
+  if (buf.length === 0) return undefined
+  try { return JSON.parse(buf.toString()) } catch { return undefined }
+}
+
+function writeMessengerDenial(res: http.ServerResponse, device: string, reason: string, method: string, path: string): void {
+  logger.warn({ device, rule: 'device-key-scope', method, path, reason }, 'messenger device key: request refused (403)')
+  res.writeHead(403, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ error: `a messenger device key may not do this: ${reason}`, rule: 'device-key-scope', device }))
+}
+
+/** The messenger key's whole scope. Returns true when the request may proceed, false once a response is written. */
+async function messengerGate(
+  req: http.IncomingMessage, res: http.ServerResponse, url: URL, path: string, method: string,
+  device: string, mainAgentId: string, lookups: IdentityLookups,
+): Promise<boolean> {
+  const taken = messengerNameTaken(device, mainAgentId)
+  if (taken) {
+    writeMessengerDenial(res, device, `the key is named like ${taken}`, method, path)
+    return false
+  }
+  for (const e of MESSENGER_ALLOWLIST) {
+    if (e.method !== method) continue
+    const m = e.pattern.exec(path)
+    if (!m) continue
+    let body: unknown
+    if (e.needsBody) {
+      const read = await readAndStashBody(req, res)
+      if (!read) return false
+      body = parseJsonOrUndefined(read.buf)
+    }
+    let ok: boolean
+    try {
+      ok = e.check(m, { device, mainAgentId, url, body, lookups })
+    } catch (err) {
+      // A lookup failure must not open the door: fail closed.
+      logger.error({ err: (err as Error).message, device, method, path }, 'messenger device key: check failed')
+      ok = false
+    }
+    // The order is the allowlist (403), then the length (413), then the rate (429): a refused or oversized message
+    // never uses up the hour's quota.
+    if (ok && e.method === 'POST') {
+      const content = (body as Record<string, unknown>).content
+      if (typeof content === 'string' && [...content].length > MESSENGER_MAX_CONTENT_CHARS) {
+        logger.warn({ device, rule: 'device-key-content-length', method, path }, 'messenger device key: content too long (413)')
+        res.writeHead(413, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `a messenger device key sends at most ${MESSENGER_MAX_CONTENT_CHARS} characters`, rule: 'device-key-content-length', device }))
+        return false
+      }
+      if (!messengerPostAllowed(device, Date.now())) {
+        logger.warn({ device, rule: 'device-key-rate', method, path }, 'messenger device key: rate limit (429)')
+        res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '3600' })
+        res.end(JSON.stringify({ error: `a messenger device key sends at most ${MESSENGER_POSTS_PER_HOUR} messages an hour`, rule: 'device-key-rate', device }))
+        return false
+      }
+    }
+    if (ok) return true
+    writeMessengerDenial(res, device, `${method} ${path} outside what the key may send or read (${e.why})`, method, path)
+    return false
+  }
+  writeMessengerDenial(res, device, `${method} ${path} is outside the messenger allowlist`, method, path)
+  return false
+}
+
 /**
  * The whole request gate as web.ts runs it: resolve the principal, answer 401
  * for a gated path with no principal (unchanged behaviour), then apply the
@@ -676,6 +845,10 @@ export async function gateRequest(
     res.end(JSON.stringify({ error: 'Unauthorized' }))
     return null
   }
+  // MVDKSCOPE917: a messenger key, on EVERY path (public and static ones included).
+  if (auth.kind === 'device' && auth.scope === 'messenger') {
+    return (await messengerGate(req, res, url, path, method, auth.device, opts.mainAgentId, opts.identityLookups ?? dbIdentityLookups)) ? auth : null
+  }
   if (auth.kind !== 'token' || !auth.tokenAgent) return auth
   // Public paths (auth status, login, avatars, static assets) stay public for
   // every caller; the scope applies to gated paths only.
@@ -692,19 +865,9 @@ export async function gateRequest(
   if (matchingBindings(method, path).length > 0) {
     let body: unknown
     if (identityBindingNeedsBody(method, path)) {
-      let buf: Buffer
-      try {
-        buf = await readBody(req)
-      } catch (err) {
-        const tooLarge = err instanceof RequestBodyTooLargeError
-        res.writeHead(tooLarge ? 413 : 400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: tooLarge ? (err as Error).message : 'request body could not be read' }))
-        return null
-      }
-      stashPreReadBody(req, buf)
-      if (buf.length > 0) {
-        try { body = JSON.parse(buf.toString()) } catch { body = undefined }
-      }
+      const read = await readAndStashBody(req, res)
+      if (!read) return null
+      body = parseJsonOrUndefined(read.buf)
     }
     let reason: string | null
     try {

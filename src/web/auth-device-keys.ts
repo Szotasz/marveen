@@ -35,8 +35,12 @@ const KEY_PREFIX = 'mvdk_'
  * key: the gate lets it reach /api/operator/* only (operator-gate.ts), and it
  * must expire -- an operator key without an end date cannot be minted.
  */
-export type DeviceKeyScope = 'full' | 'operator'
-export const DEVICE_KEY_SCOPES: readonly DeviceKeyScope[] = ['full', 'operator']
+export type DeviceKeyScope = 'full' | 'operator' | 'messenger'
+export const DEVICE_KEY_SCOPES: readonly DeviceKeyScope[] = ['full', 'operator', 'messenger']
+/** MVDKSCOPE917: a 'messenger' key (the voice-robot relay) only sends messages as itself, marked with this
+ *  origin_note, and reads the replies to its own messages (auth-gate.ts MESSENGER_ALLOWLIST). It must expire, with
+ *  the operator key's bounds. */
+export const MESSENGER_ORIGIN_NOTE = 'hang-robot'
 export const OPERATOR_KEY_DEFAULT_EXPIRY_DAYS = 90
 /** An operator key lives at most a year (owner decision 2026-10-05; a full key keeps its own ceiling). */
 export const OPERATOR_KEY_MAX_EXPIRY_DAYS = 365
@@ -75,7 +79,9 @@ interface CachedKey {
 // Fail closed: only the literal 'full' (the column default) is a full key. An
 // unexpected stored value reads as the narrowest scope, never the widest.
 function toScope(value: unknown): DeviceKeyScope {
-  return value === 'full' ? 'full' : 'operator'
+  if (value === 'full') return 'full'
+  if (value === 'messenger') return 'messenger'
+  return 'operator'
 }
 
 const cache = new Map<string, CachedKey>()
@@ -93,11 +99,13 @@ function nowSec(): number {
 // revoked.
 export function createDeviceKey(name: string, opts: { expiresInDays?: number; installId?: string; scope?: DeviceKeyScope } = {}): MintedDeviceKey {
   const scope = opts.scope ?? 'full'
-  if (scope === 'operator' && !(opts.expiresInDays && opts.expiresInDays > 0)) {
-    throw new Error('an operator key must expire')
+  // MVDKSCOPE917: a messenger key expires under the operator key's rule.
+  const mustExpire = scope === 'operator' || scope === 'messenger'
+  if (mustExpire && !(opts.expiresInDays && opts.expiresInDays > 0)) {
+    throw new Error(`an ${scope} key must expire`)
   }
-  if (scope === 'operator' && opts.expiresInDays! > OPERATOR_KEY_MAX_EXPIRY_DAYS) {
-    throw new Error(`an operator key lives at most ${OPERATOR_KEY_MAX_EXPIRY_DAYS} days`)
+  if (mustExpire && opts.expiresInDays! > OPERATOR_KEY_MAX_EXPIRY_DAYS) {
+    throw new Error(`an ${scope} key lives at most ${OPERATOR_KEY_MAX_EXPIRY_DAYS} days`)
   }
   const raw = KEY_PREFIX + randomBytes(32).toString('base64url')
   const keyHash = sha256hex(raw)
