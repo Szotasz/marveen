@@ -10,6 +10,7 @@ import {
   STALE_NUDGE_COOLDOWN_MS,
   MAX_STALE_NUDGES,
   MAX_NUDGES_PER_HOUR,
+  nudgeBatchMs,
   type NudgeState,
 } from '../web/inbox-nudge-watcher.js'
 
@@ -158,5 +159,30 @@ describe('recordNudge', () => {
     const fresh = recordNudge(second, NOW + 800_000, 6)
     expect(fresh.staleNudges).toBe(1)
     expect(fresh.recentNudges).toHaveLength(3)
+  })
+})
+
+describe('INBOX_NUDGE_BATCH_MINUTES -- normal rows wait to be drained together', () => {
+  const normal = { priority: 0, from_agent: 'spirit-lelle', urgent: 0, stop_authorized: 0 }
+
+  it('is off at 0 and on an empty inbox', () => {
+    expect(nudgeBatchMs([normal], 0)).toBe(0)
+    expect(nudgeBatchMs([], 15)).toBe(0)
+  })
+
+  it('holds a normal-only inbox for the window', () => {
+    expect(nudgeBatchMs([normal, normal], 15)).toBe(15 * 60_000)
+  })
+
+  it('any row above normal nudges at once', () => {
+    for (const hi of [{ urgent: 1 }, { stop_authorized: 1 }, { priority: 1 }, { from_agent: 'system' }]) {
+      expect(nudgeBatchMs([normal, { ...normal, ...hi }], 15)).toBe(0)
+    }
+  })
+
+  it('the preflight waits until the oldest row is as old as the window', () => {
+    const w = 15 * 60_000
+    expect(decideNudgePreflight({ now: NOW, oldestId: 1, oldestAgeMs: w - 1, batchMs: w }, st()).proceed).toBe(false)
+    expect(decideNudgePreflight({ now: NOW, oldestId: 1, oldestAgeMs: w, batchMs: w }, st()).proceed).toBe(true)
   })
 })

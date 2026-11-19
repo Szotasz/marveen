@@ -1028,6 +1028,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'INBOX_NUDGE_BATCH_MINUTES',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 120,
+    description: 'A fő ágenst a neki jött, NEM sürgős ügynök-üzenetek csak akkor ébresztik, ha a legrégebbi már ennyi perce vár: addig gyűlnek, és egy körben dolgozza fel őket (kevesebb kör, kevesebb token). A sürgős, a rendszer- és a gazda-üzenet, valamint a magas prioritású sor azonnal ébreszt. A gazda bármely üzenete közben is mindent felvesz. 0 = kikapcsolva (a korábbi viselkedés: kb. 10 másodperc után ébreszt).',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'NOTIFY_SLACK_TARGET',
     type: 'string',
     default: '',
