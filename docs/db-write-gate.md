@@ -71,7 +71,11 @@ runs in.
 There is one exception to "the data stays data": a wrapper written here whose text runs a positional parameter. That
 means `$1`, `"$@"`, `${1}` or `$*` as the command, or after `exec`, `eval`, a shell with its options, `source` or `.`
 (for example `exec sh "$@"`). Its arguments are run positions, so handing it the written file runs that file. A
-wrapper that only reads or prints its argument (`wc -l "$1"`, `echo "$1"`) does not count.
+wrapper that only reads or prints its argument (`wc -l "$1"`, `echo "$1"`) does not count. A braced positional with a
+modifier (`${1:-x}`, `${1-x}`, `${@}`, `${1#p}`) is the same parameter; a length (`${#1}`) is not. A shell function the
+command defines (`f() { ...; }`, `function g { ...; }`) is such a wrapper, its body read as its text. A wrapper that
+runs `"$@"` as the command, handed `sh FILE`, is a shell run of FILE and is judged as `sh FILE` directly; handed
+`sh -c FILE`, it is not.
 
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file

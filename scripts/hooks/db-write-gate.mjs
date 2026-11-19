@@ -1251,7 +1251,9 @@ function namedByUnknownProgram(name, rest, own, names, fns = new Set(), made = n
 // echo/printf), with a positional parameter in a run position ($1, "$@", ${1}, $* as the command, after exec, eval, a
 // shell (its options, -c too), source or .), runs what it is handed: its arguments are run positions too. A later
 // segment that runs such a program (by its name, or as a shell's script word) and hands it the written file runs it.
-const POSITIONAL = String.raw`["']?\$(?:\{[1-9@*]\}|[1-9@*])["']?`
+// F4: a braced form with a modifier (${1:-x}, ${1-x}, ${1:=x}, ${@}, ${1#p}, ${1%s}, ${1/a/b}) is the parameter too
+// (${#1} is its length, not it)
+const POSITIONAL = String.raw`["']?\$(?:\{[1-9@*](?:[-:=?+#%/^,][^}]*)?\}|[1-9@*])["']?`
 const RUNNER_PREFIX = String.raw`(?:(?:exec|eval|command|nohup|builtin)\s+)*(?:(?:\S*\/)?(?:ba|z|da|k)?sh(?:\s+-[A-Za-z]+)*\s+|source\s+|\.\s+)?`
 const POSITIONAL_RUN_RX = new RegExp(String.raw`(?:^|[;&|\n(]|\bthen\b|\bdo\b|\belse\b)\s*${RUNNER_PREFIX}${POSITIONAL}(?=\s|$|[;&|)])`, 'm')
 export function textRunsPositional(text) {
@@ -1262,9 +1264,22 @@ export function textRunsPositional(text) {
 // extracted function, which `sh redact.sh` itself passes).
 const SHELL_POSITIONAL_RUN_RX = new RegExp(String.raw`(?:^|[;&|\n(]|\bthen\b|\bdo\b|\belse\b)\s*(?:(?:exec|command|nohup|builtin)\s+)*(?:(?:\S*\/)?(?:ba|z|da|k)?sh(?:\s+-(?![A-Za-z]*c)[A-Za-z]+)*|source|\.)\s+${POSITIONAL}(?=\s|$|[;&|)])`, 'm')
 const WRAPPER_SHELL_RX = /^(?:\S*\/)?(?:(?:ba|z|da|k)?sh|source|\.)$/
-/** The wrapper a segment's words run and the arguments it gets, with the text this command wrote into it; null when
- *  the program is not a file an earlier segment wrote with a readable text. */
+// F4: "$@" / $* (any form) as the command word: the wrapper runs its arguments as a command
+const RUNS_ALL_ARGS_RX = new RegExp(String.raw`(?:^|[;&|\n(]|\bthen\b|\bdo\b|\belse\b)\s*(?:(?:exec|command|nohup|builtin)\s+)*["']?\$(?:\{[@*]\}|[@*])["']?(?=\s|$|[;&|)])`, 'm')
+/** F4: the shell functions the command defines (f() { ...; } and function f { ...; }), name -> body. The segmenter
+ *  splits a definition at its separators, so the bodies are read over the segments joined by line breaks. */
+function fnBodiesOf(segs) {
+  const text = segs.map((x) => x.own).join('\n')
+  const out = new Map()
+  // the body runs to the closing brace the segmenter leaves on a line of its own (a ${1:-x} inside holds a brace too)
+  for (const m of text.matchAll(/(?:^|[;&|{(\s])(?:function\s+([A-Za-z_][\w-]*)\s*(?:\(\s*\))?|([A-Za-z_][\w-]*)\s*\(\s*\))\s*\{([\s\S]*?)\n\s*\}(?=\s*(?:\n|$))/g)) out.set(m[1] ?? m[2], m[3])
+  return out
+}
+/** The wrapper a segment's words run and the arguments it gets, with the text this command wrote into it (a file an
+ *  earlier segment wrote, or F4: a shell function the command defines); null when there is none. */
 function hereWrittenWrapper(segs, j, vals) {
+  const body = fnBodiesOf(segs).get(vals[0])
+  if (body !== undefined) return { args: vals.slice(1), text: body, viaShell: false, fn: true }
   // the program word: the command itself, or a shell's / source's script word
   let at = 0
   if (WRAPPER_SHELL_RX.test(vals[0])) {
@@ -1291,8 +1306,14 @@ function wrapperShellRunsTarget(segs, j, vals, targets) {
   const w = hereWrittenWrapper(segs, j, vals)
   if (!w || !w.args.some((v) => targets.includes(v))) return false
   const line = w.text.split('\n', 1)[0]
-  if (!w.viaShell && line.startsWith('#!') && !SHELL_SHEBANG.test(line)) return false
-  return SHELL_POSITIONAL_RUN_RX.test(w.text)
+  if (!w.fn && !w.viaShell && line.startsWith('#!') && !SHELL_SHEBANG.test(line)) return false
+  if (SHELL_POSITIONAL_RUN_RX.test(w.text)) return true
+  // F4: a wrapper that runs "$@" as the command, handed `sh FILE`: the shell runs FILE, as `sh FILE` directly would
+  if (RUNS_ALL_ARGS_RX.test(w.text) && SYSTEM_SHELL_RX.test(w.args[0] ?? '')) {
+    const script = w.args.slice(1).find((v) => !v.startsWith('-'))
+    return script !== undefined && targets.includes(script) && !w.args.slice(1).some((v) => /^-[A-Za-z]*c[A-Za-z]*$/.test(v))
+  }
+  return false
 }
 
 export function madeFileParts(segs, upto) {
