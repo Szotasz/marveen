@@ -78,7 +78,10 @@ runs `"$@"` as the command, handed `sh FILE`, is a shell run of FILE and is judg
 `sh -c FILE`, it is not. The braced form may also be two digits (`${10}`) or hold one nested expansion
 (`${1:-${2}}`). A function that hands a positional argument to another function the command defines runs what that
 function runs (`g() { "$@"; }; f() { g "$@"; }`). A shell option that takes an argument (`-o NAME`, `+o NAME`,
-`-O NAME`, `+O NAME`) is not the script word, so `sh -o errexit FILE` runs FILE, as `sh FILE` does.
+`-O NAME`, `+O NAME`) is not the script word, so `sh -o errexit FILE` runs FILE, as `sh FILE` does. A braced
+positional is read however deep its modifier nests (`${1:-${2:-${3}}}`), and a function chain has no depth limit.
+bash's `--rcfile RC` and `--init-file RC` take an argument, so the next word is the script; the rc file they name is a
+run too (an interactive shell runs it).
 
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file

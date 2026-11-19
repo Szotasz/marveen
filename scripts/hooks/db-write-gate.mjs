@@ -1261,10 +1261,31 @@ function namedByUnknownProgram(name, rest, own, names, fns = new Set(), made = n
 // F4 reading ([^}]* up to the first brace) stays as an alternative, so nothing it read is lost. A shell's option may
 // start with + (+x), and an option cluster ending in o or O takes a plain word as its argument (-o errexit, +O extglob).
 const POSITIONAL = String.raw`["']?\$(?:\{(?:[1-9][0-9]*|[@*])(?:[-:=?+#%/^,](?:[^{}]|\{[^{}]*\})*|[-:=?+#%/^,][^}]*)?\}|[1-9@*])["']?`
-const RUNNER_PREFIX = String.raw`(?:(?:exec|eval|command|nohup|builtin)\s+)*(?:(?:\S*\/)?(?:ba|z|da|k)?sh(?:\s+[-+][A-Za-z]*[oO]\s+[A-Za-z_][\w-]*|\s+[-+][A-Za-z]+)*\s+|source\s+|\.\s+)?`
+const RUNNER_PREFIX = String.raw`(?:(?:exec|eval|command|nohup|builtin)\s+)*(?:(?:\S*\/)?(?:ba|z|da|k)?sh(?:\s+--(?:rcfile|init-file)(?:\s+|=)\S+|\s+--[A-Za-z][\w-]*|\s+[-+][A-Za-z]*[oO]\s+[A-Za-z_][\w-]*|\s+[-+][A-Za-z]+)*\s+|source\s+|\.\s+)?`
 const POSITIONAL_RUN_RX = new RegExp(String.raw`(?:^|[;&|\n(]|\bthen\b|\bdo\b|\belse\b)\s*${RUNNER_PREFIX}${POSITIONAL}(?=\s|$|[;&|)])`, 'm')
 export function textRunsPositional(text) {
-  return POSITIONAL_RUN_RX.test(String(text))
+  return POSITIONAL_RUN_RX.test(flatPositionals(String(text)))
+}
+/** F6: every balanced ${N...} / ${@...} / ${*...} (N one or more digits), at any nesting depth, read as ${N}: the
+ *  regexes then see the parameter however deep its modifier nests. An unbalanced one is left as it is, so nothing the
+ *  regexes read before is lost. */
+export function flatPositionals(text) {
+  let out = ''
+  let i = 0
+  while (i < text.length) {
+    const m = /^\$\{([1-9][0-9]*|[@*])(?=[^}])/.exec(text.slice(i, i + 24))
+    if (!m) { out += text[i]; i++; continue }
+    let depth = 0
+    let j = i + 1
+    for (; j < text.length; j++) {
+      if (text[j] === '{') depth++
+      else if (text[j] === '}' && --depth === 0) break
+    }
+    if (j >= text.length) { out += text[i]; i++; continue }
+    out += '${' + m[1] + '}'
+    i = j + 1
+  }
+  return out
 }
 // ...and when the wrapper hands it to a shell (sh "$1", . "$1", source, exec sh "$@"; never a shell's -c), that run is
 // a shell run of the file, judged as running it directly with sh would be (the fleet meter: a wrapper sourcing an
@@ -1281,19 +1302,25 @@ function fnBodiesOf(segs) {
   // the body runs to the closing brace the segmenter leaves on a line of its own (a ${1:-x} inside holds a brace too)
   for (const m of text.matchAll(/(?:^|[;&|{(\s])(?:function\s+([A-Za-z_][\w-]*)\s*(?:\(\s*\))?|([A-Za-z_][\w-]*)\s*\(\s*\))\s*\{([\s\S]*?)\n\s*\}(?=\s*(?:\n|$))/g)) out.set(m[1] ?? m[2], m[3])
   // F5: a body that hands a positional argument to another defined function runs what that function runs: its text
-  // takes that function's text too (followed to a depth of 4; a function already on the path is not read again)
+  // takes that function's text too. F6: every function it reaches that way, with no depth ceiling (a breadth-first
+  // walk over the call graph; a function is read once, so a cycle ends). Bodies are read with flatPositionals.
+  for (const [name, body] of out) out.set(name, flatPositionals(body))
   const callsWithPositional = (body, g) => new RegExp(String.raw`(?:^|[;&|\n({]|\bthen\b|\bdo\b|\belse\b)\s*(?:(?:exec|command|nohup|builtin)\s+)*${escapeRx(g)}(?=\s)[^\n;&|]*?${POSITIONAL}`, 'm').test(body)
-  const expand = (name, path) => {
-    let text = out.get(name) ?? ''
-    if (path.length >= 4) return text
-    for (const g of out.keys()) {
-      if (path.includes(g) || g === name || !callsWithPositional(out.get(name) ?? '', g)) continue
-      text += '\n' + expand(g, [...path, name])
-    }
-    return text
-  }
+  const calls = new Map([...out.keys()].map((f) => [f, [...out.keys()].filter((g) => g !== f && callsWithPositional(out.get(f), g))]))
   const expanded = new Map()
-  for (const name of out.keys()) expanded.set(name, expand(name, []))
+  for (const name of out.keys()) {
+    const seen = new Set([name])
+    const queue = [...calls.get(name)]
+    let text = out.get(name)
+    while (queue.length) {
+      const g = queue.shift()
+      if (seen.has(g)) continue
+      seen.add(g)
+      text += '\n' + out.get(g)
+      queue.push(...calls.get(g))
+    }
+    expanded.set(name, text)
+  }
   return expanded
 }
 /** The wrapper a segment's words run and the arguments it gets, with the text this command wrote into it (a file an
@@ -1320,7 +1347,7 @@ function hereWrittenWrapper(segs, j, vals) {
       const ws = shellWords(segs[i].own)
       if (!ws || !(ws.redirects ?? []).some((r) => lastPart(r.value) === prog)) continue
       const writer = lastPart(unwrapRun(ws).rest[0]?.value ?? '')
-      return { args: vals.slice(at + 1), text: scriptTextOf(segs[i].own, segs[i].bodies ?? [], writer), viaShell: at > 0 }
+      return { args: vals.slice(at + 1), text: flatPositionals(scriptTextOf(segs[i].own, segs[i].bodies ?? [], writer)), viaShell: at > 0 }
     }
   }
   return null
