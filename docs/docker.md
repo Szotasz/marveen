@@ -18,10 +18,6 @@ Marveen runs as a single container with Docker Compose, with Ollama next to it f
 
 ## Start
 
-<!-- DOCKERGUIDEBUILD1108 / DOCKERUX1118: this step needs the published image. Until MARVEEN_PUBLISH_IMAGE is on, the
-     pull is denied; since DOCKERUX1118 the compose file has no build:, so "docker compose up -d" stops there with
-     "error from registry: denied" (measured) instead of building on the server silently (Geri 33317). Publishing the
-     image is the owner's decision. -->
 ```bash
 git clone -b main https://github.com/Szotasz/marveen.git
 cd marveen
@@ -29,16 +25,21 @@ docker compose up -d
 docker compose logs marveen      # prints the dashboard link once it is up
 ```
 
-`-b main` takes the released version; without it, `git clone` takes the development branch.
+`-b main` takes the released version: the guide and the compose file of the last release, which can be older than the page you are reading. Without it, `git clone` takes the development branch.
 
-If the start stops with `error from registry: denied`, the image of this version cannot be downloaded: see [Build the image yourself](#build-the-image-yourself).
+If the start stops with an error from the registry, the image cannot be downloaded:
+
+- `not found`: no image has the tag you asked for. Image tags are plain versions, without a `v` (`1.50.0`, not `v1.50.0`); see `MARVEEN_VERSION` below.
+- `denied`: the image cannot be downloaded from here (no access to it).
+
+In both cases nothing is created. You can also [build the image yourself](#build-the-image-yourself).
 
 **Choosing the channel and other settings:** the channel is chosen **before** the first start, with `MARVEEN_CHANNEL=telegram|discord|slack` in a `.env` file next to `docker-compose.yml` or in your shell. It is fixed for this install. Other optional settings:
 
 - `MARVEEN_AGENT_ID`: the main agent's id, default `marveen`; also fixed.
 - `MARVEEN_LANG`: `en` or `hu`.
 - `TZ`: e.g. `Europe/Budapest`.
-- `MARVEEN_VERSION`: the image tag, default `latest`.
+- `MARVEEN_VERSION`: the image tag, default `latest`. A release's tag is its version without a `v`, e.g. `1.50.0`.
 
 ## Open the dashboard
 
