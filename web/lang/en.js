@@ -2728,6 +2728,7 @@ window._i18n.en = {
   'auth.operator.mint':            'Create operator key',
   'auth.operator.minted_hint':     'This key is shown only now. Expires: {date}. The operator signs in here: {url}',
   'auth.operator.badge':           'Operator',
+  'auth.messenger.badge':          'Messenger',
 
   'auth.bridge.title':             'Bridge pairing',
   'auth.bridge.desc':              'Paste the key line shown by the Bridge app (ssh-ed25519 ... marveen-remote:...), name the device, then copy the returned bundle back into the Bridge. The device gets its own, individually revocable key.',
