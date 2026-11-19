@@ -6,7 +6,7 @@
 // The HTTP half drives the exact gate web.ts runs (gateRequest) in front of the real route handlers, over a real
 // socket, like agent-tokens-scope.test.ts.
 
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
@@ -33,7 +33,9 @@ process.env.NODE_ENV = 'test'
 
 const { initDatabase, createAgentMessage, getDb } = await import('../db.js')
 const { MAIN_AGENT_ID, PROJECT_ROOT, VOICE_CHANNEL_ID } = await import('../config.js')
-const { gateRequest, messengerNameTaken, MESSENGER_ALLOWLIST, MESSENGER_POSTS_PER_MINUTE, resetMessengerRateLimit } = await import('../web/auth-gate.js')
+const { gateRequest, messengerNameTaken, MESSENGER_ALLOWLIST, MESSENGER_POSTS_PER_HOUR, MESSENGER_MAX_CONTENT_CHARS, resetMessengerRateLimit } = await import('../web/auth-gate.js')
+// Every test starts with an empty hourly quota (several tests send valid messages with the same key).
+beforeEach(() => { resetMessengerRateLimit() })
 const { createDeviceKey, resolveDeviceKey, getDeviceKey, _clearDeviceKeyCacheForTest, MESSENGER_ORIGIN_NOTE } = await import('../web/auth-device-keys.js')
 const { operatorGateDecision } = await import('../web/operator-gate.js')
 const { tryHandleAuth } = await import('../web/routes/auth.js')
@@ -370,35 +372,52 @@ async function gateRaw(method: string, pathAndQuery: string, headers: Record<str
   return out
 }
 
-// R1 (review on #2957): a per-key cap on POSTs, so a stolen key or a TV in the room cannot flood the main agent.
-describe('the messenger POST rate limit', () => {
-  it('the limit is ten a minute: the eleventh POST is a 429, another key is unaffected, and the window frees up', async () => {
-    expect(MESSENGER_POSTS_PER_MINUTE).toBe(10)
-    resetMessengerRateLimit()
+// R1 (review on #2957, Samu 81668): at most 3 messages an hour per key (the 4th is a 429) and at most 500 characters
+// (longer is a 413), so a stolen key or a TV in the room cannot flood the main agent.
+describe('the messenger POST limits', () => {
+  const keyFor = (name: string) => createDeviceKey(name, { scope: 'messenger', expiresInDays: 30 }).key
+  const post = (k: string, from: string, content = 'szia') => gateRaw('POST', '/api/messages', { authorization: `Bearer ${k}`, 'content-type': 'application/json' },
+    { from, to: MAIN_AGENT_ID, content, origin_note: MESSENGER_ORIGIN_NOTE })
+
+  it('three an hour: the 3rd still passes, the 4th is a 429, another key is unaffected, reads are not limited, and the hour frees up', async () => {
+    expect(MESSENGER_POSTS_PER_HOUR).toBe(3)
     const a = `${ROBOT}-rate-a`, b = `${ROBOT}-rate-b`
-    const ka = createDeviceKey(a, { scope: 'messenger', expiresInDays: 30 }).key
-    const kb = createDeviceKey(b, { scope: 'messenger', expiresInDays: 30 }).key
-    const post = (k: string, from: string) => gateRaw('POST', '/api/messages', { authorization: `Bearer ${k}`, 'content-type': 'application/json' },
-      { from, to: MAIN_AGENT_ID, content: 'szia', origin_note: MESSENGER_ORIGIN_NOTE })
+    const ka = keyFor(a), kb = keyFor(b)
     const base = Date.now() // the keys expire in 30 days: the fake clock stays inside that
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
       vi.setSystemTime(base)
-      for (let i = 0; i < 10; i++) expect((await post(ka, a)).status).toBe(200)
+      expect((await post(ka, a)).status).toBe(200)
+      expect((await post(ka, a)).status).toBe(200)
+      expect((await post(ka, a)).status).toBe(200) // negative control: the 3rd still passes
       const over = await post(ka, a)
       expect(over.status).toBe(429)
       expect(over.body.rule).toBe('device-key-rate')
-      // a refused POST (wrong from) is a 403 and does not count; the other key has its own window
+      // a refused POST (wrong from) is a 403 and uses nothing; the other key has its own quota
       expect((await post(kb, a)).status).toBe(403)
       expect((await post(kb, b)).status).toBe(200)
-      // reads are not limited
       expect((await gateRaw('GET', `/api/messages?agent=${a}`, { authorization: `Bearer ${ka}` })).status).toBe(200)
-      vi.setSystemTime(base + 60_001)
+      vi.setSystemTime(base + 3_599_000)
+      expect((await post(ka, a)).status).toBe(429) // still inside the hour
+      vi.setSystemTime(base + 3_600_001)
       expect((await post(ka, a)).status).toBe(200)
     } finally {
       vi.useRealTimers()
-      resetMessengerRateLimit()
     }
+  })
+
+  it('500 characters pass, 501 are a 413, counted in characters (not bytes), and an oversized message uses no quota', async () => {
+    expect(MESSENGER_MAX_CONTENT_CHARS).toBe(500)
+    const c = `${ROBOT}-len`
+    const kc = keyFor(c)
+    expect((await post(kc, c, 'é'.repeat(500))).status).toBe(200) // 1000 bytes, 500 characters
+    const long = await post(kc, c, 'a'.repeat(501))
+    expect(long.status).toBe(413)
+    expect(long.body.rule).toBe('device-key-content-length')
+    for (let i = 0; i < 5; i++) expect((await post(kc, c, 'x'.repeat(600))).status).toBe(413)
+    expect((await post(kc, c)).status).toBe(200) // 2nd of 3: the five 413s used nothing
+    expect((await post(kc, c)).status).toBe(200)
+    expect((await post(kc, c)).status).toBe(429)
   })
 })
 

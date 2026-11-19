@@ -692,16 +692,19 @@ export const MESSENGER_ALLOWLIST: readonly MessengerAllowEntry[] = [
   },
 ]
 
-/** R1 (review on #2957): a messenger key sends at most this many messages per rolling minute; more is a 429, so a
- *  stolen key, or a TV talking in the robot's room, cannot flood the main agent's queue. Per key name, in memory (a
- *  dashboard restart resets it), counting only POSTs that passed every other check. */
-export const MESSENGER_POSTS_PER_MINUTE = 10
+/** R1 (review on #2957, Samu's decision 81668): a messenger key sends at most this many messages per rolling hour;
+ *  more is a 429, so a stolen key, or a TV talking in the robot's room, cannot flood the main agent's queue. Per key
+ *  name, in memory (a dashboard restart resets it), counting only POSTs that passed every other check. */
+export const MESSENGER_POSTS_PER_HOUR = 3
+const MESSENGER_RATE_WINDOW_MS = 3_600_000
+/** And at most this many characters (code points) of content per message; longer is a 413 (Samu 81668). */
+export const MESSENGER_MAX_CONTENT_CHARS = 500
 const messengerPostTimes = new Map<string, number[]>()
 /** Tests only: forget every key's window. */
 export function resetMessengerRateLimit(): void { messengerPostTimes.clear() }
 function messengerPostAllowed(device: string, nowMs: number): boolean {
-  const recent = (messengerPostTimes.get(device) ?? []).filter((t) => nowMs - t < 60_000)
-  const allowed = recent.length < MESSENGER_POSTS_PER_MINUTE
+  const recent = (messengerPostTimes.get(device) ?? []).filter((t) => nowMs - t < MESSENGER_RATE_WINDOW_MS)
+  const allowed = recent.length < MESSENGER_POSTS_PER_HOUR
   if (allowed) recent.push(nowMs)
   messengerPostTimes.set(device, recent)
   return allowed
@@ -773,11 +776,22 @@ async function messengerGate(
       logger.error({ err: (err as Error).message, device, method, path }, 'messenger device key: check failed')
       ok = false
     }
-    if (ok && e.method === 'POST' && !messengerPostAllowed(device, Date.now())) {
-      logger.warn({ device, rule: 'device-key-rate', method, path }, 'messenger device key: rate limit (429)')
-      res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '60' })
-      res.end(JSON.stringify({ error: `a messenger device key sends at most ${MESSENGER_POSTS_PER_MINUTE} messages a minute`, rule: 'device-key-rate', device }))
-      return false
+    // The order is the allowlist (403), then the length (413), then the rate (429): a refused or oversized message
+    // never uses up the hour's quota.
+    if (ok && e.method === 'POST') {
+      const content = (body as Record<string, unknown>).content
+      if (typeof content === 'string' && [...content].length > MESSENGER_MAX_CONTENT_CHARS) {
+        logger.warn({ device, rule: 'device-key-content-length', method, path }, 'messenger device key: content too long (413)')
+        res.writeHead(413, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `a messenger device key sends at most ${MESSENGER_MAX_CONTENT_CHARS} characters`, rule: 'device-key-content-length', device }))
+        return false
+      }
+      if (!messengerPostAllowed(device, Date.now())) {
+        logger.warn({ device, rule: 'device-key-rate', method, path }, 'messenger device key: rate limit (429)')
+        res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '3600' })
+        res.end(JSON.stringify({ error: `a messenger device key sends at most ${MESSENGER_POSTS_PER_HOUR} messages an hour`, rule: 'device-key-rate', device }))
+        return false
+      }
     }
     if (ok) return true
     writeMessengerDenial(res, device, `${method} ${path} outside what the key may send or read (${e.why})`, method, path)
