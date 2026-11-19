@@ -8027,6 +8027,94 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
   `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
 }
 
+// AGENTCREATEPR1-1119: the channel-independent decision core. A channel adapter (Slack, the Teams card, later more)
+// verifies on its own who decided, where and on which message, without any agent in the chain; the core then records
+// the decision with the same rules for every channel. The adapters keep their own decision rows (approval_slack_posts,
+// approval_teams_cards) and close them in the same transaction as the core's write.
+
+/** What a channel adapter verified about one decision. */
+export interface ApprovalEvidence {
+  /** The channel whose adapter verified the decision: 'slack', 'teams', ... */
+  channel: string
+  /** How the owner decided there ('reaction', 'reply', 'card'), or the refusal mode that turned it into a rejection. */
+  mode: string
+  /**
+   * The verified ids the audit names in resolved_by, in order (the owner's user id, the deciding message, a refusal
+   * reason). A channel with its own decision row (the Teams card) keeps its ids there and passes none.
+   */
+  trail?: readonly string[]
+}
+
+/** The audit value of a decision: `<channel>_<mode>` and then the trail, colon separated. */
+export function approvalResolvedBy(e: ApprovalEvidence): string {
+  return [`${e.channel}_${e.mode}`, ...(e.trail ?? [])].join(':')
+}
+
+export type ApprovalDecideOutcome = 'decided' | 'not_pending' | 'content_changed' | 'expired'
+
+/**
+ * The core's one write, run INSIDE the caller's transaction. In this order: the request must be pending; when the
+ * adapter showed the owner a content hash, the request must still carry exactly that hash; an approval must come before
+ * the timeout (a rejection may land after it). Only then is the request resolved, and the UPDATE repeats every condition.
+ */
+function decideApprovalInTx(p: {
+  approvalId: string; status: 'approved' | 'rejected'; resolvedBy: string; expectedContentHash?: string | null; now: number
+}): ApprovalDecideOutcome {
+  const before = db.prepare('SELECT status, content_hash, timeout_at FROM approvals WHERE id = ?').get(p.approvalId) as
+    Pick<Approval, 'status' | 'content_hash' | 'timeout_at'> | undefined
+  if (!before || before.status !== 'pending') return 'not_pending'
+  const checksHash = p.expectedContentHash !== undefined
+  if (checksHash && before.content_hash !== p.expectedContentHash) return 'content_changed'
+  if (p.status === 'approved' && before.timeout_at != null && before.timeout_at <= p.now) return 'expired'
+  const changed = db.prepare(`
+    UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?
+    WHERE id = ? AND status = 'pending' AND (? = 0 OR content_hash IS ?) AND (? = 'rejected' OR timeout_at IS NULL OR timeout_at > ?)
+  `).run(p.status, p.now, p.resolvedBy, p.approvalId, checksHash ? 1 : 0, p.expectedContentHash ?? null, p.status, p.now).changes > 0
+  return changed ? 'decided' : 'not_pending'
+}
+
+/**
+ * A category's consumer: what runs after an approval of that category is decided as approved (PR-2: agent_create). It
+ * runs after the transaction committed, at most once per decision; a throw is logged and never undoes the decision.
+ * No category registers one yet: email_send's consumer is still the 30-minute send window on the send path.
+ */
+export type ApprovalConsumer = (approval: Approval) => void
+const approvalConsumers = new Map<string, ApprovalConsumer>()
+
+export function registerApprovalConsumer(category: string, consumer: ApprovalConsumer): void {
+  if (approvalConsumers.has(category)) throw new Error(`approval consumer already registered: ${category}`)
+  approvalConsumers.set(category, consumer)
+}
+
+/** Call only for a decision the core recorded ('decided'); runs the consumer of an approved request's category. */
+function runApprovalConsumer(approvalId: string): void {
+  const approval = getApproval(approvalId)
+  if (!approval || approval.status !== 'approved') return
+  const consumer = approvalConsumers.get(approval.category)
+  if (!consumer) return
+  try {
+    consumer(approval)
+  } catch (err) {
+    logger.error({ approvalId, category: approval.category, err: err instanceof Error ? err.message : String(err) }, 'approval consumer failed; the decision stands')
+  }
+}
+
+/**
+ * One decision from a channel adapter that has no decision row of its own, in one transaction, then the category's
+ * consumer. The Slack and Teams adapters call the same core inside their own transactions (decideApprovalFromSlack,
+ * decideApprovalFromTeams).
+ */
+export function decideApproval(p: {
+  approvalId: string; status: 'approved' | 'rejected'; evidence: ApprovalEvidence; expectedContentHash?: string | null
+}): { outcome: ApprovalDecideOutcome; approval: Approval | undefined } {
+  const outcome = db.transaction(() => decideApprovalInTx({
+    approvalId: p.approvalId, status: p.status, resolvedBy: approvalResolvedBy(p.evidence),
+    expectedContentHash: p.expectedContentHash, now: Math.floor(Date.now() / 1000),
+  }))()
+  if (outcome === 'decided') runApprovalConsumer(p.approvalId)
+  return { outcome, approval: getApproval(p.approvalId) }
+}
+
 // APPROVALSLACK1030 (2): the posted request (approval_slack_posts).
 export interface ApprovalSlackPostRow {
   approval_id: string
@@ -8101,23 +8189,24 @@ export function decideApprovalFromSlack(p: {
   decidedByTs?: string | null; binding?: string | null
 }): { outcome: SlackDecisionOutcome; changed: boolean } {
   const now = Math.floor(Date.now() / 1000)
+  let res: { outcome: SlackDecisionOutcome; changed: boolean }
   try {
-    return db.transaction(() => {
+    res = db.transaction(() => {
       const closed = db.prepare(`
         UPDATE approval_slack_posts SET decided_at = ?, decision = ?, decided_by_ts = ?, binding = ?
         WHERE approval_id = ? AND decided_at IS NULL
       `).run(now, p.decision, p.decidedByTs ?? null, p.binding ?? null, p.approvalId).changes > 0
       if (!closed) return { outcome: 'already_decided' as const, changed: false }
-      const changed = db.prepare(`
-        UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?
-        WHERE id = ? AND status = 'pending' AND (? = 'rejected' OR timeout_at IS NULL OR timeout_at > ?)
-      `).run(p.status, now, p.resolvedBy, p.approvalId, p.status, now).changes > 0
-      return { outcome: 'recorded' as const, changed }
+      // The Slack post binds the message text (checked before this call), not the request's content_hash: no hash here.
+      const core = decideApprovalInTx({ approvalId: p.approvalId, status: p.status, resolvedBy: p.resolvedBy, now })
+      return { outcome: 'recorded' as const, changed: core === 'decided' }
     })()
   } catch (err) {
     if (err instanceof Error && /UNIQUE constraint failed/.test(err.message)) return { outcome: 'reply_already_used', changed: false }
     throw err
   }
+  if (res.changed) runApprovalConsumer(p.approvalId)
+  return res
 }
 
 // TEAMSAPPROVECARD1118: the Teams approval card rows (see the table's comment).
@@ -8163,28 +8252,22 @@ export function decideApprovalFromTeams(p: {
   approvalId: string; status: 'approved' | 'rejected'; activityId: string; ownerAad: string
 }): { outcome: TeamsCardDecisionOutcome; approval: Approval | undefined } {
   const now = Math.floor(Date.now() / 1000)
-  return db.transaction(() => {
+  const res = db.transaction(() => {
     const card = db.prepare('SELECT content_hash FROM approval_teams_cards WHERE approval_id = ? AND decided_at IS NULL').get(p.approvalId) as { content_hash: string } | undefined
-    const before = db.prepare('SELECT * FROM approvals WHERE id = ?').get(p.approvalId) as Approval | undefined
-    if (!card) return { outcome: 'card_already_used' as const, approval: before }
-    let outcome: TeamsCardDecisionOutcome
-    if (!before || before.status !== 'pending') outcome = 'not_pending'
-    else if (before.content_hash !== card.content_hash) outcome = 'content_changed'
-    else if (p.status === 'approved' && before.timeout_at != null && before.timeout_at <= now) outcome = 'expired'
-    else outcome = 'decided'
+    if (!card) return { outcome: 'card_already_used' as const, approval: getApproval(p.approvalId) }
+    // The card showed the owner this content_hash: the core decides only while the request still carries it.
+    const outcome: TeamsCardDecisionOutcome = decideApprovalInTx({
+      approvalId: p.approvalId, status: p.status, resolvedBy: approvalResolvedBy({ channel: 'teams', mode: 'card' }),
+      expectedContentHash: card.content_hash, now,
+    })
     db.prepare(`
       UPDATE approval_teams_cards SET decided_at = ?, decision = ?, decided_activity_id = ?, decided_by_aad = ?
       WHERE approval_id = ? AND decided_at IS NULL
     `).run(now, outcome === 'decided' ? p.status : `${p.status}:${outcome}`, p.activityId, p.ownerAad, p.approvalId)
-    if (outcome === 'decided') {
-      db.prepare(`
-        UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = 'teams_card'
-        WHERE id = ? AND status = 'pending' AND content_hash = ? AND (? = 'rejected' OR timeout_at IS NULL OR timeout_at > ?)
-      `).run(p.status, now, p.approvalId, card.content_hash, p.status, now)
-    }
-    const after = db.prepare('SELECT * FROM approvals WHERE id = ?').get(p.approvalId) as Approval | undefined
-    return { outcome, approval: after }
+    return { outcome, approval: getApproval(p.approvalId) }
   })()
+  if (res.outcome === 'decided') runApprovalConsumer(p.approvalId)
+  return res
 }
 
 // The CREATE path stamps the owner-notification message id onto the row
