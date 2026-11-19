@@ -1281,6 +1281,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    // TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS (owner request, 2026-11-08): a tap on a button of an old question
+    // delivers nothing. Baked into the plugin source by scripts/patch-telegram-plugin.py at the channel start.
+    key: 'TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 8760,
+    description: 'Válasz-gombok lejárata órában. Ha be van állítva (például 24), egy ennél régebbi kérdés gombjára koppintás nem jut el az ügynökhöz: a felugró üzenet azt kéri, hogy a választ írd be, és a kérdés gombjai helyére egyetlen „⏱ Lejárt, írd be a választ” gomb kerül. A kor a kérdés elküldési idejétől számít, így a plugin újraindítása után is érvényes. 0 = a gombok nem járnak le (a mai működés). A beállítást a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: 0. A módosítás a csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     // DCEXT1111: Marveen's version of the Discord plugin (vendor/discord-plugin) over the official one. Off puts the
     // official file back, and with it the official permission relay that asks EVERY paired DM: a loosening.
     key: 'DISCORD_PLUGIN_EXT',
