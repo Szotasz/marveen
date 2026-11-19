@@ -325,6 +325,24 @@
    "file": "bv_read.py",
    "expected": false,
    "body": "import requests\nprint(requests.get('https://api.brevo.com/v3/account', headers=h).json())\n"
+  },
+  {
+   "name": "a Graph send in a national cloud, python requests",
+   "file": "gnat.py",
+   "expected": true,
+   "body": "import requests\nrequests.post('https://graph.microsoft.us/v1.0/me/sendMail', json=msg, headers=h)\n"
+  },
+  {
+   "name": "a Graph reply in another national cloud, node fetch",
+   "file": "gcn.mjs",
+   "expected": true,
+   "body": "await fetch('https://microsoftgraph.chinacloudapi.cn/v1.0/users/' + uid + '/messages/' + mid + '/reply', { method: 'POST', body })\n"
+  },
+  {
+   "name": "a Graph read in a national cloud",
+   "file": "gnatread.py",
+   "expected": false,
+   "body": "import requests\nrequests.get('https://graph.microsoft.us/v1.0/me/messages', headers=h)\n"
   }
  ],
  "inline_comment": "MAILCURLSEND1118: an HTTP mail API send written inline on the command line (curl, wget, httpie, xh) is judged like the same send in a script. Each `inline` cmd runs through is_send_invocation / isSendInvocation in both twins' tests (scripts/__tests__/mail-api-send-cases.test.py, src/__tests__/mail-api-send-cases.test.ts). On a literal mail-only API host (normalised host and path) only a known read passes (GET or HEAD without a body on that provider's API path); Graph, which is not mail-only, sends on its send paths; a host that is not literal is decided by the provider send paths (or a mail API host elsewhere in the line), a send unless a plain read. The boundary is written out at _inline_mail_api_sends in outgoing-copy-gate.py.",
@@ -808,6 +826,423 @@
    "name": "an output-file variable next to a POST to another host, a mail API host in the line",
    "cmd": "G=https://gmail.googleapis.com; curl -s -X POST -o \"$OUT\" https://example.com/x -d x",
    "expected": false
+  },
+  {
+   "name": "a method-override header on a GET of a provider read path",
+   "expected": true,
+   "cmd": "curl -s -H 'X-HTTP-Method-Override: POST' https://gmail.googleapis.com/gmail/v1/users/me/messages -o out.json"
+  },
+  {
+   "name": "a method-override header at the end of a short cluster",
+   "expected": true,
+   "cmd": "curl -sH 'X-HTTP-Method: DELETE' https://gmail.googleapis.com/gmail/v1/users/me/messages/abc"
+  },
+  {
+   "name": "a method-override header glued to the header option",
+   "expected": true,
+   "cmd": "curl -H'X-Method-Override: PUT' https://api.sendgrid.com/v3/templates"
+  },
+  {
+   "name": "a method-override header in the long equals form, wget",
+   "expected": true,
+   "cmd": "wget -q --header='X-HTTP-Method-Override: POST' https://api.mailgun.net/v3/domains"
+  },
+  {
+   "name": "a method-override header naming a variable method",
+   "expected": true,
+   "cmd": "curl -H \"X-HTTP-Method-Override: $M\" https://api.postmarkapp.com/server"
+  },
+  {
+   "name": "a method-override header naming GET stays a read",
+   "expected": false,
+   "cmd": "curl -H 'X-HTTP-Method-Override: GET' https://gmail.googleapis.com/gmail/v1/users/me/labels"
+  },
+  {
+   "name": "a method-override header on another API is no mail send",
+   "expected": false,
+   "cmd": "curl -H 'X-HTTP-Method-Override: PATCH' https://api.example.com/items/1"
+  },
+  {
+   "name": "a method-override text as another option's value is no header",
+   "expected": false,
+   "cmd": "curl -A 'X-HTTP-Method-Override: POST' https://gmail.googleapis.com/gmail/v1/users/me/labels"
+  },
+  {
+   "name": "a Graph send in a national cloud",
+   "expected": true,
+   "cmd": "curl -X POST https://graph.microsoft.us/v1.0/me/sendMail -H 'Content-Type: application/json' -d @m.json"
+  },
+  {
+   "name": "a Graph reply in a second national cloud",
+   "expected": true,
+   "cmd": "curl -X POST https://microsoftgraph.chinacloudapi.cn/v1.0/users/u1/messages/m1/reply -d @r.json"
+  },
+  {
+   "name": "a Graph send in a third national cloud",
+   "expected": true,
+   "cmd": "curl -X POST https://graph.svc.sovcloud.fr/v1.0/me/sendMail -d @m.json"
+  },
+  {
+   "name": "a Graph send in a fourth national cloud",
+   "expected": true,
+   "cmd": "curl -X POST https://graph.microsoft.de/v1.0/me/sendMail -d @m.json"
+  },
+  {
+   "name": "a Graph read in a national cloud",
+   "expected": false,
+   "cmd": "curl -s https://graph.microsoft.us/v1.0/me/events"
+  },
+  {
+   "name": "a Graph calendar write in a national cloud is no mail send",
+   "expected": false,
+   "cmd": "curl -X POST https://graph.microsoft.us/v1.0/me/events -d @e.json"
+  },
+  {
+   "name": "an unparseable command naming a mail-only API host",
+   "expected": true,
+   "cmd": "curl -X POST \"https://api.sendgrid.com/v3/mail/send -d @m.json"
+  },
+  {
+   "name": "an unparseable command naming a Graph host",
+   "expected": true,
+   "cmd": "curl -X POST 'https://graph.microsoft.com/v1.0/me/messages/m1/forward -d @f.json"
+  },
+  {
+   "name": "an unparseable command with no mail host",
+   "expected": false,
+   "cmd": "grep -n \"unterminated notes.txt"
+  }
+ ],
+ "url_file_comment": "MAILURLFILE1118: a request whose URL (and method, headers, body) comes from a FILE the line only names: a curl config file (-K / --config) or a wget input file (-i / --input-file). Each `url_file` case writes its `files` (relative path -> text) into a fresh directory, replaces `{dir}` in `cmd` with it, and runs `cmd` through is_send_invocation / isSendInvocation with that directory as the cwd, in both twins' tests. `class` names the shape: `send` (the file is read and the request is a mail send), `allow` (the file is read and it is none), `undecidable` (the file cannot be read here: a send only when the line carries a mail marker, a mail-only API host or a Microsoft Graph host, the file's text included). The rows of `inline` named for a method-override header, a national cloud or an unparseable command belong to the same follow-up. The boundary is written out at _url_file_words in outgoing-copy-gate.py.",
+ "url_file": [
+  {
+   "name": "a config file holding a provider send endpoint, its method and a body",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -s -K mailsend.cfg",
+   "files": {
+    "mailsend.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\"\nrequest = POST\ndata = \"@raw.json\"\n"
+   }
+  },
+  {
+   "name": "a config file in the long equals form",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl --config=mailsend.cfg",
+   "files": {
+    "mailsend.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\"\nrequest = POST\ndata = \"@raw.json\"\n"
+   }
+  },
+  {
+   "name": "a config file at the end of a short cluster",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -sK mailsend.cfg",
+   "files": {
+    "mailsend.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\"\nrequest = POST\ndata = \"@raw.json\"\n"
+   }
+  },
+  {
+   "name": "a config file glued to its option",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -Kmailsend.cfg",
+   "files": {
+    "mailsend.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\"\nrequest = POST\ndata = \"@raw.json\"\n"
+   }
+  },
+  {
+   "name": "a config file in the long form with a separate operand",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl --config mailsend.cfg -s",
+   "files": {
+    "mailsend.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\"\nrequest = POST\ndata = \"@raw.json\"\n"
+   }
+  },
+  {
+   "name": "config lines with dashes, a colon separator and an unquoted value",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -K dashes.cfg",
+   "files": {
+    "dashes.cfg": "--url: https://api.resend.com/emails\n-X POST\n--data {}\n"
+   }
+  },
+  {
+   "name": "a config file naming the endpoint, the method and body on the line",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -K sg.cfg -X POST -d @m.json",
+   "files": {
+    "sg.cfg": "url = \"https://api.sendgrid.com/v3/mail/send\"\n"
+   }
+  },
+  {
+   "name": "a config file naming the endpoint, a body file on the line",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -K pm.cfg --data-binary @m.json",
+   "files": {
+    "pm.cfg": "url \"https://api.postmarkapp.com/email\"\n"
+   }
+  },
+  {
+   "name": "an absolute config path",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -K {dir}/mailsend.cfg",
+   "files": {
+    "mailsend.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\"\nrequest = POST\ndata = \"@raw.json\"\n"
+   }
+  },
+  {
+   "name": "a relative config file under a literal cd",
+   "class": "send",
+   "expected": true,
+   "cmd": "cd sub && curl -K subsend.cfg",
+   "files": {
+    "sub/subsend.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\"\nrequest = POST\ndata = \"@raw.json\"\n"
+   }
+  },
+  {
+   "name": "a stdin config named by a redirect",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -K - < mailsend.cfg",
+   "files": {
+    "mailsend.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\"\nrequest = POST\ndata = \"@raw.json\"\n"
+   }
+  },
+  {
+   "name": "a config file behind a shell -c wrapper",
+   "class": "send",
+   "expected": true,
+   "cmd": "bash -c 'curl -sK mailsend.cfg'",
+   "files": {
+    "mailsend.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\"\nrequest = POST\ndata = \"@raw.json\"\n"
+   }
+  },
+  {
+   "name": "a config file on a Graph send in a national cloud",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -K gnat.cfg -d @m.json",
+   "files": {
+    "gnat.cfg": "url = \"https://graph.microsoft.us/v1.0/me/sendMail\"\nheader = \"Content-Type: application/json\"\n"
+   }
+  },
+  {
+   "name": "a config file with a method-override header on a provider read path",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -K override.cfg",
+   "files": {
+    "override.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/messages\"\nheader = \"X-HTTP-Method-Override: POST\"\n"
+   }
+  },
+  {
+   "name": "a config file with a GET outside the provider's read paths",
+   "class": "send",
+   "expected": true,
+   "cmd": "curl -K outside.cfg",
+   "files": {
+    "outside.cfg": "url = \"https://gmail.googleapis.com/batch/gmail/v1\"\n"
+   }
+  },
+  {
+   "name": "a wget input file of provider send URLs with a body",
+   "class": "send",
+   "expected": true,
+   "cmd": "wget -q -i sendlist.txt --post-data x",
+   "files": {
+    "sendlist.txt": "https://api.mailgun.net/v3/example.org/messages\n"
+   }
+  },
+  {
+   "name": "a wget input file in the long equals form",
+   "class": "send",
+   "expected": true,
+   "cmd": "wget --input-file=sendlist.txt --post-file=m.json",
+   "files": {
+    "sendlist.txt": "https://api.mailgun.net/v3/example.org/messages\n"
+   }
+  },
+  {
+   "name": "a wget input file at the end of a short cluster",
+   "class": "send",
+   "expected": true,
+   "cmd": "wget -qi sendlist.txt --post-data x",
+   "files": {
+    "sendlist.txt": "https://api.mailgun.net/v3/example.org/messages\n"
+   }
+  },
+  {
+   "name": "a missing config file, a mail-only API host in the line",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "curl -K missing-a.cfg https://gmail.googleapis.com/gmail/v1/users/me/messages",
+   "files": {}
+  },
+  {
+   "name": "a config from a pipe, a mail-only API host in the line",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "printf 'url = \"https://api.resend.com/emails\"\\nrequest = POST\\n' | curl -K -",
+   "files": {}
+  },
+  {
+   "name": "a config from a heredoc, a mail-only API host in it",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "curl -K - <<'EOF'\nurl = \"https://api.sendgrid.com/v3/mail/send\"\nrequest = POST\nEOF",
+   "files": {}
+  },
+  {
+   "name": "a config file from a variable, a Graph host in the line",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "curl -K \"$CFG\" https://graph.microsoft.com/v1.0/me/messages",
+   "files": {}
+  },
+  {
+   "name": "a config file naming another config, a mail-only API host in the file",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "curl -K nested.cfg",
+   "files": {
+    "nested.cfg": "url = \"https://gmail.googleapis.com/gmail/v1/users/me/labels\"\nconfig = \"more.cfg\"\n"
+   }
+  },
+  {
+   "name": "a wget HTML input file, a mail-only API host in the file",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "wget -F -i links.html",
+   "files": {
+    "links.html": "<a href=\"https://api.sendgrid.com/v3/mail/send\">x</a>\n"
+   }
+  },
+  {
+   "name": "a device as the config file, a mail-only API host in the line",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "curl -K /dev/stdin https://api.postmarkapp.com/server",
+   "files": {}
+  },
+  {
+   "name": "an empty device as the config file, a mail-only API host in the line",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "curl -K /dev/null https://api.postmarkapp.com/server",
+   "files": {}
+  },
+  {
+   "name": "a relative config file after a cd that cannot be resolved, a mail-only API host in the line",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "cd \"$D\" && curl -K x.cfg -H 'Host: api.brevo.com'",
+   "files": {
+    "x.cfg": "header = \"A: b\"\n"
+   }
+  },
+  {
+   "name": "a missing config file next to a variable base before a provider send path (the line as written decides)",
+   "class": "undecidable",
+   "expected": true,
+   "cmd": "curl -K missing-c.cfg \"$SG/v3/mail/send\" -o out.json",
+   "files": {}
+  },
+  {
+   "name": "a stdin config holding an auth header next to another API's URL",
+   "class": "undecidable",
+   "expected": false,
+   "cmd": "curl -s -K - https://api.example.com/v1/items <<'EOF'\nheader = \"Authorization: Bearer x\"\nEOF",
+   "files": {}
+  },
+  {
+   "name": "a piped config next to another API's URL",
+   "class": "undecidable",
+   "expected": false,
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$TOK\" | curl -s -K - https://api.example.com/x",
+   "files": {}
+  },
+  {
+   "name": "a missing config file next to another API's URL",
+   "class": "undecidable",
+   "expected": false,
+   "cmd": "curl -K missing-b.cfg https://api.example.com/x",
+   "files": {}
+  },
+  {
+   "name": "a config file from a variable next to another API's URL",
+   "class": "undecidable",
+   "expected": false,
+   "cmd": "curl -K \"$CFG\" https://api.example.com/x",
+   "files": {}
+  },
+  {
+   "name": "a wget HTML input file with no mail host",
+   "class": "undecidable",
+   "expected": false,
+   "cmd": "wget --force-html -i page.html",
+   "files": {
+    "page.html": "<a href=\"https://example.com/a\">a</a>\n"
+   }
+  },
+  {
+   "name": "a config file holding only an auth header next to another API's URL",
+   "class": "allow",
+   "expected": false,
+   "cmd": "curl -K auth.cfg https://api.example.com/x",
+   "files": {
+    "auth.cfg": "header = \"Authorization: Bearer x\"\n"
+   }
+  },
+  {
+   "name": "a config file holding only an auth header next to a provider read path",
+   "class": "allow",
+   "expected": false,
+   "cmd": "curl -s -K auth.cfg https://gmail.googleapis.com/gmail/v1/users/me/labels",
+   "files": {
+    "auth.cfg": "header = \"Authorization: Bearer x\"\n"
+   }
+  },
+  {
+   "name": "a config file holding a provider read URL",
+   "class": "allow",
+   "expected": false,
+   "cmd": "curl -K read.cfg",
+   "files": {
+    "read.cfg": "# list\nurl = \"https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is%3Aunread\"\n"
+   }
+  },
+  {
+   "name": "a config file with a quoted escape and another API",
+   "class": "allow",
+   "expected": false,
+   "cmd": "curl -K esc.cfg -X POST -d x",
+   "files": {
+    "esc.cfg": "url = \"https://api.example.com/a\\\"b\"\n"
+   }
+  },
+  {
+   "name": "a wget input file of provider read URLs",
+   "class": "allow",
+   "expected": false,
+   "cmd": "wget -q -O- -i reads.txt",
+   "files": {
+    "reads.txt": "https://gmail.googleapis.com/gmail/v1/users/me/labels\n"
+   }
+  },
+  {
+   "name": "a wget input file of another host's URLs with a body",
+   "class": "allow",
+   "expected": false,
+   "cmd": "wget -i other.txt --post-data x",
+   "files": {
+    "other.txt": "https://example.com/form\n"
+   }
   }
  ]
 }

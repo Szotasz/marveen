@@ -26,6 +26,7 @@ with open(os.path.join(HOOKS, "mail-api-send-cases.json"), encoding="utf-8") as 
     _TABLE = json.load(fh)
 CASES = _TABLE["cases"]
 INLINE = _TABLE["inline"]   # MAILCURLSEND1118: commands judged by is_send_invocation as written
+URL_FILE = _TABLE["url_file"]   # MAILURLFILE1118: commands whose URL comes from a file, judged with their files in the cwd
 
 failed = []
 
@@ -63,6 +64,19 @@ try:
     for c in INLINE:
         got = ocg.is_send_invocation(c["cmd"])
         check(f"inline command: {c['name']}", got == c["expected"], f"got {got}")
+    # MAILURLFILE1118: a request whose URL comes from a file the line names is judged with the file read in
+    check("the url_file list has every class, and undecidable both ways",
+          {c["class"] for c in URL_FILE} == {"send", "allow", "undecidable"}
+          and all(c["expected"] == (c["class"] == "send") for c in URL_FILE if c["class"] != "undecidable")
+          and {c["expected"] for c in URL_FILE if c["class"] == "undecidable"} == {True, False})
+    for c in URL_FILE:
+        cwd = tempfile.mkdtemp(prefix="mail-url-file-", dir=td)
+        for name, body in c["files"].items():
+            os.makedirs(os.path.dirname(os.path.join(cwd, name)), exist_ok=True)
+            with open(os.path.join(cwd, name), "w", encoding="utf-8") as fh:
+                fh.write(body)
+        got = ocg.is_send_invocation(c["cmd"].replace("{dir}", cwd), cwd=cwd)
+        check(f"url file ({c['class']}): {c['name']}", got == c["expected"], f"got {got}")
 finally:
     shutil.rmtree(td, ignore_errors=True)
 
