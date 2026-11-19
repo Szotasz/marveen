@@ -445,6 +445,10 @@ export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 
+// DOCKERHTTPS1119 (Geri's live run, 81231): first-boot writes WEB_PUBLIC_PORT into .env, not into the process
+// environment, so it is read from the file like WEB_HOST; public-access.ts publicListenerPort checks the value.
+export const WEB_PUBLIC_PORT = env['WEB_PUBLIC_PORT'] ?? ''
+
 // How long a fired scheduled task may stay busy before the watchdog calls it
 // stuck (default 45 minutes; `stuckAfterMinutes` still overrides it per task).
 //

@@ -135,6 +135,19 @@ export const PUBLIC_LISTENER_OPEN_PATHS: ReadonlyArray<readonly [method: string,
   ['POST', '/api/auth/setup-code'],
 ]
 
+// DOCKERHTTPS1119 (Geri's live run 81231, Dani): what a setup session (a redeemed one-time code, before the first
+// login) may reach among the gated paths: the wizard's state, so its first step renders, and creating the first
+// login. Everything else answers 403 setup_session_scope (403, not 401: a 401 would put the page's access notice
+// over the wizard). The owner gates of the routes still decide inside this list.
+export const SETUP_SESSION_PATHS: ReadonlyArray<readonly [method: string, path: string]> = [
+  ['GET', '/api/onboarding/status'],
+  ['POST', '/api/auth/users'],
+]
+
+export function setupSessionPath(path: string, method: string): boolean {
+  return SETUP_SESSION_PATHS.some(([m, p]) => m === method && p === path)
+}
+
 export function publicListenerOpenPath(path: string, method: string): boolean {
   return PUBLIC_LISTENER_OPEN_PATHS.some(([m, p]) => m === method && p === path)
 }
@@ -644,6 +657,11 @@ export async function gateRequest(
   if (opts.publicListener === true && auth.kind === 'none' && path.startsWith('/api/') && !requiresAuth(path, method) && !publicListenerOpenPath(path, method)) {
     res.writeHead(404, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ error: 'Not found' }))
+    return null
+  }
+  if (auth.kind === 'setup' && requiresAuth(path, method) && !setupSessionPath(path, method)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'The setup code only lets you create the dashboard password. Create it, then sign in.', code: 'setup_session_scope' }))
     return null
   }
   if (requiresAuth(path, method) && auth.kind === 'none') {

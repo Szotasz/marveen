@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, WEB_PUBLIC_PORT, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { gateRequest, requiresAuth, type AuthResult } from './web/auth-gate.js'
@@ -399,7 +399,7 @@ export function startWebServer(port = 3420): http.Server {
   // DOCKERHTTPS1119: the public listener (public-access.ts). Same handler; each of its requests is marked public
   // first, so the gate accepts only browser cookies on it. Only when WEB_PUBLIC_PORT is set (first-boot, with
   // MARVEEN_DOMAIN); the compose file never publishes this port to the host, Caddy reaches it on the compose network.
-  const publicPort = publicListenerPort()
+  const publicPort = publicListenerPort({ WEB_PUBLIC_PORT })
   if (publicPort !== null && publicPort !== port) {
     const publicServer = http.createServer((req, res) => {
       markPublicRequest(req)

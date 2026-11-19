@@ -8,7 +8,12 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, createDashboardUser } from '../db.js'
-import { resolveAuth, requiresAuth, gateRequest, PUBLIC_LISTENER_OPEN_PATHS, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
+import { resolveAuth, requiresAuth, gateRequest, PUBLIC_LISTENER_OPEN_PATHS, SETUP_SESSION_PATHS, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs'
+import { scanRoutes } from './helpers/route-owner-scan.js'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { vi } from 'vitest'
 import { tryHandleAuth, mayActAsOwnerOrFirstRun, FIRST_RUN_PATHS, isHttps } from '../web/routes/auth.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 import { _resetThrottleForTest } from '../web/login-throttle.js'
@@ -147,6 +152,86 @@ describe('the public listener with no cookie reaches only the closed list', () =
     const sid = createSession({ userId: u.id, username: u.username })
     const r = await gate('/api/agents/zara/avatar', 'GET', true, { cookie: `${SESSION_COOKIE_NAME}=${sid}` })
     expect(r.auth?.kind).toBe('session')
+  })
+})
+
+// Geri's live run (81231) 4: a setup session read GET /api/memories. It reaches only SETUP_SESSION_PATHS among the
+// gated paths now; everything else is 403 setup_session_scope.
+describe('the setup session reaches only the closed list among gated paths', () => {
+  async function gateSetup(path: string, method: string) {
+    issueSetupCode()
+    const value = redeemSetupCode(issueSetupCode())!
+    const out = { status: 0, body: '' }
+    const res = { writeHead(s: number) { out.status = s; return res }, setHeader() {}, end(d?: string) { if (d) out.body += d } }
+    const url = new URL(`http://127.0.0.1:3421${path}`)
+    const auth = await gateRequest(mkReq({ cookie: `${SETUP_COOKIE_NAME}=${value}` }, true), res as unknown as http.ServerResponse, url, path, method, { dashboardToken: TOKEN, mainAgentId: 'marveen', publicListener: true })
+    return { auth, status: out.status, body: out.body }
+  }
+
+  // Samu 81244: EVERY gated route, so a new one cannot open to a setup session quietly. The literal routes of the
+  // router (`path === '/api/...' && method === '...'` in src/web.ts and src/web/routes/*.ts, GETs included), plus the
+  // state-changing routes the owner-pin scanner finds; a matcher route (a regex) is covered by the same path-blind rule.
+  it('every gated literal route of the router: 403 for a setup session, except the two allowed', async () => {
+    const files = [join(__dirname, '..', 'web.ts'), ...readdirSync(join(__dirname, '..', 'web', 'routes')).filter((f) => f.endsWith('.ts')).map((f) => join(__dirname, '..', 'web', 'routes', f))]
+    const routes = new Set<string>()
+    for (const f of files) {
+      for (const m of readFileSync(f, 'utf-8').matchAll(/path === '(\/api\/[^']+)' && method === '(GET|POST|PUT|PATCH|DELETE)'/g)) routes.add(`${m[2]} ${m[1]}`)
+    }
+    for (const r of scanRoutes(join(__dirname, '..', '..')).routes) {
+      if (r.pathKey.startsWith('/api/')) for (const m of r.methods) routes.add(`${m} ${r.pathKey}`)
+    }
+    expect(routes.size).toBeGreaterThan(200)
+    const allowed = new Set(SETUP_SESSION_PATHS.map(([m, p]) => `${m} ${p}`))
+    const wrong: string[] = []
+    for (const route of routes) {
+      const [method, path] = route.split(' ') as [string, string]
+      if (!requiresAuth(path, method)) continue
+      const r = await gateSetup(path, method)
+      const ok = allowed.has(route) ? r.auth?.kind === 'setup' && r.status === 0 : r.auth === null && r.status === 403 && JSON.parse(r.body).code === 'setup_session_scope'
+      if (!ok) wrong.push(`${route} -> ${r.status}`)
+    }
+    expect(wrong).toEqual([])
+  })
+
+  it('a read and a write outside the list: 403 setup_session_scope', async () => {
+    for (const [method, path] of [['GET', '/api/memories'], ['GET', '/api/agents'], ['POST', '/api/onboarding/identity'], ['GET', '/api/auth/users']] as const) {
+      const r = await gateSetup(path, method)
+      expect([r.auth, r.status], path).toEqual([null, 403])
+      expect(JSON.parse(r.body).code, path).toBe('setup_session_scope')
+    }
+  })
+
+  it('the wizard state and creating the first login pass the gate', async () => {
+    // the list itself is pinned: widening it is a review decision, not a quiet edit
+    expect(SETUP_SESSION_PATHS).toEqual([['GET', '/api/onboarding/status'], ['POST', '/api/auth/users']])
+    for (const [method, path] of SETUP_SESSION_PATHS) {
+      const r = await gateSetup(path, method)
+      expect([r.auth?.kind, r.status], path).toEqual(['setup', 0])
+    }
+  })
+})
+
+// Geri's live run (81231) 1: first-boot writes WEB_PUBLIC_PORT into .env only; the listener must read it from there.
+describe('WEB_PUBLIC_PORT comes from the install .env', () => {
+  it('config.ts reads it from the .env file, and web.ts hands that value to publicListenerPort', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'webpublicport-'))
+    const saved = { dir: process.env.CLAUDECLAW_ENV_DIR, port: process.env.WEB_PUBLIC_PORT }
+    try {
+      writeFileSync(join(dir, '.env'), 'WEB_PUBLIC_PORT=3421\n')
+      process.env.CLAUDECLAW_ENV_DIR = dir
+      delete process.env.WEB_PUBLIC_PORT
+      vi.resetModules()
+      const cfg = await import('../config.js')
+      expect(cfg.WEB_PUBLIC_PORT).toBe('3421')
+    } finally {
+      if (saved.dir === undefined) delete process.env.CLAUDECLAW_ENV_DIR; else process.env.CLAUDECLAW_ENV_DIR = saved.dir
+      if (saved.port !== undefined) process.env.WEB_PUBLIC_PORT = saved.port
+      vi.resetModules()
+      rmSync(dir, { recursive: true, force: true })
+    }
+    const web = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
+    expect(web).toContain('publicListenerPort({ WEB_PUBLIC_PORT })')
+    expect(web).not.toMatch(/publicListenerPort\(\)/)
   })
 })
 
