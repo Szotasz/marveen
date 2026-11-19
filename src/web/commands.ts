@@ -19,11 +19,14 @@
 // touching this file's builtin list.
 
 export type CommandKind = 'read' | 'write'
+export type CommandChannel = 'telegram' | 'discord'
 
 export interface CommandContext {
   reply(text: string): Promise<void>
   ownerId: number
   now: number
+  /** The channel the command came from; unset = Telegram (every caller before Discord). /status shows its CSATORNA. */
+  channel?: CommandChannel
 }
 
 export interface CommandSpec {
@@ -46,7 +49,12 @@ export interface CommandSpec {
   /** Claims specific argument shapes; an entry without it is the fallback. */
   matches?: (args: string[]) => boolean
   run?: (ctx: CommandContext, args: string[]) => Promise<void> | void
+  /** Only on these channels. Elsewhere the entry does not exist: not in /help, not in that channel's menu, and the
+   *  /word is not a registry command there (it goes to the model, as before the entry was added). Unset = every channel. */
+  channels?: readonly CommandChannel[]
 }
+
+const onChannel = (e: CommandSpec, channel: CommandChannel) => !e.channels || e.channels.includes(channel)
 
 const entries: CommandSpec[] = []
 
@@ -102,8 +110,8 @@ export function listInvalidCustomCommands(): readonly InvalidCustomCommand[] {
   return invalidCustom
 }
 
-export function hasCommand(name: string): boolean {
-  return entries.some(e => e.name === name)
+export function hasCommand(name: string, channel: CommandChannel = 'telegram'): boolean {
+  return entries.some(e => e.name === name && onChannel(e, channel))
 }
 
 export interface ParsedCommand {
@@ -124,8 +132,8 @@ export function parseCommand(text: string): ParsedCommand | null {
 }
 
 // Pick the entry that should handle `args` for command `name`.
-export function resolveCommand(name: string, args: string[]): CommandSpec | null {
-  const forName = entries.filter(e => e.name === name)
+export function resolveCommand(name: string, args: string[], channel: CommandChannel = 'telegram'): CommandSpec | null {
+  const forName = entries.filter(e => e.name === name && onChannel(e, channel))
   for (const e of forName) {
     if (e.matches && e.matches(args)) return e
   }
@@ -141,8 +149,8 @@ export function isHelpRequest(args: string[]): boolean {
   return args.includes('?')
 }
 
-export function commandHelpText(name: string): string | null {
-  const forName = entries.filter(e => e.name === name)
+export function commandHelpText(name: string, channel: CommandChannel = 'telegram'): string | null {
+  const forName = entries.filter(e => e.name === name && onChannel(e, channel))
   if (forName.length === 0) return null
   const own = forName.find(e => e.help)
   if (own?.help) return own.help()
@@ -157,14 +165,15 @@ export type DispatchOutcome = 'ran' | 'planned' | 'unknown' | 'not-command' | 'e
 export async function dispatchCommand(text: string, ctx: CommandContext): Promise<DispatchOutcome> {
   const parsed = parseCommand(text)
   if (!parsed) return 'not-command'
+  const channel = ctx.channel ?? 'telegram'
   if (isHelpRequest(parsed.args)) {
-    const h = commandHelpText(parsed.name)
+    const h = commandHelpText(parsed.name, channel)
     if (h !== null) {
       await ctx.reply(h)
       return 'ran'
     }
   }
-  const spec = resolveCommand(parsed.name, parsed.args)
+  const spec = resolveCommand(parsed.name, parsed.args, channel)
   if (!spec) {
     await ctx.reply(`Ismeretlen parancs: /${parsed.name}. Nem futtattam semmit. Lásd /help.`)
     return 'unknown'
@@ -188,9 +197,10 @@ function helpLine(e: CommandSpec): string {
 }
 
 // /help text, generated from the registry. Sections follow CMD920 3.2.
-export function renderHelp(): string {
-  const builtin = entries.filter(e => e.source !== 'custom')
-  const custom = entries.filter(e => e.source === 'custom')
+export function renderHelp(channel: CommandChannel = 'telegram'): string {
+  const here = entries.filter(e => onChannel(e, channel))
+  const builtin = here.filter(e => e.source !== 'custom')
+  const custom = here.filter(e => e.source === 'custom')
   const read = builtin.filter(e => e.kind === 'read')
   const write = builtin.filter(e => e.kind === 'write' && !e.confirm)
   const confirm = builtin.filter(e => e.kind === 'write' && e.confirm)
@@ -221,12 +231,14 @@ export interface BotCommand {
 
 // The Telegram command menu: one row per runnable top-level name. Planned-only
 // names are left out (the menu would offer a command that does nothing).
-export function botCommandList(): BotCommand[] {
+// With channel 'discord' it is the list the Discord overlay registers as slash commands.
+export function botCommandList(channel: CommandChannel = 'telegram'): BotCommand[] {
   const seen = new Set<string>()
   const out: BotCommand[] = []
-  for (const e of entries) {
+  const here = entries.filter(e => onChannel(e, channel))
+  for (const e of here) {
     if (e.planned || seen.has(e.name)) continue
-    const primary = entries.find(x => x.name === e.name && !x.matches && !x.planned) ?? e
+    const primary = here.find(x => x.name === e.name && !x.matches && !x.planned) ?? e
     seen.add(e.name)
     out.push({ command: e.name, description: primary.description.slice(0, 256) })
   }

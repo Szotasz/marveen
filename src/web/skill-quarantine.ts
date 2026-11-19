@@ -29,11 +29,14 @@
 // that a skill has no business carrying. An empty list does not mean safe.
 // The load-bearing control is that nothing goes live without that approval,
 // while the switch is ON. SKILLAPPROVALOFF1101 (owner, 2026-11-01): the hold is
-// a switch, SKILL_QUARANTINE, OFF by default. OFF, a queued skill goes live at
+// a switch, SKILL_QUARANTINE, OFF by default (SKILLQUARANTINEDEF1109, owner,
+// 2026-11-18, customer installs too). OFF, a queued skill goes live at
 // once on the same path (goLiveUnquarantined below): scanned, bound to the
 // scanned hash, one audit line in store/skills-audit.jsonl, and what the scan
-// cannot show in full still waits. There, the scan and the audit are a record,
-// not a gate.
+// cannot show in full still waits, as does a finding of a strong shape
+// (SKILL_HOLD_PATTERNS, SKILLHOLDSTRONG1117), and so does a findings list that
+// reached its cap, since a strong finding past the cap is not in it. For every other finding, the scan
+// and the audit are a record, not a gate.
 //
 // Not covered here (stated, not hidden):
 //   - an agent writing a skill directory directly with its file tools. For its
@@ -45,6 +48,11 @@
 //     boundary;
 //   - the fleet import, the agent-bundle import and the `skill` CLI, which
 //     have their own paths;
+//   - an agent package install (POST /api/agents/install-package,
+//     MIOAGENTINSTALL1114 N10): its skills go straight into the agent's own
+//     .claude/skills/, in the owner's session; the scanner runs on them in
+//     REPORTING mode only (an audit line with event package_install_scanned
+//     and the counts in the install answer), the switch does not apply;
 //   - editing a LIVE skill's SKILL.md through PUT /api/skills/:name;
 //   - who approves: since kanban 2c72e07c the approve and reject routes take
 //     the owner's session (mayActAsOwner, the #2163 predicate), not the
@@ -622,11 +630,69 @@ export const SKILL_SCAN_PATTERNS: ReadonlyArray<[string, RegExp]> = [
   ['persistence-target', /(settings(\.local)?\.json|scheduled-tasks|crontab\b|LaunchAgents|\.bashrc|\.zshrc|\.profile\b)/i],
   ['install-hook', /"(pre|post)install"\s*:|\bnpm\s+(i|install)\b|\bpip3?\s+install\b|\bbrew\s+install\b/i],
   ['long-encoded-blob', /[A-Za-z0-9+/]{200,}={0,2}/],
+  // SKILLSCANPI1118: prompt-injection shapes a skill has no honest reason to carry.
+  // The idea of covering these shapes comes from skill-security-auditor
+  // (alirezarezvani/claude-skills); the expressions below are our own. A line-level
+  // "ignore this line" comment is deliberately NOT honoured: a file under review must
+  // not be able to switch its own review off.
+  // All rows here are audit lines only: none of them is in the set that holds a skill
+  // with the quarantine switch off. exfil-instruction and cloud-credential-target fire on
+  // honest how-to text now and then, so they stay out of that set on purpose.
+  //
+  // A reader is told to set its standing rules aside.
+  ['override-directive', /\b(?:disregard|forget|override|abandon|set\s+aside)\s+(?:(?:all|any|every|your|of)\s+)+(?:(?:previous|prior|earlier|current|existing)\s+)?(?:instructions|rules|guidelines|constraints|safety)\b/i],
+  // Either a role-play with the limits removed, or an order to switch a safety check off.
+  ['safety-bypass', /\b(?:pretend|imagine|act\s+as\s+(?:if|though))\s+(?:that\s+)?you\s+(?:have\s+no|are\s+free\s+of|(?:do\s+not|don'?t)\s+have\s+any)\s+(?:restrictions|limits|limitations|rules|safety)\b|\b(?:skip|disable|bypass|ignore|(?:turn|switch)\s+off)\s+(?:safety|security|content)\s+(?:checks?|filters?|restrictions?|rules?|guards?)\b/i],
+  // Whatever command, with the confirmation step taken out.
+  ['unrestricted-exec', /\b(?:run|execute)\s+(?:any|every|all|arbitrary|whatever)\s+(?:shell\s+)?(?:commands?|code|scripts?)\b[^.\n]{0,30}?\b(?:without|with\s+no|no)\s+(?:asking|confirm(?:ation|ing)?|approval|restrictions?|limits?)\b/i],
+  // Moving something out of the user's environment: the source is the workspace, or the
+  // destination is somewhere external. A plain "send the data to the API" stays quiet.
+  // The home folder, /etc, .ssh, .env and secret stores count as such sources too.
+  ['exfil-instruction', /\b(?:send|upload|post|transmit|exfiltrate|forward)\s+(?:(?:the|all|every)\s+)?(?:contents?|data|files?|information)\s+(?:(?:of|from)\s+(?:the\s+|this\s+|your\s+|the\s+user'?s\s+)?(?:workspace|repo(?:sitory)?|project|codebase|home|machine|system|disk|environment|session|conversation|~\/|\$HOME|\/etc\/|\.ssh|\.env\b|credentials|secrets|keys)|to\s+(?:an?\s+|the\s+|my\s+)?(?:remote|external|attacker|third[-\s]party|webhook|pastebin|https?:\/\/))/i],
+  // The AWS credential store itself, not the config folder a deployment guide names.
+  ['cloud-credential-target', /\.aws\/(?:credentials|sso\/cache)\b/i],
+  // An HTML comment, invisible when rendered, that speaks to the model: it carries a role
+  // label (system:, developer:, assistant:) or tells "you" what you must or may now do.
+  // A maintainer's note ("runbook: keep in sync") names no role and addresses no one.
+  ['hidden-html-directive', /<!--[^>]{0,40}?(?:\b(?:system|developer|assistant)\s*(?:prompt\s*)?[:\]>]|\byou\s+(?:must|may|should|are\s+now)\b)/i],
+  // A claim to whole-machine reach: an all-or-root grade of access, aimed within a few
+  // words at the machine as a whole rather than at one folder.
+  ['excess-permission', /\b(?:unrestricted|unlimited|full|complete|total|root|admin(?:istrator)?)[-\s]+(?:level\s+)?(?:access|control|rights|privileges)\b[^.\n]{0,30}?\b(?:file\s*system|disk|network|internet|shell|terminal|machine|computer|host|everything)\b/i],
+  // Consent given before the question is asked: an unconditional consent verb over every
+  // action of a kind, or consent to everything with the review left out. Accepting all
+  // dialogs in a test browser names no action of the agent and stays quiet.
+  ['blanket-approval', /\b(?:always|automatically|blindly|unconditionally|auto-?)\s*(?:approve|accept|allow|confirm|say\s+yes\s+to)\s+(?:all|any|every)\s+(?:\w+\s+)?(?:tool\s*calls?|requests?|prompts?|permissions?|actions?|commands?|operations?)\b|\b(?:approve|accept|allow)\s+(?:everything|all\s+of\s+(?:them|it))\s+without\b/i],
+  // A soft hyphen between two letters of the same case renders as nothing and can split
+  // a keyword the rows above look for. Only there: the same byte pair turns up in fonts
+  // and images the scan reads as text. Kept apart from invisible-unicode so it never holds a skill.
+  ['soft-hyphen-split', /\p{Ll}\u00AD\p{Ll}|\p{Lu}\u00AD\p{Lu}/u],
 ]
+
+// SKILLHOLDSTRONG1117 (owner, 2026-11-17): with the switch OFF, a finding of one of these shapes still holds the
+// skill for the owner's decision. They are the shapes of an attack on the agent itself (forged tags and headers,
+// instruction override, hidden text, run-what-you-download), which an honest skill has no reason to carry. The
+// other patterns (exfil-shape, credential-target, persistence-target, install-hook, shell-exec) stay in the audit
+// only: measured on one install, 21 of 30 unquarantined go-lives carried at least one of them, all from the
+// fleet's own operational skills (a curl to a LAN host, a settings.json path in a note), none of a strong shape.
+// Holding on those would put two thirds of every skill fix in front of the owner, which trains a reflex click.
+// Still a triage list, not a verdict: an empty strong set does not mean safe.
+export const SKILL_HOLD_PATTERNS: ReadonlySet<string> = new Set([
+  'security-tag-forgery',
+  'system-reminder-forgery',
+  'directive-header-forgery',
+  'instruction-override',
+  'role-reassignment',
+  'pipe-to-shell',
+  'decode-and-run',
+  'long-encoded-blob',
+  'invisible-unicode',
+])
 
 function excerpt(line: string, at: number): string {
   const start = Math.max(0, at - 40)
-  return line.slice(start, start + 120).replace(INVISIBLE_RE, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`)
+  return line.slice(start, start + 120)
+    .replace(INVISIBLE_RE, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase()}>`)
+    .replace(/\u00AD/g, '<U+AD>')
 }
 
 export function scanSkillDir(root: string): ScanReport {
@@ -887,10 +953,10 @@ export function quarantineOn(read: () => unknown = () => getEffectiveSettingValu
 
 export type SkillAuditLine = {
   at: string
-  event: 'live_unquarantined' | 'held_unquarantined' | 'superseded_unquarantined'
+  event: 'live_unquarantined' | 'held_unquarantined' | 'superseded_unquarantined' | 'package_install_scanned'
   id: string
   name: string
-  source: PendingSource
+  source: PendingSource | 'agent-package'
   target: SkillTarget
   proposedBy: string | null
   hash: string | null
@@ -938,9 +1004,15 @@ export function goLiveUnquarantined(
     at: new Date().toISOString(), id, name: p.name, source: p.source, target: p.target, proposedBy: p.proposedBy ?? null,
     replaces: !!p.replaces, findings, findingsTruncated: p.report.findingsTruncated,
   }
-  const r = before === p.hash
-    ? approvePending(id, p.hash)
-    : { ok: false as const, status: 409, error: 'The pending skill changed while it was scanned; it waits for a decision' }
+  const strong = [...new Set(p.report.findings.map((f) => f.pattern).filter((n) => SKILL_HOLD_PATTERNS.has(n)))]
+  const r = before !== p.hash
+    ? { ok: false as const, status: 409, error: 'The pending skill changed while it was scanned; it waits for a decision' }
+    : strong.length > 0
+      ? { ok: false as const, status: 409, error: `The scan found ${strong.join(', ')}; it waits for the owner's decision` }
+      // The findings list stops at MAX_FINDINGS, so a strong finding past the cap is not in it: a capped list holds too.
+      : p.report.findingsTruncated
+        ? { ok: false as const, status: 409, error: "The scan could not show every finding (the list reached its cap); it waits for the owner's decision" }
+        : approvePending(id, p.hash)
   if (!r.ok) {
     audit({ ...base, event: 'held_unquarantined', hash: p.hash, why: r.error })
     logger.warn({ id, name: p.name, status: r.status }, 'skill: quarantine is off, but this one did not go live; it waits for a decision')

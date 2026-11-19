@@ -3,7 +3,7 @@
 `scripts/hooks/db-write-gate.mjs` is a PreToolUse gate for every agent, the main agent included. It denies:
 
 1. an SQL write on the dashboard database's security tables (`approvals`, `approval_events`, `approval_slack_posts`,
-   `auth_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
+   `approval_teams_cards`, `agent_create_specs`, `auth_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
    `support_consents` and `support_password_state`), `PRAGMA writable_schema`, and any write on `sqlite_master` /
    `sqlite_schema`;
 2. a file-level write of `store/claudeclaw.db` (and its `-wal`, `-shm`, `-journal`);
@@ -39,8 +39,33 @@ argument of a python/node script file is data, its glob no pattern (GATESCRIPTAR
 Inline code (`-c`, `-e`, `-m`, stdin), a heredoc a script reads, bun/deno and the shell family stay strict, and a
 protected path handed to a script is still denied.
 
+**A file the command writes and then runs** (INSTRWRITEEXEC1105) is judged as the commands it holds. GATEOPENFORMS1118
+widened what counts as running it: a copy of it under another name (a copier, a link, a redirect or a pipe that takes
+its text), a run behind a wrapper, a leading assignment or a compound command's reserved word, a shell start-up variable
+naming it, a program that takes it as its code file through an option (or make's default makefile), its text used as
+code through a command substitution, and a run in the directory a wrapper moves to or after a directory change this
+gate cannot follow. Text that is only written, copied, read or sent on still passes. GATEPATHNORM1118: the file is the
+same file under any spelling of its path (a relative name after a directory change, `./`, `../`, a doubled slash, `/./`,
+or an absolute path for a file written by a relative name, and the same for a copy of it): every name a later segment
+uses is resolved at the directory that segment runs in. Where that directory cannot be followed, a name with the same
+last path part counts.
+
+GATEPATHNORM1118 (a-e) turns the rule around, class by class, instead of listing more programs. A later program that
+names the file (any spelling of it: an operand, an option value, an assignment, its stdin) runs it, unless it is a
+known reader, a copier, a data transformer, a sender, a file handler (`touch`, `mkdir`, `rm`; `chmod` stays a runner),
+the caller's own script or a shell function the command defines, a container, or another host. A copy is followed
+through any program that reads the file and writes a redirect (except the caller's own scripts, a container and
+another host), through a command substitution only into a printer (`echo`, `printf`), and through `tar -C`, `split`,
+a brace or glob source and a symlink to its directory. A variable that holds the file's text (`X=$(cat f)`,
+`export X=$(<f)`, `read`/`mapfile`) is code wherever a shell takes it as code: `eval`, a shell's `-c`, a here-string
+to a shell, the command word. A spelling built from the command's own literal assignments (`S=/abs; ... $S/a.sh`)
+counts as well. All of this acts only when the written text names a protected path.
+
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
-statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. The
+statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file
+written in an earlier Bash call (or with the Write tool) and run in a later one is not read either. What the caller's
+own script, a container or another host does with the file is not read: a script that copies it for a later shell, or
+a container that mounts the install, passes. The
 owner's approval becomes trustworthy only once GROMZODONTES1030 (F1-F3) moves the decision to the mxd store.
 
 ## Vész-helyreállítás

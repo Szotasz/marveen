@@ -18,12 +18,36 @@ npm run dashboard-user -- reset-password <felhasznalo>  # új jelszó (elfelejte
 npm run dashboard-user -- remove <felhasznalo>          # user törlése; az utolsó user törlése = vissza token-only módba
 npm run dashboard-user -- sessions:clear [<felhasznalo>] # böngésző-sessionök törlése
 npm run dashboard-user -- security:reset                # VÉSZHELYZETI RESET (lásd lent)
+npm run dashboard-user -- totp:off <felhasznalo>        # kétlépcsős belépés ki (elveszett telefon ÉS biztonsági kódok)
 ```
+
+A `totp:off` a `reset-password`-höz hasonlóan semmilyen bizonyítékot nem kér a gépen futáson kívül, ezért ugyanúgy
+audit-bejegyzést (`security.break_glass_totp_off`) és értesítést hagy. Hogy a kétlépcsős belépés be van-e kapcsolva,
+az adatbázis is őrzi (`dashboard_users.totp_enabled`), ezért a `store/.dashboard-totp.json` törlése NEM kapcsolja ki:
+ha a fájl hiányzik vagy sérült, a bekapcsolt jelzőjű felhasználó belépése 503-at ad, sosem enged be csak jelszóval
+(akinél a jelző nincs bekapcsolva, az sérült fájl mellett is beléphet a jelszavával). Ilyenkor előbb a `totp:off`
+(törli a jelzőt, és szól, ha a fájl sérült), utána a sérült fájl javítása vagy törlése a gépen. A weben (jelszóval
+és kóddal) kikapcsolt kétlépcsős belépésről is értesítés megy a gazdának.
 
 A `reset-password` nem kéri a régi jelszót (ez a lényege), ezért minden
 futásáról audit-bejegyzés készül és -- ha van bekötött csatorna -- Telegram-
 értesítés megy a gazdának. Csatorna nélküli installon az értesítés csendben
 kimarad; a visszaút sosem függ tőle.
+
+### Docker- és Hostinger-telepítésen
+
+A konténer képében nincs TypeScript-futtató, ezért ott az `npm run dashboard-user` nem fut (`tsx: not found`). Ugyanez
+a CLI lefordítva a konténeren belül fut, `node`-dal, ugyanazokkal a parancsokkal:
+
+```bash
+docker compose exec marveen node dist/dashboard-user-cli.js totp:off <felhasznalo>
+docker compose exec marveen node dist/dashboard-user-cli.js reset-password <felhasznalo>
+docker compose exec marveen node dist/dashboard-user-cli.js list
+```
+
+Hostingeren nincs saját compose-mappa: SSH-val lépj be, a konténer nevét a `docker ps` adja (`-marveen-1`-re végződik),
+és ugyanez a parancs `docker exec -it <a-nev> node dist/dashboard-user-cli.js ...` alakban fut. A részletek a
+[docker.md "Locked out" szakaszában](docker.md#locked-out-lost-password-or-phone) vannak.
 
 ## `security:reset` -- a pánikgomb
 

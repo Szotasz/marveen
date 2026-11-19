@@ -1811,6 +1811,45 @@ export function initDatabase(dbPathOverride?: string): void {
     try { db.exec(`ALTER TABLE approval_slack_posts ADD COLUMN ${col}`) } catch { /* already exists */ }
   }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_slack_posts_decided_by ON approval_slack_posts(channel, decided_by_ts) WHERE decided_by_ts IS NOT NULL')
+  // TEAMSAPPROVECARD1118: the Teams approval card the SERVER posted for one request (web/approval-teams-card.ts).
+  // conversation_id + activity_id name the posted card, so a click counts only on that card; owner_aad is a snapshot of
+  // TEAMS_OWNER_AAD_OBJECT_ID at posting; content_hash is the request's anchor the card showed; nonce_sha256 is the hash
+  // of the one-time value only the card carries. decided_at closes the row once; decided_activity_id / decided_by_aad
+  // are the audit of the click that decided (the request itself gets resolved_by = 'teams_card').
+  // AGENTCREATEPR2-1119: the stored spec behind an agent_create approval. spec_json is the canonical JSON the owner was
+  // shown (the text is rendered from it) and content_hash its sha256, equal to the approvals row's. The consumer stamps
+  // consumed_at in the same transaction as the approval's consume, then the outcome. A security table.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_create_specs (
+      approval_id TEXT PRIMARY KEY,
+      spec_json TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      requested_by TEXT NOT NULL,
+      requested_at INTEGER NOT NULL,
+      consumed_at INTEGER,
+      created_agent TEXT,
+      outcome TEXT,
+      outcome_at INTEGER
+    )
+  `)
+  // A security table: the db-write-gate denies an agent's write on it, like approvals.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_teams_cards (
+      approval_id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      activity_id TEXT NOT NULL,
+      owner_aad TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      nonce_sha256 TEXT NOT NULL,
+      card_sha256 TEXT NOT NULL,
+      lang TEXT NOT NULL,
+      posted_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      decision TEXT,
+      decided_activity_id TEXT,
+      decided_by_aad TEXT
+    )
+  `)
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -1880,6 +1919,11 @@ export function initDatabase(dbPathOverride?: string): void {
       disabled INTEGER NOT NULL DEFAULT 0
     )
   `)
+  // DOCKERHTTPS1119: whether the login's TOTP second factor is on. The secret lives in store/.dashboard-totp.json
+  // (0600); this flag is the record that it EXISTS, in a table the agent DB-write gate protects, so deleting or
+  // emptying that file cannot turn the second factor off: the login fails closed (503) instead.
+  const dashUserCols = (db.prepare('PRAGMA table_info(dashboard_users)').all() as { name: string }[]).map((c) => c.name)
+  if (!dashUserCols.includes('totp_enabled')) db.exec('ALTER TABLE dashboard_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0')
   // Browser login sessions. NOT named `sessions` -- that table already maps
   // Telegram chats to Claude session ids. Only sha256(session_id) is stored, so
   // a DB leak does not hand out live sessions. Rows survive dashboard restarts;
@@ -2070,16 +2114,18 @@ export interface DashboardUser {
   created_at: number
   updated_at: number
   disabled: number
+  /** DOCKERHTTPS1119: 1 while the TOTP second factor is on (the secret itself is in store/.dashboard-totp.json). */
+  totp_enabled: number
 }
 
-export type DashboardUserPublic = Omit<DashboardUser, 'password_hash'>
+export type DashboardUserPublic = Omit<DashboardUser, 'password_hash' | 'totp_enabled'>
 
 export function createDashboardUser(username: string, passwordHash: string): DashboardUser {
   const now = Math.floor(Date.now() / 1000)
   const info = db
     .prepare('INSERT INTO dashboard_users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)')
     .run(username, passwordHash, now, now)
-  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, created_at: now, updated_at: now, disabled: 0 }
+  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, created_at: now, updated_at: now, disabled: 0, totp_enabled: 0 }
 }
 
 export function getDashboardUser(username: string): DashboardUser | undefined {
@@ -2105,6 +2151,12 @@ export function countDashboardUsers(includeDisabled = false): number {
 export function updateDashboardUserPassword(userId: number, passwordHash: string): void {
   db.prepare('UPDATE dashboard_users SET password_hash = ?, updated_at = ? WHERE id = ?')
     .run(passwordHash, Math.floor(Date.now() / 1000), userId)
+}
+
+/** DOCKERHTTPS1119: the record that the TOTP second factor is on for this user (see dashboard-totp.ts). */
+export function setDashboardUserTotpEnabled(userId: number, enabled: boolean): void {
+  db.prepare('UPDATE dashboard_users SET totp_enabled = ?, updated_at = ? WHERE id = ?')
+    .run(enabled ? 1 : 0, Math.floor(Date.now() / 1000), userId)
 }
 
 export function deleteDashboardUser(username: string): boolean {
@@ -2843,8 +2895,9 @@ export function updateMemory(id: number, content: string, category?: string, age
   // live and stay correct, while hybridSearch keeps fusing the stale vector's
   // ranking in. Dropping it to NULL hands the row back to backfillEmbeddings,
   // which processes exactly `WHERE embedding IS NULL` and is therefore
-  // idempotent and resumable. Deliberately NOT regenerating here: that would
-  // put a synchronous Ollama call in the path of a DB write.
+  // idempotent and resumable. Deliberately NOT regenerating synchronously here:
+  // that would put an Ollama call in the path of a DB write. The asynchronous
+  // re-embed after the write (REEMBEDONUPDATE1117, below) fills it in.
   //
   // The trigger is the embedded TEXT changing, which is content AND keywords:
   // both saveAgentMemory and backfillEmbeddings embed `content + ' ' + keywords`,
@@ -2855,7 +2908,8 @@ export function updateMemory(id: number, content: string, category?: string, age
   // resends the unchanged body on a category-only edit), so presence alone says
   // nothing about a change.
   const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
-  if (before && (before.content !== content || keywordsChanged)) {
+  const embeddedTextChanged = !!before && (before.content !== content || keywordsChanged)
+  if (embeddedTextChanged) {
     sets.push('embedding = NULL')
     sets.push('embedding_model = NULL')
   }
@@ -2878,6 +2932,17 @@ export function updateMemory(id: number, content: string, category?: string, age
     } else {
       if (before?.agent_id) memoryCacheInvalidate(before.agent_id)
       if (agentId && agentId !== before?.agent_id) memoryCacheInvalidate(agentId)
+    }
+    // REEMBEDONUPDATE1117: re-embed the new text right away, fire-and-forget,
+    // the same way saveAgentMemory does. Without this the row stayed NULL until
+    // the next backfill (the nightly Dream Engine round), so for up to a day
+    // the vector half of hybrid search could not see a freshly edited memory.
+    // It stays off the write path: scheduleEmbedding never blocks, a backend
+    // outage just leaves the NULL for backfill as before, and its UPDATE is
+    // guarded by `content = ? AND keywords IS ?`, so a slow reply for text
+    // that has been edited again in the meantime is discarded, not stored.
+    if (embeddedTextChanged) {
+      scheduleEmbedding(id, content, keywords !== undefined ? keywords : (before?.keywords ?? undefined))
     }
   }
   return changed
@@ -6090,8 +6155,13 @@ export function appendTaskRun(name: string, agent: string, status = 'fired'): nu
   return Number(info.lastInsertRowid)
 }
 
-/** How a run ENDED. Distinct from `status`, which is how it was dispatched. */
-export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted'
+/**
+ * How a run ENDED. Distinct from `status`, which is how it was dispatched.
+ * 'unauth' (DOCKERUNAUTHRUN1118): the session took the prompt and went idle, but its only reply was Claude Code's
+ * "Not logged in" authentication error, so nothing ran. Not 'done': duration statistics and once-task success
+ * filter on 'done' and must not count it.
+ */
+export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted' | 'unauth'
 
 /**
  * Close a run. Idempotent by design: the WHERE clause refuses to overwrite an
@@ -7991,6 +8061,107 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
   `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
 }
 
+// AGENTCREATEPR1-1119: the channel-independent decision core. A channel adapter (Slack, the Teams card, later more)
+// verifies on its own who decided, where and on which message, without any agent in the chain; the core then records
+// the decision with the same rules for every channel. The adapters keep their own decision rows (approval_slack_posts,
+// approval_teams_cards) and close them in the same transaction as the core's write.
+
+/** What a channel adapter verified about one decision. */
+export interface ApprovalEvidence {
+  /** The channel whose adapter verified the decision: 'slack', 'teams', ... */
+  channel: string
+  /** How the owner decided there ('reaction', 'reply', 'card'), or the refusal mode that turned it into a rejection. */
+  mode: string
+  /**
+   * The verified ids the audit names in resolved_by, in order (the owner's user id, the deciding message, a refusal
+   * reason). A channel with its own decision row (the Teams card) keeps its ids there and passes none.
+   */
+  trail?: readonly string[]
+}
+
+/** The audit value of a decision: `<channel>_<mode>` and then the trail, colon separated. */
+export function approvalResolvedBy(e: ApprovalEvidence): string {
+  return [`${e.channel}_${e.mode}`, ...(e.trail ?? [])].join(':')
+}
+
+export type ApprovalDecideOutcome = 'decided' | 'not_pending' | 'content_changed' | 'expired'
+
+/**
+ * The core's one write, run INSIDE the caller's transaction. In this order: the request must be pending; when the
+ * adapter showed the owner a content hash, the request must still carry exactly that hash; an approval must come before
+ * the timeout (a rejection may land after it). Only then is the request resolved, and the UPDATE repeats every condition.
+ */
+/**
+ * AGENTCREATEPR2-1119: categories whose approval is bound to content the server stored (agent_create: the spec). Such a
+ * request is approved only when it carries a content hash AND the adapter showed the owner exactly that hash; a missing
+ * hash on either side is never an approval. A rejection needs neither.
+ */
+export const HASH_BOUND_APPROVAL_CATEGORIES: ReadonlySet<string> = new Set(['agent_create'])
+
+function decideApprovalInTx(p: {
+  approvalId: string; status: 'approved' | 'rejected'; resolvedBy: string; expectedContentHash?: string; now: number
+}): ApprovalDecideOutcome {
+  const before = db.prepare('SELECT status, category, content_hash, timeout_at FROM approvals WHERE id = ?').get(p.approvalId) as
+    Pick<Approval, 'status' | 'category' | 'content_hash' | 'timeout_at'> | undefined
+  if (!before || before.status !== 'pending') return 'not_pending'
+  const checksHash = p.expectedContentHash !== undefined
+  // A null is never a hash the owner was shown (a JS caller can still pass one): it matches nothing.
+  if (checksHash && (p.expectedContentHash === null || before.content_hash !== p.expectedContentHash)) return 'content_changed'
+  if (p.status === 'approved' && HASH_BOUND_APPROVAL_CATEGORIES.has(before.category)
+    && (!checksHash || typeof before.content_hash !== 'string' || !before.content_hash)) return 'content_changed'
+  if (p.status === 'approved' && before.timeout_at != null && before.timeout_at <= p.now) return 'expired'
+  const changed = db.prepare(`
+    UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?
+    WHERE id = ? AND status = 'pending' AND (? = 0 OR content_hash IS ?) AND (? = 'rejected' OR timeout_at IS NULL OR timeout_at > ?)
+  `).run(p.status, p.now, p.resolvedBy, p.approvalId, checksHash ? 1 : 0, p.expectedContentHash ?? null, p.status, p.now).changes > 0
+  return changed ? 'decided' : 'not_pending'
+}
+
+/**
+ * A category's consumer: what runs after an approval of that category is decided as approved (PR-2: agent_create). It
+ * runs after the transaction committed, at most once per decision; a throw is logged and never undoes the decision.
+ * No category registers one yet: email_send's consumer is still the 30-minute send window on the send path.
+ */
+export type ApprovalConsumer = (approval: Approval) => void
+const approvalConsumers = new Map<string, ApprovalConsumer>()
+
+export function registerApprovalConsumer(category: string, consumer: ApprovalConsumer): void {
+  if (approvalConsumers.has(category)) throw new Error(`approval consumer already registered: ${category}`)
+  approvalConsumers.set(category, consumer)
+}
+
+/** Call only for a decision the core recorded ('decided'); runs the consumer of an approved request's category. */
+function runApprovalConsumer(approvalId: string): void {
+  // The consumer runs after the decision committed (Dani, #2903): inside a caller's transaction a consumer's own write
+  // would commit or roll back with the caller's, and a consumer that creates something must not.
+  if (db.inTransaction) throw new Error('approval consumer called inside a transaction; it runs after the commit')
+  const approval = getApproval(approvalId)
+  if (!approval || approval.status !== 'approved') return
+  const consumer = approvalConsumers.get(approval.category)
+  if (!consumer) return
+  try {
+    consumer(approval)
+  } catch (err) {
+    logger.error({ approvalId, category: approval.category, err: err instanceof Error ? err.message : String(err) }, 'approval consumer failed; the decision stands')
+  }
+}
+
+/**
+ * One decision from a channel adapter that has no decision row of its own, in one transaction, then the category's
+ * consumer. The Slack and Teams adapters call the same core inside their own transactions (decideApprovalFromSlack,
+ * decideApprovalFromTeams).
+ */
+export function decideApproval(p: {
+  approvalId: string; status: 'approved' | 'rejected'; evidence: ApprovalEvidence; expectedContentHash?: string
+}): { outcome: ApprovalDecideOutcome; approval: Approval | undefined } {
+  const outcome = db.transaction(() => decideApprovalInTx({
+    approvalId: p.approvalId, status: p.status, resolvedBy: approvalResolvedBy(p.evidence),
+    expectedContentHash: p.expectedContentHash, now: Math.floor(Date.now() / 1000),
+  }))()
+  if (outcome === 'decided') runApprovalConsumer(p.approvalId)
+  return { outcome, approval: getApproval(p.approvalId) }
+}
+
 // APPROVALSLACK1030 (2): the posted request (approval_slack_posts).
 export interface ApprovalSlackPostRow {
   approval_id: string
@@ -8065,23 +8236,85 @@ export function decideApprovalFromSlack(p: {
   decidedByTs?: string | null; binding?: string | null
 }): { outcome: SlackDecisionOutcome; changed: boolean } {
   const now = Math.floor(Date.now() / 1000)
+  let res: { outcome: SlackDecisionOutcome; changed: boolean }
   try {
-    return db.transaction(() => {
+    res = db.transaction(() => {
       const closed = db.prepare(`
         UPDATE approval_slack_posts SET decided_at = ?, decision = ?, decided_by_ts = ?, binding = ?
         WHERE approval_id = ? AND decided_at IS NULL
       `).run(now, p.decision, p.decidedByTs ?? null, p.binding ?? null, p.approvalId).changes > 0
       if (!closed) return { outcome: 'already_decided' as const, changed: false }
-      const changed = db.prepare(`
-        UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?
-        WHERE id = ? AND status = 'pending' AND (? = 'rejected' OR timeout_at IS NULL OR timeout_at > ?)
-      `).run(p.status, now, p.resolvedBy, p.approvalId, p.status, now).changes > 0
-      return { outcome: 'recorded' as const, changed }
+      // The Slack post binds the message text (checked before this call), not the request's content_hash: no hash here.
+      const core = decideApprovalInTx({ approvalId: p.approvalId, status: p.status, resolvedBy: p.resolvedBy, now })
+      return { outcome: 'recorded' as const, changed: core === 'decided' }
     })()
   } catch (err) {
     if (err instanceof Error && /UNIQUE constraint failed/.test(err.message)) return { outcome: 'reply_already_used', changed: false }
     throw err
   }
+  if (res.changed) runApprovalConsumer(p.approvalId)
+  return res
+}
+
+// TEAMSAPPROVECARD1118: the Teams approval card rows (see the table's comment).
+export interface ApprovalTeamsCard {
+  approval_id: string
+  conversation_id: string
+  activity_id: string
+  owner_aad: string
+  content_hash: string
+  nonce_sha256: string
+  card_sha256: string
+  lang: string
+  posted_at: number
+  decided_at: number | null
+  decision: string | null
+  decided_activity_id: string | null
+  decided_by_aad: string | null
+}
+
+export function recordApprovalTeamsCard(p: {
+  approvalId: string; conversationId: string; activityId: string; ownerAad: string; contentHash: string
+  nonceSha256: string; cardSha256: string; lang: string
+}): void {
+  db.prepare(`
+    INSERT INTO approval_teams_cards (approval_id, conversation_id, activity_id, owner_aad, content_hash, nonce_sha256, card_sha256, lang, posted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(p.approvalId, p.conversationId, p.activityId, p.ownerAad, p.contentHash, p.nonceSha256, p.cardSha256, p.lang, Math.floor(Date.now() / 1000))
+}
+
+export function getApprovalTeamsCard(approvalId: string): ApprovalTeamsCard | undefined {
+  return db.prepare('SELECT * FROM approval_teams_cards WHERE approval_id = ?').get(approvalId) as ApprovalTeamsCard | undefined
+}
+
+export type TeamsCardDecisionOutcome = 'decided' | 'card_already_used' | 'not_pending' | 'expired' | 'content_changed'
+
+/**
+ * One owner click on the server-posted Teams card, in ONE transaction: the card row closes once (the click's activity
+ * id and the owner's object id recorded), and the request is resolved only while it is still pending, its content_hash
+ * still the one the card showed, and (for an approval) its timeout not passed. The caller has already checked the
+ * channel token, the tenant, the owner, the card binding and the nonce.
+ */
+export function decideApprovalFromTeams(p: {
+  approvalId: string; status: 'approved' | 'rejected'; activityId: string; ownerAad: string
+}): { outcome: TeamsCardDecisionOutcome; approval: Approval | undefined } {
+  const now = Math.floor(Date.now() / 1000)
+  const res = db.transaction(() => {
+    const card = db.prepare('SELECT content_hash FROM approval_teams_cards WHERE approval_id = ? AND decided_at IS NULL').get(p.approvalId) as { content_hash: string } | undefined
+    if (!card) return { outcome: 'card_already_used' as const, approval: getApproval(p.approvalId) }
+    // The card showed the owner this content_hash: the core decides only while the request still carries it.
+    const outcome: TeamsCardDecisionOutcome = decideApprovalInTx({
+      approvalId: p.approvalId, status: p.status, resolvedBy: approvalResolvedBy({ channel: 'teams', mode: 'card' }),
+      expectedContentHash: card.content_hash, now,
+    })
+    db.prepare(`
+      UPDATE approval_teams_cards SET decided_at = ?, decision = ?, decided_activity_id = ?, decided_by_aad = ?
+      WHERE approval_id = ? AND decided_at IS NULL
+    `).run(now, outcome === 'decided' ? p.status : `${p.status}:${outcome}`, p.activityId, p.ownerAad, p.approvalId)
+    return { outcome, approval: getApproval(p.approvalId) }
+  })()
+  if (res.outcome === 'decided') runApprovalConsumer(p.approvalId)
+  return res
 }
 
 // The CREATE path stamps the owner-notification message id onto the row

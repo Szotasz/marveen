@@ -162,7 +162,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | Key | Type | Default | Description | Restart |
 |-----|------|---------|-------------|---------|
 | `AGENT_TOKENS` | boolean | `0` (off) | Own dashboard token for every sub-agent (`agents/<name>/.dashboard-token`) with a server-side scope and identity binding; see `docs/agens-azonositas-api.md` section 8 | no (applies at the sub-agent's next start) |
-| `SKILL_QUARANTINE` | boolean | `0` (off) | Skill quarantine. Off: a new or improved skill (proposal, generation, import) goes live at once, with the scan, the hash binding and an audit line (`store/skills-audit.jsonl`); what the scan cannot show in full waits for approval. On: every new skill waits for the owner's approval. Turning it off over the API takes the dashboard login | no |
+| `SKILL_QUARANTINE` | boolean | `0` (off) | Skill quarantine. On: every new or improved skill (proposal, generation, import) waits for the owner's approval. Off (default): it goes live at once, with the scan, the hash binding and an audit line (`store/skills-audit.jsonl`); what the scan cannot show in full (for example because the findings list reached its cap), or where it finds a strong shape (a forged tag or header, an instruction override, invisible Unicode, running downloaded code, a long encoded blob), waits for approval. Turning it off over the API takes the dashboard login | no |
 
 **Registry -- Heartbeat module:**
 
@@ -185,6 +185,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (off) | macOS only | yes |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (off) | all | yes (channel start) |
 | `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (on) | all | yes (channel start) |
+| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (0–8760) | `0` (never expire) | all | yes (channel start) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- main-agent config isolation (macOS)
 
@@ -318,6 +319,22 @@ still answers once when tapped.
 `TELEGRAM_REPLY_BUTTONS=0` in `.env`. The next channel start rewrites the plugin source.
 Running agents keep the old code until their own plugin process restarts: restarting the
 session brings it to them.
+
+#### `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`: answer buttons expire
+
+**What it is for.** A button on an old question can still be tapped long after the conversation
+moved on. With a max age set (say `24`), a tap on a question older than that does not reach the
+agent: the toast asks to type the answer, and the question's buttons give way to a single "⏱ Lejárt, írd be a
+választ" ("expired, type the answer") button, as an answered question keeps its "✓ <label>". The
+age counts from the question's send time (the Telegram message's own timestamp), so it holds
+across a plugin restart. An answered question still gets "Erre már válaszoltál." ("already
+answered"). The buttons change on a tap only, never by themselves.
+
+**Setting it.** Dashboard: *Settings → Channels → `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`*, or for
+example `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24` in `.env`. Whole hours from 0 to 8760; `0` (the
+default) turns it off, and the plugin source is then exactly what it is today. An invalid value
+means no expiry, logged in one line in `store/channels-failures.log`. It takes effect at the next
+channel start, for running agents when their session restarts.
 
 **API endpoints:**
 

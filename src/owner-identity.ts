@@ -40,6 +40,21 @@ export function readTelegramOwnerSetting(path: string = OVERRIDES_FILE): string 
   }
 }
 
+// DCEXT1111 F1s: the Discord owner for the slash commands -- ONLY the explicit DISCORD_OWNER_USER_ID (an overrides-only
+// registry key; the same value the Discord overlay's tool-permission check reads). The plugin's sole-DM fallback is not
+// used here: the dashboard does not read the Discord plugin's access.json, and a command must not run for a guess.
+export const DISCORD_OWNER_KEY = 'DISCORD_OWNER_USER_ID'
+export const DISCORD_USER_ID_RX = /^[1-9][0-9]{16,19}$/
+export function readDiscordOwnerSetting(path: string = OVERRIDES_FILE): string | null {
+  try {
+    const v = (JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>)[DISCORD_OWNER_KEY]
+    const s = typeof v === 'string' ? v.trim() : ''
+    return DISCORD_USER_ID_RX.test(s) ? s : null
+  } catch {
+    return null
+  }
+}
+
 export type OwnerIdentity =
   | { chatId: string; source: 'setting' | 'allowed-chat-id' | 'sole-dm'; ambiguous?: undefined }
   | { chatId: null; source: null; ambiguous: boolean; reason: string }

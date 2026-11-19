@@ -42,7 +42,8 @@ import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { isKnownAgent } from './agent-config.js'
 import type { AgentTokenResolver } from './agent-tokens.js'
 import { logger } from '../logger.js'
-import { getAgentMessage, getApproval, getDb } from '../db.js'
+import { countDashboardUsers, getAgentMessage, getApproval, getDb } from '../db.js'
+import { SETUP_COOKIE_NAME, isSetupSession } from './public-access.js'
 import { readBody, stashPreReadBody, RequestBodyTooLargeError } from './http-helpers.js'
 import { agentVaultMode, isAgentReadableVaultId, readVaultAcl, type AgentVaultMode, type VaultAcl } from './vault-acl.js'
 
@@ -51,6 +52,9 @@ export type AuthResult =
   | { kind: 'device'; device: string; deviceId: number; scope: DeviceKeyScope }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string }
+  // DOCKERHTTPS1119: a redeemed one-time setup code, on the public listener, while no dashboard user exists. It opens
+  // the first-run paths only (routes/auth.ts mayActAsOwnerOrFirstRun); every other owner gate refuses it.
+  | { kind: 'setup' }
   | { kind: 'none' }
 
 export const SESSION_COOKIE_NAME = 'mv_session'
@@ -120,12 +124,45 @@ export function isFederationWireEndpoint(path: string, method: string): boolean 
   )
 }
 
+// DOCKERHTTPS1119 (Dani 81108 N1): on the public listener a request with NO principal reaches only these
+// unauthenticated /api/ paths: the probes and the sign-in steps the page needs before a cookie exists. Every other
+// path requiresAuth() leaves open (avatars, the Teams card callback, the operator key login, ...) answers 404 there
+// unless a browser cookie came with it, so a future exception in requiresAuth does not reach the internet by itself.
+export const PUBLIC_LISTENER_OPEN_PATHS: ReadonlyArray<readonly [method: string, path: string]> = [
+  ['GET', '/api/auth/status'],
+  ['POST', '/api/auth/login'],
+  ['POST', '/api/auth/login/totp'],
+  ['POST', '/api/auth/setup-code'],
+]
+
+// DOCKERHTTPS1119 (Geri's live run 81231, Dani): what a setup session (a redeemed one-time code, before the first
+// login) may reach among the gated paths: the wizard's state, so its first step renders, and creating the first
+// login. Everything else answers 403 setup_session_scope (403, not 401: a 401 would put the page's access notice
+// over the wizard). The owner gates of the routes still decide inside this list.
+export const SETUP_SESSION_PATHS: ReadonlyArray<readonly [method: string, path: string]> = [
+  ['GET', '/api/onboarding/status'],
+  ['POST', '/api/auth/users'],
+]
+
+export function setupSessionPath(path: string, method: string): boolean {
+  return SETUP_SESSION_PATHS.some(([m, p]) => m === method && p === path)
+}
+
+export function publicListenerOpenPath(path: string, method: string): boolean {
+  return PUBLIC_LISTENER_OPEN_PATHS.some(([m, p]) => m === method && p === path)
+}
+
 // Public (ungated) surfaces. These mirror the old inline exceptions exactly,
 // plus the new POST /api/auth/login (public + throttled) so the login form can
 // reach the server before a session exists.
 export function requiresAuth(path: string, method: string): boolean {
   if (path === '/api/auth/status' && method === 'GET') return false
   if (path === '/api/auth/login' && method === 'POST') return false
+  // DOCKERHTTPS1119: the second step of the login (the code after the password). Public like the login itself: it is
+  // authorised by the pending token the right password returned, and throttled like the login.
+  if (path === '/api/auth/login/totp' && method === 'POST') return false
+  // DOCKERHTTPS1119: the one-time setup code is redeemed before any cookie exists (public listener only).
+  if (path === '/api/auth/setup-code' && method === 'POST') return false
   // DASHOPERATOR1005: the operator page signs in with its key here, before any
   // cookie exists. The handler checks the key, the scope and the owner switch.
   if (path === '/api/operator/login' && method === 'POST') return false
@@ -135,6 +172,10 @@ export function requiresAuth(path: string, method: string): boolean {
   // authorised by a single-file, short-lived ticket instead, which the handler
   // checks itself (routes/video-review.ts); without a valid ticket it is 403.
   if (path === '/api/video-review/file' && (method === 'GET' || method === 'HEAD')) return false
+  // TEAMSAPPROVECARD1118: the Teams approval-card click, forwarded by the Teams plugin. It is authorised by the Bot
+  // Framework channel token the handler checks itself (bot-channel-token.ts); a dashboard token, shared by every agent,
+  // must not count there, so the route takes none. Without a channel token it is 401 (web/approval-teams-card.ts).
+  if (path === '/api/approvals/teams-card-action' && method === 'POST') return false
   return path.startsWith('/api/')
 }
 
@@ -145,7 +186,13 @@ export function resolveAuth(
   method: string,
   dashboardToken: string,
   resolveAgentToken?: AgentTokenResolver,
+  publicListener = false,
 ): AuthResult {
+  // DOCKERHTTPS1119: on the public listener (Caddy's upstream) only browser cookies count. The shared token, a
+  // sub-agent's token, a device key, the SSE ?token= and the federation tokens are local credentials: refused
+  // there whatever the request carries (public-access.ts says why the listener, not a header, decides).
+  if (publicListener) return resolveCookieAuth(req, true)
+
   // 1. Bearer header -- unchanged, highest precedence. The optional agent claim
   //    rides along: it never affects WHETHER the request is authenticated, only
   //    what the routes can say about who asked.
@@ -195,6 +242,11 @@ export function resolveAuth(
     if (peer !== null) return { kind: 'federation', peer }
   }
 
+  return resolveCookieAuth(req, false)
+}
+
+/** Steps 5-6 (and, on the public listener, the setup session): the browser cookies. */
+function resolveCookieAuth(req: http.IncomingMessage, publicListener: boolean): AuthResult {
   // 5. Browser-login session cookie.
   const cookieValue = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   if (cookieValue) {
@@ -209,6 +261,12 @@ export function resolveAuth(
   if (operatorCookie) {
     const op = resolveOperatorSession(operatorCookie)
     if (op) return { kind: 'device', device: op.device, deviceId: op.deviceId, scope: 'operator' }
+  }
+
+  // 7. DOCKERHTTPS1119: the setup session, on the public listener only, and only while no dashboard user exists
+  //    (disabled ones counted: a login that was ever set up ends the first run for good).
+  if (publicListener && isSetupSession(parseCookies(req.headers.cookie)[SETUP_COOKIE_NAME]) && countDashboardUsers(true) === 0) {
+    return { kind: 'setup' }
   }
 
   return { kind: 'none' }
@@ -593,9 +651,21 @@ export async function gateRequest(
   url: URL,
   path: string,
   method: string,
-  opts: { dashboardToken: string; resolveAgentToken?: AgentTokenResolver; mainAgentId: string; identityLookups?: IdentityLookups; agentVaultAcl?: () => VaultAcl },
+  opts: { dashboardToken: string; resolveAgentToken?: AgentTokenResolver; mainAgentId: string; identityLookups?: IdentityLookups; agentVaultAcl?: () => VaultAcl; publicListener?: boolean },
 ): Promise<AuthResult | null> {
-  const auth = resolveAuth(req, url, path, method, opts.dashboardToken, opts.resolveAgentToken)
+  const auth = resolveAuth(req, url, path, method, opts.dashboardToken, opts.resolveAgentToken, opts.publicListener === true)
+  // Dani n1 (81264): a setup session counts as no principal here too, so it does not reach the self-authenticating
+  // public routes (the operator login, avatars, the video file, the Teams card callback) either.
+  if (opts.publicListener === true && (auth.kind === 'none' || auth.kind === 'setup') && path.startsWith('/api/') && !requiresAuth(path, method) && !publicListenerOpenPath(path, method)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Not found' }))
+    return null
+  }
+  if (auth.kind === 'setup' && requiresAuth(path, method) && !setupSessionPath(path, method)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'The setup code only lets you create the dashboard password. Create it, then sign in.', code: 'setup_session_scope' }))
+    return null
+  }
   if (requiresAuth(path, method) && auth.kind === 'none') {
     if (isFederationWireEndpoint(path, method)) {
       // 401s are otherwise silent; federation-endpoint auth failures are the

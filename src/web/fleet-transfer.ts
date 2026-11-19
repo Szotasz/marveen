@@ -19,7 +19,8 @@ import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAM
 import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
-import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
+import { AGENTS_BASE_DIR, agentDir, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
+import { isPackageAgentDir } from './agent-package/marker.js'
 import { safeJoin, sanitizeAgentName } from './sanitize.js'
 import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
@@ -757,7 +758,9 @@ export const _exportVaultForTest = exportVault
 // The enc field signals the import side to decrypt before parsing.
 export const ENCRYPTED_FLEET_VERSION = 1
 
-export type ExportedFleet = { data: string; exportedAt: string }
+// skippedPackageAgents (MIOAGENTINSTALL1114, plan 4.2): the package agents left out of the export; the owner
+// installs them again from the catalog on the new machine (the JSON would carry only their shell).
+export type ExportedFleet = { data: string; exportedAt: string; skippedPackageAgents: string[] }
 
 export function exportFleet(options: { vaultPassword?: string } = {}): ExportedFleet {
   if (options.vaultPassword !== undefined && options.vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
@@ -769,7 +772,9 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   const bindingLookup = withSecrets ? new Map() : buildBindingLookup()
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
-  const agents = listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets))
+  const allNames = listAgentNames()
+  const skippedPackageAgents = allNames.filter((name) => isPackageAgentDir(agentDir(name)))
+  const agents = allNames.filter((name) => !skippedPackageAgents.includes(name)).map(name => exportAgent(name, bindingLookup, withSecrets))
   const skills = listSkillsInDir(join(homedir(), '.claude', 'skills'))
   const scheduledTasks = exportScheduledTasks()
 
@@ -827,10 +832,10 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     // Encrypt the entire JSON -- vault secrets, MCP tokens, settings.env all protected as a unit
     const blob = encryptWithPassword(normalized, options.vaultPassword!)
     const data = JSON.stringify({ enc: ENCRYPTED_FLEET_VERSION, blob })
-    return { data, exportedAt: fleet.exportedAt }
+    return { data, exportedAt: fleet.exportedAt, skippedPackageAgents }
   }
 
-  return { data: normalized, exportedAt: fleet.exportedAt }
+  return { data: normalized, exportedAt: fleet.exportedAt, skippedPackageAgents }
 }
 
 // ---------------------------------------------------------------------------

@@ -8049,6 +8049,12 @@ body {
 .onboarding-modal .modal-close { position: absolute; top: 12px; right: 12px; }
 .onboarding-modal h2 { margin: 0 0 4px; }
 .onb-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 16px; }
+/* DOCKERUX1118: the install language buttons on the wizard's first screen */
+.onb-lang { display: flex; gap: 6px; margin: -6px 0 14px; }
+.onb-lang[hidden] { display: none; }
+.onb-lang-btn { font-size: 12px; padding: 6px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-muted); cursor: pointer; }
+.onb-lang-btn[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.onb-lang-btn:disabled { opacity: 0.6; cursor: wait; }
 .onboarding-steps { display: flex; gap: 8px; margin-bottom: 10px; }
 .onb-flow-note { font-size: 12px; color: var(--text-muted); background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0 0 14px; }
 .onboarding-step { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 6px 8px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); }
@@ -8257,6 +8263,34 @@ body {
 .auth-session-row code { color: var(--text); }
 .auth-session-ua { margin-left: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-device-keys { margin-top: 18px; }
+/* DOCKERHTTPS1119: two-step sign-in (Settings, the wizard step, the login code step) */
+.auth-totp-status { font-size: 13px; margin: 0 0 8px; }
+.totp-setup { display: flex; flex-direction: column; gap: 8px; max-width: 420px; }
+.totp-setup .auth-muted { margin: 0; }
+.totp-qr { width: 200px; height: 200px; background: #fff; border-radius: 10px; padding: 8px; box-sizing: border-box; }
+.totp-qr svg { width: 100%; height: 100%; display: block; }
+.totp-secret-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.totp-secret { font-family: var(--mono, monospace); font-size: 14px; letter-spacing: 0.04em; word-break: break-all; color: var(--text); }
+.totp-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.totp-codes-title { font-weight: 600; font-size: 14px; margin: 0; color: var(--text); }
+.totp-codes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; margin: 4px 0; padding-left: 22px; font-family: var(--mono, monospace); font-size: 13px; color: var(--text); }
+.totp-saved { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--text); cursor: pointer; }
+.totp-code-step .totp-switch,
+.mv-auth-card button.totp-switch {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: underline;
+  cursor: pointer;
+  align-self: center;
+}
+.mv-auth-card button.totp-switch:hover { background: none; color: var(--accent-hover); }
+.onb-totp-login { max-width: none; }
+/* The display rules above would otherwise beat the hidden attribute the flows set. */
+.mv-auth-card[hidden], .auth-actions[hidden], .totp-actions[hidden], .totp-qr[hidden] { display: none; }
 .auth-device-name { color: var(--text); font-weight: 600; }
 .auth-device-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-device-row .auth-device-revoke { margin-left: auto; flex-shrink: 0; }

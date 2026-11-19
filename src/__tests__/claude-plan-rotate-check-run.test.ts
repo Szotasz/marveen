@@ -512,3 +512,64 @@ describe('rotateCheckOnce: the same lines as actions (PLANROTATEDEADLOCK1115 P1)
   })
 })
 
+// PLANROTATEDEADLOCK1115 P4 (Samu 79317): the active token plan's probe answers 429 without a 5h window.
+describe('the active plan answers 429 (PLANROTATEDEADLOCK1115 P4)', () => {
+  function active429(extra: Record<string, unknown>): void {
+    probeMock.mockImplementation(async (token: string) => {
+      if (token.endsWith('-a')) return { ok: false, error: 'rate_limited', message: 'm', httpStatus: 429, ...extra } as never
+      return { ok: true, httpStatus: 200, usage: { fiveHour: { usedPercent: 0, resetsAt: nowS() + 3600, status: 'allowed' }, sevenDay: null, overallStatus: null, representativeClaim: null } } as never
+    })
+  }
+  const setup = () => { rotationOn(); plans = [tokenPlan('a'), tokenPlan('b')]; state = { activePlanByAgent: { marveen: 'a' }, plans: {} } as ClaudePlansState }
+
+  it('a single header-less 429 with a short retry-after: no line (a burst), and it is marked for the next tick', async () => {
+    setup(); active429({ retryAfterSec: 30 })
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs).toEqual([])
+    expect(state.plans.a?.lastProbe).toMatchObject({ error: 'rate_limited', headerless: true })
+  })
+
+  it('the same header-less 429 on the next tick too: ROTATE', async () => {
+    setup(); active429({ retryAfterSec: 30 })
+    await runRotateCheck()
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs.some((l) => l.startsWith('ROTATE ') && l.includes('target=b '))).toBe(true)
+  })
+
+  it('a header-less 429 with retry-after over 5 minutes: ROTATE at once', async () => {
+    setup(); active429({ retryAfterSec: 40 * 60 })
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs.some((l) => l.startsWith('ROTATE '))).toBe(true)
+  })
+
+  it('exhausted, but it frees up within ROTATION_GATE.nearResetMs (30 min): the decision waits, as for any window', async () => {
+    setup(); active429({ retryAfterSec: 20 * 60 })
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs).toEqual([])
+  })
+
+  it('unified headers, only the overall status rejected (no 5h window): ROTATE', async () => {
+    setup(); active429({ usage: { fiveHour: null, sevenDay: null, overallStatus: 'rejected', representativeClaim: null } })
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(logs.some((l) => l.startsWith('ROTATE '))).toBe(true)
+  })
+})
+
+// Dani 79322: the second gate before a ROTATE line (rotation off OR not isolated) had no test with rotation ON.
+describe('rotation on, the main agent NOT isolated (Dani 79322)', () => {
+  it('2+ plans, the host login near the limit: no ROTATE, no action', async () => {
+    settings.set('CLAUDE_ROTATION_ENABLED', '1')
+    settings.set('MAIN_AGENT_ISOLATED_CONFIG', '0')
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    state = { activePlanByAgent: { marveen: 'a' }, plans: {} } as ClaudePlansState
+    usageJson = activeUsage(100, 100)
+    const actions = await rotateCheckOnce()
+    expect(actions).toEqual([])
+  })
+})
+

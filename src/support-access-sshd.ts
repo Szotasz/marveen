@@ -97,6 +97,8 @@ export interface SshdEffectiveConfig {
   readonly listenPorts: readonly number[]
   /** The address of every `listenaddress` line, lower case, without brackets, sorted (the wildcards included). */
   readonly listenAddresses: readonly string[]
+  /** The value of every `hostkey` line, in the order printed. Only the cross-check of the host key reads it. */
+  readonly hostKeys: readonly string[]
 }
 
 const SETTING_VALUE = /^[A-Za-z0-9._%/-]+$/
@@ -133,6 +135,7 @@ export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | nu
   const ports = new Set<number>()
   const addresses = new Set<string>()
   const acceptEnv: string[] = []
+  const hostKeys: string[] = []
   for (const raw of text.split('\n')) {
     const line = raw.trim()
     const space = line.indexOf(' ')
@@ -152,6 +155,8 @@ export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | nu
       if (isIP(address) !== (m[1] === undefined ? 4 : 6)) return null
       ports.add(port)
       addresses.add(address)
+    } else if (key === 'hostkey') {
+      hostKeys.push(value)
     } else if (key === 'acceptenv') {
       // One pattern per line as printed; a line with more is split, so no pattern is overlooked.
       if (value.length === 0) return null
@@ -183,6 +188,7 @@ export function parseSshdEffectiveConfig(text: string): SshdEffectiveConfig | nu
     acceptEnv,
     listenPorts: [...ports].sort((a, b) => a - b),
     listenAddresses: [...addresses].sort(),
+    hostKeys,
   }
 }
 
@@ -385,10 +391,20 @@ export interface SshdAssessmentInput {
   readonly answers: readonly SshdProbeAnswer[]
   /** For a login user that is not root: whether the answers could see what the daemon applies. Missing = not proven. */
   readonly nonRootProof?: { readonly ok: true } | { readonly ok: false; readonly problem: NonRootProblem }
+  /** The throwaway host key the probe passed with `-h` (not root), left out of hostKeyFiles. */
+  readonly probeHostKey?: string
 }
 
 export type SshdAssessment =
-  | { readonly ok: true; readonly version: SshdVersion; readonly keysFiles: readonly SupportKeysFileName[] }
+  | {
+      readonly ok: true
+      readonly version: SshdVersion
+      readonly keysFiles: readonly SupportKeysFileName[]
+      /** The ports sshd listens on, sorted; every answer gave the same. The host key is asked on the first. */
+      readonly listenPorts: readonly number[]
+      /** The `hostkey` files of the configuration, the probe's throwaway key left out (support-access-hostkey.ts). */
+      readonly hostKeyFiles: readonly string[]
+    }
   | { readonly ok: false; readonly problem: SshdProblem; readonly version: SshdVersion | null }
 
 /**
@@ -478,5 +494,6 @@ export function assessSshd(input: SshdAssessmentInput): SshdAssessment {
   }
   if (!configs.every((c) => c.forceCommand === 'none')) return refuse('force_command_set')
   if (!configs.every((c) => c.acceptEnv.every(acceptEnvPatternIsHarmless))) return refuse('accept_env_too_wide')
-  return { ok: true, version, keysFiles }
+  const hostKeyFiles = configs[0].hostKeys.filter((path) => path !== input.probeHostKey)
+  return { ok: true, version, keysFiles, listenPorts: ports, hostKeyFiles }
 }

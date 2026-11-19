@@ -35,7 +35,10 @@ What it does, in order:
      job; one that still does is logged (finish line scope_stop=leftover) and warned.
   5. Propagates the command's exit code (signal death -> 128 + signo).
   6. Appends start / wait / refuse / finish lines (JSON, one per line) to the
-     log, store/heavy-job-log.jsonl by default.
+     log, store/heavy-job-log.jsonl by default. A capped main-lane job that exited 0
+     gets max_mem_hint (twice its peak, rounded up to 256M, at least 256M) on its
+     finish line and a stderr note, only if that hint lowers the memory floor by at
+     least 256M.
 
 Configuration (environment; a command-line flag wins over its variable):
   HEAVY_JOB_STORE       directory of the lock, the queue and the log
@@ -84,6 +87,10 @@ collapsed, non-printables replaced, at most 100 characters).
 They also carry, as measurement only, MemAvailable at that moment
 ("mem_avail_mb") and the lock holder's live scope memory and cap
 ("holder_mem_mb", "holder_max_mb"; None when unreadable or uncapped).
+A holder that is itself waiting for its memory floor (the job has not started)
+is named as such: "holder_phase": "memory", its floor ("holder_need_mb") and
+cap ("holder_max_mb"), holder_mem_mb 0, and on stderr "the holder's job has not
+started, it is waiting for memory (floor X MB, available Y MB)" (#2832).
 If the queue cannot be used (the ticket cannot be created, the queue directory
 cannot be listed, the lock record that holds the short-lane counter cannot be
 read, or the own ticket vanished and cannot be re-created) the gate fails
@@ -396,6 +403,20 @@ def log(rec):
         pass
     finally:
         os.close(fd)
+
+
+def cap_hint_mb(peak_mb, cap_mb, min_mb, reserve):
+    """Suggested --max-mem in MB: twice the job's peak, rounded up to 256M (at least 256M),
+    and only if it lowers the memory floor max(min_mb, cap + reserve) by at least 256M
+    (so it is also below the cap). None otherwise: unknown peak, a cap that was not
+    oversized, or a cap whose floor is min_mb anyway.
+    shortcut: one run's peak, sampled every 0.5 s (a spike in the job's last half second
+    can be missed); a job whose memory varies run to run needs the caller's judgement."""
+    if not isinstance(peak_mb, int) or isinstance(peak_mb, bool) or peak_mb <= 0:
+        return None
+    hint = max(256, -(-2 * peak_mb // 256) * 256)
+    # at least one 256M step of floor: a 48 MB drop (2048M cap at the 2500 MB min-mb) is noise
+    return hint if max(min_mb, cap_mb + reserve) - max(min_mb, hint + reserve) >= 256 else None
 
 
 def say(msg):
@@ -895,13 +916,36 @@ def holder_info(rec):
                   "holder_unit": rec.get("unit")}
 
 
+def _record_int(rec, key):
+    v = rec.get(key, "")
+    return int(v) if re.fullmatch(r"\d{1,9}", v) else None
+
+
 def wait_mem_fields(rec):
     """Measurement only: the free memory and the lock holder's
     live scope memory at the moment a lock wait starts or times out, so the log
     shows whether there was headroom while the queue waited (the start line's
     mem_avail_mb is read only AFTER the lock is released). Never decides
-    anything; every unreadable value is None."""
-    out = {"mem_avail_mb": mem_available_mb(), "holder_mem_mb": None, "holder_max_mb": None}
+    anything; every unreadable value is None.
+    holder_phase (#2832): "memory" while the holder waits for its memory floor
+    with the lock held (its record says phase=memory); then holder_need_mb is
+    that floor, holder_max_mb its cap, and holder_mem_mb is 0: its job has not
+    started, so it has no scope and uses no job memory. "run" for any other
+    holder record (also a phase=memory record whose pid is gone), None when
+    the record has no pid."""
+    out = {"mem_avail_mb": mem_available_mb(), "holder_mem_mb": None, "holder_max_mb": None,
+           "holder_phase": None}
+    pid = _record_int(rec, "pid")
+    if pid:
+        # a record left by a holder that already exited (the record is not
+        # cleared on exit) says nothing about a memory wait
+        waiting = rec.get("phase") == "memory" and pid_alive(pid)
+        out["holder_phase"] = "memory" if waiting else "run"
+    if out["holder_phase"] == "memory":
+        out["holder_need_mb"] = _record_int(rec, "need_mb")
+        out["holder_max_mb"] = _record_int(rec, "max_mb")
+        out["holder_mem_mb"] = 0
+        return out
     cg = scope_cgroup(rec.get("unit", ""))
     if cg:
         cur = read_int(os.path.join(cg, "memory.current"))
@@ -909,6 +953,15 @@ def wait_mem_fields(rec):
         out["holder_mem_mb"] = cur // (1024 * 1024) if cur is not None else None
         out["holder_max_mb"] = mx // (1024 * 1024) if mx is not None else None
     return out
+
+
+def holder_mem_note(m):
+    """The stderr addition for a holder in its memory wait, or ""."""
+    if m.get("holder_phase") != "memory":
+        return ""
+    fmt = lambda v: ("%d MB" % v) if isinstance(v, int) else "unknown"
+    return ("; the holder's job has not started, it is waiting for memory "
+            "(floor %s, available %s)" % (fmt(m.get("holder_need_mb")), fmt(m.get("mem_avail_mb"))))
 
 
 def scope_cgroup(unit):
@@ -1327,14 +1380,18 @@ def run_child(argv, env, unit=None, max_sec=None):
     return code, stats
 
 
-def wait_memory(floor_now, deadline, label, avail=None):
+def wait_memory(floor_now, deadline, label, avail=None, on_wait=None):
     """Wait until MemAvailable >= floor_now() or the deadline (the floor is
     re-read every round: a side-lane job may start or end meanwhile). Returns
     (the last reading, None = unreadable; the floor it was compared with).
-    avail: a reading already taken. Unloads idle ollama models once when opted in."""
+    avail: a reading already taken. Unloads idle ollama models once when opted in.
+    on_wait(floor_mb): called when the wait starts and whenever the floor
+    changes during it (the lock record shows the holder's wait, #2832)."""
     floor_mb = floor_now()
     avail = mem_available_mb() if avail is None else avail
     if avail is not None and avail < floor_mb:
+        if on_wait:
+            on_wait(floor_mb)
         say("MemAvailable %d MB < required %d MB; waiting up to %ds"
             % (avail, floor_mb, max(0, round(deadline - time.monotonic()))))
         log({"event": "wait", "reason": "memory", "label": label, "mem_avail_mb": avail,
@@ -1348,7 +1405,9 @@ def wait_memory(floor_now, deadline, label, avail=None):
         while avail is not None and avail < floor_mb and time.monotonic() < deadline:
             time.sleep(min(poll_sec(), max(0.01, deadline - time.monotonic())))
             avail = mem_available_mb()
-            floor_mb = floor_now()
+            prev_floor, floor_mb = floor_mb, floor_now()
+            if on_wait and floor_mb != prev_floor:
+                on_wait(floor_mb)
     return avail, floor_mb
 
 
@@ -1446,6 +1505,8 @@ def main(argv=None):
     def on_first_wait(ahead):
         holder_rec = read_record(lp)
         text, fields = holder_info(holder_rec)
+        mem = wait_mem_fields(holder_rec)
+        text += holder_mem_note(mem)
         pos = len(ahead) + 1
         if ahead:
             say("queued behind older heavy jobs: queue position %d (ahead: %s); lock record: %s; "
@@ -1459,7 +1520,7 @@ def main(argv=None):
             rec["agent"] = agent
         if my_short:
             rec["short"] = True
-        log(dict(rec, **fields, **wait_mem_fields(holder_rec)))
+        log(dict(rec, **fields, **mem))
 
     state = {"cleanup": False, "pending": None}
 
@@ -1520,6 +1581,8 @@ def main(argv=None):
     if not got:
         holder_rec = read_record(lp)
         text, fields = holder_info(holder_rec)
+        mem = wait_mem_fields(holder_rec)
+        text += holder_mem_note(mem)
         say("REFUSED: another heavy job held the lock for %ds (%s)%s. Not started. "
             "Retry later." % (wait_sec, text,
                               ("; still behind %d older job(s) in the queue: %s"
@@ -1527,7 +1590,7 @@ def main(argv=None):
         log(dict({"event": "refuse", "reason": "lock_timeout", "label": label, "cmd": cmd_text,
                   "waited_sec": round(time.monotonic() - t0, 1),
                   "queue_pos": len(ahead) + 1, "ahead": ahead,
-                  "exit": EXIT_LOCK_TIMEOUT}, **fields, **wait_mem_fields(holder_rec)))
+                  "exit": EXIT_LOCK_TIMEOUT}, **fields, **mem))
         os.close(fd)
         return EXIT_LOCK_TIMEOUT
     token = secrets.token_hex(16)
@@ -1567,7 +1630,19 @@ def main(argv=None):
             # without the token a nested call cannot be verified; say so, still run capped
             say("warning: cannot write the lock holder record: %s" % e)
 
-    write_record(carry_tail)
+    # the record's tail until this job is admitted: the previous holder's
+    # short-lane counter, unchanged (also during the memory wait below)
+    wait_tail = carry_tail
+    write_record(wait_tail)
+
+    # #2832: a main-lane job waiting for its memory floor holds the lock with
+    # nothing running. The record says so (phase=memory, the floor, the cap),
+    # so a queued job's wait line can name it; admission drops it again.
+    mem_rec = {"written": False}
+
+    def on_mem_wait(floor_mb):
+        mem_rec["written"] = True
+        write_record("%s phase=memory need_mb=%d max_mb=%d" % (wait_tail, floor_mb, cap_mb))
 
     # 2. memory floor (SIGTERM/SIGINT/SIGHUP during this wait: refuse line, 128 + signo).
     # Main lane: also the unused cap of a job in the side lane. Side lane:
@@ -1595,7 +1670,8 @@ def main(argv=None):
     mem_caught = None
     try:
         avail, floor_mb = wait_memory(floor_now, deadline, label,
-                                      avail=side["mem_avail_mb"] if side else None)
+                                      avail=side["mem_avail_mb"] if side else None,
+                                      on_wait=None if side else on_mem_wait)
     except QueueSignal as e:
         mem_caught, avail = e.signo, None
     finally:
@@ -1631,8 +1707,10 @@ def main(argv=None):
         return EXIT_MEM_TIMEOUT
 
     # 3. run, capped
-    if lane_tail != carry_tail:
-        write_record(lane_tail)  # admitted: now this job counts in the short lane
+    if lane_tail != carry_tail or mem_rec["written"]:
+        # admitted: now this job counts in the short lane, and is no longer
+        # in the memory wait
+        write_record(lane_tail)
     env = dict(os.environ, HEAVY_JOB_ACTIVE="1", HEAVY_JOB_TOKEN=token)
     if scoped:
         argv_run = ["systemd-run", "--user", "--scope", "--collect", "--quiet"] + no_expand_flag() + [
@@ -1689,6 +1767,16 @@ def main(argv=None):
         say("STOPPED: the job was still running after --max-sec %ds and was stopped by the gate "
             "(whole scope); exit %d (the killed job's own code: %s)"
             % (max_sec, EXIT_RUNTIME_LIMIT, stats.get("killed_exit")))
+    # an oversized cap raises the memory floor; a side-lane job's floor is computed differently: no hint
+    hint = None
+    if scoped and code == 0 and not side:
+        hint = cap_hint_mb(stats.get("peak_mb"), cap_mb, opts["min_mb"], reserve)
+    if hint:
+        rec["max_mem_hint"] = "%dM" % hint
+        say("note: the job peaked at %d MB of its %d MB cap; --max-mem %dM is enough next time and "
+            "lowers the memory floor %d -> %d MB"
+            % (stats["peak_mb"], cap_mb, hint, max(opts["min_mb"], cap_mb + reserve),
+               max(opts["min_mb"], hint + reserve)))
     if scoped and code in (137, 143) and not stats.get("forwarded_signals"):
         signame = "SIGKILL" if code == 137 else "SIGTERM"
         rec["stopped_by_signal"] = signame

@@ -1,7 +1,7 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
-import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePaneAsync } from './agent-process.js'
+import { withTmuxBatch, tmuxBatchListSessionsFailed, isAgentRunning, captureParkedInputView, sendEnterToSession, capturePaneAsync } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
@@ -11,6 +11,7 @@ import {
   parkedPasteSignature,
   decideStuckInputRecovery,
   detectPaneState,
+  paneTurnInFlight,
   type PaneState,
   type StuckInputState,
   type StuckInputThresholds,
@@ -264,7 +265,9 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
       // exactly this (the agent's own outbound messages bracketed every
       // alert). Recovery attempts above are untouched; only the alert gates.
       const pane = await capturePaneAsync(session)
-      const paneState = pane != null ? detectPaneState(pane) : null
+      // paneTurnInFlight first: a tall parked box pushes the live spinner out
+      // of detectPaneState's window, and a working pane reads 'typing'.
+      const paneState: PaneState | null = pane == null ? null : paneTurnInFlight(pane) ? 'busy' : detectPaneState(pane)
       if (shouldAlertParkedGiveUp({
         attempts: next.attempts,
         maxAttempts: LOCAL_FAST_THRESHOLDS.maxAttempts,
@@ -315,9 +318,14 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     } catch (err) {
       logger.debug({ err }, 'stuck-input-watcher: main agent check error')
     }
-    for (const name of listAgentNames()) {
-      if (!isAgentRunning(name)) {
-        watchState.delete(resolveAgentSession(name))
+    const names = listAgentNames()
+    // Read run state once at pass start: new starts wait one pass; stops use the existing check failure path.
+    const running = withTmuxBatch(() => new Map(names.map(name => [name, isAgentRunning(name)])))
+    const listFailed = tmuxBatchListSessionsFailed()
+    for (const name of names) {
+      if (!running.get(name)) {
+        // A failed LOCAL listing is not "every session gone": keep the spell, the next successful pass decides.
+        if (!listFailed) watchState.delete(resolveAgentSession(name))
         continue
       }
       const session = resolveAgentSession(name)

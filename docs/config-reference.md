@@ -165,7 +165,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | Kulcs | Típus | Alapérték | Leírás | Újraindítás |
 |-------|-------|-----------|--------|-------------|
 | `AGENT_TOKENS` | boolean | `0` (ki) | Saját dashboard-token minden al-ügynöknek (`agents/<név>/.dashboard-token`), szerveroldali hatókörrel és azonosság-kötéssel; lásd `agens-azonositas-api.md` 8. fejezet | nem (az al-ügynök következő indításakor lép életbe) |
-| `SKILL_QUARANTINE` | boolean | `0` (ki) | Skill-karantén. Ki: az új vagy javított skill (javaslat, generálás, import) azonnal élesedik, a scan, a hash-kötés és egy auditsor (`store/skills-audit.jsonl`) mellett; ami a scan számára nem mutatható teljesen, jóváhagyásra vár. Be: minden új skill a gazda jóváhagyásáig vár. Kikapcsolni az API-n csak a dashboard-belépéssel lehet | nem |
+| `SKILL_QUARANTINE` | boolean | `0` (ki) | Skill-karantén. Be: minden új vagy javított skill (javaslat, generálás, import) a gazda jóváhagyásáig vár. Ki (alapértelmezés): azonnal élesedik, a scan, a hash-kötés és egy auditsor (`store/skills-audit.jsonl`) mellett; ami a scan számára nem mutatható teljesen (például mert a találati lista elérte a felső korlátját), vagy amiben a scan erős mintát talál (hamisított címke vagy fejléc, utasítás-felülírás, láthatatlan Unicode, letöltött kód futtatása, hosszú kódolt blob), az jóváhagyásra vár. Kikapcsolni az API-n csak a dashboard-belépéssel lehet | nem |
 
 **Registry -- Heartbeat modul:**
 
@@ -174,6 +174,9 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `HEARTBEAT_START_HOUR` | int | 9 | min 0, max 22 | nem |
 | `HEARTBEAT_END_HOUR` | int | 23 | min 1, max 24 | nem |
 | `HEARTBEAT_AGENT_ENABLED` | string | `1` | `0` vagy `1` | igen |
+| `QUOTA_GATE_HARD_AT_PERCENT` | int | 0 (ki) | min 0, max 100 | nem |
+
+`QUOTA_GATE_HARD_AT_PERCENT` a kvóta-kapu (`src/quota-gate.ts`) szintjeit kapcsolja be kis előfizetéshez. 0: a mai viselkedés (85%-tól minden háttér-heartbeat áll). Ha be van állítva (pl. 95): 85% és e határ között csak az `essential: true` jelölésű heartbeatek futnak (`scheduled-tasks.md`), a határon és fölötte egy háttérfeladat sem. 85 vagy annál kisebb érték mindenkire lejjebb hozza a vonalat (az essential sem fut). A 20 perc és 2 óra közötti régi pillanatképnél a kapu már nem tart vissza, de még nem riaszt; 2 óra után egyszer szól. A `task` és `command` típusú feladatokat nem érinti.
 **Registry -- Ötletláda modul:**
 
 | Kulcs | Típus | Alapérték | Korlát | Újraindítás |
@@ -188,6 +191,11 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
 | `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
+| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (0–8760) | `0` (nem jár le) | mind | igen (csatorna-indítás) |
+| `DISCORD_PLUGIN_EXT` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
+| `DISCORD_OWNER_USER_ID` | string | üres | mind | igen (csatorna-indítás) |
+| `DISCORD_BACKFILL` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
+| `DISCORD_CHANNEL_POLICY` | string (JSON) | üres | mind | igen (csatorna-indítás) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- a fő agent config-izolációja (macOS)
 
@@ -322,6 +330,64 @@ kapcsolás előtt kiküldött gombra koppintás egyszer még válaszol.
 `.env`-ben `TELEGRAM_REPLY_BUTTONS=0`. A csatorna következő indításakor a script átírja a
 plugin forrását. Az ügynökök viszont addig a régi kóddal futnak, amíg a saját plugin-folyamatuk
 újra nem indul: a session újraindítása hozza el náluk.
+
+#### `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`: a válasz-gombok lejárata
+
+**Mire szolgál.** Egy régi kérdés gombjára akkor is rá lehet koppintani, amikor a beszélgetés
+már rég továbblépett. Beállítva (például `24`) egy ennél régebbi kérdés gombjára koppintás nem
+jut el az ügynökhöz: a felugró üzenet azt kéri, hogy a választ írd be, és a kérdés gombjai helyére
+egyetlen „⏱ Lejárt, írd be a választ” gomb kerül (mint a megválaszolt kérdésnél a „✓ <felirat>”). A kor a kérdés elküldési idejétől számít (a Telegram-üzenet saját időbélyege),
+így a plugin újraindítása után is érvényes. Egy már megválaszolt kérdésnél továbbra is az „Erre
+már válaszoltál.” üzenet jön. A gombokat csak koppintáskor cseréli, magától nem.
+
+**Beállítás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`*, vagy
+`.env`-ben például `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24`. Egész óra 0 és 8760 között; a `0`
+(alapértelmezés) kikapcsolja, és ilyenkor a plugin forrása pontosan a mai. Érvénytelen értéknél
+a gombok nem járnak le, és a `store/channels-failures.log` egy sorban jelzi. A csatorna következő
+indításakor lép életbe, a futó ügynököknél a session újraindításával.
+
+#### `DISCORD_PLUGIN_EXT`, `DISCORD_OWNER_USER_ID`, `DISCORD_BACKFILL`: a Marveen Discord-pluginja
+
+**Mire szolgál.** A csatorna-indítás (`scripts/patch-discord-plugin.py`) a hivatalos Discord plugin
+forrását a Marveen-változatra cseréli (`vendor/discord-plugin/<verzió>/overlay`, a különbség a
+`VENDOR.md`-ben). Csak akkor, ha a telepített plugin pontosan az ismert verzió; plugin-frissítés
+után a hivatalos plugin fut változatlanul, és a `store/channels-failures.log` egy `LOUD:` sorban jelzi.
+
+**Kikapcsolás.** `DISCORD_PLUGIN_EXT=0` (csak a gazda: felülírás-kulcs, `.env`-sor nem kapcsolja ki).
+A csatorna következő indításakor a hivatalos plugin áll vissza byte-azonosan.
+
+**A gazda.** `DISCORD_OWNER_USER_ID`: csak ő kapja Discordon az eszköz-jóváhagyás kérését, és
+csak az ő döntése érvényes. Üresen a fő bot egyetlen párosított DM-je; több DM mellett senki (a
+kérés a terminálban marad). Felülírás-kulcs: `.env`-ből nem olvasódik.
+
+**Pótlás.** `DISCORD_BACKFILL=0` kikapcsolja a kiesett üzenetek induláskori pótlását.
+
+**Szerepek csatornánként.** `DISCORD_CHANNEL_POLICY` (csak a gazda, felülírás-kulcs), például
+`{"<csatorna-ID>": {"allowRoles": ["<szerep-ID>"]}}`. Ahol szerep van megadva, ott a csatorna engedélyezett
+felhasználói MELLETT a szerep birtokosai is írhatnak a botnak (üres felhasználói lista mellett csak ők).
+A szerep **ID-ja** kell, nem a neve: a mentés a nem-ID tételt elutasítja, a csatorna-indítás pedig minden
+eldobott tételt egy `LOUD` sorral jelez. Vigyázat: az `@everyone` szerep ID-ja a szerver (guild) ID-ja, érvényes
+ID, tehát átmegy, és a csatornát a szerver MINDEN tagjának megnyitja.
+Nem az `access.json`-ban él, mert a `/discord:access group add` a csatorna bejegyzését felülírja.
+Ugyanitt kapcsolható be csatornánként a **csatorna-előzmény**: `{"<csatorna-ID>": {"history": true}}` (a
+szerepekkel együtt is). Ilyenkor a botnak szóló üzenet elé bekerül, amit a csatornában a bot utolsó üzenete óta
+írtak (legfeljebb 20 üzenet, csak azoktól, akik a botnak is írhatnának). Alapból ki van kapcsolva. Az értéke
+idézőjel nélküli `true` vagy `false`; mást (`"true"`, `1`) és ismeretlen kulcsot (elírást) a mentés visszautasít.
+Szintén itt kapcsolható be az **automatikus szál**: `{"<csatorna-ID>": {"autoThread": true}}`. Ilyenkor a botnak
+szóló üzenet szálat nyit magán, és a válasz abba megy (csak olyan csatornán, ahol a botot meg kell szólítani).
+Ha a szál nem nyitható meg, egy sor megy a csatornába, és az üzenet nem jut el a sessionig. Alapból ki van kapcsolva.
+A `history`-hoz hasonlóan csak idézőjel nélküli `true` vagy `false` lehet.
+
+**Slash-parancsok.** Ha a `DISCORD_OWNER_USER_ID` be van állítva, a dashboard parancslistája (ugyanaz, amiből a
+Telegram-menü készül) Discord slash-parancsként is megjelenik, de csak a bottal folytatott DM-ben, és csak a
+gazdának fut. A válasz ugyanaz, mint Telegramon (a parancs-hook adja, modell-kör nélkül). Discordról csak az
+olvasó parancsok futnak (`/status`, `/usage`, `/board`...); egy állító parancs (`/model`, `/context clear`, a saját
+parancsok) egy sorban jelzi, hogy Telegramon adható ki. A lista a csatorna indításakor frissül, és a Discordnál
+csak akkor regisztrálódik újra, ha változott.
+
+**Kapcsolat-figyelés.** A plugin 15 mp-enként nézi, él-e a Discord-kapcsolat; elakadásnál újra bejelentkezik,
+de legfeljebb 5 percenként, egyre ritkábban (5-60 perc), és 24 óra alatt legfeljebb 20-szor
+(`$DISCORD_STATE_DIR/reconnects.json`). A hosszú csend önmagában nem hiba, csak rossz heartbeattel együtt.
 
 **API végpontok:**
 

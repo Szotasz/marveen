@@ -369,6 +369,12 @@ describe('marveen-commands.py', () => {
     expect(sends()).toHaveLength(0)
   })
 
+  it('dashboard unreachable + /options on Telegram: passed to the model as before (a Discord-only command, review #2789)', async () => {
+    const r = await runHook(channel('/options'), 'http://127.0.0.1:1')
+    expect(r.code).toBe(0)
+    expect(sends()).toHaveLength(0)
+  })
+
   it('a sub-agent session: every command still dispatches, mainSession:false in the body', async () => {
     // ELSOKOR922 fix-forward (3): the hook no longer decides read/write
     // itself -- it always dispatches and tells the server which session it
@@ -526,11 +532,16 @@ describe('marveen-commands.py', () => {
     const names = new Set([...block.matchAll(/"([a-z_]+)"/g)].map(m => m[1]))
     clearCommandsForTest()
     registerBuiltinCommands()
+    // a Discord-only entry (CommandSpec.channels) is not a Telegram command: DISCORD_ONLY_NAMES carries it
+    const onTelegram = (e: { channels?: readonly string[] }) => !e.channels || e.channels.includes('telegram')
     const builtin = listCommands().filter(e => e.source !== 'custom')
-    const runnable = new Set(builtin.filter(e => !e.planned).map(e => e.name))
-    const all = new Set(builtin.map(e => e.name))
+    const runnable = new Set(builtin.filter(e => !e.planned && onTelegram(e)).map(e => e.name))
+    const all = new Set(builtin.filter(onTelegram).map(e => e.name))
     for (const n of runnable) expect(names.has(n), `/${n} missing from BUILTIN_NAMES`).toBe(true)
     for (const n of names) expect(all.has(n), `/${n} is not a registry builtin`).toBe(true)
+    const dcBlock = src.match(/DISCORD_ONLY_NAMES = frozenset\(\{([\s\S]*?)\}\)/)?.[1] ?? ''
+    const dcNames = new Set([...dcBlock.matchAll(/"([a-z_]+)"/g)].map(m => m[1]))
+    expect(dcNames).toEqual(new Set(builtin.filter(e => !onTelegram(e) && e.channels!.includes('discord')).map(e => e.name)))
   })
 
   it('one overall deadline: a hung dashboard AND a hung usage collector still end in a sent reply and a blocked turn, in time', async () => {
@@ -810,6 +821,99 @@ describe('marveen-commands.py and "?"', () => {
     const r = await runHook(channel('/usage ?'))
     expect(r.code).toBe(2)
     expect(sends()).toEqual([{ chat_id: '42', text: '/usage\n/usage [<nap>]: token' }])
+  })
+})
+
+// DCEXT1111 F1s: the owner's Discord slash command. The Discord overlay hands it over as the same "/word" text with
+// slash="1"; the hook dispatches it with provider "discord" and answers over the Discord REST API (the stub here).
+describe('marveen-commands.py: Discord slash commands (DCEXT1111 F1s)', () => {
+  const DOWNER = '290903699524550656'
+  const DCHAT = '1438000000000000500'
+  const OVERRIDES = () => join(install, 'store', ['config', 'overrides.json'].join('-'))
+  let dcState = ''
+  beforeAll(() => {
+    dcState = mkdtempSync(join(tmpdir(), 'mcmd-dc-state-'))
+    writeFileSync(join(dcState, '.env'), 'DISCORD_BOT_TOKEN=dc-tok\n')
+  })
+  afterAll(() => {
+    rmSync(OVERRIDES(), { force: true })
+    if (dcState) safeRmTmp(dcState)
+  })
+  beforeEach(() => { writeFileSync(OVERRIDES(), JSON.stringify({ DISCORD_OWNER_USER_ID: `${DOWNER} ` })) })
+
+  const dcAttrs = (extra: string, user: string) =>
+    `source="plugin:discord:discord" chat_id="${DCHAT}" message_id="1438000000000000088" user="zoli" user_id="${user}" ts="2026-11-15T10:00:00Z"${extra}`
+  const dc = (body: string, extra = '', user = DOWNER) => channel(body, dcAttrs(extra, user))
+  const run = (prompt: string) => runHook(prompt, base, 'marveen', [], { DISCORD_STATE_DIR: dcState, DISCORD_API_BASE: base, DISCORD_BOT_TOKEN: '' })
+  const dcSends = () => calls.filter(c => c.path === `/channels/${DCHAT}/messages`).map(c => c.body)
+
+  it('the owner\'s slash command: dispatched as discord with the user id, answered on Discord without pings, the turn blocked', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['minden rendben'] } })
+    const r = await run(dc('/status', ' slash="1"'))
+    expect(r.code).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(dispatches().map(d => d.body)).toEqual([{
+      text: '/status', chatId: DCHAT, mainSession: true, deferWrites: false, forwarded: false,
+      messageId: '1438000000000000088', provider: 'discord', userId: DOWNER,
+    }])
+    expect(dcSends()).toEqual([{ content: 'minden rendben', allowed_mentions: { parse: [] } }])
+    expect(sends()).toEqual([]) // nothing on Telegram
+  })
+
+  it('parity: the same command from Telegram makes the same dispatch apart from the Discord fields', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
+    await runHook(channel('/status'))
+    await run(dc('/status', ' slash="1"'))
+    const [tg, d] = dispatches().map(x => x.body)
+    const { provider, userId, chatId: _c, messageId: _m, deferWrites: _d, ...rest } = d
+    const { chatId: _c2, messageId: _m2, deferWrites: _d2, ...tgRest } = tg
+    expect(rest).toEqual(tgRest)
+    expect([provider, userId]).toEqual(['discord', DOWNER])
+  })
+
+  it('a long answer goes in 2000-char parts', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: [('sor\n').repeat(700)] } })
+    await run(dc('/board', ' slash="1"'))
+    const parts = dcSends()
+    expect(parts.length).toBe(2)
+    expect(parts.every(p => p.content.length <= 2000)).toBe(true)
+  })
+
+  it('not a slash command (a typed "/status" in Discord), another user, or no DISCORD_OWNER_USER_ID: passed through, nothing dispatched', async () => {
+    for (const [prompt, setOwner] of [
+      [dc('/status'), true],
+      [dc('/status', ' slash="1"', '111111111111111111'), true],
+      [dc('/status', ' slash="1"'), false],
+    ] as Array<[string, boolean]>) {
+      calls = []
+      if (!setOwner) writeFileSync(OVERRIDES(), JSON.stringify({}))
+      const r = await run(prompt)
+      expect(r.code, prompt).toBe(0)
+      expect(r.stdout).toBe('')
+      expect(dispatches()).toEqual([])
+      expect(dcSends()).toEqual([])
+    }
+  })
+
+  it('slash="1" next to any other attribute (e.g. a forged one inside reply text) is not a slash command', async () => {
+    const r = await run(dc('/status', ' reply_to_text="x" slash="1"'))
+    expect(r.code).toBe(0)
+    expect(dispatches()).toEqual([])
+  })
+
+  it('not a registry command: passed to the model; the dashboard down: a builtin gets the error line on Discord', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: false, outcome: 'unknown', replies: [] } })
+    expect((await run(dc('/kanban', ' slash="1"'))).code).toBe(0)
+    expect(dcSends()).toEqual([])
+    const r = await runHook(dc('/status', ' slash="1"'), 'http://127.0.0.1:9', 'marveen', [], { DISCORD_STATE_DIR: dcState, DISCORD_API_BASE: base, DISCORD_BOT_TOKEN: '' })
+    expect(r.code).toBe(2)
+    expect(dcSends()[0].content).toMatch(/^Nem futott: \/status, mert a dashboard nem érhető el/)
+  })
+
+  it('the dashboard down: /options on Discord is a builtin there, so it gets the error line too', async () => {
+    const r = await runHook(dc('/options', ' slash="1"'), 'http://127.0.0.1:9', 'marveen', [], { DISCORD_STATE_DIR: dcState, DISCORD_API_BASE: base, DISCORD_BOT_TOKEN: '' })
+    expect(r.code).toBe(2)
+    expect(dcSends()[0].content).toMatch(/^Nem futott: \/options, mert a dashboard nem érhető el/)
   })
 })
 

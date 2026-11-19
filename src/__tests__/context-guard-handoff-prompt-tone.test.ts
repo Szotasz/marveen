@@ -21,6 +21,9 @@ import {
   handoffPrompt,
   idleFlushHandoffPrompt,
   staleRefreshHandoffPrompt,
+  dailyHandoffPrompt,
+  periodicHandoffPrompt,
+  taskCloseHandoffPrompt,
 } from '../web/context-guard-runner.js'
 
 const PATH = '/tmp/agents/x/HANDOFF.md'
@@ -160,5 +163,43 @@ describe('the selecting ternary keeps the alarming prompt as the fallback', () =
     expect(idleCall).toBeGreaterThan(0)
     expect(bare).toBeGreaterThan(0)
     expect(bare).toBeGreaterThan(idleCall)
+  })
+})
+
+// HANDOFFKARTYA1118: at a customer, a fresh session continued from the kanban
+// alone and dropped an agreed HANDOFF item that had no card. Every request that
+// asks for a first handoff now asks, per Next Steps item, for the card id or the
+// marker "KÁRTYA NÉLKÜL"; the seed handoff skill uses the same marker, so the
+// writer and the template cannot drift apart.
+describe('every first-write handoff request asks for a card id or the no-card marker per Next Steps item', () => {
+  const MARKER = 'KÁRTYA NÉLKÜL'
+  const requests: Array<[string, () => string]> = [
+    ['act', act],
+    ['idle', idle],
+    ['daily', () => dailyHandoffPrompt('04:00', PATH)],
+    ['periodic', () => periodicHandoffPrompt(30, PATH)],
+    ['task-close', () => taskCloseHandoffPrompt(PATH)],
+  ]
+  for (const [label, make] of requests) {
+    it(label, () => {
+      const p = make()
+      expect(p).toContain('a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját')
+      expect(p).toContain(`"${MARKER}"`)
+    })
+  }
+
+  it('the seed handoff skill asks for the same marker in its Next Steps template', () => {
+    // DOCKERI18N1119: the base path is the Hungarian text, i18n/en/ the English one; both carry the marker.
+    const skill = readFileSync(join(process.cwd(), 'i18n/en/seed-skills/handoff/SKILL.md'), 'utf-8')
+    const nextSteps = skill.slice(skill.indexOf('## Next Steps'), skill.indexOf('### 3. Deliver'))
+    expect(nextSteps.length).toBeGreaterThan(0)
+    expect(nextSteps).toContain('kanban card ID or the marker `KÁRTYA NÉLKÜL` (no card)')
+    // and the closing paragraph no longer reads as "the kanban is the full list"
+    expect(skill).toContain('the kanban is not the full to-do list either')
+    const hu = readFileSync(join(process.cwd(), 'seed-skills/handoff/SKILL.md'), 'utf-8')
+    const huNextSteps = hu.slice(hu.indexOf('## Next Steps'), hu.indexOf('### 3. Kézbesítés'))
+    expect(huNextSteps.length).toBeGreaterThan(0)
+    expect(huNextSteps).toContain(`\`${MARKER}\``)
+    expect(hu).toContain('A kanban viszont nem is a teljes teendőlista')
   })
 })

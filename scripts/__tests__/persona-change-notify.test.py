@@ -125,6 +125,18 @@ def main():
     t.write("agents/igor/SOUL.md", "back\n")
     t.run()
     check("created again", len(t.sent) == 1 and "agents/igor/SOUL.md (letrehozva" in t.sent[0]["text"], True)
+
+    print("a package agent's layers are persona files too (MIOAGENTINSTALL1114, M25)")
+    t.sent.clear()
+    t.write("agents/pkg/PACKAGE.md", "p\n")
+    t.write("agents/pkg/LOCAL.md", "l\n")
+    t.run("Write")
+    check("both new layers alert", len(t.sent) == 1 and "agents/pkg/PACKAGE.md (letrehozva" in t.sent[0]["text"]
+          and "agents/pkg/LOCAL.md (letrehozva" in t.sent[0]["text"], True)
+    t.sent.clear()
+    t.write("agents/pkg/LOCAL.md", "l\nmine\n")
+    t.run("Edit")
+    check("an edit of the local layer alerts", len(t.sent) == 1 and "agents/pkg/LOCAL.md (modositva, 2 sor)" in t.sent[0]["text"], True)
     t.done()
 
     print("no token: nothing is sent, but the log line is still written")

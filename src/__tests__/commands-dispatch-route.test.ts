@@ -10,15 +10,15 @@ import { readFileSync } from 'node:fs'
 import { initDatabase } from '../db.js'
 import { join } from 'node:path'
 import { registerCommand, clearCommandsForTest } from '../web/commands.js'
-import { dispatchForChat, tryHandleCommands, mainSessionFromBody } from '../web/routes/commands.js'
+import { dispatchForChat, dispatchForDiscord, DISCORD_WRITE_REPLY, tryHandleCommands, mainSessionFromBody } from '../web/routes/commands.js'
 import { requiresAuth, resolveAuth } from '../web/auth-gate.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 // The owner chat the route resolves, and the channel state dir the evidence
 // is read from: both pinned, so the HTTP cases below never see a live install.
 // OWNERAUTHGUESS1106: the route asks the strict identity resolver who the owner is
-const ident = vi.hoisted(() => ({ current: { chatId: '42', source: 'setting' } as Record<string, unknown> }))
-vi.mock('../owner-identity.js', async (orig) => ({ ...(await orig<typeof import('../owner-identity.js')>()), resolveOwnerIdentity: () => ident.current }))
+const ident = vi.hoisted(() => ({ current: { chatId: '42', source: 'setting' } as Record<string, unknown>, discord: '290903699524550656' as string | null }))
+vi.mock('../owner-identity.js', async (orig) => ({ ...(await orig<typeof import('../owner-identity.js')>()), resolveOwnerIdentity: () => ident.current, readDiscordOwnerSetting: () => ident.discord }))
 const STATE = mkdtempSync(join(tmpdir(), 'cmd-evidence-'))
 const prevStateDir = process.env.TELEGRAM_STATE_DIR
 beforeAll(() => { initDatabase(':memory:'); process.env.TELEGRAM_STATE_DIR = STATE })
@@ -239,6 +239,21 @@ describe('POST /api/commands/dispatch', () => {
     await tryHandleCommands(ctx)
     expect(out.body.commands.map((c: { command: string }) => c.command)).toEqual(['status'])
   })
+  it('GET /api/commands/menu?channel=discord: the Discord slash list; a Discord-only entry only there; a bad channel is a 400', async () => {
+    clearCommandsForTest()
+    registerCommand({ name: 'status', kind: 'read', description: 'á', run: () => {} })
+    registerCommand({ name: 'options', kind: 'read', description: 'k', channels: ['discord'], run: () => {} })
+    const names = async (q: string) => {
+      const { ctx, out } = fakeCtx({}, {}, 'GET', '/api/commands/menu')
+      ctx.url = new URL(`http://localhost:3420/api/commands/menu${q}`)
+      await tryHandleCommands(ctx)
+      return out
+    }
+    expect((await names('')).body.commands.map((c: { command: string }) => c.command)).toEqual(['status'])
+    expect((await names('?channel=telegram')).body.commands.map((c: { command: string }) => c.command)).toEqual(['status'])
+    expect((await names('?channel=discord')).body.commands.map((c: { command: string }) => c.command)).toEqual(['status', 'options'])
+    expect((await names('?channel=slack')).status).toBe(400)
+  })
   it('other paths are not ours', async () => {
     const { ctx } = fakeCtx({}, {}, 'GET', '/api/status')
     expect(await tryHandleCommands(ctx)).toBe(false)
@@ -265,5 +280,68 @@ describe('wiring (review #1529, point 1)', () => {
     expect(code).toMatch(/^\s*registerBuiltinCommands\(\)$/m)
     // inside the authenticated route chain, i.e. after the auth gate resolved routeCtx
     expect(code.indexOf('if (await tryHandleCommands(routeCtx)) return')).toBeGreaterThan(code.indexOf('if (await tryHandleStatus(routeCtx)) return'))
+  })
+})
+
+// DCEXT1111 F1s: the owner's Discord slash command, answered by the same registry as on Telegram.
+describe('dispatchForDiscord (DCEXT1111 F1s)', () => {
+  const DOWNER = '290903699524550656'
+  const OTHER = '111111111111111111'
+
+  it('parity: a read command gives exactly the Telegram answer, through the same registry run', async () => {
+    const tg = await dispatchForChat('/status', '42', '42')
+    const dc = await dispatchForDiscord('/status', DOWNER, DOWNER)
+    expect(dc).toEqual(tg)
+    expect(runs).toBe(2)
+  })
+
+  it('another user, or no DISCORD_OWNER_USER_ID: nothing runs, passed to the model', async () => {
+    expect(await dispatchForDiscord('/status', OTHER, DOWNER)).toEqual({ handled: false, outcome: 'not-owner', replies: [] })
+    expect(await dispatchForDiscord('/status', DOWNER, null)).toEqual({ handled: false, outcome: 'not-owner', replies: [] })
+    expect(runs).toBe(0)
+  })
+
+  it('a write (and a custom command, a planned one) is refused with one line, never run; its ? is still answered', async () => {
+    registerCommand({ name: 'irasos', kind: 'write', description: 'ír', help: () => 'SÚGÓ', run: async () => { runs++ } })
+    expect(await dispatchForDiscord('/irasos', DOWNER, DOWNER)).toEqual({ handled: true, outcome: 'discord-write-refused', replies: [DISCORD_WRITE_REPLY('irasos')] })
+    expect(await dispatchForDiscord('/runs stop abc', DOWNER, DOWNER)).toMatchObject({ handled: true, outcome: 'discord-write-refused' })
+    expect(await dispatchForDiscord('/irasos ?', DOWNER, DOWNER)).toEqual({ handled: true, outcome: 'ran', replies: ['SÚGÓ'] })
+    expect(runs).toBe(0)
+    expect(DISCORD_WRITE_REPLY('model')).toContain('Telegramon')
+  })
+
+  it('a forwarded one is refused; plain text and an unknown /word are not handled', async () => {
+    expect(await dispatchForDiscord('/status', DOWNER, DOWNER, Date.now(), true)).toMatchObject({ handled: true, outcome: 'forwarded-refused' })
+    expect((await dispatchForDiscord('szia', DOWNER, DOWNER)).handled).toBe(false)
+    expect(await dispatchForDiscord('/kanban', DOWNER, DOWNER)).toEqual({ handled: false, outcome: 'unknown', replies: [] })
+    expect(runs).toBe(0)
+  })
+
+  it('HTTP: provider discord takes the Discord owner, not the Telegram chat; a bad userId is 400', async () => {
+    ident.discord = DOWNER
+    const ok = fakeCtx({ text: '/status', chatId: '1438000000000000500', provider: 'discord', userId: DOWNER })
+    await tryHandleCommands(ok.ctx)
+    expect(ok.out.body).toEqual({ handled: true, outcome: 'ran', replies: ['minden rendben'] })
+    // the Telegram owner chat id is not a Discord owner
+    const tgId = fakeCtx({ text: '/status', chatId: '42', provider: 'discord', userId: OTHER })
+    await tryHandleCommands(tgId.ctx)
+    expect(tgId.out.body.handled).toBe(false)
+    for (const userId of [undefined, '42', 'zoli', 290903699524550656]) {
+      const bad = fakeCtx({ text: '/status', chatId: '1', provider: 'discord', userId })
+      await tryHandleCommands(bad.ctx)
+      expect(bad.out.status, String(userId)).toBe(400)
+    }
+    ident.discord = null
+    const unset = fakeCtx({ text: '/status', chatId: '1', provider: 'discord', userId: DOWNER })
+    await tryHandleCommands(unset.ctx)
+    expect(unset.out.body.handled).toBe(false)
+    ident.discord = DOWNER
+    expect(runs).toBe(1)
+  })
+
+  it('HTTP: without provider the Telegram path is unchanged (the Discord user id field is ignored there)', async () => {
+    const r = fakeCtx({ text: '/status', chatId: '42', userId: OTHER })
+    await tryHandleCommands(r.ctx)
+    expect(r.out.body).toEqual({ handled: true, outcome: 'ran', replies: ['minden rendben'] })
   })
 })

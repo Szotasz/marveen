@@ -94,6 +94,9 @@ export interface ScheduledTask {
   // than matched against a list of task names in the runner: a hand-kept list
   // is a blind spot the day someone adds a GUI round and forgets it.
   requiresDesktop?: boolean
+  // heartbeat only: still runs above the quota gate's defer threshold, up to
+  // QUOTA_GATE_HARD_AT_PERCENT, when that tier setting is on (quota-gate.ts).
+  essential?: boolean
   // When true, skip the busy-state check entirely and inject the prompt
   // via tmux send-keys regardless. The Claude session will process it at
   // the next idle slot. Useful for critical tasks that must never be
@@ -429,7 +432,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = skillBuf != null ? skillBuf.toString('utf-8') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; preCheckTimeoutSeconds?: unknown; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown; telegramTopic?: unknown } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; essential?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; preCheckTimeoutSeconds?: unknown; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown; telegramTopic?: unknown } = {}
   try {
     config = JSON.parse(configBuf != null ? configBuf.toString('utf-8') : '{}')
   } catch { /* use defaults */ }
@@ -448,6 +451,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     type: (config.type as 'task' | 'heartbeat' | 'command') || 'task',
     skipIfBusy: config.skipIfBusy === true,
     requiresDesktop: config.requiresDesktop === true,
+    essential: config.essential === true,
     forceSend: config.forceSend === true,
     targetSession: config.targetSession || undefined,
     command: config.command,

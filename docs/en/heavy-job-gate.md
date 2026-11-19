@@ -96,7 +96,14 @@ are system errors: report them to the main agent.
    processes (or of a reused pid) are removed by whoever sees them, so a crashed
    waiter never blocks the queue.
 2. **Memory floor.** After the lock it waits for `MemAvailable >= floor`. The lock
-   wait and the memory wait share one deadline (`--wait-sec`).
+   wait and the memory wait share one deadline (`--wait-sec`). The lock stays held
+   during the memory wait, so the jobs behind it wait too, even when their own floor
+   is met (#2832). The holder's lock record says so (`phase=memory`, its floor and
+   cap), and a queued job's `wait` line names it: `holder_phase: "memory"`,
+   `holder_need_mb` (its floor), `holder_max_mb` (its cap), `holder_mem_mb: 0` (its
+   job has not started) next to `mem_avail_mb`, and on stderr "the holder's job has
+   not started, it is waiting for memory (floor X MB, available Y MB)". A holder
+   whose job runs is `holder_phase: "run"`.
 3. **Scope.** `systemd-run --user --scope --collect -p MemoryMax=<cap>M
    -p MemorySwapMax=<swap>M -p TimeoutStopSec=5s`. Before anything else the gate
    verifies that a cap really takes effect: a probe scope gets `MemoryMax=64M`, and
@@ -111,7 +118,12 @@ are system errors: report them to the main agent.
 4. **Teardown.** When the main process ends: `systemctl --user stop <unit>.scope`,
    then a bounded check that the cgroup is empty, `cgroup.kill` as the last resort.
 5. **Log.** One JSON line per event in `store/heavy-job-log.jsonl`: `wait`, `start`,
-   `finish` (exit code, duration, peak memory, OOM kills, scope stop result),
+   `finish` (exit code, duration, peak memory, OOM kills, scope stop result; a capped
+   main-lane job that exited 0 also gets `max_mem_hint`, twice the peak rounded up to
+   256M and at least 256M, plus a stderr note "lowers the memory floor X -> Y MB", only
+   if that hint lowers the floor `max(--min-mb, cap + reserve)` by at least 256M, which
+   also means it is below the cap. The peak is sampled every 0.5 s, so a spike in the
+   job's last half second can be missed),
    `refuse` (with a `reason`), `uncapped`, `ollama_unload`, `nested`,
    `nested_unverified`. The `cmd` field is the program name plus the first 32
    characters of its arguments, never the full argv (a token can be passed in argv).

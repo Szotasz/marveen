@@ -24,7 +24,7 @@
 import type http from 'node:http'
 import { json, readBody } from '../http-helpers.js'
 import { parseCommand, resolveCommand, dispatchCommand, botCommandList, isHelpRequest, hasCommand, type DispatchOutcome } from '../commands.js'
-import { resolveOwnerIdentity, OWNER_UNSET_REPLY, type OwnerIdentity } from '../../owner-identity.js'
+import { resolveOwnerIdentity, readDiscordOwnerSetting, DISCORD_USER_ID_RX, OWNER_UNSET_REPLY, type OwnerIdentity } from '../../owner-identity.js'
 import { checkWriteEvidence, WRITE_EVIDENCE_REPLY, type WriteEvidenceCheck } from '../write-evidence.js'
 import { onMainTurnEnded } from '../main-model.js'
 import { logger } from '../../logger.js'
@@ -63,7 +63,7 @@ export function mainSessionFromBody(b: Record<string, unknown>): boolean {
 
 export interface DispatchResult {
   handled: boolean
-  outcome: DispatchOutcome | 'not-owner' | 'owner-unset' | 'sub-agent-write-refused' | 'deferred' | 'forwarded-refused' | 'write-evidence-refused'
+  outcome: DispatchOutcome | 'not-owner' | 'owner-unset' | 'sub-agent-write-refused' | 'deferred' | 'forwarded-refused' | 'write-evidence-refused' | 'discord-write-refused'
   replies: string[]
 }
 
@@ -155,10 +155,52 @@ export async function dispatchForChat(
   return { handled: true, outcome, replies }
 }
 
+// DCEXT1111 F1s: the same command from the owner's Discord DM (a slash command the Discord overlay turns into the
+// "/word" text, answered by the same hook). The owner is the explicit DISCORD_OWNER_USER_ID only. Only READ commands
+// run: a write needs the Telegram plugin's inbound evidence (write-evidence.ts), which Discord does not have yet, and a
+// custom command (kind write) would answer on Telegram. Those get one line instead. No new command logic: the read
+// runs through the same dispatchCommand as on Telegram (a parity test pins it).
+export const DISCORD_WRITE_REPLY = (name: string) => `/${name} Discordról nem fut: ez a parancs állít vagy indít valamit, és ahhoz a Telegram-üzenet kell bizonyítéknak. Telegramon kiadhatod.`
+
+export async function dispatchForDiscord(
+  text: string, userId: string, ownerUserId: string | null, now = Date.now(), forwarded = false,
+  telegramOwnerChatId: string | null = null,
+): Promise<DispatchResult> {
+  const parsed = parseCommand(text)
+  const helpAsk = parsed !== null && isHelpRequest(parsed.args) && hasCommand(parsed.name, 'discord')
+  const spec = parsed ? resolveCommand(parsed.name, helpAsk ? [] : parsed.args, 'discord') : null
+  if (!parsed || !spec) {
+    return { handled: false, outcome: parsed ? 'unknown' : 'not-command', replies: [] }
+  }
+  if (!ownerUserId || userId !== ownerUserId) {
+    return { handled: false, outcome: 'not-owner', replies: [] }
+  }
+  if (forwarded) {
+    return { handled: true, outcome: 'forwarded-refused', replies: [FORWARDED_REPLY(spec.name)] }
+  }
+  if (!helpAsk && (spec.kind === 'write' || spec.planned)) {
+    return { handled: true, outcome: 'discord-write-refused', replies: [DISCORD_WRITE_REPLY(spec.name)] }
+  }
+  const replies: string[] = []
+  const outcome = await dispatchCommand(text, {
+    reply: async (t: string) => { replies.push(t) },
+    ownerId: Number(telegramOwnerChatId ?? 0),
+    now,
+    channel: 'discord',
+  })
+  return { handled: true, outcome, replies }
+}
+
 export async function tryHandleCommands(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
   if (path === '/api/commands/menu' && method === 'GET') {
-    json(res, { commands: botCommandList() })
+    // ?channel=discord: the Discord slash list (scripts/patch-discord-plugin.py); without it the Telegram menu.
+    const channel = ctx.url.searchParams.get('channel')
+    if (channel !== null && channel !== 'telegram' && channel !== 'discord') {
+      json(res, { error: 'unknown channel', known: ['telegram', 'discord'] }, 400)
+      return true
+    }
+    json(res, { commands: botCommandList(channel ?? 'telegram') })
     return true
   }
   // The main session's Stop hook (marveen-commands.py --stop): a turn ended.
@@ -192,6 +234,18 @@ export async function tryHandleCommands(ctx: RouteContext): Promise<boolean> {
   const mainSession = mainSessionFromBody(b)
   if (!text || !chatId) {
     json(res, { error: 'text and chatId are required' }, 400)
+    return true
+  }
+  if (b.provider === 'discord') {
+    const userId = typeof b.userId === 'string' ? b.userId : ''
+    if (!DISCORD_USER_ID_RX.test(userId)) {
+      json(res, { error: 'userId (a Discord user id) is required for provider discord' }, 400)
+      return true
+    }
+    const result = await dispatchForDiscord(text, userId, readDiscordOwnerSetting(), Date.now(), b.forwarded === true, resolveOwnerIdentity().chatId)
+    if (result.handled) logger.info({ command: parseCommand(text)?.name, outcome: result.outcome, provider: 'discord' }, 'commands: dispatched')
+    else if (result.outcome === 'not-owner') logger.warn({ provider: 'discord' }, 'commands: registry command from a non-owner Discord user, passed to the model')
+    json(res, result)
     return true
   }
   const deferWrites = b.deferWrites === true

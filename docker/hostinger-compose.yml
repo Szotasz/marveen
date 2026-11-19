@@ -1,8 +1,9 @@
 # Marveen for the "Deploy on Hostinger" button (DOCKERUX1118; Samu 80873). See docs/docker.md, "On a Hostinger VPS".
 #
 # The button hands Hostinger's Docker Manager THIS FILE ONLY, from its raw URL (compose_url), never the repository.
-# So, unlike ../docker-compose.yml: no build:, no relative path (the tls profile's ./docker/Caddyfile would not exist)
-# and no Caddy. Every variable has a default, so it starts without any input.
+# So, unlike ../docker-compose.yml: no build: and no relative path. Every variable has a default, so it starts without
+# any input. The optional HTTPS proxy (DOCKERHTTPS1119) is the main file's caddy service, byte for byte: it starts only
+# with COMPOSE_PROFILES=tls and MARVEEN_DOMAIN set to this server's public host name (e.g. srvNNN.hstgr.cloud).
 #
 # The image tag is pinned: MARVEEN_VERSION defaults to the release this file ships with. A test fails in CI when the
 # default and package.json's version differ, so the release step updates both.
@@ -15,13 +16,14 @@ name: marveen
 
 services:
   marveen:
-    image: ghcr.io/szotasz/marveen:${MARVEEN_VERSION:-1.50.1}
+    image: ghcr.io/szotasz/marveen:${MARVEEN_VERSION:-1.51.0}
     restart: unless-stopped
     environment:
       MARVEEN_CHANNEL: ${MARVEEN_CHANNEL:-telegram}
       MARVEEN_AGENT_ID: ${MARVEEN_AGENT_ID:-marveen}
       MARVEEN_LANG: ${MARVEEN_LANG:-en}
       MARVEEN_OLLAMA_URL: ${MARVEEN_OLLAMA_URL:-http://ollama:11434}
+      MARVEEN_DOMAIN: ${MARVEEN_DOMAIN:-}
       TZ: ${TZ:-UTC}
       WEB_PORT: "3420"
     ports:
@@ -50,7 +52,37 @@ services:
     entrypoint: ["/bin/sh", "-c", "for i in $$(seq 1 30); do ollama pull nomic-embed-text && exit 0; sleep 5; done; exit 1"]
     restart: "no"
 
+  # DOCKERHTTPS1119: the TLS proxy, only with the tls profile (COMPOSE_PROFILES=tls) and MARVEEN_DOMAIN. It forwards to
+  # the dashboard's public listener (3421, compose network only, cookies only), never to 3420. Its config is
+  # written from the environment at start, not mounted: the Hostinger button loads docker/hostinger-compose.yml alone,
+  # where no ./docker/Caddyfile exists. Its log drops the whole query string (Geri's live run: an upstream error
+  # logged the full URI, ?token= included). This block is the same in both files (a test compares them).
+  caddy:
+    profiles: ["tls"]
+    image: ${CADDY_IMAGE:-caddy:2}
+    restart: unless-stopped
+    depends_on:
+      - marveen
+    environment:
+      MARVEEN_DOMAIN: ${MARVEEN_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        case "$$MARVEEN_DOMAIN" in
+          ""|*[!A-Za-z0-9.-]*) echo "caddy: MARVEEN_DOMAIN must be this server's public host name (now: '$$MARVEEN_DOMAIN')" >&2; exit 1 ;;
+        esac
+        printf '{\n\tlog {\n\t\tformat filter {\n\t\t\twrap console\n\t\t\tfields {\n\t\t\t\trequest>uri regexp "[?].*" ""\n\t\t\t}\n\t\t}\n\t}\n}\n%s {\n\theader Strict-Transport-Security "max-age=31536000"\n\theader Referrer-Policy "no-referrer"\n\treverse_proxy marveen:3421\n}\n' "$$MARVEEN_DOMAIN" > /config/Caddyfile
+        exec caddy run --config /config/Caddyfile --adapter caddyfile
+
 volumes:
   marveen-install:
   marveen-home:
   ollama-models:
+  caddy-data:
+  caddy-config:

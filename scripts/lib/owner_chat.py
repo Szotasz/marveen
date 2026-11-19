@@ -106,6 +106,33 @@ def _from_access(access_path):
     return None, f"no owner chat: .env placeholder/empty and access.json has {len(ids)} DM entries, refusing to guess"
 
 
+def _from_teams_allowlist(allowlist_path):
+    """TEAMSAPPROVECARD1118: the Teams plugin writes no access.json; its paired
+    users are in allowlist.json, {"version":1,"entries":[{"aad_object_id":..}]}.
+    (chat_id, None) for exactly one paired user (lowercased), else
+    (None, reason). Port of owner-chat.ts soleTeamsOwner/teamsAllowlistIds."""
+    try:
+        with open(allowlist_path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return None, "no owner chat: .env placeholder/empty and no readable Teams allowlist.json"
+    ids = []
+    entries = raw.get("entries") if isinstance(raw, dict) and raw.get("version") == 1 and not isinstance(raw.get("version"), bool) else None
+    if isinstance(entries, list):
+        for entry in entries:
+            entry_id = entry.get("aad_object_id") if isinstance(entry, dict) else None
+            if not isinstance(entry_id, str):
+                continue
+            norm = entry_id.strip().lower()
+            if norm and norm not in ids:
+                ids.append(norm)
+    if len(ids) == 1:
+        return ids[0], None
+    if not ids:
+        return None, "no owner chat: .env placeholder/empty and the Teams allowlist.json has no paired user"
+    return None, f"no owner chat: .env placeholder/empty and the Teams allowlist.json has {len(ids)} paired users, refusing to guess"
+
+
 def resolve_owner_chat(env, provider="telegram"):
     """(chat_id, None), or (None, reason) when this install has no owner chat
     for an alert. env: a dict (already-parsed .env, with "__env_file__" naming
@@ -123,6 +150,8 @@ def resolve_owner_chat(env, provider="telegram"):
         return normalized, None
     if not env_file:
         return None, "no owner chat: .env placeholder/empty and no install dir to look in"
+    if provider == "teams":
+        return _from_teams_allowlist(os.path.join(_state_dir(env_file, provider), "allowlist.json"))
     return _from_access(os.path.join(_state_dir(env_file, provider), "access.json"))
 
 

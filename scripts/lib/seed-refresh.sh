@@ -163,6 +163,15 @@ sched_pre_verify_once() {
   fi
 }
 
+# DOCKERUX1118: the per-file report hook. A caller that wants each file's outcome defines
+# seed_refresh_report <installed path> current|updated|kept|added; without it nothing is called and nothing changes
+# (update.sh and first-boot define none). A test pins that the output and the files are the same with these calls removed.
+_seed_report() {
+  command -v seed_refresh_report >/dev/null 2>&1 || return 0
+  seed_refresh_report "$@" || true
+  return 0
+}
+
 # Refresh ONE installed copy of a shipped file if it is provably untouched.
 # $1 = source file, $2 = installed path, $3 = repo-relative path, $4 = mode.
 refresh_one_seed_file() {
@@ -180,7 +189,7 @@ refresh_one_seed_file() {
   # signal that stops being read.
   want="$(render_seed_file "$f" "$mode" | shasum -a 256 | awk '{print $1}')"
   have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
-  [ "$want" = "$have" ] && return 0
+  if [ "$want" = "$have" ]; then _seed_report "$installed" current; return 0; fi
   if seed_copy_is_untouched_any "$installed" "$rel" "$mode"; then
     sched_pre_verify_once
     if [ "$mode" = "verbatim" ]; then
@@ -190,8 +199,10 @@ refresh_one_seed_file() {
     fi
     SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
     sched_dir_refreshed=1
+    _seed_report "$installed" updated
   else
     SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
+    _seed_report "$installed" kept
   fi
   return 0
 }
@@ -265,6 +276,7 @@ refresh_untouched_seeds() {
         fi
         SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
         sched_dir_refreshed=1
+        _seed_report "$installed" added
       fi
     done <<EOF_TRACKED
 $tracked

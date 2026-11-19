@@ -82,6 +82,12 @@ describe('/help generated from the registry (CMD920 test 3)', () => {
   it('every registered builtin appears in /help, planned writes marked "tervezett"', () => {
     const help = renderHelp()
     for (const e of listCommands()) {
+      // an entry limited to other channels (/options: Discord only) is in that channel's /help, not this one
+      if (e.channels && !e.channels.includes('telegram')) {
+        expect(help).not.toContain(`${e.usage ?? `/${e.name}`}:`)
+        for (const c of e.channels) expect(renderHelp(c)).toContain(e.usage ?? `/${e.name}`)
+        continue
+      }
       expect(help).toContain(e.usage ?? `/${e.name}`)
     }
     for (const e of listCommands().filter(x => x.planned)) {

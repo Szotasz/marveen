@@ -65,14 +65,55 @@ agent_launch_env() {
   fi
 }
 
+# WDSANDBOXNODE1119: the node to run the dashboard's code with. This script's PATH (below) has the Homebrew,
+# Linuxbrew and /usr/local bins, not a node from nvm or elsewhere, so the dashboard records the one it runs on
+# (process.execPath) in store/.dashboard-node at start. It is taken only as one line holding an absolute path to an
+# existing executable file, with no quote and no colon (it also goes in front of PATH for npm start); anything else is
+# ignored and never run. Otherwise the node on PATH, and a log line says so. Prints nothing when there is neither.
+dashboard_node() {
+  local F="$INSTALL_DIR/store/.dashboard-node" N=""
+  if [ -f "$F" ]; then N="$(cat "$F" 2>/dev/null; printf x)"; N="${N%x}"; N="${N%$'\n'}"; fi
+  case "$N" in
+    *"'"*|*'"'*|*:*|*$'\n'*) ;;
+    /*) if [ -f "$N" ] && [ -x "$N" ]; then printf '%s' "$N"; return 0; fi ;;
+  esac
+  N="$(command -v node)"
+  echo "$(timestamp) [watchdog] dashboard node not recorded or not usable ($F); using the node on PATH: ${N:-none}" >> "$LOG"
+  printf '%s' "$N"
+}
+
 # BASHSANDBOX1022: an agent on the owner's BASH_SANDBOX_AGENTS list runs its Bash in Claude
 # Code's sandbox, from a --settings file the dashboard writes on every start of it (and removes
 # for an agent the switch does not list). A restart from here must carry the same file, or the
-# first auto-recovery would bring the agent back unsandboxed. The file's presence decides: this
-# script cannot read the dashboard's settings, and a stale file errs on the restrictive side.
+# first auto-recovery would bring the agent back unsandboxed.
+# WDSANDBOXMARKER1119: the file on disk does not decide (any process of this user can delete or
+# edit it). The restart writes it the way the dashboard's start does, through the same function
+# (scripts/bash-sandbox-sync.mjs -> dist/web/bash-sandbox.js), from the owner's list and sources.
+# Prints the flag (empty for an unlisted agent); returns 1 when the file cannot be produced (no
+# node or dist, an unreadable owner source, a write failure, an unexpected answer): the caller
+# then does not start the agent, as the dashboard refuses it (fail closed).
 agent_sandbox_flag() {
-  local F="$INSTALL_DIR/store/bash-sandbox/$1.settings.json"
-  if [ -f "$F" ]; then printf " --settings '%s'" "$F"; fi
+  local NODE OUT
+  NODE="$(dashboard_node)"
+  [ -n "$NODE" ] || return 1
+  OUT="$("$NODE" "$INSTALL_DIR/scripts/bash-sandbox-sync.mjs" "$1" 2>>"$LOG")" || return 1
+  case "$OUT" in
+    "settings=") return 0 ;;
+    *"'"*|*$'\n'*) return 1 ;;
+    "settings=/"*"/store/bash-sandbox/$1.settings.json") printf " --settings '%s'" "${OUT#settings=}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# CODEMODEFOLLOW1119: the dashboard decides whether an agent runs in Code Mode (resolveCodeModeLaunch: the owner's
+# switch AND the agent's own isolated config dir with the caveat keys) and keeps store/code-mode/<id>.on in step on
+# every start; the owner's "off" removes it at once. This restart follows that decision instead of copying the rule:
+# 1 only with the marker AND this launch on the agent's own .claude-config (agent_launch_env), else an explicit 0, so
+# an inherited value never decides. A missing marker is off, the safe direction (see code-mode-caveats.ts).
+agent_code_mode_env() {
+  local ON=0
+  if [ -f "$INSTALL_DIR/store/code-mode/$1.on" ] && [ -n "$(agent_launch_env "$2")" ]; then ON=1; fi
+  printf '%s' "export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=$ON && "
 }
 
 # Self-test hook, mirroring --resolve-provider: print the launch-env prefix
@@ -80,7 +121,12 @@ agent_sandbox_flag() {
 # fixtures (scripts/__tests__/watchdog-config-isolation.test.sh).
 if [ "${1:-}" = "--sandbox-flag" ]; then
   [ -n "${2:-}" ] || { echo "usage: watchdog.sh --sandbox-flag <agent-id>" >&2; exit 2; }
-  echo "flag=$(agent_sandbox_flag "$2")"
+  if FLAG="$(agent_sandbox_flag "$2")"; then echo "flag=$FLAG"; else echo "flag=REFUSED"; fi
+  exit 0
+fi
+if [ "${1:-}" = "--code-mode-env" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --code-mode-env <agent-id>" >&2; exit 2; }
+  echo "env=$(agent_code_mode_env "$2" "$INSTALL_DIR/agents/$2/")"
   exit 0
 fi
 if [ "${1:-}" = "--launch-env" ]; then
@@ -108,6 +154,86 @@ agent_is_scaffolded() {
 if [ "${1:-}" = "--check-scaffolded" ]; then
   [ -n "${2:-}" ] || { echo "usage: watchdog.sh --check-scaffolded <agent-dir>" >&2; exit 2; }
   if agent_is_scaffolded "$2"; then echo "scaffolded=yes"; else echo "scaffolded=no"; fi
+  exit 0
+fi
+
+# MIOAGENTINSTALL1114 (plan 7.4, 7.5): the package start guard. This loop starts
+# agents WITHOUT startAgentProcess, so it carries the server guard's three
+# conditions itself, with the same texts:
+#   1. the name is on the hidden list the server writes (store/agent-package-hidden.json:
+#      the names under a VALID install marker); a missing or unreadable list is an
+#      empty list (logged): the watchdog then starts as it always did;
+#   2. CLAUDE.md starts with the shell prefix, but PACKAGE.md is missing, a link,
+#      not a regular file, unreadable or empty;
+#   3. .package/manifest.json exists and is not empty, but CLAUDE.md is not a
+#      regular file starting with the shell prefix.
+# The prefix bytes live in scripts/lib/package-shell-prefix (a test binds them to the
+# server's constant). They are compared through a pipe (head -c N | cmp), never read
+# into a variable: bash drops NUL bytes and trailing newlines there, and two inputs
+# the server refuses would look like the shell (plan 7.5, Dani B3).
+PACKAGE_SHELL_PREFIX_FILE="$INSTALL_DIR/scripts/lib/package-shell-prefix"
+PACKAGE_HIDDEN_LIST="$INSTALL_DIR/store/agent-package-hidden.json"
+
+# 0 when $1 is a regular file (not a link) whose first bytes are the prefix. Any
+# failure of the compare (an unreadable file) is "not the shell".
+starts_with_package_shell() {
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -f "$PACKAGE_SHELL_PREFIX_FILE" ] || return 1
+  local n
+  n=$(LC_ALL=C wc -c < "$PACKAGE_SHELL_PREFIX_FILE" | tr -d ' ')
+  LC_ALL=C head -c "$n" "$1" 2>/dev/null | LC_ALL=C cmp -s - "$PACKAGE_SHELL_PREFIX_FILE"
+}
+
+# 0 when the readable regular file $1 holds no byte other than space, tab, LF, VT,
+# FF and CR (plan 7.5: the six bytes, LC_ALL=C; a BOM or a no-break space is content).
+file_is_blank() {
+  [ "$(LC_ALL=C tr -d ' \011\012\013\014\015' < "$1" 2>/dev/null | LC_ALL=C head -c 1 | LC_ALL=C wc -c | tr -d ' ')" = 0 ]
+}
+
+# 0 when PACKAGE.md is present: a regular, readable, non-empty file, not a link.
+# The link test comes first: [ -f ] and [ -s ] follow a link (Dani C3).
+package_layer_present() {
+  [ ! -L "$1" ] && [ -f "$1" ] && [ -r "$1" ] && ! file_is_blank "$1"
+}
+
+# 0 when the manifest file exists and is not empty. Fail closed: a link, a folder
+# or an unreadable file in its place counts as a non-empty manifest.
+package_manifest_present() {
+  [ -L "$1" ] || [ -e "$1" ] || return 1
+  [ ! -L "$1" ] && [ -f "$1" ] && [ -r "$1" ] || return 0
+  ! file_is_blank "$1"
+}
+
+# 0 when the agent name $1 stands on the hidden list $2. A missing or unreadable list
+# answers 1 (not hidden); the caller logs that once per tick.
+package_install_hidden() {
+  [ -f "$2" ] || return 1
+  python3 -c 'import json,sys
+try:
+    names = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(names, list) and sys.argv[2] in names else 1)' "$2" "$1" 2>/dev/null
+}
+
+# Prints the refusal text, or nothing when the agent may start. $1 agent dir, $2 name,
+# $3 the hidden list file.
+package_start_refusal() {
+  local d="${1%/}"
+  if package_install_hidden "$2" "$3"; then echo "Package install incomplete"; return; fi
+  if starts_with_package_shell "$d/CLAUDE.md"; then
+    package_layer_present "$d/PACKAGE.md" || echo "Package files missing: run a package repair"
+    return
+  fi
+  if package_manifest_present "$d/.package/manifest.json"; then
+    echo "Package shell broken: CLAUDE.md must start with the PACKAGE.md and LOCAL.md import lines"
+  fi
+}
+
+# Self-test hook: watchdog.sh --check-package <agent-dir> [hidden-list-file]
+if [ "${1:-}" = "--check-package" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --check-package <agent-dir> [hidden-list-file]" >&2; exit 2; }
+  REFUSAL="$(package_start_refusal "$2" "$(basename "${2%/}")" "${3:-$PACKAGE_HIDDEN_LIST}")"
+  if [ -z "$REFUSAL" ]; then echo "package=ok"; else echo "package=refused:$REFUSAL"; fi
   exit 0
 fi
 
@@ -173,7 +299,9 @@ request_open_redelivery() {
 DASHBOARD_PID=$(ps -ef | grep "node dist/index.js" | grep -v grep | awk '{print $2}' | head -1)
 if [ -z "$DASHBOARD_PID" ]; then
   echo "$(timestamp) [watchdog] Dashboard down, restarting..." >> "$LOG"
-  cd "$INSTALL_DIR" && nohup npm start >> "$INSTALL_DIR/logs/dashboard.log" 2>&1 &
+  # WDSANDBOXNODE1119: npm and the node it starts come from the dashboard's own node directory first.
+  NODE_BIN="$(dashboard_node)"
+  cd "$INSTALL_DIR" && PATH="${NODE_BIN:+$(dirname "$NODE_BIN"):}$PATH" nohup npm start >> "$INSTALL_DIR/logs/dashboard.log" 2>&1 &
   sleep 5
   NEW_PID=$(ps -ef | grep "node dist/index.js" | grep -v grep | awk '{print $2}' | head -1)
   echo "$(timestamp) [watchdog] Dashboard restarted (PID: ${NEW_PID:-?})" >> "$LOG"
@@ -218,6 +346,12 @@ fi
 
 CLAUDE_BIN="$(command -v claude)"
 
+# The server writes the hidden list on every start (an empty one too), so a missing
+# list is abnormal: say so once per tick, then start as before (plan 7.2, J1/f).
+if [ ! -f "$PACKAGE_HIDDEN_LIST" ]; then
+  echo "$(timestamp) [watchdog] agent package hidden list missing ($PACKAGE_HIDDEN_LIST); treated as empty" >> "$LOG"
+fi
+
 for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   AGENT_ID=$(basename "$AGENT_DIR")
   SESSION_NAME="agent-${AGENT_ID}"
@@ -230,6 +364,12 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   # writing CLAUDE.md / SOUL.md. The next tick starts it once both exist.
   if ! agent_is_scaffolded "$AGENT_DIR"; then
     echo "$(timestamp) [watchdog] $AGENT_ID: personality files not ready yet (wizard still generating?), skipping this tick" >> "$LOG"
+    continue
+  fi
+
+  PKG_REFUSAL="$(package_start_refusal "$AGENT_DIR" "$AGENT_ID" "$PACKAGE_HIDDEN_LIST")"
+  if [ -n "$PKG_REFUSAL" ]; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: not started: $PKG_REFUSAL" >> "$LOG"
     continue
   fi
 
@@ -250,8 +390,13 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   # FLEETVENV923: the fleet venv's bin/ first, as in startAgentProcess -- a
   # watchdog restart must not hand the agent a different python3 (#1626 review).
   FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$LOG")"
+  CODE_MODE_ENV="$(agent_code_mode_env "$AGENT_ID" "$AGENT_DIR")"
+  if ! SANDBOX_FLAG="$(agent_sandbox_flag "$AGENT_ID")"; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: not started: bash-sandbox settings could not be produced (fail-closed, BASH_SANDBOX_AGENTS)" >> "$LOG"
+    continue
+  fi
 
-  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official$(agent_sandbox_flag "$AGENT_ID")"
+  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && ${CODE_MODE_ENV}cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official${SANDBOX_FLAG}"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

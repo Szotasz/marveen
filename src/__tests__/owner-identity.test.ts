@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'nod
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { resolveOwnerIdentity, ownerUnsetNotice, OWNER_UNSET_REPLY, readTelegramOwnerSetting, TELEGRAM_OWNER_KEY } from '../owner-identity.js'
+import { resolveOwnerIdentity, ownerUnsetNotice, OWNER_UNSET_REPLY, readTelegramOwnerSetting, TELEGRAM_OWNER_KEY, readDiscordOwnerSetting } from '../owner-identity.js'
 import { ownerUnsetResult } from '../web/routes/commands.js'
 import { registerCommand, clearCommandsForTest } from '../web/commands.js'
 import { midTurnTick, newTailState, type MidTurnDeps } from '../web/midturn-commands.js'
@@ -79,6 +79,27 @@ describe('readTelegramOwnerSetting: the overrides file only', () => {
     writeFileSync(f, '{ bad')
     expect(readTelegramOwnerSetting(f)).toBe('')
     expect(readTelegramOwnerSetting(join(dir, 'missing.json'))).toBe('')
+  })
+})
+
+describe('readDiscordOwnerSetting (DCEXT1111 F1s): the explicit DISCORD_OWNER_USER_ID only', () => {
+  let dir: string
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
+  it('a snowflake string, trimmed (the live value carried a trailing space); anything else is null', () => {
+    dir = mkdtempSync(join(tmpdir(), 'owner-identity-dc-'))
+    const f = join(dir, 'overrides.json')
+    const D = '290903699524550656'
+    writeFileSync(f, JSON.stringify({ DISCORD_OWNER_USER_ID: `${D} ` }))
+    expect(readDiscordOwnerSetting(f)).toBe(D)
+    for (const v of ['', '0', '42', 'zoli', true, 290903699524550656]) {
+      writeFileSync(f, JSON.stringify({ DISCORD_OWNER_USER_ID: v }))
+      expect(readDiscordOwnerSetting(f), String(v)).toBeNull()
+    }
+    writeFileSync(f, JSON.stringify({ TELEGRAM_OWNER_USER_ID: '42' }))
+    expect(readDiscordOwnerSetting(f)).toBeNull()
+    writeFileSync(f, '{ bad')
+    expect(readDiscordOwnerSetting(f)).toBeNull()
+    expect(readDiscordOwnerSetting(join(dir, 'missing.json'))).toBeNull()
   })
 })
 

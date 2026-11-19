@@ -1,0 +1,65 @@
+{
+  "source": "CODEMODEFLAG1119: real PreToolUse REPL payloads from a live Code Mode probe (Claude Code 2.1.326, 2026-11-19), ids and paths neutralised, tool_name and tool_input verbatim",
+  "cases": [
+    {
+      "payload": {
+        "session_id": "00000000-0000-0000-0000-000000000000",
+        "transcript_path": "/neutral/transcript.jsonl",
+        "cwd": "/neutral/work",
+        "scratchpad_dir": "/neutral/scratchpad",
+        "prompt_id": "00000000-0000-0000-0000-000000000001",
+        "permission_mode": "bypassPermissions",
+        "effort": {
+          "level": "medium"
+        },
+        "hook_event_name": "PreToolUse",
+        "tool_name": "REPL",
+        "tool_input": {
+          "code": "const d1 = await $`echo SLOWPROBE`.nothrow();\nconst d2 = await $`echo after-slow`.nothrow();\nconst found = await searchTools(\"probe echo\");\n({d1: d1.output, d1exit: d1.exitCode, d1err: d1.error, d2: d2.output, d2exit: d2.exitCode, found});",
+          "description": "Run D1 then D2, find probe echo tool"
+        },
+        "tool_use_id": "toolu_neutral_0"
+      }
+    },
+    {
+      "payload": {
+        "session_id": "00000000-0000-0000-0000-000000000000",
+        "transcript_path": "/neutral/transcript.jsonl",
+        "cwd": "/neutral/work",
+        "scratchpad_dir": "/neutral/scratchpad",
+        "prompt_id": "00000000-0000-0000-0000-000000000001",
+        "permission_mode": "bypassPermissions",
+        "effort": {
+          "level": "medium"
+        },
+        "hook_event_name": "PreToolUse",
+        "tool_name": "REPL",
+        "tool_input": {
+          "code": "const d1b = await $`echo SLOWPROBE`.nothrow();\nconst e1 = await tools.mcp__probe__echo({text: \"from-code\"}).catch(e => ({error: e.message}));\n({d1b: d1b.output, e1});",
+          "description": "Retry D1 alone, then call probe echo"
+        },
+        "tool_use_id": "toolu_neutral_1"
+      }
+    },
+    {
+      "payload": {
+        "session_id": "00000000-0000-0000-0000-000000000000",
+        "transcript_path": "/neutral/transcript.jsonl",
+        "cwd": "/neutral/work",
+        "scratchpad_dir": "/neutral/scratchpad",
+        "prompt_id": "00000000-0000-0000-0000-000000000001",
+        "permission_mode": "bypassPermissions",
+        "effort": {
+          "level": "medium"
+        },
+        "hook_event_name": "PreToolUse",
+        "tool_name": "REPL",
+        "tool_input": {
+          "code": "String(require).slice(0, 200)",
+          "description": "F1 literal String(require)"
+        },
+        "tool_use_id": "toolu_neutral_2"
+      }
+    }
+  ]
+}

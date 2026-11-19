@@ -21,6 +21,28 @@ NC='\033[0m'
 ok() { echo -e "  ${GREEN}✓${NC} $*"; }
 warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 
+# INSTNONINTER1118: --non-interactive (docs/install-non-interactive.md). On only with the flag, never from the
+# environment: the Bridge's derived payload runs this script with MARVEEN_NONINTERACTIVE=1 and its own presets, and
+# that path stays as it is. Every prompt keeps its `read -rp` line byte for byte (the Bridge derives its headless
+# script from those lines); the line above it answers instead when the mode is on:
+#   ni_answer VAR KIND [ENV] [DEFAULT] ||
+#   read -rp "..." VAR
+# KIND: value = the ENV value (required, checked before any step); yn = ENV (i/y/n) or DEFAULT; file = the first line
+# of the file ENV names (secrets come only from a file, read straight into VAR, never echoed); fixed = DEFAULT (the
+# documented answer, no env). Without the flag ni_answer returns 1 and the read runs as before.
+INSTALL_NONINTERACTIVE=0
+ni_on() { [ "$INSTALL_NONINTERACTIVE" = 1 ]; }
+ni_answer() {
+  ni_on || return 1
+  case "$2" in
+    value) printf -v "$1" '%s' "${!3}" ;;
+    yn) case "${!3:-$4}" in i|y) printf -v "$1" i ;; *) printf -v "$1" n ;; esac ;;
+    # \r in IFS: a file saved with CRLF gives the same value as a typed answer.
+    file) IFS=$' \t\r\n' read -r "$1" < "${!3}" || true ;;
+    *) printf -v "$1" '%s' "$4" ;;
+  esac
+}
+
 INSTALL_STEP="init"
 
 # ADMINPREREQTRUST1104 (Samu 69561): --admin-prereq runs as ROOT, so it may only run code that the
@@ -138,6 +160,7 @@ offer_claude_fallback() {
   echo -e "${ORANGE}Claude Code elerheto a gepen.${NC}"
   local prompt="Marveen installer failed at step \"${step}\". Error: ${err_msg}. Script: install-linux.sh${line_info}. Repo: https://github.com/Szotasz/marveen. OS: $(lsb_release -ds 2>/dev/null || cat /etc/os-release 2>/dev/null | head -1 || echo Linux). Node: $(node -v 2>/dev/null || echo missing). Dir: ${INSTALL_DIR}. Your task: diagnose this Marveen installer failure. The install scripts are install.sh (macOS) and install-linux.sh. Read the relevant section, check for missing dependencies or permission issues, and suggest concrete shell commands to fix."
   if [ -t 0 ]; then
+    ni_answer OPEN_CLAUDE fixed "" n ||
     read -rp "$(_t prompt_open_claude)" OPEN_CLAUDE
     OPEN_CLAUDE=${OPEN_CLAUDE:-n}
     if [[ "$OPEN_CLAUDE" == "i" || "$OPEN_CLAUDE" == "y" ]]; then
@@ -275,6 +298,9 @@ INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # CLI flag parsing -- runs before the interactive wizard.
 # WEB_PORT can also be set as an env var (env var wins if --port is not given).
+# The loop shifts every argument away; the self-reclone re-exec below forwards this copy
+# (INSTEXECARGS1118).
+INSTALL_ARGS=("$@")
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --port|--web-port)
@@ -284,13 +310,15 @@ while [[ $# -gt 0 ]]; do
       WEB_PORT="$2"; shift 2 ;;
     --admin-prereq)
       ADMIN_PREREQ=1; shift ;;
+    --non-interactive)
+      INSTALL_NONINTERACTIVE=1; shift ;;
     --user)
       if [[ -z "${2:-}" || "${2}" == --* ]]; then
         echo "Error: --user requires a user name (with --admin-prereq: the user Marveen will run as)" >&2; exit 1
       fi
       ADMIN_USER="$2"; shift 2 ;;
     --help|-h)
-      echo "Usage: $0 [--port <N>] [--admin-prereq [--user <name>]]"
+      echo "Usage: $0 [--port <N>] [--admin-prereq [--user <name>]] [--non-interactive]"
       echo "  --port <N>       Dashboard port (default: 3420). Also settable via WEB_PORT env var."
       echo "  --admin-prereq   Run as root (sudo) by an administrator: installs ONLY the machine-level"
       echo "                   prerequisites (packages, Node.js >= 20, the managed-settings channel gate)"
@@ -298,6 +326,8 @@ while [[ $# -gt 0 ]]; do
       echo "                   no services. Safe to run again."
       echo "  --user <name>    With --admin-prereq: the user Marveen will run as. Its user services"
       echo "                   are allowed to keep running (loginctl linger), which only root can set."
+      echo "  --non-interactive  No questions: every answer from a MARVEEN_* env variable or a documented"
+      echo "                   default, secrets only from files. See docs/install-non-interactive.md."
       exit 0 ;;
     *) echo "Unknown option: $1 (use --help for usage)" >&2; exit 1 ;;
   esac
@@ -328,6 +358,52 @@ if [ "$ADMIN_PREREQ" = 1 ] && [ "$(id -u)" -ne 0 ]; then
 fi
 if [ -n "$ADMIN_USER" ] && ! id "$ADMIN_USER" >/dev/null 2>&1; then
   echo -e "${RED}$(_t linux.adminprereq_user_unknown) ${ADMIN_USER}${NC}" >&2; exit 1
+fi
+
+# INSTNONINTER1118: everything a --non-interactive run will need is checked here, before any step, so a scripted
+# install stops at once and names the variable (exit 1, nothing installed). A secret given as an env VALUE is refused
+# (it would sit in the environment of every child and in /proc); it comes from a file. Auth is the pre-placed
+# store/.claude-oauth-token (service_auth_present); the run asks nothing about it.
+if ni_on; then
+  ni_stop() { echo -e "${RED}$(_t ni.stop)${NC} $*" >&2; exit 1; }
+  for __s in MARVEEN_TELEGRAM_TOKEN MARVEEN_BOT_TOKEN MARVEEN_SLACK_BOT_TOKEN MARVEEN_SLACK_APP_TOKEN \
+    MARVEEN_DISCORD_BOT_TOKEN MARVEEN_TEAMS_BOT_APP_PASSWORD MARVEEN_API_KEY MARVEEN_OAUTH_TOKEN; do
+    [ -z "${!__s:-}" ] || ni_stop "$(_t ni.secret_env) $__s"
+  done
+  for __s in MARVEEN_SWAP MARVEEN_WHISPER; do
+    case "${!__s:-}" in ""|i|y|n) ;; *) ni_stop "$(_t ni.bad_value) $__s (i|y|n)" ;; esac
+  done
+  if [ "$ADMIN_PREREQ" != 1 ]; then
+    [ -f "$INSTALL_DIR/package.json" ] || ni_stop "$(_t ni.no_checkout) $INSTALL_DIR"
+    service_auth_present || ni_stop "$(_t ni.no_auth) $INSTALL_DIR/store/.claude-oauth-token"
+    __need=(MARVEEN_OWNER_NAME MARVEEN_BOT_NAME) __files=()
+    case "${MARVEEN_CHANNEL:-}" in
+      telegram) NI_PROVIDER_CHOICE=1; __files=(MARVEEN_TELEGRAM_TOKEN_FILE) ;;
+      slack) NI_PROVIDER_CHOICE=2; __files=(MARVEEN_SLACK_BOT_TOKEN_FILE MARVEEN_SLACK_APP_TOKEN_FILE) ;;
+      discord) NI_PROVIDER_CHOICE=3; __files=(MARVEEN_DISCORD_BOT_TOKEN_FILE)
+        __need+=(MARVEEN_DISCORD_CHANNEL_ID MARVEEN_DISCORD_USER_ID) ;;
+      gromzo) NI_PROVIDER_CHOICE=4 ;;
+      teams) NI_PROVIDER_CHOICE=5; __files=(MARVEEN_TEAMS_BOT_APP_PASSWORD_FILE)
+        __need+=(MARVEEN_TEAMS_BOT_APP_ID MARVEEN_TEAMS_BOT_TENANT_ID) ;;
+      "") ni_stop "$(_t ni.missing) MARVEEN_CHANNEL" ;;
+      *) ni_stop "$(_t ni.bad_value) MARVEEN_CHANNEL (telegram|slack|discord|gromzo|teams)" ;;
+    esac
+    for __s in "${__need[@]}" "${__files[@]}"; do
+      [ -n "${!__s:-}" ] || ni_stop "$(_t ni.missing) $__s"
+      # One line, like a typed answer: a line break would add a line to .env.
+      case "${!__s}" in *$'\n'*|*$'\r'*) ni_stop "$(_t ni.bad_value) $__s" ;; esac
+    done
+    for __s in "${__files[@]}"; do
+      # The same read as ni_answer's file branch (first line, same IFS): what is checked here is what is used.
+      __v=''
+      { [ -f "${!__s}" ] && [ -r "${!__s}" ] && { IFS=$' \t\r\n' read -r __v < "${!__s}" || true; }; } 2>/dev/null
+      if [ -z "$__v" ]; then
+        unset __v
+        ni_stop "$(_t ni.bad_file) $__s"
+      fi
+    done
+  fi
+  unset __s __need __files __v
 fi
 
 clear
@@ -539,6 +615,7 @@ if command -v free &>/dev/null; then
     warn "$(_t linux.low_ram_prefix) ${TOTAL_RAM_MB} MB RAM + ${TOTAL_SWAP_MB} MB swap = ${TOTAL_AVAIL} MB"
     echo -e "  ${ORANGE}Az npm build legalabb 2 GB memoriat igenyel.${NC}"
     if [ "$TOTAL_SWAP_MB" -lt 1024 ]; then
+      ni_answer CREATE_SWAP yn MARVEEN_SWAP i ||
       read -rp "$(_t prompt_swap)" CREATE_SWAP
       CREATE_SWAP=${CREATE_SWAP:-i}
       if [ "$CREATE_SWAP" = "i" ]; then
@@ -832,7 +909,7 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
   echo -e "  Telepito ujrainditasa a checkoutbol..."
   # Forward argv so a run from outside the repo (curl bootstrap, or an explicit
   # `install-linux.sh --port N`) keeps its flags across the self-reclone exec.
-  exec bash "$TARGET_DIR/install-linux.sh" "$@"
+  exec bash "$TARGET_DIR/install-linux.sh" "${INSTALL_ARGS[@]}"
 fi
 
 INSTALL_STEP="claude-bun-install"
@@ -1147,6 +1224,8 @@ if service_auth_present; then
   ok "A telepites mar hordoz auth kulcsot (.env / store/.claude-oauth-token)"
   scrub_secret_exports_from_rc
 else
+  # INSTNONINTER1118: checked before any step; here only if the token vanished during the run. Never a prompt.
+  if ni_on; then fail "$(_t ni.no_auth) $INSTALL_DIR/store/.claude-oauth-token"; fi
   if claude auth status &>/dev/null; then
     echo -e "  ${ORANGE}A terminalod be van jelentkezve, de a SZOLGALTATASOK ehhez nem ferenek hozza.${NC}"
     echo -e "  ${DIM}A systemd unitok csak a .env-et es a store/.claude-oauth-token-t olvassak.${NC}"
@@ -1343,6 +1422,7 @@ INSTALL_STEP="personal-info"
 # ─────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}$(_t section_4_linux)${NC}"
+ni_answer OWNER_NAME value MARVEEN_OWNER_NAME ||
 read -rp "$(_t prompt_your_name)" OWNER_NAME
 # Chat ID is NOT asked here -- the user doesn't know it yet.
 # It will be set automatically during the Telegram pairing flow.
@@ -1360,6 +1440,7 @@ if [ "$IS_HEADLESS" = "true" ]; then
   echo -e "  ${BOLD}Javasoljuk:${NC} lepj be a claude.ai Settings oldalara es"
   echo -e "  tiltsd le a felesleges MCP-ket telepites elott."
   echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  ni_answer CONTINUE_MCP fixed "" i ||
   read -rp "$(_t prompt_vps_continue)" CONTINUE_MCP
   CONTINUE_MCP=${CONTINUE_MCP:-i}
   if [ "$CONTINUE_MCP" != "i" ]; then
@@ -1378,6 +1459,7 @@ echo -e "  ${BOLD}3.${NC} Discord"
 echo -e "  ${BOLD}4.${NC} $(_t channel_option_gromzo)"
 echo -e "  ${BOLD}5.${NC} $(_t channel_option_teams)"
 echo ""
+ni_answer PROVIDER_CHOICE fixed "" "$NI_PROVIDER_CHOICE" ||
 read -rp "$(_t prompt_channel_select5)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
@@ -1402,11 +1484,25 @@ ok "Csatorna: $CHANNEL_PROVIDER"
 # The dashboard save path hard-rejects the same states (#926); this is the
 # installer-side voice for the same three findings, each with its remedy.
 # set -e safe: every path ends in return 0; curl failures are guarded.
-# The token value itself is NEVER printed.
+# The token value itself is NEVER printed, and never put on a command line: each URL reaches
+# curl as a config line on stdin (-K -), so ps does not show it (INSTTGTOKENARGV1118).
 probe_telegram_token() {
   _ptt_t="$1"
   [ -n "$_ptt_t" ] || return 0
-  _ptt_me="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getMe" 2>/dev/null)" || return 0
+  # The token goes into a curl config line below: a quote or a line break in it would end that line. A bot token is
+  # digits, a colon and [A-Za-z0-9_-]; anything else is refused before any call. Checked with case patterns on the
+  # value itself: no [[ =~ ]] (it leaves a second copy of the token in BASH_REMATCH, which bash 3.2 cannot unset) and
+  # no $(...) (it would drop a trailing line break before the check). A bracket class matches a line break too.
+  _ptt_bad=0
+  case "$_ptt_t" in [0-9]*:?*) ;; *) _ptt_bad=1 ;; esac
+  case "${_ptt_t%%:*}" in *[!0-9]*) _ptt_bad=1 ;; esac
+  case "${_ptt_t#*:}" in *[!A-Za-z0-9_-]*) _ptt_bad=1 ;; esac
+  if [ "$_ptt_bad" = 1 ]; then
+    warn "A megadott bot token alakja ERVENYTELEN (szamok, kettospont, betuk; pl. 123456789:AAF...)."
+    echo -e "    ${DIM}Ellenorizd a @BotFather-tol kapott tokent. A telepites folytatodik, de a bot ezzel a tokennel nem fog valaszolni.${NC}"
+    return 0
+  fi
+  _ptt_me="$(printf 'url = "%s"\n' "https://api.telegram.org/bot${_ptt_t}/getMe" | curl -s --max-time 8 -K - 2>/dev/null)" || return 0
   case "$_ptt_me" in
     *'"ok":true'*) : ;;
     *'"ok":false'*)
@@ -1415,7 +1511,7 @@ probe_telegram_token() {
       return 0 ;;
     *) return 0 ;;
   esac
-  _ptt_wh="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getWebhookInfo" 2>/dev/null)" || return 0
+  _ptt_wh="$(printf 'url = "%s"\n' "https://api.telegram.org/bot${_ptt_t}/getWebhookInfo" | curl -s --max-time 8 -K - 2>/dev/null)" || return 0
   case "$_ptt_wh" in
     *'"url":"http'*)
       warn "A bot token ervenyes, de a bot WEBHOOKRA van kotve -- a Marveen poller igy nem tud ra csatlakozni."
@@ -1423,7 +1519,7 @@ probe_telegram_token() {
       echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot azzal.${NC}"
       return 0 ;;
   esac
-  _ptt_up="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getUpdates?timeout=0&limit=1" 2>/dev/null)" || return 0
+  _ptt_up="$(printf 'url = "%s"\n' "https://api.telegram.org/bot${_ptt_t}/getUpdates?timeout=0&limit=1" | curl -s -o /dev/null -w '%{http_code}' --max-time 8 -K - 2>/dev/null)" || return 0
   if [ "$_ptt_up" = "409" ]; then
     warn "A bot token ervenyes, de egy MASIK futo rendszer mar hasznalja (Telegram 409 Conflict)."
     echo -e "    ${DIM}Egy tokent egyszerre csak egy telepites hasznalhat. Teendo: allitsd le a korabbi telepitest,${NC}"
@@ -1455,6 +1551,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  3. Adj nevet a botodnak${NC}"
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
+  ni_answer BOT_TOKEN file MARVEEN_TELEGRAM_TOKEN_FILE ||
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
   probe_telegram_token "$BOT_TOKEN"
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
@@ -1467,11 +1564,14 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
   echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
   echo ""
+  ni_answer DISCORD_BOT_TOKEN file MARVEEN_DISCORD_BOT_TOKEN_FILE ||
   read -rp "$(_t prompt_discord_bot_token)" DISCORD_BOT_TOKEN
+  ni_answer DISCORD_CHANNEL_ID value MARVEEN_DISCORD_CHANNEL_ID ||
   read -rp "$(_t prompt_discord_channel_id)" DISCORD_CHANNEL_ID
   echo ""
   echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
   echo -e "${DIM}  DM-et ir a botnak, a bot ezen az ID-n ertesit teged jovahagyasert.${NC}"
+  ni_answer OPERATOR_DISCORD_USER_ID value MARVEEN_DISCORD_USER_ID ||
   read -rp "$(_t prompt_discord_user_id)" OPERATOR_DISCORD_USER_ID
 elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
   # EE2392D3: the three keys of the Azure Bot's Entra app (the names the Teams plugin and the dashboard read:
@@ -1484,9 +1584,11 @@ elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
   echo -e "${DIM}  Ha meg nincs: hagyd uresen, a bot a telepites utan a Teams-bovitmeny${NC}"
   echo -e "${DIM}  setup-azure-bot.sh szkriptjevel hozhato letre (Teams-bekotesi sugo).${NC}"
   echo ""
+  ni_answer TEAMS_BOT_APP_ID value MARVEEN_TEAMS_BOT_APP_ID ||
   read -rp "$(_t prompt_teams_app_id)" TEAMS_BOT_APP_ID
   TEAMS_BOT_APP_ID="$(_teams_clean "$TEAMS_BOT_APP_ID")"
   if [ -n "$TEAMS_BOT_APP_ID" ]; then
+    ni_answer TEAMS_BOT_TENANT_ID value MARVEEN_TEAMS_BOT_TENANT_ID ||
     read -rp "$(_t prompt_teams_tenant_id)" TEAMS_BOT_TENANT_ID
     TEAMS_BOT_TENANT_ID="$(_teams_clean "$TEAMS_BOT_TENANT_ID")"
     # Echo off only on a terminal, and back on every way out of the read: Ctrl+C and TERM restore it and stop
@@ -1503,6 +1605,7 @@ elif [ "$CHANNEL_PROVIDER" = "teams" ]; then
       trap 'stty echo 2>/dev/null || true; eval "$_teams_prev_exit"' EXIT
       stty -echo 2>/dev/null || true
     fi
+    ni_answer TEAMS_BOT_APP_PASSWORD file MARVEEN_TEAMS_BOT_APP_PASSWORD_FILE ||
     read -rp "$(_t prompt_teams_app_password)" TEAMS_BOT_APP_PASSWORD
     if _teams_tty; then
       stty echo 2>/dev/null || true
@@ -1535,10 +1638,13 @@ else
   echo -e "${DIM}     app_mention, message.channels, message.groups, message.im${NC}"
   echo -e "${DIM}  5. Installald a workspace-be${NC}"
   echo ""
+  ni_answer SLACK_BOT_TOKEN file MARVEEN_SLACK_BOT_TOKEN_FILE ||
   read -rp "$(_t prompt_slack_bot_token)" SLACK_BOT_TOKEN
+  ni_answer SLACK_APP_TOKEN file MARVEEN_SLACK_APP_TOKEN_FILE ||
   read -rp "$(_t prompt_slack_app_token)" SLACK_APP_TOKEN
 fi
 
+ni_answer BOT_NAME value MARVEEN_BOT_NAME ||
 read -rp "$(_t prompt_bot_name)" BOT_NAME
 BOT_NAME=${BOT_NAME:-"Marveen"}
 
@@ -2141,7 +2247,10 @@ if [ "$CHANNEL_PROVIDER" = "teams" ]; then
     [ "$(id -u)" -eq 0 ] || _ms_priv="sudo"
     _ms_args=()
     for _p in $TEAMS_ALLOWLIST_PLUGINS; do _ms_args+=(--add-plugin "$_p"); done
-    if $_ms_priv mkdir -p "$(dirname "$TEAMS_MANAGED_FILE")" 2>/dev/null \
+    # explicit 0755 -- never group- or other-writable AND always readable by the unprivileged
+    # session (it must traverse the dir to read the policy); a root-owned 0700 dir hid the
+    # policy from the session (maintainer finding on the OR-umask version: 077|022=077).
+    if $_ms_priv mkdir -p -m 0755 "$(dirname "$TEAMS_MANAGED_FILE")" 2>/dev/null \
       && $_ms_priv python3 -I "$INSTALL_DIR/scripts/lib/managed-settings-write.py" "$TEAMS_MANAGED_FILE" --create "${_ms_args[@]}"; then
       ok "Teams engedelyezve a managed-settings allowlistben ($TEAMS_MANAGED_FILE)"
     else
@@ -2367,6 +2476,7 @@ echo -e "  Whisper telepites (beszed -> szoveg leirat, opcionalis)..."
 if command -v whisper &>/dev/null; then
   ok "whisper mar telepitve"
 else
+  ni_answer DO_WHISPER yn MARVEEN_WHISPER n ||
   read -rp "$(_t prompt_whisper)" DO_WHISPER
   DO_WHISPER=${DO_WHISPER:-n}
   if [ "$DO_WHISPER" = "i" ]; then
@@ -3008,7 +3118,8 @@ _pairing_access_file() {
 # ─────────────────────────────────────────────
 # Channel pairing (Telegram only; Slack uses OAuth / App install)
 # ─────────────────────────────────────────────
-if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
+# INSTNONINTER1118: --non-interactive skips it (no one types a code); the end of the run says so.
+if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ] && ! ni_on; then
   echo ""
   echo -e "${BOLD}Telegram parositas${NC}"
 
@@ -3134,6 +3245,7 @@ fi
 echo ""
 echo -e "${BOLD}Korabbi rendszer koltoztetese${NC}"
 echo -e "${DIM}  Ha volt korabbi AI asszisztensed (OpenClaw, egyeni bot), atmigralhato a memoriai.${NC}"
+ni_answer DO_MIGRATE fixed "" n ||
 read -rp "$(_t prompt_migrate)" DO_MIGRATE
 DO_MIGRATE=${DO_MIGRATE:-n}
 if [ "$DO_MIGRATE" = "i" ]; then
@@ -3229,5 +3341,11 @@ if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
     echo -e "  ${DIM}  A fenti 2. lepes (\"irj a botodnak\") addig NEM fog mukodni.${NC}"
   fi
   echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
+  echo ""
+fi
+
+# INSTNONINTER1118: a --non-interactive run asked for no pairing code; the channel is paired on the dashboard.
+if ni_on; then
+  echo -e "  ${ORANGE}!${NC} $(_t ni.pairing_skipped) http://localhost:${WEB_PORT:-3420}"
   echo ""
 fi

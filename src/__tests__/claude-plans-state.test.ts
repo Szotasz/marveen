@@ -65,6 +65,15 @@ describe('readClaudePlansState', () => {
     writeFileSync(CLAUDE_PLANS_STATE_PATH, JSON.stringify({ activePlanByAgent: { marveen: 42 }, plans: {} }))
     expect(readClaudePlansState()).toEqual({ activePlanByAgent: {}, plans: {} })
   })
+
+  // PLANROTATEDEADLOCK1115 P5: every writer goes through this reader first (the old task's script too), so a field it
+  // drops is lost on the next write: the rotation guard and the once-only notice would be forgotten.
+  it('keeps the backend record\'s lastRotationAt and retiredTaskNoticeAt; a non-number is dropped', () => {
+    writeFileSync(CLAUDE_PLANS_STATE_PATH, JSON.stringify({ activePlanByAgent: {}, plans: {}, backend: { lastRotationAt: 1_800_000_000_000, retiredTaskNoticeAt: 1_800_000_060_000 } }))
+    expect(readClaudePlansState().backend).toEqual({ lastRotationAt: 1_800_000_000_000, retiredTaskNoticeAt: 1_800_000_060_000 })
+    writeFileSync(CLAUDE_PLANS_STATE_PATH, JSON.stringify({ activePlanByAgent: {}, plans: {}, backend: { lastRotationAt: 'soon', retiredTaskNoticeAt: null } }))
+    expect(readClaudePlansState().backend).toBeUndefined()
+  })
 })
 
 describe('writeClaudePlansState', () => {

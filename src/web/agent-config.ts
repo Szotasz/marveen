@@ -8,6 +8,7 @@ import { parseExtraChannels, wantsGromzo } from './agent-extra-channels.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
 import { safeJoin } from './sanitize.js'
+import { isHiddenByInstallMarker } from './agent-package/marker.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
 import {
   resolveAgentModelFromConfig,
@@ -519,6 +520,45 @@ export function writeAgentMemoryIsolation(name: string, enabled: boolean): void 
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+// CODEMODEFLAG1119: opt-in per-agent Claude Code "Code Mode" (default OFF). When true, the launcher exports
+// CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 for this sub-agent; otherwise the variable is unset at launch, so an
+// inherited value can never switch it on. Absent/false = off.
+export function readAgentCodeMode(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    return config.codeMode === true
+  } catch { /* fall through */ }
+  return false
+}
+
+// Persist the opt-in codeMode flag. `false` removes the key, as for memoryIsolation.
+export function writeAgentCodeMode(name: string, enabled: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  if (enabled) config.codeMode = true
+  else delete config.codeMode
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// CODEMODEFLAG1119 (Q1): the mode the agent was last LAUNCHED in, recorded by startAgentProcess. A Code Mode session
+// resumed without Code Mode refuses to start, and a session started without it resumes without it even with the
+// variable set; so when the switch differs from this record the next start is fresh. Missing = launched without.
+export function readAgentCodeModeLaunched(name: string): boolean {
+  try {
+    return JSON.parse(readFileOr(join(agentDir(name), 'agent-config.json'), '{}')).codeModeLaunched === true
+  } catch { return false }
+}
+
+// `false` removes the key, so an agent that never ran in Code Mode keeps its agent-config.json as it was.
+export function writeAgentCodeModeLaunched(name: string, launched: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  if (launched) config.codeModeLaunched = true
+  else delete config.codeModeLaunched
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 // Opt-in per-agent agent-state-observer mod (default OFF, MODSTERMEK1005).
 // When true the launcher loads plugins/agent-state-observer for this agent's
 // session (see state-observer.ts for the version gate and what it writes).
@@ -747,6 +787,10 @@ export function listAllAgentNames(): string[] {
   try { baseReal = realpathSync(AGENTS_BASE_DIR) } catch { baseReal = resolve(AGENTS_BASE_DIR) }
   return readdirSync(AGENTS_BASE_DIR).filter((f) => {
     if (f === MAIN_AGENT_ID) return false
+    // MIOAGENTINSTALL1114 (plan 4.2, 7.2): a folder under a VALID package install marker is an unfinished install,
+    // not an agent. This one choke point keeps it out of the roster, delivery, export and the scheduler. A marker
+    // that does not count is logged and ignored: the agent stays listed.
+    if (isHiddenByInstallMarker(f)) return false
     const path = join(AGENTS_BASE_DIR, f)
     try {
       const st = lstatSync(path)
@@ -862,6 +906,8 @@ export function writeAgentVoiceConfig(name: string, patch: Partial<AgentVoiceCon
 export function isKnownAgent(name: string): boolean {
   if (!name) return false
   if (name === MAIN_AGENT_ID) return true
+  // MIOAGENTINSTALL1114 (plan 4.2): an unfinished package install is not an agent (see listAllAgentNames).
+  if (isHiddenByInstallMarker(name)) return false
   try {
     const dir = agentDir(name)
     return existsSync(dir) && statSync(dir).isDirectory()

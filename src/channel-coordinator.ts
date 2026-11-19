@@ -26,13 +26,14 @@
 // Lifecycle: launchd (com.<SERVICE_ID>.channel-coordinator, #1873) with KeepAlive. SIGTERM
 // drains, persists offset, exits cleanly.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, linkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { execFile, execFileSync } from 'node:child_process'
 import { logger } from './logger.js'
 import { isSettingOn } from './setting-flag.js'
+import { getEffectiveSettingValue } from './settings-store.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './config.js'
 import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
 import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
@@ -145,6 +146,25 @@ export interface PidLockDeps {
   // The process's command line. string = the command line; null = the process
   // does not exist (gone); undefined = could not be determined (ps missing, denied, timed out).
   argvOf(pid: number): string | null | undefined
+  // Machine boot id (/proc/sys/kernel/random/boot_id). undefined = cannot read.
+  // Optional: when absent (every fake deps in the pre-existing tests) the lock
+  // behaves exactly as before -- legacy content, argv-based decisions.
+  bootId?(): string | undefined
+  // The RAW starttime of a process: /proc/<pid>/stat field 22, in clock ticks
+  // since boot, as an integer. undefined on any failure (process gone, /proc
+  // unreadable), never throws. Optional, same backward-compat rule as bootId.
+  // Under one boot id a pid's raw tick is unique, immutable and EXACT -- it is
+  // a single /proc read with no arithmetic on other clocks -- so THIS is the
+  // lock's IDENTITY TOKEN (card c3f84534, defect B1): a recorded tick that no
+  // longer matches the pid is proof of pid REUSE, decided without ps.
+  startTicks?(pid: number): number | undefined
+  // The process's command line read straight from /proc/<pid>/cmdline,
+  // consulted BEFORE argvOf (card c3f84534 round 4, PR #2881 review). string =
+  // the command line; undefined = /proc cannot tell (unreadable, empty for a
+  // zombie or kernel thread, no /proc): argvOf (ps) decides then. Never null and
+  // never throws: whether the process is gone is left to isAlive and argvOf.
+  // Optional, same backward-compat rule as bootId.
+  procArgvOf?(pid: number): string | undefined
 }
 export type PidLockResult =
   | { ok: true; reclaimed: number | null }
@@ -166,36 +186,157 @@ function parsePid(raw: string): number | null {
   return Number.isSafeInteger(n) ? n : null
 }
 
+// Lock file formats (#c3f84534). Legacy: a single token, the pid (strict parse,
+// exactly as before). New: "pid boot_id tick" -- three whitespace-separated
+// tokens, pid matches the strict pid regex, boot_id is a non-empty token, tick
+// is the RAW /proc/<pid>/stat field 22 starttime in clock ticks since boot.
+// The third token is deliberately the RAW TICK and NOT the derived epoch ms of
+// the first revision of this card: epoch ms is computed from three separately
+// read clocks and MEASURED to jitter by 9 ms sample-to-sample (card c3f84534,
+// defect B1, 2026-11-18: 40 samples, 9-10 distinct values), while the lock
+// decision compares for EXACT equality -- so a live holder was misjudged as
+// pid reuse, reclaimed, and two coordinators ended up on one token. Anything
+// else is garbage (today's stale path).
+type ParsedLock =
+  | { pid: number; boot: null; tick: null } // legacy naked-pid lock
+  | { pid: number; boot: string; tick: number } // new self-validating lock
+
+function parseLockContent(raw: string): ParsedLock | null {
+  const toks = raw.trim().split(/\s+/)
+  if (toks.length === 1) {
+    const pid = parsePid(toks[0] ?? '')
+    return pid === null ? null : { pid, boot: null, tick: null }
+  }
+  if (toks.length !== 3) return null
+  const [pidTok, bootTok, tickTok] = toks as [string, string, string]
+  const pid = parsePid(pidTok)
+  if (pid === null || !/^\S+$/.test(bootTok) || !/^[0-9]+$/.test(tickTok)) return null
+  if (!Number.isSafeInteger(Number(tickTok))) return null
+  return { pid, boot: bootTok, tick: Number(tickTok) }
+}
+
+// What we write for OURSELVES: the new format when both boot id and our own
+// raw start tick are available, today's legacy content otherwise. The recorded
+// tick must come from startTicks (exact, one /proc read), never from the
+// derived epoch ms (jittering, defect B1) -- whatever we write here is
+// what we must be able to match EXACTLY on the next start.
+function ownLockContent(selfPid: number, deps: PidLockDeps): string {
+  const boot = deps.bootId?.()
+  if (typeof boot !== 'string') return String(selfPid)
+  const tick = deps.startTicks?.(selfPid)
+  if (typeof tick !== 'number') return String(selfPid)
+  return `${selfPid} ${boot} ${tick}`
+}
+
+type LockVerdict =
+  | { kind: 'ours' } // our own current lock: keep it, untouched
+  | { kind: 'held'; holder: number } // another live coordinator holds it
+  | { kind: 'unknown'; holder: number } // alive, cannot tell: refuse (fail closed)
+  | { kind: 'stale' } // provably not a live holder: reclaim
+
+const STALE: LockVerdict = { kind: 'stale' }
+
+// Verdict for a holder pid already known to be alive: its command line decides.
+// It is read from /proc/<pid>/cmdline first (procArgvOf: one file read, no child
+// process, no timeout) and from ps only when /proc cannot tell (card c3f84534
+// round 4, PR #2881 review). A live holder whose command line neither can read
+// is refused (fail closed). The earlier start-time-vs-mtime reclaim is gone: it
+// compared wall-clock values, so a forward clock step (NTP, VM resume) made a
+// LIVE coordinator look younger than its own lock and reclaimed it -- two
+// coordinators on one token.
+function liveHolderVerdict(pid: number, deps: PidLockDeps): LockVerdict {
+  const fromProc = deps.procArgvOf?.(pid)
+  const argv = fromProc !== undefined ? fromProc : deps.argvOf(pid)
+  if (argv === undefined) return { kind: 'unknown', holder: pid }
+  return argv !== null && isCoordinatorArgv(argv) ? { kind: 'held', holder: pid } : STALE
+}
+
+// The legacy decision tree for a holder pid that is not us: liveness, then the
+// command line (/proc first, then ps).
+function legacyVerdict(pid: number, deps: PidLockDeps): LockVerdict {
+  if (!deps.isAlive(pid)) return STALE
+  return liveHolderVerdict(pid, deps)
+}
+
+// Decision tree for an existing lock, in order: garbage -> stale; our own pid
+// -> keep (legacy, or new with identical tokens) / rewrite (our pid recorded
+// before a reboot); new-format other pid -> boot_id and the RAW start tick
+// decide without ps, falling back to the legacy tree when they cannot; legacy
+// other pid -> the legacy tree above.
+//
+// B1 (card c3f84534, measured 2026-11-18): every equality below is on the RAW
+// /proc tick, never on the derived epoch ms. Epoch ms jitters by ~9 ms between
+// reads of the SAME live process (three separately-read clocks), so exact
+// equality on it declared a live holder "pid reuse" -> STALE -> reclaimed ->
+// two coordinators on one token. The raw tick is one /proc read: exact.
+function verdictForExisting(lock: ParsedLock | null, selfPid: number, deps: PidLockDeps): LockVerdict {
+  if (lock === null) return STALE // garbage: today's stale path
+  if (lock.pid === selfPid) {
+    if (lock.boot === null) return { kind: 'ours' } // our legacy lock: untouched
+    const myBoot = deps.bootId?.()
+    const myTick = deps.startTicks?.(selfPid)
+    return myBoot === lock.boot && myTick === lock.tick
+      ? { kind: 'ours' } // our current new-format lock: untouched
+      : STALE // our pid, tokens from before a reboot: rewrite a fresh own lock
+  }
+  if (lock.boot === null) return legacyVerdict(lock.pid, deps)
+  const myBoot = deps.bootId?.()
+  if (myBoot === undefined) return legacyVerdict(lock.pid, deps) // cannot validate: conservative
+  if (myBoot !== lock.boot) return STALE // written before the last reboot
+  if (!deps.isAlive(lock.pid)) return STALE // holder process is gone
+  const cur = deps.startTicks?.(lock.pid)
+  if (cur === lock.tick) return { kind: 'held', holder: lock.pid } // same process since the lock was written: held, no ps needed
+  if (cur !== undefined) return STALE // same boot, different tick: pid reuse
+  return liveHolderVerdict(lock.pid, deps) // tick unreadable: argv-based tree (/proc first, then ps)
+}
+
 // A bare kill(pid, 0) is not enough: after a reboot or crash the recorded pid can
 // belong to an unrelated process (pid reuse), so the holder must also look like a
 // coordinator by its argv. A live pid whose argv cannot be read is treated as held
-// (fail closed). O_EXCL makes the create exclusive; reclaiming a stale file re-reads
-// it right before unlinking, which narrows but cannot fully close the window in which
-// two starters act on the same stale file (Node has no flock). Attempts are bounded;
-// if another starter keeps winning we refuse (the safe side).
+// (fail closed). Since #c3f84534 the lock records boot_id + the RAW start tick
+// (/proc/<pid>/stat field 22), which makes pid reuse decidable WITHOUT ps (the
+// thing that failed on the incident host): a different boot_id means the lock
+// predates the last reboot; a different tick under the same boot means the pid
+// was reused. The tick is used RAW (B1): the derived epoch-ms form of the first
+// revision jittered 9 ms between reads of the same live process, so exact
+// equality on it reclaimed a LIVE holder's lock. The holder's command line is
+// read from /proc/<pid>/cmdline first and from ps only when /proc cannot tell;
+// a live holder neither can read is refused, whatever the clocks say (round 4).
+// The lock appears WITH its content: it is written to a pid-unique temp file and
+// hard-linked into place, and link() fails with EEXIST like O_EXCL. A plain
+// O_EXCL create exposed an empty file between the create and the write; a second
+// starter read it as garbage, reclaimed it, and both won (CHCOORDRACE1118:
+// 3 of 20 simultaneous starts on an earlier develop; a reader process saw the
+// O_EXCL-created file empty 307 times in 85004 reads, the linked one never).
+// Reclaiming a stale file re-reads it right before unlinking, which narrows but
+// cannot fully close the window in which two starters act on the same stale file
+// (Node has no flock). Attempts are bounded; if another starter keeps winning we
+// refuse (the safe side).
 export function tryAcquirePidLock(pidFile: string, selfPid: number, deps: PidLockDeps): PidLockResult {
   let reclaimed: number | null = null
+  const tmp = `${pidFile}.${selfPid}.tmp`
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      writeFileSync(pidFile, String(selfPid), { flag: 'wx', mode: 0o600 })
+      // wx on the temp file too: a leftover (or planted symlink) is removed, never written through.
+      try { unlinkSync(tmp) } catch { /* absent */ }
+      writeFileSync(tmp, ownLockContent(selfPid, deps), { flag: 'wx', mode: 0o600 })
+      linkSync(tmp, pidFile)
       return { ok: true, reclaimed }
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
+    } finally {
+      try { unlinkSync(tmp) } catch { /* absent */ }
     }
     let content: string
     try { content = readFileSync(pidFile, 'utf-8') } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue
       throw err
     }
-    const prev = parsePid(content)
-    if (prev !== null) {
-      if (prev === selfPid) return { ok: true, reclaimed: null }
-      if (deps.isAlive(prev)) {
-        const argv = deps.argvOf(prev)
-        if (argv === undefined) return { ok: false, holder: prev, reason: 'unknown' }
-        if (argv !== null && isCoordinatorArgv(argv)) return { ok: false, holder: prev, reason: 'held' }
-      }
-    }
+    const lock = parseLockContent(content)
+    const verdict = verdictForExisting(lock, selfPid, deps)
+    if (verdict.kind === 'ours') return { ok: true, reclaimed: null }
+    if (verdict.kind === 'held') return { ok: false, holder: verdict.holder, reason: 'held' }
+    if (verdict.kind === 'unknown') return { ok: false, holder: verdict.holder, reason: 'unknown' }
     // Stale: unlink only if the file is still exactly what the decision was based on.
     let again: string
     try { again = readFileSync(pidFile, 'utf-8') } catch (err) {
@@ -206,7 +347,9 @@ export function tryAcquirePidLock(pidFile: string, selfPid: number, deps: PidLoc
     try { unlinkSync(pidFile) } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
     }
-    if (prev !== null) reclaimed = prev
+    // Never report our own pid as reclaimed (the file held our pid from before
+    // a reboot; the rewrite below is just a refresh).
+    if (lock !== null && lock.pid !== selfPid) reclaimed = lock.pid
   }
   return { ok: false, holder: null, reason: 'contention' }
 }
@@ -214,6 +357,18 @@ export function tryAcquirePidLock(pidFile: string, selfPid: number, deps: PidLoc
 export const realPidLockDeps: PidLockDeps = {
   isAlive: (pid) => {
     try { process.kill(pid, 0); return true } catch (err) { return (err as NodeJS.ErrnoException)?.code === 'EPERM' }
+  },
+  // The command line straight from /proc/<pid>/cmdline (NUL-separated argv),
+  // read before ps (card c3f84534 round 4): one file read, no child process and
+  // no timeout. MEASURED (2026-11-18, WSL host): /proc/<pid>/cmdline has the same
+  // owner and mode (0444) as /proc/<pid>/stat and /proc has no hidepid, so it is
+  // readable wherever the start tick is. undefined on ANY failure and for an
+  // empty file (a zombie or a kernel thread): argvOf (ps) decides then. Never throws.
+  procArgvOf: (pid) => {
+    try {
+      const argv = readFileSync(`/proc/${pid}/cmdline`, 'utf-8').split('\0').filter((s) => s !== '').join(' ')
+      return argv || undefined
+    } catch { return undefined }
   },
   argvOf: (pid) => {
     // /bin/ps first (as elsewhere in the codebase), then ps from PATH for hosts
@@ -237,6 +392,33 @@ export const realPidLockDeps: PidLockDeps = {
       }
     }
     return undefined // no ps at all: unknown
+  },
+  // Machine boot id: changes on every reboot, so a lock whose boot_id differs
+  // from the current one was written by a process that no longer exists.
+  bootId: () => {
+    try {
+      const s = readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim()
+      return s || undefined
+    } catch { return undefined }
+  },
+  // RAW process start tick: /proc/<pid>/stat field 22 (starttime in clock
+  // ticks since boot), read straight out of the kernel with no arithmetic on
+  // any other clock. This is the lock's IDENTITY TOKEN (card c3f84534, defect
+  // B1): measured stable across 40 consecutive reads of a live pid, where the
+  // derived epoch ms jitters by 9 ms. Returns undefined on ANY failure --
+  // including a dead pid, whose /proc/<pid>/stat is gone -- and never throws.
+  startTicks: (pid) => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8')
+      const r = stat.lastIndexOf(')')
+      if (r < 0) return undefined
+      const f = stat.slice(r + 2).split(' ')
+      if (f[0] === 'Z' || f[0] === 'X') return undefined // zombie/dead: kill(pid,0) and the tick lie; undefined hands the decision to the ps-based tree (pre-c3f84534)
+      const tok = f[19] // field 22 overall (index 19 after the last ')' + space); measured
+      if (tok === undefined || !/^[0-9]+$/.test(tok)) return undefined
+      const ticks = Number(tok)
+      return Number.isSafeInteger(ticks) ? ticks : undefined
+    } catch { return undefined }
   },
 }
 
@@ -330,6 +512,23 @@ export function buildHandoffContent(ev: {
   return `<channel ${attrs}>\n${body}\n</channel>`
 }
 
+// KBDBACKFILLEXP1119: the Telegram plugin answers a tap on a reply button (kbd:) of a question older than
+// TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS with "expired" and delivers nothing (scripts/patch-telegram-plugin.py,
+// _kbd_expiry_line). While the plugin is down the backfill must not deliver it either. The same rule: the age is
+// counted from the question's send time (the callback's message date), 0 = never expire.
+export function isExpiredKbdTap(ev: { kind: string; content: string; tg_date: number | null }, maxAgeHours: number, nowSec: number): boolean {
+  if (ev.kind !== 'callback_query' || !ev.content.startsWith('kbd:')) return false
+  if (!(maxAgeHours > 0) || ev.tg_date == null || !(ev.tg_date > 0)) return false
+  return nowSec - ev.tg_date > maxAgeHours * 3600
+}
+
+function kbdMaxAgeHours(): number {
+  try {
+    const v = Number(getEffectiveSettingValue('TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS'))
+    return Number.isFinite(v) ? v : 0
+  } catch { return 0 }
+}
+
 // ---- backoff -------------------------------------------------------------
 
 // Exponential backoff with full jitter, capped. Math.random is fine here --
@@ -356,6 +555,12 @@ export function processBatch(updates: { update_id: number }[]): { offset: number
     if (!ev) {
       // unhandled update kind: offset still advances past it
       durable = durable == null ? raw.update_id : Math.max(durable, raw.update_id)
+      continue
+    }
+    if (isExpiredKbdTap(ev, kbdMaxAgeHours(), Math.floor(Date.now() / 1000))) {
+      // dropped like an unhandled kind: the offset advances past it, nothing is stored or handed off
+      durable = durable == null ? raw.update_id : Math.max(durable, raw.update_id)
+      logger.info({ update_id: ev.update_id, chat_id: ev.chat_id }, 'channel-coordinator: expired reply-button tap dropped (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)')
       continue
     }
 

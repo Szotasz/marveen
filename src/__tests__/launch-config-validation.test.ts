@@ -35,8 +35,10 @@ describe('MAIN_AGENT_CONFIG_DIR write validation', () => {
 
 describe('agent create: the model id is checked before anything is created', () => {
   const SRC = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents.ts'), 'utf-8')
-  const start = SRC.indexOf("if (path === '/api/agents' && method === 'POST') {")
-  const handler = SRC.slice(start, SRC.indexOf("json(res, { ok: true, name })", start))
+  // AGENTCREATEPR2-1119: the route calls createAgentFromSpec (agent-create.ts), which holds the handler's body.
+  const CREATE_SRC = readFileSync(join(__dirname, '..', 'web', 'agent-create.ts'), 'utf-8')
+  const start = CREATE_SRC.indexOf('export async function createAgentFromSpec(')
+  const handler = start < 0 ? '' : CREATE_SRC.slice(start, CREATE_SRC.indexOf('return { status: 200, body: { ok: true, name } }', start))
   it('isValidModelId runs before scaffoldAgentDir and answers 400', () => {
     // The refusals live in checkAgentCreatable (agent-create.ts) since MIOAGENTINSTALL1114 PR-I0; the handler runs them
     // before the base writes (writeAgentBase, which holds the scaffold call).

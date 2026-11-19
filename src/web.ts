@@ -4,16 +4,19 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, WEB_PUBLIC_PORT, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { gateRequest, requiresAuth, type AuthResult } from './web/auth-gate.js'
+import { isPublicRequest, issueSetupCode, markPublicRequest, publicListenerPort, SETUP_CODE_TTL_MS } from './web/public-access.js'
 import { createAgentTokenResolver } from './web/agent-tokens.js'
 import { operatorGateDecision } from './web/operator-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { tryHandleSupportAccess } from './web/routes/support-access.js'
 import { startSupportReconcile } from './web/support-standby-runtime.js'
+import { startRotationBackend, defaultRotationBackendDeps } from './web/claude-rotation-backend.js'
+import { withRotationLock } from './web/claude-rotation-lock.js'
 import { tryHandleOperator } from './web/routes/operator.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
@@ -22,13 +25,13 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
 import { forEachAgentIsolated } from './web/agent-seed-loop.js'
-import { ensureRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
-import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './web/agent-scaffold.js'
+import { retireRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
-import { createAgentMessage } from './db.js'
+import { countDashboardUsers, createAgentMessage } from './db.js'
 import { setOwnerChatMissingSink, setOwnerRelayLang, setOwnerRelaySink } from './notify.js'
 import { approvalTextLang } from './web/agent-text-lang.js'
 import { startUpdateChecker } from './web/update-checker.js'
@@ -91,6 +94,7 @@ import { tryHandleConnectors } from './web/routes/connectors.js'
 import { tryHandleDocs } from './web/routes/docs.js'
 import { tryHandleResearch } from './web/routes/research.js'
 import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
+import { tryHandleAgentPackages } from './web/routes/agent-packages.js'
 import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
 import { tryHandleReviewAction } from './web/routes/review-action.js'
@@ -106,6 +110,7 @@ import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper, startApprovalReactionSweeper } from './web/routes/approvals.js'
+import { registerAgentCreateConsumer, sweepAgentCreateOnStart } from './web/agent-create-approval.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleFleetFreeze } from './web/routes/fleet-freeze.js'
 import { initGromzoConsentWatch, tryHandleGromzo } from './web/routes/gromzo.js'
@@ -204,6 +209,7 @@ export function startWebServer(port = 3420): http.Server {
       dashboardToken: DASHBOARD_TOKEN,
       resolveAgentToken,
       mainAgentId: MAIN_AGENT_ID,
+      publicListener: isPublicRequest(req),
     })
     if (auth === null) return
     // DASHOPERATOR1005: an operator-scoped key reaches /api/operator/* only,
@@ -223,6 +229,7 @@ export function startWebServer(port = 3420): http.Server {
       : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId, scope: auth.scope }
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
+      : auth.kind === 'setup' ? { kind: 'setup' as const }
       : undefined
 
     // The mobile-login QR needs a URL the phone can actually reach. When the
@@ -261,6 +268,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleConnectors(routeCtx)) return
       if (await tryHandleDocs(routeCtx)) return
       if (await tryHandleResearch(routeCtx)) return
+      if (await tryHandleAgentPackages(routeCtx)) return
       if (await tryHandleAgentsSkills(routeCtx)) return
       if (await tryHandleReviewAction(routeCtx)) return
       if (await tryHandleSkills(routeCtx)) return
@@ -387,6 +395,31 @@ export function startWebServer(port = 3420): http.Server {
       logger.error({ err }, 'Web szerver hiba')
     }
   })
+
+  // DOCKERHTTPS1119: the public listener (public-access.ts). Same handler; each of its requests is marked public
+  // first, so the gate accepts only browser cookies on it. Only when WEB_PUBLIC_PORT is set (first-boot, with
+  // MARVEEN_DOMAIN); the compose file never publishes this port to the host, Caddy reaches it on the compose network.
+  const publicPort = publicListenerPort({ WEB_PUBLIC_PORT })
+  if (publicPort !== null && publicPort !== port) {
+    const publicServer = http.createServer((req, res) => {
+      markPublicRequest(req)
+      server.emit('request', req, res)
+    })
+    publicServer.on('error', (err) => logger.error({ err, port: publicPort }, 'public listener error'))
+    publicServer.listen(publicPort, WEB_HOST, () => {
+      logger.info({ port: publicPort }, 'Web dashboard: public listener (cookies only)')
+      // The one-time setup code, while no dashboard login exists: to stdout (the container log), never to the
+      // structured log, and only its hash is kept.
+      if (countDashboardUsers(true) === 0) {
+        const code = issueSetupCode()
+        const site = DASHBOARD_PUBLIC_URL || 'your HTTPS address'
+        process.stdout.write(
+          `\n  Marveen setup code (one use, valid ${SETUP_CODE_TTL_MS / 3600000} hours): ${code}\n` +
+          `  Open ${site} and enter it to set the dashboard password. Restart the container for a new code.\n\n`,
+        )
+      }
+    })
+  }
 
   server.listen(port, WEB_HOST, () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
@@ -528,6 +561,8 @@ export function startWebServer(port = 3420): http.Server {
   const pluginMonitorInterval = servicesOff ? undefined : startChannelPluginMonitor()
   // SUPPORTKULCS1109 (terv-v7 3.8): the support reconcile, shortly after the start and then daily.
   if (!servicesOff) startSupportReconcile()
+  // PLANROTATEDEADLOCK1115: the plan rotation runs here, with no agent turn (an exhausted main agent cannot run one).
+  const rotationBackend = servicesOff ? undefined : startRotationBackend()
   if (!servicesOff) logger.info('Channel plugin health monitor started (60s poll)')
 
   // Userbot inbound-probe (gold-standard deafness detector). Safe no-op until
@@ -624,6 +659,9 @@ export function startWebServer(port = 3420): http.Server {
   // Sweep timed-out pending approvals every minute
   const approvalTimeoutInterval = startApprovalTimeoutSweeper()
   const approvalReactionInterval = startApprovalReactionSweeper()
+  // AGENTCREATEPR2-1119: the agent_create consumer, and the start-up sweep of requests decided while it could not run
+  registerAgentCreateConsumer()
+  void sweepAgentCreateOnStart().catch((err) => logger.error({ err }, 'agent_create start-up sweep failed'))
 // Desktop-lock TTL sweeper. Independent of the schedule gate on purpose: an
 // abandoned lock must expire (and be reported) even on a day when no
 // desktop-driving round happens to be due.
@@ -686,6 +724,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     ensureSystemDirectiveAuthSection(MAIN_AGENT_ID)
     ensureAgentIdHeaderSection(MAIN_AGENT_ID)
     ensureMemorySearchLabelSection(MAIN_AGENT_ID)
+    ensureMemoryFactChangeSection(MAIN_AGENT_ID)
     ensureFleetAuthSection(MAIN_AGENT_ID)
     ensureEvidenceSection(MAIN_AGENT_ID)
     ensureMcpListChannelSection(MAIN_AGENT_ID)
@@ -833,15 +872,14 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       logger.warn({ err }, 'Scheduled tasks seed skipped')
     }
 
-    // Claude plan rotation needs its heartbeat task; installs that turned
-    // rotation on before this was automatic (or updated into it) get it here.
-    // Never overwrites an existing task, and honors an operator's deletion.
-    try {
-      const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })
-      if (seeded === 'created') logger.info('Claude rotation heartbeat task created')
-      if (seeded === 'upgraded') logger.info('Claude rotation heartbeat prompt upgraded (sub-agent lines)')
-    } catch (err) {
-      logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
+    // PLANROTATEDEADLOCK1115 P5: the plan rotation runs in the backend (startRotationBackend above), so the old
+    // main-agent task is no longer seeded; it is retired here instead, in the branch its seed used (it writes the
+    // user-global dir too) and only with the services on, like the backend: an unedited seed is removed, an edited
+    // one switched off and the owner told once. Under the rotation lock: it writes the side-car.
+    if (!servicesOff) {
+      void withRotationLock(() => retireRotationHeartbeatTask(defaultRotationBackendDeps()))
+        .then((r) => { if (r.result !== 'none') logger.info({ result: r.result, told: r.told }, 'Old Claude rotation heartbeat task retired') })
+        .catch((err) => logger.warn({ err }, 'Old Claude rotation heartbeat task retirement failed'))
     }
   }
 
@@ -863,6 +901,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(routerInterval)
     clearInterval(scheduleInterval)
     clearInterval(heartbeatGapInterval)
+    rotationBackend?.stop()
     if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
     workerLivenessCancelled = true
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)

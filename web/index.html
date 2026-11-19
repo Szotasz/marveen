@@ -42,6 +42,12 @@
       <button class="modal-close" id="onboardingClose" title="Bezárás" aria-label="Bezárás">&times;</button>
       <h2 data-i18n="onboarding.title">Marveen beállítása</h2>
       <p class="onb-sub" data-i18n="onboarding.subtitle">Fejezd be a beállítást innen, a dashboardból -- SSH nélkül.</p>
+      <!-- DOCKERUX1118 (owner 33327): the install's language, on the wizard's first screen, in the container only. Each
+           label in its own language, so it is never translated. -->
+      <div class="onb-lang" id="onbLang" role="group" aria-label="Nyelv / Language" hidden>
+        <button type="button" class="onb-lang-btn" data-lang="hu" lang="hu">Magyar</button>
+        <button type="button" class="onb-lang-btn" data-lang="en" lang="en">English</button>
+      </div>
       <div class="onboarding-steps" id="onboardingSteps">
         <div class="onboarding-step" data-ostep="1"><span class="onb-num">1</span> <span data-i18n="onboarding.login.tab">Belépés</span></div>
         <div class="onboarding-step" data-ostep="2"><span class="onb-num">2</span> <span data-i18n="onboarding.identity.tab">Név</span></div>
@@ -2893,6 +2899,16 @@
             </label>
             <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.5" data-i18n="agents.settings.memory_isolation_desc">
               Bekapcsolva az ágens a saját, kezdetben üres fájl-memóriájával indul, és nem látja a közös MEMORY.md-t. A megosztott SQLite-emlékek és a CLAUDE.md továbbra is elérnek hozzá. Több-felhasználós telepítésen ajánlott; egy-felhasználós telepítésen hagyd kikapcsolva. A következő újraindításkor lép életbe.
+            </small>
+          </div>
+          <!-- CODEMODEFLAG1119: per sub-agent Code Mode switch (hidden on the main agent card) -->
+          <div class="form-group" id="codeModeGroup">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal">
+              <input type="checkbox" id="codeModeToggle">
+              <span data-i18n="agents.settings.code_mode_toggle">Code Mode (kísérleti)</span>
+            </label>
+            <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.5" data-i18n="agents.settings.code_mode_desc">
+              Kísérleti. Code Mode-ban Claude JavaScript-kódot ír és futtat, amely meghívja az eszközeit, ahelyett hogy egyenként hívná őket. Ez korai kísérlet: eltérhet a megszokott Claude Code működésétől, és bármelyik kiadásban megváltozhat vagy megszűnhet. Code Mode-ban a Remote Control, a Claude in Chrome és a számítógép-vezérlés (computer use) ki van kapcsolva. A Code Mode-ban indított session csak bekapcsolt Code Mode-dal folytatható, ezért minden váltás után a következő indítás friss session (a korábbi kontextus nem folytatódik). A session ugyanabban a jogosultsági módban indul, mint Code Mode nélkül, ez lehet auto mód is. Auto módban a biztonsági ellenőrzés minden JavaScript-részletet egyszer olvas el, a futtatás előtt, és nem ellenőrzi egyenként a kód által indított eszközhívásokat, így nem látja azokat az értékeket, amelyeket a kód futás közben számol ki. A bekapcsolással elfogadod ezeket a Code Mode-figyelmeztetéseket ennél az ügynöknél. A következő indításkor lép életbe.
             </small>
           </div>
           <!-- MAINAUTHSWITCH1107: the main agent's own authentication switch (only on the main agent card) -->

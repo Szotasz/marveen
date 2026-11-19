@@ -236,14 +236,15 @@ describe('install-linux.sh: the channel .env and access.json', () => {
 describe('install-linux.sh: the machine-wide allowlist on a teams install', () => {
   const BLOCK = between(SCRIPT, 'TEAMS_ALLOWLIST_PLUGINS=', '    unset _ms_priv _ms_args _p\n  fi\nfi')
   const FOUR = ['slack-channel@marveen-marketplace', 'telegram@claude-plugins-official', 'teams@marveen-marketplace', 'discord@claude-plugins-official']
-  const run = (file: string) => {
+  const run = (file: string, pre = '') => {
     const fixed = '"/etc/claude-code/managed-settings.json"'
     expect(BLOCK).toContain(`TEAMS_MANAGED_FILE=${fixed}`)
     const slice = BLOCK.replace(`TEAMS_MANAGED_FILE=${fixed}`, `TEAMS_MANAGED_FILE='${file}'`)
     refuse(slice)
     // The real step runs as root via sudo with root's umask; 0002 makes mkdir -p
     // create a group-writable directory, which the writer rightly refuses.
-    return bash(['umask 022', PRELUDE, 'managed_settings_notice() { echo NOTICE; }', 'sudo() { echo "SUDO $1" >&2; "$@"; }',
+    // (353a3859) an explicit pre (umask 077 / umask 002) overrides the root default.
+    return bash([pre || 'umask 022', PRELUDE, 'managed_settings_notice() { echo NOTICE; }', 'sudo() { echo "SUDO $1" >&2; "$@"; }',
       `INSTALL_DIR='${ROOT}'`, 'CHANNEL_PROVIDER=teams', slice].join('\n'))
   }
   const listed = (file: string) => (JSON.parse(readFileSync(file, 'utf8')).allowedChannelPlugins as { plugin: string; marketplace: string }[])
@@ -255,6 +256,22 @@ describe('install-linux.sh: the machine-wide allowlist on a teams install', () =
     expect(listed(f).sort()).toEqual([...FOUR].sort())
     expect(statSync(f).mode & 0o777).toBe(0o644)
     expect(r.stdout).toContain('ok: Teams engedelyezve')
+  })
+  it('a stricter caller umask (077) still gets the explicit 0755 dir, never the umask-derived 0700 (353a3859)', () => {
+    const dir = join(tempDir(), 'claude-code')
+    const f = join(dir, 'managed-settings.json')
+    const r = run(f, 'umask 077')
+    expect(r.status).toBe(0)
+    expect(statSync(dir).mode & 0o777).toBe(0o755)
+    expect(existsSync(f)).toBe(true)
+  })
+  it('a loose caller umask (002) gets the dir tightened to 0755, not the writer-refused 0775 (353a3859)', () => {
+    const dir = join(tempDir(), 'claude-code')
+    const f = join(dir, 'managed-settings.json')
+    const r = run(f, 'umask 002')
+    expect(r.status).toBe(0)
+    expect(statSync(dir).mode & 0o777).toBe(0o755)
+    expect(existsSync(f)).toBe(true)
   })
   it('an existing file: merged, every other key kept', () => {
     const f = join(tempDir(), 'managed-settings.json')

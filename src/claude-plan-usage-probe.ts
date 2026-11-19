@@ -109,7 +109,20 @@ export type ProbeErrorKind =
 
 export type ProbeResult =
   | { ok: true; httpStatus: number; usage: PlanUsage }
-  | { ok: false; error: ProbeErrorKind; message: string; httpStatus?: number; usage?: PlanUsage }
+  | { ok: false; error: ProbeErrorKind; message: string; httpStatus?: number; usage?: PlanUsage; retryAfterSec?: number }
+
+/**
+ * PLANROTATEDEADLOCK1115 P4: a 429's `retry-after`, in whole seconds from `nowMs`: delta-seconds or an HTTP date.
+ * null when absent or unreadable.
+ */
+export function parseRetryAfter(raw: string | null, nowMs: number): number | null {
+  if (raw === null || raw.trim() === '') return null
+  const t = raw.trim()
+  if (/^\d+$/.test(t)) return Number(t)
+  const at = Date.parse(t)
+  if (!Number.isFinite(at)) return null
+  return Math.max(0, Math.round((at - nowMs) / 1000))
+}
 
 export const PROBE_URL = 'https://api.anthropic.com/v1/messages'
 export const PROBE_MODEL = 'claude-haiku-4-5-20251001'
@@ -169,12 +182,14 @@ export async function probePlanUsage(
     return { ok: false, error: 'invalid_token', message: 'Token rejected (401)', httpStatus }
   }
   if (httpStatus === 429) {
+    const retryAfterSec = parseRetryAfter(res.headers.get('retry-after'), Date.now())
     return {
       ok: false,
       error: 'rate_limited',
       message: 'Plan is rate limited (429)',
       httpStatus,
       ...(usage ? { usage } : {}),
+      ...(retryAfterSec !== null ? { retryAfterSec } : {}),
     }
   }
   if (httpStatus < 200 || httpStatus >= 300) {
@@ -220,6 +235,8 @@ export function observationFromProbe(
     ok: result.ok,
     ...(result.ok ? {} : { error: result.error }),
     ...(result.ok || result.httpStatus === undefined ? {} : { httpStatus: result.httpStatus }),
+    // PLANROTATEDEADLOCK1115 P4: a 429 that carried no unified headers, so the next tick can tell "twice in a row".
+    ...(!result.ok && result.error === 'rate_limited' && !usage ? { headerless: true } : {}),
   }
   if (!usage) {
     return {

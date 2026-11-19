@@ -18,10 +18,6 @@ Marveen runs as a single container with Docker Compose, with Ollama next to it f
 
 ## Start
 
-<!-- DOCKERGUIDEBUILD1108 / DOCKERUX1118: this step needs the published image. Until MARVEEN_PUBLISH_IMAGE is on, the
-     pull is denied; since DOCKERUX1118 the compose file has no build:, so "docker compose up -d" stops there with
-     "error from registry: denied" (measured) instead of building on the server silently (Geri 33317). Publishing the
-     image is the owner's decision. -->
 ```bash
 git clone -b main https://github.com/Szotasz/marveen.git
 cd marveen
@@ -29,16 +25,21 @@ docker compose up -d
 docker compose logs marveen      # prints the dashboard link once it is up
 ```
 
-`-b main` takes the released version; without it, `git clone` takes the development branch.
+`-b main` takes the released version: the guide and the compose file of the last release, which can be older than the page you are reading. Without it, `git clone` takes the development branch.
 
-If the start stops with `error from registry: denied`, the image of this version cannot be downloaded: see [Build the image yourself](#build-the-image-yourself).
+If the start stops with an error from the registry, the image cannot be downloaded:
+
+- `not found`: no image has the tag you asked for. Image tags are plain versions, without a `v` (`1.50.0`, not `v1.50.0`); see `MARVEEN_VERSION` below.
+- `denied`: the image cannot be downloaded from here (no access to it).
+
+In both cases nothing is created. You can also [build the image yourself](#build-the-image-yourself).
 
 **Choosing the channel and other settings:** the channel is chosen **before** the first start, with `MARVEEN_CHANNEL=telegram|discord|slack` in a `.env` file next to `docker-compose.yml` or in your shell. It is fixed for this install. Other optional settings:
 
 - `MARVEEN_AGENT_ID`: the main agent's id, default `marveen`; also fixed.
-- `MARVEEN_LANG`: `en` or `hu`.
+- `MARVEEN_LANG`: `en` (default) or `hu`, the install's language: the agent's files and the dashboard. You can also switch it on the setup wizard's first screen (Magyar / English); see [The setup wizard](#the-setup-wizard).
 - `TZ`: e.g. `Europe/Budapest`.
-- `MARVEEN_VERSION`: the image tag, default `latest`.
+- `MARVEEN_VERSION`: the image tag, default `latest`. A release's tag is its version without a `v`, e.g. `1.50.0`.
 
 ## Open the dashboard
 
@@ -50,13 +51,15 @@ The dashboard listens on the server's `127.0.0.1:3420` only. Plain http on a pub
   ```bash
   MARVEEN_DOMAIN=marveen.example.com docker compose --profile tls up -d
   ```
-  Caddy gets a certificate automatically and forwards to the dashboard. Open `https://marveen.example.com/?token=...`, using the token from the log.
+  Caddy gets a certificate automatically and forwards to the dashboard. Open `https://marveen.example.com/`: before the dashboard password exists it asks for the one-time **setup code**, the `Marveen setup code` line in `docker compose logs marveen` (it works once, for 2 hours; `docker compose restart marveen` prints a new one). On the HTTPS address the dashboard accepts only the browser login: the access token, agent tokens and device keys work on `127.0.0.1:3420` only (the Bridge and an SSH tunnel keep using that). Only ports 80 and 443 open to the internet (Caddy's); the dashboard's 3420 stays on `127.0.0.1`. Caddy's config is written from `MARVEEN_DOMAIN` when it starts (HTTPS with HSTS, no referrer), so there is no file to edit. `COMPOSE_PROFILES=tls` in the environment does the same as `--profile tls`.
 
 The link carries the install's access token. Set the dashboard password in the wizard's first step; after that you log in with it, and the token link is not needed.
 
 ## On a Hostinger VPS
 
-Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/hostinger-compose.yml), the file the "Deploy on Hostinger" button points at. It is the same Marveen and Ollama as `docker-compose.yml`, made for a panel that gets this one file and not the repository: a pinned Marveen version, no `build:`, no Caddy, and a default for every setting (the language is English unless you set `MARVEEN_LANG`).
+Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/hostinger-compose.yml), the file the "Deploy on Hostinger" button points at. It is the same Marveen and Ollama as `docker-compose.yml`, made for a panel that gets this one file and not the repository: a pinned Marveen version, no `build:`, and a default for every setting (the language is English unless you set `MARVEEN_LANG`).
+
+- **HTTPS on the VPS's own name (optional):** set two environment variables for the project: `MARVEEN_DOMAIN` to the VPS's host name (Hostinger gives each VPS one, e.g. `srv123456.hstgr.cloud`, or use your own domain pointed at the VPS) and `COMPOSE_PROFILES=tls`. Caddy then gets a certificate and serves the dashboard at `https://<that name>`; only ports 80 and 443 open, 3420 stays on `127.0.0.1`. The first visit asks for the one-time setup code: the `Marveen setup code` line in **View logs**. Without these two variables nothing changes.
 
 - **The dashboard link:** in Docker Manager, open the project's **⋮** menu and choose **View logs**; the link is in the `marveen` container's output.
 - **Opening the dashboard:** it listens on the VPS's `127.0.0.1:3420` only, as above. Use the Marveen Bridge, or an SSH tunnel from your computer (Hostinger's Docker VPS template logs you in as `root`):
@@ -64,6 +67,7 @@ Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/ho
   ssh -L 3420:127.0.0.1:3420 root@<your VPS's IP>
   ```
   then open the link from the log on your computer.
+- **Locked out (lost password or phone):** see [Locked out](#locked-out-lost-password-or-phone); on Hostinger with `docker exec -it <name>-marveen-1 ...` over SSH.
 
 ## The setup wizard
 
@@ -74,6 +78,8 @@ Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/ho
 5. Pairing: message your bot, and approve the code in the dashboard.
 
 The main agent starts as soon as the token is saved.
+
+**The language:** the wizard's first screen has a Magyar / English switch. Before you have signed in it changes the wizard's text only; once you have signed in, it changes the install's language. The agent's files that you have not edited (`CLAUDE.md`, `SOUL.md`, the shipped skills and scheduled tasks) are written again in the new language. A file you edited is left as it is, and the wizard lists it. The switch works until the main agent first starts.
 
 ### After the wizard: the name rule of the outgoing-text check
 
@@ -90,6 +96,21 @@ EOF
 `bad_name_patterns` is a list of Python regular expressions for the wrong forms; `correction` is the line the check shows next to a hit. A file that cannot be read as this shape stops outgoing e-mail until it is fixed, so check the JSON before you save it.
 
 If you decide you need no name rule, say so in the file, and the warning stops: `{"bad_name_patterns": [], "no_name_rule": true, "no_name_rule_reason": "<why>"}`.
+
+## Locked out: lost password or phone
+
+The break-glass commands run inside the container, on the server (being on the machine is the proof). The image has no TypeScript runner, so they run with node, not `npm run`:
+
+```bash
+# the two-step sign-in off (lost phone and backup codes)
+docker compose exec marveen node dist/dashboard-user-cli.js totp:off <username>
+# a new dashboard password (asks for it twice)
+docker compose exec marveen node dist/dashboard-user-cli.js reset-password <username>
+# list the logins
+docker compose exec marveen node dist/dashboard-user-cli.js list
+```
+
+On a Hostinger VPS there is no `docker compose` project folder of your own: log in with SSH, find the container with `docker ps` (its name ends in `-marveen-1`), and run the same command with `docker exec -it <that name> node dist/dashboard-user-cli.js ...`. Each command leaves an audit line and, when a channel is set up, tells the owner.
 
 ## What is where
 

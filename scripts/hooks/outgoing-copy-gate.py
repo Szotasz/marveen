@@ -166,7 +166,10 @@ _GRAPH_SEND = re.compile(
     r"/(?:me|users/[^\n]{1,120}?)/(?:sendMail(?![A-Za-z0-9_-]|[^\x00-\x7f])|messages/[^\n]{1,160}?/(?:send|reply|replyAll|forward)(?![A-Za-z0-9_-]|[^\x00-\x7f]))",
     re.I,
 )
-_GRAPH_EVIDENCE = re.compile(r"graph\.microsoft\.com|microsoft-graph-client|msgraph|\.api\s*\(", re.I)
+# MAILURLFILE1118: the Graph host of every cloud, the national clouds too (source: the cloud endpoint table of the Azure
+# CLI, azure/cli/core/cloud.py, microsoft_graph_resource_id); mirrored as GRAPH_HOSTS in email-send-gate.mjs
+_GRAPH_HOSTS = r"graph\.microsoft\.(?:com|us|de)|microsoftgraph\.chinacloudapi\.cn|graph\.svc\.sovcloud\.fr"
+_GRAPH_EVIDENCE = re.compile(_GRAPH_HOSTS + r"|microsoft-graph-client|msgraph|\.api\s*\(", re.I)
 
 
 def _graph_sends(text: str) -> bool:
@@ -204,6 +207,17 @@ _MAIL_API_RULES = (
     (re.compile(r"api\.postmarkapp\.com|['\"]postmark['\"]|\bpostmarker\b", re.I),
      re.compile(r"api\.postmarkapp\.com/email(?:/batch|/withTemplate)?" + _ACTION_END
                 + r"|\.sendEmail(?:Batch|WithTemplate|BatchWithTemplates)?\s*\(|\.emails\.send(?:_batch|_with_template)?\s*\(", re.I)),
+    # MAILCURLSEND1118: Amazon SES: the v2 outbound email endpoints or the v1 query action on a regional email host, or the
+    # SDKs (the node client's send commands, boto3's send_email family on an ses / sesv2 client).
+    (re.compile(r"email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com|['\"]@aws-sdk/client-sesv2?['\"]|\bclient\s*\(\s*['\"]sesv2?['\"]", re.I),
+     re.compile(r"[/]v2[/]email[/]outbound-(?:bulk-)?emails" + _ACTION_END + r"|\bAction=Send(?:Raw|Templated|BulkTemplated)?Email\b"
+                r"|\bSend(?:Raw|Templated|BulkTemplated|Bulk)?EmailCommand\b|\.send_(?:raw_|templated_|bulk_templated_|bulk_)?email\s*\(")),
+    # MAILCURLSEND1118: Mailjet: the send endpoint (v3 or v3.1) on the API host, or the clients' send call.
+    (re.compile(r"api\.mailjet\.com|['\"]node-mailjet['\"]|\bmailjet_rest\b", re.I),
+     re.compile(r"api\.mailjet\.com[/]v3(?:\.1)?[/]send" + _ACTION_END + r"|\.post\s*\(\s*['\"]send['\"]|\.send\.create\s*\(", re.I)),
+    # MAILCURLSEND1118: Brevo (ex Sendinblue): the transactional email endpoint, or the clients' sendTransacEmail call.
+    (re.compile(r"api\.(?:brevo|sendinblue)\.com|['\"]@getbrevo/brevo['\"]|['\"]sib-api-v3-sdk['\"]|\bsib_api_v3_sdk\b|\bbrevo_python\b", re.I),
+     re.compile(r"api\.(?:brevo|sendinblue)\.com[/]v3[/]smtp[/]email" + _ACTION_END + r"|\.(?:sendTransacEmail|send_transac_email)\s*\(", re.I)),
 )
 
 def _mail_api_sends(text: str) -> bool:
@@ -358,13 +372,42 @@ _SAFE_METHODS = {"GET", "HEAD"}
 # a torzse `kulcs=ertek` / `kulcs:=json` elem -- egyiket sem ismeri az alabbi
 # curl/wget flag-olvaso, ezert a `http POST .../emails to=...` "read" lett, es a
 # kapu atengedte. A httpie-re a metodus itt nem dontheto: fail-closed.
-_HTTPIE = re.compile(r"^http$", re.I)
+_HTTPIE = re.compile(r"^(?:https?|xhs?)$", re.I)   # MAILCURLSEND1118: httpie's `https` and xh / xhs take the same shape
+
+
+# MAILURLFILE1118: a method-override header turns a GET into the method it names on a server that honours it, so a
+# non-safe method there is a send and a value that cannot be read is undecidable.
+_METHOD_OVERRIDE = re.compile(r"^\s*x-(?:http-method(?:-override)?|method-override)\s*:\s*(.*)$", re.I | re.S)
+
+
+def _header_values(prog, rest):
+    """MAILURLFILE1118: the values of the client's header options: curl -H / --header (also -Hvalue and -H at the end of
+    a short cluster, --header=value), wget --header; httpie and xh are undecidable in _curl_resend_verdict anyway."""
+    out = []
+    for i, t in enumerate(rest):
+        nxt = rest[i + 1] if i + 1 < len(rest) else None
+        if t == "--header":
+            out.append(nxt)
+        elif t.startswith("--header="):
+            out.append(t[len("--header="):])
+        elif prog.lower() == "curl" and re.match(r"^-[^-]", t):
+            k = next((j for j, ch in enumerate(t[1:], 1) if ch in _URL_VALUE_SHORT), None)
+            if k is not None and t[k] == "H":
+                out.append(t[k + 1:] or nxt)
+    return [v for v in out if v is not None]
 
 
 def _curl_resend_verdict(prog, rest):
     """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed."""
     if _HTTPIE.match(prog):
         return "unknown"
+    for v in _header_values(prog, rest):   # MAILURLFILE1118
+        m = _METHOD_OVERRIDE.match(v)
+        if m:
+            if not m.group(1).strip().isalpha():
+                return "unknown"
+            if m.group(1).strip().upper() not in _SAFE_METHODS:
+                return "send"
     method = None
     has_body = False
     get_forced = False
@@ -1160,7 +1203,328 @@ def _head_is_send(toks, depth: int) -> bool:
     # tovabbra is fail-closed.
     if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
         return _curl_resend_verdict(prog, rest) != "read"
+    if _HTTP_CLIENT.match(prog):
+        # MAILURLFILE1118: the words a URL file of the client adds are judged with the line's own
+        alternatives, undecidable = _url_file_words(prog, rest)
+        if undecidable and _url_file_marker():
+            return True
+        if any(_inline_mail_api_sends(prog, words) for words in alternatives):
+            return True
     return False
+
+
+# MAILCURLSEND1118: an HTTP mail API send written inline on the command line (curl, wget, httpie, xh) is judged like
+# the same send in a script. Each URL word of the client (not an option's value, not a word with a space; `--url=`
+# read) is split into host, path and query; the host is normalised (userinfo and port cut, lower case, trailing dots
+# cut), a `Host:` header naming a mail API host stands for a literal host that is none, and the path is normalised
+# (%-escapes decoded once, empty and `.` segments dropped, `..` resolved).
+# - A literal host of a mail-only API (_MAIL_API_HOSTS) inverts the default: only a known read passes, i.e. a GET or
+#   HEAD without a body (_curl_resend_verdict == "read") on a literal path of that provider's API (its read pattern).
+#   Every other request there is a send: a POST, PUT, PATCH or DELETE on any path (a batch endpoint too), an undecidable
+#   method (httpie, xh, a variable, a config file), a path holding a variable or a substitution, a URL glob ({ or [).
+# - Microsoft Graph is not mail-only (calendar, files, chats): there only its send paths are a send, as in a script.
+# - A host that is not literal (a variable, a substitution) cannot be told: the provider send paths alone decide
+#   (_MAIL_API_HOSTS send pattern on the path after it), and a non-literal URL word while the whole line carries a
+#   mail-only API host counts too; either is a send unless the request is a plain read (GET or HEAD, no body).
+# - A literal host that is no mail API host (localhost, another API, an IP without a Host header) is no send here.
+# The Resend rule above keeps its own method verdict on its host for curl, wget and http. A URL the line only names in
+# a file (curl -K, wget -i) is read in by _url_file_words (MAILURLFILE1118). Mirrored in email-send-gate.mjs
+# (inlineMailApiSends); the `inline` cases of mail-api-send-cases.json bind the two twins.
+_HTTP_CLIENT = re.compile(r"^(?:curl|wget|https?|xhs?)$", re.I)
+# (provider, host pattern on the normalised host, path prefix a shared host needs, read pattern, send pattern)
+_SEG = r"(?:/[^/]+)"
+_MAIL_API_HOSTS = (
+    ("gmail", re.compile(r"gmail\.googleapis\.com"), None,
+     re.compile(r"^/gmail/v1/users/[^/]+" + _SEG + r"*$"),
+     re.compile(r"/users/[^/]+/(?:messages|drafts)/send$|/batch/gmail(?:/v1)?$")),
+    ("gmail", re.compile(r"(?:www\.)?googleapis\.com"), re.compile(r"^/(?:upload/|batch/)?gmail(?:/|$)"),
+     re.compile(r"^/gmail/v1/users/[^/]+" + _SEG + r"*$"),
+     re.compile(r"/users/[^/]+/(?:messages|drafts)/send$|/batch/gmail(?:/v1)?$")),
+    ("resend", re.compile(r"api\.resend\.com"), None, re.compile(r"^" + _SEG + r"+$"), re.compile(r"/emails(?:/batch)?$")),
+    ("sendgrid", re.compile(r"api\.sendgrid\.com"), None, re.compile(r"^/v3" + _SEG + r"*$"), re.compile(r"/v3/mail/send$")),
+    ("mailgun", re.compile(r"(?:[a-z0-9-]+\.)*mailgun\.net"), None, re.compile(r"^/v[345]" + _SEG + r"*$"),
+     re.compile(r"/v3/[^/]+/messages(?:\.mime)?$")),
+    ("postmark", re.compile(r"api\.postmarkapp\.com"), None, re.compile(r"^" + _SEG + r"+$"),
+     re.compile(r"/email(?:/batch|/withTemplate|/batchWithTemplates)?$")),
+    ("ses", re.compile(r"email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com"), None, re.compile(r"^/v2/email" + _SEG + r"*$"),
+     re.compile(r"/v2/email/outbound-(?:bulk-)?emails$")),
+    ("mailjet", re.compile(r"api\.mailjet\.com"), None, re.compile(r"^/v3(?:\.1)?" + _SEG + r"*$"),
+     re.compile(r"/v3(?:\.1)?/send$")),
+    ("brevo", re.compile(r"api\.(?:brevo|sendinblue)\.com"), None, re.compile(r"^/v3" + _SEG + r"*$"),
+     re.compile(r"/v3/smtp/email$")),
+)
+_GRAPH_HOST = re.compile(_GRAPH_HOSTS)
+_GRAPH_SEND_PATH = re.compile(r"/(?:me|users/[^/]+)/(?:sendMail|messages/[^/]+/(?:send|reply|replyAll|forward))$", re.I)
+# the line carries a mail-only API host (Graph is not one)
+_MAIL_API_HOST = re.compile(r"gmail\.googleapis\.com|googleapis\.com(?::[0-9]+)?/(?:upload/|batch/)?gmail(?:/|\b)|api\.resend\.com"
+                            r"|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com|email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com"
+                            r"|api\.mailjet\.com|api\.(?:brevo|sendinblue)\.com", re.I)
+_URL_WORD = re.compile(r"^(?:([A-Za-z][A-Za-z0-9+.-]*)://)?([^/?#]*)([^?#]*)(.*)$", re.S)
+_URL_START = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://|[$`]")
+_HOST_HEADER = re.compile(r"^\s*host\s*:\s*(\S+)", re.I)
+_URL_VALUE_SHORT = frozenset("AbcCdDeEFHKmoOQrTuUwxXYyza")
+_URL_VALUE_LONG = frozenset((
+    "--header", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii", "--json", "--form",
+    "--form-string", "--upload-file", "--user", "--output", "--output-document", "--user-agent", "--referer",
+    "--cookie", "--cookie-jar", "--config", "--write-out", "--max-time", "--connect-timeout", "--request",
+    "--method", "--oauth2-bearer", "--proxy", "--cacert", "--cert", "--key", "--post-data", "--post-file",
+    "--body-data", "--body-file", "--auth", "--password", "--http-user", "--http-password"))
+_LINE_MAIL_HOST = [False]   # set per top-level is_send_invocation call from the WHOLE command line
+# MAILURLFILE1118: a mail marker for a URL file that cannot be read and for an unparseable command: a mail-only API host
+# or a Microsoft Graph host (of any cloud) anywhere in the text
+_MAIL_MARKER = re.compile(_MAIL_API_HOST.pattern + "|" + _GRAPH_HOSTS, re.I)
+_LINE_CTX = [None, []]   # MAILURLFILE1118: the cwd of the top-level is_send_invocation call and every text it judged
+
+
+def _option_value_word(prev: str) -> bool:
+    """the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL"""
+    if prev.startswith("--"):
+        return prev in _URL_VALUE_LONG
+    if len(prev) < 2 or not prev.startswith("-"):
+        return False
+    # a short cluster: the first letter that takes a value takes the rest of the word (-XPOST) or, last, the next word
+    k = next((j for j, ch in enumerate(prev[1:], 1) if ch in _URL_VALUE_SHORT), None)
+    return k == len(prev) - 1
+
+
+def _norm_host(auth: str) -> str:
+    return re.sub(r":[0-9]*$", "", auth.rsplit("@", 1)[-1]).lower().rstrip(".")
+
+
+def _norm_path(path: str) -> str:
+    """%-escapes decoded once, empty and `.` segments dropped, `..` resolved"""
+    path = re.sub(r"%([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), path)
+    segs = []
+    for s in path.split("/"):
+        if s == "..":
+            if segs:
+                segs.pop()
+        elif s not in ("", "."):
+            segs.append(s)
+    return "/" + "/".join(segs)
+
+
+def _mail_api_provider(host: str, path: str):
+    """(read pattern, send pattern) of the mail-only API on this normalised host and path, or None"""
+    for _name, host_rx, gate, read, send in _MAIL_API_HOSTS:
+        if host_rx.fullmatch(host) and (gate is None or gate.match(path)):
+            return read, send
+    return None
+
+
+def _host_header(rest):
+    """the normalised host of a `Host:` header option, or None"""
+    for i, t in enumerate(rest):
+        val = None
+        if t in ("-H", "--header") and i + 1 < len(rest):
+            val = rest[i + 1]
+        elif t.startswith("--header="):
+            val = t[len("--header="):]
+        elif t.startswith("-H") and len(t) > 2:
+            val = t[2:]
+        m = _HOST_HEADER.match(val) if val is not None else None
+        if m:
+            return _norm_host(m.group(1))
+    return None
+
+
+def _inline_mail_api_sends(prog, rest) -> bool:
+    plain_read = _curl_resend_verdict(prog, rest) == "read"
+    host_header = _host_header(rest)
+    cannot_tell = False
+    for i, t in enumerate(rest):
+        if i and _option_value_word(rest[i - 1]):
+            continue
+        u = t[len("--url="):] if t.startswith("--url=") else t
+        if re.search(r"\s", u) and not _URL_START.match(u):
+            continue   # a header or a sentence; a URL or a variable word may hold a substitution with a space
+        scheme, auth, path, query = _URL_WORD.match(u).groups()
+        npath = _norm_path(path)
+        if _nonliteral_value(auth):
+            if (scheme or u.startswith(("$", "`"))) and (
+                    _LINE_MAIL_HOST[0] or _GRAPH_SEND_PATH.search(npath)
+                    or any(send.search(npath) for *_x, send in _MAIL_API_HOSTS)):
+                cannot_tell = True
+            continue
+        host = _norm_host(auth)
+        if _GRAPH_HOST.fullmatch(host):
+            if _nonliteral_value(path) or "{" in path or "[" in path:
+                cannot_tell = True
+            elif _GRAPH_SEND_PATH.search(npath):
+                return True
+            continue
+        provider = _mail_api_provider(host, npath)
+        if provider is None and host_header and scheme:
+            provider = _mail_api_provider(host_header, npath)
+        if provider is None:
+            continue
+        read, _send = provider
+        if (not plain_read or _nonliteral_value(path) or re.search(r"[{\[]", path + query)
+                or not read.match(npath)):
+            return True
+    return cannot_tell and not plain_read
+
+
+# MAILURLFILE1118: the URL (and the method, headers and body) of a request may come from a FILE the line only names: a
+# curl config file (-K FILE, --config FILE, --config=FILE, a K ending a short cluster or with the file glued on) or a
+# wget input file (-i FILE, --input-file FILE, --input-file=FILE, the same short forms). The file is read and its words
+# join the client's own, so the inline rule above judges the request as if the line held them: a curl config line
+# `name value`, `name = value` or `name: value` (the name with or without its dashes, a double-quoted value with its
+# backslash escapes, `#` comments) is the option and its value, a wget input file is one URL per line. A mail-only
+# API host in the file counts as one in the line. The file is looked up like a script: absolute, `~`, or relative
+# under the cwd and every literal `cd DIR` of the line; each readable candidate is judged on its own. When some file
+# cannot be read, the line as written is judged too (its URL-file option undecidable), as before this rule.
+# Cannot tell: the file is stdin (`-` with no `< FILE` redirect naming it: a pipe, a heredoc), a variable, a URL, a
+# process substitution, not a regular file, missing, unreadable or too large, an HTML input (wget --force-html), a
+# config that names another config, or a relative file after a `cd` that cannot be resolved. That is a send ONLY when
+# the line carries a mail marker (_MAIL_MARKER, the file's text included); without one it passes, so a config that
+# only holds an auth header next to another API's URL keeps working. Stated limits (class level): a config the client
+# reads on its own (a default rc file), a long option abbreviation, and wget's own rc commands are not read. Mirrored
+# in email-send-gate.mjs (urlFileWords); the `url_file` cases of mail-api-send-cases.json bind the two twins.
+_WGET_VALUE_SHORT = frozenset("oaeiBtOTwQPUlARDIXn")   # wget's short options that take a value (-n takes its letter)
+_URL_FILE_ALTERNATIVES = 16
+
+
+def _url_file_split(prog, rest):
+    """(the client's words without its URL-file options, the files they name; None for a missing operand)"""
+    short, long_ = ("K", "--config") if prog == "curl" else ("i", "--input-file")
+    values = _URL_VALUE_SHORT if prog == "curl" else _WGET_VALUE_SHORT
+    words, files = [], []
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        nxt = rest[i + 1] if i + 1 < len(rest) else None
+        if t == long_:
+            files.append(nxt)
+            i += 2
+            continue
+        if t.startswith(long_ + "="):
+            files.append(t[len(long_) + 1:])
+            i += 1
+            continue
+        k = next((j for j, ch in enumerate(t[1:], 1) if ch in values), None) if re.match(r"^-[^-]", t) else None
+        if k is not None and t[k] == short:
+            if k > 1:
+                words.append(t[:k])
+            if t[k + 1:]:
+                files.append(t[k + 1:])
+                i += 1
+            else:
+                files.append(nxt)
+                i += 2
+            continue
+        words.append(t)
+        i += 1
+    return words, files
+
+
+def _curl_config_words(text):
+    """a curl config file as command-line words"""
+    words = []
+    for line in re.split(r"\r\n|\r|\n", text):
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        name, val = re.match(r"([^\s=:]+)[\s=:]*(.*)$", s, re.S).groups()
+        words.append(name if name.startswith("-") else "--" + name)
+        if val.startswith('"'):
+            out, i = [], 1
+            while i < len(val) and val[i] != '"':
+                if val[i] == "\\" and i + 1 < len(val):
+                    out.append({"t": "\t", "n": "\n", "r": "\r", "v": "\v"}.get(val[i + 1], val[i + 1]))
+                    i += 2
+                else:
+                    out.append(val[i])
+                    i += 1
+            words.append("".join(out))
+        elif val:
+            words.append(val.split()[0])
+    return words
+
+
+def _stdin_file(words):
+    """the file a `< FILE` redirect among the words names, or None"""
+    for i, t in enumerate(words):
+        if t == "<" and i + 1 < len(words):
+            return words[i + 1]
+        if t.startswith("<") and len(t) > 1 and t[1] not in "<(&":
+            return t[1:]
+    return None
+
+
+def _wget_force_html(words):
+    for t in words:
+        if t == "--force-html":
+            return True
+        if re.match(r"^-[^-]", t):
+            k = next((j for j, ch in enumerate(t[1:], 1) if ch in _WGET_VALUE_SHORT), len(t))
+            if "F" in t[1:k]:
+                return True
+    return False
+
+
+def _url_file_bodies(f):
+    """(the readable texts the file operand can name, undecidable)"""
+    if f is None or f == "-" or f.startswith(("<", "(")) or _nonliteral_value(f) or _URL_START.match(f):
+        return [], True
+    cwd = _LINE_CTX[0]
+    if not isinstance(cwd, str):
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            cwd = None
+    words = []
+    for text in _LINE_CTX[1]:
+        try:
+            words += [w for toks in _segments_tokens(text) for w in toks]
+        except ValueError:
+            pass
+    words = _with_env_chdir(words)
+    bodies, undecidable = [], False
+    for p in _resolve_script_paths(f, cwd, words):
+        body = _read_script_head(p) if os.path.isfile(p) else None
+        if body is not None:
+            bodies.append(body)
+            undecidable = undecidable or len(body.encode("utf-8", "replace")) >= _SCRIPT_READ_LIMIT
+    relative = not (os.path.isabs(f) or f == "~" or f.startswith("~/"))
+    return bodies, undecidable or not bodies or (relative and _cd_bases(cwd, words)[1])
+
+
+def _url_file_words(prog, rest):
+    """(alternatives, undecidable): the client's words as written, and with every URL file read in"""
+    p = _basename(prog).lower()
+    if p not in ("curl", "wget"):
+        return [rest], False
+    words, files = _url_file_split(p, rest)
+    if not files:
+        return [rest], False
+    alternatives, undecidable = [words], False
+    for f in files:
+        bodies, undec = _url_file_bodies(_stdin_file(words) if f == "-" else f)
+        undecidable = undecidable or undec
+        if not bodies:
+            continue
+        added = []
+        for body in bodies:
+            if _MAIL_API_HOST.search(body):
+                _LINE_MAIL_HOST[0] = True
+                _LINE_CTX[1].append(body)
+            if p == "curl":
+                fw, nested = _url_file_split(p, _curl_config_words(body))
+                undecidable = undecidable or bool(nested)
+            elif _wget_force_html(words):
+                fw, undecidable = [], True
+            else:
+                fw = [ln.strip() for ln in re.split(r"\r\n|\r|\n", body) if ln.strip()]
+            added += [a + fw for a in alternatives]
+        undecidable = undecidable or len(added) > _URL_FILE_ALTERNATIVES   # a cut alternative is not judged
+        alternatives = added[:_URL_FILE_ALTERNATIVES]
+    # a file that cannot be read keeps the line as written in play too (its URL-file option is undecidable there)
+    return ([rest] if undecidable else []) + alternatives, undecidable
+
+
+def _url_file_marker() -> bool:
+    return _LINE_MAIL_HOST[0] or any(_MAIL_MARKER.search(t) for t in _LINE_CTX[1])
 
 
 def wrapper_depth_hit(cmd: str) -> bool:
@@ -1291,10 +1655,15 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
     return _written_then_run(cmd, written, depth)
 
 
-def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
+    # MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
+    if _depth == 0:
+        _LINE_CTX[:] = [cwd, []]
+    _LINE_CTX[1].append(cmd)
     # FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
     # A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
     _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and _line_clean(cmd)
+    _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or bool(_MAIL_API_HOST.search(cmd))   # MAILCURLSEND1118
     if _heredoc_program_sends(cmd, _depth):
         return True
     try:
@@ -1304,7 +1673,7 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
         # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
         # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
         # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
-        return bool(_FALLBACK_LITERALS.search(cmd))
+        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))   # MAILURLFILE1118: a mail host too
     if any(_segment_is_send(toks, _depth) for toks in segments):
         return True
     # the same command with every substitution as one undecidable word
@@ -1315,7 +1684,7 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
     try:
         return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
     except ValueError:
-        return bool(_FALLBACK_LITERALS.search(cmd))
+        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))
 
 # MAILGATESCRIPT1027: a mail send done by a SCRIPT FILE. is_send_invocation sees the command text only,
 # so `node send-it.mjs` or `python3 notify.py` ran a mail past the main agent's approval gate. This is the
@@ -1350,6 +1719,9 @@ _NODE_LOCAL_IMPORT = re.compile(
 _NODE_EXTS = ("", ".js", ".mjs", ".cjs", ".ts", "/index.js", "/index.mjs", "/index.ts")
 _HELPER_LIMIT = 40
 _ADDRESS_FLAG = re.compile(r"^--(?:to|cc|bcc)(?:=(.*))?$", re.S)
+# COPYSUBST1116: argparse takes any unambiguous prefix of a long option, so `--bc x@y` is --bcc to the program
+_ADDRESS_FLAG_ABBREV = re.compile(r"^--(to?|cc?|b(?:cc?)?)(?:=(.*))?$", re.S)
+_FLAT_SUBST_WORD = "$__SUBST__"  # the word flatten_substitutions puts in place of a substitution
 _SCRIPT_FILE = re.compile(r"\.(?:py|mjs|cjs|js|ts)$", re.I)
 _SHELL_C_FLAG = re.compile(r"^-[a-zA-Z]*c[a-zA-Z]*$")
 _SCRIPT_READ_LIMIT = 1024 * 1024
@@ -1465,13 +1837,25 @@ def _node_script_operand(prog, rest):
     return words[0] if words else None
 
 
+def _nonliteral_value(val: str) -> bool:
+    """COPYSUBST1116 (Marveen 4114): a recipient value the gate cannot read as text -- a command or process substitution
+    (also the flattened $__SUBST__ word), a variable, an ANSI-C $'..' string, a backtick -- may be any address."""
+    return "$" in val or "`" in val
+
+
 def _address_flag_given(rest) -> bool:
+    """an address on a recipient flag. COPYSUBST1116: also an argparse prefix of --to / --cc / --bcc (--t, --c, --bc,
+    ...) with an address, and a NON-LITERAL value (_nonliteral_value) on any of them but the one-letter prefixes
+    (`--c "$CFG"` is too often no recipient): fail-closed, the address cannot be proven not to be one."""
     for i, t in enumerate(rest):
-        m = _ADDRESS_FLAG.match(t)
+        m = _ADDRESS_FLAG_ABBREV.match(t)
         if not m:
             continue
-        val = m.group(1) if m.group(1) is not None else (rest[i + 1] if i + 1 < len(rest) else "")
-        if "@" in val:
+        nxt = rest[i + 1] if i + 1 < len(rest) else ""
+        val = m.group(2) if m.group(2) is not None else nxt
+        if m.group(2) == "" and nxt == _FLAT_SUBST_WORD:
+            val = nxt  # `--to=$(..)` flattened: the substitution word is set apart from its `--to=` by a space
+        if "@" in val or (len(m.group(1)) > 1 and _nonliteral_value(val)):
             return True
     return False
 
@@ -1886,9 +2270,31 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         if depth >= _SHELL_C_DEPTH:
             return False
         for i in range(len(rest) - 1):
-            if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words):
+            if not _SHELL_C_FLAG.match(rest[i]):
+                continue
+            # COPYSUBST1116 (Revizor 4111 L2): the tokenizer keeps `\$` inside double quotes, the shell does not, so
+            # the body is judged as written AND with the double-quote escapes undone (this only adds a verdict)
+            body = rest[i + 1]
+            if any(script_run_sends(b, cwd, read_script, depth + 1, cmd_words)
+                   for b in dict.fromkeys((body, _undo_dquote_escapes(body)))):
                 return True
         return False
+    if prog in ("builtin", "command"):
+        # Revizor 4123 L2, 4138 L8: `builtin eval ...`, `builtin command eval ...`, `command -p eval ...`
+        k = 0
+        while k < len(rest) and (rest[k] in ("builtin", "command", "--") or (re.match(r"^-[pvV]+$", rest[k]))):
+            k += 1
+        if k < len(rest) and _basename(rest[k]) == "eval":
+            prog, rest = "eval", rest[k + 1:]
+    if prog == "eval":
+        # COPYSUBST1116: eval runs its joined words as a command line
+        if rest and rest[0] == "--":
+            rest = rest[1:]   # Revizor 4123 L2: `eval -- ...`
+        if depth >= _SHELL_C_DEPTH or not rest:
+            return False
+        line = " ".join(rest)
+        return any(script_run_sends(b, cwd, read_script, depth + 1, cmd_words)
+                   for b in dict.fromkeys((line, _undo_dquote_escapes(line))))
     # the fail-closed branches below fire when `addressed`: on this gate always (see _FAIL_CLOSED_NEEDS_ADDRESS)
     # Samu 69648 (3a): after a command-substitution cd, what runs is out of sight even without an address
     addressed = (not _FAIL_CLOSED_NEEDS_ADDRESS) or _SUBST_MARK in cmd_words or _run_is_addressed(rest, cmd_words)
@@ -2135,6 +2541,672 @@ def draft_isolation_hint(cmd: str, cwd, read_script=None) -> bool:
             if not _py_address_run_sends(_resolve_script_paths(script, cwd, cmd_words), read_script):
                 return True
     return False
+
+
+# EMAILGATESUBST1116: a send command built by process substitution, a here-string, a stdin heredoc or xargs is
+# refused as unverifiable (fail-closed refusal, not expansion: the shell is not re-implemented here). Every gate that
+# classifies Bash sends calls unverifiable_send_construction FIRST and refuses on True with its own wording: this
+# file's main(), email-approval-gate.py (at every level) and the JS twin unverifiableSendConstruction in
+# email-send-gate.mjs; unverifiable-construction-cases.json binds the two copies. A segment is refused when BOTH hold:
+#   (a) its program text or argument list is built by one of the class mechanisms:
+#       - a shell (sh, bash, zsh, dash), source / `.`, python or a JS runtime (not npx) reads its PROGRAM from a
+#         process substitution (`<(...)`, zsh `=(...)`: as the script operand, or stdin redirected from one), from a
+#         here-string, or from a stdin heredoc, also through a pipe from a segment whose program only copies such a
+#         stdin (cat with no file operand, tee: _uv_copier_output); /dev/stdin, /dev/fd/0 and /proc/self/fd/0 as the
+#         script operand are stdin, another /dev/fd/N is undecidable;
+#       - xargs (or gxargs) builds the argument list of its command template;
+#   (b) the built text could be a send. The text the gate can read is judged with the gates' existing markers: a
+#       shell's text with is_send_invocation, script_run_sends and this rule one level deeper, an interpreter's text
+#       with the heredoc code rule (_heredoc_body_sends). A text it cannot read cannot be told, which counts as a send:
+#       a process substitution whose command is not one literal echo / printf, a text that is one expansion as a
+#       whole (`"$CMD"`, `"$(cat f)"`), a `<` left at a segment end (a substitution the scanner did not mark), a heredoc
+#       without a readable body. An xargs template is judged AS WRITTEN with the send markers; an address probe stands
+#       in for what xargs adds only where that is a recipient value: the template ends in a recipient flag (--to /
+#       --cc / --bcc, an argparse prefix of one, curl's --mail-rcpt), or the -I / -J / -i / --replace string is in
+#       the word right after one (or glued to one with `=`). A shell -c program in the template is judged with the replace
+#       string and the positional parameters as that address; a -c program that IS the input cannot be told. A helper
+#       script that xargs runs is judged by the script-run rule as before, not here (Marveen's real-traffic control).
+# A shell `-c` string and an eval line are searched for the same shapes one level deeper (up to _SHELL_C_DEPTH).
+# Not in the class, so not refused here: a data argument or the stdin of a program whose script is a file (the send
+# forms the other rules judge, e.g. `python3 send.py --to x < body.txt`), a pipe from another producer into a
+# program, a program other than the shells / interpreters above, and a value no xargs probe stands for.
+# EMAILGATEPIPESH1116: a send whose command text a producer pipes or hands to a shell is refused the same way. The
+# producers, whose output text is judged like a heredoc's (a text that cannot be computed cannot be told = a send):
+#   - echo / printf (by path, behind a wrapper or `builtin`): echo's words with -n / -e / -E stepped over, a
+#     backslash left in the text = cannot be told; printf's format with only %s / %% specifiers filled from its
+#     arguments (the format repeats while arguments remain), another specifier or a backslash escape other than \n /
+#     \t = cannot be told, `printf -v` prints nothing;
+#   - a copier (cat with no file operand, tee) passes on the text of its stdin, a pipe included, so a chain of
+#     copiers carries the text through;
+#   - a subshell `( ... )` or a brace group `{ ...; }` writes the texts of the producers at its top level (a segment
+#     that pipes into another one inside the group writes into that pipe, not out of the group); a pipe into a group
+#     reaches the group's first command;
+#   - a command substitution that is the whole `-c` string of a shell or the whole argument of eval (quoted
+#     `"$(...)"` / a backquote pair, or an unquoted `$(...)` right after eval / a -c flag): its inner command's
+#     producer output is the program text; a substitution whose inner command is no producer stays out of the class
+#     (`eval "$(ssh-agent -s)"`, `bash -c "$(curl ...)"`), an unbalanced one cannot be told;
+#   - parallel is judged like xargs: its `{}` (any `{...}` replacement string) is the replace string when the
+#     template has one, else its input is appended; the words after `:::` / `::::` are its input, not the template.
+#   - review round 1: an unquoted `$(...)` or backquote pair in an echo / printf word is replaced by its inner
+#     command's producer output as the shell splits it (trailing newlines dropped, blanks collapsed; a word that is
+#     only the substitution gives its fields); an inner command that is no producer, an unclosed one, or one nested
+#     deeper than _SHELL_C_DEPTH cannot be told; the inner command is still judged for the class in its own right.
+#     An unquoted backquote pair right after eval / a -c flag is read like `$(...)` there. `2>&1` / `&>` stay
+#     inside their command (the tokenizer would cut the command at the `&`).
+# Not producers (so a pipe from them stays out of the class): any other program and a cat with a file operand.
+_UNVERIFIABLE_HINT = re.compile(r"<<|<\(|=\(|xargs|parallel|\||\$\(|`")
+_UV_HEREDOC = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n(?:.*?\n)?\3(?=\s|$)", re.S)
+_UV_MARK = re.compile(r"^__GATE(HEREDOC|PROCSUBST)(\d+)__$")
+_UV_PIPE_OUT, _UV_PIPE_IN = "__GATEPIPEOUT__", "__GATEPIPEIN__"
+_UV_GROUP_OPEN, _UV_GROUP_CLOSE = "__GATEGROUPOPEN__", "__GATEGROUPCLOSE__"
+_UV_CMDSUBST = re.compile(r"^__GATECMDSUBST(\d+)__$")
+_UV_SUBST_ARG = re.compile(r"[\s;&|(](?:eval|-[a-zA-Z]*c[a-zA-Z]*)[ \t]+$")   # an unquoted `$(` right after it
+_UV_PAR_REPL = re.compile(r"\{[^{}\s]*\}")   # parallel's replacement strings ({}, {.}, {1}, ...)
+_UV_PAR_ARGS = (":::", "::::", ":::+", "::::+")
+_UV_WORDSUBST = re.compile(r"__GATEWORDSUBST(\d+)__")   # EMAILGATEPIPESH1116 R1: a substitution in a producer word
+_UV_PRODUCER_SKIP = ("{", "!", "if", "then", "else", "elif", "do", "while", "until", "time", "command", "builtin",
+                     "nohup", "exec", "env")
+_UV_SUBST_SCANS = 64   # substitutions after eval / -c read per command; one more cannot be told (bounds the time)
+_UV_COPIERS = ("cat", "tee")   # a program whose standard output is its standard input
+_UV_STDIN_PATHS = ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0")
+_UV_FD_PATH = re.compile(r"^/(?:dev/fd|proc/self/fd)/\d+$")
+_UV_WHOLE_EXPANSION = re.compile(r"^\s*(?:\$(?:\w+|\{[^}]*\}|\(.*\)|[@*#?$!-])|`.*`)\s*$", re.S)
+_UV_PROBE_ADDR = "x@unverifiable.invalid"
+_UV_RCPT_FLAG = re.compile(r"^--(?:to?|cc?|bcc?|b|mail-rcpt)$")   # with argparse prefixes; curl's recipient
+_UV_RCPT_GLUED = re.compile(r"^--(?:to?|cc?|bcc?|b|mail-rcpt)=")
+_UV_POSITIONAL = re.compile(r"\$(?:[0-9@*]|\{[0-9@*]\})")
+_XARGS_SHORT_VAL = "adEIJLnPRsS"   # GNU and BSD xargs options that take a value
+_XARGS_SHORT_OPT = "eil"           # an optional value, glued only
+_XARGS_SHORT_FLAG = "0oprtx"
+_XARGS_LONG_VAL = ("arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var")
+_XARGS_LONG_FLAG = ("null", "no-run-if-empty", "interactive", "verbose", "exit", "open-tty", "show-limits", "help",
+                    "version", "eof", "max-lines", "replace")
+
+
+def _uv_mark(cmd: str, texts: list) -> str:
+    """the command with every heredoc and every unquoted process substitution replaced by a placeholder word; their
+    texts are appended to `texts` (a process substitution's entry is its inner COMMAND, a heredoc's its body)"""
+    def heredoc(m):
+        texts.append(("heredoc", m.group(0)[len(m.group(1)) + 1:len(m.group(0)) - len(m.group(3))]))
+        head = re.match(r"<<-?\s*(['\"]?)\w+\1", m.group(1))
+        sep = "" if re.search(r"(?:^|[\s;&|(])\d+$", m.string[:m.start()]) else " "   # `0<<TAG` keeps its fd
+        return f"{sep}<< __GATEHEREDOC{len(texts) - 1}__" + m.group(1)[head.end():]
+    cmd = _UV_HEREDOC.sub(heredoc, cmd)
+    out, q, i, n = [], None, 0, len(cmd)
+    parens = []   # "s" for an open `$(`, "g" for a group `(`: which `)` closes a group
+    scans = 0     # substitution scans after eval / -c, each up to the end of the command: bounded
+    cmd_start, starts, first = 0, [], {}   # where the current simple command starts in `out` (R1)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == '"' and cmd[i + 1:i + 3] == "$(" and _uv_subst_arg(out):
+            # EMAILGATEPIPESH1116: a whole `"$(...)"` right after eval / a -c flag: the substitution opens its own
+            # quoting, so the word is replaced by one that stands for it (its commands are judged through it)
+            scans += 1
+            end = _uv_close_paren(cmd, i + 3) if scans <= _UV_SUBST_SCANS else -2
+            if 0 < end < n and cmd[end] == '"':
+                texts.append(("cmdsubst", cmd[i + 3:end - 1]))
+                out.append(f" __GATECMDSUBST{len(texts) - 1}__ ")
+                i = end + 1
+                continue
+            if end == -2:   # past the scan bound: cannot be told
+                texts.append(("cmdsubst", None))
+                out.append(f" __GATECMDSUBST{len(texts) - 1}__ ")
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "`":
+            # EMAILGATEPIPESH1116 R1: an unquoted backquote pair after eval / a -c flag, or in a producer's word
+            kind = ("cmdsubst" if _uv_subst_arg(out) else
+                    "wordsubst" if _uv_producer_context(out, cmd_start, first) else None)
+            if kind:
+                j = i + 1
+                while j < n and cmd[j] != "`":
+                    j += 2 if cmd[j] == "\\" else 1
+                texts.append((kind, cmd[i + 1:j] if j < n else None))
+                out.append(f" __GATECMDSUBST{len(texts) - 1}__ " if kind == "cmdsubst"
+                           else f"__GATEWORDSUBST{len(texts) - 1}__")
+                i = j + 1
+                continue
+            out.append(ch); i += 1; cmd_start = len(out); continue
+        if ch == "&" and ((i > 0 and cmd[i - 1] in "<>") or cmd[i + 1:i + 2] == ">"):
+            i += 1   # R1: `2>&1`, `&>f`: a redirection, not a separator (the tokenizer would cut the command there)
+            continue
+        if ch in ";&\n":
+            out.append(ch); i += 1; cmd_start = len(out); continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|("):
+            while i < n and cmd[i] != "\n":   # a comment: an apostrophe in it opens no quote
+                out.append(cmd[i]); i += 1
+            continue
+        if ch == "|" and not (i > 0 and cmd[i - 1] == ">"):
+            if i + 1 < n and cmd[i + 1] == "|":
+                out.append("||"); i += 2; cmd_start = len(out); continue
+            # a pipe: the segment before it ends in _UV_PIPE_OUT, the one after it starts with _UV_PIPE_IN
+            out.append(f" {_UV_PIPE_OUT} | {_UV_PIPE_IN} ")
+            i += 2 if i + 1 < n and cmd[i + 1] == "&" else 1
+            cmd_start = len(out)
+            continue
+        if i + 1 < n and cmd[i + 1] == "(" and (ch == "<" or (ch == "=" and (i == 0 or cmd[i - 1] in " \t\n;&|(<"))):
+            depth, j, iq = 1, i + 2, None
+            while j < n and depth > 0:
+                c = cmd[j]
+                j += 1
+                if iq:
+                    if c == iq:
+                        iq = None
+                    continue
+                if c in "'\"":
+                    iq = c
+                elif c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+            texts.append(("procsubst", cmd[i + 2:j - 1] if depth == 0 else None))
+            out.append(f" __GATEPROCSUBST{len(texts) - 1}__ ")
+            i = j
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            # EMAILGATEPIPESH1116: right after eval / a -c flag the substitution's inner command is recorded and a
+            # word stands for it there; the substitution itself is still scanned (its commands are judged as before)
+            if _uv_subst_arg(out):
+                scans += 1
+                end = _uv_close_paren(cmd, i + 2) if scans <= _UV_SUBST_SCANS else -1   # past the bound: cannot tell
+                texts.append(("cmdsubst", cmd[i + 2:end - 1] if end > 0 else None))
+                out.append(f" __GATECMDSUBST{len(texts) - 1}__ ")
+            elif _uv_producer_context(out, cmd_start, first):
+                # EMAILGATEPIPESH1116 R1: an unquoted substitution in an echo / printf word: one glued word stands
+                # for it, and its inner command is judged through it (_uv_wordsubst_sends)
+                end = _uv_close_paren(cmd, i + 2)
+                texts.append(("wordsubst", cmd[i + 2:end - 1] if end > 0 else None))
+                out.append(f"__GATEWORDSUBST{len(texts) - 1}__")
+                i = end if end > 0 else n
+                continue
+            parens.append("s")
+            starts.append(cmd_start)
+            out.append("$("); i += 2; cmd_start = len(out); continue
+        if ch == "(":
+            parens.append("g")
+            out.append(f"( {_UV_GROUP_OPEN} "); i += 1; cmd_start = len(out); continue
+        if ch == ")" and parens:
+            if parens.pop() == "g":
+                out.append(f") {_UV_GROUP_CLOSE} "); i += 1; cmd_start = len(out); continue
+            cmd_start = starts.pop() if starts else len(out)
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _uv_producer_context(out, start, cache) -> bool:
+    """EMAILGATEPIPESH1116 R1: the simple command scanned since `start` is an echo / printf (behind keywords,
+    assignments and plain launchers) whose name is a complete word; cached per command start"""
+    if start in cache:
+        return cache[start]
+    text = "".join(out[start:])
+    words = text.split()
+    while words and (words[0] in _UV_PRODUCER_SKIP or re.match(r"^[A-Za-z0-9_]+=", words[0])):
+        words = words[1:]
+    # the substitution in the command name itself (no complete name before it) makes no producer
+    cache[start] = (bool(words) and (len(words) > 1 or text[-1:].isspace())
+                    and _basename(words[0]) in ("echo", "printf"))
+    return cache[start]
+
+
+def _uv_subst_arg(out) -> bool:
+    """the scanned text so far ends in eval or a -c flag and blanks (its last 64 characters are read)"""
+    tail = "".join(out[-64:])
+    return bool(_UV_SUBST_ARG.search((" " if len(out) <= 64 and len(tail) <= 64 else "x") + tail[-64:]))
+
+
+def _uv_close_paren(s: str, j: int) -> int:
+    """the index after the `)` that closes a `(` opened right before index j (quote-aware as the process
+    substitution scan above); -1 when it is not closed"""
+    depth, iq, n = 1, None, len(s)
+    while j < n and depth > 0:
+        c = s[j]
+        j += 1
+        if iq:
+            if c == iq:
+                iq = None
+            continue
+        if c in "'\"":
+            iq = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+    return j if depth == 0 else -1
+
+
+def _uv_produced_text(inner):
+    """the text a process substitution's command writes, when it is one literal echo or printf; else None"""
+    if inner is None:
+        return None
+    try:
+        segs = _segments_tokens(inner)
+    except ValueError:
+        return None
+    if len(segs) != 1 or not segs[0]:
+        return None
+    printed = _uv_printed(segs[0])
+    return printed[1] if printed else None
+
+
+def _uv_printed(words):
+    """EMAILGATEPIPESH1116: ("text", the text an echo / printf command prints, or None when it cannot be computed);
+    None when the command is no echo / printf or prints nothing (`printf -v`)"""
+    prog, words = _basename(words[0]), list(words[1:])
+    if prog == "echo":
+        while words and re.match(r"^-[neE]+$", words[0]):
+            words = words[1:]
+        text = " ".join(words)
+        return ("text", None if "\\" in text else text)
+    if prog != "printf":
+        return None
+    if words and words[0] == "--":
+        words = words[1:]
+    if not words or words[0].startswith("-v"):
+        return None
+    fmt = words[0].replace("\\n", "\n").replace("\\t", "\t")
+    specs = re.findall(r"%(.|$)", fmt, re.S)
+    if "\\" in fmt or any(s not in ("s", "%") for s in specs):
+        return ("text", None)
+    args, n = words[1:], specs.count("s")
+
+    def fill(chunk):
+        it = iter(chunk)
+        return re.sub(r"%([s%])", lambda m: "%" if m.group(1) == "%" else next(it, ""), fmt)
+    if n == 0 or not args:
+        return ("text", fill([]))
+    if -(-len(args) // n) * (len(fmt) - 2 * n) + sum(map(len, args)) > 2 * sum(map(len, words)) + 4096:
+        return ("text", None)   # the format repeated far beyond the command's own length: not computed (time bound)
+    return ("text", "".join(fill(args[k:k + n]) for k in range(0, len(args), n)))
+
+
+def _uv_text(word, texts):
+    """(is a placeholder, its readable program text or None) for a word"""
+    m = _UV_MARK.match(word or "")
+    if not m:
+        return False, None
+    kind, text = texts[int(m.group(2))]
+    return True, (_uv_produced_text(text) if kind == "procsubst" else text)
+
+
+def _uv_stdin_and_args(rest, texts, feed=None):
+    """(stdin feed, the words without redirections); a feed is ("text", str or None) or ("file",); `feed` is what a
+    pipe brings in, and a redirection overrides it"""
+    args, i = [], 0
+    while i < len(rest):
+        t = rest[i]
+        nxt = rest[i + 1] if i + 1 < len(rest) else ""
+        m = (re.match(r"^(\d*)(<<<)(.*)$", t, re.S) or re.match(r"^(\d*)(<<-?)(.*)$", t, re.S)
+             or re.match(r"^(\d*)(<)(.*)$", t, re.S))
+        if m:
+            target = m.group(3) or nxt
+            if m.group(1) in ("", "0"):
+                if m.group(2) == "<<<":
+                    feed = ("text", target)
+                else:
+                    marked, text = _uv_text(target, texts)
+                    feed = ("text", text) if (marked or m.group(2) != "<") else ("file",)
+            i += 1 if m.group(3) else 2
+            continue
+        m = re.match(r"^(\d*|&)>>?\|?(.*)$", t, re.S)
+        if m:
+            i += 1 if m.group(2) else 2
+            continue
+        args.append(t)
+        i += 1
+    return feed, args
+
+
+def _uv_program_source(kind, prog, args):
+    """("file", word) | ("string", word) | ("stdin", None) | (None, None): where the program text comes from"""
+    if kind == "sh":
+        i, forced = 0, False
+        while i < len(args):
+            t = args[i]
+            if t in ("--", "-"):
+                i += 1
+                break
+            if t in ("--rcfile", "--init-file"):
+                i += 2
+                continue
+            if t.startswith("--"):
+                i += 1
+                continue
+            if t[:1] in ("-", "+") and len(t) > 1:
+                if t[0] == "-" and "c" in t[1:]:
+                    return "string", (args[i + 1] if i + 1 < len(args) else "")
+                forced = forced or (t[0] == "-" and "s" in t[1:])
+                i += 2 if ("o" in t[1:] or "O" in t[1:]) else 1
+                continue
+            break
+        return ("stdin", None) if forced or i >= len(args) else ("file", args[i])
+    if kind == "src":
+        words = [t for t in args if t != "--"]
+        return ("file", words[0]) if words else (None, None)
+    if kind == "py":
+        script, stdin, _ = _python_script_operand(args)
+        if script is not None:
+            return "file", script
+        if stdin or not any(re.match(r"^-[cm]", t) for t in args):
+            return "stdin", None
+        return None, None
+    if any(t in ("-e", "-p", "--eval", "--print") or t.startswith(("--eval=", "--print=")) for t in args):
+        return None, None
+    script = _node_script_operand(prog, args)
+    return ("file", script) if script is not None else ("stdin", None)
+
+
+def _uv_program_text_sends(kind, text, cwd, depth, texts) -> bool:
+    if text is None or _UV_WHOLE_EXPANSION.match(text):
+        return True   # cannot be told: counts as a send
+    if kind in ("sh", "src"):
+        return bool(is_send_invocation(text) or script_run_sends(text, cwd)
+                    or (depth < _SHELL_C_DEPTH and _uv_sends(text, cwd, depth + 1, texts)))
+    return _heredoc_body_sends(text, kind)
+
+
+def _uv_copier_output(head, texts, pipe_feed=None):
+    """EMAILGATESUBST1116 (Dani's #2842 review B1): the text a pipeline segment writes into the pipe when its program
+    only copies its stdin -- cat with no file operand (only switches, `-` and `--`) or tee (its file operands are
+    extra outputs), behind any path or wrapper -- and that stdin is a heredoc or a here-string in any spelling, or
+    (EMAILGATEPIPESH1116) the text a producer pipes in. ("text", None) when that text is unreadable; None when the
+    segment is no such copier."""
+    prog = _basename(head[0])
+    if prog not in _UV_COPIERS:
+        return None
+    feed, args = _uv_stdin_and_args(head[1:], texts, pipe_feed)
+    if feed is None or feed[0] != "text":
+        return None
+    if prog == "cat" and any(not a.startswith("-") for a in args):
+        return None   # a file operand: the output is not only the stdin
+    return feed
+
+
+def _uv_head_output(head, texts, pipe_feed=None):
+    """EMAILGATEPIPESH1116: what a command writes to its stdout when it is a producer (echo / printf, a copier):
+    ("text", str or None); None when it is no producer"""
+    prog, rest = _basename(head[0]), list(head[1:])
+    while prog == "builtin" and rest:
+        prog, rest = _basename(rest[0]), rest[1:]
+    if prog in ("echo", "printf"):
+        words = _uv_resolve_words(_uv_stdin_and_args(rest, texts)[1], texts)
+        return ("text", None) if words is None else _uv_printed([prog] + words)
+    return _uv_copier_output(head, texts, pipe_feed)
+
+
+def _uv_resolve_words(words, texts):
+    """EMAILGATEPIPESH1116 R1: a producer's words with each substitution replaced by its inner producer's output as
+    the shell splits it (trailing newlines dropped, blanks collapsed; a word that is only the substitution becomes
+    its fields); None when one of them cannot be computed"""
+    out = []
+    for w in words:
+        if not _UV_WORDSUBST.search(w):
+            out.append(w)
+            continue
+        vals = [texts[int(k)][2][1] if len(texts[int(k)]) > 2 else None for k in _UV_WORDSUBST.findall(w)]
+        if any(v is None for v in vals):
+            return None
+        it = iter(vals)
+        r = _UV_WORDSUBST.sub(lambda m: re.sub(r"\s+", " ", next(it).rstrip("\n")), w)
+        out.extend(r.split() if _UV_WORDSUBST.fullmatch(w) else [r])
+    return out
+
+
+def _uv_wordsubst_sends(k, cwd, depth, texts) -> bool:
+    """EMAILGATEPIPESH1116 R1: judge the inner command of a substitution in a producer word (as the scan would have
+    judged it in place) and keep its producer output for _uv_resolve_words; no producer = cannot be told"""
+    entry = texts[k]
+    if len(entry) > 2:
+        return False
+    if entry[1] is None:
+        texts[k] = ("wordsubst", None, ("text", None))
+        return False
+    if depth >= _SHELL_C_DEPTH:
+        texts[k] = ("wordsubst", entry[1], ("text", None))
+        return True   # nested beyond the bound: cannot be told
+    outs = []
+    if _uv_sends(entry[1], cwd, depth + 1, texts, outs):
+        return True
+    texts[k] = ("wordsubst", entry[1], _uv_join(outs) or ("text", None))
+    return False
+
+
+def _uv_join(feeds):
+    """the texts of several producers written one after another; None when there is none"""
+    if not feeds:
+        return None
+    if any(f[1] is None for f in feeds):
+        return ("text", None)
+    return ("text", "\n".join(f[1] for f in feeds))
+
+
+def _uv_subst_sends(words, cwd, depth, texts) -> bool:
+    """EMAILGATEPIPESH1116: a -c string / an eval argument that is one command substitution as a whole, whose inner
+    command is a producer: its output is the program text, judged like a heredoc's"""
+    m = _UV_CMDSUBST.match(words[0])
+    if not m and len(words) != 1:
+        return False
+    s = words[0].strip()
+    if m:
+        inner = texts[int(m.group(1))][1]
+    elif len(s) > 1 and s[0] == s[-1] == "`" and "`" not in s[1:-1]:
+        inner = s[1:-1]
+    elif s.startswith("$(") and s.endswith(")") and _uv_close_paren(s, 2) == len(s):
+        inner = s[2:-1]
+    else:
+        return False
+    if inner is None:
+        return True   # an unbalanced substitution: cannot be told
+    outs = []
+    if _uv_sends(inner, cwd, depth + 1, texts, outs):
+        return True
+    out = _uv_join(outs)
+    return out is not None and _uv_program_text_sends("sh", out[1], cwd, depth, texts)
+
+
+def _uv_head(head, cwd, depth, texts, pipe_feed=None) -> bool:
+    prog, rest = _basename(head[0]), list(head[1:])
+    while prog == "builtin" and rest:
+        prog, rest = _basename(rest[0]), rest[1:]
+    if prog == "eval":
+        return depth < _SHELL_C_DEPTH and bool(rest) and (_uv_subst_sends(rest, cwd, depth, texts)
+                                                          or _uv_sends(" ".join(rest), cwd, depth + 1, texts))
+    kind = ("sh" if _WRAPPER_SHELL.match(prog) else "src" if prog in ("source", ".") else
+            "py" if _PYTHON.match(prog) else "js" if _NODEISH.match(prog) and prog.lower() != "npx" else None)
+    if kind is None:
+        return False
+    feed, args = _uv_stdin_and_args(rest, texts, pipe_feed)
+    src, word = _uv_program_source(kind, prog, args)
+    if src == "file":
+        marked, text = _uv_text(word, texts)
+        if marked:
+            return _uv_program_text_sends(kind, text, cwd, depth, texts)
+        if _UV_FD_PATH.match(word) and word not in _UV_STDIN_PATHS:
+            return True   # another descriptor: what feeds it is not read here
+        if word not in _UV_STDIN_PATHS:
+            return False
+        src = "stdin"
+    if src == "string":
+        return kind == "sh" and depth < _SHELL_C_DEPTH and (_uv_subst_sends([word], cwd, depth, texts)
+                                                             or _uv_sends(word, cwd, depth + 1, texts))
+    if src != "stdin" or feed is None or feed[0] == "file":
+        return False
+    return _uv_program_text_sends(kind, feed[1], cwd, depth, texts)
+
+
+def _uv_shell_word(w: str) -> str:
+    return w if re.match(r"^[A-Za-z0-9_@%+=:,./$-]+$", w) else "'" + w.replace("'", "'\\''") + "'"
+
+
+def _uv_xargs_templates(words, repl=None, j=0, _memo=None):
+    """[(template words, replace string or None)] for the words after xargs; an unknown option is read both ways,
+    memoized on (index, replace string) so a run of unknown options costs linear time (Dani's #2842 review R1)"""
+    memo = {} if _memo is None else _memo
+    key = (j, repl)
+    if key in memo:
+        return memo[key]
+    out = []
+    while j < len(words):
+        t = words[j]
+        if t == "--":
+            j += 1
+            break
+        if t.startswith("--"):
+            name, eq, val = t[2:].partition("=")
+            if name == "replace":
+                repl = val if eq else "{}"
+            if not eq and name in _XARGS_LONG_VAL:
+                j += 2
+                continue
+            if not eq and name not in _XARGS_LONG_FLAG:
+                out += _uv_xargs_templates(words, repl, j + 2, memo)
+            j += 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            step = 1
+            for k in range(1, len(t)):
+                c = t[k]
+                if c in _XARGS_SHORT_VAL or c in _XARGS_SHORT_OPT:
+                    val = t[k + 1:]
+                    if not val and c in _XARGS_SHORT_VAL:
+                        val, step = (words[j + 1] if j + 1 < len(words) else ""), 2
+                    if c in "IJ" or (c == "i"):
+                        repl = val or "{}"
+                    break
+                if c not in _XARGS_SHORT_FLAG:
+                    out += _uv_xargs_templates(words, repl, j + 2, memo)
+                    break
+            j += step
+            continue
+        break
+    memo[key] = list(dict.fromkeys(out + [(tuple(words[j:]), repl)]))
+    return memo[key]
+
+
+def _uv_xargs_sends(words, cwd, texts, parallel=False) -> bool:
+    """The xargs template judged as written; a value probe only where xargs fills a recipient value; a shell -c program
+    in it judged with its placeholder and positional parameters as values. parallel (EMAILGATEPIPESH1116): its
+    template ends at `:::` / `::::`, and a `{...}` replacement string in it is the replace string."""
+    for template, repl in _uv_xargs_templates(words):
+        template = _uv_stdin_and_args(template, texts)[1]   # a redirection there is xargs' own
+        if parallel:
+            cut = next((k for k, w in enumerate(template) if w in _UV_PAR_ARGS), len(template))
+            template = [_UV_PAR_REPL.sub("{}", w) for w in template[:cut]]
+            if not repl and any("{}" in w for w in template):
+                repl = "{}"
+        if not template:
+            continue
+        if is_send_invocation(" ".join(_uv_shell_word(w) for w in template)):
+            return True   # the template program is itself a send
+        if repl:
+            hit = any((repl in w and i > 0 and _UV_RCPT_FLAG.match(template[i - 1])) or
+                      (_UV_RCPT_GLUED.match(w) and repl in w) for i, w in enumerate(template))
+            filled = [w.replace(repl, _UV_PROBE_ADDR) for w in template]
+        else:
+            hit = bool(_UV_RCPT_FLAG.match(template[-1]))
+            filled = template + [_UV_PROBE_ADDR]
+        if hit:
+            line = " ".join(_uv_shell_word(w) for w in filled)
+            if is_send_invocation(line) or script_run_sends(line, cwd):
+                return True
+        for h in _command_heads(template):
+            if not h or not _WRAPPER_SHELL.match(_basename(h[0])):
+                continue
+            k = next((x for x in range(1, len(h)) if _SHELL_C_FLAG.match(h[x])), None)
+            if k is None:
+                continue
+            if k == len(h) - 1:
+                if not repl:
+                    return True   # the -c program itself comes from the input: cannot be told
+                continue
+            text = h[k + 1]
+            if repl and text.strip() == repl:
+                return True   # the -c program is the input line: cannot be told
+            if repl:
+                text = text.replace(repl, _UV_PROBE_ADDR)
+            text = _UV_POSITIONAL.sub(_UV_PROBE_ADDR, text)
+            if is_send_invocation(text) or script_run_sends(text, cwd):
+                return True
+    return False
+
+
+def _uv_sends(cmd: str, cwd, depth: int, texts: list, outs=None) -> bool:
+    """`outs` (EMAILGATEPIPESH1116), when given, collects the producer outputs written at the command's top level"""
+    try:
+        segments = _segments_tokens(_uv_mark(cmd, texts))
+    except ValueError:
+        return False   # unparseable: is_send_invocation's legacy fallback judges it
+    pipe_feed = None   # what the previous segment writes into the pipe, when it is a producer
+    frames = []        # the producer outputs of each open group, innermost last
+    carry = None       # a pipe into a `( ... )` group reaches its first command
+    for toks in segments:
+        feed_in = pipe_feed if toks[0] == _UV_PIPE_IN else None
+        pipe_feed = None
+        pipes_out = toks[-1] == _UV_PIPE_OUT
+        closed, group_out = False, None
+        if toks[0] == _UV_GROUP_OPEN:
+            frames.append([])
+            feed_in = carry
+        carry = None
+        if toks[0] == _UV_GROUP_CLOSE:
+            closed, group_out = True, (_uv_join(frames.pop()) if frames else None)
+        toks = [t for t in toks if t not in (_UV_PIPE_IN, _UV_PIPE_OUT, _UV_GROUP_OPEN, _UV_GROUP_CLOSE)]
+        if toks and toks[0] == "{":
+            frames.append([])
+            toks = toks[1:]
+        if toks and toks[0] == "}" and not closed:
+            closed, group_out = True, (_uv_join(frames.pop()) if frames else None)
+            toks = toks[1:]
+        out = None
+        if toks:
+            if any(_uv_wordsubst_sends(int(k), cwd, depth, texts) for t in toks for k in _UV_WORDSUBST.findall(t)):
+                return True
+            if toks[-1] in ("<", "="):
+                # a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
+                texts.append(("procsubst", None))
+                toks = toks[:-1] + [f"__GATEPROCSUBST{len(texts) - 1}__"]
+            for i, t in enumerate(toks):
+                if _basename(t) in ("xargs", "gxargs", "parallel") and _uv_xargs_sends(
+                        [w for w in toks[i + 1:] if not _UV_CMDSUBST.match(w)], cwd, texts, _basename(t) == "parallel"):
+                    return True
+            heads = [h for h in _command_heads(toks) if h]
+            if any(_uv_head(h, cwd, depth, texts, feed_in) for h in heads):
+                return True
+            out = next((f for f in (_uv_head_output(h, texts, feed_in) for h in heads) if f), None)
+        elif feed_in is not None and not closed:
+            carry = feed_in   # `x | ( ...`: the pipe ends at the group's `(`
+        if closed:
+            out = group_out   # what is left of the closing segment are redirections
+        if pipes_out:
+            pipe_feed = out
+        elif out is not None:
+            if frames:
+                frames[-1].append(out)
+            elif outs is not None:
+                outs.append(out)
+    return False
+
+
+UNVERIFIABLE_CONSTRUCTION_MSG = (
+    "Ezt a kuldo parancsot folyamat-behelyettesites (<(...)), here-string (<<<), stdin-heredoc vagy xargs epiti, "
+    "igy a level boritekja (cimzett, torzs) ebben az alakban nem ellenorizheto.\n"
+    "Futtasd a kuldo szkriptet kozvetlenul: a cimzett literalisan (--to cim), a torzs fajlbol "
+    "(< /abszolut/ut/body.txt) vagy --body-ban.")
+
+
+def unverifiable_send_construction(cmd: str, cwd=None, _depth: int = 0) -> bool:
+    """True when a send command is built by process substitution, a here-string, a stdin heredoc or xargs, so the
+    gate cannot verify its envelope (see the EMAILGATESUBST1116 note above)."""
+    if not isinstance(cmd, str) or not _UNVERIFIABLE_HINT.search(cmd):
+        return False
+    return _uv_sends(cmd, cwd, _depth, [])
 
 
 # ISSUE2582 (A): `D=/x; python3 $D/a.py` -- a variable the command itself sets to a literal. The script path was
@@ -2620,6 +3692,7 @@ def _outside_bodies(cmd: str, lo: int, hi: int) -> str:
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
     if read_script is None:
         read_script = _read_script_head
+    cmd = _decode_ansi_c(cmd)   # Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'` read as the shell reads them
     cmd = _bind_literal_vars(cmd)
     written = _written_scripts(cmd, cwd)
     # Dani (review of #2586): a P that exists now may survive the write (read-only, noclobber set elsewhere): its body
@@ -2650,8 +3723,133 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
         cmd_words += ["cd", _SUBST_MARK]
     if _PY_FUNC_DEF_RAW.search(cmd):
         cmd_words.append(_PY_REBOUND_MARK)
-    return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
-               for toks in segments for h in _command_heads(toks))
+    if any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
+           for toks in segments for h in _command_heads(toks)):
+        return True
+    return _flat_addressed_run_sends(cmd, cwd, read_script, depth, cmd_words)
+
+
+_ANSI_C_SIMPLE = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+                  "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+def _ansi_c_body(body: str) -> str:
+    """the text of a bash $'...' string: its backslash escapes decoded (an unknown one keeps its backslash, as bash)"""
+    out = []
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch); i += 1; continue
+        e = body[i + 1]
+        if e in _ANSI_C_SIMPLE:
+            out.append(_ANSI_C_SIMPLE[e]); i += 2; continue
+        m = (re.match(r"[0-7]{1,3}", body[i + 1:]) or (re.match(r"x([0-9A-Fa-f]{1,2})", body[i + 1:]))
+             or re.match(r"u([0-9A-Fa-f]{1,4})", body[i + 1:]) or re.match(r"U([0-9A-Fa-f]{1,8})", body[i + 1:]))
+        if m:
+            digits = m.group(1) if m.groups() else m.group(0)
+            code = int(digits, 8 if not m.groups() else 16)
+            try:
+                out.append(chr(code))
+            except (ValueError, OverflowError):
+                out.append("�")
+            i += 1 + len(m.group(0)); continue
+        if e == "c" and i + 2 < n:
+            out.append(chr(ord(body[i + 2]) & 0x1f)); i += 3; continue
+        out.append(ch + e); i += 2
+    return "".join(out)
+
+
+def _decode_ansi_c(cmd: str) -> str:
+    """COPYSUBST1116 (Revizor 4123 L1, L3): every unquoted bash $'...' word as the single-quoted text it stands for, so a
+    flag name, an address or a -c / eval body written that way is read as the shell reads it. Twin: decodeAnsiC."""
+    if "$'" not in cmd and '$"' not in cmd:
+        return cmd
+    out = []
+    q = None
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
+            j = i + 2
+            while j < n and cmd[j] != "'":
+                j += 2 if cmd[j] == "\\" else 1
+            text = _ansi_c_body(cmd[i + 2:min(j, n)])
+            out.append("'" + text.replace("'", "'\\''") + "'")
+            i = j + 1
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == '"':
+            i += 1   # Revizor 4138 L7: a locale $"..." string is the "..." string (with no catalogue, as here)
+            continue
+        if ch in "'\"":
+            q = ch
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _undo_dquote_escapes(s: str) -> str:
+    """the shell's double-quote escapes undone: \\$ \\` \\" \\\\ -> the character, backslash-newline -> nothing"""
+    return re.sub(r'\\([$`"\\\n])', lambda m: "" if m.group(1) == "\n" else m.group(1), s)
+
+
+def _strip_shell_comments(cmd: str) -> str:
+    """an unquoted comment dropped up to (not with) its newline: the twin of stripShellComments in email-send-gate.mjs,
+    with the same word-start rule as _mask_subshell_markers"""
+    out = []
+    q = None
+    i, n = 0, len(cmd)
+    parens = []
+    subst_close_at = -1
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|(" or (cmd[i - 1] == ")" and subst_close_at != i - 1)):
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s"); out.append("$("); i += 2; continue
+        if ch == "(":
+            parens.append("p")
+        elif ch == ")" and parens and parens.pop() == "s":
+            subst_close_at = i
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _flat_addressed_run_sends(cmd: str, cwd, read_script, depth, cmd_words) -> bool:
+    """COPYSUBST1116: the tokenizer cuts an unquoted $(...), backtick or <(...) out of its word and splits the command
+    there, so a --to / --cc / --bcc AFTER it fell into a segment of its own and no run was addressed. The command is
+    judged once more with every substitution as one undecidable word -- on the same base the segmenter reads, without
+    heredoc bodies and comments (Revizor 4111 L1: an apostrophe in a comment or a heredoc body flipped the flattener
+    into quote mode) -- but ONLY the runs that carry an address: an unaddressed `python3 $(...)/x.py` keeps its verdict."""
+    base = _strip_shell_comments(_HEREDOC.sub(r"\1", cmd))
+    flat = flatten_substitutions(base)
+    if flat == base:
+        return False
+    try:
+        segments = _segments_tokens(flat)
+    except ValueError:
+        return False
+    return any(_address_flag_given(h[1:]) and _head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
+               for toks in segments for h in _command_heads(toks) if h)
 
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
@@ -3126,6 +4324,37 @@ def _name_correction() -> str:
 
 BAD_NAME, RULES_STATE = load_bad_name()
 ACCENTED = set("áéíóöőúüűÁÉÍÓÖŐÚÜŰ")
+
+
+def load_extra_accentless():
+    """The install's own accentless entries ("extra_accentless" in the local rules file), e.g. its town's name.
+
+    The shipped ACCENTLESS holds no proper names; this is where an install keeps its own, without editing this
+    file. Pick keys that are never correct without the accent: a key that is also an ordinary unaccented word
+    would block legitimate text. Keys: lowercase ASCII letters; values: a string with at least one accented letter. A shipped key is
+    never overridden (logged). An invalid block is dropped as a whole and logged; it changes nothing else (the
+    name rule above keeps its own state, and no send is blocked because of it). No key: {}."""
+    try:
+        with open(_LOCAL_RULES, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return {}  # missing or broken: load_bad_name() above already reports the file's state
+    extra = data.get("extra_accentless") if isinstance(data, dict) else None
+    if extra is None:
+        return {}
+    if not isinstance(extra, dict) or not all(
+            isinstance(k, str) and re.fullmatch(r"[a-z]+", k) and isinstance(v, str) and any(c in ACCENTED for c in v)
+            for k, v in extra.items()):
+        _gate_log(f"outgoing-copy-gate: extra_accentless ERVENYTELEN ({_LOCAL_RULES}) -- kimarad, "
+                  "kulcs: kisbetus ASCII szo, ertek: ekezetes alak.")
+        return {}
+    clash = sorted(k for k in extra if k in ACCENTLESS)
+    if clash:
+        _gate_log(f"outgoing-copy-gate: extra_accentless a beepitett szotar kulcsat nem irja felul: {', '.join(clash)}")
+    return {k: v for k, v in extra.items() if k not in ACCENTLESS}
+
+
+ACCENTLESS.update(load_extra_accentless())
 TAG = re.compile(r"<[^>]+>")
 
 # GATEKOTOJEL817 + GATEHYPH816 (2026-08-19 este, ket hamis pozitiv elo
@@ -4112,7 +5341,10 @@ def main():
                 text, unreadable = collect_mcp_body(tool_input, tool), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not is_send_invocation(cmd):
+        if unverifiable_send_construction(cmd, payload.get("cwd")):
+            sys.stderr.write(f"KIMENO-SZOVEG KAPU: TILTVA.\n{UNVERIFIABLE_CONSTRUCTION_MSG}\n")
+            sys.exit(2)
+        if not is_send_invocation(cmd, cwd=payload.get("cwd")):   # MAILURLFILE1118: a relative URL file is read there
             http_channel_gate(cmd)  # exits if it is a human-facing HTTP send; else returns
             inter_agent_homoglyph_gate(cmd)  # exits; a no-op pass for anything else
         text, unreadable = collect_bash_body(cmd)

@@ -44,10 +44,12 @@ must not rewrite the user-level cache other Claude Code sessions load
   JSON, so /status can say in one line when a patch is missing
   (src/web/system-status.ts) instead of the command silently falling back.
 
-Usage: patch-telegram-plugin.py [--state FILE] [--topics on|off] [--buttons on|off] [<plugins cache root>]
+Usage: patch-telegram-plugin.py [--state FILE] [--topics on|off] [--buttons on|off] [--buttons-max-age HOURS]
+                                [<plugins cache root>]
 (default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache;
 without --topics the TELEGRAM_TOPICS_ENABLED setting of this install decides,
-without --buttons the TELEGRAM_REPLY_BUTTONS setting, default on)
+without --buttons the TELEGRAM_REPLY_BUTTONS setting, default on,
+without --buttons-max-age the TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS setting, default 0 = never expire)
 """
 import json
 import os
@@ -155,7 +157,7 @@ KBD_SCHEMA = ("reply schema files property", re.compile(
     r"^ *description: 'Absolute file paths to attach\. [^\n]*',\n( *)\},\n", re.MULTILINE), "insert-after",
     "{indent}buttons: {{ type: 'array', items: {{ type: 'string' }}, description: 'Optional one-tap answer buttons, "
     "shown under the message; after one tap the chosen one stays, marked with a check mark, and its label comes back "
-    "as an ordinary text message from the user. Also write the options into text, so the question can be answered by "
+    "as an ordinary text message from the user, quoting the question (reply_to_text). Also write the options into text, so the question can be answered by "
     "typing. At most 12 labels, each non-empty, at most 64 characters, not starting with a slash; private chats only. "
     "Editing the message with edit_message removes the buttons; with files the buttons sit under the last text part. "
     "An empty list removes a keyboard shown earlier under the input field.' }}, "
@@ -180,9 +182,38 @@ KBD_SEND = ("reply send options", re.compile(
     ]))
 KBD_SET = ("permission reply regex", re.compile(r"^( *)const PERMISSION_REPLY_RE = [^\n]*\n", re.MULTILINE), "insert-after",
     _kbd_lines(["const marveenKbdAnswered = new Set<string>(), marveenKbdOpen = new Map<string, Set<number>>()"]))
-KBD_CALLBACK = ("callback perm regex", re.compile(
-    r"^( *)const m = /\^perm:\(allow\|deny\|more\):\(\[a-km-z\]\{5\}\)\$/\.exec\(data\)\n", re.MULTILINE), "insert-after",
-    _kbd_lines([
+KBD_CALLBACK_RX = re.compile(
+    r"^( *)const m = /\^perm:\(allow\|deny\|more\):\(\[a-km-z\]\{5\}\)\$/\.exec\(data\)\n", re.MULTILINE)
+# TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS (owner request, 2026-11-08): a button on an old question can be tapped long
+# after the conversation moved on. With a max age set, a tap on a question older than that delivers nothing: the
+# toast says to type the answer, and the keyboard becomes ONE button saying the same (fire and forget, a message too
+# old to edit keeps its buttons), the way an answered question keeps its "✓ label". Not an empty keyboard: measured
+# on the owner's clients (2026-11-19), Telegram Desktop drops the toast when the whole keyboard goes (the phone showed
+# it), and a bare question without buttons said nothing about what happened to them. The button's data, kbd:x, is
+# no answer: a tap on it gets the existing dead-button toast and delivers nothing.
+# The age is the question's own send time (Message.date), so it holds across a plugin restart without any list kept
+# in memory. It runs after the "already answered" check (that toast stays the right one for an answered question)
+# and before the tap is recorded. 0, the default, leaves the line out: the file is byte-identical to the one without
+# the setting. The value goes into the file as seconds, so changing it is the usual in-place rebuild (apply_kbd).
+KBD_MAX_AGE_SETTING = "TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS"
+KBD_MAX_AGE_HOURS_MAX = 8760  # a year; the registry has the same bound
+KBD_EXPIRED_TOAST = "Ez a kérdés lejárt, írd be a választ."
+KBD_EXPIRED_BUTTON = "⏱ Lejárt, írd be a választ"
+
+
+def _kbd_expiry_line(max_age_hours):
+    return ("  if ('date' in kbdMsg && kbdMsg.date > 0 && Math.floor(Date.now() / 1000) - kbdMsg.date > "
+            + str(int(max_age_hours) * 3600) + ") { "
+            "marveenKbdOpen.get(kbdMsg.chat.id + ('is_topic_message' in kbdMsg && kbdMsg.is_topic_message "
+            "&& kbdMsg.message_thread_id != null ? '#' + kbdMsg.message_thread_id : ''))?.delete(kbdMsg.message_id); "
+            "await kbdToast('" + KBD_EXPIRED_TOAST + "'); "
+            "void ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [[{ text: '" + KBD_EXPIRED_BUTTON + "', "
+            "callback_data: 'kbd:x' }]] } }).catch(() => {}); return }")
+
+
+def _kbd_callback(max_age_hours=0):
+    expiry = [_kbd_expiry_line(max_age_hours)] if max_age_hours > 0 else []
+    return ("callback perm regex", KBD_CALLBACK_RX, "insert-after", _kbd_lines([
         "if (data.startsWith('kbd:')) {",
         "  const kbdMsg = ctx.callbackQuery.message",
         "  const kbdToast = (text: string) => ctx.answerCallbackQuery({ text }).catch(() => {})",
@@ -197,6 +228,7 @@ KBD_CALLBACK = ("callback perm regex", re.compile(
         "|| PERMISSION_REPLY_RE.test(kbdButton.text)) { await kbdToast('Ez a gomb már nem él, írd be a választ.'); return }",
         "  const kbdKey = kbdMsg.chat.id + ':' + kbdMsg.message_id",
         "  if (marveenKbdAnswered.has(kbdKey)) { await kbdToast('Erre már válaszoltál.'); return }",
+    ] + expiry + [
         "  if (marveenKbdAnswered.size >= 1000) marveenKbdAnswered.clear()",
         "  marveenKbdAnswered.add(kbdKey)",
         "  marveenKbdOpen.get(kbdMsg.chat.id + ('is_topic_message' in kbdMsg && kbdMsg.is_topic_message "
@@ -209,15 +241,27 @@ KBD_CALLBACK = ("callback perm regex", re.compile(
         "  return",
         "}",
     ]))
+
+
+KBD_CALLBACK = _kbd_callback()
 # A tap has no ctx.message: the meta would say ts 1970 (the staleness guard then warns on every tap) and carry no
 # message_id. A later spread wins over the earlier `ts` key; message_id is the id of the QUESTION the button sits on
 # (the conversation ledger keys the tapped answer by it). Before the imagePath line, not after the ts line: the topics
 # patch inserts after the ts line, and both orders must give the same file.
+# The tap also carries the question itself, the same way a typed reply carries the message it quotes (quote1101):
+# reply_to_message_id is the question's id and reply_to_text a single-line excerpt of it (whitespace collapsed, at
+# most 300 code points; its caption when the question is a captioned file). Before, a tap arrived as the bare label
+# ("Egyik sem"), and once the session had moved on (a restart, a tap days later) nothing said which question it
+# answered (owner report, 2026-11-08). No reply_to_selected: the excerpt is never the owner's own selection.
 KBD_TS = ("inbound meta imagePath", re.compile(
     r"^( *)\.\.\.\(imagePath \? \{ image_path: imagePath \} : \{\}\),\n", re.MULTILINE), "insert-before",
     _kbd_lines([
-        "...(ctx.callbackQuery?.message ? { ts: new Date().toISOString(), "
-        "message_id: String(ctx.callbackQuery.message.message_id) } : {}),",
+        "...(ctx.callbackQuery?.message ? ((kbdQ, kbdQText) => ({ ts: new Date().toISOString(), "
+        "message_id: String(kbdQ.message_id), reply_to_message_id: String(kbdQ.message_id), "
+        "...(kbdQText ? { reply_to_text: kbdQText } : {}) }))(ctx.callbackQuery.message, "
+        "Array.from((('text' in ctx.callbackQuery.message && ctx.callbackQuery.message.text) "
+        "|| ('caption' in ctx.callbackQuery.message && ctx.callbackQuery.message.caption) || '')"
+        ".replace(/\\s+/g, ' ').trim()).slice(0, 300).join('')) : {}),",
     ]))
 # ISSUE2398KBD (marveen#2398): a question answered by TYPING kept its live buttons. The question's message id is
 # remembered per chat when the keyboard goes out (the last text chunk of the reply), and the next typed text message
@@ -251,7 +295,7 @@ KBD_TYPED = ("inbound typing indicator", re.compile(r"^( *)// Typing indicator[^
     ]))
 KBD_ANCHORS = [KBD_SCHEMA, KBD_CHECK, KBD_SEND, KBD_SET, KBD_CALLBACK, KBD_TS, KBD_OPEN, KBD_TYPED]
 KBD_PATCH = {"name": "kbd", "marker": KBD_MARKER, "anchors": KBD_ANCHORS, "mode": "insert-after",
-             "apply": lambda text, buttons=True: apply_kbd(text, buttons),  # defined below
+             "apply": lambda text, buttons=True, max_age_hours=0: apply_kbd(text, buttons, max_age_hours),  # defined below
              "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"}
 
 # TELEGRAM_REPLY_BUTTONS off: an owner may not want answer buttons at all (owner request, 2026-11-03: no buttons
@@ -536,12 +580,14 @@ def strip_kbd(text):
     return "".join(line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(" " + KBD_MARKER))
 
 
-def apply_kbd(text, buttons=True):
+def apply_kbd(text, buttons=True, max_age_hours=0):
     """Returns (new_text, status) like apply_patch, but a file that already carries kbd lines is not skipped:
     the lines are taken out and rebuilt, so an older version (the reply keyboard), or the other side of the
     TELEGRAM_REPLY_BUTTONS switch, is replaced in place and a current one comes out byte-identical ('already').
     Status also: 'damaged:kbd markers' (a marker that is not at the end of a line; the file is left alone)."""
     patch = KBD_PATCH if buttons else KBD_OFF_PATCH
+    if max_age_hours > 0:
+        patch = {**patch, "anchors": [_kbd_callback(max_age_hours) if a is KBD_CALLBACK else a for a in patch["anchors"]]}
     if KBD_MARKER not in text:
         return apply_patch(text, patch)
     base = strip_kbd(text)
@@ -552,7 +598,8 @@ def apply_kbd(text, buttons=True):
         return text, status  # the old lines stay: they still work
     if new == text:
         return text, "already"
-    log("kbd lines rebuilt (an older or edited version, or the other side of TELEGRAM_REPLY_BUTTONS)")
+    log("kbd lines rebuilt (an older or edited version, the other side of TELEGRAM_REPLY_BUTTONS, or another "
+        "TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)")
     return new, "patched"
 
 
@@ -593,13 +640,14 @@ def remove_topics(text):
 TOPICS_PATCH = {"name": "topics", "fallback": TOPICS_FALLBACK}
 
 
-def patch_text(text, topics=False, buttons=True, lang="hu"):
+def patch_text(text, topics=False, buttons=True, lang="hu", max_age_hours=0):
     """Returns (new_text, [(patch, status), ...]). The topics entry is there
     when the switch is on, or when switching it off took the patch out.
-    `buttons` picks the side of the kbd patch (TELEGRAM_REPLY_BUTTONS); `lang` the pairtext language."""
+    `buttons` picks the side of the kbd patch (TELEGRAM_REPLY_BUTTONS); `lang` the pairtext language;
+    `max_age_hours` the age past which a button tap delivers nothing (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS, 0 = never)."""
     results = []
     for patch in PATCHES:
-        text, status = patch["apply"](text, buttons) if "apply" in patch else apply_patch(text, patch)
+        text, status = patch["apply"](text, buttons, max_age_hours) if "apply" in patch else apply_patch(text, patch)
         results.append((patch, status))
     # pairtext last: independent of the others (its own marker and anchors), all-or-nothing on its own.
     text, status = apply_pairtext(text, lang)
@@ -625,7 +673,7 @@ def file_status(results):
     return next(st for st in statuses if st.startswith(("anchor-missing", "damaged")))
 
 
-def patch_file(path, topics=False, buttons=True, lang="hu"):
+def patch_file(path, topics=False, buttons=True, lang="hu", max_age_hours=0):
     """Returns (file status, {patch name: status})."""
     try:
         with open(path, encoding="utf-8") as f:
@@ -633,7 +681,7 @@ def patch_file(path, topics=False, buttons=True, lang="hu"):
     except Exception as e:
         log(f"cannot read {path}: {type(e).__name__}")
         return "unreadable", {}
-    new, results = patch_text(text, topics, buttons, lang)
+    new, results = patch_text(text, topics, buttons, lang, max_age_hours)
     per_patch = {p["name"]: st for p, st in results}
     for patch, status in results:
         if status.startswith("anchor-missing"):
@@ -737,6 +785,43 @@ def buttons_setting(install_dir):
     return flag_setting(install_dir, BUTTONS_SETTING, True)
 
 
+def parse_max_age(value):
+    """A max age in whole hours, 0..KBD_MAX_AGE_HOURS_MAX; None for anything else (a typo, a negative or a fraction)."""
+    text = str(value).strip(JS_TRIM)
+    if not re.fullmatch(r"[0-9]+", text):
+        return None
+    hours = int(text)
+    return hours if hours <= KBD_MAX_AGE_HOURS_MAX else None
+
+
+def max_age_setting(install_dir):
+    """TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS as the settings store resolves it (store/config-overrides.json, then .env),
+    registry default 0 = buttons never expire. A value that is not a whole number of hours in range is logged and read
+    as 0: an unreadable setting must not take a working button away."""
+    raw = None
+    try:
+        with open(os.path.join(install_dir, "store", "config-overrides.json"), encoding="utf-8") as f:
+            overrides = json.load(f)
+        if isinstance(overrides, dict) and KBD_MAX_AGE_SETTING in overrides:
+            raw = overrides[KBD_MAX_AGE_SETTING]
+    except Exception:
+        pass
+    if raw is None:
+        try:
+            with open(os.path.join(install_dir, ".env"), encoding="utf-8", errors="replace", newline="") as f:
+                raw = parse_env_content(f.read()).get(KBD_MAX_AGE_SETTING)
+        except Exception:
+            pass
+    if raw is None or str(raw).strip(JS_TRIM) == "":
+        return 0
+    hours = parse_max_age(raw)
+    if hours is None:
+        log(f"{KBD_MAX_AGE_SETTING}={str(raw)[:40]!r} is not a whole number of hours between 0 and "
+            f"{KBD_MAX_AGE_HOURS_MAX}; buttons do not expire")
+        return 0
+    return hours
+
+
 def lang_setting(install_dir):
     """AGENT_TEXT_LANG from the install's .env, as src/web/agent-text-lang.ts reads it: en or hu. Unset, unreadable or
     anything else: hu (Samu 73716)."""
@@ -753,9 +838,16 @@ def main(argv):
     state_path = None
     topics = None
     buttons = None
-    while len(args) >= 2 and args[0] in ("--state", "--topics", "--buttons"):
+    max_age_hours = None
+    while len(args) >= 2 and args[0] in ("--state", "--topics", "--buttons", "--buttons-max-age"):
         if args[0] == "--state":
             state_path = args[1]
+        elif args[0] == "--buttons-max-age":
+            max_age_hours = parse_max_age(args[1])
+            if max_age_hours is None:
+                print(f"patch-telegram-plugin.py: --buttons-max-age takes whole hours from 0 to {KBD_MAX_AGE_HOURS_MAX}, "
+                      f"got {args[1]!r}; nothing patched", file=sys.stderr)
+                return 2
         elif args[1] not in ("on", "off"):
             # An explicit switch: anything else is a typo, and reading it as
             # "off" would silently take a patch off (or the buttons away).
@@ -771,6 +863,8 @@ def main(argv):
         topics = topics_setting(install_dir)
     if buttons is None:
         buttons = buttons_setting(install_dir)
+    if max_age_hours is None:
+        max_age_hours = max_age_setting(install_dir)
     lang = lang_setting(install_dir)
     root = args[0] if args else default_root()
     files = []
@@ -779,18 +873,19 @@ def main(argv):
         for ver in sorted(os.listdir(base)):
             path = os.path.join(base, ver, "server.ts")
             if os.path.isfile(path):
-                status, patches = patch_file(path, topics, buttons, lang)
+                status, patches = patch_file(path, topics, buttons, lang, max_age_hours)
                 files.append({"version": ver, "path": path, "status": status, "patches": patches})
     if state_path:
         write_state(state_path, {"at": int(time.time()), "root": root, "topics": "on" if topics else "off",
-                                 "buttons": "on" if buttons else "off", "lang": lang, "files": files})
+                                 "buttons": "on" if buttons else "off", "buttons_max_age_hours": max_age_hours,
+                                 "lang": lang, "files": files})
     return 0
 
 
 if __name__ == "__main__":
     code = 0
     try:
-        # Non-zero only for a mistyped --topics or --buttons, which channels.sh never passes.
+        # Non-zero only for a mistyped --topics, --buttons or --buttons-max-age, which channels.sh never passes.
         code = main(sys.argv)
     except Exception as e:  # never stop the channel from starting
         log(f"unexpected {type(e).__name__}, nothing patched")

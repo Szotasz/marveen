@@ -263,7 +263,7 @@ for c in d['stuck']:
 print(f\"Beakadt-riasztás: vizsgált={d['examined']}, beakadt={len(d['stuck'])}, számít={len(counted)}, fő-ágens régi={len(own_old)}\" + ('' if d['examined'] else ' (nem tudott mérni)') + ('' if last else ' (első futás: nincs előző audit, az új nem mérhető)'))
 for c in own_old:
     print('  csak jelentés:', c['id'], '|', c['status'], '|', c['idle_days'], 'nap |', c['title'])
-print('TELEGRAM: IGEN (3+ számító beakadt)' if len(counted)>=3 else 'TELEGRAM: nem')
+print('OWNER ALERT: yes (3+ számító beakadt)' if len(counted)>=3 else 'OWNER ALERT: no')
 "
      ```
    - **ÚJ blokker (waiting > 48h).** Az "új" a lényeg, nem a 48 óra: a `waiting` kártyák hosszan állnak (a
@@ -286,7 +286,7 @@ new=[c for c in old if last>0 and since(c)+H48>=last-GRACE]  # az elozo auditkor
 print(f'Waiting > 48h: vizsgált={len(w)}, 48h felett={len(old)}, új={len(new)}' + ('' if w else ' (nem tudott mérni)') + ('' if last else ' (első futás: nincs előző audit, az új nem mérhető)'))
 for c in new:
     print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', round((now-since(c))/3600.0,1), 'h |', c['title'])
-print('TELEGRAM: IGEN (új blokker)' if new else 'TELEGRAM: nem')
+print('OWNER ALERT: yes (új blokker)' if new else 'OWNER ALERT: no')
 "
      ```
    - Detektorral nem fedett státuszú kártya (6a): ugyanarról a kártyáról naponta legfeljebb egyszer, a többi körben csak a jelentésben

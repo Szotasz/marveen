@@ -16,7 +16,7 @@ const { SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
 const { tryHandleAgents } = await import('../web/routes/agents.js')
 const { tryHandleCustomProviders } = await import('../web/routes/custom-providers.js')
 const { agentDir } = await import('../web/agent-config.js')
-const { PROJECT_ROOT } = await import('../config.js')
+const { PROJECT_ROOT, MAIN_AGENT_ID } = await import('../config.js')
 // custom-providers.ts keeps its file under PROJECT_ROOT/store (this checkout's, gitignored): saved and restored here,
 // the same pattern as agent-model-custom-provider-brackets.test.ts.
 const PROVIDERS_PATH = join(PROJECT_ROOT, 'store', 'custom-providers.json')
@@ -88,7 +88,7 @@ describe('the field split', () => {
 describe('PUT /api/agents/:name with the bare shared token', () => {
   const values: Record<string, unknown> = {
     claudeMd: '# injected\n', soulMd: 'injected', mcpJson: '{"mcpServers":{"x":{"command":"true"}}}',
-    authMode: 'shared', apiKey: 'k', claudePlan: '', memoryIsolation: true, customProvider: null,
+    authMode: 'shared', apiKey: 'k', claudePlan: '', memoryIsolation: true, customProvider: null, codeMode: true,
   }
   for (const field of AGENT_PUT_OWNER_FIELDS) {
     it(`${field}: 403 owner_session_required, and no file changed`, async () => {
@@ -121,6 +121,67 @@ describe('PUT /api/agents/:name with the bare shared token', () => {
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, { kind: 'device', scope: 'full', device: 'Bridge' }, { claudeMd: '# x\n' }))).toBe(true)
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, { kind: 'device', scope: 'operator', device: 'Op' }, { claudeMd: '# x\n' }, ownerCookie()))).toBe(true)
     expect(snapshot()['CLAUDE.md']).toBe(ORIGINAL['CLAUDE.md'])
+  })
+})
+
+// CODEMODEFLAG1119: the Code Mode switch changes how the agent's Claude Code runs, so it is an owner field. Named here
+// on its own (not only through the AGENT_PUT_OWNER_FIELDS loop above, which a removed entry would silently skip).
+describe('PUT codeMode: owner only, sub-agents only', () => {
+  const config = () => JSON.parse(readFileSync(join(DIR, 'agent-config.json'), 'utf-8'))
+  // Q2 (Samu 81017): the agent's isolated .claude.json, in the two-space shape Claude Code writes.
+  const DOT = join(DIR, '.claude-config', '.claude.json')
+  const DOT_ORIGINAL = '{\n  "numStartups": 4,\n  "hasCompletedOnboarding": true,\n  "projects": {\n    "/a": {\n      "hasTrustDialogAccepted": true\n    }\n  }\n}\n'
+  const writeDot = () => { mkdirSync(join(DIR, '.claude-config'), { recursive: true }); writeFileSync(DOT, DOT_ORIGINAL) }
+  const dotBytes = () => readFileSync(DOT, 'utf-8')
+
+  it('the bare shared token: 403 owner_session_required, agent-config.json AND the isolated .claude.json byte-identical', async () => {
+    writeDot()
+    const before = snapshot()
+    const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, TOKEN, { codeMode: true })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(r.body.fields).toEqual(['codeMode'])
+    expect(snapshot()).toEqual(before)
+    expect(dotBytes()).toBe(DOT_ORIGINAL)
+  })
+
+  it('the owner switch is the acceptance: on stamps both caveat keys, off -> on -> off leaves .claude.json byte-identical', async () => {
+    writeDot()
+    expect((await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { codeMode: false })).status).toBe(200)
+    expect(dotBytes()).toBe(DOT_ORIGINAL)
+    expect((await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { codeMode: true })).status).toBe(200)
+    const on = JSON.parse(dotBytes())
+    expect(on.codeModeCaveatsAcceptedV1).toBe(true)
+    expect(on.codeModeAutoModeCaveatAcceptedV1).toBe(true)
+    expect((await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { codeMode: false })).status).toBe(200)
+    expect(dotBytes()).toBe(DOT_ORIGINAL)
+    expect(config()).toEqual({ model: 'claude-opus-5' })
+  })
+
+  it('an unreadable isolated .claude.json refuses the switch (500) and changes nothing', async () => {
+    mkdirSync(join(DIR, '.claude-config'), { recursive: true })
+    writeFileSync(DOT, '{broken')
+    const before = snapshot()
+    const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { codeMode: true })
+    expect(r.status).toBe(500)
+    expect(snapshot()).toEqual(before)
+    expect(dotBytes()).toBe('{broken')
+  })
+
+  it('the owner session: 200, codeMode written beside the other keys, and false removes it again', async () => {
+    const on = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { codeMode: true })
+    expect(on.status).toBe(200)
+    expect(config()).toEqual({ model: 'claude-opus-5', codeMode: true })
+    const detail = await hit(tryHandleAgents, 'GET', `/api/agents/${AGENT}`, TOKEN)
+    expect(detail.body.codeMode).toBe(true)
+    const off = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, TOKEN, { codeMode: false }, ownerCookie())
+    expect(off.status).toBe(200)
+    expect(config()).toEqual({ model: 'claude-opus-5' })
+    expect((await hit(tryHandleAgents, 'GET', `/api/agents/${AGENT}`, TOKEN)).body.codeMode).toBe(false)
+  })
+
+  it('the main agent: refused with 400 even for the owner session', async () => {
+    const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${encodeURIComponent(MAIN_AGENT_ID)}`, SESSION, { codeMode: true })
+    expect(r.status).toBe(400)
   })
 })
 

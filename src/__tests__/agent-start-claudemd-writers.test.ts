@@ -26,6 +26,7 @@ const calls = [...PROCESS.matchAll(CALL_RX)].map((m) => `${m[1]}(${m[2]})`)
 // Literal on purpose: the sequence this file was written against. A new writer is added HERE, in its place.
 const SEQUENCE = [
   'syncAgentTokenOnStart(name)',
+  'ensureFleetBaseRulesSection(name, driveFolder)',
   'ensureFleetRosterSection(name)',
   'ensureProjectRootInClaudeMd(name)',
   'ensureAutonomySection(name)',
@@ -35,6 +36,7 @@ const SEQUENCE = [
   'ensureAgentIdHeaderSection(name)',
   'ensureThinChiefHandoffSection(name)',
   'ensureMemorySearchLabelSection(name)',
+  'ensureMemoryFactChangeSection(name)',
   'ensureFleetAuthSection(name)',
   'ensureEvidenceSection(name)',
   'ensureMcpListChannelSection(name)',

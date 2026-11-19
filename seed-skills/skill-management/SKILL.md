@@ -1,35 +1,35 @@
 ---
 name: skill-management
-description: List, inspect, patch, or delete skills from ~/.claude/skills/. Use when the user asks about available skills, wants to modify an existing skill, or when a retrospective proposes skill changes. Trigger on "/skills" command or skill-related retrospective actions.
+description: Skillek listázása, megtekintése, patchelése vagy törlése a ~/.claude/skills/ mappából. Akkor használd, ha a felhasználó az elérhető skillekről kérdez, egy meglévő skillt akar módosítani, vagy ha egy retrospektív skill-változtatást javasol. A "/skills" parancsra vagy skillhez kapcsolódó retrospektív lépésekre indul.
 ---
 
-# Skill Management -- CRUD for the Skill Library
+# Skill-kezelés: CRUD a skill-könyvtárhoz
 
-## When to use
+## Mikor használd
 
-- User asks "what skills do I have?" or "list skills"
-- User wants to inspect a specific skill's content
-- A `/retrospective` proposes CREATE, PATCH, or DELETE actions on skills
-- User says "update skill X" or "fix skill Y"
-- Periodic audit: check for stale or duplicate skills
+- A felhasználó azt kérdezi: "milyen skilljeim vannak?", vagy azt kéri: "listázd a skilleket"
+- A felhasználó egy konkrét skill tartalmát akarja megnézni
+- Egy `/retrospective` CREATE, PATCH vagy DELETE lépést javasol skilleken
+- A felhasználó azt mondja: "frissítsd az X skillt" vagy "javítsd az Y skillt"
+- Rendszeres audit: elavult vagy duplikált skillek keresése
 
-## Arguments
+## Argumentumok
 
-| Argument | Required | Description |
+| Argumentum | Kötelező | Leírás |
 |----------|----------|-------------|
-| `action` | YES | One of: `list`, `show`, `create`, `patch`, `delete`, `audit` |
-| `name` | for show/patch/delete | Skill directory name (e.g. `github-pr-rebase-merge`) |
-| `scope` | no | `global` (default, ~/.claude/skills/) or `local` (./claude/skills/) |
+| `action` | IGEN | Ezek egyike: `list`, `show`, `create`, `patch`, `delete`, `audit` |
+| `name` | show/patch/delete esetén | A skill könyvtárneve (pl. `github-pr-rebase-merge`) |
+| `scope` | nem | `global` (alapértelmezés, ~/.claude/skills/) vagy `local` (./claude/skills/) |
 
-Examples:
-- `/skills action=list` -- list all skills with descriptions
-- `/skills action=show name=github-pr-rebase-merge` -- show full SKILL.md
-- `/skills action=create name=new-skill` -- interactive skill creation
-- `/skills action=patch name=existing-skill` -- modify specific sections
-- `/skills action=delete name=old-skill` -- remove with confirmation
-- `/skills action=audit` -- find stale, duplicate, or oversized skills
+Példák:
+- `/skills action=list`: az összes skill listázása leírással
+- `/skills action=show name=github-pr-rebase-merge`: a teljes SKILL.md megjelenítése
+- `/skills action=create name=new-skill`: interaktív skill-létrehozás
+- `/skills action=patch name=existing-skill`: konkrét szakaszok módosítása
+- `/skills action=delete name=old-skill`: eltávolítás megerősítéssel
+- `/skills action=audit`: elavult, duplikált vagy túlméretes skillek keresése
 
-## Procedure
+## Eljárás
 
 ### action=list
 
@@ -49,21 +49,21 @@ for dir in "$SKILL_DIR"/*/; do
 done
 ```
 
-Present as a compact table. If both global and local exist, show both.
+Tömör táblázatként mutasd be. Ha globális és helyi is van, mindkettőt mutasd.
 
 ### action=show
 
-1. Read `~/.claude/skills/{name}/SKILL.md`
-2. If it has a `references/` subdirectory, list those files too
-3. Present the full content
+1. Olvasd be a `~/.claude/skills/{name}/SKILL.md` fájlt
+2. Ha van `references/` alkönyvtára, azokat a fájlokat is listázd
+3. Mutasd be a teljes tartalmat
 
 ### action=create
 
-Interactive skill creation workflow:
+Interaktív skill-létrehozó munkafolyamat:
 
-1. Ask for trigger context: "When should this skill activate?"
-2. Ask for procedure steps: "What does it do, step by step?"
-3. Generate SKILL.md with proper frontmatter:
+1. Kérdezz rá az indító kontextusra: "Mikor kapcsoljon be ez a skill?"
+2. Kérdezz rá az eljárás lépéseire: "Mit csinál, lépésről lépésre?"
+3. Készítsd el a SKILL.md-t megfelelő frontmatterrel:
 
 ```markdown
 ---
@@ -85,50 +85,50 @@ description: {one-line, specific about triggers}
 - {Known issues, if any}
 ```
 
-4. Write to `~/.claude/skills/{name}/SKILL.md`
-5. Update `.skill-index.md` if it exists
+4. Írd ide: `~/.claude/skills/{name}/SKILL.md`
+5. Frissítsd a `.skill-index.md`-t, ha létezik
 
-Rules:
-- Keep SKILL.md under 500 lines
-- Large reference material goes in `references/` subdirectory
-- Description must be specific enough for L0 matching (not "does stuff")
-- Procedure steps must be concrete and executable
+Szabályok:
+- A SKILL.md maradjon 500 sor alatt
+- A nagy referenciaanyag a `references/` alkönyvtárba kerül
+- A leírás legyen elég konkrét az L0 illesztéshez (ne "csinál dolgokat")
+- Az eljárás lépései legyenek konkrétak és végrehajthatók
 
 ### action=patch
 
-Targeted modification of an existing skill:
+Egy meglévő skill célzott módosítása:
 
-1. Read the current SKILL.md
-2. Identify the section to change based on user input or retrospective proposal
-3. Apply targeted edit (old text -> new text), not full rewrite
-4. If adding a pitfall from a runtime discovery, append to the Pitfalls section
-5. Log the patch reason in the Pitfalls section if it came from an error recovery
+1. Olvasd be a jelenlegi SKILL.md-t
+2. A felhasználó kérése vagy a retrospektív javaslata alapján azonosítsd a módosítandó szakaszt
+3. Célzott szerkesztést végezz (régi szöveg -> új szöveg), ne teljes újraírást
+4. Ha futás közbeni felfedezésből adsz hozzá buktatót, fűzd a Buktatók szakasz végére
+5. Ha a patch hibából való helyreállásból jött, az okát is jegyezd fel a Buktatók szakaszban
 
-Rules:
-- Never rewrite the entire skill for a small change
-- Preserve existing pitfalls and procedure steps unless explicitly removing
-- If the patch changes triggers, update the description in frontmatter too
+Szabályok:
+- Kis változtatásért soha ne írd újra az egész skillt
+- Őrizd meg a meglévő buktatókat és eljárási lépéseket, hacsak nem kifejezetten törlöd őket
+- Ha a patch az indító feltételeket változtatja, a frontmatter leírását is frissítsd
 
 ### action=delete
 
-1. Show the skill content first
-2. Ask for confirmation: "Delete skill '{name}'? This removes the entire directory."
-3. On confirmation:
+1. Előbb mutasd meg a skill tartalmát
+2. Kérj megerősítést: "Törlöd a(z) '{name}' skillt? Ez a teljes könyvtárat eltávolítja."
+3. Megerősítés után:
 ```bash
 rm -rf "${HOME}/.claude/skills/${NAME}"
 ```
-4. Update `.skill-index.md` if it exists
+4. Frissítsd a `.skill-index.md`-t, ha létezik
 
-Rules:
-- Never delete without showing content first
-- Never delete without explicit user confirmation
-- If the skill is referenced by other skills, warn before deleting
+Szabályok:
+- Soha ne törölj úgy, hogy előbb nem mutattad meg a tartalmat
+- Soha ne törölj a felhasználó kifejezett megerősítése nélkül
+- Ha más skillek hivatkoznak a skillre, törlés előtt figyelmeztess
 
 ### action=audit
 
-Comprehensive skill library health check:
+Átfogó állapotellenőrzés a skill-könyvtáron:
 
-1. **Stale detection**: Skills not referenced in any CLAUDE.md and with no git activity in 60+ days
+1. **Elavultság keresése**: egyik CLAUDE.md-ben sem hivatkozott skillek, amelyeken 60+ napja nem volt git-aktivitás
 ```bash
 for dir in ~/.claude/skills/*/; do
   name=$(basename "$dir")
@@ -140,7 +140,7 @@ for dir in ~/.claude/skills/*/; do
 done | sort
 ```
 
-2. **Duplicate detection**: Skills with overlapping descriptions or triggers
+2. **Duplikátumok keresése**: átfedő leírású vagy indító feltételű skillek
 ```bash
 for dir in ~/.claude/skills/*/; do
   skill_file="$dir/SKILL.md"
@@ -150,9 +150,9 @@ for dir in ~/.claude/skills/*/; do
   fi
 done
 ```
-Review for semantic overlaps manually.
+Nézd át kézzel a jelentésbeli átfedéseket.
 
-3. **Size check**: Skills over 500 lines that should be refactored
+3. **Méretellenőrzés**: 500 sornál hosszabb skillek, amelyeket át kellene szervezni
 ```bash
 for dir in ~/.claude/skills/*/; do
   skill_file="$dir/SKILL.md"
@@ -165,7 +165,7 @@ for dir in ~/.claude/skills/*/; do
 done
 ```
 
-4. **Index sync**: Check `.skill-index.md` matches actual directories
+4. **Index-szinkron**: ellenőrizd, hogy a `.skill-index.md` egyezik-e a tényleges könyvtárakkal
 ```bash
 if [ -f ~/.claude/skills/.skill-index.md ]; then
   echo "Index exists, checking sync..."
@@ -176,7 +176,7 @@ if [ -f ~/.claude/skills/.skill-index.md ]; then
 fi
 ```
 
-Present findings as:
+Így mutasd be a megállapításokat:
 ```
 ## Skill Audit Results
 
@@ -195,9 +195,9 @@ Disk usage: {size}
 3. REINDEX: regenerate .skill-index.md
 ```
 
-## Skill Index Regeneration
+## A skill-index újragenerálása
 
-When skills are created, patched, or deleted, regenerate the index:
+Ha skillt hozol létre, patchelsz vagy törölsz, generáld újra az indexet:
 
 ```bash
 INDEX_FILE="${HOME}/.claude/skills/.skill-index.md"
@@ -216,20 +216,20 @@ for dir in ~/.claude/skills/*/; do
 done
 ```
 
-## Pitfalls
+## Buktatók
 
-- Do NOT auto-delete skills without user confirmation
-- Do NOT create skills for one-off tasks (check the 2+ occurrence rule)
-- Audit results are advisory, not auto-executed
-- The `.skill-index.md` is for L0 matching only; the full SKILL.md is L1
-- On macOS, `stat` syntax differs from Linux; the audit commands handle both
-- If a skill references external APIs or tokens, never include the actual values
+- NE törölj skillt automatikusan a felhasználó megerősítése nélkül
+- NE hozz létre skillt egyszeri feladatra (nézd meg a 2+ előfordulás szabályát)
+- Az audit eredménye tanácsadó jellegű, nem hajtódik végre automatikusan
+- A `.skill-index.md` csak az L0 illesztésre való; a teljes SKILL.md az L1
+- macOS-en a `stat` szintaxisa eltér a Linuxétól; az audit-parancsok mindkettőt kezelik
+- Ha egy skill külső API-kra vagy tokenekre hivatkozik, soha ne írd bele a tényleges értékeket
 
-## Relation to other mechanisms
+## Kapcsolat a többi mechanizmussal
 
-| Mechanism | Skill-management's role |
+| Mechanizmus | A skill-management szerepe |
 |-----------|------------------------|
-| retrospective | Retrospective proposes changes; skill-management executes them |
-| CLAUDE.md | CLAUDE.md references skills; skill-management maintains the library |
-| .skill-index.md | Skill-management regenerates this after mutations |
-| seed-skills/ | Seed skills are templates; once installed they become regular skills managed here |
+| retrospective | A retrospektív javasolja a változtatásokat; a skill-management végrehajtja őket |
+| CLAUDE.md | A CLAUDE.md hivatkozik a skillekre; a skill-management karbantartja a könyvtárat |
+| .skill-index.md | A skill-management minden módosítás után újragenerálja |
+| seed-skills/ | A seed skillek sablonok; telepítés után szokásos skillekké válnak, amelyeket itt kezelsz |

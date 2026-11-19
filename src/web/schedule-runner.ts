@@ -82,7 +82,7 @@ import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig,
 import { enqueueWorksourceItem, worksourceItemStage, worksourcePendingHead, type WorksourceItemStage } from './worksource-queue.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
-import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
+import { classifyDelivery, readUserPromptsSince, sessionAuthFailedSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
 import { paneTyped } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { channelStateDir, getProvider, readChannelToken, readTeamsCreds, type ChannelProviderType } from '../channel-provider.js'
@@ -108,7 +108,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { findTelegramTopic, telegramTopicsEnabled } from './telegram-topics.js'
 import { runCommandTask } from './command-task.js'
 import { trackDetachedGroup } from './detached-groups.js'
-import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
+import { decideQuotaAction, quotaBlindness, type QuotaSnapshot, type QuotaWorkClass } from '../quota-gate.js'
 import { isAgentBudgetHeld } from './agent-budget-alerts.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
@@ -443,6 +443,24 @@ export function checkTaskDeliveryIntegrity(
   if (verdict === 'tail-lost' && !final) return null
   if (verdict == null && final) return dirs.some((d) => dirExists(d)) ? 'not-arrived' : 'unverifiable'
   return verdict
+}
+
+// DOCKERUNAUTHRUN1118: did the session answer this run with nothing but "Not logged in"? Read from the same
+// transcripts as the delivery verdict, from the moment typing began (sessionAuthFailedSince, delivery-integrity.ts).
+// Only a typed local run has typedAt; a remote or worksource run gives no evidence here (false). An unreadable
+// transcript is false as well: the run keeps the ending it had before this check existed. `read` is injectable
+// so the decision is unit-tested without disk.
+export function checkTaskAuthFailure(
+  entry: Pick<TaskInflightEntry, 'typedAt' | 'workingDir' | 'configDirs'>,
+  read: (dirs: readonly string[], sinceMs: number) => boolean = sessionAuthFailedSince,
+): boolean {
+  if (entry.typedAt == null) return false
+  const dirs = [...new Set(entry.configDirs.map((c) => projectsDirFor(entry.workingDir, c)))]
+  try {
+    return read(dirs, entry.typedAt)
+  } catch {
+    return false
+  }
 }
 
 // Card 7d2b49b4: a once task is switched off after its first SUCCESSFUL run (isOnceRunSuccess: the run
@@ -1423,6 +1441,94 @@ export function quotaWorkClass(task: Pick<ScheduledTask, 'type'>): QuotaWorkClas
   if (task.type === 'command') return 'free'
   if (task.type === 'heartbeat') return 'background'
   return 'owner-facing'
+}
+
+// QUOTA_GATE_HARD_AT_PERCENT, read live once per tick; 0 (tiers off) on any read error.
+function readQuotaHardAtPercent(): number {
+  try { return Number(getEffectiveSettingValue('QUOTA_GATE_HARD_AT_PERCENT')) || 0 } catch { return 0 }
+}
+
+// The gate fails open on an untrusted or stale snapshot (quota-gate.ts); that
+// must not be silent. One log line per state change, and one owner notice when
+// the gate goes blind; quiet until it can see again. The blind kind and the source
+// that were alerted on are kept in store/ (no timestamp: a running collector rewrites
+// an estimate every 15 minutes), so a restart while the same blindness lasts does
+// not notify again.
+let quotaBlindState: ReturnType<typeof quotaBlindness> = null
+
+const QUOTA_BLIND_ALERT_PATH = join(PROJECT_ROOT, 'store', 'quota-blind-alert.json')
+
+export interface AlertedKeyStore { read(): string | null; write(key: string): void }
+
+const fileAlertedKeyStore: AlertedKeyStore = {
+  read() {
+    try {
+      const k = (JSON.parse(readFileSync(QUOTA_BLIND_ALERT_PATH, 'utf-8')) as { key?: unknown }).key
+      return typeof k === 'string' ? k : null
+    } catch { return null }
+  },
+  write(key) {
+    try { atomicWriteFileSync(QUOTA_BLIND_ALERT_PATH, JSON.stringify({ key }) + '\n') } catch (err) {
+      logger.warn({ err }, 'schedule-runner: failed to persist the quota blind-alert key')
+    }
+  },
+}
+
+export function noteQuotaBlindness(
+  snapshot: QuotaSnapshot | null,
+  nowMs: number,
+  notify: (text: string) => void = sendQuotaBlindNotice,
+  alerted: AlertedKeyStore = fileAlertedKeyStore,
+): void {
+  const next = quotaBlindness(snapshot, nowMs)
+  if (next === quotaBlindState) return
+  const prev = quotaBlindState
+  quotaBlindState = next
+  if (!next) {
+    logger.info({ previous: prev }, 'Quota gate sees the quota again (trusted, fresh snapshot)')
+    if (prev) alerted.write('')
+    return
+  }
+  const at = snapshot?.generatedAtMs
+  const ageMinutes = typeof at === 'number' ? Math.round((nowMs - at) / 60_000) : null
+  logger.warn(
+    { state: next, source: snapshot?.source ?? null, ageMinutes },
+    'Quota gate is blind: background tasks run unchecked (fail open) until a trusted, fresh snapshot arrives',
+  )
+  if (prev) return
+  const key = `${next}|${snapshot?.source ?? 'none'}`
+  if (alerted.read() === key) return // same blindness already alerted on, before a restart
+  alerted.write(key)
+  const why = next === 'untrusted-source'
+    ? `a kvóta-pillanatkép forrása "${snapshot?.source ?? 'ismeretlen'}", ami nem mért szám`
+    : `a legutóbbi kvóta-pillanatkép ${ageMinutes ?? '?'} perce készült`
+  notify([
+    `[${BOT_NAME} scheduler] A kvóta-kapu nem látja a keretet: ${why}.`,
+    'A háttérfeladatok ettől még futnak, de a kapu nem tudja visszafogni őket, ha fogy a keret.',
+    'Javítás: a usage-collect feladat (scripts/usage-collect.py) adjon friss, mért számot; a részletek a dashboard.log-ban. Amíg így marad, nem szólok újra.',
+  ].join('\n'))
+}
+
+/** Test helper: forget the last blind state. */
+export function resetQuotaBlindStateForTest(): void {
+  quotaBlindState = null
+}
+
+function sendQuotaBlindNotice(text: string): void {
+  const token = resolveSchedulerAlertToken()
+  const ownerChat = token ? resolveSchedulerOwnerChat() : null
+  if (!token || !ownerChat) {
+    logger.warn({ provider: CHANNEL_PROVIDER }, 'quota-blind notice suppressed: no channel bot token or owner chat')
+    return
+  }
+  ;(async () => {
+    try {
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info('quota-blind notice sent')
+    } catch (err) {
+      logger.warn({ err }, 'quota-blind notice delivery failed')
+    }
+  })()
 }
 
 // Where a task's preCheck script lives, by the same rule the registry hash
@@ -3526,7 +3632,25 @@ export function startScheduleRunner(): NodeJS.Timeout {
           )
         }
       }
-      if (decision === 'done' || decision === 'abandoned') {
+      if (decision === 'done' && checkTaskAuthFailure(entry)) {
+        // DOCKERUNAUTHRUN1118: the pane went idle after a turn, but the only reply was Claude Code's own "Not logged
+        // in" error: the session could not work, so this is not a success. Recorded as outcome 'unauth' (the
+        // delivery verdict stays what the transcript showed: the prompt did arrive). Not a success for a once task
+        // either, so settleOnceAfterRun is not called and the task stays enabled. No retry is queued: a redelivery
+        // would meet the same login wall, and the session itself is the reauth healer's to report.
+        logger.warn(
+          { task: entry.taskName, agent: entry.agentName, session: entry.session, runId: entry.runId, delivery: entry.deliveryVerdict ?? null },
+          'Scheduled run hit a session that is not logged in -- the only reply was an authentication error; recorded as unauth, NOT as done',
+        )
+        if (entry.runId != null) {
+          try {
+            markTaskRunCompleted(entry.runId, 'unauth', now)
+          } catch (err) {
+            logger.warn({ err, task: entry.taskName, runId: entry.runId }, 'Failed to record task-run completion')
+          }
+        }
+        taskInflightMap.delete(key)
+      } else if (decision === 'done' || decision === 'abandoned') {
         // 'done' is genuine success (sawTurn was true) -- this occurrence's
         // lost-redelivery count, if any, no longer applies to a FUTURE
         // occurrence of the same task@agent key. 'abandoned' means max-track
@@ -3771,6 +3895,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // fleet draws on ONE subscription quota pool, so the gate below asks the
     // same snapshot about all of them.
     const quotaSnapshot = readQuotaSnapshot()
+    noteQuotaBlindness(quotaSnapshot, now)
+    const quotaHardAtPercent = readQuotaHardAtPercent()
 
     for (const task of tasks) {
       if (!task.enabled) continue
@@ -3843,6 +3969,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
         snapshot: quotaSnapshot,
         nowMs: now,
         workClass: quotaWorkClass(task),
+        essential: task.essential === true,
+        hardAtPercent: quotaHardAtPercent,
       })
       if (quota.action === 'defer') {
         logger.info(

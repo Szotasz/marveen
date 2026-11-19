@@ -66,7 +66,8 @@ describe('the launcher binding', () => {
     // Geri's #1692 review gap (c): the other two inputs are pinned too.
     expect(block).toMatch(/installedCli: \(await measureClaudeCliVersion\(\)\)\.version/)
     expect(block).toMatch(/runAs: !!agentTmuxTarget\(name\)\.runAsUser/)
-    expect(SRC).toMatch(/\$\{providerEnv\}\$\{stateObserverEnv\}cd "\$\{launchCwd\}"/)
+    // CODEMODEFLAG1119: the Code Mode piece sits between the observer export and cd.
+    expect(SRC).toMatch(/\$\{providerEnv\}\$\{stateObserverEnv\}\$\{codeModeEnv\}cd "\$\{launchCwd\}"/)
   })
 
   it('reads the flag from agent-config.json as a strict boolean', () => {

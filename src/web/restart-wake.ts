@@ -164,14 +164,21 @@ function handoffWhen(h: FreshHandoff): string {
 export function mainRestartWakePrompt(reason: string, handoff: FreshHandoff | null): string {
   const where = handoff
     ? `A ${handoff.path} atado friss (irva: ${handoffWhen(handoff)}): olvasd be, es FOLYTASD az ott leirt munkat. ` +
-      'Ami az atado ota tortent, azt a kanban tablad es a hot memoriaid mutatjak: azokat is nezd meg. '
+      'Ami az atado ota tortent, azt a kanban tablad es a hot memoriaid mutatjak: azokat is nezd meg. ' +
+      // HANDOFFKARTYA1118: the kanban alone dropped an agreed handoff item that had no card.
+      'Az atado Next Steps MINDEN tetele teendo akkor is, ha nincs kartyaja: ebben az elso korben minden kartya nelkuli tetelre hozz letre kartyat ' +
+      '(vagy ird a tetel melle, miert nem kell). A kanban NEM a teljes teendolista. '
     : 'Nezd meg a kanban tabladat es a hot memoriaidat, es FOLYTASD onnan a megkezdett munkat. '
+  const idle = handoff
+    ? 'Az atado nyitott tetele futo munka, akkor is, ha nincs kartyaja. ' +
+      'Ha nem volt futo munkad es az atadoban sincs nyitott tetel, az is teljes erteku allapot: olyankor ne talalj ki magadnak feladatot. '
+    : 'Ha nem volt futo munkad, az is teljes erteku allapot: olyankor ne talalj ki magadnak feladatot. '
   return (
     `[RESTART-WAKE] A munkamenetedet kezzel ujrainditottak (friss inditas, ok: ${reason}): ` +
     'a korabbi beszelgetes NEM maradt meg. ' +
     where +
     'Ne kezdd elolrol, ami mar kesz, es ne delegald ujra, amit mar atadtal. ' +
-    'Ha nem volt futo munkad, az is teljes erteku allapot: olyankor ne talalj ki magadnak feladatot. ' +
+    idle +
     'Az ujrainditasrol a csatornadra NE kuldj uzenetet.'
   )
 }

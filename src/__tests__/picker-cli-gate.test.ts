@@ -151,7 +151,8 @@ describe('the writers are gated too (POST/PUT model)', () => {
     const create = readFileSync(join(REPO, 'src', 'web', 'agent-create.ts'), 'utf8')
     const post = create.indexOf("const cliGate = await refuseIfCliCannotLaunch(model)")
     expect(post).toBeGreaterThan(-1)
-    expect(src).toContain('await checkAgentCreatable(name, model, customProvider,')
+    // AGENTCREATEPR2-1119: the POST body runs them in createAgentFromSpec (agent-create.ts).
+    expect(create.slice(create.indexOf('export async function createAgentFromSpec('))).toContain('await checkAgentCreatable(name, model, customProvider,')
   })
 })
 

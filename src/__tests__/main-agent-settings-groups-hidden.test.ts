@@ -23,7 +23,7 @@ const el = (hidden = false): El => ({
 function load() {
   const src = APP.match(/\nfunction applyMarveenReadonlyMode\(readOnly\) \{\n[\s\S]*?\n\}\n/)
   expect(src, 'applyMarveenReadonlyMode not found in web/app.js').toBeTruthy()
-  const ids = ['securityProfileGroup', 'claudePlanGroup', 'authModeGroup', 'memoryIsolationGroup', 'mainAuthGroup',
+  const ids = ['securityProfileGroup', 'claudePlanGroup', 'authModeGroup', 'memoryIsolationGroup', 'codeModeGroup', 'mainAuthGroup',
     'marveenReadonlyNote', 'editClaudeMd', 'editSoulMd', 'editMcpJson', 'editAgentModel',
     'saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveAuthModeBtn', 'saveModelBtn']
   const els: Record<string, El> = Object.fromEntries(ids.map((id) => [id, el()]))
@@ -77,6 +77,30 @@ describe('main agent: per sub-agent settings groups are hidden (#2727)', () => {
     expect(els.saveModelBtn.disabled).toBe(true)
     expect(els.editClaudeMd.attrs.readonly).toBe('readonly')
     expect(loads()).toBe(1)
+  })
+
+  // CODEMODEFLAG1119: the Code Mode switch is a sub-agent setting (the main agent does not start through the launcher
+  // that reads it), so it follows the memory-isolation group: hidden on the main agent card, back on a sub-agent.
+  it('the Code Mode group: hidden for the main agent, shown again for a sub-agent', () => {
+    const { fn, els } = load()
+    fn(true)
+    expect(els.codeModeGroup.hidden).toBe(true)
+    fn(false)
+    expect(els.codeModeGroup.hidden).toBe(false)
+  })
+
+  it('the Code Mode markup, the checkbox state and the PUT it sends', () => {
+    const group = HTML.match(/<div class="form-group" id="codeModeGroup">[\s\S]*?<\/div>/)
+    expect(group, 'codeModeGroup not found in web/index.html').toBeTruthy()
+    expect(group![0]).toContain('<input type="checkbox" id="codeModeToggle">')
+    expect(group![0]).toContain('data-i18n="agents.settings.code_mode_toggle"')
+    expect(group![0]).toContain('data-i18n="agents.settings.code_mode_desc"')
+    expect(HTML.match(/id="codeModeToggle"/g) ?? []).toHaveLength(1)
+    expect(APP).toContain("if (codeModeToggle) codeModeToggle.checked = currentAgent.codeMode === true")
+    const handler = APP.slice(APP.indexOf("document.getElementById('codeModeToggle').addEventListener('change'"))
+    expect(handler.slice(0, 900)).toContain("if (!currentAgent || currentAgent.role === 'main') return")
+    expect(handler.slice(0, 900)).toContain('body: JSON.stringify({ codeMode: enabled }),')
+    expect(handler.slice(0, 900)).toContain('currentAgent.codeMode = enabled')
   })
 
   it('a missing group does not break the mode switch', () => {

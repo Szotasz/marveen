@@ -264,7 +264,7 @@ for c in d['stuck']:
 print(f\"Stuck alert: examined={d['examined']}, stuck={len(d['stuck'])}, counted={len(counted)}, main agent old={len(own_old)}\" + ('' if d['examined'] else ' (could not measure)') + ('' if last else ' (first run: no previous audit, new cannot be measured)'))
 for c in own_old:
     print('  report only:', c['id'], '|', c['status'], '|', c['idle_days'], 'days |', c['title'])
-print('TELEGRAM: YES (3+ counted stuck)' if len(counted)>=3 else 'TELEGRAM: no')
+print('OWNER ALERT: yes (3+ counted stuck)' if len(counted)>=3 else 'OWNER ALERT: no')
 "
      ```
    - **NEW blocker (waiting > 48h).** "New" is the point, not the 48 hours: `waiting` cards stand for a long time
@@ -288,7 +288,7 @@ new=[c for c in old if last>0 and since(c)+H48>=last-GRACE]  # it was still with
 print(f'Waiting > 48h: examined={len(w)}, over 48h={len(old)}, new={len(new)}' + ('' if w else ' (could not measure)') + ('' if last else ' (first run: no previous audit, new cannot be measured)'))
 for c in new:
     print(' ', c['id'], '|', (c.get('assignee') or '-'), '|', round((now-since(c))/3600.0,1), 'h |', c['title'])
-print('TELEGRAM: YES (new blocker)' if new else 'TELEGRAM: no')
+print('OWNER ALERT: yes (new blocker)' if new else 'OWNER ALERT: no')
 "
      ```
    - Card with a status no detector covers (6a): at most once a day about the same card, in the other rounds only in the report

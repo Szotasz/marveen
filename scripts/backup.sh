@@ -11,6 +11,7 @@
 #     scheduled-tasks.json     (legacy, if present)
 #     assets/meetings/**       (meeting transcripts/memos)
 #     agents/*/CLAUDE.md, SOUL.md, .mcp.json
+#     agents/*/PACKAGE.md, LOCAL.md, .package/manifest.json  (an agent package's layers and record)
 #     agents/*/.claude/channels/{telegram,slack,discord}/.env, access.json
 #     agents/*/agent-config.json, .claude/settings.local.json, .claude/skills/
 #       (token and key files in skills only with MARVEEN_BACKUP_AGENT_SECRETS=1),
@@ -114,7 +115,15 @@ add_if() {
 #     large-task fire, so a restore losing yesterday's costs nothing
 #   (measured 2026-09-16: these two were 788 MB of a 948 MB archive; excluding them
 #    leaves ~150 MB. STORE_SKIP does not delete anything -- the files stay on disk.)
-STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay scheduled-runs "
+#   agent-package-credential.json -- the agent package device token (MIOAGENTINSTALL1114, plan 6.4): one per
+#     machine, never carried; after a restore the owner connects again
+#   agent-package-installing, agent-package-leftovers, agent-package-hidden.json -- the package installer's
+#     install markers, set-aside folders and derived hidden list (plan 4.2, 7.2): state of an install in
+#     progress on THIS machine; a restored marker would hide a restored agent
+#   bash-sandbox -- the per-agent Bash sandbox settings (BASHSANDBOX1022): the dashboard and the watchdog rewrite
+#     them from the owner's settings on every start, so a restore loses nothing; the folder is read-only (0555),
+#     and a staged copy of it kept the 0555, so the stage cleanup's rm -rf failed and the run exited 1
+STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay scheduled-runs agent-package-credential.json agent-package-installing agent-package-leftovers agent-package-hidden.json bash-sandbox "
 if [[ -d store ]]; then
   while IFS= read -r _entry; do
     _name="$(basename "${_entry}")"
@@ -159,6 +168,11 @@ if [[ -d agents ]]; then
   #                                transcripts next to it
   # A missing path is not an error: find prints nothing.
   find agents -mindepth 2 -maxdepth 2 -type f -name 'agent-config.json' -print >> "${REPOLIST}"
+  # MIOAGENTINSTALL1114 (plan 4.2, M23): a package agent's CLAUDE.md is only the shell that imports these two
+  # layers; restored without them it would point at missing files. LOCAL.md is the owner's own data, and the
+  # record says which package and version stand there.
+  find agents -mindepth 2 -maxdepth 2 -type f \( -name 'PACKAGE.md' -o -name 'LOCAL.md' \) -print >> "${REPOLIST}"
+  find agents -mindepth 3 -maxdepth 3 -type f -path 'agents/*/.package/manifest.json' -print >> "${REPOLIST}"
   find agents -mindepth 3 -maxdepth 3 -type f -path 'agents/*/.claude/settings.local.json' -print >> "${REPOLIST}"
   # Skills are taken file by file: a skill folder can also hold credential
   # files, and those follow the same opt-in switch as secrets/ below.

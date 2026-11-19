@@ -35,6 +35,7 @@ import { hardRestartMarveenChannels, restartMainForRotationContinue } from '../c
 import { rotationReadiness } from '../claude-rotation-heartbeat.js'
 import { mainRotationContinueVerdict, type ContinueRestartResult } from '../main-rotation-continue.js'
 import type { RouteContext } from './types.js'
+import { withRotationLock, mainRotationTooSoon, MAIN_ROTATION_MIN_GAP_MS } from '../claude-rotation-lock.js'
 
 /** Minimum gap between two manual probes of the same plan (POST .../probe). */
 export const MANUAL_PROBE_MIN_INTERVAL_MS = 60_000
@@ -189,6 +190,8 @@ export function commitNewPlan(rawBody: Record<string, unknown>): { status: numbe
 // PLANROTATEDEADLOCK1115 P2: the rotation itself, for both callers: the route below (after its request-shape checks)
 // and, next, the backend timer. Same guardrails and the same restart as the route always had; the answer is the
 // status and body the route sends.
+// P5: a main-agent rotation within MAIN_ROTATION_MIN_GAP_MS of the last one is refused (429), whoever asks: the
+// backend tick, the old agent task and the dashboard button alike (see the route below).
 export async function rotatePlan(input: { agentId: string; targetPlanId: string; continue: boolean }): Promise<{ status: number; payload: Record<string, unknown> }> {
   const { agentId, targetPlanId } = input
   const wantContinue = input.continue
@@ -238,6 +241,17 @@ export async function rotatePlan(input: { agentId: string; targetPlanId: string;
       }
     }
 
+    const lastRotationAt = readClaudePlansState().backend?.lastRotationAt
+    const ago = mainRotationTooSoon(lastRotationAt, Date.now())
+    if (ago !== null) {
+      const min = Math.round(ago / 60_000)
+      logger.warn({ agentId, targetPlanId, lastRotationAt }, 'Claude plan rotation refused: the main agent was rotated too recently')
+      return { status: 429, payload: {
+        error: `Rotation refused: the main agent was switched ${min} min ago; another switch is allowed ${Math.round(MAIN_ROTATION_MIN_GAP_MS / 60_000)} min after the last one`,
+        code: 'rotation_too_soon', lastRotationAt,
+      } }
+    }
+
     // Record the decision BEFORE restarting: the next launch resolves its
     // CLAUDE_CONFIG_DIR by reading this file back
     // (main-agent-isolated-config.mjs -> resolveMainAgentRotatedConfigDir),
@@ -260,6 +274,8 @@ export async function rotatePlan(input: { agentId: string; targetPlanId: string;
         return { status: 500, payload: { error: result.error || 'Main agent restart failed' } }
       }
     }
+    const st = readClaudePlansState()
+    writeClaudePlansState({ ...st, backend: { ...(st.backend ?? {}), lastRotationAt: Date.now() } })
     logger.info({ agentId, targetPlanId, ...(mode ? { mode } : {}) }, 'Claude plan rotation: main agent restarted')
 
     // Fleet leg (opt-in, CLAUDE_ROTATION_FLEET): the shared fleet token and
@@ -371,7 +387,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   }
 
   // Why rotation would stay inert right now (rotation off, main agent not
-  // isolated, too few channels plans, heartbeat task missing/disabled). Read
+  // isolated, too few channels plans, no active plan). Read
   // by the Settings "Claude plans" warning banner. Before the :id matcher for
   // the same reason as .../state above.
   if (path === '/api/claude-plans/readiness' && method === 'GET') {
@@ -413,7 +429,10 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     }
     const wantContinue = b.continue === true
 
-    const r = await rotatePlan({ agentId, targetPlanId, continue: wantContinue })
+    // PLANROTATEDEADLOCK1115 P3: the same lock as the backend tick, so a manual rotation and a tick never interleave.
+    // P5: the lastRotationAt guard in rotatePlan holds for this route too. A dashboard click is not exempt: on the
+    // usual token-in-the-browser dashboard it looks exactly like the old agent task's call (the same access token).
+    const r = await withRotationLock(() => rotatePlan({ agentId, targetPlanId, continue: wantContinue }))
     json(res, r.payload, r.status)
     return true
   }

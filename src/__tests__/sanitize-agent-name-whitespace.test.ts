@@ -53,14 +53,16 @@ describe('POST /api/agents refuses the main agent id', () => {
   const src = readFileSync(join(import.meta.dirname, '..', 'web/routes/agents.ts'), 'utf8')
   const create = readFileSync(join(import.meta.dirname, '..', 'web/agent-create.ts'), 'utf8')
   const checks = create.slice(create.indexOf('export async function checkAgentCreatable('), create.indexOf('export interface AgentBase'))
+  // AGENTCREATEPR2-1119: the route's body is createAgentFromSpec (agent-create.ts); the route calls it.
   const routeRunsChecksBeforeWrites = () => {
-    const post = src.indexOf("path === '/api/agents' && method === 'POST'")
-    const callCheck = src.indexOf('await checkAgentCreatable(name, model, customProvider,', post)
-    const callWrite = src.indexOf('writeAgentBase(name, {', post)
+    expect(src).toContain('const result = await createAgentFromSpec(data)')
+    const post = create.indexOf('export async function createAgentFromSpec(')
+    const callCheck = create.indexOf('await checkAgentCreatable(name, model, customProvider,', post)
+    const callWrite = create.indexOf('writeAgentBase(name, {', post)
     expect(post).toBeGreaterThan(-1)
     expect(callCheck).toBeGreaterThan(post)
     expect(callWrite).toBeGreaterThan(callCheck)
-    expect(src.slice(callCheck, callWrite)).toContain('if (refusal) { json(res, refusal.body, refusal.status); return true }')
+    expect(create.slice(callCheck, callWrite)).toContain('if (refusal) return { status: refusal.status, body: refusal.body }')
     expect(checks).not.toContain('scaffoldAgentDir(')
   }
   it('checks name === MAIN_AGENT_ID before scaffoldAgentDir', () => {

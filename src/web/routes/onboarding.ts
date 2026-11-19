@@ -22,7 +22,21 @@ import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.
 import { mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
 import { assertEnvEntry } from '../../env.js'
 import { mainGromzoPrimaryReady } from '../main-gromzo-launch.js'
+import { teamsAllowlistIds, TEAMS_ALLOWLIST_FILE } from '../../owner-chat.js'
 import type { RouteContext } from './types.js'
+import { deployment } from '../deployment.js'
+import { installLang, switchInstallLanguage, type RunResult } from '../install-lang-switch.js'
+
+// DOCKERUX1118: one language switch at a time.
+let langSwitchBusy = false
+/** A program without a shell, with exactly the given environment; never rejects (a failure is a code). */
+function runNoShell(file: string, args: readonly string[], env: Record<string, string>): Promise<RunResult> {
+  return new Promise((resolve) => {
+    execFile(file, [...args], { env, timeout: 120_000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (err, stdout) => {
+      resolve({ code: err === null ? 0 : typeof err.code === 'number' ? err.code : null, stdout: stdout ?? '' })
+    })
+  })
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -211,11 +225,10 @@ function existingChannelTokens(): { botToken: string | null; appToken: string | 
 // TEAMSPAIRED1115: the Teams plugin (claude-channel-teams 0.3.0, src/pairing/allowlist.ts) keeps its paired users
 // in <stateDir>/allowlist.json as {"version":1,"entries":[{"aad_object_id":"<uuid>",...}]} and writes no access.json.
 // Paired = at least one entry with an object id; any other shape the plugin itself treats as empty.
+// The parser is owner-chat.ts teamsAllowlistIds, shared with the owner-alert target (TEAMSAPPROVECARD1118).
 function teamsPaired(): boolean {
   try {
-    const a = JSON.parse(readFileSync(join(channelStateDir('teams'), 'allowlist.json'), 'utf-8')) as { version?: unknown; entries?: unknown }
-    if (!a || a.version !== 1 || !Array.isArray(a.entries)) return false
-    return a.entries.some((e) => !!e && typeof (e as { aad_object_id?: unknown }).aad_object_id === 'string' && (e as { aad_object_id: string }).aad_object_id.trim() !== '')
+    return teamsAllowlistIds(JSON.parse(readFileSync(join(channelStateDir('teams'), TEAMS_ALLOWLIST_FILE), 'utf-8'))).length > 0
   } catch { return false }
 }
 
@@ -307,7 +320,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     const pr = paired()
     // Only surface an already-saved token while step 3 (channel setup) is the one still pending --  once the
     // channel is configured there is nothing to pre-fill and no reason to hand the value back over the wire.
-    const existingTokens = !ch ? existingChannelTokens() : { botToken: null, appToken: null }
+    // DOCKERHTTPS1119 Dani n2 (81264): a setup session (the public listener before the first login) never gets a saved
+    // channel token back; the wizard reaches the channel step only after the password, on the owner session.
+    const existingTokens = !ch && ctx.auth?.kind !== 'setup' ? existingChannelTokens() : { botToken: null, appToken: null }
     // Slack pre-flight, surfaced passively (GET, no probe/write/restart): when  a token is already on disk
     // but the managed-settings.json plugin allowlist isn't, the wizard can show the sudo command immediately
     // instead of making the operator hit Save just to learn it's needed. Kept null whenever there's nothing to
@@ -352,6 +367,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       needsOnboarding: !claude || !running || !ch || !pr,
       // ONBOARDNOTG1108 (b): the owner closed the wizard (the machine's flag, whatever origin the dashboard is on).
       dismissed: onboardingDismissedOnServer(),
+      // DOCKERUX1118: the wizard shows its language switch in the container only, and compares with the install's.
+      deployment: deployment(),
+      installLang: installLang(readEnvValue),
     })
     return true
   }
@@ -378,6 +396,62 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       return true
     }
     json(res, { ok: true, dismissed: onboardingDismissedOnServer() })
+    return true
+  }
+
+  // DOCKERUX1118 (owner 33327/33329, Samu 80886/80891): the wizard's language switch. Docker only (a native install's
+  // language is the installer's question); the owner session only, never the bare first-run token; only while the
+  // setup is unfinished and the main agent does not run (its CLAUDE.md is in use then). What it rewrites, and the
+  // untouched-only rule: src/web/install-lang-switch.ts.
+  if (path === '/api/onboarding/language' && method === 'POST') {
+    if (!mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing the install language needs the dashboard login (an owner session).' }, 403)
+      return true
+    }
+    const raw = await readBodyOrRefuse(req, res)
+    if (!raw) return true
+    let lang: unknown
+    try { lang = (JSON.parse(raw.toString()) as { lang?: unknown }).lang } catch { /* empty */ }
+    if (lang !== 'en' && lang !== 'hu') { json(res, { error: 'lang must be "en" or "hu".', reason: 'bad-lang' }, 400); return true }
+    if (deployment() !== 'docker') {
+      json(res, { error: 'The install language is switched here only in the Docker container. This install chose its language when it was installed.', reason: 'not_docker' }, 409)
+      return true
+    }
+    if (agentsRunning()) {
+      json(res, { error: 'The main agent is already running, so its files are in use: the install language can only be switched before it starts.', reason: 'agent_running' }, 409)
+      return true
+    }
+    if (channelConfigured() && paired() && (await claudeAuthPresent())) {
+      json(res, { error: 'The setup is finished: the install language can only be switched during the setup.', reason: 'onboarding_done' }, 409)
+      return true
+    }
+    if (langSwitchBusy) { json(res, { error: 'A language switch is already running.', reason: 'busy' }, 409); return true }
+    langSwitchBusy = true
+    try {
+      const result = await switchInstallLanguage(lang, {
+        root: PROJECT_ROOT,
+        dockerDir: process.env.MARVEEN_DOCKER_DIR || '/opt/marveen-docker',
+        home: homedir(),
+        readEnv: readEnvValue,
+        setEnv: setEnvKey,
+        readFile: (p) => { try { return readFileSync(p, 'utf-8') } catch { return null } },
+        writeFile: (p, text) => atomicWriteFileSync(p, text),
+        exists: (p) => existsSync(p),
+        run: runNoShell,
+        agentRunning: agentsRunning,
+      })
+      logger.info({ lang, ok: result.ok, files: result.files.length }, 'onboarding: install language switched')
+      if (!result.ok && result.error === 'agent_running') {
+        json(res, { error: 'The main agent started while the language was being switched: nothing was changed. The install language can only be switched before it starts.', reason: 'agent_running' }, 409)
+      } else {
+        json(res, result, result.ok ? 200 : 500)
+      }
+    } catch (err) {
+      logger.error({ err: (err as Error).message }, 'onboarding: the install language switch failed')
+      json(res, { error: 'The install language could not be switched.', reason: 'write-failed' }, 500)
+    } finally {
+      langSwitchBusy = false
+    }
     return true
   }
 

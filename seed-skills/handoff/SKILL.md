@@ -1,36 +1,36 @@
 ---
 name: handoff
-description: Generate a HANDOFF.md context transfer document for session continuity. Use when switching sessions, handing off to another agent, or preserving complex task context before a context window reset. Trigger on "/handoff" command or "handoff:" prefix in inter-agent messages.
+description: HANDOFF.md kontextusátadó dokumentum készítése a session folytonosságához. Akkor használd, ha sessiont váltasz, egy másik ágensnek adod át a munkát, vagy egy összetett feladat kontextusát kell megőrizned a kontextusablak visszaállítása előtt. A "/handoff" parancsra vagy az inter-agent üzenetek "handoff:" előtagjára indul.
 ---
 
-# Handoff -- Session Context Transfer
+# Handoff: a session kontextusának átadása
 
-## When to use
+## Mikor használd
 
-- You are about to hit context limits and need to preserve task state
-- A task needs to continue in a fresh session (yours or another agent's)
-- Inter-agent delegation of a complex, multi-step task
-- User explicitly says `/handoff` or asks to "save context for later"
-- Before a `/checkpoint` when the task is too complex for 3-5 bullet points
+- Közel vagy a kontextus határához, és meg kell őrizned a feladat állapotát
+- Egy feladatnak friss sessionben kell folytatódnia (a tiédben vagy egy másik ágensében)
+- Összetett, többlépéses feladat delegálása másik ágensnek
+- A felhasználó kifejezetten `/handoff`-ot ír, vagy azt kéri, hogy "mentsd el a kontextust későbbre"
+- Egy `/checkpoint` előtt, ha a feladat túl összetett 3-5 felsoroláspontnak
 
-## Arguments
+## Argumentumok
 
-| Argument | Required | Description |
+| Argumentum | Kötelező | Leírás |
 |----------|----------|-------------|
-| `purpose` | YES | What the next session should do with this context |
-| `target` | no | Agent name (e.g. `target=dev2`) -- sends via inter-agent message instead of writing file |
-| `output` | no | File path override (default: project root `HANDOFF.md`) |
+| `purpose` | IGEN | Mit kezdjen a következő session ezzel a kontextussal |
+| `target` | nem | Ágensnév (pl. `target=dev2`): fájlírás helyett inter-agent üzenetben küldi |
+| `output` | nem | A fájl útjának felülírása (alapértelmezés: `HANDOFF.md` a projekt gyökerében) |
 
-Examples:
+Példák:
 - `/handoff purpose="Continue the Pipedrive connector PR review and address CI failures"`
 - `/handoff purpose="Finish the scheduler forceSend implementation" target=dev2`
 - `/handoff purpose="Debug the auth redirect loop" output=/tmp/handoff-auth.md`
 
-## Procedure
+## Eljárás
 
-### 1. Gather context
+### 1. Gyűjtsd össze a kontextust
 
-Collect data from these sources (skip any that return empty):
+Gyűjts adatot ezekből a forrásokból (hagyd ki, amelyik üreset ad):
 
 ```bash
 # Active kanban cards (assigned to current agent or recently touched).
@@ -65,15 +65,15 @@ curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   "http://localhost:$PORT/api/daily-log?agent=$AGENT_ID&date=$DATE"
 ```
 
-Also include from your current conversation context:
-- The last significant user/peer messages and decisions
-- Any error patterns or debugging findings
-- File paths and line numbers you were working on
-- Git branch, uncommitted changes, open PRs
+A jelenlegi beszélgetésed kontextusából is vedd bele:
+- Az utolsó jelentős felhasználói és társ-üzeneteket és döntéseket
+- A hibamintákat és a hibakeresés megállapításait
+- A fájlutakat és sorszámokat, amelyeken dolgoztál
+- A git ágat, a nem commitolt változásokat, a nyitott PR-okat
 
-### 2. Generate HANDOFF.md
+### 2. Készítsd el a HANDOFF.md-t
 
-Structure with exactly these 5 sections:
+Pontosan ezzel az 5 szakasszal építsd fel:
 
 ```markdown
 # Handoff: {purpose}
@@ -105,18 +105,18 @@ To: {target agent or "next session"}
 - Edge cases discovered}
 
 ## Next Steps
-{Concrete, actionable items for the receiving session:
-1. First thing to do (most specific)
-2. Second thing
+{Concrete, actionable items for the receiving session, each with its kanban card ID or the marker `KÁRTYA NÉLKÜL` (no card):
+1. First thing to do (most specific) -- card #123
+2. Second thing -- KÁRTYA NÉLKÜL
 3. ...
 Keep each step concrete enough to execute without asking questions.}
 ```
 
-### 3. Deliver
+### 3. Kézbesítés
 
-**File mode** (default): Write HANDOFF.md to the project root (or `output` path).
+**Fájl mód** (alapértelmezés): írd a HANDOFF.md-t a projekt gyökerébe (vagy az `output` útra).
 
-**Inter-agent mode** (`target=` specified): Send the full HANDOFF.md content as an inter-agent message:
+**Inter-agent mód** (ha meg van adva a `target=`): küldd el a HANDOFF.md teljes tartalmát inter-agent üzenetként:
 
 ```bash
 curl -s -X POST http://localhost:$PORT/api/messages \
@@ -125,30 +125,30 @@ curl -s -X POST http://localhost:$PORT/api/messages \
   -d "{\"from\":\"$AGENT_ID\",\"to\":\"TARGET\",\"content\":\"[HANDOFF] purpose: ... \n\n$(cat HANDOFF.md)\"}"
 ```
 
-### 4. Confirm
+### 4. Visszaigazolás
 
-Report to the user/caller:
-- Where the handoff was written (file path or inter-agent message ID)
-- Summary: how many kanban cards, memories, and log entries were included
-- The `purpose` line for quick reference
+Jelentsd a felhasználónak vagy a hívónak:
+- Hová került a handoff (fájlút vagy az inter-agent üzenet azonosítója)
+- Összefoglaló: hány kanban-kártya, emlék és naplóbejegyzés került bele
+- A `purpose` sort, gyors hivatkozásként
 
-## Pitfalls
+## Buktatók
 
-- Do NOT include secrets, tokens, or .env values in the handoff
-- Do NOT include full file contents -- use paths and line numbers
-- Keep it under 3000 words -- the receiving session needs room to work
-- If `target=` agent is not running (check tmux), warn and fall back to file mode
-- The handoff is a snapshot -- it goes stale. Include the timestamp prominently
+- NE tegyél a handoffba titkot, tokent vagy .env-értéket
+- NE tegyél bele teljes fájltartalmat: utakat és sorszámokat használj
+- Maradj 3000 szó alatt: a fogadó sessionnek hely kell a munkához
+- Ha a `target=` ágens nem fut (nézd meg a tmuxban), figyelmeztess, és térj vissza fájl módra
+- A handoff pillanatkép, tehát elavul. Az időbélyeget tedd jól látható helyre
 
-## Relation to other persistence mechanisms
+## Kapcsolat a többi megőrzési mechanizmussal
 
-| Mechanism | Scope | Handoff uses it as |
+| Mechanizmus | Hatókör | A handoff így használja |
 |-----------|-------|--------------------|
-| checkpoint | Session summary (SQLite) | Source: pulls recent checkpoint data |
-| DREAM.md | Nightly consolidation | Not directly -- too high-level |
-| hot memory | Active task state | Source: includes active hot memories |
-| warm memory | Stable project context | Source: includes relevant warm context |
-| kanban | Task tracking | Source: includes assigned/active cards |
-| daily log | Chronological record | Source: includes today's log entries |
+| checkpoint | Session-összefoglaló (SQLite) | Forrás: behúzza a friss checkpoint-adatot |
+| DREAM.md | Éjszakai konszolidáció | Közvetlenül nem: túl magas szintű |
+| hot memory | Aktív feladat állapota | Forrás: beleveszi az aktív hot emlékeket |
+| warm memory | Stabil projektkontextus | Forrás: beleveszi a releváns warm kontextust |
+| kanban | Feladatkövetés | Forrás: beleveszi a hozzárendelt és aktív kártyákat |
+| daily log | Időrendi napló | Forrás: beleveszi a mai naplóbejegyzéseket |
 
-The handoff READS from these systems but does not REPLACE them. After a handoff, the receiving session should still check the live state of kanban/memory -- the handoff is a starting-context accelerator, not the source of truth.
+A handoff OLVASSA ezeket a rendszereket, de nem VÁLTJA KI őket. Handoff után a fogadó sessionnek továbbra is meg kell néznie a kanban és a memória élő állapotát: a handoff a kiinduló kontextust gyorsítja, nem az igazság forrása. A kanban viszont nem is a teljes teendőlista: a handoff minden nyitott Next Steps tétele feladat a kanban-kártyák mellett, a `KÁRTYA NÉLKÜL` jelölésű is. A fogadó session az első körében minden ilyen tételhez kártyát hoz létre, vagy mellé írja, miért nincs rá szükség.

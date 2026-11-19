@@ -70,10 +70,10 @@ const ALLOW = { deny: false }
 describe('1. SQL writes on the security tables', () => {
   // APPROVALSLACK1030 (2): approval_slack_posts joins (the posted Slack request the owner's reaction is checked against).
   // SUPPORTKULCS1109 D5: the two support tables joined the list.
-  it('the table list is the decided nine', () => {
-    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state'])
+  it('the table list is the decided eleven (approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119)', () => {
+    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'agent_create_specs', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state'])
   })
-  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']) {
+  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'agent_create_specs', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']) {
     it.each([
       `UPDATE ${t} SET x=1`,
       `INSERT INTO ${t} VALUES (1)`,
@@ -226,11 +226,17 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     // NETTARGETENV1104, Dani 68849: the network-target origins recorded at the last boot.
     'store/.net-target-hosts.json',
     // GATEFILES1110: the owner-gated agent settings (a provider's baseUrl, the context-guard values)
-    'store/custom-providers.json', 'store/context-guard.json']
+    'store/custom-providers.json', 'store/context-guard.json',
+    // DOCKERHTTPS1119 (Dani 81107 B2): the dashboard login's TOTP secrets and replay state
+    'store/.dashboard-totp.json',
+    // WDSANDBOXNODE1119 (Dani 81206 B1): the node the dashboard runs on, which the watchdog runs
+    'store/.dashboard-node',
+    // WDSANDBOXMARKER1119: the per-agent launch files every restart path reads (a file under each directory)
+    'store/bash-sandbox/soma.settings.json', 'store/code-mode/soma.on']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.dashboard-node', 'store/bash-sandbox', 'store/code-mode', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json',
       // SUPPORTKULCS1109 D5: the support state of this machine, one folder
@@ -269,6 +275,61 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   it('the root comes from the gate\'s own place, not from the cwd: a worktree cwd does not move it', () => {
     expect(file('Write', join(root, 'store', 'autonomy-config.json'), wt)).toEqual(DENY_FILE)
     expect(file('Write', join(wt, 'store', 'autonomy-config.json'), root)).toEqual(ALLOW)
+  })
+  it('DOCKERHTTPS1119 (Dani 81107 B2): deleting, emptying or replacing the TOTP store is denied; reading it passes', () => {
+    const p = join(root, 'store', '.dashboard-totp.json')
+    expect(bash(`rm ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -f store/.dashboard-totp.json`)).toEqual(DENY_FILE)
+    expect(bash(`: > ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`mv /tmp/x.json ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`cat ${p}`)).toEqual(ALLOW)
+  })
+  // WDSANDBOXMARKER1119: an agent deleting or editing its own sandbox settings or Code Mode marker would change how it
+  // comes back at the next restart; reading them stays free.
+  it.each([
+    ['store/bash-sandbox', 'soma.settings.json'],
+    ['store/code-mode', 'soma.on'],
+  ])('WDSANDBOXMARKER1119: writes under %s are denied; reads pass', (dir, name) => {
+    mkdirSync(join(root, dir), { recursive: true })
+    writeFileSync(join(root, dir, name), '{}')
+    const p = join(root, dir, name)
+    const bare = dir.split('/')[1]
+    for (const tool of ['Write', 'Edit']) expect(file(tool, p)).toEqual(DENY_FILE)
+    expect(file('Write', join(root, dir, 'zara.new'))).toEqual(DENY_FILE)
+    expect(bash(`rm ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -f ${dir}/${name}`)).toEqual(DENY_FILE)
+    expect(bash(`: > ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`echo '{"sandbox":{"enabled":false}}' > ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`mv /tmp/x.json ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`truncate -s 0 ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`chmod 755 ${join(root, dir)}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -rf ${join(root, dir)}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -rf ${bare}`, join(root, 'store'))).toEqual(DENY_FILE)
+    // the agent the switch is about is a sub-agent: the same verdict in that mode
+    const asSub = (command: string) => gateDecision('Bash', { command }, { cwd: join(root, 'agents', 'soma'), root, subAgent: true })
+    expect(asSub(`rm ${p}`)).toEqual(DENY_FILE)
+    expect(asSub(`echo '{}' > ${p}`)).toEqual(DENY_FILE)
+    expect(asSub(`cat ${p}`)).toEqual(ALLOW)
+    expect(bash(`cat ${p}`)).toEqual(ALLOW)
+    expect(bash(`ls ${join(root, dir)}`)).toEqual(ALLOW)
+    // a worktree's own copy is free
+    expect(file('Write', join(wt, dir, name), wt)).toEqual(ALLOW)
+  })
+  // WDSANDBOXNODE1119 (Dani 81206 B1): the node the dashboard runs on, which the watchdog runs, recorded directly in the
+  // store (not under the 0555 store/bash-sandbox/), and denied there on its own entry.
+  it('WDSANDBOXNODE1119: writing, replacing or deleting the recorded node file is denied; reading it passes', () => {
+    const p = join(root, 'store', '.dashboard-node')
+    writeFileSync(p, '/usr/bin/node\n')
+    for (const tool of ['Write', 'Edit']) expect(file(tool, p)).toEqual(DENY_FILE)
+    expect(bash(`printf '/tmp/x/node' > ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`mv /tmp/x ${p}`)).toEqual(DENY_FILE)
+    expect(bash(`rm -f store/.dashboard-node`)).toEqual(DENY_FILE)
+    expect(bash(`cat ${p}`)).toEqual(ALLOW)
+    const asSub = (command: string) => gateDecision('Bash', { command }, { cwd: join(root, 'agents', 'soma'), root, subAgent: true })
+    expect(asSub(`printf '/tmp/x/node' > ${p}`)).toEqual(DENY_FILE)
+    expect(asSub(`cat ${p}`)).toEqual(ALLOW)
+    // a worktree's own copy is free
+    expect(file('Write', join(wt, 'store', '.dashboard-node'), wt)).toEqual(ALLOW)
   })
   it('another file of the install is not protected', () => {
     expect(file('Write', join(root, 'scripts', 'other.py'))).toEqual(ALLOW)

@@ -22,7 +22,7 @@ vi.mock('../web/agent-config.js', () => ({ agentDir: (n: string) => join(tmpRoot
 
 const {
   parseSandboxAgents, bashSandboxEnabledFor, sandboxAllowedDomains, sandboxWritePaths,
-  buildBashSandboxSettings, syncBashSandboxSettings, bashSandboxSettingsPath,
+  buildBashSandboxSettings, syncBashSandboxSettings, bashSandboxSettingsPath, recordDashboardNode,
 } = await import('../web/bash-sandbox.js')
 
 const REPO = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..')
@@ -112,6 +112,50 @@ describe('syncBashSandboxSettings', () => {
   })
 })
 
+// WDSANDBOXNODE1119: the dashboard records the node it runs on for scripts/watchdog.sh, whose PATH may not hold it
+// (nvm). The full watchdog side is scripts/__tests__/watchdog-bash-sandbox.test.sh.
+describe('recordDashboardNode', () => {
+  const dir = join(tmpRoot, 'node-rec')
+  const file = join(dir, '.dashboard-node')
+  it('writes the path and one newline, read-only; leaves the directory as it was; rewrites only on a change', () => {
+    mkdirSync(dir, { recursive: true })
+    const dirMode = statSync(dir).mode & 0o777
+    expect(recordDashboardNode('/opt/x/bin/node', file)).toBe(true)
+    expect(readFileSync(file, 'utf-8')).toBe('/opt/x/bin/node\n')
+    expect(statSync(file).mode & 0o777).toBe(0o444)
+    expect(statSync(dir).mode & 0o777).toBe(dirMode)
+    const before = statSync(file).ino
+    expect(recordDashboardNode('/opt/x/bin/node', file)).toBe(false)
+    expect(statSync(file).ino).toBe(before)
+    expect(recordDashboardNode('/home/u/.nvm/versions/node/v22/bin/node', file)).toBe(true)
+    expect(readFileSync(file, 'utf-8')).toBe('/home/u/.nvm/versions/node/v22/bin/node\n')
+    expect(statSync(file).mode & 0o777).toBe(0o444)
+  })
+  // Dani 81206 B1: a 0555 store/bash-sandbox/ on every install left a stage directory scripts/backup.sh could not
+  // remove. The default is a file directly in the store, and the dashboard's start (this, then the sandbox sync of an
+  // agent the owner's list does not name) creates no store/bash-sandbox/ on an install without the list.
+  it('defaults to this process\'s own node, in store/.dashboard-node; no store/bash-sandbox/ without the list', () => {
+    const sb = join(STORE, 'bash-sandbox')
+    expect(existsSync(sb)).toBe(false)
+    recordDashboardNode()
+    expect(readFileSync(join(STORE, '.dashboard-node'), 'utf-8')).toBe(`${process.execPath}\n`)
+    expect(statSync(join(STORE, '.dashboard-node')).mode & 0o777).toBe(0o444)
+    expect(syncBashSandboxSettings('soma')).toBeNull()
+    expect(existsSync(sb)).toBe(false)
+  })
+  it('the dashboard records it at start, before the first agent start', () => {
+    const idx = readFileSync(join(REPO, 'src', 'index.ts'), 'utf-8')
+    const main = idx.slice(idx.indexOf('async function main()'))
+    expect(main).toMatch(/if \(recordDashboardNode\(\)\) logger\.info/)
+    expect(main.indexOf('recordDashboardNode()')).toBeLessThan(main.indexOf('startAgentProcess('))
+    const src = readFileSync(join(REPO, 'src', 'web', 'bash-sandbox.ts'), 'utf-8')
+    expect(src).toMatch(/export const DASHBOARD_NODE_PATH = join\(STORE_DIR, '\.dashboard-node'\)/)
+    expect(src).toMatch(/recordDashboardNode\(execPath = process\.execPath, file = DASHBOARD_NODE_PATH\)/)
+    const wd = readFileSync(join(REPO, 'scripts', 'watchdog.sh'), 'utf-8')
+    expect(wd).toMatch(/local F="\$INSTALL_DIR\/store\/\.dashboard-node"/)
+  })
+})
+
 // startAgentProcess is too wide to run here; its sandbox contract is pinned on the source, like
 // writeMainModel's guard (model-id-injection.test.ts).
 describe('the launch paths carry the file', () => {
@@ -132,16 +176,53 @@ describe('the launch paths carry the file', () => {
     expect(src.indexOf('let bashSandboxFlag')).toBeLessThan(src.indexOf('return startRemoteAgentProcess('))
   })
 
-  it('watchdog.sh: a restart carries --settings exactly when the file exists', () => {
+  // WDSANDBOXMARKER1119: the restart no longer decides by the file on disk (deleted -> unsandboxed, edited -> passed
+  // on). It produces the file through the dashboard's own sync, and a listed agent it cannot produce one for is not
+  // started. The full run is scripts/__tests__/watchdog-bash-sandbox.test.sh (real dist, stubbed tmux); here the
+  // --sandbox-flag hook with a stand-in helper, and the wiring on the source.
+  it('watchdog.sh: the flag is the helper\'s answer, and anything else refuses', () => {
     const fx = join(tmpRoot, 'wd')
     mkdirSync(join(fx, 'scripts'), { recursive: true })
     mkdirSync(join(fx, 'store', 'bash-sandbox'), { recursive: true })
     writeFileSync(join(fx, 'scripts', 'watchdog.sh'), readFileSync(join(REPO, 'scripts', 'watchdog.sh')))
+    const file = join(fx, 'store', 'bash-sandbox', 'soma.settings.json')
+    const helper = (body: string) => writeFileSync(join(fx, 'scripts', 'bash-sandbox-sync.mjs'), body)
     const run = (id: string) => execFileSync('bash', [join(fx, 'scripts', 'watchdog.sh'), '--sandbox-flag', id], { encoding: 'utf-8' }).trim()
+    // a file on disk without the helper's word is not enough any more
+    writeFileSync(file, '{}')
+    helper('process.exit(1)\n')
+    expect(run('soma')).toBe('flag=REFUSED')
+    helper('process.stdout.write("settings=\\n")\n')
     expect(run('soma')).toBe('flag=')
-    writeFileSync(join(fx, 'store', 'bash-sandbox', 'soma.settings.json'), '{}')
-    expect(run('soma')).toBe(`flag= --settings '${join(fx, 'store', 'bash-sandbox', 'soma.settings.json')}'`)
+    helper(`process.stdout.write(${JSON.stringify(`settings=${file}\n`)})\n`)
+    expect(run('soma')).toBe(`flag= --settings '${file}'`)
+    // another agent's file, a quote, a second line, or no answer at all: refused
+    expect(run('zara')).toBe('flag=REFUSED')
+    // (each of these still ends in the right file name, so only the quote and line checks refuse them)
+    helper(`process.stdout.write(${JSON.stringify(`settings=${join(fx, "it's", 'store', 'bash-sandbox', 'soma.settings.json')}\n`)})\n`)
+    expect(run('soma')).toBe('flag=REFUSED')
+    helper(`process.stdout.write(${JSON.stringify(`settings=/x\nsettings=${file}\n`)})\n`)
+    expect(run('soma')).toBe('flag=REFUSED')
+    helper(`process.stdout.write(${JSON.stringify(`noise\nsettings=${file}\n`)})\n`)
+    expect(run('soma')).toBe('flag=REFUSED')
+    helper('\n')
+    expect(run('soma')).toBe('flag=REFUSED')
+  })
+  it('watchdog.sh: the restart refuses before building the command, and the command carries the produced flag', () => {
     const wd = readFileSync(join(REPO, 'scripts', 'watchdog.sh'), 'utf-8')
-    expect(wd).toMatch(/--channels plugin:\$\{AGENT_PROVIDER\}@claude-plugins-official\$\(agent_sandbox_flag "\$AGENT_ID"\)"/)
+    expect(wd).not.toMatch(/if \[ -f "\$F" \]; then printf " --settings/)
+    expect(wd).toMatch(/NODE="\$\(dashboard_node\)"\n\s*\[ -n "\$NODE" \] \|\| return 1\n\s*OUT="\$\("\$NODE" "\$INSTALL_DIR\/scripts\/bash-sandbox-sync\.mjs" "\$1" 2>>"\$LOG"\)" \|\| return 1/)
+    const loop = wd.slice(wd.indexOf('for AGENT_DIR in'))
+    expect(loop).toMatch(/if ! SANDBOX_FLAG="\$\(agent_sandbox_flag "\$AGENT_ID"\)"; then\n\s*echo "[^\n]*not started: bash-sandbox settings could not be produced[^\n]*\n\s*continue\n\s*fi/)
+    expect(loop.indexOf('if ! SANDBOX_FLAG=')).toBeLessThan(loop.indexOf('CMD="'))
+    expect(loop).toMatch(/--channels plugin:\$\{AGENT_PROVIDER\}@claude-plugins-official\$\{SANDBOX_FLAG\}"/)
+    expect(loop.match(/agent_sandbox_flag/g)).toHaveLength(1)
+  })
+  it('the helper is the dashboard\'s own sync, not a copy of the rule', () => {
+    const helperSrc = readFileSync(join(REPO, 'scripts', 'bash-sandbox-sync.mjs'), 'utf-8')
+    expect(helperSrc).toMatch(/await import\(join\(projectRoot, 'dist', 'web', 'bash-sandbox\.js'\)\)/)
+    expect(helperSrc).toMatch(/const file = syncBashSandboxSettings\(String\(process\.argv\[2\] \?\? ''\)\)\n\s*process\.stdout\.write\(`settings=\$\{file \?\? ''\}\\n`\)/)
+    expect(helperSrc).toMatch(/process\.exit\(1\)/)
+    expect(helperSrc).not.toMatch(/BASH_SANDBOX_AGENTS['"]/)
   })
 })

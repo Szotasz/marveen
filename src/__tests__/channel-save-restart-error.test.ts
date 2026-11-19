@@ -35,7 +35,8 @@ describe('mainChannelsRestartOutcome', () => {
 })
 
 describe('the channel-save route returns restartError on both main-agent branches', () => {
-  const route = between(agentsSource, '// POST /api/agents/:name/channels/:provider (legacy: /telegram) -- setup', '// DELETE /api/agents/:name/channels/:provider')
+  // AGENTCREATEPR2-1119: the setup body is setupAgentChannel (same file); the route calls it.
+  const route = between(agentsSource, 'export async function setupAgentChannel(', 'export async function tryHandleAgents(')
 
   it('bot-token branch: the restart goes through the helper and the error reaches the response', () => {
     const botBranch = route.slice(route.indexOf('const { botToken'))

@@ -14,7 +14,12 @@
 //     `tampered`, and the owner is told); the kit must still verify and its
 //     dispatcher be the path the record binds; the lines are reconciled to what
 //     the record and THIS release's pins give (a deviant line goes, a missing
-//     one is not written back); and marveen.io is asked with the self-probe.
+//     one is not written back); and marveen.io is asked with the self-probe;
+//     when that changes nothing, the host key sshd offers is asked again and
+//     sent (support-access-hostkey.ts, confirmed by a root-owned .pub): the
+//     resend of an enable whose send did not get a 200, and the news of a
+//     changed key. A missing or unconfirmed key is not sent; neither it nor a
+//     failed send changes anything here; the log has the fingerprint only.
 //
 // token_revoked (G1-G6): only HTTP 401 with exactly {"error":"token_revoked"}
 // takes the lines away (support-access-check.ts). Under the lock of the keys
@@ -27,6 +32,7 @@
 // the dashboard stopped, it is not seen until it starts again.
 import { reconcileSupportLinesOnDisk, revokeSupportLinesIf } from './support-access-fs.js'
 import { supportSelfProbe } from './support-access-check.js'
+import { hostKeyFingerprint, sendSupportHostKey } from './support-access-hostkey.js'
 import type { RedeemTransport } from './support-access-redeem.js'
 import { readSupportToken, removeSupportToken } from './support-access-token.js'
 import { readGroupRecord, removeGroupRecord, type SupportGroupRecord } from './support-group-record.js'
@@ -39,7 +45,7 @@ import { join } from 'node:path'
 export type ReconcileRevokedVia = 'tampered' | 'external' | 'replaced'
 
 export interface ReconcileDeps {
-  readonly standby: Pick<StandbyDeps, 'supportDir' | 'sshDir' | 'pins' | 'probeSshd'>
+  readonly standby: Pick<StandbyDeps, 'supportDir' | 'sshDir' | 'pins' | 'probeSshd' | 'readHostKey'>
   readonly transport: RedeemTransport
   readonly consents: {
     readonly has: (grantId: string) => boolean
@@ -130,7 +136,16 @@ async function reconcileOnce(deps: ReconcileDeps): Promise<ReconcileOutcome> {
   // G1-G6: the self-probe; only token_revoked changes anything.
   const verdict = await supportSelfProbe({ token: token.token, fingerprint: keys[0].fingerprint }, deps.transport)
   deps.log('self_probe', { verdict })
-  if (verdict !== 'token_revoked') return 'kept'
+  if (verdict !== 'token_revoked') {
+    const own = await deps.standby.readHostKey(sshd)
+    if (own.kind !== 'ok') {
+      deps.log(own.kind === 'missing' ? 'host_key_missing' : 'host_key_unverified')
+    } else {
+      const sent = await sendSupportHostKey({ token: token.token, hostKey: own.key }, deps.transport)
+      deps.log('host_key', { fingerprint: hostKeyFingerprint(own.key), sent })
+    }
+    return 'kept'
+  }
   const sameToken = (): boolean => {
     const now = readSupportToken(supportDir)
     return now.kind === 'ok' && now.token === token.token

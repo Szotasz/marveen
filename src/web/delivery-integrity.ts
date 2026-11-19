@@ -193,6 +193,78 @@ export function readUserPromptsSince(
   maxBytes: number = TRANSCRIPT_TAIL_BYTES,
 ): ReceivedPrompt[] {
   const hits: Array<{ ts: number; text: string; queued: boolean }> = []
+  forEachTranscriptLineSince(dirs, sinceMs, maxBytes, (line) => {
+    // Cheap pre-filter before JSON.parse on a multi-MB tail.
+    if (!line.includes('"user"') && !line.includes('"queued_command"')) return
+    let row: { type?: unknown; timestamp?: unknown; message?: { content?: unknown }; attachment?: unknown }
+    try {
+      row = JSON.parse(line)
+    } catch {
+      return
+    }
+    if ((row.type !== 'user' && row.type !== 'attachment') || typeof row.timestamp !== 'string') return
+    const ts = Date.parse(row.timestamp)
+    if (!Number.isFinite(ts) || ts < sinceMs) return
+    if (row.type === 'user') {
+      const t = promptText(row.message?.content)
+      if (t != null) hits.push({ ts, text: t, queued: false })
+    } else {
+      const t = queuedPromptText(row.attachment)
+      if (t != null) hits.push({ ts, text: t, queued: true })
+    }
+  })
+  hits.sort((a, b) => a.ts - b.ts)
+  return hits.map((h) => ({ text: h.text, queued: h.queued }))
+}
+
+// DOCKERUNAUTHRUN1118: a prompt typed into a session that is NOT logged in arrives whole (so its delivery is
+// 'intact') and Claude Code answers it at once with a synthetic error reply, after which the pane is idle again.
+// The sweep read that as a finished run ('done'). Measured 2026-11-18 on a Docker install without a Claude login
+// (Claude Code 2.1.311, srv2127946, memoria-heartbeat 21:30:09Z), the reply row right after the typed prompt:
+//   {"type":"assistant","isSidechain":false,"timestamp":"2026-11-18T21:30:09.580Z","error":"authentication_failed",
+//    "isApiErrorMessage":true,"message":{"model":"<synthetic>","content":[{"type":"text",
+//    "text":"Not logged in · Please run /login"}],...}}
+// and the pane shows "⎿  Not logged in · Please run /login" under the prompt. The structured pair
+// (isApiErrorMessage + error "authentication_failed") is read, not the wording: on this host the same pair also
+// carries "Please run /login · API Error: 403 ..." text, and either way the session could not work.
+
+/**
+ * True when every main-chain assistant row written in `dirs` at or after `sinceMs` is an API error and at least one
+ * of them is an authentication failure: the session answered only "not logged in" and did no work. A single real
+ * reply (an assistant row that is not an API error) makes it false, so a run that worked and only later lost its
+ * login is not relabelled. Unreadable files and malformed lines are skipped; never throws.
+ */
+export function sessionAuthFailedSince(
+  dirs: readonly string[],
+  sinceMs: number,
+  maxBytes: number = TRANSCRIPT_TAIL_BYTES,
+): boolean {
+  let authFailed = false
+  let realReply = false
+  forEachTranscriptLineSince(dirs, sinceMs, maxBytes, (line) => {
+    if (!line.includes('"assistant"')) return
+    let row: { type?: unknown; isSidechain?: unknown; timestamp?: unknown; isApiErrorMessage?: unknown; error?: unknown }
+    try {
+      row = JSON.parse(line)
+    } catch {
+      return
+    }
+    if (row.type !== 'assistant' || row.isSidechain === true || typeof row.timestamp !== 'string') return
+    const ts = Date.parse(row.timestamp)
+    if (!Number.isFinite(ts) || ts < sinceMs) return
+    if (row.isApiErrorMessage !== true) realReply = true
+    else if (row.error === 'authentication_failed') authFailed = true
+  })
+  return authFailed && !realReply
+}
+
+// Calls `onLine` for every line in the tail window of each transcript in `dirs` modified at or after `sinceMs`.
+function forEachTranscriptLineSince(
+  dirs: readonly string[],
+  sinceMs: number,
+  maxBytes: number,
+  onLine: (line: string) => void,
+): void {
   // Two config roots can be the same directory: on the reference install the
   // main agent's .channels-config/projects is a symlink to ~/.claude/projects.
   // Read each real directory once, or every prompt would be counted twice.
@@ -217,28 +289,7 @@ export function readUserPromptsSince(
       } catch {
         continue
       }
-      for (const line of text.split('\n')) {
-        // Cheap pre-filter before JSON.parse on a multi-MB tail.
-        if (!line.includes('"user"') && !line.includes('"queued_command"')) continue
-        let row: { type?: unknown; timestamp?: unknown; message?: { content?: unknown }; attachment?: unknown }
-        try {
-          row = JSON.parse(line)
-        } catch {
-          continue
-        }
-        if ((row.type !== 'user' && row.type !== 'attachment') || typeof row.timestamp !== 'string') continue
-        const ts = Date.parse(row.timestamp)
-        if (!Number.isFinite(ts) || ts < sinceMs) continue
-        if (row.type === 'user') {
-          const t = promptText(row.message?.content)
-          if (t != null) hits.push({ ts, text: t, queued: false })
-        } else {
-          const t = queuedPromptText(row.attachment)
-          if (t != null) hits.push({ ts, text: t, queued: true })
-        }
-      }
+      for (const line of text.split('\n')) onLine(line)
     }
   }
-  hits.sort((a, b) => a.ts - b.ts)
-  return hits.map((h) => ({ text: h.text, queued: h.queued }))
 }

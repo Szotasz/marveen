@@ -447,6 +447,24 @@ def _load_script_run_sends():
              "eszkozokon fut.")
 
 
+def _load_unverifiable_construction():
+    """EMAILGATESUBST1116: (predicate, refusal text) from outgoing-copy-gate.py, loaded like the two loaders above: a
+    send command built by process substitution, a here-string, a stdin heredoc or xargs has no envelope this gate can
+    anchor, so it is refused at every level. A load failure is a deny that names the file."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "outgoing_copy_gate", os.path.join(_HERE, "outgoing-copy-gate.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.unverifiable_send_construction, mod.UNVERIFIABLE_CONSTRUCTION_MSG
+    except Exception as exc:  # noqa: BLE001 -- SyntaxError, missing file, anything: fail-closed
+        deny("A kapu fuggosege (scripts/hooks/outgoing-copy-gate.py) nem toltheto be "
+             f"({exc!r}) -- fail-closed: nem dontheto el, hogy egy Bash-hivas levelet "
+             "kuld-e, ezert minden Bash-hivas tiltva, amig a modul nem javul. A javitas "
+             "fajl-szerkeszto eszkozzel mehet: ez a kapu csak a Bash- es a levelezo "
+             "eszkozokon fut.")
+
+
 def draft_hint_note(cmd: str, cwd) -> str:
     """COPYGATEDRAFTFP1104 (Samu 69345): the fix to name when a python run with an address is a send only because the
     interpreter was not isolated (outgoing-copy-gate.draft_isolation_hint). A hint, never a decision: any failure
@@ -1311,7 +1329,10 @@ def main():
     cmd = ""
     if tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        if not (_load_is_send_invocation()(cmd)
+        unverifiable, unverifiable_msg = _load_unverifiable_construction()
+        if unverifiable(cmd, payload.get("cwd")):
+            deny(unverifiable_msg)
+        if not (_load_is_send_invocation()(cmd, cwd=payload.get("cwd"))   # MAILURLFILE1118: the URL file's cwd
                 or _load_script_run_sends()(cmd, payload.get("cwd"))):
             sys.exit(0)
         if ledger_enabled():
