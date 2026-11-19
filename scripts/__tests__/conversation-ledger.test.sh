@@ -1007,6 +1007,35 @@ emit_env plugin:discord:discord 900000000000000010 9007 "$OWNER_UID" "x" \
     | T_OWNER_INSTALL="$NOOWN" run_hook ledger-capture.py "$DB_R7"
 assert_eq "no owner in the main install: the row is 'paired'" "paired" "$(role_of "$DB_R7" 9007)"
 
+# (r7z) #2965: Telegram ALLOWED_CHAT_ID. An explicit "0" means not set (CHATID0), so the main install's sole DM
+#       allowlist entry decides; a positive id is the owner as before; a negative (group) id names no person, so the
+#       sole entry decides as before. Each owner install has its OWN telegram state dir with a .env, so owner_chat
+#       never falls back to the host's ~/.claude/channels/telegram.
+tg_owner_install() { # dir ALLOWED_CHAT_ID allowFrom-json
+    mkdir -p "$1/.claude/channels/telegram"
+    printf 'ALLOWED_CHAT_ID=%s\n' "$2" > "$1/.env"
+    : > "$1/.claude/channels/telegram/.env"
+    printf '{"dmPolicy":"allowlist","allowFrom":%s}' "$3" > "$1/.claude/channels/telegram/access.json"
+}
+tg_role() { # name owner-install message-id -> the row's sender_role
+    local db
+    db="$(case_db "$1")"
+    emit_env plugin:telegram:telegram "$OWNER_UID" "$3" "$OWNER_UID" "szia" | T_OWNER_INSTALL="$2" run_hook ledger-capture.py "$db"
+    role_of "$db" "$3"
+}
+TGZ="$TMPDIR_BASE/tg-zero-one"; tg_owner_install "$TGZ" 0 "[\"$OWNER_UID\"]"
+assert_eq "telegram: ALLOWED_CHAT_ID=0 + one DM allowlist entry -> that entry is the owner" "owner" "$(tg_role r7z1 "$TGZ" 9701)"
+TGZE="$TMPDIR_BASE/tg-zero-empty"; tg_owner_install "$TGZE" 0 "[]"
+assert_eq "telegram: ALLOWED_CHAT_ID=0 + empty allowlist -> no owner, 'paired'" "paired" "$(tg_role r7z2 "$TGZE" 9702)"
+TGZM="$TMPDIR_BASE/tg-zero-many"; tg_owner_install "$TGZM" 0 "[\"$OWNER_UID\",\"5000000002\"]"
+assert_eq "telegram: ALLOWED_CHAT_ID=0 + two allowlist entries -> no owner, 'paired'" "paired" "$(tg_role r7z3 "$TGZM" 9703)"
+TGP="$TMPDIR_BASE/tg-positive"; tg_owner_install "$TGP" "$OWNER_UID" "[\"5000000002\",\"5000000003\"]"
+assert_eq "telegram: a positive ALLOWED_CHAT_ID is the owner (unchanged)" "owner" "$(tg_role r7z4 "$TGP" 9704)"
+TGPO="$TMPDIR_BASE/tg-positive-other"; tg_owner_install "$TGPO" 5000000002 "[\"$OWNER_UID\"]"
+assert_eq "telegram: a positive ALLOWED_CHAT_ID naming someone else wins over the allowlist (unchanged)" "paired" "$(tg_role r7z5 "$TGPO" 9705)"
+TGN="$TMPDIR_BASE/tg-negative"; tg_owner_install "$TGN" -1001234567890 "[\"$OWNER_UID\"]"
+assert_eq "telegram: a negative (group) ALLOWED_CHAT_ID names no person; the sole entry decides (unchanged)" "owner" "$(tg_role r7z6 "$TGN" 9706)"
+
 # (r7b) ENVRELAXGATE1104: an owner install named in the ENVIRONMENT is not read.
 # The case's install carries NOOWN's files (no owner); the env points at
 # OWNER_INSTALL, where the same sender IS the owner. The row stays 'paired'.
