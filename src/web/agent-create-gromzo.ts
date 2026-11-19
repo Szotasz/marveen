@@ -22,6 +22,9 @@ import type { ApprovalLang } from './approval-texts.js'
 
 export const GROMZO_DECISION_KIND = 'agent_create'
 export const GROMZO_DECISION_GATE = 'agent_create'
+/** The consume answers that mean "mxd could not be asked now" (a socket error or timeout is reported as unreachable;
+ *  unavailable is mxd's own "decisions not available"): retried. Every other code fails the row. */
+export const GROMZO_TRANSIENT_CONSUME_CODES: ReadonlySet<string> = new Set(['unreachable', 'timeout', 'unavailable'])
 
 export interface GromzoDecisionDeps {
   call: MxdDashCall
@@ -97,8 +100,16 @@ export async function gromzoDecisionTick(deps: GromzoDecisionDeps = defaultDeps)
     let spent
     try { spent = await consumeDecision(deps.call, GROMZO_DECISION_KIND, row.mxd_hash, GROMZO_DECISION_GATE) } catch { spent = { ok: false as const, code: 'unreachable' } }
     if (!spent.ok) {
-      moveApprovalGromzoPost(id, 'consuming', 'pending', `consume_${spent.code}`)
-      logger.warn({ approvalId: id, code: spent.code }, 'agent_create: mxd did not spend the Gromzo approval; nothing decided, it stays pending')
+      // Dani N1 / Samu 81811: only a known transient answer is retried (back to pending); any other refusal
+      // (already_consumed: mxd spent it and the reply was lost; expired; not_found; kind_mismatch; an unknown code) can
+      // never succeed later, so it fails loudly instead of repeating every round in silence.
+      if (GROMZO_TRANSIENT_CONSUME_CODES.has(spent.code)) {
+        moveApprovalGromzoPost(id, 'consuming', 'pending', `consume_${spent.code}`)
+        logger.warn({ approvalId: id, code: spent.code }, 'agent_create: mxd could not be asked to spend the Gromzo approval now; nothing decided, it stays pending')
+      } else {
+        moveApprovalGromzoPost(id, 'consuming', 'failed', `consume_${spent.code}`)
+        deps.alert(`[agent_create] A Gromzo-jóváhagyást az mxd nem költötte el (${spent.code}), ezért a kérést (${id}) nem hagytam jóvá: ügynök NEM jött létre. Nézd meg a dashboardon, és ha kell, döntsd el ott.`)
+      }
       out.push({ approvalId: id, outcome: `consume_${spent.code}` })
       continue
     }

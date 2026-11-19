@@ -98,14 +98,31 @@ describe('the watcher: the owner\'s answer and the double-spend order', () => {
     expect(getApproval(a.id)!.status).toBe('approved')
     expect(getApprovalGromzoPost(a.id)!.state).toBe('done')
   })
-  it('approve, but mxd does not spend it (refused or unreachable): back to pending, nothing decided', async () => {
-    for (const consume of [{ ok: false, error: 'already_consumed' }, new Error('timeout')] as Array<MxdDashReply | Error>) {
+  // Dani N1 / Samu 81811: only a known transient answer is retried; any other refusal fails loudly, once
+  it('approve, but mxd cannot be asked now (a thrown socket error or timeout, or "unavailable"): back to pending, no alert, nothing decided', async () => {
+    for (const consume of [new Error('timeout'), { ok: false, error: 'unavailable' }] as Array<MxdDashReply | Error>) {
       initDatabase(':memory:')
       const a = await posted()
       const f = fake((r) => (r.verb === 'decision_get' ? answered('approve') : consume))
       await gromzoDecisionTick(f.deps)
       expect(getApproval(a.id)!.status).toBe('pending')
       expect(getApprovalGromzoPost(a.id)!.state).toBe('pending')
+      expect(f.alerts).toEqual([])
+    }
+  })
+  it('approve, but mxd refuses to spend it (already_consumed, expired, not_found, kind_mismatch, an unknown code): failed, one alert, nothing decided', async () => {
+    for (const code of ['already_consumed', 'expired', 'not_found', 'kind_mismatch', 'some_new_code']) {
+      initDatabase(':memory:')
+      const a = await posted()
+      const f = fake((r) => (r.verb === 'decision_get' ? answered('approve') : { ok: false, error: code }))
+      await gromzoDecisionTick(f.deps)
+      expect(getApproval(a.id)!.status).toBe('pending')
+      expect(getApprovalGromzoPost(a.id)).toMatchObject({ state: 'failed', note: `consume_${code}` })
+      expect(f.alerts).toHaveLength(1)
+      expect(f.alerts[0]).toContain(code)
+      // the next round does not read it again
+      expect(await gromzoDecisionTick(f.deps)).toEqual([])
+      expect(f.alerts).toHaveLength(1)
     }
   })
   it('approve, mxd spends it, but the core does not decide (the hash changed): failed, alerted, nothing decided', async () => {
