@@ -216,6 +216,43 @@ describe('LOGINKIESES1119: login-lost-alert hook', () => {
     expect(state().marveen.failed_turns).toBe(3)
   })
 
+  it('Revizor case 1: a logged-out session beside a good one, 3 rounds: at most one alert, no recovery until the logged-out one answers', () => {
+    for (let i = 0; i < 3; i++) {
+      turn('marveen', loginEntry(), { session_id: 'kint' })
+      turn('marveen', normalEntry('jó válasz'), { session_id: 'bent' })
+    }
+    expect(notifyLog()).toHaveLength(1)
+    expect(notifyLog()[0]).toMatch(/^RIASZTÁS: /)
+    turn('marveen', normalEntry('vissza'), { session_id: 'kint' })
+    expect(notifyLog()).toHaveLength(2)
+    expect(notifyLog()[1]).toMatch(/^HELYREÁLLT: /)
+  })
+
+  it('Revizor case 2: an overload error of the logged-out session neither alerts nor recovers, the outage stays', () => {
+    turn('marveen', loginEntry(), { session_id: 'kint' })
+    const overload = { type: 'assistant', isApiErrorMessage: true, error: 'overloaded',
+      message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'API Error: 529 Overloaded' }] } }
+    turn('marveen', overload, { session_id: 'kint' })
+    turn('marveen', overload, { session_id: 'kint', last_assistant_message: 'API Error: 529 Overloaded' })
+    stopFailure('marveen', 'overloaded')
+    expect(notifyLog()).toHaveLength(1)
+    expect(Object.keys(state().marveen.sessions)).toContain('kint')
+  })
+
+  it('S8: an own recovery that failed to send does not survive a new outage of that session', () => {
+    turn('marveen', loginEntry(), { session_id: 'a' })
+    writeFileSync(join(tmp, 'notify-fail'), '')
+    turn('marveen', normalEntry('vissza'), { session_id: 'a' })
+    rmSync(join(tmp, 'notify-fail'))
+    turn('marveen', loginEntry(), { session_id: 'a' })
+    const p = join(tmp, 'store', 'login-alert-state.json')
+    const st = state()
+    st.marveen.sessions.a -= 61 * 60
+    writeFileSync(p, JSON.stringify(st))
+    turn('marveen', normalEntry('másik munkamenet'), { session_id: 'b' })
+    expect(notifyLog().at(-1)).toMatch(/^VALÓSZÍNŰLEG HELYREÁLLT: /)
+  })
+
   it('another API error during an outage is no recovery (E1): transcript line and payload text are the same error', () => {
     turn('marveen', loginEntry())
     turn('marveen', { type: 'assistant', isApiErrorMessage: true, error: 'overloaded',

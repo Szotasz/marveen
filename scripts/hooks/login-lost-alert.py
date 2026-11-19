@@ -189,6 +189,7 @@ def handle(agent_id, v, now, session="-", event=""):
             if not same_turn:
                 st["failed_turns"] = int(st.get("failed_turns") or 0) + 1
             st["last_down"] = {"session": session, "event": event, "t": now}
+            st.pop("own_recovery", None)  # a new logged-out turn: an earlier, unsent own recovery no longer holds
             sessions = st.get("sessions") if isinstance(st.get("sessions"), dict) else {}
             sessions[session] = now
             st["sessions"] = sessions
