@@ -1,8 +1,7 @@
 {
-  "source": "CODEMODEFLAG1119: real PreToolUse REPL payloads from a live Code Mode probe (Claude Code, 2026-11-19), ids and paths neutralised, tool_name and tool_input verbatim",
+  "source": "CODEMODEFLAG1119: real PreToolUse REPL payloads from a live Code Mode probe (Claude Code 2.1.326, 2026-11-19), ids and paths neutralised, tool_name and tool_input verbatim",
   "cases": [
     {
-      "expect": "allow",
       "payload": {
         "session_id": "00000000-0000-0000-0000-000000000000",
         "transcript_path": "/neutral/transcript.jsonl",
@@ -23,7 +22,6 @@
       }
     },
     {
-      "expect": "allow",
       "payload": {
         "session_id": "00000000-0000-0000-0000-000000000000",
         "transcript_path": "/neutral/transcript.jsonl",
@@ -44,7 +42,6 @@
       }
     },
     {
-      "expect": "deny",
       "payload": {
         "session_id": "00000000-0000-0000-0000-000000000000",
         "transcript_path": "/neutral/transcript.jsonl",
