@@ -229,7 +229,7 @@ function runDirGate(o: {
   umask?: string
   existing?: number | 'symlink' | 'other-owner'
   managed?: string
-}): { out: string; dir: string; target?: string } {
+}): { out: string; dir: string; target?: string; sudoLog: string } {
   const base = mkdtempSync(join(tmpdir(), 'marveen-gate-dir-'))
   dirs.push(base)
   const dir = join(base, 'ClaudeCode')
@@ -258,9 +258,12 @@ function runDirGate(o: {
     ...(o.as === 'root'
       ? ['id() { echo 0; }']
       : ['id() { echo "${FAKE_ID:-1000}"; }',
-        'sudo() { chmod u+r "$MANAGED_FILE" 2>/dev/null; FAKE_ID=0 "$@"; }']),
+        'sudo() { echo "$*" >> "$SUDO_LOG"; chmod u+r "$MANAGED_FILE" 2>/dev/null; FAKE_ID=0 "$@"; }']),
   ]
+  const sudoLog = join(base, 'sudo.log')
+  writeFileSync(sudoLog, '')
   const script = ['set -u', ...(o.umask ? [`umask ${o.umask}`] : []), `MANAGED_FILE=${JSON.stringify(join(dir, 'managed-settings.json'))}`,
+    `SUDO_LOG=${JSON.stringify(sudoLog)}`,
     ...stubs, scriptBody(SCRIPT)].join('\n')
   const bin = join(base, 'bin')
   mkdirSync(bin)
@@ -268,7 +271,7 @@ function runDirGate(o: {
   const scriptFile = join(bin, 'ensure-managed-channels-enabled.sh')
   writeFileSync(scriptFile, script)
   const out = execFileSync('bash', [scriptFile], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
-  return { out, dir, target }
+  return { out, dir, target, sudoLog: readFileSync(sudoLog, 'utf-8') }
 }
 
 describe('ensure-managed-channels-enabled: the managed directory is 0755 (MANAGEDUMASK1119)', () => {
@@ -311,10 +314,11 @@ describe('ensure-managed-channels-enabled: the managed directory is 0755 (MANAGE
     expect(mode(dir)).toBe(0o755)
   })
 
-  it('a 0755 dir is left alone and nothing is said', () => {
-    const { out, dir } = runDirGate({ as: 'sudo', existing: 0o755, managed: ENABLED })
+  it('a 0755 dir is left alone and nothing is said, with no privileged id -u (review: no needless sudo call)', () => {
+    const { out, dir, sudoLog } = runDirGate({ as: 'sudo', existing: 0o755, managed: ENABLED })
     expect(mode(dir)).toBe(0o755)
     expect(out).not.toContain('allitva')
+    expect(sudoLog).not.toMatch(/^id -u$/m)
   })
 
   it('a dir owned by someone else is not touched', () => {

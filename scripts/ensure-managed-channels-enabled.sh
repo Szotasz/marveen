@@ -70,7 +70,8 @@ repair_managed_dir() {
   local om owner mode
   om="$(stat -c '%u %a' "$MANAGED_DIR" 2>/dev/null || stat -f '%u %Lp' "$MANAGED_DIR" 2>/dev/null)"
   owner="${om%% *}"; mode="${om##* }"
-  [ -n "$om" ] && [ "$owner" = "$($1 id -u)" ] && [ "$mode" != "755" ] || return 0
+  # the mode first: a 0755 dir needs no privileged `id -u` (no sudo call, no password) on every run
+  [ -n "$om" ] && [ "$mode" != "755" ] && [ "$owner" = "$($1 id -u)" ] || return 0
   if $1 chmod 0755 "$MANAGED_DIR" 2>/dev/null; then
     echo "  ! channelsEnabled: a $MANAGED_DIR mappa joga $mode volt (a session nem latott bele) -- 0755-re allitva."
   else
