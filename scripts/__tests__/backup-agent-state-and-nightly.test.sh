@@ -14,7 +14,7 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 echo "backup.sh: per-agent state + systemd units; backup-nightly.sh: optional second copy"
 echo "===================================================================================="
@@ -71,12 +71,19 @@ printf '{}' > "$A/.package/manifest.json"
 printf '{}' > "$FAKE/store/agent-package-installing/beta.json"
 printf 'x' > "$FAKE/store/agent-package-leftovers/alpha.1/CLAUDE.md"
 printf '[]' > "$FAKE/store/agent-package-hidden.json"
+# BASHSANDBOX1022: the sandbox settings folder is read-only (0555) as the dashboard leaves it; it stays out of the
+# archive, and the stage cleanup must not trip on it.
+mkdir -p "$FAKE/store/bash-sandbox"
+printf '{}' > "$FAKE/store/bash-sandbox/alpha.settings.json"
+chmod 0444 "$FAKE/store/bash-sandbox/alpha.settings.json"
+chmod 0555 "$FAKE/store/bash-sandbox"
 
 set +e
 OUTPUT="$(cd "$FAKE" && HOME="$FHOME" BACKUP_DIR="$OUT" bash scripts/backup.sh 2>&1)"
 RC=$?
 if [ "$RC" -eq 0 ]; then pass "backup.sh exits 0"; else
   fail "backup.sh exited $RC"; echo "$OUTPUT" | tail -15; fi
+if ls -d "$OUT"/.stage.* >/dev/null 2>&1; then fail "a stage folder was left in BACKUP_DIR"; else pass "no stage folder left in BACKUP_DIR"; fi
 
 ARCHIVE="$(ls -1 "$OUT"/claudeclaw-*.tar.gz 2>/dev/null | head -1)"
 LIST="$TMP/archive.list"
@@ -106,6 +113,7 @@ for p in repo/agents/alpha/.claude/skills/own/.env \
          repo/store/agent-package-installing/beta.json \
          repo/store/agent-package-leftovers/alpha.1/CLAUDE.md \
          repo/store/agent-package-hidden.json \
+         repo/store/bash-sandbox/alpha.settings.json \
          home/.config/systemd/user/default.target.wants/other-app.service; do
   if grep -qx "$p" "$LIST"; then fail "kept-out file is in the default archive: $p"; else pass "kept out of the default archive: $p"; fi
 done
