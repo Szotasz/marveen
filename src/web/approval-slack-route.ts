@@ -20,7 +20,7 @@
  * envelope.
  */
 import { recordApprovalSlackPost, pendingApprovalSlackPosts, markApprovalSlackPostChecked, decideApprovalFromSlack, setApprovalSlackNotice,
-  STANDING_DECISION_CATEGORIES, type Approval } from '../db.js'
+  STANDING_DECISION_CATEGORIES, approvalResolvedBy, type Approval, type ApprovalEvidence } from '../db.js'
 import { logger } from '../logger.js'
 import { verifiedEnvelope, envelopeText } from '../approval-envelope.js'
 import { postApprovalPrompt, sweepOnce, slackCaller, type SlackCall, type ApprovalSlackPost, type Verdict, type ApprovalLang } from '../approval-slack.js'
@@ -169,14 +169,16 @@ export async function decide(call: SlackCall, post: ApprovalSlackPost, v: Exclud
   const via = v.kind === 'refused' ? undefined : v.via
   const label = v.kind === 'refused' ? `refused:${v.reason}` : via ? `${v.kind}:reply` : v.kind
   const status = v.kind === 'approved' ? 'approved' : 'rejected'
-  const refusedPrefix = post.replyMode === true ? 'slack_refused' : 'slack_reaction_refused'
-  const by = v.kind === 'refused' ? `${refusedPrefix}:${v.reason}` : via ? `slack_reply:${v.userId}:${via.ts}` : `slack_reaction:${v.userId}`
-  const res = decideApprovalFromSlack({ approvalId: post.approvalId, decision: label, status, resolvedBy: by, decidedByTs: via?.ts ?? null, binding: via?.binding ?? null })
+  // AGENTCREATEPR1-1119: the evidence this adapter verified, in the core's audit form (slack_<mode>:<ids>).
+  const refusedMode = post.replyMode === true ? 'refused' : 'reaction_refused'
+  const evidence: ApprovalEvidence = v.kind === 'refused' ? { channel: 'slack', mode: refusedMode, trail: [v.reason] }
+    : via ? { channel: 'slack', mode: 'reply', trail: [v.userId, via.ts] } : { channel: 'slack', mode: 'reaction', trail: [v.userId] }
+  const res = decideApprovalFromSlack({ approvalId: post.approvalId, decision: label, status, resolvedBy: approvalResolvedBy(evidence), decidedByTs: via?.ts ?? null, binding: via?.binding ?? null })
   if (res.outcome === 'reply_already_used') {
     // One owner message decides one request; the same ts on a second request is an anomaly: close it as a rejection.
     logger.warn({ approvalId: post.approvalId, ts: via?.ts }, 'approval Slack reply REFUSED: that owner message already decided another request')
     alert(OWNER_TEXT[postLang(post)].alertReplyUsed(post.approvalId))
-    decideApprovalFromSlack({ approvalId: post.approvalId, decision: 'refused:reply_already_used', status: 'rejected', resolvedBy: `${refusedPrefix}:reply_already_used` })
+    decideApprovalFromSlack({ approvalId: post.approvalId, decision: 'refused:reply_already_used', status: 'rejected', resolvedBy: approvalResolvedBy({ channel: 'slack', mode: refusedMode, trail: ['reply_already_used'] }) })
     return
   }
   if (res.outcome === 'already_decided') {
