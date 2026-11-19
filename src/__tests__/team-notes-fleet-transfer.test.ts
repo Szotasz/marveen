@@ -46,7 +46,7 @@ vi.mock('../config.js', () => ({
   BRAND_NAME: 'Marveen', OWNER_NAME: 'Owner', CHANNEL_PROVIDER: 'telegram',
 }))
 vi.mock('../web/vault-bindings.js', () => ({ getBindings: () => [] }))
-vi.mock('../env.js', () => ({ updateEnvFile: vi.fn() }))
+vi.mock('../env.js', () => ({ updateEnvFile: vi.fn(), readEnvFile: () => ({}) }))
 vi.mock('../logger.js', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
 
 const NOTE = { id: 'abc123', assignee: 'cody', content: 'check the build', due_date: '2026-10-20', created_at: 1791700000, created_by: 'margo', deleted_at: null, deleted_by: null, delete_reason: null }

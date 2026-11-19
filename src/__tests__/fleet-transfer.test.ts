@@ -118,6 +118,7 @@ vi.mock('../web/vault-bindings.js', () => ({
 
 vi.mock('../env.js', () => ({
   updateEnvFile: vi.fn(),
+  readEnvFile: () => ({}),
 }))
 
 vi.mock('../logger.js', () => ({
