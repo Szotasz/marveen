@@ -2761,6 +2761,30 @@ async function queueScheduledToWorksource(
   return 'fired'
 }
 
+// PRECHECKBUSY1119: would attemptFireTask answer a plain 'busy' for this target
+// right now -- the one answer a skipIfBusy task drops? Asked BEFORE the pre-check
+// runs, because a pre-check may move its own state on (the nav-adategeszseg one
+// starts the next measurement and marks its finding "already reported"): run on
+// a tick that is then dropped for a busy agent, the finding is lost without a
+// trace (B-1119-C01, measured order: pre-check at the cron loop, skipIfBusy drop
+// after the fire attempt). Mirrors attemptFireTask's order and returns false for
+// every state that is NOT dropped there: a missing session (auto-start), the
+// main session respawning, a first-run dialog, a refused target -- those keep
+// their own path. The feedback-modal dismissal is the same one attemptFireTask
+// would do, so a modal-only pane still counts as free.
+export async function targetBusyForSkipIfBusy(task: ScheduledTask, agentName: string, now: number): Promise<boolean> {
+  if (targetSessionRefused(task)) return false
+  if (isRestartInFlight(agentName)) return true
+  const { session, host } = resolveTaskTarget(task, agentName)
+  if (!sessionExistsOnHost(host, session)) return false
+  if (session === MAIN_CHANNELS_SESSION && mainRespawnHold(now)) return false
+  if (await isSessionReadyForPrompt(session, host)) return false
+  const pane = capturePane(session, host)
+  if (pane != null && detectsFirstRunGate(pane)) return false
+  if (await clearFeedbackModalAndRecheck(session, host)) return false
+  return true
+}
+
 // Injection priority within one tick: when several tasks are due in the same
 // scan window, the order of attemptFireTask calls decides who gets the target
 // session first -- and an injection takes seconds to a minute (readiness
@@ -3998,7 +4022,29 @@ export function startScheduleRunner(): NodeJS.Timeout {
         persistScheduleLastRun()
         continue
       }
-      const targetAgents = budget.run
+      let targetAgents = budget.run
+
+      // PRECHECKBUSY1119: a skipIfBusy task drops its tick for a busy target
+      // anyway, so its pre-check must not run for that target -- a pre-check
+      // that advances its own state (marks a finding reported, starts the next
+      // measurement) would lose the finding on a dropped tick. Busy targets are
+      // recorded exactly like the drop below ('skipped', no last-run stamp);
+      // when no target is left, the pre-check does not run at all. forceSend is
+      // exempt, as in the drop. Tasks without a pre-check keep the old path.
+      if (task.preCheck && task.skipIfBusy && !task.forceSend) {
+        const free: string[] = []
+        for (const target of targetAgents) {
+          if (pendingKeys.has(`${task.name}@${target}`)) { free.push(target); continue }
+          if (await targetBusyForSkipIfBusy(task, target, now)) {
+            logger.info({ task: task.name, agent: target }, 'Schedule busy, skipIfBusy=true: dropping tick before its pre-check runs')
+            appendTaskRun(task.name, target, 'skipped')
+          } else {
+            free.push(target)
+          }
+        }
+        if (free.length === 0) continue
+        targetAgents = free
+      }
 
       // Run pre-check once per task (not per agent) since it queries shared
       // state (DB, filesystem) that does not vary by target agent.
