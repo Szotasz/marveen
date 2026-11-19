@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync, openSync, fstatSync, readSync, closeSync, constants as fsConstants } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
@@ -534,6 +534,71 @@ function maybeAlertSharedConfigCollision(name: string): void {
 // Consequence for a fresh agent: no `projects` entry is provisioned, and Claude Code
 // creates its own inside the isolated config dir. That is the intended end state.
 const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json', 'projects'])
+
+// The isolated dir must carry no Anthropic credential, but on Linux Claude Code
+// also keeps remote MCP servers' OAuth tokens in that same .credentials.json.
+// Only these keys survive a spawn (MCPOAUTHWIPE1119).
+const ISOLATED_CREDENTIALS_KEEP_KEYS = ['mcpOAuth', 'mcpOAuthClientConfig'] as const
+const ISOLATED_CREDENTIALS_MAX_BYTES = 1024 * 1024
+
+// Drop everything but the MCP OAuth keys from an isolated .credentials.json.
+// A symlink is unlinked, never followed (its target may be the shared
+// ~/.claude/.credentials.json). Anything unreadable, or holding no MCP key, is
+// removed as before. A failed rewrite removes the file too: a credential that
+// should have been dropped must never survive.
+function scrubIsolatedCredentialsFile(path: string, name: string): void {
+  // rmSync removes a symlink itself, never its target.
+  const remove = (): void => { try { rmSync(path, { force: true }) } catch { /* absent */ } }
+  // Opened ONCE without following a link, every check made on that descriptor,
+  // so the file cannot be swapped for a link between the check and the read.
+  let fd: number
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    remove() // ELOOP (a symlink) or unopenable
+    return
+  }
+  let raw: string | null = null
+  try {
+    const st = fstatSync(fd)
+    if (st.isFile() && st.size <= ISOLATED_CREDENTIALS_MAX_BYTES) {
+      const buf = Buffer.alloc(ISOLATED_CREDENTIALS_MAX_BYTES + 1)
+      let n = 0
+      for (;;) {
+        const got = readSync(fd, buf, n, buf.length - n, null)
+        if (got === 0) break
+        n += got
+        if (n > ISOLATED_CREDENTIALS_MAX_BYTES) break
+      }
+      if (n <= ISOLATED_CREDENTIALS_MAX_BYTES) raw = buf.subarray(0, n).toString('utf-8')
+    }
+  } catch { raw = null } finally { closeSync(fd) }
+  if (raw === null) { remove(); return }
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) } catch { remove(); return }
+  if (!isPlainObject(parsed)) { remove(); return }
+  const kept: Record<string, unknown> = {}
+  for (const key of ISOLATED_CREDENTIALS_KEEP_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(parsed, key) && isPlainObject(parsed[key])) kept[key] = parsed[key]
+  }
+  const keptKeys = Object.keys(kept)
+  if (keptKeys.length === 0) { remove(); return }
+  if (Object.keys(parsed).length === keptKeys.length) return // already clean: no rewrite, mtime kept
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`
+  try {
+    // Created 0600 (the umask can only narrow it); no chmod after the rename,
+    // since chmod would follow a link swapped in at `path`.
+    writeFileSync(tmp, JSON.stringify(kept), { mode: 0o600, flag: 'wx' })
+    renameSync(tmp, path)
+  } catch {
+    try { unlinkSync(tmp) } catch { /* never created */ }
+    remove()
+    logger.warn({ name }, 'isolated-config: could not rewrite .credentials.json, removed it')
+    return
+  }
+  logger.info({ name, kept: keptKeys }, 'isolated-config: dropped the Anthropic credential from .credentials.json, kept MCP OAuth tokens')
+}
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
@@ -1222,14 +1287,25 @@ function provisionIsolatedConfigDir(
     const perUserAgent = readAgentRunAsUser(name) != null
     for (const entry of readdirSync(realClaude)) {
       if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) {
-        // Defensively drop a real .credentials.json that an older build may have
-        // symlinked/copied here, so the env-var token is the only auth source.
+        // Defensively drop the Anthropic credential from a .credentials.json that
+        // an older build may have symlinked/copied here, so the env-var token is
+        // the only auth source. Claude Code also keeps remote MCP servers' OAuth
+        // tokens (mcpOAuth) in this file, so only those keys survive: deleting
+        // the whole file logged an agent out of its OAuth MCP servers on every
+        // spawn (MCPOAUTHWIPE1119).
         // An own_team agent is the exception: its .credentials.json IS its own
         // /login credential, written here by `claude auth login`, and deleting it
         // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
         const stale = join(cfg, entry)
         if (entry === '.credentials.json' && readAgentAuthMode(name) !== 'own_team') {
-          try { rmSync(stale, { force: true }) } catch { /* absent */ }
+          // A per-user agent runs as another OS user: a rewrite by the router
+          // would hand the file to the router's user at 0600 and lock the agent
+          // out of it (see writeJsonAtomic), so it keeps the whole-file removal.
+          if (perUserAgent) {
+            try { rmSync(stale, { force: true }) } catch { /* absent */ }
+          } else {
+            scrubIsolatedCredentialsFile(stale, name)
+          }
         }
         continue
       }
