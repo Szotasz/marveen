@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision } from '../../scripts/hooks/db-write-gate.mjs'
-import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -101,6 +101,25 @@ describe('the shared ~/.claude ones (linked into every agent config dir at its s
   })
   it('through the own config dir symlink', () => {
     expect(write(join(self, '.claude-config', 'skills', 'x', 'SKILL.md'))).toEqual(SUB)
+  })
+  it('through the own config dir links to rules/, commands/ and the CLAUDE.md file (the spawn links them too)', () => {
+    // the own-directory exemption must not reach the shared tree through these links
+    for (const d of ['rules', 'commands']) {
+      mkdirSync(join(home, '.claude', d), { recursive: true })
+      symlinkSync(join(home, '.claude', d), join(self, '.claude-config', d))
+    }
+    writeFileSync(join(home, '.claude', 'CLAUDE.md'), 'x')
+    symlinkSync(join(home, '.claude', 'CLAUDE.md'), join(self, '.claude-config', 'CLAUDE.md'))
+    for (const tool of TOOLS) {
+      expect(file(tool, join(self, '.claude-config', 'rules', 'style.md'))).toEqual(SUB)
+      expect(file(tool, join(self, '.claude-config', 'commands', 'x.md'))).toEqual(SUB)
+      expect(file(tool, join(self, '.claude-config', 'CLAUDE.md'))).toEqual(SUB)
+    }
+    expect(bash(`printf x >> ${join(self, '.claude-config', 'CLAUDE.md')}`)).toEqual(SUB)
+    expect(bash('printf x >> .claude-config/CLAUDE.md')).toEqual(SUB)
+    expect(bash('printf x > .claude-config/rules/style.md')).toEqual(SUB)
+    // control: the own real CLAUDE.md stays free
+    expect(write(join(self, 'CLAUDE.md'))).toEqual(FREE)
   })
 })
 
