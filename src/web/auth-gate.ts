@@ -692,6 +692,21 @@ export const MESSENGER_ALLOWLIST: readonly MessengerAllowEntry[] = [
   },
 ]
 
+/** R1 (review on #2957): a messenger key sends at most this many messages per rolling minute; more is a 429, so a
+ *  stolen key, or a TV talking in the robot's room, cannot flood the main agent's queue. Per key name, in memory (a
+ *  dashboard restart resets it), counting only POSTs that passed every other check. */
+export const MESSENGER_POSTS_PER_MINUTE = 10
+const messengerPostTimes = new Map<string, number[]>()
+/** Tests only: forget every key's window. */
+export function resetMessengerRateLimit(): void { messengerPostTimes.clear() }
+function messengerPostAllowed(device: string, nowMs: number): boolean {
+  const recent = (messengerPostTimes.get(device) ?? []).filter((t) => nowMs - t < 60_000)
+  const allowed = recent.length < MESSENGER_POSTS_PER_MINUTE
+  if (allowed) recent.push(nowMs)
+  messengerPostTimes.set(device, recent)
+  return allowed
+}
+
 /** Why a messenger key's name is unusable, or null. A key named like an agent, the owner, the main agent or the
  *  voice channel id is refused on every request: an agents/<name> directory made later must not turn the key into
  *  that agent. The mint (routes/auth.ts) refuses these names too. */
@@ -757,6 +772,12 @@ async function messengerGate(
       // A lookup failure must not open the door: fail closed.
       logger.error({ err: (err as Error).message, device, method, path }, 'messenger device key: check failed')
       ok = false
+    }
+    if (ok && e.method === 'POST' && !messengerPostAllowed(device, Date.now())) {
+      logger.warn({ device, rule: 'device-key-rate', method, path }, 'messenger device key: rate limit (429)')
+      res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '60' })
+      res.end(JSON.stringify({ error: `a messenger device key sends at most ${MESSENGER_POSTS_PER_MINUTE} messages a minute`, rule: 'device-key-rate', device }))
+      return false
     }
     if (ok) return true
     writeMessengerDenial(res, device, `${method} ${path} outside what the key may send or read (${e.why})`, method, path)
