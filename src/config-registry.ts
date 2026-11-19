@@ -170,6 +170,16 @@ function validUnitFraction(v: string): string | null {
 // A '' (nobody) or a comma-separated list of agent names, e.g. "pm,reviewer".
 // Exported for the sub-agent rotation stage (claude-plan-subagent-rotation.ts), which puts a name into a heartbeat line.
 export const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$/
+
+/** AGENT_DISALLOWED_TOOLS may only name these: built-in tools whose schema rides in every call and that no fleet
+ *  workflow depends on. A closed list, so the shared token cannot take Bash or Edit away from an agent.
+ *  scripts/main-extra-plugins-settings.sh repeats it for the main agent's launch (a test pins the two). */
+export const DISABLEABLE_TOOLS = ['Artifact', 'Workflow', 'SendFeedback', 'ReportFindings', 'ScheduleWakeup'] as const
+
+/** The AGENT_DISALLOWED_TOOLS entries that are on DISABLEABLE_TOOLS, in order, without repeats. */
+export function disallowedToolList(v: string): string[] {
+  return [...new Set(v.split(/[\s,]+/).filter((t) => (DISABLEABLE_TOOLS as readonly string[]).includes(t)))]
+}
 function validAgentNameList(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -1037,6 +1047,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: false,
+  },
+  {
+    key: 'AGENT_DISALLOWED_TOOLS',
+    type: 'string',
+    default: '',
+    validate: (v) =>
+      v.split(/[\s,]+/).filter(Boolean).every((t) => (DISABLEABLE_TOOLS as readonly string[]).includes(t))
+        ? null
+        : `Csak ezek közül, vesszővel elválasztva: ${DISABLEABLE_TOOLS.join(', ')}.`,
+    description: 'Beépített Claude Code eszközök, amelyeket egyik ügynök (a fő ágens is) NEM kap meg: a leírásuk így nem utazik minden hívásban (kevesebb token). Csak a nem használt eszközök közül választható: Artifact, Workflow, SendFeedback, ReportFindings, ScheduleWakeup. Vesszővel elválasztva; üres = mind megmarad. Az ügynök következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
   },
   {
     key: 'NOTIFY_SLACK_TARGET',
