@@ -182,6 +182,34 @@ describe('LOGINKIESES1119: login-lost-alert hook', () => {
     expect(state().marveen).toBeUndefined()
   })
 
+  it('two logged-out sessions of one agent share the 30-minute brake: one alert, and recovery only after both are back', () => {
+    for (let i = 0; i < 3; i++) {
+      turn('marveen', loginEntry(), { session_id: 'a' })
+      turn('marveen', loginEntry(), { session_id: 'b' })
+    }
+    expect(notifyLog()).toHaveLength(1)
+    turn('marveen', normalEntry('a vissza'), { session_id: 'a' })
+    expect(notifyLog()).toHaveLength(1)
+    turn('marveen', normalEntry('b vissza'), { session_id: 'b' })
+    expect(notifyLog()).toHaveLength(2)
+    expect(notifyLog()[1]).toMatch(/^HELYREÁLLT: /)
+  })
+
+  it('a Stop and a StopFailure for the same turn count as one failed turn', () => {
+    turn('marveen', loginEntry(), { session_id: 's' })
+    stopFailure('marveen', 'authentication_failed')
+    expect(notifyLog()).toHaveLength(1)
+    expect(state().marveen.failed_turns).toBe(1)
+    const p = join(tmp, 'store', 'login-alert-state.json')
+    const st = state()
+    st.marveen.last_down.t -= 11
+    writeFileSync(p, JSON.stringify(st))
+    turn('marveen', loginEntry(), { session_id: 's' })
+    expect(state().marveen.failed_turns).toBe(2)
+    turn('marveen', loginEntry(), { session_id: 's' })
+    expect(state().marveen.failed_turns).toBe(3)
+  })
+
   it('a failed "recovered" send is kept and retried on the next normal turn', () => {
     turn('marveen', loginEntry())
     writeFileSync(join(tmp, 'notify-fail'), '')

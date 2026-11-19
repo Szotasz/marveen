@@ -14,6 +14,8 @@ What it does, per agent (the id comes from the transcript path, ledger_lib.agent
   - the first normal turn after that: one "recovered" message, and the agent's state is cleared. With two
     sessions under one agent id, a normal turn of one does not recover the other while it is still logged out
     (a session not seen logged out for 15 minutes counts as gone). A failed "recovered" send is retried.
+    The 30-minute brake is per agent, so two logged-out sessions never double the alert, and a Stop plus a
+    StopFailure for the same turn count as one failed turn.
 State: <install>/store/login-alert-state.json (agent -> since, last alert, failed turns), under a lock.
 A notify.sh that fails does not count as sent, so the next logged-out turn tries again.
 
@@ -39,6 +41,7 @@ import ledger_lib  # noqa: E402
 STATE_FILE = "login-alert-state.json"
 REPEAT_SECONDS = 30 * 60
 SESSION_STALE_SECONDS = 15 * 60
+SAME_TURN_SECONDS = 10
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 AUTH_ERROR = "authentication_failed"
 # The whole last assistant text, end to end: "Not logged in · Please run /login",
@@ -149,7 +152,7 @@ def _session_key(payload):
     return str(payload.get("session_id") or payload.get("transcript_path") or "-")
 
 
-def handle(agent_id, v, now, session="-"):
+def handle(agent_id, v, now, session="-", event=""):
     path = state_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -160,7 +163,13 @@ def handle(agent_id, v, now, session="-"):
         if v == "down":
             if not isinstance(st, dict):
                 st = {"since": now, "last_alert": 0, "failed_turns": 0}
-            st["failed_turns"] = int(st.get("failed_turns") or 0) + 1
+            # Stop and StopFailure for the SAME turn count once: the other event of this session, moments ago.
+            prev = st.get("last_down") if isinstance(st.get("last_down"), dict) else {}
+            same_turn = (prev.get("session") == session and prev.get("event") != event
+                         and now - float(prev.get("t") or 0) < SAME_TURN_SECONDS)
+            if not same_turn:
+                st["failed_turns"] = int(st.get("failed_turns") or 0) + 1
+            st["last_down"] = {"session": session, "event": event, "t": now}
             sessions = st.get("sessions") if isinstance(st.get("sessions"), dict) else {}
             sessions[session] = now
             st["sessions"] = sessions
@@ -225,7 +234,7 @@ def main():
                     return
         except (OSError, ValueError):
             return
-    handle(agent_id, v, time.time(), _session_key(payload))
+    handle(agent_id, v, time.time(), _session_key(payload), str(payload.get("hook_event_name") or ""))
 
 
 if __name__ == "__main__":
