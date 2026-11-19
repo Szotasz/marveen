@@ -39,7 +39,7 @@ import { logger } from './logger.js'
 import { isSettingOn } from './setting-flag.js'
 import {
   getApproval, resolveApproval, recordApprovalBotMessage, getApprovalBotMessage, setApprovalBotConfirmAt,
-  getApprovalBotPairing, setApprovalBotPairing, type Approval,
+  getApprovalBotPairing, setApprovalBotPairing, HASH_BOUND_APPROVAL_CATEGORIES, type Approval,
 } from './db.js'
 import { getUpdates, TelegramApiError, type RawUpdate, type RawMessage } from './channel-coordinator/telegram-client.js'
 
@@ -231,7 +231,9 @@ function confirmKeyboard(bot: ApprovalBot, approvalId: string, chatId: string): 
 /** Send the question through the approval bot. True when it went out (and is on record). */
 export async function sendApprovalPrompt(bot: ApprovalBot, a: Approval): Promise<boolean> {
   const chatId = bot.pairing()?.chatId ?? null // unpaired: the main-bot path runs instead
-  if (!chatId || !compactId(a.id)) return false
+  // A hash-bound category (agent_create) is approved only through the decision core with the hash the owner was shown;
+  // the buttons carry no hash, so such a request takes the other paths.
+  if (!chatId || !compactId(a.id) || HASH_BOUND_APPROVAL_CATEGORIES.has(a.category)) return false
   const messageId = await bot.api.sendMessage(chatId, promptText(a), firstKeyboard(bot, a.id, chatId))
   if (messageId == null) return false
   recordApprovalBotMessage(a.id, chatId, messageId, bot.now())
@@ -242,7 +244,7 @@ export async function sendApprovalPrompt(bot: ApprovalBot, a: Approval): Promise
 export type CallbackOutcome =
   | 'confirm-asked' | 'approved' | 'rejected' | 'cancelled' | 'already-decided'
   | 'bad-data' | 'not-owner' | 'wrong-chat' | 'not-our-message' | 'unknown-approval' | 'expired'
-  | 'confirm-without-step-one' | 'confirm-too-late'
+  | 'confirm-without-step-one' | 'confirm-too-late' | 'hash-bound'
 
 const REFUSAL_ANSWER = 'Ez a gomb nem érvényes.'
 
@@ -307,6 +309,8 @@ async function decide(bot: ApprovalBot, cq: CallbackQuery): Promise<CallbackOutc
     }
   }
   const status = parsed.op === 'c' ? 'approved' : 'rejected'
+  // Never a plain status write for a hash-bound approval, even on a message recorded before it was refused buttons.
+  if (status === 'approved' && HASH_BOUND_APPROVAL_CATEGORIES.has(a.category)) { await answer(REFUSAL_ANSWER); return 'hash-bound' }
   if (!resolveApproval(a.id, status, RESOLVED_BY)) {
     const now2 = getApproval(a.id) ?? a
     await answer(`Ez a kérés már el van döntve: ${STATUS_LABEL[now2.status]}.`)

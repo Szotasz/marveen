@@ -12,7 +12,7 @@ vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<ty
 vi.mock('../owner-chat.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../owner-chat.js')>()), resolveOwnerChatId: () => '777' }))
 vi.mock('../web/telegram.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../web/telegram.js')>()), sendTelegramMessage: mainSend }))
 
-import { initDatabase, createApproval, getApproval, resolveApproval, getApprovalBotMessage, setApprovalBotPairing as setApprovalBotPairingDb } from '../db.js'
+import { initDatabase, createApproval, getApproval, resolveApproval, getApprovalBotMessage, recordApprovalBotMessage, setApprovalBotPairing as setApprovalBotPairingDb } from '../db.js'
 import {
   sendApprovalPrompt, handleCallback, callbackData, parseCallbackData, compactId, expandId, confirmText,
   startApprovalBotPoller, setActiveApprovalBotForTest, activeApprovalBot, CONFIRM_WINDOW_SEC, RESOLVED_BY,
@@ -96,6 +96,19 @@ describe('the question', () => {
     const { api } = fakeApi()
     const a = createApproval({ id: 'not-a-uuid', agent_id: 'soma', category: 'x', action_description: 'y', action_payload: null, timeout_at: null, content_hash: null })
     expect(await sendApprovalPrompt(makeBot(api), a)).toBe(false)
+  })
+  // AGENTCREATEPR2-1119: agent_create is approved only through the decision core with the hash the owner was shown.
+  it('a hash-bound request (agent_create) gets no buttons, and a press on a recorded message never approves it', async () => {
+    const { api, calls } = fakeApi()
+    const bot = makeBot(api)
+    const a = createApproval({ id: randomUUID(), agent_id: 'soma', category: 'agent_create', action_description: 'új ügynök', action_payload: null, timeout_at: clock + 3600, content_hash: 'a'.repeat(64) })
+    expect(await sendApprovalPrompt(bot, a)).toBe(false)
+    expect(calls.some((c) => c.m === 'sendMessage')).toBe(false)
+    recordApprovalBotMessage(a.id, OWNER, 4242, clock)
+    const data = (op: 'a' | 'c') => callbackData(bot.key, op, a.id, OWNER)
+    expect(await handleCallback(bot, press(bot, data('a'), { message: 4242 }))).toBe('confirm-asked')
+    expect(await handleCallback(bot, press(bot, data('c'), { message: 4242 }))).toBe('hash-bound')
+    expect(getApproval(a.id)?.status).toBe('pending')
   })
 })
 
