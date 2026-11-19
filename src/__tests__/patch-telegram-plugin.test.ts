@@ -375,6 +375,29 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(meta({ callbackQuery: {} })).toEqual({})
   })
 
+  it('the inbound meta of a tap quotes the question: its id and a single-line excerpt, like a typed reply (quote1101)', () => {
+    run()
+    const line = kbdLines(readFileSync(server, 'utf-8')).find(l => l.includes('ts: new Date().toISOString()'))
+    const meta = new Function('ctx', `return {\n${line}\n}`)
+    const long = 'Melyik kiejtés jó?\n\n  A) egy   B) kettő ' + 'x'.repeat(400)
+    const tap = meta({ callbackQuery: { message: { message_id: 901, text: long } } })
+    expect(tap.reply_to_message_id).toBe('901')
+    expect(tap.reply_to_text.startsWith('Melyik kiejtés jó? A) egy B) kettő x')).toBe(true)
+    expect(tap.reply_to_text).toHaveLength(300)
+    expect(tap).not.toHaveProperty('reply_to_selected')
+    // the 300 counts code points: an emoji is never cut in half
+    const emoji = meta({ callbackQuery: { message: { message_id: 902, text: '😀'.repeat(400) } } })
+    expect(Array.from(emoji.reply_to_text)).toHaveLength(300)
+    expect(emoji.reply_to_text).toBe('😀'.repeat(300))
+    // a question sent as a captioned file quotes its caption
+    expect(meta({ callbackQuery: { message: { message_id: 903, caption: '  kép  felirat ' } } })).toMatchObject({ reply_to_message_id: '903', reply_to_text: 'kép felirat' })
+    // no text and no caption: the id only, no empty reply_to_text
+    const bare = meta({ callbackQuery: { message: { message_id: 904 } } })
+    expect(bare.reply_to_message_id).toBe('904')
+    expect(bare).not.toHaveProperty('reply_to_text')
+    expect(meta({ callbackQuery: { message: { message_id: 905, text: '   ' } } })).not.toHaveProperty('reply_to_text')
+  })
+
   it('taking it back = deleting the marked lines: byte-identical to the file patched without kbd', () => {
     run()
     const withKbd = readFileSync(server, 'utf-8')
@@ -957,7 +980,7 @@ describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 267
     expect(h.delivered.map(d => d.text)).toEqual(['Béta'])
   })
 
-  it('AC-D1/D2: a tap through the real patched handleInbound: content is the label, meta has the question id and a fresh ts, no forwarded flag, the evidence record has message_id null', async () => {
+  it('AC-D1/D2: a tap through the real patched handleInbound: content is the label, meta has the question id, its excerpt and a fresh ts, no forwarded flag, the evidence record has message_id null', async () => {
     const inbound = inboundHarness(patched, stateDir)
     const h = callbackHarness(patched, { handleInbound: inbound.handleInbound })
     const r = await h.press({ data: 'kbd:1', messageId: 901 })
@@ -966,8 +989,9 @@ describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 267
     const n = inbound.notifications[0]
     expect(n.method).toBe('notifications/claude/channel')
     expect(n.params.content).toBe('Béta')
-    expect(Object.keys(n.params.meta).sort()).toEqual(['chat_id', 'message_id', 'ts', 'user', 'user_id'])
-    expect(n.params.meta).toMatchObject({ chat_id: '42', message_id: '901', user: 'owner', user_id: '42' })
+    expect(Object.keys(n.params.meta).sort()).toEqual(['chat_id', 'message_id', 'reply_to_message_id', 'reply_to_text', 'ts', 'user', 'user_id'])
+    // the question the button sat on comes with it ('Kérdés' is the text of the harness message)
+    expect(n.params.meta).toMatchObject({ chat_id: '42', message_id: '901', reply_to_message_id: '901', reply_to_text: 'Kérdés', user: 'owner', user_id: '42' })
     expect(n.params.meta).not.toHaveProperty('forwarded')
     expect(Number.isNaN(Date.parse(n.params.meta.ts))).toBe(false)
     expect(Math.abs(Date.now() - Date.parse(n.params.meta.ts))).toBeLessThan(5000)
