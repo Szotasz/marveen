@@ -6,7 +6,7 @@
 // token and then stays open. It also writes down what environment it got, so
 // the isolation is checked from the child's side.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { launchSetupTokenRelay, SetupTokenLogin } from '../web/setup-token-login.js'
@@ -18,9 +18,22 @@ let dir: string
 let stub: string
 let report: string
 let codeFile: string
+// The relay makes its temp root under os.tmpdir(), and the test checks that no
+// root is left behind by listing that directory. On the shared host the real
+// tmpdir holds ~450k entries: one listing took 1.5 s idle and 2-5 s under load
+// (measured 2026-11-19), two listings were ~80% of this test's time, and the
+// full suite pushed it past its 20 s timeout. os.tmpdir() reads TMPDIR on every
+// call, so the file gets a private tmpdir: the listing is of the relay's own
+// roots only, which is also the stricter check.
+let privateTmp: string
+let parentTmpdir: string | undefined
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'marveen-stw-relay-test-'))
+  privateTmp = join(dir, 'tmp')
+  mkdirSync(privateTmp)
+  parentTmpdir = process.env.TMPDIR
+  process.env.TMPDIR = privateTmp
   stub = join(dir, 'claude')
   report = join(dir, 'env.json')
   codeFile = join(dir, 'code.txt')
@@ -54,7 +67,11 @@ setInterval(() => {}, 1000)
 `, { mode: 0o755 })
 })
 
-afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
+afterAll(() => {
+  if (parentTmpdir === undefined) delete process.env.TMPDIR
+  else process.env.TMPDIR = parentTmpdir
+  rmSync(dir, { recursive: true, force: true })
+})
 
 function waitFor(cond: () => boolean, ms = 8000): Promise<void> {
   const t0 = Date.now()
@@ -68,7 +85,11 @@ function waitFor(cond: () => boolean, ms = 8000): Promise<void> {
   })
 }
 
-const tempRoots = () => readdirSync(tmpdir()).filter((n) => n.startsWith('marveen-setup-token-'))
+const tempRoots = () => {
+  // Guard: the listing must be the private tmpdir, never the host's huge one.
+  expect(tmpdir()).toBe(privateTmp)
+  return readdirSync(tmpdir()).filter((n) => n.startsWith('marveen-setup-token-'))
+}
 
 describe('setup-token PTY relay (real python3, stub claude)', () => {
   it('gives the stub a terminal, catches link and token, isolates the env, and cleans up', async () => {
@@ -95,6 +116,7 @@ describe('setup-token PTY relay (real python3, stub claude)', () => {
     expect(env.tgEmpty).toBe(true)
     expect(env.browserExecutable).toBe(true)
     const root = dirname(env.configDir)
+    expect(dirname(root)).toBe(privateTmp)
     expect(existsSync(root)).toBe(true)
 
     let caught = ''
