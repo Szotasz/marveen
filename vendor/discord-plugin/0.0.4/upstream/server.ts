@@ -1,7 +1,4 @@
 #!/usr/bin/env bun
-// claude-plugins-official/discord 0.0.4 server.ts (Apache-2.0, (c) Anthropic), verbatim and
-// complete apart from these three lines (identical to anthropics/claude-plugins-official main,
-// external_plugins/discord/server.ts, on 2026-10-23). Test input for scripts/patch-discord-plugin.py.
 /**
  * Discord channel for Claude Code.
  *

@@ -73,6 +73,7 @@ const BLOCKS = [
   'system-directive-auth',
   'agent-id-header',
   'memory-search-label',
+  'memory-fact-change',
   'fleet-auth',
   'evidence-rule',
   'mcp-list-channel',
@@ -111,5 +112,23 @@ describe('rewriteAgentClaudeMdOnStart on an agent directory', () => {
     const at = BLOCKS.indexOf('memory-search-label')
     expect(blocks(withOptIn)).toEqual([...BLOCKS.slice(0, at), 'thin-chief-handoff', ...BLOCKS.slice(at)])
     expect(blocks(first)).not.toContain('thin-chief-handoff')
+  })
+})
+
+// MIOAGENTINSTALL1114 (plan 10.3, first test; M5, 7.5): a package agent's shell survives the whole start rewrite.
+describe('rewriteAgentClaudeMdOnStart on a package agent', () => {
+  it('the CLAUDE.md still starts with the shell prefix byte for byte, then the fleet base rules block; twice is once', async () => {
+    const { PACKAGE_SHELL_PREFIX_TEXT, startsWithPackageShell } = await import('../web/agent-package/marker.js')
+    const dir = join(tmpRoot, 'agents', 'agent-p')
+    mkdirSync(join(dir, '.package'), { recursive: true })
+    writeFileSync(join(dir, '.package', 'manifest.json'), '{"schema":1}\n')
+    writeFileSync(file('agent-p'), PACKAGE_SHELL_PREFIX_TEXT, 'utf-8')
+    rewriteAgentClaudeMdOnStart('agent-p', PROFILE)
+    const once = readFileSync(file('agent-p'))
+    expect(startsWithPackageShell(once)).toBe(true)
+    expect(once.toString('utf8').startsWith(PACKAGE_SHELL_PREFIX_TEXT + '\n<!-- BEGIN GENERATED: fleet-base-rules ')).toBe(true)
+    expect(blocks(once.toString('utf8'))).toEqual(['fleet-base-rules', ...BLOCKS])
+    rewriteAgentClaudeMdOnStart('agent-p', PROFILE)
+    expect(readFileSync(file('agent-p')).equals(once)).toBe(true)
   })
 })

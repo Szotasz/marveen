@@ -28,6 +28,10 @@ const REAUTH_MARKERS: { rx: RegExp; reason: string }[] = [
   // box can complete. Same first-run-gate family, same restart heal.
   { rx: /Use the url below to sign in|Paste code here if prompted/i, reason: 'Browser sign-in screen (first-run gate)' },
   { rx: /Invalid authentication credentials/i, reason: 'Invalid authentication credentials (401)' },
+  // ISSUE2817 (marveen#2817, measured on a customer install): the main session failed ~10 h with
+  // "OAuth token revoked · Please run /login". Ahead of the generic "/login" marker, so the reason names the cause
+  // (a revoked token needs a new setup-token, not a quota wait).
+  { rx: /OAuth token (?:has been )?revoked/i, reason: 'OAuth token revoked' },
   { rx: /Please run\s+\/login/i, reason: 'Please run /login' },
   { rx: /Not logged in/i, reason: 'Not logged in' },
   { rx: /\bAPI Error:\s*401\b/i, reason: 'API Error: 401' },
@@ -107,6 +111,62 @@ export function detectReauthNeeded(pane: string | null | undefined): ReauthState
   if (ESCALATION_QUOTE_MARKERS.some((rx) => rx.test(region))) return { needsReauth: false }
   for (const m of REAUTH_MARKERS) {
     if (m.rx.test(region)) return { needsReauth: true, reason: m.reason }
+  }
+  return lastTurnErrorLine(pane)
+}
+
+// ISSUE2817 (3), measured 2026-11-16 on Claude Code 2.1.325 with an invalid OAuth token in a throwaway config: a
+// turn that fails on auth renders its error as the reply, and the completed-turn line sits between it and the box:
+//   ❯ say hi
+//   (blank)
+//   ⏺ Please run /login · API Error: 401 OAuth access token is invalid.
+//   (blank)
+//   ✻ Worked for 2s · done 9:55 AM
+//   (blank)
+//   ──────── (the input box)
+// liveStatusRegion() reads only the one line above the box (here a blank), so the failure was invisible and a
+// customer's main session failed ~10 h with no owner alert (marveen#2817). So the LAST turn's reply (the lines
+// between the last submitted prompt and the box) is read too, under two conditions together (Dani's review of
+// #2823: an agent's own reply line such as "⏺ API Error: 401 came back from Stripe" or a "● Not logged in: ..."
+// bullet must not count):
+//  1. the error IS the whole reply: its first content line is the error, and no other reply line opens with a
+//     content glyph (⏺ / ●); only the "✻ ..." completed-turn line and wrapped continuation lines may follow;
+//  2. that line is Claude Code's own error composite: "Please run /login", "OAuth token revoked/expired", or
+//     "API Error: 401" followed by Claude Code's own continuation ("OAuth access token is invalid", {"type":"error").
+// A stale failure above a newer prompt (e.g. "❯ /login" and its "Login successful") is outside the block.
+const LAST_TURN_MAX_LINES = 40
+const PROMPT_LINE_RX = /^[❯>]\s+\S/
+const CONTENT_GLYPH_RX = /^\s*[⏺●]/
+const DONE_LINE_RX = /^\s*✻ /
+const LAST_TURN_ERROR_MARKERS: { rx: RegExp; reason: string }[] = [
+  { rx: /^[\s⏺●⎿]*OAuth token (?:has been )?revoked\b/i, reason: 'OAuth token revoked' },
+  { rx: /^[\s⏺●⎿]*OAuth token (?:has )?expired\b/i, reason: 'OAuth token expired' },
+  { rx: /^[\s⏺●⎿]*(?:Not logged in\s*[·∙•]\s*)?Please run\s+\/login\b/i, reason: 'Please run /login' },
+  { rx: /^[\s⏺●⎿]*API Error:\s*401\b.*(?:OAuth access token is invalid|\{"type":"error")/i, reason: 'API Error: 401' },
+]
+
+function lastTurnErrorLine(pane: string): ReauthState {
+  const lines = pane.split('\n')
+  const borders: number[] = []
+  for (let i = lines.length - 1; i >= 0 && borders.length < 2; i--) {
+    if (BOX_BORDER_RX.test(lines[i])) borders.push(i)
+  }
+  if (borders.length < 2) return { needsReauth: false }
+  const top = Math.min(borders[0], borders[1])
+  let start = -1
+  for (let i = top - 1; i >= Math.max(0, top - LAST_TURN_MAX_LINES); i--) {
+    if (PROMPT_LINE_RX.test(lines[i])) { start = i; break }
+  }
+  if (start < 0) return { needsReauth: false }
+  const block = lines.slice(start + 1, top)
+  if (ESCALATION_QUOTE_MARKERS.some((rx) => block.some((l) => rx.test(l)))) return { needsReauth: false }
+  const content = block.filter((l) => l.trim() !== '' && !DONE_LINE_RX.test(l))
+  if (content.length === 0) return { needsReauth: false }
+  // Condition 1: the error is the whole reply (no second content-glyph line after it).
+  if (content.slice(1).some((l) => CONTENT_GLYPH_RX.test(l))) return { needsReauth: false }
+  // Condition 2: the first line is Claude Code's own error composite.
+  for (const m of LAST_TURN_ERROR_MARKERS) {
+    if (m.rx.test(content[0])) return { needsReauth: true, reason: m.reason }
   }
   return { needsReauth: false }
 }

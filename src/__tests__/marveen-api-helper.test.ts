@@ -140,6 +140,60 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen[0].headers['x-agent-id']).toBe('dani')
   })
 
+  it('memory-save --supersedes: the ids go as a JSON array of numbers, the rest of the body unchanged', async () => {
+    const r = await run(['memory-save', 'dani', 'warm', 'k', file('s.txt', 'új állapot'), '--supersedes', '12,345'])
+    expect(r.code).toBe(0)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].url).toBe('/api/memories')
+    expect(seen[0].headers['x-agent-id']).toBe('dani')
+    expect(JSON.parse(seen[0].body)).toEqual({ agent_id: 'dani', content: 'új állapot', category: 'warm', keywords: 'k', supersedes: [12, 345] })
+    // the option may stand anywhere, a single id is a one-element array
+    expect((await run(['memory-save', '--supersedes', '7', 'dani', 'cold', 'k', file('s1.txt', 'x')])).code).toBe(0)
+    expect(JSON.parse(seen[1].body).supersedes).toEqual([7])
+    // without the option the body has no supersedes key at all (a plain save keeps the server's old rule)
+    expect((await run(['memory-save', 'dani', 'warm', 'k', file('s2.txt', 'y')])).code).toBe(0)
+    expect('supersedes' in JSON.parse(seen[2].body)).toBe(false)
+  })
+
+  it('memory-save --supersedes: a malformed list exits 2 and sends nothing', async () => {
+    const tooMany = Array.from({ length: 51 }, (_, i) => String(i + 1)).join(',')
+    for (const v of ['', '12,', ',12', '12;34', '1 2', '0', '-3', '12,12', 'abc', '12/..', '12\n', '12,\n34', tooMany]) {
+      const r = await run(['memory-save', 'dani', 'warm', 'k', file('bad-s.txt', 'x'), '--supersedes', v])
+      expect(r.code, v).toBe(2)
+    }
+    expect((await run(['memory-save', 'dani', 'warm', 'k', file('bad-s2.txt', 'x'), '--supersedes'])).code).toBe(2)
+    const fifty = Array.from({ length: 50 }, (_, i) => String(i + 1)).join(',')
+    expect(seen).toHaveLength(0)
+    expect((await run(['memory-save', 'dani', 'warm', 'k', file('ok-50.txt', 'x'), '--supersedes', fifty])).code).toBe(0)
+    expect(JSON.parse(seen[0].body).supersedes).toHaveLength(50)
+  })
+
+  it('memory-retract: POST /api/memories/<id>/retract with the author in the body and in X-Agent-Id', async () => {
+    reply = { status: 200, body: '{"ok":true,"id":42,"outcome":"retracted"}' }
+    const r = await run(['memory-retract', '42', 'dani'])
+    expect(r.code).toBe(0)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].method).toBe('POST')
+    expect(seen[0].url).toBe('/api/memories/42/retract')
+    expect(seen[0].headers.authorization).toBe(`Bearer ${TOKEN}`)
+    expect(seen[0].headers['x-agent-id']).toBe('dani')
+    expect(JSON.parse(seen[0].body)).toEqual({ agent_id: 'dani' })
+    expect(r.stdout).toContain('"outcome":"retracted"')
+  })
+
+  it('memory-retract: a bad call exits 2 and sends nothing; a 403 (not the author) is a loud exit 1', async () => {
+    for (const a of [['memory-retract'], ['memory-retract', '42'], ['memory-retract', '42', 'dani', 'x'],
+      ['memory-retract', '0', 'dani'], ['memory-retract', '4/..', 'dani'], ['memory-retract', '42', 'Dani!'],
+      ['memory-retract', '42', 'dani', '--force']]) {
+      expect((await run(a)).code, a.join(' ')).toBe(2)
+    }
+    expect(seen).toHaveLength(0)
+    reply = { status: 403, body: '{"error":"Only the author can retract a memory"}' }
+    const r = await run(['memory-retract', '42', 'dani'])
+    expect(r.code).toBe(1)
+    expect(r.stderr).toContain('HTTP 403')
+  })
+
   it('memory-update and memory-list', async () => {
     expect((await run(['memory-update', '7', 'dani', file('u.txt', 'új')])).code).toBe(0)
     expect(seen[0].method).toBe('PUT')
@@ -475,7 +529,8 @@ describe('marveen-api.sh: schedules are read only', () => {
     '    j = os.path.join(d, "pin-s.json"); open(j, "w").write("{\\"a\\": 1}")',
     '    s = {',
     '        "message-close": ["7", "--result-file", f], "directive-verify": ["1"], "memory-search": ["dani", "q"],',
-    '        "memory-save": ["dani", "warm", "k", f], "memory-list": ["dani", "hot"], "memory-move": ["5", "cold", "dani"],',
+    '        "memory-save": ["dani", "warm", "k", f], "memory-retract": ["5", "dani"],',
+    '        "memory-list": ["dani", "hot"], "memory-move": ["5", "cold", "dani"],',
     '        "memory-update": ["5", "dani", f], "daily-log": ["dani", f], "taskstate-save": ["dani", j],',
     '        "approval-request": ["dani", "memory_maintenance", "60", f], "approval-status": ["ap-1"],',
     '        "approval-consume": ["ap-1", "memory_maintenance", "dani"], "skill-propose": ["my-skill", f],',

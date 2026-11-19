@@ -11,16 +11,18 @@ export class PeerResponseTooLargeError extends Error {
   }
 }
 
-/** Read a fetch Response body up to maxBytes; throws PeerResponseTooLargeError
+/** Read a fetch Response body up to maxBytes, as bytes; throws PeerResponseTooLargeError
  *  beyond that (and cancels the stream). Checks the declared Content-Length
- *  first so an honestly-huge response is refused without reading. */
-export async function readBoundedBody(res: Response, maxBytes: number): Promise<string> {
+ *  first so an honestly-huge response is refused without reading. Bytes, not a
+ *  string: a caller that needs strict UTF-8 decodes them itself, so invalid
+ *  UTF-8 does not silently become U+FFFD. */
+export async function readBoundedBytes(res: Response, maxBytes: number): Promise<Buffer> {
   const declared = parseInt(res.headers.get('content-length') ?? '', 10)
   if (Number.isFinite(declared) && declared > maxBytes) {
     try { await res.body?.cancel() } catch { /* best effort */ }
     throw new PeerResponseTooLargeError(maxBytes)
   }
-  if (!res.body) return ''
+  if (!res.body) return Buffer.alloc(0)
   const reader = res.body.getReader()
   const chunks: Uint8Array[] = []
   let total = 0
@@ -36,5 +38,10 @@ export async function readBoundedBody(res: Response, maxBytes: number): Promise<
       chunks.push(value)
     }
   }
-  return Buffer.concat(chunks).toString('utf-8')
+  return Buffer.concat(chunks)
+}
+
+/** readBoundedBytes decoded as UTF-8 (invalid sequences become U+FFFD). */
+export async function readBoundedBody(res: Response, maxBytes: number): Promise<string> {
+  return (await readBoundedBytes(res, maxBytes)).toString('utf-8')
 }

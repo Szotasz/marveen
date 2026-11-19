@@ -16,11 +16,12 @@
 //   4. currentHeartbeatIdentity source -- the config-bound factory must delegate
 //      to resolveDashboardOrigin so it picks up DASHBOARD_PUBLIC_URL.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { resolveDashboardOrigin } from '../web/agent-scaffold.js'
+import { logger } from '../logger.js'
 import { renderHeartbeatClaudeMd, type HeartbeatIdentity } from '../web/heartbeat-agent-scaffold.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -99,6 +100,105 @@ describe('resolveDashboardOrigin', () => {
   it('defaults the third argument, so two-argument callers keep working', () => {
     // Existing call sites and tests pass two arguments; that must stay valid.
     expect(resolveDashboardOrigin('https://marveen.example.com', 3420)).toBe('https://marveen.example.com')
+  })
+
+  // --- only an absolute http(s) URL counts -----------------------------------
+  // Measured 2026-11-16 on a live install: DASHBOARD_PUBLIC_URL was "marveen" (a name, no scheme). The resolver
+  // returned it unchanged, so every generated recipe read `curl ... marveen/api/messages`, a relative path: each call
+  // failed and the agent had nothing to report. A value that cannot stand in front of "/api/..." is skipped.
+
+  it('a public URL without a scheme is not used: the fallback is localhost', () => {
+    expect(resolveDashboardOrigin('marveen', 3420)).toBe('http://localhost:3420')
+    expect(resolveDashboardOrigin('marveen.example.com', 3420)).toBe('http://localhost:3420')
+    expect(resolveDashboardOrigin('localhost:3420', 3420)).toBe('http://localhost:3420')
+    expect(resolveDashboardOrigin('//marveen.example.com', 3420)).toBe('http://localhost:3420')
+  })
+
+  it('an agent origin without a scheme is skipped, and the valid public URL is used', () => {
+    expect(resolveDashboardOrigin('https://marveen.example.com', 3420, 'marveen')).toBe('https://marveen.example.com')
+  })
+
+  it('both values unusable: localhost on the given port', () => {
+    expect(resolveDashboardOrigin('marveen', 4000, 'dashboard.internal:3420')).toBe('http://localhost:4000')
+  })
+
+  it.each([
+    'ftp://marveen.example.com',
+    'file:///srv/marveen',
+    'javascript:alert(1)',
+    'ws://marveen.example.com',
+    'http:marveen.example.com',
+    'http://',
+    'https:///api',
+  ])('a value with another scheme or no host is skipped: %s', (bad) => {
+    expect(resolveDashboardOrigin(bad, 3420)).toBe('http://localhost:3420')
+    expect(resolveDashboardOrigin('https://marveen.example.com', 3420, bad)).toBe('https://marveen.example.com')
+  })
+
+  it('a value with whitespace in it is skipped (it would split the recipe into two words)', () => {
+    expect(resolveDashboardOrigin(' https://marveen.example.com', 3420)).toBe('http://localhost:3420')
+    expect(resolveDashboardOrigin('https://marveen.example.com ', 3420)).toBe('http://localhost:3420')
+    expect(resolveDashboardOrigin('https://marveen example.com', 3420)).toBe('http://localhost:3420')
+  })
+
+  it('a valid agent origin still wins over an unusable public URL', () => {
+    expect(resolveDashboardOrigin('marveen', 3420, 'http://localhost:3420')).toBe('http://localhost:3420')
+    expect(resolveDashboardOrigin('marveen', 3420, 'http://dashboard.internal:8080/')).toBe('http://dashboard.internal:8080')
+  })
+
+  it('REGRESSION GUARD: a valid value is returned as it was written (scheme case, path, port, IPv6)', () => {
+    expect(resolveDashboardOrigin('HTTPS://Marveen.Example.com', 3420)).toBe('HTTPS://Marveen.Example.com')
+    expect(resolveDashboardOrigin('https://example.com/marveen/', 3420)).toBe('https://example.com/marveen')
+    expect(resolveDashboardOrigin('', 3420, 'http://[::1]:3420')).toBe('http://[::1]:3420')
+    expect(resolveDashboardOrigin('', 3420, 'http://10.0.0.5:3420')).toBe('http://10.0.0.5:3420')
+  })
+
+  describe('the skipped value is named in the log once', () => {
+    const warned = () => (warn.mock.calls as unknown[][]).filter((c) => typeof c[1] === 'string' && c[1].startsWith('dashboard origin:'))
+    let warn: ReturnType<typeof vi.spyOn>
+    beforeEach(() => { warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never) })
+    afterEach(() => { warn.mockRestore() })
+
+    it('names the key and the value, and does not repeat for the same pair', () => {
+      resolveDashboardOrigin('warn-once-public', 3420)
+      resolveDashboardOrigin('warn-once-public', 3420)
+      resolveDashboardOrigin('warn-once-public', 9999)
+      expect(warned()).toHaveLength(1)
+      expect(warned()[0][0]).toEqual({ key: 'DASHBOARD_PUBLIC_URL', value: 'warn-once-public' })
+    })
+
+    it('the same text under the other key, and another value under the same key, are told separately', () => {
+      resolveDashboardOrigin('', 3420, 'warn-key-a')
+      resolveDashboardOrigin('warn-key-a', 3420)
+      resolveDashboardOrigin('warn-key-b', 3420)
+      expect(warned().map((c) => c[0])).toEqual([
+        { key: 'AGENT_API_ORIGIN', value: 'warn-key-a' },
+        { key: 'DASHBOARD_PUBLIC_URL', value: 'warn-key-a' },
+        { key: 'DASHBOARD_PUBLIC_URL', value: 'warn-key-b' },
+      ])
+    })
+
+    it('an unusable public URL behind a valid agent origin is not used, so it is not reported here', () => {
+      resolveDashboardOrigin('warn-unused-public', 3420, 'http://localhost:3420')
+      expect(warned()).toHaveLength(0)
+    })
+
+    it('empty, blank and valid values log nothing', () => {
+      resolveDashboardOrigin('', 3420, '')
+      resolveDashboardOrigin('   ', 3420, '\t')
+      resolveDashboardOrigin('https://marveen.example.com', 3420, 'http://localhost:3420')
+      expect(warned()).toHaveLength(0)
+    })
+
+    it('a blank value counts as not set: the next candidate applies', () => {
+      expect(resolveDashboardOrigin('https://marveen.example.com', 3420, '  ')).toBe('https://marveen.example.com')
+      expect(resolveDashboardOrigin('  ', 3420)).toBe('http://localhost:3420')
+    })
+
+    it('a very long value is cut in the log line', () => {
+      resolveDashboardOrigin('x'.repeat(500), 3420)
+      expect((warned()[0][0] as { value: string }).value).toHaveLength(200)
+    })
   })
 })
 

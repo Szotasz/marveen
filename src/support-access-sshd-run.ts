@@ -153,7 +153,8 @@ type ProbeBase = Omit<Parameters<typeof assessSshd>[0], 'localAddresses' | 'answ
 async function askAll(base: ProbeBase, hostKeyArgs: readonly string[], deps: SshdProbeDeps, keyPath: string | null): Promise<SshdAssessment> {
   const localAddresses = reachableLocalAddresses(deps.interfaceAddresses())
   let nonRootProof: { ok: true } | { ok: false; problem: NonRootProblem } | undefined
-  const refused = (answers: readonly SshdProbeAnswer[]): SshdAssessment => assessSshd({ ...base, localAddresses, answers, nonRootProof })
+  const refused = (answers: readonly SshdProbeAnswer[]): SshdAssessment =>
+    assessSshd({ ...base, localAddresses, answers, nonRootProof, probeHostKey: keyPath ?? undefined })
   const ask = async (spec: SshdConnectionSpec, extra: readonly string[] = []): Promise<SshdProbeAnswer> => {
     const connection = formatSshdConnectionSpec(spec)
     if (connection === null) return { spec, text: null }

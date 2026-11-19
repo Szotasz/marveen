@@ -12,7 +12,11 @@ Reads current usage/quota status for two providers:
     does not exist). On a transient
     failure (429/5xx/timeout) it reuses the last authoritative snapshot
     from store/usage-latest.json if it's fresh enough (source becomes
-    "authoritative_cached") instead of losing real numbers. Only falls
+    "authoritative_cached") instead of losing real numbers. When neither
+    the endpoint, the statusLine side file nor that cache gave anything, the
+    same windows are read from the rate-limit headers of one minimal
+    Messages call (dist/claude-ratelimit-reading.js, source
+    "ratelimit_headers"). Only falls
     back to a token-total ESTIMATE built from local
     ~/.claude/projects/*/*.jsonl transcripts when there's no usable
     cache: missing/expired token, a 403 (real scope problem), or a
@@ -77,6 +81,7 @@ CONFIG = {
     # has had a long time to move. Older -> not used, fall through (fail open).
     "claude_statusline_max_age_min": 10,
 }
+
 
 # Window length in seconds, keyed by the Claude window's dict key. Codex
 # windows carry their own "window_minutes" field so no static table is
@@ -650,6 +655,40 @@ def _read_claude_statusline(max_age_minutes, now_utc=None, path=None):
     return windows, age_minutes
 
 
+# Last-resort Claude source: the unified rate-limit headers of one minimal
+# Messages call, read by the compiled TypeScript entry (the same parser and 429
+# rules as the plan rotation). Costs a few tokens of the quota per run.
+# Under plan rotation (MAIN_AGENT_ISOLATED_CONFIG=1, 2+ plans, no
+# MAIN_AGENT_CONFIG_DIR) the entry makes no call: the token read below is the
+# host's default login, not necessarily the active plan, so it answers ok:false
+# and this collector falls through to the estimate (QUOTAHDRROT1118).
+RATELIMIT_ENTRY = os.path.join(REPO_ROOT, "dist", "claude-ratelimit-reading.js")
+
+
+def _collect_claude_ratelimit_headers():
+    """Return (windows_dict, None) or (None, reason). The token travels to the
+    entry in its environment only, never in argv; no reason string contains it."""
+    token, token_source = _read_claude_token()
+    if not token:
+        return None, "no oauth token available"
+    if not os.path.isfile(RATELIMIT_ENTRY):
+        return None, "dist/claude-ratelimit-reading.js not built"
+    try:
+        # 10 s: the entry's own probe timeout is 8 s; with the 10 s usage call and the
+        # 5 s `claude --version` this stays inside the seed task's 30 s timeoutMs.
+        proc = subprocess.run(
+            ["node", RATELIMIT_ENTRY], capture_output=True, text=True, timeout=10,
+            env={**os.environ, "CLAUDE_RATELIMIT_TOKEN": token},
+        )
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
+    except Exception as e:
+        # The exception text is dropped: only its type is safe to record.
+        return None, type(e).__name__
+    if out.get("ok") is True and isinstance(out.get("windows"), dict):
+        return out["windows"], None
+    return None, f"{out.get('reason', 'no reading')} ({token_source} token)"
+
+
 def _claude_transcript_globs():
     """Every place Claude Code transcripts live on this install. A glob over
     ~/.claude/projects alone finds nothing when the main agent and the
@@ -772,6 +811,16 @@ def collect_claude():
             result["cache_age_minutes"] = round(age_minutes, 1)
             return result
 
+    # Last resort before the estimate: the rate-limit headers. Never ahead of a
+    # fresh authoritative cache above, which is what the plan rotation sees (#2839 B1).
+    rl_windows, rl_err = _collect_claude_ratelimit_headers()
+    if rl_windows is not None:
+        result["source"] = "ratelimit_headers"
+        result["windows"] = rl_windows
+        result["measured_at"] = datetime.now(timezone.utc).isoformat()
+        return result
+    result["ratelimit_headers_error"] = rl_err
+
     try:
         result.update(_collect_claude_estimate())
     except Exception as e:
@@ -857,7 +906,9 @@ def render_summary(snapshot):
     lines.append(f"Claude (source: {claude.get('source')}):")
     if not claude.get("ok"):
         lines.append(f"  error: {claude.get('error')}")
-    elif claude.get("source") in ("authoritative", "authoritative_cached", "statusline"):
+    elif claude.get("source") in ("authoritative", "authoritative_cached", "statusline", "ratelimit_headers"):
+        if claude.get("source") == "ratelimit_headers":
+            lines.append(f"  (from the rate-limit headers of a minimal Messages call -- usage endpoint error: {claude.get('auth_error')})")
         if claude.get("source") == "statusline":
             age = claude.get("statusline_age_minutes")
             age_str = f"{age:.0f}" if isinstance(age, (int, float)) else "?"
@@ -885,6 +936,8 @@ def render_summary(snapshot):
     else:
         if claude.get("auth_error"):
             lines.append(f"  (authoritative endpoint unavailable: {claude['auth_error']})")
+        if claude.get("ratelimit_headers_error"):
+            lines.append(f"  (rate-limit header probe unavailable: {claude['ratelimit_headers_error']})")
         lines.append(f"  5-hour estimated token volume: {claude.get('five_hour_est_tokens', '?')}")
         lines.append(f"  weekly estimated token volume: {claude.get('seven_day_est_tokens', '?')}")
         lines.append(f"  weekly Opus estimated token volume: {claude.get('seven_day_opus_est_tokens', '?')}")

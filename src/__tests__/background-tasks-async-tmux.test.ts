@@ -29,6 +29,7 @@ const FAKE_TMUX = `#!/bin/sh
 d="$FAKE_TMUX_DIR"
 sub="$1"
 printf 'start %s\\n' "$*" >> "$d/calls.log"
+printf '%s\\n' "$$" >> "$d/pids"
 if [ -f "$d/sleep" ]; then sleep "$(cat "$d/sleep")"; fi
 if [ -f "$d/sleep-$sub" ]; then sleep "$(cat "$d/sleep-$sub")"; fi
 if [ -f "$d/no-server" ]; then echo "no server running on /tmp/fake-tmux" >&2; printf 'end %s\\n' "$sub" >> "$d/calls.log"; exit 1; fi
@@ -79,6 +80,21 @@ const put = (name: string, content: string) => writeFileSync(join(dir, name), co
 const drop = (name: string): void => rmSync(join(dir, name), { force: true })
 const calls = (): string[] => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf-8').split('\n').filter(Boolean) : [])
 const sessions = (): string[] => (existsSync(join(dir, 'sessions')) ? readFileSync(join(dir, 'sessions'), 'utf-8').split('\n').filter(Boolean) : [])
+
+// Waits (real time, bounded) until every fake tmux started in `d` has exited.
+// A poll tick marks a task done and only THEN runs kill-session, so a test that
+// waits for 'done' can end while that fake still writes calls.log and sessions:
+// removing the directory then raced it (CI, 2026-11-16: ENOTEMPTY on rmdir in
+// afterEach). A fake killed by a route timeout is already gone.
+async function settleFakeTmux(d: string, boundMs = 10_000): Promise<void> {
+  const f = join(d, 'pids')
+  const pids = existsSync(f) ? readFileSync(f, 'utf-8').split('\n').filter(Boolean).map(Number) : []
+  const alive = (pid: number): boolean => {
+    try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
+  }
+  const end = Date.now() + boundMs
+  while (pids.some(alive) && Date.now() < end) await sleep(20)
+}
 
 // Worst event-loop delay (ms) while fn runs. monitorEventLoopDelay samples on a
 // libuv timer, so vitest's fake timers do not touch it (measured). A stall that
@@ -159,9 +175,10 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'] })
 })
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers()
   for (const t of db.getRunningBackgroundTasks()) db.finishBackgroundTask(t.id, 'failed', '(test cleanup)')
+  await settleFakeTmux(dir)
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -485,5 +502,23 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     const t = db.getBackgroundTask(id)!
     expect(t.status).toBe('failed')
     expect(['out text\n___BG_DONE___', '(cancelled)']).toContain(t.output)
+  })
+})
+
+describe('test cleanup', () => {
+  it('settleFakeTmux waits for a fake tmux that is still writing, and not for one that has exited', async () => {
+    put('sleep-kill-session', '0.6')
+    const running = promisify(execFile)(join(bin, 'tmux'), ['kill-session', '-t', '=nobody'],
+      { env: { ...process.env, FAKE_TMUX_DIR: dir } }).catch(() => undefined)
+    for (let i = 0; i < 250 && !calls().some((l) => l.startsWith('start kill-session')); i++) await sleep(20)
+    expect(calls()).toContainEqual(expect.stringMatching(/^start kill-session/))
+    expect(calls()).not.toContain('end kill-session')
+    await settleFakeTmux(dir)
+    // without the wait this line is written after the directory would be gone
+    expect(calls()).toContain('end kill-session')
+    await running
+    const t0 = Date.now()
+    await settleFakeTmux(dir)
+    expect(Date.now() - t0).toBeLessThan(500)
   })
 })

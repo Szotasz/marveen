@@ -23,7 +23,9 @@ ocg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ocg)
 
 with open(os.path.join(HOOKS, "mail-api-send-cases.json"), encoding="utf-8") as fh:
-    CASES = json.load(fh)["cases"]
+    _TABLE = json.load(fh)
+CASES = _TABLE["cases"]
+INLINE = _TABLE["inline"]   # MAILCURLSEND1118: commands judged by is_send_invocation as written
 
 failed = []
 
@@ -55,6 +57,12 @@ try:
         flag = "-c" if prog == "python3" else "-e"
         got = ocg.is_send_invocation(f"{prog} {flag} {shlex.quote(c['body'])}")
         check(f"code string: {c['name']}", got == c["expected"], f"got {got}")
+    # MAILCURLSEND1118: an HTTP mail API send written inline on the command line is judged like the same send in a script
+    check("the inline list has send and no-send cases",
+          any(c["expected"] for c in INLINE) and any(not c["expected"] for c in INLINE))
+    for c in INLINE:
+        got = ocg.is_send_invocation(c["cmd"])
+        check(f"inline command: {c['name']}", got == c["expected"], f"got {got}")
 finally:
     shutil.rmtree(td, ignore_errors=True)
 

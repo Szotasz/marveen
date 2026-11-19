@@ -30,7 +30,7 @@ const LINES = buildSupportGrantLines({
   sshd: { major: 9, minor: 6 },
 })
 const PERSONAL = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH someone'
-const SSHD_OK: SshdAssessment = { ok: true, version: { major: 10, minor: 0 }, keysFiles: ['authorized_keys', 'authorized_keys2'] }
+const SSHD_OK: SshdAssessment = { ok: true, version: { major: 10, minor: 0 }, keysFiles: ['authorized_keys', 'authorized_keys2'], listenPorts: [22], hostKeyFiles: [] }
 
 function deps(over: Partial<SupportStatusDeps> = {}): { deps: SupportStatusDeps; probed: string[][]; asked: string[] } {
   const probed: string[][] = []
@@ -388,7 +388,8 @@ describe('enable and disable on the command line', () => {
     supportDir: '/nonexistent/support',
     sshDir: '/nonexistent/.ssh',
     pins: { keys: TEST_ONLY_KEYS, fromCidrs: TEST_ONLY_FROM },
-    probeSshd: async () => ({ ok: true, version: { major: 9, minor: 6 }, keysFiles: ['authorized_keys'] }),
+    probeSshd: async () => ({ ok: true, version: { major: 9, minor: 6 }, keysFiles: ['authorized_keys'], listenPorts: [22], hostKeyFiles: [] }),
+    readHostKey: async () => ({ kind: 'ok', key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJ' }),
     redeemTransport: async () => {
       throw new Error('no network in this test')
     },

@@ -14,6 +14,8 @@ import { readOperatorAccess } from './web/operator-access.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { tryHandleSupportAccess } from './web/routes/support-access.js'
 import { startSupportReconcile } from './web/support-standby-runtime.js'
+import { startRotationBackend, defaultRotationBackendDeps } from './web/claude-rotation-backend.js'
+import { withRotationLock } from './web/claude-rotation-lock.js'
 import { tryHandleOperator } from './web/routes/operator.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
@@ -22,8 +24,8 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
 import { forEachAgentIsolated } from './web/agent-seed-loop.js'
-import { ensureRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
-import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './web/agent-scaffold.js'
+import { retireRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureBashEgressParser, ensureMainScopeBashEgressParser, ensureGovernanceGateCommands, ensureTelegramCopyGate, ensureChildClaudeGuard, ensureWebSearchEnvelope, ensureExtraHookEntries, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -91,6 +93,7 @@ import { tryHandleConnectors } from './web/routes/connectors.js'
 import { tryHandleDocs } from './web/routes/docs.js'
 import { tryHandleResearch } from './web/routes/research.js'
 import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
+import { tryHandleAgentPackages } from './web/routes/agent-packages.js'
 import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
 import { tryHandleReviewAction } from './web/routes/review-action.js'
@@ -261,6 +264,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleConnectors(routeCtx)) return
       if (await tryHandleDocs(routeCtx)) return
       if (await tryHandleResearch(routeCtx)) return
+      if (await tryHandleAgentPackages(routeCtx)) return
       if (await tryHandleAgentsSkills(routeCtx)) return
       if (await tryHandleReviewAction(routeCtx)) return
       if (await tryHandleSkills(routeCtx)) return
@@ -528,6 +532,8 @@ export function startWebServer(port = 3420): http.Server {
   const pluginMonitorInterval = servicesOff ? undefined : startChannelPluginMonitor()
   // SUPPORTKULCS1109 (terv-v7 3.8): the support reconcile, shortly after the start and then daily.
   if (!servicesOff) startSupportReconcile()
+  // PLANROTATEDEADLOCK1115: the plan rotation runs here, with no agent turn (an exhausted main agent cannot run one).
+  const rotationBackend = servicesOff ? undefined : startRotationBackend()
   if (!servicesOff) logger.info('Channel plugin health monitor started (60s poll)')
 
   // Userbot inbound-probe (gold-standard deafness detector). Safe no-op until
@@ -686,6 +692,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     ensureSystemDirectiveAuthSection(MAIN_AGENT_ID)
     ensureAgentIdHeaderSection(MAIN_AGENT_ID)
     ensureMemorySearchLabelSection(MAIN_AGENT_ID)
+    ensureMemoryFactChangeSection(MAIN_AGENT_ID)
     ensureFleetAuthSection(MAIN_AGENT_ID)
     ensureEvidenceSection(MAIN_AGENT_ID)
     ensureMcpListChannelSection(MAIN_AGENT_ID)
@@ -833,15 +840,14 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       logger.warn({ err }, 'Scheduled tasks seed skipped')
     }
 
-    // Claude plan rotation needs its heartbeat task; installs that turned
-    // rotation on before this was automatic (or updated into it) get it here.
-    // Never overwrites an existing task, and honors an operator's deletion.
-    try {
-      const seeded = ensureRotationHeartbeatTask({ respectRemoval: true })
-      if (seeded === 'created') logger.info('Claude rotation heartbeat task created')
-      if (seeded === 'upgraded') logger.info('Claude rotation heartbeat prompt upgraded (sub-agent lines)')
-    } catch (err) {
-      logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
+    // PLANROTATEDEADLOCK1115 P5: the plan rotation runs in the backend (startRotationBackend above), so the old
+    // main-agent task is no longer seeded; it is retired here instead, in the branch its seed used (it writes the
+    // user-global dir too) and only with the services on, like the backend: an unedited seed is removed, an edited
+    // one switched off and the owner told once. Under the rotation lock: it writes the side-car.
+    if (!servicesOff) {
+      void withRotationLock(() => retireRotationHeartbeatTask(defaultRotationBackendDeps()))
+        .then((r) => { if (r.result !== 'none') logger.info({ result: r.result, told: r.told }, 'Old Claude rotation heartbeat task retired') })
+        .catch((err) => logger.warn({ err }, 'Old Claude rotation heartbeat task retirement failed'))
     }
   }
 
@@ -863,6 +869,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(routerInterval)
     clearInterval(scheduleInterval)
     clearInterval(heartbeatGapInterval)
+    rotationBackend?.stop()
     if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
     workerLivenessCancelled = true
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)

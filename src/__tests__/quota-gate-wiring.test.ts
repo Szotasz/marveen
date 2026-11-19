@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { quotaWorkClass } from '../web/schedule-runner.js'
+import { noteQuotaBlindness, quotaWorkClass, resetQuotaBlindStateForTest } from '../web/schedule-runner.js'
+import { logger } from '../logger.js'
 import { parseQuotaSnapshot } from '../quota-snapshot.js'
+import { getSettingDefinition } from '../config-registry.js'
 
 // The gate itself is covered in quota-gate.test.ts. This file covers the two
 // seams around it: how a scheduled task is classified, and how the collector's
@@ -85,5 +87,88 @@ describe('parseQuotaSnapshot', () => {
     // Null timestamp -> the gate fails open rather than trusting stale numbers.
     expect(s?.generatedAtMs).toBeNull()
     expect(s?.source).toBe('authoritative')
+  })
+})
+
+describe('noteQuotaBlindness -- the blind gate is never silent, and never noisy', () => {
+  const NOW = Date.UTC(2026, 10, 16, 12, 0, 0)
+  const estimate = { source: 'estimate', generatedAtMs: NOW - 60_000, windows: null }
+  const fresh = { source: 'ratelimit_headers', generatedAtMs: NOW - 60_000, windows: { seven_day: { used_percent: 22, resets_at: NOW / 1000 + 3600 } } }
+  const old = { ...fresh, generatedAtMs: NOW - 3 * 60 * 60_000 }
+
+  let saved: string | null = null
+  const store = { read: () => saved, write: (k: string) => { saved = k || null } }
+  const note = (s: Parameters<typeof noteQuotaBlindness>[0], t: number, n: (x: string) => void) => noteQuotaBlindness(s, t, n, store)
+  beforeEach(() => { resetQuotaBlindStateForTest(); saved = null })
+  afterEach(() => vi.restoreAllMocks())
+
+  it('estimate: one warn + one owner notice, then quiet on every later tick', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    const notify = vi.fn()
+    for (let i = 0; i < 5; i++) note(estimate, NOW + i * 60_000, notify)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toContain('"estimate"')
+  })
+
+  it('stale > 2h: one warn + one notice; blind kind change logs but does not re-alert', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    const notify = vi.fn()
+    note(old, NOW, notify)
+    note(old, NOW + 60_000, notify)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toContain('180 perce')
+    note(estimate, NOW + 120_000, notify)
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers with one info line, and a new blind spell alerts again', () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never)
+    const notify = vi.fn()
+    note(estimate, NOW, notify)
+    note(fresh, NOW, notify)
+    note(fresh, NOW + 60_000, notify)
+    expect(info).toHaveBeenCalledTimes(1)
+    note(estimate, NOW + 120_000, notify)
+    expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('restarts while the same blindness lasts do not alert again, even on rewritten snapshots; another source does', () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    const notify = vi.fn()
+    note(estimate, NOW, notify)
+    for (let i = 1; i <= 3; i++) {
+      resetQuotaBlindStateForTest() // dashboard restart: in-memory state lost, store kept
+      // a running collector rewrites the estimate every 15 minutes
+      note({ ...estimate, generatedAtMs: (estimate.generatedAtMs ?? NOW) + i * 15 * 60_000 }, NOW + i * 15 * 60_000, notify)
+    }
+    expect(notify).toHaveBeenCalledTimes(1)
+    resetQuotaBlindStateForTest()
+    note({ ...estimate, source: 'unknown' }, NOW + 60 * 60_000, notify)
+    expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('no snapshot (collector not enabled) is not blind: no log, no notice', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    const notify = vi.fn()
+    note(null, NOW, notify)
+    expect(warn).not.toHaveBeenCalled()
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('is wired once per tick next to the snapshot read, and the gate gets essential + the hard line', () => {
+    expect(RUNNER_SRC).toContain('noteQuotaBlindness(quotaSnapshot, now)')
+    expect(RUNNER_SRC.match(/noteQuotaBlindness\(quotaSnapshot/g)?.length).toBe(1)
+    expect(RUNNER_SRC).toContain('essential: task.essential === true,')
+    expect(RUNNER_SRC).toContain('hardAtPercent: quotaHardAtPercent,')
+    const io = readFileSync(join(__dirname, '../web/scheduled-tasks-io.ts'), 'utf-8')
+    expect(io).toContain('essential: config.essential === true,')
+  })
+
+  it('the tiers are off unless set: registry default 0, and the runner falls back to 0', () => {
+    expect(getSettingDefinition('QUOTA_GATE_HARD_AT_PERCENT')?.default).toBe(0)
+    expect(RUNNER_SRC).toContain("try { return Number(getEffectiveSettingValue('QUOTA_GATE_HARD_AT_PERCENT')) || 0 } catch { return 0 }")
   })
 })

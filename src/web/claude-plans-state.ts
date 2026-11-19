@@ -42,6 +42,8 @@ export interface PlanProbeOutcome {
   /** ProbeErrorKind when !ok. */
   error?: string
   httpStatus?: number
+  /** PLANROTATEDEADLOCK1115 P4: a 429 with no unified rate-limit headers at all. */
+  headerless?: boolean
 }
 
 export interface ObservedPlanState {
@@ -89,6 +91,26 @@ export interface ClaudePlansState {
   fleet?: FleetRotationRecord
   /** SUBPLANTOKEN1110 2nd PR: per sub-agent rotation bookkeeping (claude-plan-subagent-rotation.ts). Absent = none. */
   subAgents?: Record<string, SubAgentRotationRecord>
+  /** PLANROTATEDEADLOCK1115: the dashboard-backend rotation's own bookkeeping. Absent = it never ran. */
+  backend?: RotationBackendRecord
+}
+
+export interface RotationBackendRecord {
+  /** Unix epoch ms of the last finished check (the liveness alert reads it). */
+  lastCheckAt?: number
+  /** Owner signals that could not be sent, each with its original [HH:MM]; retried on the next tick, oldest first. */
+  pendingSignals?: string[]
+  /** How many unsent signals fell off the end of pendingSignals; told to the owner in one line. */
+  pendingDropped?: number
+  /** NO_ALTERNATIVE signals already sent, one key per agent, plan, trigger and window. */
+  noAlternativeSent?: string[]
+  /** Unix epoch ms of the last stale-check alert, so one stale episode alerts once. */
+  staleAlertAt?: number
+  /** Unix epoch ms of the last successful MAIN-agent rotation (tick or route); a second one within
+   *  MAIN_ROTATION_MIN_GAP_MS is refused (claude-rotation-lock.ts). */
+  lastRotationAt?: number
+  /** Unix epoch ms the owner was told that the edited old rotation task was disabled, so a restart does not repeat it. */
+  retiredTaskNoticeAt?: number
 }
 
 /** A sub-agent's rotation bookkeeping between heartbeat ticks. */
@@ -121,6 +143,21 @@ function readSubAgents(v: unknown): Record<string, SubAgentRotationRecord> | und
   return Object.keys(out).length ? out : undefined
 }
 
+function readBackend(v: unknown): RotationBackendRecord | undefined {
+  if (!isPlainObject(v)) return undefined
+  const strings = (x: unknown): string[] | undefined => (Array.isArray(x) ? x.filter((s): s is string => typeof s === 'string') : undefined)
+  const num = (x: unknown): number | undefined => (typeof x === 'number' && Number.isFinite(x) ? x : undefined)
+  const out: RotationBackendRecord = {}
+  const lastCheckAt = num(v.lastCheckAt); if (lastCheckAt !== undefined) out.lastCheckAt = lastCheckAt
+  const staleAlertAt = num(v.staleAlertAt); if (staleAlertAt !== undefined) out.staleAlertAt = staleAlertAt
+  const lastRotationAt = num(v.lastRotationAt); if (lastRotationAt !== undefined) out.lastRotationAt = lastRotationAt
+  const retiredTaskNoticeAt = num(v.retiredTaskNoticeAt); if (retiredTaskNoticeAt !== undefined) out.retiredTaskNoticeAt = retiredTaskNoticeAt
+  const pendingSignals = strings(v.pendingSignals); if (pendingSignals?.length) out.pendingSignals = pendingSignals
+  const pendingDropped = num(v.pendingDropped); if (pendingDropped !== undefined && pendingDropped > 0) out.pendingDropped = pendingDropped
+  const noAlternativeSent = strings(v.noAlternativeSent); if (noAlternativeSent?.length) out.noAlternativeSent = noAlternativeSent
+  return Object.keys(out).length ? out : undefined
+}
+
 export function readClaudePlansState(): ClaudePlansState {
   if (!existsSync(CLAUDE_PLANS_STATE_PATH)) return EMPTY_STATE
   try {
@@ -132,10 +169,12 @@ export function readClaudePlansState(): ClaudePlansState {
       ? (raw.fleet as unknown as FleetRotationRecord)
       : undefined
     const subAgents = readSubAgents(raw.subAgents)
+    const backend = readBackend(raw.backend)
     return {
       activePlanByAgent, plans,
       ...(fleet ? { fleet } : {}),
       ...(subAgents ? { subAgents } : {}),
+      ...(backend ? { backend } : {}),
     }
   } catch {
     return EMPTY_STATE

@@ -42,6 +42,9 @@ CARD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # the status set belongs to the server; this only keeps the value one plain token
 STATUS_RE = re.compile(r'^[a-z][a-z_]{1,31}$')
 PRIORITIES = ('low', 'normal', 'high', 'urgent')
+# memory-save --supersedes: the server's MAX_SUPERSEDES (src/web/routes/memories.ts); one replacing save names a
+# handful of older rows, not a sweep.
+MAX_SUPERSEDES = 50
 DATE_RE = re.compile(r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
 # a card's assignee: an agent name, or the owner's name as the board holds it ("Szabolcs"); letters (any script),
 # digits, space, '.', '-', '_'; a JSON value in the body, never a path or a shell word
@@ -52,7 +55,10 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   message-close <id> [--result-file <file>] [--no-notify] [--failed]
   directive-verify <msg-id>
   memory-search <agent> <query> [--category hot|warm|cold|shared] [--strict] [--date <expr>] [--since <day>] [--until <day>] [--limit <n>]
-  memory-save <agent> <hot|warm|cold|shared> <keywords> <content-file>
+  memory-save <agent> <hot|warm|cold|shared> <keywords> <content-file> [--supersedes <id>[,<id>...]]
+                (--supersedes: your own older memories this one replaces; the server retracts them)
+  memory-retract <memory-id> <agent>
+                (takes back your own memory: it leaves the lists and the search, it is not deleted)
   memory-list <agent> <hot|warm|cold|shared> [--limit <n>]
   memory-move <memory-id> <hot|warm|cold|shared> <updated-by>
   memory-update <memory-id> <updated-by> <content-file>
@@ -240,6 +246,22 @@ def check(value, rx, what):
     return value
 
 
+def parse_id_list(value, what):
+    """'12,34' -> [12, 34]: positive memory ids, comma-separated, no repeats, at most MAX_SUPERSEDES (the server's
+    own limit, src/web/routes/memories.ts)."""
+    parts = value.split(',')
+    if any(not ID_RE.fullmatch(p) for p in parts):
+        fail_usage(f'{what}: expected memory ids separated by commas, got {value!r}')
+    ids = [int(p) for p in parts]
+    if any(i < 1 for i in ids):
+        fail_usage(f'{what}: a memory id is a positive number, got {value!r}')
+    if len(set(ids)) != len(ids):
+        fail_usage(f'{what}: an id is given twice in {value!r}')
+    if len(ids) > MAX_SUPERSEDES:
+        fail_usage(f'{what}: at most {MAX_SUPERSEDES} ids in one save, got {len(ids)}')
+    return ids
+
+
 def check_category(value):
     if value not in CATEGORIES:
         fail_usage(f'invalid category: {value!r} (one of {", ".join(CATEGORIES)})')
@@ -316,13 +338,28 @@ def build_request(verb, args):
             q['limit'] = check(limit, ID_RE, 'limit')
         return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {'search_header': True}
     if verb == 'memory-save':
+        supersedes = take_opt(args, '--supersedes')
         agent, category, keywords, content_file = positional(args, 4, verb)
         check(agent, NAME_RE, 'agent name')
+        replaced = parse_id_list(supersedes, '--supersedes') if supersedes is not None else None
         body = {'agent_id': agent, 'content': read_text(content_file), 'category': check_category(category), 'keywords': keywords}
         if not body['content'].strip():
             fail_usage('memory-save: the content is empty')
+        if replaced is not None:
+            # The server retracts these rows in the same transaction as the insert, and only the author's own.
+            body['supersedes'] = replaced
         headers['X-Agent-Id'] = agent
         return 'POST', '/api/memories', body, headers, {}
+    if verb == 'memory-retract':
+        mem_id, agent = positional(args, 2, verb)
+        check(mem_id, ID_RE, 'memory id')
+        check(agent, NAME_RE, 'agent name')
+        if int(mem_id) < 1:
+            fail_usage(f'invalid memory id: {mem_id!r}')
+        # A retraction, not a delete: the row stays readable (GET /api/memories/<id>), it only leaves the lists
+        # and the search. Only the author can retract (the server answers 403 otherwise).
+        headers['X-Agent-Id'] = agent
+        return 'POST', f'/api/memories/{mem_id}/retract', {'agent_id': agent}, headers, {}
     if verb == 'memory-list':
         limit = take_opt(args, '--limit')
         agent, category = positional(args, 2, verb)

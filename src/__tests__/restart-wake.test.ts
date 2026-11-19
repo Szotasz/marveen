@@ -243,6 +243,42 @@ describe('mainRestartWakePrompt: the fresh main restart gets a text that does no
   })
 })
 
+// HANDOFFKARTYA1118: at a customer, a fresh session continued from the kanban
+// alone and dropped an agreed HANDOFF item that had no card. With a fresh
+// handoff the wake says its Next Steps items are tasks without a card too, and
+// an open handoff item no longer falls under "no running work".
+describe('mainRestartWakePrompt: an open handoff item is a task even without a card', () => {
+  const T0 = Date.UTC(2026, 10, 15, 16, 21, 30)
+  const fresh = mainRestartWakePrompt('manual-main-restart', { path: '/srv/app/HANDOFF.md', mtimeMs: T0, ageMs: 12 * 60_000 })
+  const none = mainRestartWakePrompt('manual-main-restart', null)
+  const ITEMS = 'Az atado Next Steps MINDEN tetele teendo akkor is, ha nincs kartyaja'
+  const FIRST_ROUND = 'ebben az elso korben minden kartya nelkuli tetelre hozz letre kartyat (vagy ird a tetel melle, miert nem kell)'
+  const NOT_FULL = 'A kanban NEM a teljes teendolista.'
+  const OLD_IDLE = 'Ha nem volt futo munkad, az is teljes erteku allapot'
+
+  it('fresh handoff: the per-item task sentence is there, after the handoff is named', () => {
+    expect(fresh).toContain(ITEMS)
+    expect(fresh).toContain(FIRST_ROUND)
+    expect(fresh).toContain(NOT_FULL)
+    expect(fresh.indexOf(ITEMS)).toBeGreaterThan(fresh.indexOf('olvasd be, es FOLYTASD az ott leirt munkat'))
+  })
+
+  it('fresh handoff: an open handoff item counts as running work, so "no running work" needs an empty handoff too', () => {
+    expect(fresh).not.toContain(OLD_IDLE)
+    expect(fresh).toContain('Az atado nyitott tetele futo munka, akkor is, ha nincs kartyaja.')
+    expect(fresh).toContain('Ha nem volt futo munkad es az atadoban sincs nyitott tetel, az is teljes erteku allapot')
+    // the running-work sentence comes BEFORE the "do not invent a task" one
+    expect(fresh.indexOf('nyitott tetele futo munka')).toBeLessThan(fresh.indexOf('ne talalj ki magadnak feladatot'))
+  })
+
+  it('no fresh handoff (null): nothing about handoff items, the idle sentence as before', () => {
+    expect(none).not.toContain(ITEMS)
+    expect(none).not.toContain('kartya nelkuli')
+    expect(none).not.toContain('nyitott tetel')
+    expect(none).toContain(`${OLD_IDLE}: olyankor ne talalj ki magadnak feladatot.`)
+  })
+})
+
 describe('freshHandoff: the code decides whether the handoff file is worth naming (review C1)', () => {
   const NOW = Date.UTC(2026, 10, 15, 18, 0, 0)
   const at = (ageMs: number) => ({ mtimeMs: () => NOW - ageMs })

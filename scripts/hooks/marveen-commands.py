@@ -88,8 +88,11 @@ TELEGRAM_API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.or
 TELEGRAM_MAX_TEXT = 4096
 SEND_ATTEMPTS = 3
 SEND_RETRY_SECONDS = float(os.environ.get("MARVEEN_CMD_SEND_RETRY_SECONDS", "1.5"))
+DISCORD_API_BASE = os.environ.get("DISCORD_API_BASE", "https://discord.com/api/v10")
+DISCORD_MAX_TEXT = 2000
+DISCORD_ID_RX = re.compile(r"[1-9][0-9]{16,19}")
 
-from command_prompt import COMMAND_RX, command_block  # noqa: E402
+from command_prompt import COMMAND_RX, command_block, provider  # noqa: E402
 
 # Overall deadline, see the docstring. MARVEEN_HOOK_DEADLINE_SEC is the test
 # override (the real value stays 40).
@@ -126,6 +129,8 @@ BUILTIN_NAMES = frozenset({
     "help", "status", "queue", "runs", "jobs", "approvals", "model",
     "context", "usage", "board", "commands", "stop", "resume",
 })
+# Registry builtins that exist only on Discord (CommandSpec.channels): on Telegram they are not commands.
+DISCORD_ONLY_NAMES = frozenset({"options"})
 
 WINDOW_LABELS = [
     ("five_hour", "5 órás"),
@@ -274,7 +279,7 @@ def mark_answered(sd, payload, chat_id, text):
         log(sd, f"ledger log_outbound failed: {type(e).__name__}")
 
 
-def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, timeout=None, message_id=None):
+def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, timeout=None, message_id=None, discord_user=None):
     """POST the command to the dashboard. Returns (result dict, None) or (None, why).
 
     `main_session` rides along so the server can refuse a WRITE resolved for
@@ -296,11 +301,13 @@ def dispatch(text, chat_id, main_session, defer_writes=False, forwarded=False, t
         return None, "nincs dashboard-token"
     if not dtok:
         return None, "nincs dashboard-token"
+    body = {"text": text, "chatId": chat_id, "mainSession": main_session,
+            "deferWrites": defer_writes, "forwarded": forwarded, "messageId": message_id}
+    if discord_user is not None:
+        body.update({"provider": "discord", "userId": discord_user})
     req = urllib.request.Request(
         api_base() + "/api/commands/dispatch",
-        data=json.dumps({"text": text, "chatId": chat_id, "mainSession": main_session,
-                         "deferWrites": defer_writes, "forwarded": forwarded,
-                         "messageId": message_id}).encode(),
+        data=json.dumps(body).encode(),
         method="POST",
         headers={"Authorization": "Bearer " + dtok, "Content-Type": "application/json"},
     )
@@ -635,11 +642,13 @@ def attr(attrs, name):
 
 
 MIDTURN_CONTEXT = (
-    "Tulajdonosi parancsok kör közben: ha egy futó kör közben <channel> üzenet érkezik a "
+    "Tulajdonosi parancsok kör közben: ha egy futó kör közben Telegram <channel> üzenet érkezik a "
     "tulajdonostól, ami egyetlen /szó parancs a lenti listából, arra NE válaszolj, és ne "
     "hajtsd végre: a dashboard külön, a Bot API-n válaszol rá (a kör közben érkező üzenetet a "
     "UserPromptSubmit hook nem látja, ezért a dashboard a transzkriptből olvassa ki). "
-    "Folytasd a saját munkádat. A lista: {names}. A listán kívüli /szó a tiéd, a szokott módon."
+    "Folytasd a saját munkádat. A lista: {names}. A listán kívüli /szó a tiéd, a szokott módon. "
+    "Egy Discord slash parancsot (slash=\"1\") kör közben a dashboard NEM kap el: arra egy "
+    "sorban válaszolj a reply eszközzel, hogy a kör végén adja ki újra."
 )
 
 
@@ -712,6 +721,99 @@ def run_stop():
     sys.exit(0)
 
 
+# ---- Discord slash commands (DCEXT1111 F1s) ------------------------------------
+#
+# The Discord overlay turns the owner's slash command into the same "/word"
+# text, marked slash="1" (command_prompt.discord_slash). The dispatch is the
+# same call with provider "discord"; the server runs only READ commands from
+# Discord (routes/commands.ts dispatchForDiscord). The answer goes back over
+# the Discord REST API with this session's bot token, never pinging anyone.
+
+
+def discord_state_dir():
+    # as the plugin reads it: DISCORD_STATE_DIR ?? ~/.claude/channels/discord (set-but-empty is kept)
+    v = os.environ.get("DISCORD_STATE_DIR")
+    return v if v is not None else os.path.expanduser("~/.claude/channels/discord")
+
+
+def discord_owner_id():
+    """DISCORD_OWNER_USER_ID, the overrides-only key, or None. No fallback: the server decides on the same key."""
+    try:
+        with open(os.path.join(REPO_ROOT, "store", "config-overrides.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        v = data.get("DISCORD_OWNER_USER_ID") if isinstance(data, dict) else None
+        if isinstance(v, str) and DISCORD_ID_RX.fullmatch(v.strip()):
+            return v.strip()
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def discord_send(sd, tok, chat_id, text):
+    """True iff at least one part went out (the same contract as send())."""
+    sent_any = False
+    for part in chunks(text, DISCORD_MAX_TEXT):
+        for attempt in range(1, SEND_ATTEMPTS + 1):
+            try:
+                req = urllib.request.Request(
+                    f"{DISCORD_API_BASE}/channels/{chat_id}/messages",
+                    data=json.dumps({"content": part, "allowed_mentions": {"parse": []}}).encode(),
+                    method="POST",
+                    headers={"Authorization": "Bot " + tok, "Content-Type": "application/json",
+                             "User-Agent": "DiscordBot (https://marveen.io, 1)"},
+                )
+                with urllib.request.urlopen(req, timeout=budget(15)) as r:
+                    r.read()
+                sent_any = True
+                break
+            except DeadlineExceeded:
+                log(sd, "discord send skipped: the hook deadline is reached")
+                return sent_any
+            except Exception as e:
+                log(sd, f"discord send failed (attempt {attempt}/{SEND_ATTEMPTS}): {type(e).__name__}")
+                if attempt < SEND_ATTEMPTS:
+                    time.sleep(max(0.0, min(SEND_RETRY_SECONDS * attempt, remaining() - MIN_STEP_SEC)))
+    return sent_any
+
+
+def run_discord(payload, attrs, body, sid):
+    name = COMMAND_RX.match(body).group(1).lower()
+    chat_id = attr(attrs, "chat_id") or ""
+    user_id = attr(attrs, "user_id") or ""
+    owner = discord_owner_id()
+    if owner is None or user_id != owner or not DISCORD_ID_RX.fullmatch(chat_id):
+        sys.exit(0)
+    sd = discord_state_dir()
+    tok = os.environ.get("DISCORD_BOT_TOKEN") or env_value(os.path.join(sd, ".env"), "DISCORD_BOT_TOKEN")
+    if not tok:
+        log(sd, "discord: no bot token found, letting the prompt through")
+        sys.exit(0)
+    result, why = dispatch(body, chat_id, is_main_session(payload), forwarded=attr(attrs, "forwarded") == "1",
+                           message_id=attr(attrs, "message_id"), discord_user=user_id)
+    if result is None:
+        if name not in BUILTIN_NAMES | DISCORD_ONLY_NAMES:
+            log(sd, f"discord /{name}: dashboard unreachable ({why}), not a builtin, passed to the model")
+            sys.exit(0)
+        replies = [DASHBOARD_DOWN_REPLY.format(name=name, why=why)]
+        if name == "usage":
+            replies = [quota_text(sd) + "\n\n" + replies[0]]
+    elif not result.get("handled"):
+        log(sd, f"discord /{name}: not a registry command ({result.get('outcome')}), passed to the model chat={chat_id} sid={sid}")
+        sys.exit(0)
+    else:
+        replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]
+        if name == "usage" and "?" not in body.split()[1:]:
+            replies = [quota_text(sd) + ("\n\n" + replies[0] if replies else "")] + replies[1:]
+    sent_any = False
+    for r in replies:
+        if discord_send(sd, tok, chat_id, r):
+            sent_any = True
+    if sent_any:
+        mark_answered(sd, payload, chat_id, replies[-1])
+    log(sd, f"discord /{name} answered ({(result or {}).get('outcome', why)}) chat={chat_id} sid={sid} reply={json.dumps(chr(10).join(replies)[:2000], ensure_ascii=False)}")
+    sys.exit(2)  # block: the model never sees this turn
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -724,6 +826,8 @@ def main():
     if found is None:
         sys.exit(0)
     attrs, body = found
+    if provider(attrs) == "discord":
+        run_discord(payload, attrs, body, sid)
     cm = COMMAND_RX.match(body)
     chat_id = attr(attrs, "chat_id")
     owner = owner_chat_id()

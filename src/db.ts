@@ -1811,6 +1811,29 @@ export function initDatabase(dbPathOverride?: string): void {
     try { db.exec(`ALTER TABLE approval_slack_posts ADD COLUMN ${col}`) } catch { /* already exists */ }
   }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_slack_posts_decided_by ON approval_slack_posts(channel, decided_by_ts) WHERE decided_by_ts IS NOT NULL')
+  // TEAMSAPPROVECARD1118: the Teams approval card the SERVER posted for one request (web/approval-teams-card.ts).
+  // conversation_id + activity_id name the posted card, so a click counts only on that card; owner_aad is a snapshot of
+  // TEAMS_OWNER_AAD_OBJECT_ID at posting; content_hash is the request's anchor the card showed; nonce_sha256 is the hash
+  // of the one-time value only the card carries. decided_at closes the row once; decided_activity_id / decided_by_aad
+  // are the audit of the click that decided (the request itself gets resolved_by = 'teams_card').
+  // A security table: the db-write-gate denies an agent's write on it, like approvals.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_teams_cards (
+      approval_id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      activity_id TEXT NOT NULL,
+      owner_aad TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      nonce_sha256 TEXT NOT NULL,
+      card_sha256 TEXT NOT NULL,
+      lang TEXT NOT NULL,
+      posted_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      decision TEXT,
+      decided_activity_id TEXT,
+      decided_by_aad TEXT
+    )
+  `)
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -2843,8 +2866,9 @@ export function updateMemory(id: number, content: string, category?: string, age
   // live and stay correct, while hybridSearch keeps fusing the stale vector's
   // ranking in. Dropping it to NULL hands the row back to backfillEmbeddings,
   // which processes exactly `WHERE embedding IS NULL` and is therefore
-  // idempotent and resumable. Deliberately NOT regenerating here: that would
-  // put a synchronous Ollama call in the path of a DB write.
+  // idempotent and resumable. Deliberately NOT regenerating synchronously here:
+  // that would put an Ollama call in the path of a DB write. The asynchronous
+  // re-embed after the write (REEMBEDONUPDATE1117, below) fills it in.
   //
   // The trigger is the embedded TEXT changing, which is content AND keywords:
   // both saveAgentMemory and backfillEmbeddings embed `content + ' ' + keywords`,
@@ -2855,7 +2879,8 @@ export function updateMemory(id: number, content: string, category?: string, age
   // resends the unchanged body on a category-only edit), so presence alone says
   // nothing about a change.
   const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
-  if (before && (before.content !== content || keywordsChanged)) {
+  const embeddedTextChanged = !!before && (before.content !== content || keywordsChanged)
+  if (embeddedTextChanged) {
     sets.push('embedding = NULL')
     sets.push('embedding_model = NULL')
   }
@@ -2878,6 +2903,17 @@ export function updateMemory(id: number, content: string, category?: string, age
     } else {
       if (before?.agent_id) memoryCacheInvalidate(before.agent_id)
       if (agentId && agentId !== before?.agent_id) memoryCacheInvalidate(agentId)
+    }
+    // REEMBEDONUPDATE1117: re-embed the new text right away, fire-and-forget,
+    // the same way saveAgentMemory does. Without this the row stayed NULL until
+    // the next backfill (the nightly Dream Engine round), so for up to a day
+    // the vector half of hybrid search could not see a freshly edited memory.
+    // It stays off the write path: scheduleEmbedding never blocks, a backend
+    // outage just leaves the NULL for backfill as before, and its UPDATE is
+    // guarded by `content = ? AND keywords IS ?`, so a slow reply for text
+    // that has been edited again in the meantime is discarded, not stored.
+    if (embeddedTextChanged) {
+      scheduleEmbedding(id, content, keywords !== undefined ? keywords : (before?.keywords ?? undefined))
     }
   }
   return changed
@@ -8082,6 +8118,73 @@ export function decideApprovalFromSlack(p: {
     if (err instanceof Error && /UNIQUE constraint failed/.test(err.message)) return { outcome: 'reply_already_used', changed: false }
     throw err
   }
+}
+
+// TEAMSAPPROVECARD1118: the Teams approval card rows (see the table's comment).
+export interface ApprovalTeamsCard {
+  approval_id: string
+  conversation_id: string
+  activity_id: string
+  owner_aad: string
+  content_hash: string
+  nonce_sha256: string
+  card_sha256: string
+  lang: string
+  posted_at: number
+  decided_at: number | null
+  decision: string | null
+  decided_activity_id: string | null
+  decided_by_aad: string | null
+}
+
+export function recordApprovalTeamsCard(p: {
+  approvalId: string; conversationId: string; activityId: string; ownerAad: string; contentHash: string
+  nonceSha256: string; cardSha256: string; lang: string
+}): void {
+  db.prepare(`
+    INSERT INTO approval_teams_cards (approval_id, conversation_id, activity_id, owner_aad, content_hash, nonce_sha256, card_sha256, lang, posted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(p.approvalId, p.conversationId, p.activityId, p.ownerAad, p.contentHash, p.nonceSha256, p.cardSha256, p.lang, Math.floor(Date.now() / 1000))
+}
+
+export function getApprovalTeamsCard(approvalId: string): ApprovalTeamsCard | undefined {
+  return db.prepare('SELECT * FROM approval_teams_cards WHERE approval_id = ?').get(approvalId) as ApprovalTeamsCard | undefined
+}
+
+export type TeamsCardDecisionOutcome = 'decided' | 'card_already_used' | 'not_pending' | 'expired' | 'content_changed'
+
+/**
+ * One owner click on the server-posted Teams card, in ONE transaction: the card row closes once (the click's activity
+ * id and the owner's object id recorded), and the request is resolved only while it is still pending, its content_hash
+ * still the one the card showed, and (for an approval) its timeout not passed. The caller has already checked the
+ * channel token, the tenant, the owner, the card binding and the nonce.
+ */
+export function decideApprovalFromTeams(p: {
+  approvalId: string; status: 'approved' | 'rejected'; activityId: string; ownerAad: string
+}): { outcome: TeamsCardDecisionOutcome; approval: Approval | undefined } {
+  const now = Math.floor(Date.now() / 1000)
+  return db.transaction(() => {
+    const card = db.prepare('SELECT content_hash FROM approval_teams_cards WHERE approval_id = ? AND decided_at IS NULL').get(p.approvalId) as { content_hash: string } | undefined
+    const before = db.prepare('SELECT * FROM approvals WHERE id = ?').get(p.approvalId) as Approval | undefined
+    if (!card) return { outcome: 'card_already_used' as const, approval: before }
+    let outcome: TeamsCardDecisionOutcome
+    if (!before || before.status !== 'pending') outcome = 'not_pending'
+    else if (before.content_hash !== card.content_hash) outcome = 'content_changed'
+    else if (p.status === 'approved' && before.timeout_at != null && before.timeout_at <= now) outcome = 'expired'
+    else outcome = 'decided'
+    db.prepare(`
+      UPDATE approval_teams_cards SET decided_at = ?, decision = ?, decided_activity_id = ?, decided_by_aad = ?
+      WHERE approval_id = ? AND decided_at IS NULL
+    `).run(now, outcome === 'decided' ? p.status : `${p.status}:${outcome}`, p.activityId, p.ownerAad, p.approvalId)
+    if (outcome === 'decided') {
+      db.prepare(`
+        UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = 'teams_card'
+        WHERE id = ? AND status = 'pending' AND content_hash = ? AND (? = 'rejected' OR timeout_at IS NULL OR timeout_at > ?)
+      `).run(p.status, now, p.approvalId, card.content_hash, p.status, now)
+    }
+    const after = db.prepare('SELECT * FROM approvals WHERE id = ?').get(p.approvalId) as Approval | undefined
+    return { outcome, approval: after }
+  })()
 }
 
 // The CREATE path stamps the owner-notification message id onto the row

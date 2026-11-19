@@ -75,8 +75,21 @@ const USAGE_LIMIT_BANNER_REGION_LINES = 15
 //    "Session limit reached" panelnel a detektor nema maradt -- ez az az eset, aminek kiesés az ara.
 // A rebase (2026-08-19) elott a ket ag KULON-KULON javitotta ezt a regexet, es a sajat aganak
 // `hit ... limit` resze epp a masik meresét (session) ejtette volna ki. Ezert unio, nem valasztas.
+//
+// ISSUE2817 (marveen#2817, measured on a customer install 2026-11-15/16): unanchored, this matched a scheduled
+// task's own prompt that QUOTES the phrase ("... elfogy ('Usage limit reached' egy pane-ben) ..."): the failed
+// prompt stayed in the live region and the owner got an hourly "out of quota" notice while the real cause was a
+// revoked token. So the phrase must OPEN the line, the way EXTRA_USAGE_EXHAUSTED_RX is anchored: after indentation
+// and the glyphs Claude Code draws before its own output ("⎿", "●", "⚠"), optionally after the subject words the
+// banners start with ("Claude ", "Claude AI ", "You ", "You've ", "You have ", "Your ") or the "/" of "/upgrade".
+// NOT the ">" of the input prompt: a line the user or a scheduler typed is not a banner. The tail of the line is
+// left free on purpose: the measured banners continue ("· resets 5:50pm", ". Your limit will reset at 18:00",
+// "· continuing automatically at 6am · esc to cancel").
+// Dani's review of #2823 (strings extracted from the CC 2.1.325 binary, not measured in a pane): two more banner
+// openings, the goal-mode status "Goal paused · usage limit reached · ..." and the bracketed
+// "[Usage limit reached ... grace window active ...]". Neither can come from a quoted prompt line.
 const USAGE_LIMIT_RX =
-  /(usage limit reached|reached your (?:usage|weekly) limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?(?:\w+ )?(?:usage|weekly) limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|(?:weekly|session) limit reached|upgrade to increase your usage limit)/i
+  /^[\s⎿●⚠[]*(?:goal paused\s*[·∙•]\s*)?(?:claude (?:ai )?)?(?:you(?:['’]ve| have)? )?(?:your )?\/?(usage limit reached|reached your (?:usage|weekly) limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?(?:\w+ )?(?:usage|weekly) limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|(?:weekly|session) limit reached|upgrade to increase your usage limit)/i
 
 // The exhausted-extra-usage reply. Measured on the live install: the main
 // session answered 2798 turns with exactly this synthetic API-error message

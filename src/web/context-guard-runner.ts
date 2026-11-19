@@ -22,7 +22,7 @@ import { deliverWhenReady, RESUME_DELIVERY_OPTIONS } from './resume-delivery.js'
 import { notifyChannel } from '../notify.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, hasBackgroundWork, paneShowsContextSaturation, paneShowsContextSaturationHardError } from '../pane-state.js'
-import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir, readTranscriptTailFromProjectDir } from './active-model.js'
+import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir, readTranscriptTailFromProjectDir, readLastTurnActivityMs } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import { agentHeavyJobs, gateAlive, heavyJobPaths, liveHeavyJobDeps, sessionPanePids, type GatedJob } from './heavy-job-owner.js'
 import {
@@ -515,7 +515,7 @@ export function handoffPrompt(pctRound: number, handoffPath: string): string {
     `[CONTEXT-GUARD] A munkakontextusod ~${pctRound}%-on van -- kritikus. ` +
     `NE folytasd a feladatot. EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
     `(purpose: a folyamatban lévő feladat folytatása friss kontextusban; Goal / Current Progress / What Worked / What Didn't Work / Next Steps szekciók, ` +
-    `konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). Ha nincs aktív feladatod, írd bele hogy nincs. ` +
+    `konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). Ha nincs aktív feladatod, írd bele hogy nincs. ` +
     `Utána ÁLLJ MEG -- a rendszer friss kontextussal újraindít és a HANDOFF.md-ből folytatod.`
   )
 }
@@ -535,7 +535,7 @@ export function idleFlushHandoffPrompt(tokens: number, idleMinutes: number, hand
     `[CONTEXT-GUARD] Rutin karbantartás, nem vészhelyzet. A sessionöd kontextusa ~${Math.round(tokens / 1000)}k token, ` +
     `és ${idleMinutes} perce nincs benne aktivitás, ezért friss kontextussal indítalak újra -- így olcsóbb és gyorsabb lesz a következő kör. ` +
     `EGYETLEN dolgod: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
-    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
     `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
   )
@@ -556,7 +556,7 @@ export function dailyHandoffPrompt(atTime: string, handoffPath: string): string 
     `[CONTEXT-GUARD] Ütemezett napi újraindítás (${atTime}), nem vészhelyzet és nem hiba. ` +
     `A sessionöd hamarosan friss kontextussal indul újra, és ami nincs leírva, az nem éli túl. ` +
     `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
-    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
     `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
   )
@@ -572,7 +572,7 @@ export function periodicHandoffPrompt(everyMinutes: number, handoffPath: string)
     `[CONTEXT-GUARD] Ütemezett, ${everyMinutes} percenkénti frissítés, nem vészhelyzet és nem hiba. ` +
     `A sessionöd hamarosan friss kontextussal indul újra, és ami nincs leírva, az nem éli túl. ` +
     `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
-    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
     `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
   )
@@ -587,7 +587,7 @@ export function taskCloseHandoffPrompt(handoffPath: string): string {
     `[CONTEXT-GUARD] Lezárult az utolsó nyitott kanban-kártyád, és nincs megválaszolatlan bejövő üzeneted: ` +
     `ez természetes szünet, a sessionöd most friss kontextussal indul újra. Nem vészhelyzet és nem hiba. ` +
     `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
-    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal; a Next Steps MINDEN tétele mellé írd a kártyája azonosítóját, vagy ha nincs kártyája, azt, hogy "KÁRTYA NÉLKÜL"). ` +
     `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
     `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
   )
@@ -711,6 +711,12 @@ export function resumePrompt(
     base + source + heavyJobResumeText(heavyJobs) +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
     `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
+    // HANDOFFKARTYA1118: a fresh session that continued from the kanban alone
+    // dropped an agreed handoff item that had no card. Only when a handoff exists.
+    (hadHandoff
+      ? `A HANDOFF Next Steps MINDEN tétele teendő akkor is, ha nincs kártyája: ebben az első körben minden kártya nélküli tételre hozz létre kártyát ` +
+        `(vagy írd a tétel mellé, miért nem kell). A kanban NEM a teljes teendőlista. `
+      : '') +
     // ORSICTX912: msg 23670 was delivered SEVEN SECONDS after the guard kill
     // started, into the dying session -- the queue marked it delivered, the
     // fresh session had no reason to look, and completed_at is unused (0/37
@@ -1001,6 +1007,16 @@ export function restartLossLine(
   return '.' + restartNoticeQueueText(queue)
 }
 
+/**
+ * How recent a transcript turn line has to be for an idle-looking pane to
+ * still count as mid-turn when a restart is about to fire. Same figure and
+ * same reason as SWITCH_TURN_QUIET_MS in session-control.ts: it only has to
+ * cover the moment the pane reads idle between two tool calls of a running
+ * turn. Kept here, not imported: session-control sits on the restart-gate
+ * runner, which imports this module.
+ */
+export const RESTART_TURN_QUIET_MS = 20_000
+
 async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
@@ -1227,7 +1243,35 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
       : null,
   }
 
-  const decision = decideGuard(state, inputs, cfg)
+  let decision = decideGuard(state, inputs, cfg)
+
+  // An idle-looking pane is not a finished turn. Between two tool calls of a
+  // running turn the pane can read idle (the gap the restart gate's transcript
+  // quiet window and the /model switch already guard), and a restart decided
+  // on that reading cuts the turn. Measured on a live install: a hard-threshold
+  // restart was decided 80 ms after the session wrote two parallel tool calls;
+  // their results landed 40 ms after the decision and died with the session.
+  // So a restart that a not-busy reading allowed asks the transcript first: a
+  // turn line younger than RESTART_TURN_QUIET_MS means the turn is still
+  // running, and the decision is taken again with the pane read as busy -- the
+  // same deferral a busy pane gets. The saturation net ignores the busy
+  // signal, so its restart is decided the same either way. An unreadable
+  // transcript (null) keeps the decision: a wedged pane must still get the
+  // restart that is its only way out. One tail read per restart decision.
+  if (decision.action === 'restart' && !inputs.paneBusy) {
+    const turnAt = readLastTurnActivityMs(workingDirFor(name), configDirFor(name))
+    if (turnAt !== null && nowMs - turnAt < RESTART_TURN_QUIET_MS) {
+      const held = decideGuard(state, { ...inputs, paneBusy: true, paneIdle: false }, cfg)
+      if (held.action !== 'restart') {
+        logger.warn(
+          { name, phase: state.phase, wouldHave: decision.reason, turnAgoMs: Math.max(0, nowMs - turnAt), instead: held.action, insteadReason: held.reason },
+          'context-guard: pane read idle but the transcript shows a running turn -- restart held, decided again as busy',
+        )
+        decision = held
+      }
+    }
+  }
+
   // The heavy-job hold episode continues only through restart decisions;
   // the sweep closes it for every agent not noted here (heavy-job-hold.ts).
   if (continuesHoldEpisode(decision)) episodeContinuesThisSweep.add(name)

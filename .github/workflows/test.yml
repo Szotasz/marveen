@@ -75,6 +75,9 @@ jobs:
       # regression guard that only runs manually rots exactly like a one-shot
       # seed. Runs natively here (ubuntu = the Linux branch it asserts).
       - run: bash scripts/__tests__/stop-start-system-unit.test.sh
+      # MIOAGENTINSTALL1114 (plan 10.3, Dani C5): the watchdog's half-scaffold and package start guard. Here it
+      # measures the Linux shell tools (head -c, cmp, tr under LC_ALL=C) on the shared case list.
+      - run: bash scripts/__tests__/watchdog-scaffold-guard.test.sh
       # TASKEGRESSDRIFT913: the egress-drift scan is a gate instrument; a guard that
       # only runs by hand rots (the #1316 class), so its tests run here too.
       - run: python3 scripts/__tests__/egress-drift-scan.test.py

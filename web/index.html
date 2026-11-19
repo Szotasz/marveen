@@ -42,6 +42,12 @@
       <button class="modal-close" id="onboardingClose" title="Bezárás" aria-label="Bezárás">&times;</button>
       <h2 data-i18n="onboarding.title">Marveen beállítása</h2>
       <p class="onb-sub" data-i18n="onboarding.subtitle">Fejezd be a beállítást innen, a dashboardból -- SSH nélkül.</p>
+      <!-- DOCKERUX1118 (owner 33327): the install's language, on the wizard's first screen, in the container only. Each
+           label in its own language, so it is never translated. -->
+      <div class="onb-lang" id="onbLang" role="group" aria-label="Nyelv / Language" hidden>
+        <button type="button" class="onb-lang-btn" data-lang="hu" lang="hu">Magyar</button>
+        <button type="button" class="onb-lang-btn" data-lang="en" lang="en">English</button>
+      </div>
       <div class="onboarding-steps" id="onboardingSteps">
         <div class="onboarding-step" data-ostep="1"><span class="onb-num">1</span> <span data-i18n="onboarding.login.tab">Belépés</span></div>
         <div class="onboarding-step" data-ostep="2"><span class="onb-num">2</span> <span data-i18n="onboarding.identity.tab">Név</span></div>

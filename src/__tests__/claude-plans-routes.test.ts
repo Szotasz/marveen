@@ -85,6 +85,7 @@ vi.mock('../web/claude-plan-fleet-wiring.js', () => ({
 const { tryHandleClaudePlans, rotatePlan } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH, readClaudePlans } = await import('../web/claude-plans.js')
 const { CLAUDE_PLANS_STATE_PATH } = await import('../web/claude-plans-state.js')
+const { MAIN_ROTATION_MIN_GAP_MS } = await import('../web/claude-rotation-lock.js')
 
 function fakeCtx(method: string, path: string, body?: unknown): { ctx: any; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
@@ -626,6 +627,86 @@ describe('rotatePlan(): the route body as a function (PLANROTATEDEADLOCK1115 P2)
       expect(out.body, label).toEqual(direct.payload)
     }
     expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+  })
+})
+
+// PLANROTATEDEADLOCK1115 P5: the lastRotationAt guard on the route path (the leftover old agent task POSTs here with
+// the dashboard token). The caller here is the owner (the auth mock): the dashboard button is guarded the same way.
+describe('POST /api/claude-plans/rotate: the lastRotationAt guard (P5)', () => {
+  const agentsDir = join(tmpRoot, 'agents')
+  const stateOnDisk = () => JSON.parse(readFileSync(CLAUDE_PLANS_STATE_PATH, 'utf-8'))
+  const setLastRotationAt = (ms: number) => {
+    const s = stateOnDisk()
+    writeFileSync(CLAUDE_PLANS_STATE_PATH, JSON.stringify({ ...s, backend: { ...(s.backend ?? {}), lastRotationAt: ms } }))
+  }
+  const post = async (targetPlanId: string, agentId?: string) => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId, ...(agentId ? { agentId } : {}) })
+    await tryHandleClaudePlans(ctx)
+    return out
+  }
+  beforeEach(async () => {
+    if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+    if (existsSync(CLAUDE_PLANS_STATE_PATH)) rmSync(CLAUDE_PLANS_STATE_PATH)
+    if (existsSync(agentsDir)) rmSync(agentsDir, { recursive: true, force: true })
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    fleetEnabled = false
+    hardRestartMarveenChannels.mockClear().mockReturnValue({ ok: true })
+    restartAgentProcess.mockClear().mockResolvedValue({ ok: true, pid: 123 })
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'pro', label: 'Personal PRO' })).ctx)
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat' })).ctx)
+  })
+
+  it('a successful main rotation records lastRotationAt; a second one within the gap is refused 429, nothing restarted', async () => {
+    const before = Date.now()
+    expect((await post('team')).status).toBe(200)
+    expect(stateOnDisk().backend.lastRotationAt).toBeGreaterThanOrEqual(before)
+    const second = await post('pro')
+    expect(second.status).toBe(429)
+    expect(second.body).toMatchObject({ code: 'rotation_too_soon' })
+    expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+    expect(stateOnDisk().activePlanByAgent['agent-a']).toBe('team')
+  })
+
+  it('just inside the gap: refused; at the gap: allowed', async () => {
+    expect((await post('team')).status).toBe(200)
+    setLastRotationAt(Date.now() - MAIN_ROTATION_MIN_GAP_MS + 60_000)
+    expect((await post('pro')).status).toBe(429)
+    setLastRotationAt(Date.now() - MAIN_ROTATION_MIN_GAP_MS)
+    expect((await post('pro')).status).toBe(200)
+    expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(2)
+    expect(stateOnDisk().activePlanByAgent['agent-a']).toBe('pro')
+  })
+
+  it('rotatePlan() called directly (the backend tick) is guarded the same way', async () => {
+    expect((await rotatePlan({ agentId: 'agent-a', targetPlanId: 'team', continue: false })).status).toBe(200)
+    expect((await rotatePlan({ agentId: 'agent-a', targetPlanId: 'pro', continue: false })).status).toBe(429)
+    expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed restart records nothing, so the next try is not held back', async () => {
+    hardRestartMarveenChannels.mockReturnValueOnce({ ok: false, error: 'boom' })
+    expect((await post('team')).status).toBe(500)
+    expect(stateOnDisk().backend?.lastRotationAt).toBeUndefined()
+    expect((await post('team')).status).toBe(200)
+  })
+
+  it('the refusal says when the last switch was and what the gap is, and leaves the record as it was', async () => {
+    expect((await post('team')).status).toBe(200)
+    const recorded = stateOnDisk().backend.lastRotationAt
+    const refused = await post('pro')
+    expect(refused.body.error).toMatch(/switched 0 min ago; another switch is allowed 30 min after the last one/)
+    expect(refused.body.lastRotationAt).toBe(recorded)
+    expect(stateOnDisk().backend.lastRotationAt).toBe(recorded)
+  })
+
+  it('a sub-agent rotation is outside the guard (it does not restart the main agent) and records nothing', async () => {
+    expect((await post('team')).status).toBe(200)
+    const recorded = stateOnDisk().backend.lastRotationAt
+    mkdirSync(join(agentsDir, 'iris'), { recursive: true })
+    writeFileSync(join(agentsDir, 'iris', 'agent-config.json'), '{}')
+    expect((await post('pro', 'iris')).status).toBe(200)
+    expect(stateOnDisk().backend.lastRotationAt).toBe(recorded)
   })
 })
 

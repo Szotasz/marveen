@@ -148,7 +148,7 @@ const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
 // (variable, truncated flag, config file) stays a send. httpie (`http`) takes
 // its method positionally and its body as `key=value` items, none of which this
 // flag scan reads, so it is undecidable too and stays a send in both twins.
-const HTTPIE = /^http$/i
+const HTTPIE = /^(?:https?|xhs?)$/i // MAILCURLSEND1118: httpie's `https` and xh / xhs take the same shape
 const CURL_BODY_OPTS = new Set([
   '-d', '--data', '--data-raw', '--data-binary', '--data-urlencode',
   '--data-ascii', '-F', '--form', '--form-string', '--json',
@@ -271,6 +271,17 @@ const MAIL_API_RULES = [
   [/api\.postmarkapp\.com|['"]postmark['"]|\bpostmarker\b/i,
     new RegExp(String.raw`api\.postmarkapp\.com\/email(?:\/batch|\/withTemplate)?` + ACTION_END +
       String.raw`|\.sendEmail(?:Batch|WithTemplate|BatchWithTemplates)?\s*\(|\.emails\.send(?:_batch|_with_template)?\s*\(`, 'i')],
+  // MAILCURLSEND1118: Amazon SES: the v2 outbound email endpoints or the v1 query action on a regional email host, or the
+  // SDKs (the node client's send commands, boto3's send_email family on an ses / sesv2 client).
+  [/email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com|['"]@aws-sdk\/client-sesv2?['"]|\bclient\s*\(\s*['"]sesv2?['"]/i,
+    new RegExp(String.raw`[/]v2[/]email[/]outbound-(?:bulk-)?emails` + ACTION_END + String.raw`|\bAction=Send(?:Raw|Templated|BulkTemplated)?Email\b` +
+      String.raw`|\bSend(?:Raw|Templated|BulkTemplated|Bulk)?EmailCommand\b|\.send_(?:raw_|templated_|bulk_templated_|bulk_)?email\s*\(`)],
+  // MAILCURLSEND1118: Mailjet: the send endpoint (v3 or v3.1) on the API host, or the clients' send call.
+  [/api\.mailjet\.com|['"]node-mailjet['"]|\bmailjet_rest\b/i,
+    new RegExp(String.raw`api\.mailjet\.com[/]v3(?:\.1)?[/]send` + ACTION_END + String.raw`|\.post\s*\(\s*['"]send['"]|\.send\.create\s*\(`, 'i')],
+  // MAILCURLSEND1118: Brevo (ex Sendinblue): the transactional email endpoint, or the clients' sendTransacEmail call.
+  [/api\.(?:brevo|sendinblue)\.com|['"]@getbrevo\/brevo['"]|['"]sib-api-v3-sdk['"]|\bsib_api_v3_sdk\b|\bbrevo_python\b/i,
+    new RegExp(String.raw`api\.(?:brevo|sendinblue)\.com[/]v3[/]smtp[/]email` + ACTION_END + String.raw`|\.(?:sendTransacEmail|send_transac_email)\s*\(`, 'i')],
 ]
 const mailApiSends = (text) => {
   const t = text.replaceAll('\\/', '/')
@@ -846,7 +857,122 @@ function headIsSend(toks, depth) {
   if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) {
     return curlResendVerdict(prog, rest) !== 'read'
   }
+  if (HTTP_CLIENT.test(prog) && inlineMailApiSends(prog, rest)) return true
   return false
+}
+
+// MAILCURLSEND1118: an HTTP mail API send written inline on the command line (curl, wget, httpie, xh) is judged like
+// the same send in a script; the rule and its boundary (the inverted default on a mail-only API host, the host and path
+// normalisation, Graph's send paths, the provider send paths deciding a host that is not literal) are written out at
+// _inline_mail_api_sends in hooks/outgoing-copy-gate.py (the python twin); the `inline` cases of
+// hooks/mail-api-send-cases.json bind the two.
+const HTTP_CLIENT = /^(?:curl|wget|https?|xhs?)$/i
+// [host pattern on the normalised host, path prefix a shared host needs, read pattern, send pattern]
+const SEG = String.raw`(?:\/[^/]+)`
+const GMAIL_READ = new RegExp(String.raw`^\/gmail\/v1\/users\/[^/]+` + SEG + '*$')
+const GMAIL_SEND = /\/users\/[^/]+\/(?:messages|drafts)\/send$|\/batch\/gmail(?:\/v1)?$/
+const MAIL_API_HOSTS = [
+  [/^gmail\.googleapis\.com$/, null, GMAIL_READ, GMAIL_SEND],
+  [/^(?:www\.)?googleapis\.com$/, /^\/(?:upload\/|batch\/)?gmail(?:\/|$)/, GMAIL_READ, GMAIL_SEND],
+  [/^api\.resend\.com$/, null, new RegExp('^' + SEG + '+$'), /\/emails(?:\/batch)?$/],
+  [/^api\.sendgrid\.com$/, null, new RegExp(String.raw`^\/v3` + SEG + '*$'), /\/v3\/mail\/send$/],
+  [/^(?:[a-z0-9-]+\.)*mailgun\.net$/, null, new RegExp(String.raw`^\/v[345]` + SEG + '*$'), /\/v3\/[^/]+\/messages(?:\.mime)?$/],
+  [/^api\.postmarkapp\.com$/, null, new RegExp('^' + SEG + '+$'), /\/email(?:\/batch|\/withTemplate|\/batchWithTemplates)?$/],
+  [/^email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com$/, null, new RegExp(String.raw`^\/v2\/email` + SEG + '*$'),
+    /\/v2\/email\/outbound-(?:bulk-)?emails$/],
+  [/^api\.mailjet\.com$/, null, new RegExp(String.raw`^\/v3(?:\.1)?` + SEG + '*$'), /\/v3(?:\.1)?\/send$/],
+  [/^api\.(?:brevo|sendinblue)\.com$/, null, new RegExp(String.raw`^\/v3` + SEG + '*$'), /\/v3\/smtp\/email$/],
+]
+const GRAPH_HOST = /^graph\.microsoft\.com$/
+const GRAPH_SEND_PATH = /\/(?:me|users\/[^/]+)\/(?:sendMail|messages\/[^/]+\/(?:send|reply|replyAll|forward))$/i
+// the line carries a mail-only API host (Graph is not one)
+const MAIL_API_HOST = /gmail\.googleapis\.com|googleapis\.com(?::[0-9]+)?\/(?:upload\/|batch\/)?gmail(?:\/|\b)|api\.resend\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com|email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com|api\.mailjet\.com|api\.(?:brevo|sendinblue)\.com/i
+const URL_WORD = /^(?:([A-Za-z][A-Za-z0-9+.-]*):\/\/)?([^/?#]*)([^?#]*)([\s\S]*)$/
+const URL_START = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|[$`])/
+const HOST_HEADER = /^\s*host\s*:\s*(\S+)/i
+const URL_VALUE_SHORT = 'AbcCdDeEFHKmoOQrTuUwxXYyza'
+const URL_VALUE_LONG = new Set([
+  '--header', '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii', '--json', '--form',
+  '--form-string', '--upload-file', '--user', '--output', '--output-document', '--user-agent', '--referer',
+  '--cookie', '--cookie-jar', '--config', '--write-out', '--max-time', '--connect-timeout', '--request',
+  '--method', '--oauth2-bearer', '--proxy', '--cacert', '--cert', '--key', '--post-data', '--post-file',
+  '--body-data', '--body-file', '--auth', '--password', '--http-user', '--http-password'])
+let lineMailHost = false // set per top-level isSendInvocation call from the WHOLE command line
+
+// the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL
+function optionValueWord(prev) {
+  if (prev.startsWith('--')) return URL_VALUE_LONG.has(prev)
+  if (prev.length < 2 || !prev.startsWith('-')) return false
+  // a short cluster: the first letter that takes a value takes the rest of the word (-XPOST) or, last, the next word
+  let k = -1
+  for (let j = 1; j < prev.length; j++) if (URL_VALUE_SHORT.includes(prev[j])) { k = j; break }
+  return k === prev.length - 1
+}
+
+const normHost = (auth) => auth.split('@').pop().replace(/:[0-9]*$/, '').toLowerCase().replace(/\.+$/, '')
+
+// %-escapes decoded once, empty and `.` segments dropped, `..` resolved
+function normPath(path) {
+  const decoded = path.replace(/%([0-9A-Fa-f]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)))
+  const segs = []
+  for (const s of decoded.split('/')) {
+    if (s === '..') segs.pop()
+    else if (s !== '' && s !== '.') segs.push(s)
+  }
+  return '/' + segs.join('/')
+}
+
+// [read pattern, send pattern] of the mail-only API on this normalised host and path, or null
+function mailApiProvider(host, path) {
+  for (const [hostRx, gate, read, send] of MAIL_API_HOSTS) {
+    if (hostRx.test(host) && (gate === null || gate.test(path))) return [read, send]
+  }
+  return null
+}
+
+// the normalised host of a `Host:` header option, or null
+function hostHeader(rest) {
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]
+    let val = null
+    if ((t === '-H' || t === '--header') && i + 1 < rest.length) val = rest[i + 1]
+    else if (t.startsWith('--header=')) val = t.slice('--header='.length)
+    else if (t.startsWith('-H') && t.length > 2) val = t.slice(2)
+    const m = val === null ? null : HOST_HEADER.exec(val)
+    if (m) return normHost(m[1])
+  }
+  return null
+}
+
+function inlineMailApiSends(prog, rest) {
+  const plainRead = curlResendVerdict(prog, rest) === 'read'
+  const headerHost = hostHeader(rest)
+  let cannotTell = false
+  for (let i = 0; i < rest.length; i++) {
+    if (i && optionValueWord(rest[i - 1])) continue
+    const t = rest[i]
+    const u = t.startsWith('--url=') ? t.slice('--url='.length) : t
+    if (/\s/.test(u) && !URL_START.test(u)) continue // a header or a sentence; a URL or a variable word may hold a substitution with a space
+    const [, scheme, auth, path, query] = URL_WORD.exec(u)
+    const npath = normPath(path)
+    if (nonliteralValue(auth)) {
+      if ((scheme || u.startsWith('$') || u.startsWith('`')) && (
+        lineMailHost || GRAPH_SEND_PATH.test(npath) || MAIL_API_HOSTS.some((row) => row[3].test(npath)))) cannotTell = true
+      continue
+    }
+    const host = normHost(auth)
+    if (GRAPH_HOST.test(host)) {
+      if (nonliteralValue(path) || path.includes('{') || path.includes('[')) cannotTell = true
+      else if (GRAPH_SEND_PATH.test(npath)) return true
+      continue
+    }
+    let provider = mailApiProvider(host, npath)
+    if (provider === null && headerHost && scheme) provider = mailApiProvider(headerHost, npath)
+    if (provider === null) continue
+    const [read] = provider
+    if (!plainRead || nonliteralValue(path) || /[{[]/.test(path + query) || !read.test(npath)) return true
+  }
+  return cannotTell && !plainRead
 }
 
 // True when some segment is still a wrapper at the depth bound (HEADDEPTH924),
@@ -876,6 +1002,16 @@ export function buildScriptSendMsg(botName, ownerName) {
     'Ha a szkriptnek nincs koze levelhez: ellenorizd, hogy a fajl letezik, es literalis uttal (vagy literalis cd utan) ' +
     'futtasd. Valtozoval is mehet, ha UGYANEBBEN a parancsban, blokkon kivul, egyszer, literalis ertekkel allitod be ' +
     '(D=/abszolut/ut; python3 $D/x.py), es nem $(...), $HOME vagy egy elozo hivas adja az erteket. ' + buildGateMsg(botName, ownerName)
+  )
+}
+
+// EMAILGATESUBST1116: the wording for a send command built by process substitution, a here-string, a stdin heredoc or
+// xargs (unverifiableSendConstruction): the envelope cannot be verified in that form.
+export function buildUnverifiableConstructionMsg(botName, ownerName) {
+  return (
+    'TILTVA (governance hard-gate): ezt a kuldo parancsot folyamat-behelyettesites (<(...)), here-string (<<<), ' +
+    'stdin-heredoc vagy xargs epiti, igy a level boritekja (cimzett, torzs) ebben az alakban nem ellenorizheto. ' +
+    'Ha nem levelkuldes: futtasd a programot kozvetlenul, literalis argumentumokkal. ' + buildGateMsg(botName, ownerName)
   )
 }
 
@@ -965,6 +1101,7 @@ export function isSendInvocation(cmd, depth = 0) {
   // FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
   // A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
   lineExemptOk = (depth === 0 || lineExemptOk) && lineClean(cmd)
+  lineMailHost = (depth > 0 && lineMailHost) || MAIL_API_HOST.test(cmd) // MAILCURLSEND1118
   if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {
@@ -984,6 +1121,546 @@ export function isSendInvocation(cmd, depth = 0) {
   } catch {
     return SEND_PATTERNS.some((re) => re.test(cmd))
   }
+}
+
+// EMAILGATESUBST1116: a send command built by process substitution, a here-string, a stdin heredoc or xargs is
+// refused as unverifiable. Twin of unverifiable_send_construction in hooks/outgoing-copy-gate.py, where the boundary
+// is written out; unverifiable-construction-cases.json binds the two. gateDecision calls it before the send checks.
+// EMAILGATEPIPESH1116: a send whose command text a producer pipes or hands to a shell is refused the same way (the
+// producers are listed at the python twin).
+const UNVERIFIABLE_HINT = /<<|<\(|=\(|xargs|parallel|\||\$\(|`/
+const UV_HEREDOC = /(<<-?\s*(['"]?)(\w+)\2[^\n]*)\n(?:[\s\S]*?\n)?\3(?=\s|$)/g
+const UV_PIPE_OUT = '__GATEPIPEOUT__'
+const UV_PIPE_IN = '__GATEPIPEIN__'
+const UV_GROUP_OPEN = '__GATEGROUPOPEN__'
+const UV_GROUP_CLOSE = '__GATEGROUPCLOSE__'
+const UV_CMDSUBST = /^__GATECMDSUBST(\d+)__$/
+const UV_SUBST_ARG = /[\s;&|(](?:eval|-[a-zA-Z]*c[a-zA-Z]*)[ \t]+$/ // an unquoted `$(` right after it
+const UV_PAR_REPL = /\{[^{}\s]*\}/g // parallel's replacement strings ({}, {.}, {1}, ...)
+const UV_PAR_ARGS = [':::', '::::', ':::+', '::::+']
+const UV_WORDSUBST = /__GATEWORDSUBST(\d+)__/g // EMAILGATEPIPESH1116 R1: a substitution in a producer word
+const UV_PRODUCER_SKIP = ['{', '!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time', 'command', 'builtin',
+  'nohup', 'exec', 'env']
+const UV_SUBST_SCANS = 64 // substitutions after eval / -c read per command; one more cannot be told (bounds the time)
+const UV_COPIERS = ['cat', 'tee'] // a program whose standard output is its standard input
+const UV_MARK = /^__GATE(HEREDOC|PROCSUBST)(\d+)__$/
+const UV_STDIN_PATHS = ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']
+const UV_FD_PATH = /^\/(?:dev\/fd|proc\/self\/fd)\/\d+$/
+const UV_WHOLE_EXPANSION = /^\s*(?:\$(?:\w+|\{[^}]*\}|\([\s\S]*\)|[@*#?$!-])|`[\s\S]*`)\s*$/
+const UV_PROBE_ADDR = 'x@unverifiable.invalid'
+const UV_RCPT_FLAG = /^--(?:to?|cc?|bcc?|b|mail-rcpt)$/ // with argparse prefixes; curl's recipient
+const UV_RCPT_GLUED = /^--(?:to?|cc?|bcc?|b|mail-rcpt)=/
+const UV_POSITIONAL = /\$(?:[0-9@*]|\{[0-9@*]\})/g
+const XARGS_SHORT_VAL = 'adEIJLnPRsS'
+const XARGS_SHORT_OPT = 'eil'
+const XARGS_SHORT_FLAG = '0oprtx'
+const XARGS_LONG_VAL = ['arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var']
+const XARGS_LONG_FLAG = ['null', 'no-run-if-empty', 'interactive', 'verbose', 'exit', 'open-tty', 'show-limits', 'help',
+  'version', 'eof', 'max-lines', 'replace']
+const uvTokens = (cmd) => segmentsTokens(stripShellComments(cmd))
+
+function uvMark(cmdIn, texts) {
+  const cmd = cmdIn.replace(UV_HEREDOC, (g0, g1, _q, tag, offset, whole) => {
+    texts.push(['heredoc', g0.slice(g1.length + 1, g0.length - tag.length)])
+    const head = /<<-?\s*(['"]?)\w+\1/.exec(g1)
+    const sep = /(?:^|[\s;&|(])\d+$/.test(whole.slice(0, offset)) ? '' : ' ' // `0<<TAG` keeps its fd
+    return `${sep}<< __GATEHEREDOC${texts.length - 1}__` + g1.slice(head.index + head[0].length)
+  })
+  let out = ''
+  let q = null
+  const parens = [] // 's' for an open `$(`, 'g' for a group `(`: which `)` closes a group
+  let scans = 0 // substitution scans after eval / -c, each up to the end of the command: bounded
+  let cmdStart = 0 // where the current simple command starts in `out` (R1)
+  const starts = []
+  const first = new Map()
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+      if (ch === q) q = null
+      out += ch
+      continue
+    }
+    if (ch === '"' && cmd.slice(i + 1, i + 3) === '$(' && uvSubstArg(out)) {
+      // EMAILGATEPIPESH1116: a whole `"$(...)"` right after eval / a -c flag (python twin)
+      const end = ++scans <= UV_SUBST_SCANS ? uvCloseParen(cmd, i + 3) : -2
+      if (end > 0 && end < cmd.length && cmd[end] === '"') {
+        texts.push(['cmdsubst', cmd.slice(i + 3, end - 1)])
+        out += ` __GATECMDSUBST${texts.length - 1}__ `
+        i = end
+        continue
+      }
+      if (end === -2) { // past the scan bound: cannot be told
+        texts.push(['cmdsubst', null])
+        out += ` __GATECMDSUBST${texts.length - 1}__ `
+      }
+    }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
+    if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+    if (ch === '`') {
+      // EMAILGATEPIPESH1116 R1: an unquoted backquote pair after eval / a -c flag, or in a producer's word
+      const kind = uvSubstArg(out) ? 'cmdsubst' : uvProducerContext(out, cmdStart, first) ? 'wordsubst' : null
+      if (kind) {
+        let j = i + 1
+        while (j < cmd.length && cmd[j] !== '`') j += cmd[j] === '\\' ? 2 : 1
+        texts.push([kind, j < cmd.length ? cmd.slice(i + 1, j) : null])
+        out += kind === 'cmdsubst' ? ` __GATECMDSUBST${texts.length - 1}__ ` : `__GATEWORDSUBST${texts.length - 1}__`
+        i = j
+        continue
+      }
+      out += ch
+      cmdStart = out.length
+      continue
+    }
+    if (ch === '&' && ((i > 0 && '<>'.includes(cmd[i - 1])) || cmd[i + 1] === '>')) continue // R1: `2>&1`, `&>f`
+    if (ch === ';' || ch === '&' || ch === '\n') { out += ch; cmdStart = out.length; continue }
+    if (ch === '#' && (i === 0 || ' \t\n;&|('.includes(cmd[i - 1]))) {
+      while (i < cmd.length && cmd[i] !== '\n') out += cmd[i++] // a comment: an apostrophe in it opens no quote
+      i--
+      continue
+    }
+    if (ch === '|' && !(i > 0 && cmd[i - 1] === '>')) {
+      if (cmd[i + 1] === '|') { out += '||'; i++; cmdStart = out.length; continue }
+      // a pipe: the segment before it ends in UV_PIPE_OUT, the one after it starts with UV_PIPE_IN
+      out += ` ${UV_PIPE_OUT} | ${UV_PIPE_IN} `
+      if (cmd[i + 1] === '&') i++
+      cmdStart = out.length
+      continue
+    }
+    if (cmd[i + 1] === '(' && (ch === '<' || (ch === '=' && (i === 0 || ' \t\n;&|(<'.includes(cmd[i - 1]))))) {
+      let depth = 1
+      let j = i + 2
+      let iq = null
+      while (j < cmd.length && depth > 0) {
+        const c = cmd[j++]
+        if (iq) { if (c === iq) iq = null; continue }
+        if (c === "'" || c === '"') iq = c
+        else if (c === '(') depth++
+        else if (c === ')') depth--
+      }
+      texts.push(['procsubst', depth === 0 ? cmd.slice(i + 2, j - 1) : null])
+      out += ` __GATEPROCSUBST${texts.length - 1}__ `
+      i = j - 1
+      continue
+    }
+    if (ch === '$' && cmd[i + 1] === '(') {
+      // EMAILGATEPIPESH1116: right after eval / a -c flag the substitution's inner command is recorded (python twin)
+      if (uvSubstArg(out)) {
+        const end = ++scans <= UV_SUBST_SCANS ? uvCloseParen(cmd, i + 2) : -1 // past the bound: cannot tell
+        texts.push(['cmdsubst', end > 0 ? cmd.slice(i + 2, end - 1) : null])
+        out += ` __GATECMDSUBST${texts.length - 1}__ `
+      } else if (uvProducerContext(out, cmdStart, first)) {
+        // EMAILGATEPIPESH1116 R1: an unquoted substitution in an echo / printf word (python twin)
+        const end = uvCloseParen(cmd, i + 2)
+        texts.push(['wordsubst', end > 0 ? cmd.slice(i + 2, end - 1) : null])
+        out += `__GATEWORDSUBST${texts.length - 1}__`
+        i = end > 0 ? end - 1 : cmd.length
+        continue
+      }
+      parens.push('s')
+      starts.push(cmdStart)
+      out += '$('
+      i++
+      cmdStart = out.length
+      continue
+    }
+    if (ch === '(') { parens.push('g'); out += `( ${UV_GROUP_OPEN} `; cmdStart = out.length; continue }
+    if (ch === ')' && parens.length) {
+      if (parens.pop() === 'g') { out += `) ${UV_GROUP_CLOSE} `; cmdStart = out.length; continue }
+      cmdStart = starts.length ? starts.pop() : out.length
+    }
+    out += ch
+  }
+  return out
+}
+
+// EMAILGATEPIPESH1116 R1: see _uv_producer_context in hooks/outgoing-copy-gate.py
+function uvProducerContext(out, start, cache) {
+  if (cache.has(start)) return cache.get(start)
+  const text = out.slice(start)
+  let words = text.split(/\s+/).filter(Boolean)
+  while (words.length && (UV_PRODUCER_SKIP.includes(words[0]) || /^[A-Za-z0-9_]+=/.test(words[0]))) words = words.slice(1)
+  // the substitution in the command name itself (no complete name before it) makes no producer
+  cache.set(start, words.length > 0 && (words.length > 1 || /\s$/.test(text)) && ['echo', 'printf'].includes(basename(words[0])))
+  return cache.get(start)
+}
+
+const uvSubstArg = (out) => UV_SUBST_ARG.test((out.length <= 64 ? ' ' : 'x') + out.slice(-64))
+
+function uvCloseParen(s, jIn) {
+  let depth = 1
+  let j = jIn
+  let iq = null
+  while (j < s.length && depth > 0) {
+    const c = s[j++]
+    if (iq) { if (c === iq) iq = null; continue }
+    if (c === "'" || c === '"') iq = c
+    else if (c === '(') depth++
+    else if (c === ')') depth--
+  }
+  return depth === 0 ? j : -1
+}
+
+function uvProducedText(inner) {
+  if (inner == null) return null
+  let segs
+  try { segs = uvTokens(inner) } catch { return null }
+  if (segs.length !== 1 || !segs[0].length) return null
+  const printed = uvPrinted(segs[0])
+  return printed ? printed.text : null
+}
+
+// EMAILGATEPIPESH1116: { text } an echo / printf command prints (text null: cannot be computed); null when the
+// command is no echo / printf or prints nothing (`printf -v`). Twin of _uv_printed.
+function uvPrinted(all) {
+  const prog = basename(all[0])
+  let words = all.slice(1)
+  if (prog === 'echo') {
+    while (words.length && /^-[neE]+$/.test(words[0])) words = words.slice(1)
+    const text = words.join(' ')
+    return { text: text.includes('\\') ? null : text }
+  }
+  if (prog !== 'printf') return null
+  if (words.length && words[0] === '--') words = words.slice(1)
+  if (!words.length || words[0].startsWith('-v')) return null
+  const fmt = words[0].replaceAll('\\n', '\n').replaceAll('\\t', '\t')
+  const specs = [...fmt.matchAll(/%([\s\S]|$)/g)].map((m) => m[1])
+  if (fmt.includes('\\') || specs.some((s) => s !== 's' && s !== '%')) return { text: null }
+  const args = words.slice(1)
+  const n = specs.filter((s) => s === 's').length
+  const fill = (chunk) => {
+    let k = 0
+    return fmt.replace(/%([s%])/g, (_m, c) => (c === '%' ? '%' : (chunk[k++] ?? '')))
+  }
+  if (n === 0 || !args.length) return { text: fill([]) }
+  // the format repeated far beyond the command's own length: not computed (time bound)
+  const total = (ws) => ws.reduce((a, w) => a + w.length, 0)
+  if (Math.ceil(args.length / n) * (fmt.length - 2 * n) + total(args) > 2 * total(words) + 4096) return { text: null }
+  let text = ''
+  for (let k = 0; k < args.length; k += n) text += fill(args.slice(k, k + n))
+  return { text }
+}
+
+function uvText(word, texts) {
+  const m = UV_MARK.exec(word ?? '')
+  if (!m) return { marked: false, text: null }
+  const [kind, text] = texts[Number(m[2])]
+  return { marked: true, text: kind === 'procsubst' ? uvProducedText(text) : text }
+}
+
+function uvStdinAndArgs(rest, texts, pipeFeed = null) {
+  let feed = pipeFeed // what a pipe brings in; a redirection overrides it
+  const args = []
+  for (let i = 0; i < rest.length;) {
+    const t = rest[i]
+    const nxt = rest[i + 1] ?? ''
+    const m = /^(\d*)(<<<)([\s\S]*)$/.exec(t) || /^(\d*)(<<-?)([\s\S]*)$/.exec(t) || /^(\d*)(<)([\s\S]*)$/.exec(t)
+    if (m) {
+      const target = m[3] || nxt
+      if (m[1] === '' || m[1] === '0') {
+        if (m[2] === '<<<') feed = { text: target }
+        else {
+          const r = uvText(target, texts)
+          feed = (r.marked || m[2] !== '<') ? { text: r.text } : { file: true }
+        }
+      }
+      i += m[3] ? 1 : 2
+      continue
+    }
+    const o = /^(\d*|&)>>?\|?([\s\S]*)$/.exec(t)
+    if (o) { i += o[2] ? 1 : 2; continue }
+    args.push(t)
+    i++
+  }
+  return { feed, args }
+}
+
+function uvProgramSource(kind, prog, args) {
+  if (kind === 'sh') {
+    let i = 0
+    let forced = false
+    while (i < args.length) {
+      const t = args[i]
+      if (t === '--' || t === '-') { i++; break }
+      if (t === '--rcfile' || t === '--init-file') { i += 2; continue }
+      if (t.startsWith('--')) { i++; continue }
+      if ((t[0] === '-' || t[0] === '+') && t.length > 1) {
+        if (t[0] === '-' && t.slice(1).includes('c')) return { src: 'string', word: args[i + 1] ?? '' }
+        forced = forced || (t[0] === '-' && t.slice(1).includes('s'))
+        i += /[oO]/.test(t.slice(1)) ? 2 : 1
+        continue
+      }
+      break
+    }
+    return forced || i >= args.length ? { src: 'stdin' } : { src: 'file', word: args[i] }
+  }
+  if (kind === 'src') {
+    const words = args.filter((t) => t !== '--')
+    return words.length ? { src: 'file', word: words[0] } : { src: null }
+  }
+  if (kind === 'py') {
+    const { script, stdin } = pythonScriptOperand(args)
+    if (script != null) return { src: 'file', word: script }
+    if (stdin || !args.some((t) => /^-[cm]/.test(t))) return { src: 'stdin' }
+    return { src: null }
+  }
+  if (args.some((t) => ['-e', '-p', '--eval', '--print'].includes(t) || t.startsWith('--eval=') || t.startsWith('--print='))) {
+    return { src: null }
+  }
+  const script = nodeScriptOperand(prog, args)
+  return script != null ? { src: 'file', word: script } : { src: 'stdin' }
+}
+
+function uvProgramTextSends(kind, text, cwd, depth, texts) {
+  if (text == null || UV_WHOLE_EXPANSION.test(text)) return true // cannot be told: counts as a send
+  if (kind === 'sh' || kind === 'src') {
+    return isSendInvocation(text) || scriptRunSends(text, cwd) || (depth < SHELL_C_DEPTH && uvSends(text, cwd, depth + 1, texts))
+  }
+  return heredocBodySends(text, kind)
+}
+
+// Dani's #2842 review B1: see _uv_copier_output in hooks/outgoing-copy-gate.py.
+// EMAILGATEPIPESH1116: a copier also passes on the text a producer pipes in.
+function uvCopierOutput(head, texts, pipeFeed = null) {
+  const prog = basename(head[0])
+  if (!UV_COPIERS.includes(prog)) return null
+  const { feed, args } = uvStdinAndArgs(head.slice(1), texts, pipeFeed)
+  if (!feed || feed.file) return null
+  if (prog === 'cat' && args.some((a) => !a.startsWith('-'))) return null // a file operand: the output is not only the stdin
+  return feed
+}
+
+// EMAILGATEPIPESH1116: see _uv_head_output, _uv_join and _uv_subst_sends in hooks/outgoing-copy-gate.py.
+function uvHeadOutput(head, texts, pipeFeed = null) {
+  let prog = basename(head[0])
+  let rest = head.slice(1)
+  while (prog === 'builtin' && rest.length) { prog = basename(rest[0]); rest = rest.slice(1) }
+  if (prog === 'echo' || prog === 'printf') {
+    const words = uvResolveWords(uvStdinAndArgs(rest, texts).args, texts)
+    return words == null ? { text: null } : uvPrinted([prog, ...words])
+  }
+  return uvCopierOutput(head, texts, pipeFeed)
+}
+
+// EMAILGATEPIPESH1116 R1: see _uv_resolve_words and _uv_wordsubst_sends in hooks/outgoing-copy-gate.py
+function uvResolveWords(words, texts) {
+  const out = []
+  for (const w of words) {
+    const ks = [...w.matchAll(UV_WORDSUBST)].map((m) => Number(m[1]))
+    if (!ks.length) { out.push(w); continue }
+    const vals = ks.map((k) => (texts[k].length > 2 ? texts[k][2].text : null))
+    if (vals.some((v) => v == null)) return null
+    let x = 0
+    const r = w.replace(UV_WORDSUBST, () => vals[x++].replace(/\n+$/, '').replace(/\s+/g, ' '))
+    if (/^__GATEWORDSUBST\d+__$/.test(w)) out.push(...r.split(/\s+/).filter(Boolean))
+    else out.push(r)
+  }
+  return out
+}
+
+function uvWordsubstSends(k, cwd, depth, texts) {
+  const entry = texts[k]
+  if (entry.length > 2) return false
+  if (entry[1] == null) { texts[k] = ['wordsubst', null, { text: null }]; return false }
+  if (depth >= SHELL_C_DEPTH) { texts[k] = ['wordsubst', entry[1], { text: null }]; return true } // nested beyond the bound
+  const outs = []
+  if (uvSends(entry[1], cwd, depth + 1, texts, outs)) return true
+  texts[k] = ['wordsubst', entry[1], uvJoin(outs) ?? { text: null }]
+  return false
+}
+
+function uvJoin(feeds) {
+  if (!feeds.length) return null
+  if (feeds.some((f) => f.text == null)) return { text: null }
+  return { text: feeds.map((f) => f.text).join('\n') }
+}
+
+function uvSubstSends(words, cwd, depth, texts) {
+  const m = UV_CMDSUBST.exec(words[0])
+  if (!m && words.length !== 1) return false
+  const s = words[0].trim()
+  let inner
+  if (m) inner = texts[Number(m[1])][1]
+  else if (s.length > 1 && s[0] === '`' && s[s.length - 1] === '`' && !s.slice(1, -1).includes('`')) inner = s.slice(1, -1)
+  else if (s.startsWith('$(') && s.endsWith(')') && uvCloseParen(s, 2) === s.length) inner = s.slice(2, -1)
+  else return false
+  if (inner == null) return true // an unbalanced substitution: cannot be told
+  const outs = []
+  if (uvSends(inner, cwd, depth + 1, texts, outs)) return true
+  const out = uvJoin(outs)
+  return out != null && uvProgramTextSends('sh', out.text, cwd, depth, texts)
+}
+
+function uvHead(head, cwd, depth, texts, pipeFeed = null) {
+  let prog = basename(head[0])
+  let rest = head.slice(1)
+  while (prog === 'builtin' && rest.length) { prog = basename(rest[0]); rest = rest.slice(1) }
+  if (prog === 'eval') {
+    return depth < SHELL_C_DEPTH && rest.length > 0 && (uvSubstSends(rest, cwd, depth, texts) ||
+      uvSends(rest.join(' '), cwd, depth + 1, texts))
+  }
+  const kind = WRAPPER_SHELL.test(prog) ? 'sh' : (prog === 'source' || prog === '.') ? 'src'
+    : PYTHON.test(prog) ? 'py' : (NODEISH.test(prog) && prog.toLowerCase() !== 'npx') ? 'js' : null
+  if (!kind) return false
+  const { feed, args } = uvStdinAndArgs(rest, texts, pipeFeed)
+  let { src, word } = uvProgramSource(kind, prog, args)
+  if (src === 'file') {
+    const r = uvText(word, texts)
+    if (r.marked) return uvProgramTextSends(kind, r.text, cwd, depth, texts)
+    if (UV_FD_PATH.test(word) && !UV_STDIN_PATHS.includes(word)) return true // another descriptor: its feed is not read here
+    if (!UV_STDIN_PATHS.includes(word)) return false
+    src = 'stdin'
+  }
+  if (src === 'string') {
+    return kind === 'sh' && depth < SHELL_C_DEPTH && (uvSubstSends([word], cwd, depth, texts) ||
+      uvSends(word, cwd, depth + 1, texts))
+  }
+  if (src !== 'stdin' || !feed || feed.file) return false
+  return uvProgramTextSends(kind, feed.text, cwd, depth, texts)
+}
+
+const uvShellWord = (w) => (/^[A-Za-z0-9_@%+=:,./$-]+$/.test(w) ? w : "'" + w.replaceAll("'", "'\\''") + "'")
+
+// memoized on (index, replace string): a run of unknown options costs linear time (Dani's #2842 review R1)
+function uvXargsTemplates(words, replIn = null, jIn = 0, memo = new Map()) {
+  const key = `${jIn}\u0000${replIn}`
+  if (memo.has(key)) return memo.get(key)
+  const out = []
+  let repl = replIn
+  let j = jIn
+  while (j < words.length) {
+    const t = words[j]
+    if (t === '--') { j++; break }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=')
+      const name = eq < 0 ? t.slice(2) : t.slice(2, eq)
+      if (name === 'replace') repl = eq < 0 ? '{}' : t.slice(eq + 1)
+      if (eq < 0 && XARGS_LONG_VAL.includes(name)) { j += 2; continue }
+      if (eq < 0 && !XARGS_LONG_FLAG.includes(name)) out.push(...uvXargsTemplates(words, repl, j + 2, memo))
+      j++
+      continue
+    }
+    if (t.startsWith('-') && t.length > 1) {
+      let step = 1
+      for (let k = 1; k < t.length; k++) {
+        const c = t[k]
+        if (XARGS_SHORT_VAL.includes(c) || XARGS_SHORT_OPT.includes(c)) {
+          let val = t.slice(k + 1)
+          if (!val && XARGS_SHORT_VAL.includes(c)) { val = words[j + 1] ?? ''; step = 2 }
+          if (c === 'I' || c === 'J' || c === 'i') repl = val || '{}'
+          break
+        }
+        if (!XARGS_SHORT_FLAG.includes(c)) { out.push(...uvXargsTemplates(words, repl, j + 2, memo)); break }
+      }
+      j += step
+      continue
+    }
+    break
+  }
+  const seen = new Map()
+  for (const [t, r] of [...out, [words.slice(j), repl]]) seen.set(JSON.stringify([t, r]), [t, r])
+  memo.set(key, [...seen.values()])
+  return memo.get(key)
+}
+
+function uvXargsSends(words, cwd, texts, parallel = false) {
+  for (const [raw, replIn] of uvXargsTemplates(words)) {
+    let template = uvStdinAndArgs(raw, texts).args // a redirection there is xargs' own
+    let repl = replIn
+    if (parallel) { // EMAILGATEPIPESH1116: see _uv_xargs_sends
+      const cut = template.findIndex((w) => UV_PAR_ARGS.includes(w))
+      template = (cut < 0 ? template : template.slice(0, cut)).map((w) => w.replace(UV_PAR_REPL, '{}'))
+      if (!repl && template.some((w) => w.includes('{}'))) repl = '{}'
+    }
+    if (!template.length) continue
+    if (isSendInvocation(template.map(uvShellWord).join(' '))) return true // the template program is itself a send
+    let hit
+    let filled
+    if (repl) {
+      hit = template.some((w, i) => (w.includes(repl) && i > 0 && UV_RCPT_FLAG.test(template[i - 1])) || (UV_RCPT_GLUED.test(w) && w.includes(repl)))
+      filled = template.map((w) => w.replaceAll(repl, UV_PROBE_ADDR))
+    } else {
+      hit = UV_RCPT_FLAG.test(template[template.length - 1])
+      filled = [...template, UV_PROBE_ADDR]
+    }
+    if (hit) {
+      const line = filled.map(uvShellWord).join(' ')
+      if (isSendInvocation(line) || scriptRunSends(line, cwd)) return true
+    }
+    for (const h of commandHeads(template)) {
+      if (!h || !h.length || !WRAPPER_SHELL.test(basename(h[0]))) continue
+      let k = -1
+      for (let x = 1; x < h.length; x++) if (SHELL_C_FLAG.test(h[x])) { k = x; break }
+      if (k < 0) continue
+      if (k === h.length - 1) {
+        if (!repl) return true // the -c program itself comes from the input: cannot be told
+        continue
+      }
+      let text = h[k + 1]
+      if (repl && text.trim() === repl) return true // the -c program is the input line: cannot be told
+      if (repl) text = text.replaceAll(repl, UV_PROBE_ADDR)
+      text = text.replace(UV_POSITIONAL, UV_PROBE_ADDR)
+      if (isSendInvocation(text) || scriptRunSends(text, cwd)) return true
+    }
+  }
+  return false
+}
+
+// `outs` (EMAILGATEPIPESH1116), when given, collects the producer outputs written at the command's top level
+function uvSends(cmd, cwd, depth, texts, outs = null) {
+  let segments
+  try { segments = uvTokens(uvMark(cmd, texts)) } catch { return false } // unparseable: isSendInvocation's legacy fallback judges it
+  let pipeFeed = null // what the previous segment writes into the pipe, when it is a producer
+  const frames = [] // the producer outputs of each open group, innermost last
+  let carry = null // a pipe into a `( ... )` group reaches its first command
+  for (let toks of segments) {
+    let feedIn = toks[0] === UV_PIPE_IN ? pipeFeed : null
+    pipeFeed = null
+    const pipesOut = toks[toks.length - 1] === UV_PIPE_OUT
+    let closed = false
+    let groupOut = null
+    if (toks[0] === UV_GROUP_OPEN) { frames.push([]); feedIn = carry }
+    carry = null
+    if (toks[0] === UV_GROUP_CLOSE) { closed = true; groupOut = frames.length ? uvJoin(frames.pop()) : null }
+    toks = toks.filter((t) => t !== UV_PIPE_IN && t !== UV_PIPE_OUT && t !== UV_GROUP_OPEN && t !== UV_GROUP_CLOSE)
+    if (toks.length && toks[0] === '{') { frames.push([]); toks = toks.slice(1) }
+    if (toks.length && toks[0] === '}' && !closed) {
+      closed = true
+      groupOut = frames.length ? uvJoin(frames.pop()) : null
+      toks = toks.slice(1)
+    }
+    let out = null
+    if (toks.length) {
+      if (toks.some((t) => [...t.matchAll(UV_WORDSUBST)].some((m) => uvWordsubstSends(Number(m[1]), cwd, depth, texts)))) return true
+      if (toks[toks.length - 1] === '<' || toks[toks.length - 1] === '=') {
+        // a `<(` / `=(` the scanner did not mark (a quote opened in a comment before it): its text is unknown
+        texts.push(['procsubst', null])
+        toks = [...toks.slice(0, -1), `__GATEPROCSUBST${texts.length - 1}__`]
+      }
+      for (let i = 0; i < toks.length; i++) {
+        const b = basename(toks[i])
+        if ((b === 'xargs' || b === 'gxargs' || b === 'parallel') &&
+          uvXargsSends(toks.slice(i + 1).filter((w) => !UV_CMDSUBST.test(w)), cwd, texts, b === 'parallel')) return true
+      }
+      const heads = commandHeads(toks).filter((h) => h && h.length)
+      if (heads.some((h) => uvHead(h, cwd, depth, texts, feedIn))) return true
+      out = heads.map((h) => uvHeadOutput(h, texts, feedIn)).find((f) => f) ?? null
+    } else if (feedIn != null && !closed) {
+      carry = feedIn // `x | ( ...`: the pipe ends at the group's `(`
+    }
+    if (closed) out = groupOut // what is left of the closing segment are redirections
+    if (pipesOut) pipeFeed = out
+    else if (out != null) {
+      if (frames.length) frames[frames.length - 1].push(out)
+      else if (outs != null) outs.push(out)
+    }
+  }
+  return false
+}
+
+export function unverifiableSendConstruction(cmd, cwd = process.cwd(), depth = 0) {
+  if (typeof cmd !== 'string' || !UNVERIFIABLE_HINT.test(cmd)) return false
+  return uvSends(cmd, cwd, depth, [])
 }
 
 // SCRIPTSENDGATE1020: a sender script under any name. isSendInvocation knows a
@@ -1131,12 +1808,21 @@ function nodeScriptOperand(prog, rest) {
   return words[0] ?? null
 }
 
+// COPYSUBST1116 (Marveen 4114): a recipient value the gate cannot read as text (a substitution, also the flattened
+// $__SUBST__ word, a variable, an ANSI-C $'..' string, a backtick) may be any address; see the python twin
+const nonliteralValue = (val) => val.includes('$') || val.includes('`')
+// argparse takes any unambiguous prefix of a long option, so `--bc x@y` is --bcc to the program
+const ADDRESS_FLAG_ABBREV = /^--(to?|cc?|b(?:cc?)?)(?:=([\s\S]*))?$/
+const FLAT_SUBST_WORD = '$__SUBST__'
 function addressFlagGiven(rest) {
   for (let i = 0; i < rest.length; i++) {
-    const m = ADDRESS_FLAG.exec(rest[i])
+    const m = ADDRESS_FLAG_ABBREV.exec(rest[i])
     if (!m) continue
-    const val = m[1] ?? rest[i + 1] ?? ''
-    if (val.includes('@')) return true
+    const nxt = rest[i + 1] ?? ''
+    let val = m[2] ?? nxt
+    if (m[2] === '' && nxt === FLAT_SUBST_WORD) val = nxt // `--to=$(..)` flattened: the word is set apart by a space
+    // the one-letter prefixes count an address only: `--c "$CFG"` is too often no recipient
+    if (val.includes('@') || (m[1].length > 1 && nonliteralValue(val))) return true
   }
   return false
 }
@@ -1325,9 +2011,30 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   if (WRAPPER_SHELL.test(prog)) {
     if (depth >= SHELL_C_DEPTH) return false
     for (let i = 0; i < rest.length - 1; i++) {
-      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1, cmdWords)) return true
+      if (!SHELL_C_FLAG.test(rest[i])) continue
+      // COPYSUBST1116: the body as written AND with the double-quote escapes undone (this only adds a verdict)
+      const body = rest[i + 1]
+      if ([...new Set([body, undoDquoteEscapes(body)])].some((b) => scriptRunSends(b, cwd, readScript, depth + 1, cmdWords))) return true
     }
     return false
+  }
+  let evalRest = rest
+  let isEval = prog === 'eval'
+  if (prog === 'builtin' || prog === 'command') {
+    // Revizor 4123 L2, 4138 L8: `builtin eval ...`, `builtin command eval ...`, `command -p eval ...`
+    let k = 0
+    while (k < rest.length && (['builtin', 'command', '--'].includes(rest[k]) || /^-[pvV]+$/.test(rest[k]))) k++
+    if (k < rest.length && basename(rest[k]) === 'eval') {
+      isEval = true
+      evalRest = rest.slice(k + 1)
+    }
+  }
+  if (isEval) {
+    // COPYSUBST1116: eval runs its joined words as a command line
+    if (evalRest[0] === '--') evalRest = evalRest.slice(1) // Revizor 4123 L2: `eval -- ...`
+    if (depth >= SHELL_C_DEPTH || !evalRest.length) return false
+    const line = evalRest.join(' ')
+    return [...new Set([line, undoDquoteEscapes(line)])].some((b) => scriptRunSends(b, cwd, readScript, depth + 1, cmdWords))
   }
   let script
   let kind
@@ -1850,7 +2557,7 @@ export function writtenScripts(cmd, cwd) {
 }
 
 export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
-  const bound = bindLiteralVars(cmdIn)
+  const bound = bindLiteralVars(decodeAnsiC(cmdIn)) // Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'`
   const allWritten = writtenScripts(bound, cwd)
   // Dani (review of #2586): a P that exists now may survive the write: its body is judged next to the file on disk
   for (const [path, body] of allWritten) {
@@ -1879,7 +2586,90 @@ export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScri
   const flat = [...cdWords, ...segments.flat()]
   const cmdWords = [...flat, ...envChdirDirs(flat).flatMap((d) => ['cd', d]), ...assignedCdDirs(segments).flatMap((d) => ['cd', d]),
     ...(SUBST_CD.test(cmd) ? ['cd', SUBST_MARK] : [])]
-  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))
+  if (segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))) return true
+  return flatAddressedRunSends(cmd, cwd, readScript, depth, cmdWords)
+}
+
+const ANSI_C_SIMPLE = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+// the text of a bash $'...' string: its backslash escapes decoded (an unknown one keeps its backslash); see the python twin
+function ansiCBody(body) {
+  let out = ''
+  for (let i = 0; i < body.length;) {
+    const ch = body[i]
+    if (ch !== '\\' || i + 1 >= body.length) { out += ch; i++; continue }
+    const e = body[i + 1]
+    if (Object.hasOwn(ANSI_C_SIMPLE, e)) { out += ANSI_C_SIMPLE[e]; i += 2; continue }
+    const tail = body.slice(i + 1)
+    let m = /^[0-7]{1,3}/.exec(tail)
+    let code = m ? parseInt(m[0], 8) : null
+    if (!m) {
+      m = /^x([0-9A-Fa-f]{1,2})/.exec(tail) || /^u([0-9A-Fa-f]{1,4})/.exec(tail) || /^U([0-9A-Fa-f]{1,8})/.exec(tail)
+      if (m) code = parseInt(m[1], 16)
+    }
+    if (m) {
+      try { out += String.fromCodePoint(code) } catch { out += '�' }
+      i += 1 + m[0].length
+      continue
+    }
+    if (e === 'c' && i + 2 < body.length) { out += String.fromCharCode(body.charCodeAt(i + 2) & 0x1f); i += 3; continue }
+    out += ch + e
+    i += 2
+  }
+  return out
+}
+
+// COPYSUBST1116 (Revizor 4123 L1, L3): every unquoted bash $'...' word as the single-quoted text it stands for
+function decodeAnsiC(cmd) {
+  if (!cmd.includes("$'") && !cmd.includes('$"')) return cmd
+  let out = ''
+  let q = null
+  for (let i = 0; i < cmd.length;) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += cmd.slice(i, i + 2); i += 2; continue }
+      if (ch === q) q = null
+      out += ch
+      i++
+      continue
+    }
+    if (ch === '\\' && i + 1 < cmd.length) { out += cmd.slice(i, i + 2); i += 2; continue }
+    if (ch === '$' && cmd[i + 1] === "'") {
+      let j = i + 2
+      while (j < cmd.length && cmd[j] !== "'") j += cmd[j] === '\\' ? 2 : 1
+      const text = ansiCBody(cmd.slice(i + 2, Math.min(j, cmd.length)))
+      out += "'" + text.replaceAll("'", "'\\''") + "'"
+      i = j + 1
+      continue
+    }
+    if (ch === '$' && cmd[i + 1] === '"') { i++; continue } // Revizor 4138 L7: a locale $"..." string is "..."
+    if (ch === "'" || ch === '"') q = ch
+    out += ch
+    i++
+  }
+  return out
+}
+
+// the shell's double-quote escapes undone: \$ \` \" \\ -> the character, backslash-newline -> nothing
+function undoDquoteEscapes(s) {
+  return s.replace(/\\([$`"\\\n])/g, (_, c) => (c === '\n' ? '' : c))
+}
+
+// COPYSUBST1116: the tokenizer cuts an unquoted $(...), backtick or <(...) out of its word and splits the command there,
+// so a --to / --cc / --bcc AFTER it fell into a segment of its own and no run was addressed. The command is judged once
+// more with every substitution as one undecidable word, on the base the segmenter reads (no heredoc bodies, no
+// comments), but ONLY the runs that carry an address. See _flat_addressed_run_sends in the python twin.
+function flatAddressedRunSends(cmd, cwd, readScript, depth, cmdWords) {
+  const base = stripShellComments(cmd.replace(HEREDOC_RE, '$1'))
+  const flat = flattenSubstitutions(base)
+  if (flat === base) return false
+  let segments
+  try {
+    segments = segmentsTokens(flat)
+  } catch {
+    return false
+  }
+  return segments.some((toks) => commandHeads(toks).some((h) => h && h.length && addressFlagGiven(h.slice(1))
+    && headRunsSenderScript(h, cwd, readScript, depth, cmdWords)))
 }
 
 // Bence 69517: GNU env reads a long option by any unique prefix (getopt_long); see the python twin.
@@ -2361,6 +3151,7 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
+    if (unverifiableSendConstruction(cmd, cwd)) return { deny: true, kind: 'unverifiable-construction' }
     if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
     if (scriptRunSends(cmd, cwd)) return { deny: true, kind: 'script-send' }
   }
@@ -2665,6 +3456,7 @@ if (isInvokedDirectly()) {
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
+    if (kind === 'unverifiable-construction') deny(buildUnverifiableConstructionMsg(botName, ownerName))
     if (kind === 'script-send') deny(buildScriptSendMsg(botName, ownerName))
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),

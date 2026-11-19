@@ -18,6 +18,11 @@ Angol változat: [en/heavy-job-gate.md](en/heavy-job-gate.md).
 - **Memória-padló:** a feladat csak akkor indul, ha a `MemAvailable` legalább
   `max(--min-mb, keret + tartalék)`, így a legrosszabb esete (a teljes kerete) mellett
   is megmarad a tartalék a gép többi részének. Erre legfeljebb `--wait-sec`-ig vár.
+  A várakozás alatt a zárat tartja, ezért a mögötte állók is várnak (#2832). A sorban
+  álló feladat `wait` sora ezt meg is mondja: `holder_phase: "memory"`, a tartó
+  padlója (`holder_need_mb`) és kerete (`holder_max_mb`), `holder_mem_mb: 0`, a
+  stderr-en pedig: "the holder's job has not started, it is waiting for memory
+  (floor X MB, available Y MB)".
 - **Saját memóriakeret:** a feladat átmeneti `systemd-run --user --scope` alatt fut,
   `MemoryMax` / `MemorySwapMax` kerettel. Az elszabadult feladatot a saját cgroupjában
   öli meg az OOM-killer (137-es kilépési kód); a gép és a többi ügynök érintetlen marad.
@@ -100,7 +105,13 @@ működés, a kapcsolók és a konfiguráció részletes leírása az
   várakozó nem akasztja meg a sort.
 - **Napló:** `store/heavy-job-log.jsonl`, eseményenként egy JSON-sor (`wait`, `start`,
   `finish`, `refuse` egy `reason` mezővel, `uncapped`, `ollama_unload`, `nested`,
-  `nested_unverified`). A `cmd` mező csak a program neve és az argumentumok első
+  `nested_unverified`). Ha egy keretes, fő sávban futó feladat 0-val lépett ki, a
+  `finish` sor `max_mem_hint` mezőt kap (a csúcs kétszerese 256M-re felfelé
+  kerekítve, legalább 256M), és a stderr-en javaslat jelenik meg ("lowers the memory
+  floor X -> Y MB"), de csak ha a javaslat csökkenti a `max(--min-mb, keret + tartalék)`
+  padlót legalább 256M-mel (tehát a keret alatt van). A csúcsot
+  a kapu 0,5 mp-enként olvassa, a feladat utolsó fél másodpercének kiugrása
+  kimaradhat. A `cmd` mező csak a program neve és az argumentumok első
   32 karaktere, a teljes argv soha (argv-ben token is lehet). 5 MiB-nál a napló
   egyszer `heavy-job-log.jsonl.1`-re fordul.
 - **Szó szerinti parancs:** ahol a `systemd-run` ismeri az `--expand-environment`

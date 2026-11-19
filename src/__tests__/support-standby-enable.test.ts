@@ -10,6 +10,7 @@ import { writeKit } from '../support-kit.js'
 import { KIT_DISPATCHER_NAME, KIT_ROUTINE_NAME } from '../support-kit-sources.js'
 import { countSupportLines } from '../support-access-line.js'
 import type { RedeemTransport } from '../support-access-redeem.js'
+import { SUPPORT_HOST_KEY_PATH } from '../support-access-hostkey.js'
 import type { SshdAssessment } from '../support-access-sshd.js'
 import { TEST_ONLY_BLOBS, TEST_ONLY_FROM, TEST_ONLY_KEYS } from './helpers/sk-test-keys.js'
 
@@ -17,6 +18,8 @@ import { TEST_ONLY_BLOBS, TEST_ONLY_FROM, TEST_ONLY_KEYS } from './helpers/sk-te
 const CODE = 'msc_' + 'TESTONLY'.repeat(4)
 const TOKEN = 'mst_' + 'TESTONLY'.repeat(5) + '_-0'
 const GRANT = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
+// TEST ONLY host key: the right shape, 32 bytes of 0x09.
+const HOST_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJ'
 const OWN_LINE = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH owner@laptop'
 const sha = (b: Buffer): string => createHash('sha256').update(b).digest('hex')
 const noSleep = async (): Promise<void> => {}
@@ -27,6 +30,9 @@ describe('enable and disable support standby', () => {
   let sshDir: string
   let calls: string[]
   let transportAnswer: { status: number; body: string }
+  let hostKeyAnswer: { status: number; body: string } | 'throw'
+  let hostKeySends: { body: string; bearer: string | undefined; linesAtSend: number }[]
+  let hostKeyAsked: { listenPorts: readonly number[]; hostKeyFiles: readonly string[] }[]
 
   async function makeKit(withDispatcher = true): Promise<void> {
     const dispatcher = Buffer.from('#!/bin/sh\nexit 1\n')
@@ -37,7 +43,13 @@ describe('enable and disable support standby', () => {
   }
 
   function deps(over: Partial<StandbyDeps> = {}): StandbyDeps {
-    const transport: RedeemTransport = async () => {
+    const transport: RedeemTransport = async (req) => {
+      if (req.path === SUPPORT_HOST_KEY_PATH) {
+        calls.push('host-key')
+        hostKeySends.push({ body: req.body, bearer: req.bearer, linesAtSend: countSupportLines(keysText(), TEST_ONLY_BLOBS) })
+        if (hostKeyAnswer === 'throw') throw new Error('timeout')
+        return hostKeyAnswer
+      }
       calls.push('redeem')
       return transportAnswer
     }
@@ -47,7 +59,11 @@ describe('enable and disable support standby', () => {
       pins: { keys: TEST_ONLY_KEYS, fromCidrs: TEST_ONLY_FROM },
       probeSshd: async (): Promise<SshdAssessment> => {
         calls.push('probe')
-        return { ok: true, version: { major: 9, minor: 6 }, keysFiles: ['authorized_keys', 'authorized_keys2'] }
+        return { ok: true, version: { major: 9, minor: 6 }, keysFiles: ['authorized_keys', 'authorized_keys2'], listenPorts: [22], hostKeyFiles: [] }
+      },
+      readHostKey: async (s) => {
+        hostKeyAsked.push({ listenPorts: s.listenPorts, hostKeyFiles: s.hostKeyFiles })
+        return { kind: 'ok', key: HOST_KEY }
       },
       redeemTransport: transport,
       now: () => new Date('2026-11-15T06:10:00.456Z'),
@@ -71,6 +87,9 @@ describe('enable and disable support standby', () => {
     writeFileSync(join(sshDir, 'authorized_keys'), OWN_LINE + '\n', { mode: 0o600 })
     calls = []
     transportAnswer = { status: 200, body: JSON.stringify({ token: TOKEN }) }
+    hostKeyAnswer = { status: 200, body: '{"stored":true}' }
+    hostKeySends = []
+    hostKeyAsked = []
     await makeKit()
   })
   afterEach(() => {
@@ -82,8 +101,12 @@ describe('enable and disable support standby', () => {
       ok: true,
       keys: ['key1', 'key2'],
       lines: 2,
+      hostKey: 'stored',
     })
-    expect(calls).toEqual(['probe', 'redeem'])
+    expect(calls).toEqual(['probe', 'redeem', 'host-key'])
+    // the confirmed key of the sshd the probe asked, sent with the new token, after the lines are written
+    expect(hostKeyAsked).toEqual([{ listenPorts: [22], hostKeyFiles: [] }])
+    expect(hostKeySends).toEqual([{ body: '{"host_key":"' + HOST_KEY + '"}', bearer: TOKEN, linesAtSend: 2 }])
     expect(readSupportToken(supportDir)).toEqual({ kind: 'ok', token: TOKEN })
     expect(readGroupRecord(supportDir)).toEqual({
       kind: 'ok',
@@ -141,6 +164,34 @@ describe('enable and disable support standby', () => {
     expect(await enableSupportStandby({ code: CODE, consentVersion: SUPPORT_CONSENT_VERSION }, deps({ probeSshd }))).toEqual({ ok: false, problem: 'sshd_config_include_unlistable' })
     expect(calls).toEqual(['probe'])
     nothingWritten()
+  })
+
+  it.each<['missing' | 'unverified', string]>([
+    ['missing', 'host_key_missing'],
+    // Dani 79778: a key on the wire that no root-owned .pub confirms (another listener on the port)
+    ['unverified', 'host_key_unverified'],
+  ])('refuses a host key that is %s, before it redeems: the code is not used', async (kind, problem) => {
+    expect(await enableSupportStandby({ code: CODE, consentVersion: SUPPORT_CONSENT_VERSION }, deps({ readHostKey: async () => ({ kind }) }))).toEqual({ ok: false, problem })
+    expect(calls).toEqual(['probe'])
+    nothingWritten()
+  })
+
+  it('asks the host key of the sshd the probe asked: its ports and its hostkey files', async () => {
+    const probeSshd = async (): Promise<SshdAssessment> => ({ ok: true, version: { major: 9, minor: 6 }, keysFiles: ['authorized_keys'], listenPorts: [2200, 2222], hostKeyFiles: ['/etc/ssh/k'] })
+    expect(await enableSupportStandby({ code: CODE, consentVersion: SUPPORT_CONSENT_VERSION }, deps({ probeSshd }))).toMatchObject({ ok: true })
+    expect(hostKeyAsked).toEqual([{ listenPorts: [2200, 2222], hostKeyFiles: ['/etc/ssh/k'] }])
+  })
+
+  it.each<[string, { status: number; body: string } | 'throw']>([
+    ['a 503', { status: 503, body: '{"error":"unavailable"}' }],
+    ['a 401', { status: 401, body: '{"error":"invalid_status_token"}' }],
+    ['no answer', 'throw'],
+  ])('a host-key send that is not stored (%s) does not stop the enable: everything written stays', async (_label, answer) => {
+    hostKeyAnswer = answer
+    expect(await enableSupportStandby({ code: CODE, consentVersion: SUPPORT_CONSENT_VERSION }, deps())).toEqual({ ok: true, keys: ['key1', 'key2'], lines: 2, hostKey: 'not_stored' })
+    expect(readSupportToken(supportDir)).toEqual({ kind: 'ok', token: TOKEN })
+    expect(readGroupRecord(supportDir).kind).toBe('ok')
+    expect(countSupportLines(keysText(), TEST_ONLY_BLOBS)).toBe(2)
   })
 
   // Dani 78357, Q3: the kit is checked before any line, and the lines bind its dispatcher.

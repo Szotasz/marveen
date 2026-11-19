@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   decideQuotaAction,
   quotaPressure,
+  quotaBlindness,
   QUOTA_GATE,
   type QuotaSnapshot,
 } from '../quota-gate.js'
@@ -153,5 +154,68 @@ describe('decideQuotaAction -- the owner is never silenced', () => {
       workClass: 'owner-facing',
     })
     expect(d.pressure).toBe(97)
+  })
+})
+
+describe('ratelimit_headers source (usage-collect.py header probe)', () => {
+  it('is trusted: a fresh header reading can hold background work', () => {
+    const d = background(snap({ seven_day: { used: 90 } }, { source: 'ratelimit_headers' }))
+    expect(d.action).toBe('defer')
+    expect(d.reason).toBe('pressure:90%')
+  })
+})
+
+describe('quotaBlindness', () => {
+  it('is null for a fresh trusted snapshot and for no snapshot at all', () => {
+    expect(quotaBlindness(snap({ five_hour: { used: 10 } }, { source: 'ratelimit_headers' }), NOW)).toBeNull()
+    expect(quotaBlindness(null, NOW)).toBeNull()
+  })
+
+  it('names an untrusted source (the estimate) as blind', () => {
+    expect(quotaBlindness(snap({}, { source: 'estimate' }), NOW)).toBe('untrusted-source')
+  })
+
+  it('names a trusted snapshot older than 2 hours as blind, not one just under', () => {
+    expect(quotaBlindness(snap({ five_hour: { used: 10 } }, { ageMs: QUOTA_GATE.blindAfterMs + 60_000 }), NOW)).toBe('stale-snapshot')
+    expect(quotaBlindness(snap({ five_hour: { used: 10 } }, { ageMs: QUOTA_GATE.blindAfterMs - 60_000 }), NOW)).toBeNull()
+  })
+})
+
+describe('decideQuotaAction -- opt-in tiers (QUOTA_GATE_HARD_AT_PERCENT)', () => {
+  const tiered = (used: number, essential: boolean, hardAtPercent?: number) =>
+    decideQuotaAction({ snapshot: snap({ seven_day: { used } }), nowMs: NOW, workClass: 'background', essential, hardAtPercent })
+
+  it('off (unset or 0): essential changes nothing, today\'s 85% rule holds', () => {
+    for (const hard of [undefined, 0]) {
+      expect(tiered(84, true, hard).action).toBe('run')
+      expect(tiered(86, true, hard).action).toBe('defer')
+      expect(tiered(86, false, hard).action).toBe('defer')
+      expect(tiered(96, true, hard).action).toBe('defer')
+    }
+  })
+
+  it('on at 95: 84 runs all, 86 runs only essential, 96 runs none', () => {
+    expect(tiered(84, false, 95).action).toBe('run')
+    expect(tiered(84, true, 95).action).toBe('run')
+    expect(tiered(86, false, 95)).toMatchObject({ action: 'defer', reason: 'pressure:86%' })
+    expect(tiered(86, true, 95)).toMatchObject({ action: 'run', reason: 'essential@86%' })
+    expect(tiered(96, true, 95)).toMatchObject({ action: 'defer', reason: 'hard:96%' })
+    expect(tiered(96, false, 95).action).toBe('defer')
+    expect(tiered(95, true, 95).action).toBe('defer')
+  })
+
+  it('essential also rides out a near-reset defer below the hard line', () => {
+    const s = snap({ five_hour: { used: 75, resetsInMin: 10 } })
+    expect(decideQuotaAction({ snapshot: s, nowMs: NOW, workClass: 'background', essential: true, hardAtPercent: 95 }).action).toBe('run')
+    expect(decideQuotaAction({ snapshot: s, nowMs: NOW, workClass: 'background', essential: false, hardAtPercent: 95 }).action).toBe('defer')
+  })
+
+  it('never touches owner-facing or command work, even above the hard line', () => {
+    expect(decideQuotaAction({ snapshot: snap({ seven_day: { used: 99 } }), nowMs: NOW, workClass: 'owner-facing', hardAtPercent: 95 }).action).toBe('run')
+    expect(decideQuotaAction({ snapshot: snap({ seven_day: { used: 99 } }), nowMs: NOW, workClass: 'free', hardAtPercent: 95 }).action).toBe('run')
+  })
+
+  it('still fails open on an untrusted snapshot with tiers on', () => {
+    expect(decideQuotaAction({ snapshot: snap({ seven_day: { used: 99 } }, { source: 'estimate' }), nowMs: NOW, workClass: 'background', hardAtPercent: 95 }).action).toBe('run')
   })
 })

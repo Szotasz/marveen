@@ -84,7 +84,11 @@
 //
 // WHAT THIS DOES NOT CLOSE -- said here so nobody reads "merged" as "closed" (owner/Marveen 29047):
 // the name-and-shape list will never be complete. Still open, by family:
-//   - network calls INSIDE a script file: the hook sees only the outer command line;
+//   - network calls INSIDE a script file: only a PYTHON file named on the command line is read
+//     (EGRESSPYFILE1113, `python3 f.py`), and only when the install turned it on ("script_files" in
+//     the vendor-hosts file; OFF by default, "log" records without blocking); a shell / node / other
+//     script, a module it imports, a file the same command writes first, a path computed at run
+//     time, and a host that is a format placeholder (`%s`, `{x}`) are not;
 //   - a program that reaches an interpreter through a PIPE or a file rather than through a heredoc /
 //     here-string attached to the interpreter itself;
 //   - for an INTERPRETER one-liner (not curl / wget): values bound by builtins other than `for` and a
@@ -181,6 +185,22 @@ export function loadAgentVendorLists(path = AGENT_VENDOR_HOSTS_PATH) {
   } catch { /* AGENTEGRESS1111: an unreadable agent list adds no exceptions. */ }
   return { hosts: new Set(), domains: new Set() }
 }
+// EGRESSPYFILE1113 (review): reading a Python script FILE is a SETTING, off by default. The same file
+// carries it: `"script_files": "off" | "log" | "on"`. "log" judges and writes what it WOULD block to
+// BLOCK_LOG (mode: "log-only") without blocking, so the vendor list can be built from real traffic
+// first. A missing key, a malformed file or any other value is "off": today's behaviour.
+export function parseScriptFileMode(raw) {
+  const v = raw && typeof raw === 'object' ? raw.script_files : undefined
+  return v === 'on' || v === 'log' ? v : 'off'
+}
+export function loadScriptFileMode(path = VENDOR_HOSTS_PATH) {
+  try { return parseScriptFileMode(JSON.parse(readFileSync(path, 'utf-8'))) } catch { return 'off' }
+}
+let scriptFileMode = 'off'
+let scriptFileFindings = []
+export function setScriptFileMode(mode) { scriptFileMode = mode === 'on' || mode === 'log' ? mode : 'off'; scriptFileFindings = [] }
+// What a "log" run would have blocked since the mode was last set: [{ file, hosts }].
+export function scriptFileLogged() { return scriptFileFindings.map((f) => ({ file: f.file, hosts: [...f.hosts] })) }
 export function hostInDomains(host, domains) {
   for (const d of domains) if (host === d || host.endsWith(`.${d}`)) return true
   return false
@@ -287,7 +307,7 @@ const PY_PLAIN_MODULES = new Set(['os', 'sys', 'json', 're', 'pathlib', 'datetim
   'random', 'statistics', 'zipfile', 'tarfile', 'difflib', 'pprint', 'typing', 'dataclasses', 'functools', 'operator', 'enum', 'fnmatch'])
 // The program with its string literals and comments blanked (newlines kept), or null when the scan cannot
 // vouch for where a string ends. An f-string is NOT blanked: it runs its braces, so its text counts as code.
-export function pythonCodeOnly(text) {
+export function pythonCodeOnly(text, keepStrings = false) {
   const out = []
   const n = text.length
   let i = 0
@@ -322,7 +342,7 @@ export function pythonCodeOnly(text) {
       if (open !== close) return null
       out.push(delim + body + delim)
     } else {
-      out.push(delim + body.replace(/[^\n]/g, ' ') + delim)
+      out.push(delim + (keepStrings ? body : body.replace(/[^\n]/g, ' ')) + delim)
     }
     i = j + delim.length
   }
@@ -351,6 +371,99 @@ function pythonUsesNetwork(text) {
   if (code === null || PY_DYNAMIC.test(code) || !pythonImportsPlain(code)) return NET_PRIMITIVE.test(text)
   return NET_PRIMITIVE.test(code)
 }
+// EGRESSPYFILE1113: the program file of a `python3 [options] file.py [args]` run, read from disk. null
+// when there is no file to read: a -c / -m / stdin run (judged elsewhere or not at all), a path this
+// hook cannot place (a `$` or a glob left in it, a relative path whose directory cwdAt cannot tell),
+// a missing or unreadable file, something that is not a regular file, or one over PY_FILE_MAX. All of
+// those PASS, as before this rule: it reads what is plainly there and is not a fence around the rest
+// (a script written by the same command, an imported module, a path computed at run time).
+import { statSync as fileStat } from 'node:fs'
+const PY_VALUE_FLAG = new Set(['-W', '-X', '--check-hash-based-pycs'])
+const PY_FILE_MAX = 1024 * 1024
+// The directory a command at offset `at` runs in: the hook's cwd moved by every plain `cd DIR` before
+// it, in order. null when that cannot be told: no cwd from the hook, a pushd / popd, a cd with no
+// literal operand (`cd`, `cd -`, `cd "$D"`).
+function cwdAt(masked, orig, at) {
+  if (hookCwd === null) return null
+  const head = masked.slice(0, at)
+  if (/(?:^|[\s;&|(!{])(?:pushd|popd)(?=[\s;&|)]|$)/.test(head)) return null
+  let dir = hookCwd
+  for (const m of head.matchAll(/(?:^|[\s;&|(!{])cd(?=[\s;&|)]|$)/g)) {
+    // The operand is read from the ORIGINAL text: in the masked one a quoted directory is blanked,
+    // so `cd "dir" && python3 x.py` had no operand and passed unread (review of #2736).
+    let from = m.index + m[0].length
+    while (orig[from] === ' ' || orig[from] === '\t') from++
+    const raw = shellWordAt(orig, from)
+    if (raw === null) return null
+    const w = unquoteWord(raw)
+    if (w === '' || w === '-' || w === '--' || /[$*?[{`~]/.test(w)) return null
+    dir = resolve(dir, w)
+  }
+  return dir
+}
+// One shell word of `text` starting at `from`, as written (quotes kept): up to the first unquoted
+// blank or `;` `&` `|` `(` `)` `<` `>`. null when a quote is left open.
+function shellWordAt(text, from) {
+  let j = from
+  while (j < text.length) {
+    const c = text[j]
+    if (c === '\\') { j += 2; continue }
+    if (c === "'" || c === '"') {
+      const end = c === "'" ? text.indexOf("'", j + 1) : (() => { let q = j + 1; while (q < text.length && text[q] !== '"') q += text[q] === '\\' ? 2 : 1; return q < text.length ? q : -1 })()
+      if (end === -1) return null
+      j = end + 1; continue
+    }
+    if (/[\s;&|()<>]/.test(c)) break
+    j++
+  }
+  return text.slice(from, j)
+}
+// Where the program file stands among python's own arguments, or -1 when there is none to read (a
+// -c / -m / stdin run). Short options cluster (`-Bu`); in a cluster `c` and `m` end the option list
+// and take the rest as their value, `W` and `X` take the rest of the word, or the next word, as
+// theirs -- so `-Wonce` and `-Ximporttime` are options with a value, not a `-c` / `-m` run (review of
+// #2736: the old `-[A-Za-z]*[cm]` pattern matched them and the file was never read).
+export function pythonScriptIndex(args) {
+  let k = 0
+  for (; k < args.length; k++) {
+    const w = args[k]
+    if (w === '-') return -1
+    if (w === '--') { k++; break }
+    if (!w.startsWith('-')) break
+    if (w.startsWith('--')) { if (PY_VALUE_FLAG.has(w)) k++; continue }
+    for (let j = 1; j < w.length; j++) {
+      if (w[j] === 'c' || w[j] === 'm') return -1
+      if (w[j] === 'W' || w[j] === 'X') { if (j === w.length - 1) k++; break }
+    }
+  }
+  return k < args.length ? k : -1
+}
+function readPyFile(abs) {
+  try {
+    const st = fileStat(abs)
+    if (!st.isFile() || st.size > PY_FILE_MAX) return null
+    return readFileSync(abs, 'utf-8')
+  } catch { return null }
+}
+function pythonScriptRun(args, base) {
+  const k = pythonScriptIndex(args)
+  if (k === -1) return null
+  // The word as written first (a quoted name may hold a `>`); then without a redirect glued to it
+  // (`fetch.py>out.txt`, review of #2736): the words here are already unquoted, so the two cannot
+  // be told apart except by which file exists.
+  const cut = args[k].search(/[<>]/)
+  for (const p of cut > 0 ? [args[k], args[k].slice(0, cut)] : [args[k]]) {
+    if (p === '' || /[$*?[{`~]/.test(p)) continue
+    if (!p.startsWith('/') && base === null) continue
+    const abs = p.startsWith('/') ? p : resolve(base, p)
+    const body = readPyFile(abs)
+    if (body !== null) return { body, args: args.slice(k + 1), file: abs }
+  }
+  return null
+}
+// A URL host that is a format placeholder (`%s`, `{host}`, `*`), not a name: it cannot be put on the
+// vendor list, and the real host is only known at run time (review of #2736).
+const PLACEHOLDER_HOST = /[%{}*<>$]/
 // Words that can stand before the real command word of a sub-command. The shell keywords are here
 // because `for p in a b; do curl ...` splits at `;` into a span that starts with `do`, and without
 // them a curl inside a loop or an if/then body was never looked at.
@@ -1442,17 +1555,26 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
 // `stdinDup` is the first redirection that makes stdin a duplicate of another descriptor (`<&3`,
 // `0<& 3`), or null. A quoted word is blank in `masked`; it is read as a word (`bash "$D/run.sh"`),
 // never as a redirection.
+// EGRESSSTDINBYPASS1117: an operand is judged on its ORIGINAL text (shellWordKind). A word whose
+// run-time value cannot be told here (an unquoted expansion, which may split or vanish, or a word
+// that is nothing but an expansion) names no script file, so the shell may still read stdin; a
+// quoted option is an option.
 function shellInputs(masked, orig, a, b) {
   const words = [...masked.slice(a, b)].map((ch, x) => (ch === ' ' && /\S/.test(orig[a + x]) ? 'q' : ch)).join('')
-  const toks = [...words.matchAll(/\S+/g)].map((m) => m[0])
+  const spans = [...words.matchAll(/\S+/g)]
+  const toks = spans.map((m) => m[0])
   let operand = false
+  let undecided = false
   let readsStdin = false
   let stdinDup = null
   // Redirections are read wherever they stand, before the command word too (`<&3 bash`); operands
   // only after it.
   const ci = commandIndex(toks)
+  let wordEnd = 0   // a quoted space splits a shell word into tokens here: the rest of it is not a word
   for (let k = 0; k < toks.length; k++) {
     const w = toks[k]
+    const start = a + spans[k].index
+    if (start < wordEnd) continue
     const redir = /^(\d*)(<>|<<<|<<-?|<|>\||>>?|&>>?)(&?)(.*)$/.exec(w)
     if (redir) {
       const target = redir[4] !== '' ? redir[4] : toks[++k]
@@ -1461,13 +1583,84 @@ function shellInputs(masked, orig, a, b) {
       }
       continue
     }
-    if (k <= ci || operand) continue
-    if (w === '-o' || w === '+o' || w === '-O' || w === '+O') { k++; continue }
-    if (/^-[A-Za-z]*s[A-Za-z]*$/.test(w)) readsStdin = true
-    if (w.startsWith('-') || w.startsWith('+')) continue
+    if (k <= ci || operand || undecided) continue
+    const raw = shellWordAt(orig, start) ?? orig.slice(start, start + w.length)
+    wordEnd = start + raw.length
+    const kind = shellWordKind(raw)
+    if (kind === null) { undecided = true; continue }
+    if (kind === '-o' || kind === '+o' || kind === '-O' || kind === '+O') { k++; continue }
+    if (/^-[A-Za-z]*s[A-Za-z]*$/.test(kind)) readsStdin = true
+    if (kind.startsWith('-') || kind.startsWith('+')) continue
     operand = true
   }
   return { operand: operand && !readsStdin, stdinDup }
+}
+// EGRESSSTDINBYPASS1117: what a shell's word after the command word is at run time, from its
+// original text. The literal value with the quotes removed (`"-x"` is the option -x), or null when
+// that cannot be told: an unquoted `$` or backtick (the value may split into options or vanish:
+// `bash $OPT` with OPT empty reads stdin), or a word made of expansions only, quoted or not (`"$@"`,
+// `"$X"`). A quoted expansion next to literal text stays one non-empty word and keeps today's
+// reading (`bash "$SD/run.sh"` names a script file). An unquoted brace expansion or glob is null too
+// (#2859 review). A command substitution anywhere in it is null:
+// a `$(...)` or a backtick, also as the run of 3+ `$` that liftSubstitutions leaves in its place.
+function shellWordKind(raw) {
+  if (/\${3,}/.test(raw)) return null
+  let q = null
+  let literal = ''
+  let expansion = false
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]
+    if (q === "'") { if (c === "'") q = null; else literal += c; continue }
+    if (c === '\\' && i + 1 < raw.length) { literal += raw[++i]; continue }
+    if (q === null && (c === "'" || c === '"')) { q = c; continue }
+    if (q === '"' && c === '"') { q = null; continue }
+    if (c === '`' || (c === '$' && q === null)) return null
+    // Unquoted, bash expands these before the shell reads its options: a brace expansion (`{a,b}`,
+    // `{a..b}`) and a glob (`*`, `?`, `[...]`, which a file named like an option can match).
+    if (q === null && (c === '*' || c === '?' || c === '[')) return null
+    if (q === null && c === '{' && /^\{[^}]*(?:,|\.\.)[^}]*\}/.test(raw.slice(i))) return null
+    if (c === '$') {
+      const n = raw[i + 1] ?? ''
+      if (n === '(') return null
+      if (n === '{') {
+        const end = raw.indexOf('}', i + 2)
+        if (end === -1) return null
+        i = end
+      } else if (/[A-Za-z_]/.test(n)) {
+        while (/\w/.test(raw[i + 1] ?? '')) i++
+      } else if (/[@*#?$!0-9-]/.test(n)) {
+        i++
+      } else { literal += c; continue }   // a lone `$` is a literal dollar
+      expansion = true
+      continue
+    }
+    literal += c
+  }
+  if (q !== null) return null
+  if (expansion && literal === '') return null
+  return literal
+}
+// A shell in span [a, b) that only PARSES its program: noexec (`-n`) with nothing in its option set
+// that can turn execution back on. `git show HEAD:x.sh | bash -n` is a syntax check, not egress, so
+// the stdin-shell deny below does not apply to it (measured 2026-11-03, a review agent's syntax check
+// was refused). The set is closed: short option clusters from {n, v, x, e, u} with an `n` among them
+// and nothing else -- no `+` option (`bash -n +n` executes), no `-o` / `+o`, no `-c`, no `-s`, no long
+// option, no operand, and a quoted option word is not read as an option. Only the shell's own execution
+// edge is exempt; every other part of the pipeline (a curl to an external host) is judged as before.
+function shellNoExec(masked, orig, a, b) {
+  const words = [...masked.slice(a, b)].map((ch, x) => (ch === ' ' && /\S/.test(orig[a + x]) ? 'q' : ch)).join('')
+  const toks = [...words.matchAll(/\S+/g)].map((m) => m[0])
+  const ci = commandIndex(toks)
+  let noexec = false
+  for (let k = 0; k < toks.length; k++) {
+    const w = toks[k]
+    const redir = /^(\d*)(<>|<<<|<<-?|<|>\||>>?|&>>?)(&?)(.*)$/.exec(w)
+    if (redir) { if (redir[4] === '') k++; continue }
+    if (k <= ci) continue
+    if (!/^-[nvxeu]+$/.test(w)) return false
+    if (w.includes('n')) noexec = true
+  }
+  return noexec
 }
 // EGRESSCURLK1020 (#1931 review 9, owner decision 2026-10-20): `-K` / `--config` passes only for the
 // dashboard's Authorization header, written where this hook reads every byte of it:
@@ -1899,7 +2092,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         // pipe or redirection hands it: `echo 'curl URL' | sh`. A heredoc / here-string feed is judged
         // above; any other input cannot be read here, so with curl or wget in sight it denies.
         if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null && !shellInputs(masked, orig, a, b).operand
-          && !feeds.some((f) => f.at >= a && f.at <= b) && (fetches || stdinTainted || /(?:^|[^|])\|&?\s*$/.test(masked.slice(0, a)))) {
+          && !shellNoExec(masked, orig, a, b) && !feeds.some((f) => f.at >= a && f.at <= b) && (fetches || stdinTainted || /(?:^|[^|])\|&?\s*$/.test(masked.slice(0, a)))) {
           return { deny: true, reason: 'shell-stdin', hosts: [`<${cmd} reads its commands from stdin>`] }
         }
       }
@@ -1916,6 +2109,24 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       if (cmd === 'curl') target = 'curl'
       else if (cmd === 'wget') target = 'wget'
       else if (INTERPRETER.test(cmd.toLowerCase()) && hasCodeFlag(cmd, mw.slice(i + 1)) && usesNetwork(cmd, text)) target = 'one-liner'
+      // EGRESSPYFILE1113: a Python program run from a FILE (`python3 fetch.py [args]`). Its body is read
+      // from disk and judged like a heredoc body (4.), with the URLs of the run's own arguments added.
+      if (!target && scriptFileMode !== 'off' && PYTHON.test(cmd.toLowerCase())) {
+        const run = pythonScriptRun(args, cwdAt(masked, orig, a))
+        if (run !== null && pythonUsesNetwork(run.body)) {
+          // A URL in a COMMENT is not a destination: comments are blanked when the scan can vouch for
+          // where the strings end (the whole body otherwise).
+          const text = pythonCodeOnly(run.body.normalize('NFKC'), true) ?? run.body
+          const found = [...`${text}\n${run.args.join('\n')}`.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+          const hosts = [...new Set(found)].filter((h) => !PLACEHOLDER_HOST.test(h) && !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+          if (hosts.length && scriptFileMode === 'on') return { deny: true, reason: 'script-file-external', hosts, file: run.file }
+          if (hosts.length) {
+            const seen = scriptFileFindings.find((f) => f.file === run.file)
+            if (seen) for (const h of hosts) seen.hosts.add(h)
+            else scriptFileFindings.push({ file: run.file, hosts: new Set(hosts) })
+          }
+        }
+      }
       if (!target) continue
       // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
       // JSON payload) is data sent to wherever curl connects, not a destination. The fleet reports PR
@@ -2000,6 +2211,8 @@ if (isInvokedDirectly()) {
       process.exit(0)
     } catch { /* not on record: fall through to classify(), which denies the measure host */ }
   }
+  // The script-file switch is read from the OWNER's file only: an agent's own list cannot set it.
+  setScriptFileMode(loadScriptFileMode())
   try {
     const agent = loadAgentVendorLists()
     const hosts = new Set([...loadVendorHosts(), ...agent.hosts])
@@ -2012,12 +2225,21 @@ if (isInvokedDirectly()) {
     if (!/\b(?:curl|wget)\b/.test(String(payload?.tool_input?.command ?? ''))) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
     r = { deny: true, reason: 'internal-error', hosts: [`parser hiba: ${e?.message}`] }
   }
+  // "log" mode: what the script-file rule would have blocked goes on record and the command runs.
+  // Best effort: a log failure here changes nothing, the rule is not enforcing in this mode.
+  for (const f of scriptFileLogged()) {
+    try {
+      mkdirSync(dirname(BLOCK_LOG), { recursive: true })
+      appendFileSync(BLOCK_LOG, JSON.stringify({ ts: new Date().toISOString(), cwd: process.cwd(), reason: 'script-file-external', mode: 'log-only', file: f.file, hosts: f.hosts }) + '\n')
+    } catch { /* log-only */ }
+  }
   if (r.deny) {
     try {
       mkdirSync(dirname(BLOCK_LOG), { recursive: true })
-      appendFileSync(BLOCK_LOG, JSON.stringify({ ts: new Date().toISOString(), cwd: process.cwd(), reason: r.reason, hosts: r.hosts }) + '\n')
+      appendFileSync(BLOCK_LOG, JSON.stringify({ ts: new Date().toISOString(), cwd: process.cwd(), reason: r.reason, hosts: r.hosts, ...(r.file ? { file: r.file } : {}) }) + '\n')
     } catch { /* the deny still stands; a log failure must not turn it into an allow */ }
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `${GATE_MSG} (hoszt: ${r.hosts.join(', ')})` } }))
+    const fileNote = r.file ? ` A tiltas oka a(z) ${r.file} szkriptfajl TARTALMA (a benne vagy az argumentumaiban allo kulso URL), nem a parancssor szovege.` : ''
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `${GATE_MSG}${fileNote} (hoszt: ${r.hosts.join(', ')})` } }))
   }
   process.exit(0)
 }

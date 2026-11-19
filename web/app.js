@@ -38,6 +38,8 @@ function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
 
   function applyLang(lang) {
     window._lang = VALID.has(lang) ? lang : 'hu'
+    // DOCKERUX1118 (Geri 33345): the page's own language follows the shown one (it stayed "hu" on an English page).
+    document.documentElement.lang = window._lang
   }
 
   // Initialise from localStorage; server default fetched async below.
@@ -72,6 +74,7 @@ function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
   window.setLang = function setLang(lang) {
     if (!VALID.has(lang)) return
     window._lang = lang
+    document.documentElement.lang = lang
     localStorage.setItem(LS_KEY, lang)
     renderNav()
     // Static elements (kanban column titles, hints, empty states) are otherwise
@@ -3480,6 +3483,9 @@ let wizardStep = 1
 let generatedClaudeMd = ''
 let generatedSoulMd = ''
 let wizardCreatedName = ''
+// True once step 3's texts came from the created agent's detail. When that GET failed, the boxes start empty and an
+// empty claudeMd/soulMd in the Create PUT would overwrite the generated files (#2845).
+let wizardTextsLoaded = false
 // Set from the POST /api/agents response when the backend fell back to a template
 // because personality generation failed. It answers 200 in that case (the agent
 // EXISTS and works), so `res.ok` alone cannot tell the operator anything -- without
@@ -3767,6 +3773,7 @@ function resetWizard() {
   generatedClaudeMd = ''
   generatedSoulMd = ''
   wizardCreatedName = ''
+  wizardTextsLoaded = false
   wizardPersonalityPending = null
   renderWizardPendingBanner()
   document.getElementById('wizardClaudeMd').value = ''
@@ -3797,6 +3804,15 @@ agentModel.addEventListener('change', () => updateCustomModelIdRow(agentModel))
 
 // Step 1 -> Step 2 (generate)
 document.getElementById('wizardNextBtn').addEventListener('click', async () => {
+  // The agent already exists (Back from step 3): Next returns to its review and never POSTs again, so a second Next
+  // cannot answer 409 or, after a rename, create a second agent (#2845). The step 1 fields are not applied again,
+  // and the toast says so.
+  if (wizardCreatedName) {
+    showToast(t('agents.wizard.already_created', { name: wizardCreatedName }))
+    wizardStep = 3
+    updateWizardUI()
+    return
+  }
   const name = agentName.value.trim()
   const desc = agentDesc.value.trim()
   // A custom provider goes in its own field with the model id typed beside it, as the agent editor saves it.
@@ -3853,6 +3869,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       const detail = await detailRes.json()
       generatedClaudeMd = detail.claudeMd || detail.content || ''
       generatedSoulMd = detail.soulMd || ''
+      wizardTextsLoaded = true
     }
 
     statusEl.textContent = t('kanban.breakdown.running')
@@ -3884,7 +3901,16 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
     }, 600)
   } catch (err) {
     showToast(`${t('common.error')}: ${err.message}`)
-    wizardStep = 1
+    // Back to step 1 only when the create POST itself failed. Once the agent exists, a later error (detail fetch,
+    // avatar) goes on to its review: step 1 would only offer to create it again (#2845).
+    if (wizardCreatedName) {
+      wizardStep = 3
+      document.getElementById('wizardClaudeMd').value = generatedClaudeMd
+      document.getElementById('wizardSoulMd').value = generatedSoulMd
+      renderWizardPendingBanner()
+    } else {
+      wizardStep = 1
+    }
     updateWizardUI()
   }
 })
@@ -3909,11 +3935,15 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
   createBtn.querySelector('.btn-loading').hidden = false
 
   try {
-    // Update with edited content
+    // Update with edited content. A text that never loaded and is still empty is left out: the server keeps the
+    // generated file for an omitted field, while an empty string would overwrite it (#2845).
+    const edits = {}
+    if (wizardTextsLoaded || claudeMd) edits.claudeMd = claudeMd
+    if (wizardTextsLoaded || soulMd) edits.soulMd = soulMd
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ claudeMd, soulMd }),
+      body: JSON.stringify(edits),
     })
 
     if (!res.ok) {
@@ -4400,6 +4430,8 @@ async function openMarveenDetail() {
     }
   } catch {}
   applyMarveenReadonlyMode(true)
+  // The main agent's voice reply section stayed blank: only the sub-agent detail loaded it (#2848).
+  loadVoiceConfig(mainAgentId())
 
   // Telegram tab -- without this the tab stays in the default "not connected"
   // view even though the bot is running and receiving messages.
@@ -6243,9 +6275,14 @@ document.getElementById('saveIdleFlushBtn').addEventListener('click', async () =
 
 // ---- voice config UI -------------------------------------------------------
 
+// Only the latest call may write the voice fields: opening one agent and then
+// another quickly must not let the first agent's late answer fill the second's form.
+let _voiceConfigSeq = 0
+
 async function loadVoiceConfig(agentName) {
   const voiceModelSel = document.getElementById('editAgentVoiceModel')
   if (!voiceModelSel) return
+  const seq = ++_voiceConfigSeq
   const banner = document.getElementById('voiceNotInstalledBanner')
   const controls = document.getElementById('voiceInstalledControls')
   try {
@@ -6253,6 +6290,7 @@ async function loadVoiceConfig(agentName) {
     const statusR = await fetch('/api/voice/status')
     if (!statusR.ok) return
     const status = await statusR.json()
+    if (seq !== _voiceConfigSeq) return
 
     if (!status.installed) {
       if (banner) banner.hidden = false
@@ -6265,6 +6303,7 @@ async function loadVoiceConfig(agentName) {
     const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/voice-config`)
     if (!r.ok) return
     const cfg = await r.json()
+    if (seq !== _voiceConfigSeq) return
     voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
       `<option value="${escapeHtml(v)}"${v === cfg.voiceModel ? ' selected' : ''}>${escapeHtml(v)}</option>`
     ).join('')
@@ -16145,6 +16184,69 @@ async function refreshOnboarding() {
   const s = await fetchOnboardingStatus()
   if (s) renderOnboarding(s, await fetchOnboardingAuth())
 }
+// DOCKERUX1118 (owner 33327/33329, Samu 80886): the install's language on the wizard's first screen, in the container
+// only. Before the owner is signed in a click switches the wizard's text in this browser and is remembered; the
+// install's own language (its persona files and seeded texts, where untouched) changes once the owner is signed in,
+// through POST /api/onboarding/language, which also says which edited files it kept.
+const ONB_LANG_PENDING = 'marveen.onbLangPending'
+let onbLangState = { docker: false, installLang: null, loginStep: true, busy: false }
+function onbLangPending() { try { return localStorage.getItem(ONB_LANG_PENDING) } catch { return null } }
+function setOnbLangPending(lang) { try { if (lang) localStorage.setItem(ONB_LANG_PENDING, lang); else localStorage.removeItem(ONB_LANG_PENDING) } catch { /* ignore */ } }
+function syncOnboardingLang(s, loginStep) {
+  onbLangState = { ...onbLangState, docker: s.deployment === 'docker', installLang: s.installLang || null, loginStep }
+  const box = document.getElementById('onbLang')
+  if (!box) return
+  box.hidden = !onbLangState.docker
+  box.querySelectorAll('.onb-lang-btn').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.lang === window._lang))
+    b.disabled = onbLangState.busy
+  })
+}
+// The server's answer as one line: how many files follow the new language, and which edited ones were kept.
+function onbLangSummary(d) {
+  const files = Array.isArray(d.files) ? d.files : []
+  const done = files.filter((f) => f.result === 're-rendered' || f.result === 'added').length
+  const kept = files.filter((f) => f.result === 'kept_customized').map((f) => f.file)
+  return t('onboarding.lang.done', { done }) + (kept.length ? ' ' + t('onboarding.lang.kept', { files: kept.join(', ') }) : '')
+}
+async function switchInstallLang(lang) {
+  onbLangState.busy = true
+  const before = window._lang
+  try {
+    const r = await fetch('/api/onboarding/language', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang }) })
+    const d = await r.json().catch(() => ({}))
+    setOnbLangPending(null)
+    onbLangState.busy = false
+    if (r.ok && d.ok) {
+      window.setLang(lang)
+      await refreshOnboarding()
+      onbMsg(onbLangSummary(d))
+      return
+    }
+    // Not switched: the wizard stays in the install's language, so what it shows is what the agent will use.
+    window.setLang(onbLangState.installLang || before)
+    await refreshOnboarding()
+    onbMsg(t('onboarding.lang.failed', { error: d.error || r.status }), true)
+  } catch {
+    onbLangState.busy = false
+    window.setLang(before)
+    onbMsg(t('auth.login.err_network'), true)
+  }
+}
+document.querySelectorAll('#onbLang .onb-lang-btn').forEach((b) => b.addEventListener('click', async () => {
+  const lang = b.dataset.lang
+  if (onbLangState.busy || !onbLangState.docker) return
+  if (onbLangState.loginStep) {
+    // Not signed in yet: this browser only; the install follows right after the login.
+    setOnbLangPending(lang === onbLangState.installLang ? null : lang)
+    if (lang !== window._lang) window.setLang(lang)
+    applyOnboardingProviderTab()
+    await refreshOnboarding()
+    return
+  }
+  if (lang === onbLangState.installLang && lang === window._lang) return
+  await switchInstallLang(lang)
+}))
 // ONBOARDOWNERPW1107 (owner decision, 11-07): the wizard's FIRST step is the dashboard login, so every later step runs
 // in the owner's session (the Bridge key or the token plus the owner cookie) and never stops on a "go to Settings"
 // text. owner_session is in the status only for a caller that could hold it (the shared token, a FULL device key, a
@@ -16184,6 +16286,13 @@ function renderOnboarding(s, auth) {
   const base = onboardingCurrentStep(s)
   if (base === 0) { overlay.classList.remove('active'); overlay.hidden = true; document.body.style.overflow = ''; return }
   const loginStep = onboardingNeedsLogin(auth)
+  syncOnboardingLang(s, loginStep)
+  // DOCKERUX1118: a language chosen before the login is the install's now that the owner is signed in.
+  const pendingLang = onbLangPending()
+  if (!loginStep && onbLangState.docker && !onbLangState.busy && (pendingLang === 'en' || pendingLang === 'hu')) {
+    if (pendingLang === s.installLang) setOnbLangPending(null)
+    else { switchInstallLang(pendingLang); return }
+  }
   const step = onboardingDisplayStep(base, auth)
   overlay.hidden = false
   overlay.classList.add('active')

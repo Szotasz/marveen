@@ -27,6 +27,9 @@ import { runLogRotationSweep, LOG_ROTATION_SWEEP_MS } from './web/log-rotation.j
 import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
+import { removeCredentialTmpLeftovers } from './web/agent-package/remote.js'
+import { flushPendingPackageNotices, reapInterruptedPackageInstalls } from './web/agent-package/install.js'
+import { notifyOwner } from './notify.js'
 import { endAllDetachedGroups } from './web/detached-groups.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
@@ -501,6 +504,26 @@ async function main(): Promise<void> {
   initDatabase()
   logger.info('Adatbazis inicializalva')
 
+  // MIOAGENTINSTALL1114 T3: an atomic write of the agent package credential interrupted between write and rename
+  // leaves its tmp file (holding the token) in the store; nothing else ever removes it.
+  try {
+    const removed = removeCredentialTmpLeftovers()
+    if (removed > 0) logger.info({ removed }, 'agent package credential: interrupted-write leftovers removed')
+  } catch (err) {
+    logger.warn({ err }, 'agent package credential leftover cleanup did not run')
+  }
+
+  // MIOAGENTINSTALL1114 (plan 7.3, M17): an agent package install interrupted by a crash or a kill. Before ANY agent
+  // is walked or started (the heartbeat start below is the first): the unfinished folder is set aside, an orphan or
+  // bad marker is removed or moved aside, and the hidden list the watchdog reads is written (also when it is empty).
+  // acquireLock above made this the only dashboard on this store, so no running install can be in between.
+  try {
+    const reaped = reapInterruptedPackageInstalls()
+    if (reaped.setAside + reaped.removedMarkers + reaped.badMarkers + reaped.blocked > 0) logger.warn({ reaped }, 'agent package installs: interrupted-install cleanup')
+  } catch (err) {
+    logger.error({ err }, 'agent package interrupted-install cleanup did not run')
+  }
+
   // GROMZOGATECONF1030 (c): the sub-agents' sender-role gates move from their own agent-config.json (which the agent
   // can write) into the store, which only the dashboard writes. Once: an existing store file means it is done.
   try {
@@ -649,6 +672,10 @@ async function main(): Promise<void> {
 
   // Web dashboard
   webServer = startWebServer(WEB_PORT)
+
+  // MIOAGENTINSTALL1114 (plan 7.3, N16): the owner notices the cleanup above stored, now that the alert path is up.
+  // A notice file is removed only after its send succeeded; a failed one waits for the next start.
+  void flushPendingPackageNotices(notifyOwner).catch((err) => logger.warn({ err }, 'agent package owner notices were not sent'))
 
   logger.info(`Marveen fut! Dashboard: http://localhost:${WEB_PORT}`)
   logger.info('Telegram kommunikacio: Claude Code Channels kezeli')

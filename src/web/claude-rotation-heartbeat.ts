@@ -11,17 +11,18 @@
 //      default) makes every tick return before deciding.
 // ensureRotationHeartbeatTask() closes (1); rotationReadiness() surfaces (2)
 // and the other silent preconditions through GET /api/claude-plans/readiness.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { CHANNEL_CHAT_ID, MAIN_AGENT_ID, PROJECT_ROOT, WEB_PORT } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { readClaudePlans } from './claude-plans.js'
 import { readAgentAuthMode } from './agent-config.js'
-import { readClaudePlansState } from './claude-plans-state.js'
+import { readClaudePlansState, type ClaudePlansState } from './claude-plans-state.js'
 import {
-  SCHEDULED_TASKS_DIR, readScheduledTask, readRemovedDefaultTasks, writeScheduledTask,
+  SCHEDULED_TASKS_DIR, readScheduledTask, readRemovedDefaultTasks, writeScheduledTask, markDefaultTaskRemoved,
 } from './scheduled-tasks-io.js'
 import { registerServerCreatedTask, rewriteRegisteredTask } from './schedule-registry-rewrite.js'
+import { unregisterScheduledTask } from './schedule-registry.js'
 
 export const ROTATION_HEARTBEAT_TASK = 'claude-plan-rotate-check'
 export const ROTATION_HEARTBEAT_SCHEDULE = '*/10 * * * *'
@@ -242,6 +243,73 @@ export function ensureRotationHeartbeatTask(opts: { respectRemoval?: boolean } =
   return 'created'
 }
 
+/**
+ * PLANROTATEDEADLOCK1115 P5: the server-written forms of the task, any of which counts as unedited: the V1 and V2
+ * seeds (isUneditedSeededSkill) and the ROTSLACK1111 form an install with an owner Slack target was seeded or upgraded
+ * to. The Slack form bakes no target in (notify.sh reads the current setting), so any non-empty target rebuilds it.
+ */
+export function isServerWrittenRotationSkill(raw: string, opts: { projectRoot: string; webPort: number; chatId: string }): boolean {
+  return isUneditedSeededSkill(raw, opts) || raw === seededSkillMd(buildRotationHeartbeatPrompt({ ...opts, slackTarget: 'slack' }))
+}
+
+export interface RetireRotationTaskDeps {
+  notify: (text: string) => Promise<boolean>
+  readState: () => ClaudePlansState
+  writeState: (s: ClaudePlansState) => void
+  now: () => number
+  lang: () => 'hu' | 'en'
+}
+
+export type RetireRotationTaskResult = 'none' | 'removed' | 'disabled' | 'kept-disabled'
+
+function retiredTaskNotice(lang: 'hu' | 'en'): string {
+  return lang === 'en'
+    ? `The Claude plan rotation now runs in the dashboard itself, with no agent turn. Your edited "${ROTATION_HEARTBEAT_TASK}" scheduled task is now switched off (not deleted), so it cannot switch plans a second time. Delete it on the Schedules page when you no longer need your changes.`
+    : `A Claude-plan rotáció mostantól közvetlenül a dashboardon fut, ügynök-kör nélkül. A módosított "${ROTATION_HEARTBEAT_TASK}" ütemezésed ki van kapcsolva (nem töröltük), így nem válthat plant másodszor is. Ha már nincs szükséged a módosításaidra, töröld az Ütemezések között.`
+}
+
+/**
+ * PLANROTATEDEADLOCK1115 P5: the old main-agent rotation task is retired at start (the backend runs the rotation now).
+ * - An UNEDITED task (isServerWrittenRotationSkill) is removed the way the schedule DELETE route removes one: the
+ *   registry entry first (a failure throws and nothing is deleted), then the dir, then the #796 tombstone.
+ * - An EDITED one is switched off, never deleted (the Settings toggle's own disable: enabled false through
+ *   rewriteRegisteredTask), and the owner is told once: backend.retiredTaskNoticeAt in the side-car is written only
+ *   after a delivered notice, so a failed one is tried again on the next start and a delivered one never repeats.
+ * - No dir, or one the scheduler cannot read as a task: nothing to do.
+ */
+export async function retireRotationHeartbeatTask(deps: RetireRotationTaskDeps): Promise<{ result: RetireRotationTaskResult; told: boolean }> {
+  const dir = join(SCHEDULED_TASKS_DIR, ROTATION_HEARTBEAT_TASK)
+  if (!existsSync(dir)) return { result: 'none', told: false }
+  const opts = { projectRoot: PROJECT_ROOT, webPort: WEB_PORT, chatId: CHANNEL_CHAT_ID }
+  let raw = ''
+  try { raw = readFileSync(join(dir, 'SKILL.md'), 'utf-8') } catch { raw = '' }
+  // Removal takes the whole dir, so only a dir holding nothing but the two server-written files counts as unedited;
+  // any file the owner added there makes it an edited task (switched off, kept).
+  let onlyServerFiles = false
+  try { onlyServerFiles = readdirSync(dir).every((n) => n === 'SKILL.md' || n === 'task-config.json') } catch { onlyServerFiles = false }
+  if (raw && onlyServerFiles && isServerWrittenRotationSkill(raw, opts)) {
+    unregisterScheduledTask(ROTATION_HEARTBEAT_TASK)
+    rmSync(dir, { recursive: true, force: true })
+    markDefaultTaskRemoved(ROTATION_HEARTBEAT_TASK)
+    return { result: 'removed', told: false }
+  }
+  const task = readScheduledTask(ROTATION_HEARTBEAT_TASK)
+  if (!task) return { result: 'none', told: false }
+  let result: RetireRotationTaskResult = 'kept-disabled'
+  if (task.enabled) {
+    rewriteRegisteredTask(ROTATION_HEARTBEAT_TASK, 'server:rotation-retire', () => { writeScheduledTask(ROTATION_HEARTBEAT_TASK, { enabled: false }); return true })
+    result = 'disabled'
+  }
+  if (deps.readState().backend?.retiredTaskNoticeAt !== undefined) return { result, told: false }
+  let told = false
+  try { told = await deps.notify(retiredTaskNotice(deps.lang())) } catch { told = false }
+  if (told) {
+    const s = deps.readState()
+    deps.writeState({ ...s, backend: { ...(s.backend ?? {}), retiredTaskNoticeAt: deps.now() } })
+  }
+  return { result, told }
+}
+
 export type SyncRotationHeartbeatResult = EnsureRotationHeartbeatResult | 'enabled' | 'disabled' | 'unchanged'
 
 /**
@@ -350,18 +418,8 @@ export function rotationReadiness(): RotationReadiness {
     })
   }
 
-  const task = readScheduledTask(ROTATION_HEARTBEAT_TASK)
-  if (!task) {
-    blockers.push({
-      code: 'heartbeat_task_missing',
-      message: `Hiányzik a rotációs heartbeat ütemezés (${ROTATION_HEARTBEAT_TASK}). Bekapcsolt rotációnál a dashboard indításkor létrehozza; ha kézzel törölted, kapcsold ki és be a rotációt.`,
-    })
-  } else if (!task.enabled) {
-    blockers.push({
-      code: 'heartbeat_task_disabled',
-      message: `A rotációs heartbeat ütemezés (${ROTATION_HEARTBEAT_TASK}) ki van kapcsolva az Ütemezések között.`,
-    })
-  }
+  // PLANROTATEDEADLOCK1115 P5: no task blocker any more. The check runs in the dashboard backend, and the old
+  // scheduled task is retired at start, so its absence (or its being off) is the expected state, not a blocker.
 
   return { ready: blockers.length === 0, blockers: blockers.map((b) => b.code), details: blockers }
 }

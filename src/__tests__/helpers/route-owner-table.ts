@@ -19,6 +19,7 @@ export const UNGATED_ROUTES: ReadonlyArray<{ key: string; cls: RouteClass; why: 
   { key: "agents.ts POST <redeliverMatch>", cls: "agent", why: "agent lifecycle: the watchdog asks the server to put a restarted sub-agent's delivered, not closed rows back for the router; takes only the name" },
   { key: "agents.ts POST <restartMatch>", cls: "agent", why: "agent lifecycle: the main agent restarts agents" },
   { key: "approvals.ts POST <consumeMatch>", cls: "agent", why: "an agent consumes its own approved request (single use, bound to the grantee)" },
+  { key: "approvals.ts POST /api/approvals/teams-card-action", cls: "own-check", why: "the owner's Teams card click (TEAMSAPPROVECARD1118): no dashboard token at all; the handler checks a Bot Framework channel token, the tenant, the owner's object id, the posted card and its nonce" },
   { key: "auth.ts POST /api/auth/login", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },
   { key: "auth.ts POST /api/auth/logout", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },
   { key: "auth.ts POST /api/auth/logout-all", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },

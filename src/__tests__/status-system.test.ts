@@ -6,12 +6,12 @@ import { tmpdir } from 'node:os'
 
 // The route tests pin the local part so they measure the ROUTE contract; the
 // pure helpers below use the real module.
-const sysMock = vi.hoisted(() => ({ fn: null as null | (() => Promise<unknown>) }))
+const sysMock = vi.hoisted(() => ({ fn: null as null | ((...a: unknown[]) => Promise<unknown>) }))
 vi.mock('../web/system-status.js', async (orig) => {
   const m = await orig<typeof import('../web/system-status.js')>()
   return {
     ...m,
-    getSystemStatus: (...a: Parameters<typeof m.getSystemStatus>) => (sysMock.fn ? sysMock.fn() : m.getSystemStatus(...a)),
+    getSystemStatus: (...a: Parameters<typeof m.getSystemStatus>) => (sysMock.fn ? sysMock.fn(...a) : m.getSystemStatus(...a)),
   }
 })
 
@@ -26,8 +26,14 @@ import {
   getSystemStatus,
   liveBlockSpecs,
   telegramPluginPatchStatus,
+  discordPluginPatchStatus,
+  discordBotIdFromToken,
+  _resetSystemStatusCacheForTest,
   type SystemStatus,
 } from '../web/system-status.js'
+import { clearCommandsForTest, dispatchCommand } from '../web/commands.js'
+import { registerBuiltinCommands } from '../web/builtin-commands.js'
+import { dispatchForChat, dispatchForDiscord } from '../web/routes/commands.js'
 import { tryHandleStatus } from '../web/routes/status.js'
 import { initDatabase } from '../db.js'
 
@@ -373,5 +379,91 @@ describe('Telegram plugin-patch row', () => {
   it('is a CSATORNA row of the live /status', () => {
     const csatorna = liveBlockSpecs().find(b => b.title === 'CSATORNA')!
     expect(csatorna.rows.map(r => r.label)).toContain('Telegram plugin-patch')
+  })
+})
+
+// Zoli 2026-11-15: a /status sent from Discord showed the Telegram bot and the Telegram plugin patch in CSATORNA.
+// The block follows the channel the command came from; an unknown source keeps the Telegram block.
+describe('/status CSATORNA follows the command\'s channel', () => {
+  const labels = (channel?: 'telegram' | 'discord') => liveBlockSpecs(Date.now(), channel).find(b => b.title === 'CSATORNA')!.rows.map(r => r.label)
+
+  it('from Discord: the Discord rows, none of the Telegram ones; default and Telegram: unchanged', () => {
+    expect(labels('discord')).toEqual(['Párosítás', 'Chat-parancsok', 'Forgalom', 'Discord plugin-patch', 'Hiba-napló (24 óra)'])
+    expect(labels('discord').join()).not.toContain('Telegram')
+    expect(labels()).toEqual(['Párosítás', 'Chat-parancsok', 'Forgalom', 'Telegram plugin-patch', 'Hiba-napló (24 óra)'])
+    expect(labels('telegram')).toEqual(labels())
+    const discordPair = liveBlockSpecs(Date.now(), 'discord').find(b => b.title === 'CSATORNA')!.rows[0]!
+    expect(discordPair.source).toContain('channels/discord/')
+  })
+
+  it('the /status command asks for the channel it came from (Discord dispatch -> discord, Telegram -> unset)', async () => {
+    const asked: unknown[] = []
+    sysMock.fn = async (...a: unknown[]) => { asked.push(a[0]); return { blocks: [] } }
+    try {
+      clearCommandsForTest()
+      registerBuiltinCommands()
+      await dispatchForDiscord('/status', '290903699524550656', '290903699524550656')
+      await dispatchForChat('/status', '42', '42')
+      await dispatchCommand('/status', { reply: async () => {}, ownerId: 1, now: Date.now() })
+    } finally {
+      sysMock.fn = null
+      clearCommandsForTest()
+    }
+    expect(asked).toEqual([{ channel: 'discord' }, { channel: undefined }, { channel: undefined }])
+  })
+
+  it('one cache per channel: a Discord /status right after a Telegram one gets the Discord block', async () => {
+    initDatabase(':memory:')
+    _resetSystemStatusCacheForTest()
+    const now = Date.now()
+    const tg = await getSystemStatus({ now })
+    const dc = await getSystemStatus({ now: now + 1000, channel: 'discord' })
+    const rowsOf = (st: SystemStatus) => st.blocks.find(b => b.title === 'CSATORNA')!.rows.map(r => r.label)
+    expect(rowsOf(tg)).toContain('Telegram plugin-patch')
+    expect(rowsOf(dc)).toContain('Discord plugin-patch')
+    expect(await getSystemStatus({ now: now + 2000 })).toBe(tg) // the Telegram cache is still its own
+    _resetSystemStatusCacheForTest()
+  }, 30_000)
+
+  it('discordBotIdFromToken: the id from the token\'s first part, nothing for anything else', () => {
+    const tok = `${Buffer.from('1438000000000000123').toString('base64')}.abc.def`
+    expect(discordBotIdFromToken(tok)).toBe('1438000000000000123')
+    expect(discordBotIdFromToken('nem-token')).toBeNull()
+    expect(discordBotIdFromToken('')).toBeNull()
+  })
+
+  describe('discordPluginPatchStatus', () => {
+    let dir = ''
+    beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'dc-patch-status-')) })
+    afterEach(() => rmSync(dir, { recursive: true, force: true }))
+    const write = (state: unknown, server?: string) => {
+      const srv = join(dir, 'server.ts')
+      if (server !== undefined) writeFileSync(srv, server)
+      const f = join(dir, 'state.json')
+      writeFileSync(f, JSON.stringify(typeof state === 'function' ? (state as (p: string) => unknown)(srv) : state))
+      return f
+    }
+
+    it('ours on disk -> rendben, with the slash count', () => {
+      const f = write((srv: string) => ({ mode: 'on', slash_commands: 15, files: [{ version: '0.0.4', path: srv, status: 'upgraded' }] }), '// MARVEEN-EXT')
+      expect(discordPluginPatchStatus(f)).toBe('rendben (0.0.4) · slash-parancsok: 15')
+      const g = write((srv: string) => ({ mode: 'on', slash_commands: null, files: [{ version: '0.0.4', path: srv, status: 'already' }] }), '// MARVEEN-EXT')
+      expect(discordPluginPatchStatus(g)).toBe('rendben (0.0.4) · slash-parancsok: nincs lista')
+    })
+
+    it('replaced since the start, an unknown plugin version, an unreadable file -> HIÁNYZIK with the reason', () => {
+      const replaced = write((srv: string) => ({ mode: 'on', files: [{ version: '0.0.4', path: srv, status: 'upgraded' }] }), 'upstream')
+      expect(discordPluginPatchStatus(replaced)).toMatch(/^HIÁNYZIK: 0\.0\.4 \(a fájl az indítás óta cserélődött\)/)
+      const unknown = write((srv: string) => ({ mode: 'on', files: [{ version: '0.0.5', path: srv, status: 'unknown' }] }), 'upstream')
+      expect(discordPluginPatchStatus(unknown)).toMatch(/^HIÁNYZIK: 0\.0\.5 \(ismeretlen plugin-verzió, a hivatalos fut\)/)
+      const gone = write({ mode: 'on', files: [{ version: '0.0.4', path: join(dir, 'nincs.ts'), status: 'upgraded' }] })
+      expect(discordPluginPatchStatus(gone)).toMatch(/^HIÁNYZIK: 0\.0\.4 \(a fájl nem olvasható\)/)
+    })
+
+    it('switched off, no file, no plugin', () => {
+      expect(discordPluginPatchStatus(write({ mode: 'off', files: [] }))).toBe('kikapcsolva (DISCORD_PLUGIN_EXT=off): a hivatalos plugin fut')
+      expect(discordPluginPatchStatus(join(dir, 'nincs.json'))).toMatch(/^nincs adat/)
+      expect(discordPluginPatchStatus(write({ mode: 'on', files: [] }))).toBe('nincs Discord plugin a cache-ben')
+    })
   })
 })

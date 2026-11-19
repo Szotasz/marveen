@@ -16,15 +16,20 @@ const b = CHANNELS.indexOf('\nexit 0\n', CHANNELS.indexOf(END_MARK))
 const EXIT_BLOCK = CHANNELS.slice(a, b + '\nexit 0\n'.length)
 const RAPID_FN = CHANNELS.slice(CHANNELS.indexOf('rapid_exit_log_line() {'), CHANNELS.indexOf('\n}\n', CHANNELS.indexOf('rapid_exit_log_line() {')) + 3)
 
+const FIXED_NOW = 1_800_000_000
+
 function run(o: { reason: string; elapsed: number; restart: boolean; priorRapid: number }) {
   const dir = mkdtempSync(join(tmpdir(), 'gz-rapid-'))
   mkdirSync(join(dir, 'store'))
   const log = join(dir, 'store', 'channels-failures.log')
   if (o.priorRapid > 0) writeFileSync(log, Array.from({ length: o.priorRapid }, () => '2026-11-09 09:00:00 rapid-exit after 5s reason=plugin-died\n').join(''))
   const r = spawnSync('bash', ['-c', [
+    // A fixed clock for `date +%s`: START_TS and the block's ELAPSED read it at two moments, and a second boundary
+    // in between made 5 s read as 6 s. Any other date call (the log line's timestamp) is the real date.
+    `date() { if [ "$*" = "+%s" ]; then echo ${FIXED_NOW}; else command date "$@"; fi; }`,
     RAPID_FN,
     'sleep() { echo "SLEPT $1"; }',
-    `INSTALL_DIR='${dir}' START_TS=$(( $(date +%s) - ${o.elapsed} )) EXIT_REASON='${o.reason}' RESTART_REQUESTED=${o.restart ? 1 : 0} PANE_EXIT_STATUS=''`,
+    `INSTALL_DIR='${dir}' START_TS=$(( ${FIXED_NOW} - ${o.elapsed} )) EXIT_REASON='${o.reason}' RESTART_REQUESTED=${o.restart ? 1 : 0} PANE_EXIT_STATUS=''`,
     EXIT_BLOCK,
   ].join('\n')], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } })
   return { status: r.status, out: r.stdout + r.stderr, log: existsSync(log) ? readFileSync(log, 'utf8') : null }

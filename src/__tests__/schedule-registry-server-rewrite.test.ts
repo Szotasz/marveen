@@ -10,7 +10,7 @@
 //   * the rotation heartbeat the server creates/toggles is registered, so the
 //     runner (which fires registered tasks only) actually fires it.
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { rmSync, writeFileSync } from 'node:fs'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { safeRmTmp } from './helpers/safe-rm-tmp.js'
 import { join } from 'node:path'
 
@@ -39,17 +39,22 @@ vi.mock('../settings-store.js', async (importOriginal) => ({
   getEffectiveSettingValue: (key: string) => settings[key] ?? '',
 }))
 
-import { initDatabase } from '../db.js'
-import { SCHEDULED_TASKS_DIR, disableOnceTask, readScheduledTask, writeScheduledTask } from '../web/scheduled-tasks-io.js'
+import { initDatabase, getScheduledTaskRegistryEntry } from '../db.js'
+import { SCHEDULED_TASKS_DIR, disableOnceTask, readScheduledTask, writeScheduledTask, readRemovedDefaultTasks } from '../web/scheduled-tasks-io.js'
 import { registerScheduledTask, verifyScheduledTask } from '../web/schedule-registry.js'
 import { rewriteRegisteredTask } from '../web/schedule-registry-rewrite.js'
 import {
   ROTATION_HEARTBEAT_TASK,
   buildRotationHeartbeatPromptV1,
+  buildRotationHeartbeatPromptV2,
+  buildRotationHeartbeatPrompt,
   ROTATION_HEARTBEAT_DESCRIPTION,
   ensureRotationHeartbeatTask,
   syncRotationHeartbeatTask,
+  retireRotationHeartbeatTask,
+  isServerWrittenRotationSkill,
 } from '../web/claude-rotation-heartbeat.js'
+import type { ClaudePlansState } from '../web/claude-plans-state.js'
 import { CHANNEL_CHAT_ID, PROJECT_ROOT, WEB_PORT } from '../config.js'
 
 function verdict(name: string) {
@@ -159,5 +164,115 @@ describe('rotation heartbeat prompt upgrade keeps the registry honest', () => {
     v1Task()
     expect(ensureRotationHeartbeatTask()).toBe('upgraded')
     expect(verdict(ROTATION_HEARTBEAT_TASK)).toMatchObject({ ok: false, reason: 'unregistered' })
+  })
+})
+
+// PLANROTATEDEADLOCK1115 P5: the old main-agent task is retired at start. Real task files, real registry.
+describe('retireRotationHeartbeatTask (P5)', () => {
+  const opts = { projectRoot: PROJECT_ROOT, webPort: WEB_PORT, chatId: CHANNEL_CHAT_ID }
+  const seeded = (prompt: string, enabled = true) => {
+    writeScheduledTask(ROTATION_HEARTBEAT_TASK, {
+      description: ROTATION_HEARTBEAT_DESCRIPTION, prompt, schedule: '*/10 * * * *',
+      agent: 'marveen', enabled, type: 'heartbeat', skipIfBusy: true,
+    })
+    registerScheduledTask(ROTATION_HEARTBEAT_TASK, 'server:rotation-heartbeat')
+  }
+  function deps(notifyOk: boolean[] = []) {
+    let state: ClaudePlansState = { activePlanByAgent: {}, plans: {} }
+    const sent: string[] = []
+    const ok = [...notifyOk]
+    return {
+      sent,
+      state: () => state,
+      d: {
+        notify: vi.fn(async (text: string) => { sent.push(text); return ok.length ? ok.shift()! : true }),
+        readState: () => state,
+        writeState: (s: ClaudePlansState) => { state = s },
+        now: () => 1_800_000_000_000,
+        lang: () => 'en' as const,
+      },
+    }
+  }
+
+  it.each([
+    ['V1', () => buildRotationHeartbeatPromptV1(opts)],
+    ['V2', () => buildRotationHeartbeatPromptV2(opts)],
+    ['the Slack form (ROTSLACK1111)', () => buildRotationHeartbeatPrompt({ ...opts, slackTarget: 'C0123' })],
+  ])('an unedited %s seed is removed: files, registry entry, a tombstone; the owner is not told', async (_label, prompt) => {
+    seeded(prompt())
+    expect(verdict(ROTATION_HEARTBEAT_TASK)).toEqual({ ok: true })
+    const h = deps()
+    expect(await retireRotationHeartbeatTask(h.d)).toEqual({ result: 'removed', told: false })
+    expect(existsSync(join(SCHEDULED_TASKS_DIR, ROTATION_HEARTBEAT_TASK))).toBe(false)
+    expect(getScheduledTaskRegistryEntry(ROTATION_HEARTBEAT_TASK)).toBeUndefined()
+    expect(readRemovedDefaultTasks().has(ROTATION_HEARTBEAT_TASK)).toBe(true)
+    expect(h.sent).toEqual([])
+  })
+
+  it('an unedited seed with an extra file the owner put in its dir is not removed: switched off, the file kept', async () => {
+    seeded(buildRotationHeartbeatPromptV2(opts))
+    const extra = join(SCHEDULED_TASKS_DIR, ROTATION_HEARTBEAT_TASK, 'notes.md')
+    writeFileSync(extra, 'my notes')
+    const h = deps()
+    const out = await retireRotationHeartbeatTask(h.d)
+    expect(out.result).not.toBe('removed')
+    expect(existsSync(extra)).toBe(true)
+    expect(readScheduledTask(ROTATION_HEARTBEAT_TASK)?.enabled).toBe(false)
+    expect(readRemovedDefaultTasks().has(ROTATION_HEARTBEAT_TASK)).toBe(false)
+  })
+
+  it('an edited task is switched off, kept, still trusted, and the owner is told once, not again on the next start', async () => {
+    const edited = buildRotationHeartbeatPromptV2(opts).replace('csendben', 'csendben, de alaposan')
+    seeded(edited)
+    const h = deps()
+    expect(await retireRotationHeartbeatTask(h.d)).toEqual({ result: 'disabled', told: true })
+    const task = readScheduledTask(ROTATION_HEARTBEAT_TASK)
+    expect(task?.enabled).toBe(false)
+    expect(task?.prompt.trim()).toBe(edited.trim())
+    expect(verdict(ROTATION_HEARTBEAT_TASK)).toEqual({ ok: true })
+    expect(h.sent).toHaveLength(1)
+    expect(h.sent[0]).toMatch(/switched off \(not deleted\)/)
+    expect(h.state().backend?.retiredTaskNoticeAt).toBe(1_800_000_000_000)
+    // The second start: already off, the marker is in the side-car.
+    expect(await retireRotationHeartbeatTask(h.d)).toEqual({ result: 'kept-disabled', told: false })
+    expect(h.sent).toHaveLength(1)
+    expect(existsSync(join(SCHEDULED_TASKS_DIR, ROTATION_HEARTBEAT_TASK))).toBe(true)
+  })
+
+  it('an edited task the owner had already switched off is kept off, and the owner is still told once', async () => {
+    seeded('my own rotation prompt', false)
+    const h = deps()
+    expect(await retireRotationHeartbeatTask(h.d)).toEqual({ result: 'kept-disabled', told: true })
+    expect(readScheduledTask(ROTATION_HEARTBEAT_TASK)?.enabled).toBe(false)
+  })
+
+  it('a notice that could not be delivered leaves no marker: the next start tells, and only then once', async () => {
+    seeded('my own rotation prompt')
+    const h = deps([false])
+    expect(await retireRotationHeartbeatTask(h.d)).toEqual({ result: 'disabled', told: false })
+    expect(h.state().backend?.retiredTaskNoticeAt).toBeUndefined()
+    expect(await retireRotationHeartbeatTask(h.d)).toEqual({ result: 'kept-disabled', told: true })
+    expect(await retireRotationHeartbeatTask(h.d)).toEqual({ result: 'kept-disabled', told: false })
+    expect(h.sent).toHaveLength(2)
+  })
+
+  it('an edited task that was never trusted is switched off but not laundered into trust', async () => {
+    writeScheduledTask(ROTATION_HEARTBEAT_TASK, { prompt: 'planted', schedule: '* * * * *', agent: 'marveen', enabled: true })
+    const h = deps()
+    expect((await retireRotationHeartbeatTask(h.d)).result).toBe('disabled')
+    expect(verdict(ROTATION_HEARTBEAT_TASK)).toMatchObject({ ok: false, reason: 'unregistered' })
+  })
+
+  it('no task: nothing to do, nothing said', async () => {
+    const h = deps()
+    expect(await retireRotationHeartbeatTask(h.d)).toEqual({ result: 'none', told: false })
+    expect(h.sent).toEqual([])
+  })
+
+  it('isServerWrittenRotationSkill: the three server forms only, not an edit of the Slack form', () => {
+    const file = (p: string) => `---\nname: ${ROTATION_HEARTBEAT_TASK}\ndescription: ${ROTATION_HEARTBEAT_DESCRIPTION}\n---\n\n${p}\n`
+    const slack = buildRotationHeartbeatPrompt({ ...opts, slackTarget: 'C0123' })
+    expect(isServerWrittenRotationSkill(file(slack), opts)).toBe(true)
+    expect(isServerWrittenRotationSkill(file(slack.replace('KÉZBESÍTÉS', 'KÉZBESÍTÉS!')), opts)).toBe(false)
   })
 })

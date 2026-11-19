@@ -51,6 +51,7 @@ import { registerModelWriteCommands, readModelChoices as readChoiceList, readHol
 import { contextClear } from './session-control.js'
 import { pullFleetBrake } from './routes/fleet-freeze.js'
 import { readFleetFreeze, REASON_MAX as FLEET_REASON_MAX } from './fleet-freeze.js'
+import { discordOptionsText } from './discord-options.js'
 
 function clip(s: string, n: number): string {
   const one = s.replace(/\s+/g, ' ').trim()
@@ -59,10 +60,10 @@ function clip(s: string, n: number): string {
 
 // ---- /status ----------------------------------------------------------------
 
-async function statusText(): Promise<string> {
+async function statusText(channel?: 'telegram' | 'discord'): Promise<string> {
   // The external lookup runs in parallel and never blocks the local rows.
   const [system, anthropic] = await Promise.all([
-    getSystemStatus(),
+    getSystemStatus({ channel }),
     fetchAnthropicStatus().catch(() => null),
   ])
   const row: StatusRow = {
@@ -747,8 +748,8 @@ const reply = (ctx: CommandContext, text: string) => ctx.reply(text)
 export function registerBuiltinCommands(): void {
   // OLVAS
   // "/help ?" is the help itself (owner, 2026-09-24).
-  registerCommand({ name: 'help', kind: 'read', description: 'ez a parancslista', help: () => renderHelp(), run: ctx => reply(ctx, renderHelp()) })
-  registerCommand({ name: 'status', kind: 'read', description: 'rendszer-állapot', run: async ctx => reply(ctx, await statusText()) })
+  registerCommand({ name: 'help', kind: 'read', description: 'ez a parancslista', help: () => renderHelp(), run: ctx => reply(ctx, renderHelp(ctx.channel)) })
+  registerCommand({ name: 'status', kind: 'read', description: 'rendszer-állapot', run: async ctx => reply(ctx, await statusText(ctx.channel)) })
   registerCommand({ name: 'queue', kind: 'read', description: 'mi vár rád, mi indul magától', run: ctx => reply(ctx, formatBlocks(collectQueue(ctx.now))) })
   registerCommand({
     name: 'runs', kind: 'read', usage: '/runs [<n>]', description: 'futó körök; <n>: egy kör részletei a futó hívásokkal',
@@ -811,6 +812,12 @@ export function registerBuiltinCommands(): void {
     },
   })
   registerCommand({ name: 'commands', kind: 'read', description: 'a saját parancsaid, az érvénytelenek külön', run: ctx => reply(ctx, customCommandsText()) })
+  // Owner request 2026-11-15: the Discord channel's switches, read-only. Discord only: on Telegram (and on an install
+  // without Discord) /options is not a command, not in /help or the menu, and goes to the model as it did before.
+  registerCommand({
+    name: 'options', kind: 'read', description: 'a Discord-csatorna kapcsolói, értékkel és az állítás helyével',
+    channels: ['discord'], run: ctx => reply(ctx, discordOptionsText()),
+  })
 
   // ÍR, megerősítés nélkül (CMD920 3.3, 3.4). /new and /clear are shipped
   // as default CUSTOM commands (custom-commands.ts DEFAULT_COMMANDS).

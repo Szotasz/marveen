@@ -29,7 +29,8 @@ import { readConfiguredMainModel } from './channel-monitor.js'
 import { readModelFallbackConfig } from './model-fallback-store.js'
 import { readMarveenTelegramConfig } from './telegram.js'
 import { resolveOwnerChatId } from '../owner-chat.js'
-import { resolveOwnerIdentity, ownerUnsetNotice } from '../owner-identity.js'
+import { resolveOwnerIdentity, ownerUnsetNotice, readDiscordOwnerSetting } from '../owner-identity.js'
+import { channelStateDir } from '../channel-provider.js'
 import { readGateConfig } from './context-restart-gate-store.js'
 import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, type QuotaSnapshot, type QuotaWindow } from './quota.js'
 import { getAgentRunningSince } from './agent-process.js'
@@ -290,6 +291,108 @@ export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-
   return lines.join('; ')
 }
 
+// The channel a command came from (CommandContext.channel). Unknown = 'telegram': the CSATORNA block as before.
+export type StatusChannel = 'telegram' | 'discord'
+
+// Discord plugin overlay (scripts/patch-discord-plugin.py, DCEXT1111): the state the last channel start recorded,
+// and each recorded server.ts re-read for the overlay's marker, so a plugin file replaced since then shows up.
+export const DISCORD_OVERLAY_MARKER = 'MARVEEN-EXT'
+
+export function discordPluginPatchStatus(stateFile = join(STORE_DIR, 'discord-plugin-patch.json')): string {
+  if (!existsSync(stateFile)) return 'nincs adat (a csatorna-indítás még nem futtatta a patchert; nem Discord csatorna?)'
+  const state = JSON.parse(readFileSync(stateFile, 'utf-8')) as {
+    mode?: string
+    slash_commands?: number | null
+    files?: Array<{ version: string; path: string; status: string }>
+  }
+  if (state.mode === 'off') return 'kikapcsolva (DISCORD_PLUGIN_EXT=off): a hivatalos plugin fut'
+  const files = state.files ?? []
+  if (files.length === 0) return 'nincs Discord plugin a cache-ben'
+  const missing: string[] = []
+  for (const f of files) {
+    let text = ''
+    try { text = readFileSync(f.path, 'utf-8') } catch { missing.push(`${f.version} (a fájl nem olvasható)`); continue }
+    if (text.includes(DISCORD_OVERLAY_MARKER)) continue
+    const why = f.status === 'unknown' ? 'ismeretlen plugin-verzió, a hivatalos fut'
+      : f.status === 'overlaid' || f.status === 'upgraded' || f.status === 'already' ? 'a fájl az indítás óta cserélődött'
+      : f.status
+    missing.push(`${f.version} (${why})`)
+  }
+  if (missing.length) return `HIÁNYZIK: ${missing.join(', ')} · a Marveen-kiegészítések (gazda-jóváhagyás, slash-parancsok, pótlás) nem futnak`
+  const slash = typeof state.slash_commands === 'number' ? `slash-parancsok: ${state.slash_commands}` : 'slash-parancsok: nincs lista'
+  return `rendben (${files.map(f => f.version).join(', ')}) · ${slash}`
+}
+
+// A Discord bot token starts with the bot's user id, base64-encoded: the bot is named without a network call.
+export function discordBotIdFromToken(token: string): string | null {
+  const first = token.split('.')[0] ?? ''
+  const id = Buffer.from(first, 'base64').toString('utf-8')
+  return /^[1-9][0-9]{16,19}$/.test(id) ? id : null
+}
+
+function discordToken(): string | null {
+  const envPath = join(channelStateDir('discord'), '.env')
+  if (!existsSync(envPath)) return null
+  const m = readFileSync(envPath, 'utf-8').match(/^DISCORD_BOT_TOKEN=(.+)$/m)
+  return m?.[1]?.trim() || null
+}
+
+function errorLogRow(now: number): BlockSpec['rows'][number] {
+  return {
+    label: 'Hiba-napló (24 óra)', source: 'store/channels.error.log mtime',
+    collect: () => {
+      const f = join(STORE_DIR, 'channels.error.log')
+      if (!existsSync(f)) return 'nincs hiba-napló fájl'
+      const m = statSync(f).mtimeMs
+      return now - m < 24 * 3600_000 ? `új bejegyzés, utolsó ${formatDayClock(m)}` : 'nincs új bejegyzés'
+    },
+  }
+}
+
+// The CSATORNA block for a command that came from Discord: the Discord bot, the Discord owner, the Discord traffic
+// and the Discord plugin overlay, not the Telegram ones.
+export function discordChannelBlock(now: number): BlockSpec {
+  return {
+    title: 'CSATORNA',
+    rows: [
+      {
+        label: 'Párosítás', source: 'channels/discord/.env (a token eleje a bot azonosítója)',
+        collect: () => {
+          const token = discordToken()
+          if (!token) return notMeasurable('nincs bot-token a Discord csatorna .env-jében')
+          const id = discordBotIdFromToken(token)
+          return `Discord-bot ${id ? `(id ${id})` : notMeasurable('a token nem a szokott alakú')} · gazda: ${readDiscordOwnerSetting() ?? notMeasurable('nincs DISCORD_OWNER_USER_ID')}`
+        },
+      },
+      {
+        label: 'Chat-parancsok', source: 'DISCORD_OWNER_USER_ID',
+        collect: () => readDiscordOwnerSetting()
+          ? 'engedélyezve a gazdának, a bot DM-jében (Discordról csak az olvasó parancsok)'
+          : 'kikapcsolva: nincs DISCORD_OWNER_USER_ID (a dashboardon állítható)',
+      },
+      {
+        label: 'Forgalom', source: 'conversation_log (Discord forrás és chatjei)',
+        collect: () => {
+          const db = getDb()
+          const lastIn = (db.prepare(
+            "SELECT MAX(created_at) AS last FROM conversation_log WHERE agent_id = ? AND direction = 'in' AND source = 'plugin:discord:discord'",
+          ).get(MAIN_AGENT_ID) as { last: number | null }).last
+          const lastOut = (db.prepare(
+            "SELECT MAX(created_at) AS last FROM conversation_log WHERE agent_id = ? AND direction = 'out' AND chat_id IN (SELECT chat_id FROM conversation_log WHERE agent_id = ? AND source = 'plugin:discord:discord')",
+          ).get(MAIN_AGENT_ID, MAIN_AGENT_ID) as { last: number | null }).last
+          const fmt = (v: number | null) => v === null ? 'nincs' : formatDayClock(msOf(v))
+          return `bejövő ${fmt(lastIn)} · kimenő ${fmt(lastOut)}`
+        },
+      },
+      {
+        label: 'Discord plugin-patch', source: 'store/discord-plugin-patch.json, server.ts jelölő',
+        collect: () => discordPluginPatchStatus(),
+      },
+      errorLogRow(now),
+    ],
+  }
+}
+
 function newestTranscript(): string | null {
   const dir = projectsDirFor(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID))
   if (!existsSync(dir)) return null
@@ -331,7 +434,7 @@ function msOf(v: number): number {
   return v > 1e12 ? v : v * 1000
 }
 
-export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
+export function liveBlockSpecs(now = Date.now(), channel: StatusChannel = 'telegram'): BlockSpec[] {
   return [
     {
       title: 'MARVEEN',
@@ -452,7 +555,7 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
         },
       ],
     },
-    {
+    channel === 'discord' ? discordChannelBlock(now) : {
       title: 'CSATORNA',
       rows: [
         {
@@ -493,15 +596,7 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
           label: 'Telegram plugin-patch', source: 'store/telegram-plugin-patch.json, server.ts jelölő',
           collect: () => telegramPluginPatchStatus(),
         },
-        {
-          label: 'Hiba-napló (24 óra)', source: 'store/channels.error.log mtime',
-          collect: () => {
-            const f = join(STORE_DIR, 'channels.error.log')
-            if (!existsSync(f)) return 'nincs hiba-napló fájl'
-            const m = statSync(f).mtimeMs
-            return now - m < 24 * 3600_000 ? `új bejegyzés, utolsó ${formatDayClock(m)}` : 'nincs új bejegyzés'
-          },
-        },
+        errorLogRow(now),
       ],
     },
     {
@@ -530,16 +625,19 @@ export function liveBlockSpecs(now = Date.now()): BlockSpec[] {
 }
 
 const CACHE_MS = 60_000
-let cache: { at: number; value: SystemStatus } | null = null
+// One cache per channel: a Discord /status must not get the Telegram block cached a minute ago, or the other way.
+const cache = new Map<StatusChannel, { at: number; value: SystemStatus }>()
 
-export async function getSystemStatus(opts: { now?: number; specs?: BlockSpec[]; noCache?: boolean } = {}): Promise<SystemStatus> {
+export async function getSystemStatus(opts: { now?: number; specs?: BlockSpec[]; noCache?: boolean; channel?: StatusChannel } = {}): Promise<SystemStatus> {
   const now = opts.now ?? Date.now()
-  if (!opts.noCache && !opts.specs && cache && now - cache.at < CACHE_MS) return cache.value
-  const value = await runCollectors(opts.specs ?? liveBlockSpecs(now), now)
-  if (!opts.specs) cache = { at: now, value }
+  const channel = opts.channel ?? 'telegram'
+  const hit = cache.get(channel)
+  if (!opts.noCache && !opts.specs && hit && now - hit.at < CACHE_MS) return hit.value
+  const value = await runCollectors(opts.specs ?? liveBlockSpecs(now, channel), now)
+  if (!opts.specs) cache.set(channel, { at: now, value })
   return value
 }
 
 export function _resetSystemStatusCacheForTest(): void {
-  cache = null
+  cache.clear()
 }
