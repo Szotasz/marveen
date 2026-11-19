@@ -20,7 +20,7 @@
  * envelope.
  */
 import { recordApprovalSlackPost, pendingApprovalSlackPosts, markApprovalSlackPostChecked, decideApprovalFromSlack, setApprovalSlackNotice,
-  STANDING_DECISION_CATEGORIES, approvalResolvedBy, type Approval, type ApprovalEvidence } from '../db.js'
+  STANDING_DECISION_CATEGORIES, HASH_BOUND_APPROVAL_CATEGORIES, approvalResolvedBy, type Approval, type ApprovalEvidence } from '../db.js'
 import { logger } from '../logger.js'
 import { verifiedEnvelope, envelopeText } from '../approval-envelope.js'
 import { postApprovalPrompt, sweepOnce, slackCaller, type SlackCall, type ApprovalSlackPost, type Verdict, type ApprovalLang } from '../approval-slack.js'
@@ -128,7 +128,8 @@ export async function postReactionPrompt(approval: Approval, route: Extract<Rout
     logger.warn({ approvalId: approval.id, error: r.error }, 'approval reaction prompt NOT posted')
     return false
   }
-  recordApprovalSlackPost({ approvalId: approval.id, ...r.post, contentBasis: route.contentBasis, reactionMode: route.modes.reaction, replyMode: route.modes.reply, lang: route.lang })
+  recordApprovalSlackPost({ approvalId: approval.id, ...r.post, contentBasis: route.contentBasis, reactionMode: route.modes.reaction, replyMode: route.modes.reply, lang: route.lang,
+    contentHash: HASH_BOUND_APPROVAL_CATEGORIES.has(approval.category) ? approval.content_hash : null })
   logger.info({ approvalId: approval.id, channel: r.post.channel, modes: route.modes, contentBasis: route.contentBasis }, 'approval Slack prompt posted')
   return true
 }

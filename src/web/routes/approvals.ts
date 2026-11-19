@@ -1,3 +1,4 @@
+import { postAgentCreateToGromzo } from '../agent-create-gromzo.js'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -246,6 +247,23 @@ export const teamsCardDeps: TeamsCardDeps = {
   alert: (text) => { void sendOwnerMessage(text) },
 }
 
+/** AGENTCREATEPR3-1119: the owner's channel ask of a filed agent_create request (a server-filed request: the text is the
+ *  server's). A seam for the test that a failing delivery leaves the request pending. */
+const notifyAgentCreateDefault = (approval: Approval, lang: ApprovalLang): void => {
+  notifyOwner(approval, null, true, lang)
+  // AGENTCREATEPR3-1119: also on the owner's Gromzo app when mxd can take decisions (never blocks; logged when not)
+  void postAgentCreateToGromzo(approval, lang)
+}
+let agentCreateNotifier = notifyAgentCreateDefault
+function notifyAgentCreateOwner(approval: Approval, lang: ApprovalLang): void { agentCreateNotifier(approval, lang) }
+/** Test seam: the owner's channel ask of one request, as a server-filed one. */
+export function _notifyOwnerForTest(approval: Approval, lang: ApprovalLang): void { notifyOwner(approval, null, true, lang) }
+/** Test seam: the agent_create notifier in force (the default asks the channels and the Gromzo app). */
+export function _runAgentCreateNotifierForTest(approval: Approval, lang: ApprovalLang): void { agentCreateNotifier(approval, lang) }
+export function _setAgentCreateNotifierForTest(fn: ((approval: Approval, lang: ApprovalLang) => void) | null): void {
+  agentCreateNotifier = fn ?? notifyAgentCreateDefault
+}
+
 function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false, filedLang?: ApprovalLang): void {
   const informative = chatApprovedMessageId != null
   // APPROVALTAGEN1108: the language is read ONCE per request: the text, the Slack DM, its expiry and the language
@@ -276,6 +294,9 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     // Telegram got the request on Telegram (measured 2026-10-30: both of the day's requests logged this function's
     // Telegram branch, its messageId and no provider). The owner asked for Slack only: the request goes to the owner's
     // Slack DM, and a miss falls back in-band, never to Telegram.
+    // AGENTCREATEPR3-1119 (Samu 81756, 2): an agent_create text longer than one Slack message is never split; the DM is a
+    // short pointer to the dashboard (no post row: no reply to it approves anything).
+    if (approval.category === 'agent_create' && text.length > reactionDeps.chunk) text = OWNER_TEXT[lang].agentCreateTooLong(approval.id, approvalsPageUrl())
     const slack = await sendOwnerSlackDm(text)
     if (slack.attempted) {
       if (slack.sent) {
@@ -533,7 +554,19 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       const listed = Object.prototype.hasOwnProperty.call(acl, id) && Array.isArray(acl[id]) ? acl[id] : []
       return listed.includes(reader)
     }
-    const r = await fileAgentSpecRequest(body, requestedBy, { setting: (k) => String(getEffectiveSettingValue(k) ?? ''), lang: approvalTextLang(), vaultReadable })
+    const lang = approvalTextLang()
+    const r = await fileAgentSpecRequest(body, requestedBy, { setting: (k) => String(getEffectiveSettingValue(k) ?? ''), lang, vaultReadable })
+    // AGENTCREATEPR3-1119 (Samu 81756, 1): the owner is asked on the channels, as for any server-filed request (the text
+    // is the server's rendering of the stored spec). A delivery that fails does not undo the filing: the request stays
+    // pending and can be decided on the dashboard; the failure is logged loudly.
+    if (r.status === 201 && typeof r.body.approvalId === 'string') {
+      try {
+        const approval = getApproval(r.body.approvalId)
+        if (approval) notifyAgentCreateOwner(approval, lang)
+      } catch (err) {
+        logger.error({ approvalId: r.body.approvalId, err: err instanceof Error ? err.message : String(err) }, 'agent_create request filed, but the owner could NOT be notified on a channel: it is on the dashboard only')
+      }
+    }
     json(res, r.body, r.status)
     return true
   }
