@@ -4590,6 +4590,24 @@ def strip_for_accent(prose: str) -> str:
     return ACCENT_MASK.sub(" ", prose)
 
 
+# HYPHSUFFIX1119 (2026-11-19, #2920 review): a Hungarian suffix is written with a hyphen after a foreign word, a quote
+# or Markdown ('`<term>`-ot', '"<phrase>"-ot', '„<phrase>”-ot', '*<bold>*-ot', '(<x>)-ot'). HYPHEN_WORD takes letters
+# only, so the closing mark cut the suffix off, and its fragment was checked as a standalone word: 'ot' -> 'öt'.
+# Measured on 637 real outgoing messages: 5 false refusals, all this shape. The mask removes the hyphen and the suffix
+# when the character right before the hyphen is a closing mark (backtick, quote, '*', '_', ')', ']'). It runs on the
+# raw text, before TECHNICAL, because TECHNICAL turns a code span into a space and the closing backtick would be gone.
+# Same limits as the unit-sign branch (ISSUE1838COPYGATE): at most 4 Hungarian Latin letters, end pinned, so a longer
+# compound part ('"x"-csatornan') and a suffix with a Cyrillic or Greek letter are still checked. Accent check only:
+# the homoglyph and double-hyphen rules keep the unmasked prose. A prose dash (' - ot') has a space before the hyphen
+# and is not touched.
+ATTACHED_SUFFIX = re.compile(r"""(?<=[`"'”’»*_)\]])-[a-záéíóöőúüű]{1,4}(?![^\W\d_])""")
+
+
+def strip_attached_suffix(text: str) -> str:
+    """Remove a hyphen-attached Hungarian suffix after a closing mark (HYPHSUFFIX1119), for the accent check only."""
+    return ATTACHED_SUFFIX.sub("", text)
+
+
 def strip_for_name(text: str) -> str:
     """A nev-ellenorzes maszkja: csak az egyertelmuen technikai regiok esnek ki."""
     return NAME_MASK.sub(" ", text)
@@ -5015,7 +5033,8 @@ def audit(text: str):
         )
     # EKEZETMASZK1018: the accent check runs on the text after the ADDITIONAL identifier mask (anchor, flag, /path);
     # the homoglyph and double-hyphen rules above still see the TECHNICAL-masked prose, unchanged.
-    accent_prose = strip_for_accent(prose)
+    # HYPHSUFFIX1119: a hyphen-attached suffix after a closing mark is removed first, on the raw text.
+    accent_prose = strip_for_accent(strip_technical(strip_attached_suffix(plain)))
     tok_pos = accent_check_tokens(accent_prose)
     words = [w for w, _ in tok_pos]
     if is_hungarian(plain) or accentless_evidence(tok_pos, accent_prose):
