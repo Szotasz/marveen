@@ -9,7 +9,8 @@ import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, createDashboardUser } from '../db.js'
 import { resolveAuth, requiresAuth, gateRequest, PUBLIC_LISTENER_OPEN_PATHS, SETUP_SESSION_PATHS, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs'
+import { scanRoutes } from './helpers/route-owner-scan.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { vi } from 'vitest'
@@ -167,6 +168,31 @@ describe('the setup session reaches only the closed list among gated paths', () 
     return { auth, status: out.status, body: out.body }
   }
 
+  // Samu 81244: EVERY gated route, so a new one cannot open to a setup session quietly. The literal routes of the
+  // router (`path === '/api/...' && method === '...'` in src/web.ts and src/web/routes/*.ts, GETs included), plus the
+  // state-changing routes the owner-pin scanner finds; a matcher route (a regex) is covered by the same path-blind rule.
+  it('every gated literal route of the router: 403 for a setup session, except the two allowed', async () => {
+    const files = [join(__dirname, '..', 'web.ts'), ...readdirSync(join(__dirname, '..', 'web', 'routes')).filter((f) => f.endsWith('.ts')).map((f) => join(__dirname, '..', 'web', 'routes', f))]
+    const routes = new Set<string>()
+    for (const f of files) {
+      for (const m of readFileSync(f, 'utf-8').matchAll(/path === '(\/api\/[^']+)' && method === '(GET|POST|PUT|PATCH|DELETE)'/g)) routes.add(`${m[2]} ${m[1]}`)
+    }
+    for (const r of scanRoutes(join(__dirname, '..', '..')).routes) {
+      if (r.pathKey.startsWith('/api/')) for (const m of r.methods) routes.add(`${m} ${r.pathKey}`)
+    }
+    expect(routes.size).toBeGreaterThan(200)
+    const allowed = new Set(SETUP_SESSION_PATHS.map(([m, p]) => `${m} ${p}`))
+    const wrong: string[] = []
+    for (const route of routes) {
+      const [method, path] = route.split(' ') as [string, string]
+      if (!requiresAuth(path, method)) continue
+      const r = await gateSetup(path, method)
+      const ok = allowed.has(route) ? r.auth?.kind === 'setup' && r.status === 0 : r.auth === null && r.status === 403 && JSON.parse(r.body).code === 'setup_session_scope'
+      if (!ok) wrong.push(`${route} -> ${r.status}`)
+    }
+    expect(wrong).toEqual([])
+  })
+
   it('a read and a write outside the list: 403 setup_session_scope', async () => {
     for (const [method, path] of [['GET', '/api/memories'], ['GET', '/api/agents'], ['POST', '/api/onboarding/identity'], ['GET', '/api/auth/users']] as const) {
       const r = await gateSetup(path, method)
@@ -176,6 +202,8 @@ describe('the setup session reaches only the closed list among gated paths', () 
   })
 
   it('the wizard state and creating the first login pass the gate', async () => {
+    // the list itself is pinned: widening it is a review decision, not a quiet edit
+    expect(SETUP_SESSION_PATHS).toEqual([['GET', '/api/onboarding/status'], ['POST', '/api/auth/users']])
     for (const [method, path] of SETUP_SESSION_PATHS) {
       const r = await gateSetup(path, method)
       expect([r.auth?.kind, r.status], path).toEqual(['setup', 0])
