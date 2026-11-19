@@ -1,30 +1,30 @@
 ---
 name: bumblebee-hygiene-scan
-description: Weekly supply-chain hygiene scan (Perplexity Bumblebee). Monday 09:00. Inventories installed packages, MCP configs, and extensions, then matches against known supply-chain threat catalogs. Telegram alert ONLY if findings > 0.
+description: Heti ellátási lánc higiéniai szkennelés (Perplexity Bumblebee). Hétfő 09:00. Leltárba veszi a telepített csomagokat, MCP-konfigokat és bővítményeket, majd ismert ellátási lánc fenyegetés-katalógusokhoz méri őket. Telegram-riasztás CSAK ha a találat > 0.
 ---
 
-# Bumblebee weekly supply-chain scan
+# Bumblebee heti ellátási lánc szkennelés
 
-## When / purpose
-Monday 09:00. The fleet uses many third-party MCP servers, auto-installed CLIs, packages, and skills, creating supply-chain risk. This is a read-only inventory + known-threat match.
+## Mikor / cél
+Hétfő 09:00. A flotta sok külső MCP-szervert, automatikusan telepített CLI-t, csomagot és skillt használ, ez ellátási lánc kockázatot jelent. Ez csak olvasó leltár + ismert fenyegetésekhez illesztés.
 
-## Binary
-- Path: `~/.local/bin/bumblebee` (Go build, PIN v0.1.1)
-- Source: `github.com/perplexityai/bumblebee` (Apache 2.0)
-- Build: `git clone https://github.com/perplexityai/bumblebee && cd bumblebee && go build -o ~/.local/bin/bumblebee ./cmd/bumblebee` (Go >= 1.25 required)
+## Bináris
+- Útvonal: `~/.local/bin/bumblebee` (Go build, PIN v0.1.1)
+- Forrás: `github.com/perplexityai/bumblebee` (Apache 2.0)
+- Build: `git clone https://github.com/perplexityai/bumblebee && cd bumblebee && go build -o ~/.local/bin/bumblebee ./cmd/bumblebee` (Go >= 1.25 kell hozzá)
 
-## Procedure
+## Eljárás
 
-1. **Check binary exists**:
+1. **Nézd meg, megvan-e a bináris**:
 ```bash
 if [ ! -x "$HOME/.local/bin/bumblebee" ]; then
   echo "bumblebee binary not found, skipping scan (install Go>=1.25 and build from github.com/perplexityai/bumblebee)"
   exit 0
 fi
 ```
-If the binary is missing (fresh machine without Go), gracefully skip with an info-level log line. Do NOT error out or send alerts.
+Ha a bináris hiányzik (friss gép Go nélkül), lépj tovább csendben egy info-szintű naplósorral. NE állj meg hibával, és ne küldj riasztást.
 
-2. **Locate threat-intel catalogs**:
+2. **Keresd meg a fenyegetés-katalógusokat**:
 ```bash
 BB_CATALOG="$HOME/.claude/tools/bumblebee-threat-intel"
 if [ ! -d "$BB_CATALOG" ] || [ -z "$(ls -A "$BB_CATALOG" 2>/dev/null)" ]; then
@@ -40,21 +40,21 @@ if [ ! -d "$BB_CATALOG" ] || [ -z "$(ls -A "$BB_CATALOG" 2>/dev/null)" ]; then
 fi
 ```
 
-3. **Run scan** (read-only, ~3 sec):
+3. **Futtasd a szkennelést** (csak olvas, ~3 mp):
 ```bash
 ~/.local/bin/bumblebee scan --profile baseline --exposure-catalog "$BB_CATALOG" > /tmp/bb-weekly.ndjson 2>/tmp/bb-weekly.err
 ```
 
-4. **Evaluate findings**:
+4. **Értékeld a találatokat**:
 ```bash
 FINDING_COUNT=$(grep -c '"record_type":"finding"' /tmp/bb-weekly.ndjson 2>/dev/null || echo 0)
 ```
 
-5. **A zero is only evidence after a positive control.** The scan's output is
-record-type-identical with and without a loaded catalog, and nothing in the
-NDJSON says whether the catalog loaded -- a mistyped path or an empty catalog
-dir produces the same reassuring zero as a clean machine (measured 2026-08-24).
-So before booking a 0 as clean, prove the match path is alive:
+5. **A nulla csak pozitív kontroll után bizonyíték.** A szkennelés kimenete
+rekordtípusra ugyanaz betöltött katalógussal és anélkül, és az NDJSON-ban
+semmi nem mondja meg, hogy a katalógus betöltődött-e: egy elírt út vagy egy üres
+katalógus-mappa ugyanazt a megnyugtató nullát adja, mint egy tiszta gép (mérve 2026-08-24).
+Mielőtt egy 0-t tisztának könyvelsz el, bizonyítsd, hogy az illesztési út él:
 ```bash
 # a) pick one certainly-installed package from today's scan
 #    (the SCAN record's field is package_name)
@@ -75,19 +75,19 @@ JSON
   grep -c '"record_type":"finding"'   # must be > 0
 rm -rf /tmp/bb-synth
 ```
-If the control yields findings, today's real 0 is a real zero. If the control
-yields 0, do NOT report clean -- report INSTRUMENT FAILURE (and check your
-synthetic file's field names first: that is the cheaper of the two causes).
-Never put the synthetic file into the real catalog dir.
+Ha a kontroll ad találatot, a mai valódi 0 valódi nulla. Ha a kontroll is 0-t ad,
+NE jelents tisztát, hanem MŰSZERHIBÁT (és előbb a szintetikus fájl mezőneveit nézd
+meg: ez az olcsóbb a két ok közül).
+A szintetikus fájlt soha ne tedd a valódi katalógus-mappába.
 
-6. **Telegram ONLY if finding > 0**: send alert with finding details (ecosystem, package, version, which threat catalog matched). If 0 findings AND the positive control passed: stay silent (heartbeat style, transcript line only). A zero without the control is UNVERIFIED and must be reported as such, not as clean.
+6. **Telegram CSAK ha a találat > 0**: küldj riasztást a találat részleteivel (ökoszisztéma, csomag, verzió, melyik fenyegetés-katalógus illeszkedett). Ha 0 a találat ÉS a pozitív kontroll átment: maradj csendben (heartbeat-stílus, csak egy átiratsor). A kontroll nélküli nulla ELLENŐRIZETLEN, és annak is kell jelenteni, nem tisztának.
 
-7. **Monthly threat-intel refresh** (once per ~30 days). Key the 30-day rule on
-a refresh-check marker, NOT on the catalog files' mtime: catalog file mtime
-never changes while upstream is unchanged, so an mtime rule re-clones on every
-weekly run once the files age past 30 days (measured 2026-09-07: 35-day-old
-files, upstream byte-identical -- the clone was pure waste). Compare content,
-copy only on change, and stamp the marker either way:
+7. **Havi fenyegetés-katalógus frissítés** (kb. 30 naponta egyszer). A 30 napos
+szabályt egy frissítés-ellenőrzési jelölőfájlhoz kösd, NE a katalógusfájlok mtime-jához:
+a katalógusfájl mtime-ja nem változik, amíg az upstream nem változik, így egy mtime-szabály
+minden heti futáskor újraklónoz, amint a fájlok 30 napnál idősebbek (mérve 2026-09-07:
+35 napos fájlok, az upstream bájtra azonos, a klónozás tiszta pazarlás volt). Tartalmat
+hasonlíts, csak változásnál másolj, és a jelölőt mindkét esetben frissítsd:
 ```bash
 MARKER="$BB_CATALOG/.last-refresh-check"
 if [ -z "$(find "$MARKER" -mtime -30 2>/dev/null)" ]; then
@@ -105,19 +105,19 @@ if [ -z "$(find "$MARKER" -mtime -30 2>/dev/null)" ]; then
 fi
 ```
 
-## Pitfalls
-- Findings ONLY appear with `--exposure-catalog` flag (otherwise always 0). The catalogs live in `~/.claude/tools/bumblebee-threat-intel/`.
-- **The scan is fail-open on the catalog**: with a mistyped catalog path or an empty catalog dir the output is record-type-identical to a healthy run, and nothing in it says the catalog did not load. A zero without the step-5 positive control is a number nobody has checked.
-- If Go is not available (< 1.25 or not installed), the binary cannot be built. The task must GRACEFULLY SKIP, not crash.
-- 0 findings does NOT mean absolute safety, only that the threats in the currently loaded catalogs are not present. Do not quote a fixed threat count from memory -- it goes stale (a "6 threats" figure survived here while the real catalogs held 12 files / 1099 entries); if the number is needed, count it from the loaded catalog files' `entries` arrays.
-- Do NOT spam: 0 findings = no Telegram message.
-- The vendored catalogs in seed-scheduled-tasks are a bootstrap fallback. The monthly refresh keeps them current.
-- SILENT-SKIP BLIND SPOT (measured 2026-08-10): if the binary is missing -- no Go toolchain on the machine (`go: command not found`), or it was simply never built -- step 1 exits 0 every single Monday while the catalogs sit there looking healthy. "Graceful skip + no Telegram" then means the coverage gap is permanently invisible: no alert, no transcript anyone reads, week after week. RULE: on a skip, before `exit 0`, check whether a `hot` memory about the gap already exists (`GET /api/memories?q=bumblebee&strict=1`) and write one if not. **The `&strict=1` is the whole check** (MEMKERESVAK917): without it the search is forgiving, so when no memory matches it answers with whatever the leftover filler words pulled in, and the absence test reads that as "already exists" and never writes. Measured on the owner store with a naturally phrased query of exactly this shape -- `q=bumblebee binary hianyzik Go toolchain nincs` -- the endpoint answered `X-Memory-Search: strict=false; relaxed=true; hits=50`. Fifty rows, none of them the memory being looked for. With `strict=1` an empty answer means exactly what it looks like. That is what surfaces it in the Dream Engine / napindito Top-3 instead of it vanishing. The no-Telegram rule bans spam, NOT record-keeping.
-- Do NOT run step 7 (catalog refresh) when the binary is missing. Refreshing threat intel for a scanner that cannot run is pure churn -- and a `git clone` + `cp` over the catalog dir is a mutation with zero payoff. Fix the binary first, refresh after.
-- Building the binary means installing a whole Go toolchain (`brew install go`) on the user's machine. That is a user decision, not an autonomous one -- escalate and wait, do not self-install.
+## Buktatók
+- Találat CSAK a `--exposure-catalog` kapcsolóval jelenik meg (nélküle mindig 0). A katalógusok helye: `~/.claude/tools/bumblebee-threat-intel/`.
+- **A szkennelés a katalógusra nézve fail-open**: elírt katalógus-úttal vagy üres katalógus-mappával a kimenet rekordtípusra azonos egy egészséges futáséval, és semmi nem jelzi benne, hogy a katalógus nem töltődött be. Az 5. lépés pozitív kontrollja nélküli nulla egy szám, amit senki nem ellenőrzött.
+- Ha nincs Go (< 1.25 vagy nincs telepítve), a bináris nem építhető. A feladatnak ilyenkor CSENDBEN TOVÁBB KELL LÉPNIE, nem összeomlania.
+- A 0 találat NEM abszolút biztonságot jelent, csak azt, hogy a most betöltött katalógusokban szereplő fenyegetések nincsenek jelen. Ne idézz fix fenyegetés-számot emlékezetből, mert elavul (egy "6 fenyegetés" szám élte túl itt, miközben a valódi katalógusokban 12 fájl / 1099 bejegyzés volt); ha kell a szám, a betöltött katalógusfájlok `entries` tömbjeiből számold meg.
+- NE spamelj: 0 találat = nincs Telegram-üzenet.
+- A seed-scheduled-tasks alatt tárolt katalógusok indító tartalék. A havi frissítés tartja őket naprakészen.
+- CSENDES KIHAGYÁS VAKFOLTJA (mérve 2026-08-10): ha a bináris hiányzik (nincs Go eszközlánc a gépen, `go: command not found`, vagy egyszerűen sosem épült meg), az 1. lépés minden egyes hétfőn 0-val lép ki, miközben a katalógusok egészségesnek látszanak. A "csendes kihagyás + nincs Telegram" ekkor azt jelenti, hogy a lefedettségi rés tartósan láthatatlan: nincs riasztás, nincs átirat, amit bárki elolvasna, hétről hétre. SZABÁLY: kihagyáskor, az `exit 0` előtt nézd meg, létezik-e már `hot` emlék a résről (`GET /api/memories?q=bumblebee&strict=1`), és ha nincs, írj egyet. **A `&strict=1` maga az ellenőrzés** (MEMKERESVAK917): nélküle a keresés engedékeny, így ha egyetlen emlék sem illeszkedik, a maradék töltelékszavakra hozott sorokkal válaszol, és a hiány-teszt ezt úgy olvassa, hogy "már létezik", és sosem ír. A gazda tárán mérve, pontosan ilyen alakú, természetesen megfogalmazott kérdéssel (`q=bumblebee binary hianyzik Go toolchain nincs`) a végpont ezt adta: `X-Memory-Search: strict=false; relaxed=true; hits=50`. Ötven sor, egyik sem a keresett emlék. A `strict=1`-gyel az üres válasz pontosan azt jelenti, aminek látszik. Ez hozza felszínre a Dream Engine / napindító Top-3-ban ahelyett, hogy eltűnne. A Telegram-tilalom a spamet tiltja, NEM a nyilvántartást.
+- NE futtasd a 7. lépést (katalógus-frissítés), ha a bináris hiányzik. Egy futni nem tudó szkenner fenyegetés-katalógusát frissíteni tiszta üresjárat, és egy `git clone` + `cp` a katalógus-mappán haszon nélküli módosítás. Előbb a binárist javítsd, utána frissíts.
+- A bináris építése egy teljes Go eszközlánc telepítését jelenti (`brew install go`) a felhasználó gépén. Ez a felhasználó döntése, nem autonóm lépés: eszkaláld és várj, ne telepítsd magadtól.
 
 
-## Verification
-- Scan exits 0, scan_summary record shows status=complete.
-- A 0-finding result was accompanied by a passing positive control (step 5), or the report says the zero is UNVERIFIED.
-- Finding > 0 triggers Telegram alert; verified 0 findings = silence.
+## Ellenőrzés
+- A szkennelés 0-val lép ki, a scan_summary rekordban status=complete.
+- Egy 0 találatos eredményt átment pozitív kontroll kísért (5. lépés), vagy a jelentés kimondja, hogy a nulla ELLENŐRIZETLEN.
+- A > 0 találat Telegram-riasztást indít; az ellenőrzött 0 találat = csend.

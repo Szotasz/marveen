@@ -404,15 +404,21 @@ describe('the shipped English seed texts', () => {
   const front = (s: string, key: string) => (s.match(new RegExp(`^${key}:\\s*(.*)$`, 'm')) ?? [])[1]
   // Where a Hungarian word in an English file is a protocol: the server or a parser uses it (kept on purpose).
   const PROTOCOL_HU = [/\[JÓVÁHAGYÁS KELL\]/g, /cim-kapu \(trigger\)/g, /<a hibás minta>|<kulcsszó>|<rendszer>|<tunet>/g, /GONDOLATJEL-KAPU/g]
-  // dream-engine's em-dash gate names the characters it looks for
-  const DASH_OK = [/grep -oE '—\|–\|―'/g, /` — ` -> ` -- `/g]
+  // dream-engine's em-dash gate names the characters it looks for; so does ai-fleet-project-execution's diff re-grep
+  const DASH_OK = [/grep -oE '—\|–\|―'/g, /` — ` -> ` -- `/g, /grep -cE "\^\\\+\.\*\(—\| -- \)"/g]
 
-  it('covers the A group (Samu 72774): 10 files', () => {
+  it('covers the A group (Samu 72774, 10 files) and the DOCKERI18N1119 group (16 files)', () => {
     expect(pairs.sort()).toEqual([
       'scheduled-tasks/dream-engine/SKILL.md', 'scheduled-tasks/ledger-live-drain/SKILL.md', 'scheduled-tasks/memoria-heartbeat/SKILL.md',
-      'scheduled-tasks/reggeli-napindito/SKILL.md', 'seed-scheduled-tasks/kanban-audit/SKILL.md',
+      'scheduled-tasks/reggeli-napindito/SKILL.md', 'seed-scheduled-tasks/bumblebee-hygiene-scan/SKILL.md',
+      'seed-scheduled-tasks/intel-collector/SKILL.md', 'seed-scheduled-tasks/intel-daily-brief/SKILL.md', 'seed-scheduled-tasks/kanban-audit/SKILL.md',
       'seed-scheduled-tasks/kanban-audit/references/kanban-audit-buktatok.md', 'seed-scheduled-tasks/kanban-audit/references/kanban-audit-step4b-waiting.md',
-      'seed-scheduled-tasks/nap-zaro/SKILL.md', 'seed-skills/approval-request-handling/SKILL.md', 'seed-skills/self-rename/SKILL.md',
+      'seed-scheduled-tasks/nap-zaro/SKILL.md', 'seed-scheduled-tasks/post-rollback-diagnose/SKILL.md',
+      'seed-skills/ai-fleet-project-execution/SKILL.md', 'seed-skills/approval-request-handling/SKILL.md', 'seed-skills/bridge-szolgaltatas-lapok/SKILL.md',
+      'seed-skills/channel-plugin-duplicate-socket/SKILL.md', 'seed-skills/fleet-helper/SKILL.md', 'seed-skills/fleet-helper/scripts/README.md',
+      'seed-skills/fleet-hygiene/SKILL.md', 'seed-skills/github-pr-rebase-merge/SKILL.md', 'seed-skills/handoff/SKILL.md',
+      'seed-skills/retrospective/SKILL.md', 'seed-skills/self-rename/SKILL.md', 'seed-skills/skill-management/SKILL.md',
+      'skills/skill-factory/SKILL.md', 'templates/scheduled-tasks/folyamatos-ellenorzes/SKILL.md',
     ])
   })
 
