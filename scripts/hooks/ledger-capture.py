@@ -375,8 +375,10 @@ def _owner_id(provider, cache):
     install_dir = _owner_install_dir()
     key = OWNER_KEY_BY_PROVIDER.get(provider)
     explicit = _setting(install_dir, key) if key else None
-    if provider == "telegram" and explicit and not explicit.isdigit():
-        explicit = None  # a negative (group) chat id names no person
+    if provider == "telegram" and explicit and (explicit == "0" or not explicit.isdigit()):
+        # a negative (group) chat id names no person; an explicit "0" means not set (CHATID0, as in
+        # src/owner-chat.ts and scripts/lib/owner_chat.py), so the sole DM-allowlist entry decides (#2965)
+        explicit = None
     if explicit:
         owner = explicit
     elif provider in SENDER_KEY:
