@@ -1304,6 +1304,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     if (!denyList.includes(rule)) denyList.push(rule)
   }
   if (!denyList.includes(SUBAGENT_TOTP_STORE_DENY)) denyList.push(SUBAGENT_TOTP_STORE_DENY)
+  for (const rule of SUBAGENT_VAULT_KEY_DENY) if (!denyList.includes(rule)) denyList.push(rule)
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
   // on EVERY spawn, because this function replaces the deny list wholesale --
   // a name written straight into settings.json disappears at the next respawn
@@ -1881,6 +1882,13 @@ export const FLEET_BASELINE_DENY = [
 // The `//**/` form is MEASURED (Claude Code 2.1.326, 2026-11-19, a sub-agent-shaped cwd two levels below the file):
 // `Read(**/store/.dashboard-totp.json)` let the Read tool read the file, this form and an absolute `//` path refused.
 export const SUBAGENT_TOTP_STORE_DENY = 'Read(//**/store/.dashboard-totp.json)'
+
+// ISSUE2951VAULT (Dani's follow-up on #2953): the vault master-key files, in the same measured `//**/store/` form as
+// the TOTP fence above. store/.vault-key is the file store (VAULT_KEY_STORE=file) and store/.vault-key.migrated the
+// plain copy left by the Keychain migration. No sub-agent reads either (the dashboard reads the key itself). A text
+// fence on the Read tool, not an OS boundary (same OS user; a Bash read is not covered). Exact names, no glob: only
+// the exact `//**/store/<file>` form is measured.
+export const SUBAGENT_VAULT_KEY_DENY = ['Read(//**/store/.vault-key)', 'Read(//**/store/.vault-key.migrated)']
 
 // The floor's sudo pair, named so the per-agent opt-out (SUDO_AGENTS) lifts
 // exactly these two rules and nothing else of the floor.
