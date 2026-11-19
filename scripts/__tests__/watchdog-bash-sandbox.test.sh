@@ -152,5 +152,133 @@ else
   dashboard_shape "$SB/sbx.settings.json" && pass "relaunch: the file it names is the dashboard's shape" || fail "relaunch: the file it names is the dashboard's shape" "$(cat "$SB/sbx.settings.json" 2>&1)"
 fi
 
+# ── Part 3: which node (WDSANDBOXNODE1119) ──────────────────────────────
+# The dashboard records the node it runs on in store/.dashboard-node; the watchdog uses it first, falls back to the
+# node on PATH (logged) when it is missing or not one line holding an absolute path to an executable file with no quote
+# or colon, and never runs a value it did not accept. A recorded value that would be accepted points at a wrapper that
+# marks its use and runs the real node; each rejected value points at a trap that marks if it is ever run.
+echo "watchdog node resolution:"
+REAL_NODE="$(node -p process.execPath)"
+NONODE_PATH="/usr/bin:/bin"
+LOGF="$FX/logs/watchdog.log"
+USED="$TMP/recorded-node.used"; TRAPPED="$TMP/trap-node.ran"; POISONED="$TMP/path-node.ran"
+mkdir -p "$TMP/nvm/bin" "$TMP/it's" "$TMP/two"$'\n'"lines" "$TMP/co:lon" "$TMP/rel/bin" "$TMP/noexec"
+printf '#!/bin/bash\necho used >> %q\nexec %q "$@"\n' "$USED" "$REAL_NODE" > "$TMP/nvm/bin/node"
+for t in "$TMP/it's/node" "$TMP/two"$'\n'"lines/node" "$TMP/co:lon/node" "$TMP/rel/bin/node"; do
+  printf '#!/bin/bash\necho ran >> %q\nexec %q "$@"\n' "$TRAPPED" "$REAL_NODE" > "$t"
+done
+chmod +x "$TMP/nvm/bin/node" "$TMP/it's/node" "$TMP/two"$'\n'"lines/node" "$TMP/co:lon/node" "$TMP/rel/bin/node"
+# Dani 81206 n1: a regular file the -x check alone rejects (0644, the same trap body).
+printf '#!/bin/bash\necho ran >> %q\nexec %q "$@"\n' "$TRAPPED" "$REAL_NODE" > "$TMP/noexec/node"; chmod 644 "$TMP/noexec/node"
+# record VALUE: written as the dashboard writes it (the value and one newline, 0444, directly in the store); "-" removes
+# the file.
+NODEF="$FX/store/.dashboard-node"
+record() { rm -f "$NODEF"; [ "$1" = - ] || { printf '%s\n' "$1" > "$NODEF"; chmod 444 "$NODEF"; }; }
+# flag_in PATH ID: --sandbox-flag from inside $TMP/rel (a relative value would resolve there), under the given PATH.
+flag_in() { ( cd "$TMP/rel" && HOME="$FH" PATH="$1" bash "$WD" --sandbox-flag "$2" ); }
+reset_marks() { rm -f "$USED" "$TRAPPED" "$POISONED"; : > "$LOGF"; }
+FALLBACK_LINE="dashboard node not recorded or not usable"
+
+if [ -n "$(env PATH="$NONODE_PATH" /bin/bash -c 'command -v node')" ]; then
+  fail "a PATH without node can be built here (refusing to run part 3)" "$(env PATH="$NONODE_PATH" /bin/bash -c 'command -v node')"
+else
+  reset_marks; record "$TMP/nvm/bin/node"
+  OUT="$(flag_in "$NONODE_PATH" sbx)"
+  [ "$OUT" = "$WANT" ] && [ -f "$USED" ] && ! grep -q "$FALLBACK_LINE" "$LOGF" \
+    && pass "no node on PATH, the dashboard's node recorded: it runs the helper, --settings" \
+    || fail "no node on PATH, the dashboard's node recorded: it runs the helper, --settings" "$OUT / used=$([ -f "$USED" ] && echo y || echo n) / $(cat "$LOGF")"
+
+  reset_marks; record -
+  OUT="$(flag_in "$NODE_DIR:$NONODE_PATH" sbx)"
+  [ "$OUT" = "$WANT" ] && grep -q "$FALLBACK_LINE.*using the node on PATH: $NODE_DIR/node" "$LOGF" \
+    && pass "nothing recorded: the node on PATH, and the log says so" \
+    || fail "nothing recorded: the node on PATH, and the log says so" "$OUT / $(cat "$LOGF")"
+
+  # Each trap exists and is executable: only the shape check stands between it and a run.
+  for bad in "bin/node|relative" "$TMP/it's/node|a quote" "$TMP/two"$'\n'"lines/node|two lines" "$TMP/co:lon/node|a colon" "$TMP/nope/node|nonexistent" "$TMP/nvm/bin|a directory" "$TMP/noexec/node|a regular file that is not executable"; do
+    val="${bad%|*}"; what="${bad##*|}"
+    reset_marks; record "$val"
+    OUT="$(flag_in "$NODE_DIR:$NONODE_PATH" sbx)"
+    [ "$OUT" = "$WANT" ] && [ ! -f "$TRAPPED" ] && [ ! -f "$USED" ] && grep -q "$FALLBACK_LINE.*using the node on PATH: $NODE_DIR/node" "$LOGF" \
+      && pass "recorded value $what: never run, the node on PATH (logged)" \
+      || fail "recorded value $what: never run, the node on PATH (logged)" "$OUT / trapped=$([ -f "$TRAPPED" ] && echo y || echo n) used=$([ -f "$USED" ] && echo y || echo n) / $(cat "$LOGF")"
+  done
+
+  reset_marks; record "$TMP/it's/node"
+  OUT="$(flag_in "$NONODE_PATH" sbx)"
+  [ "$OUT" = "flag=REFUSED" ] && [ ! -f "$TRAPPED" ] && grep -q "using the node on PATH: none" "$LOGF" \
+    && pass "a rejected value and no node on PATH: refused, as today" \
+    || fail "a rejected value and no node on PATH: refused, as today" "$OUT / $(cat "$LOGF")"
+  reset_marks; record -
+  OUT="$(flag_in "$NONODE_PATH" sbx)"
+  [ "$OUT" = "flag=REFUSED" ] && grep -q "using the node on PATH: none" "$LOGF" \
+    && pass "nothing recorded and no node on PATH: refused, as today" \
+    || fail "nothing recorded and no node on PATH: refused, as today" "$OUT / $(cat "$LOGF")"
+fi
+
+# The whole run. Its own PATH puts $HOME/.local/bin first, so a node there that fails and marks stands in for "the
+# node on PATH is not the dashboard's" on any host (here Homebrew's node would otherwise be found).
+if [ "$RESOLVED" = "$STUBS/tmux:$STUBS/claude" ]; then
+  printf '#!/bin/bash\necho ran >> %q\nexit 1\n' "$POISONED" > "$STUBS/node"; chmod +x "$STUBS/node"
+  run_all() { : > "$CMDS"; env -u TMUX HOME="$FH" TMUX_TMPDIR="$TMP/tmux-sock" PATH="$STUBS:$NONODE_PATH" bash "$WD" >/dev/null 2>&1; }
+  chmod 755 "$SB"; rm -f "$SB/sbx.settings.json"
+  reset_marks; record "$TMP/nvm/bin/node"; run_all
+  case "$(cmd_of sbx)" in
+    *"--channels plugin:telegram@claude-plugins-official --settings '$SB/sbx.settings.json'")
+      [ -f "$USED" ] && [ ! -f "$POISONED" ] && pass "relaunch: the recorded node is used, the listed agent starts with --settings" \
+        || fail "relaunch: the recorded node is used, the listed agent starts with --settings" "used=$([ -f "$USED" ] && echo y || echo n) poisoned=$([ -f "$POISONED" ] && echo y || echo n)" ;;
+    *) fail "relaunch: the recorded node is used, the listed agent starts with --settings" "$(cmd_of sbx) / $(cat "$LOGF")" ;;
+  esac
+
+  reset_marks; record -; run_all
+  [ -z "$(cmd_of sbx)" ] && [ -f "$POISONED" ] && grep -q "sbx: not started: bash-sandbox settings could not be produced" "$LOGF" && grep -q "$FALLBACK_LINE" "$LOGF" \
+    && pass "relaunch: nothing recorded -> the node on PATH (logged); it fails here, so the listed agent is refused" \
+    || fail "relaunch: nothing recorded -> the node on PATH (logged); it fails here, so the listed agent is refused" "$(cmd_of sbx) / $(cat "$LOGF")"
+
+  # The dashboard down: npm start runs with the recorded node's directory first, so npm and its node are that one.
+  printf '#!/bin/bash\nexit 0\n' > "$STUBS/ps"
+  printf '#!/bin/bash\ncommand -v node > %q\n' "$TMP/npm.node" > "$TMP/nvm/bin/npm"; chmod +x "$TMP/nvm/bin/npm"
+  reset_marks; record "$TMP/nvm/bin/node"; rm -f "$TMP/npm.node"; run_all
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$TMP/npm.node" ] && break; /bin/sleep 0.2; done
+  [ "$(cat "$TMP/npm.node" 2>/dev/null)" = "$TMP/nvm/bin/node" ] \
+    && pass "dashboard down: npm start runs from the recorded node's directory" \
+    || fail "dashboard down: npm start runs from the recorded node's directory" "$(cat "$TMP/npm.node" 2>&1)"
+fi
+
+# ── Part 4: an install without the sandbox list, and the nightly backup (Dani 81206 B1) ─
+# The recorded node used to live in store/bash-sandbox/, which the dashboard then created (0555) on EVERY install;
+# scripts/backup.sh copies the store with `cp -pR`, so its EXIT trap's `rm -rf` could not remove the staged copy and a
+# .stage.* directory stayed in BACKUP_DIR after every run, with exit 0. A fresh install with no BASH_SANDBOX_AGENTS
+# anywhere: the dashboard start's two store writers from its own dist (the node record, the sandbox sync of an
+# unlisted agent), then one backup.sh run.
+echo "install without the sandbox list:"
+FX2="$TMP/install2"; FH2="$TMP/home2"; BK="$TMP/backups"
+mkdir -p "$FX2/store" "$FX2/scripts/lib" "$FH2/.claude/skills/demo" "$FH2/.claude/scheduled-tasks/demo" "$BK"
+cp -R "$REPO_DIR/dist" "$FX2/dist"
+cp "$REPO_DIR/scripts/backup.sh" "$FX2/scripts/backup.sh"
+cp "$REPO_DIR/scripts/lib/archive-list-has.sh" "$FX2/scripts/lib/"
+echo '[]' > "$FX2/store/agent-package-hidden.json"
+if command -v sqlite3 >/dev/null 2>&1; then sqlite3 "$FX2/store/claudeclaw.db" 'CREATE TABLE t(x);'; else printf 'db' > "$FX2/store/claudeclaw.db"; fi
+printf 'x' > "$FH2/.claude/skills/demo/SKILL.md"; printf 'x' > "$FH2/.claude/scheduled-tasks/demo/SKILL.md"
+START_OUT="$(env -u BASH_SANDBOX_AGENTS HOME="$FH2" node --input-type=module -e '
+  const m = await import(process.argv[1])
+  m.recordDashboardNode()
+  process.stdout.write(String(m.syncBashSandboxSettings("free")))' "$FX2/dist/web/bash-sandbox.js" 2>&1)"
+# GNU form first: on Linux `stat -f` is the file-system status, not the BSD format flag (CI job 135496143155).
+NODE_MODE="$(stat -c %a "$FX2/store/.dashboard-node" 2>/dev/null || stat -f %Lp "$FX2/store/.dashboard-node" 2>/dev/null)"
+[ "$(cat "$FX2/store/.dashboard-node" 2>/dev/null)" = "$REAL_NODE" ] && [ "$NODE_MODE" = 444 ] \
+  && pass "dashboard start: store/.dashboard-node holds its node, 0444" \
+  || fail "dashboard start: store/.dashboard-node holds its node, 0444" "$START_OUT / mode=$NODE_MODE / $(ls -la "$FX2/store")"
+[ "$START_OUT" = null ] && [ ! -e "$FX2/store/bash-sandbox" ] \
+  && pass "dashboard start: no store/bash-sandbox/ without the list (as before the node record)" \
+  || fail "dashboard start: no store/bash-sandbox/ without the list (as before the node record)" "$START_OUT / $(ls -la "$FX2/store")"
+BK_OUT="$(cd "$FX2" && HOME="$FH2" BACKUP_DIR="$BK" bash scripts/backup.sh 2>&1)"; BK_RC=$?
+BK_ARCHIVE="$(ls -1 "$BK"/claudeclaw-*.tar.gz 2>/dev/null | head -1)"
+[ "$BK_RC" -eq 0 ] && [ -n "$BK_ARCHIVE" ] && tar -tzf "$BK_ARCHIVE" | grep -qx "repo/store/.dashboard-node" \
+  && pass "backup: exits 0 and the archive carries store/.dashboard-node" \
+  || fail "backup: exits 0 and the archive carries store/.dashboard-node" "rc=$BK_RC / $(printf '%s' "$BK_OUT" | tail -5)"
+LEFT="$(find "$BK" -mindepth 1 -maxdepth 1 -name '.stage.*' 2>/dev/null)"
+[ -z "$LEFT" ] && pass "backup: no .stage.* left in BACKUP_DIR" || fail "backup: no .stage.* left in BACKUP_DIR" "$LEFT"
+
 echo "watchdog-bash-sandbox: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

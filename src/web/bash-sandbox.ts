@@ -144,3 +144,19 @@ export function syncBashSandboxSettings(name: string, opts: { dir?: string; vend
     chmodSync(dir, 0o555)
   }
 }
+
+// WDSANDBOXNODE1119: scripts/watchdog.sh runs scripts/bash-sandbox-sync.mjs (and npm start) with node, under its own
+// PATH (Homebrew, Linuxbrew, /usr/local/bin). A host whose node comes from elsewhere (nvm) has none there, and the
+// fail-closed restart then refused every sub-agent. The dashboard records the node it runs on here, one absolute path
+// and a newline; the watchdog uses it first and falls back to PATH only when the file is missing or not that shape.
+// A read-only (0444) file directly in the store, under the db-write gate; written atomically and only when the path
+// changed. NOT under store/bash-sandbox/: that directory is kept 0555, and creating it on every install left a
+// directory scripts/backup.sh's cleanup cannot remove (Dani 81206 B1); an install without the sandbox list still
+// never gets one.
+export const DASHBOARD_NODE_PATH = join(STORE_DIR, '.dashboard-node')
+export function recordDashboardNode(execPath = process.execPath, file = DASHBOARD_NODE_PATH): boolean {
+  const data = `${execPath}\n`
+  try { if (readFileSync(file, 'utf-8') === data) return false } catch { /* missing or unreadable: write it */ }
+  atomicWriteFileSync(file, data, { mode: 0o444 })
+  return true
+}

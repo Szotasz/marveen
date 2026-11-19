@@ -65,6 +65,23 @@ agent_launch_env() {
   fi
 }
 
+# WDSANDBOXNODE1119: the node to run the dashboard's code with. This script's PATH (below) has the Homebrew,
+# Linuxbrew and /usr/local bins, not a node from nvm or elsewhere, so the dashboard records the one it runs on
+# (process.execPath) in store/.dashboard-node at start. It is taken only as one line holding an absolute path to an
+# existing executable file, with no quote and no colon (it also goes in front of PATH for npm start); anything else is
+# ignored and never run. Otherwise the node on PATH, and a log line says so. Prints nothing when there is neither.
+dashboard_node() {
+  local F="$INSTALL_DIR/store/.dashboard-node" N=""
+  if [ -f "$F" ]; then N="$(cat "$F" 2>/dev/null; printf x)"; N="${N%x}"; N="${N%$'\n'}"; fi
+  case "$N" in
+    *"'"*|*'"'*|*:*|*$'\n'*) ;;
+    /*) if [ -f "$N" ] && [ -x "$N" ]; then printf '%s' "$N"; return 0; fi ;;
+  esac
+  N="$(command -v node)"
+  echo "$(timestamp) [watchdog] dashboard node not recorded or not usable ($F); using the node on PATH: ${N:-none}" >> "$LOG"
+  printf '%s' "$N"
+}
+
 # BASHSANDBOX1022: an agent on the owner's BASH_SANDBOX_AGENTS list runs its Bash in Claude
 # Code's sandbox, from a --settings file the dashboard writes on every start of it (and removes
 # for an agent the switch does not list). A restart from here must carry the same file, or the
@@ -76,8 +93,10 @@ agent_launch_env() {
 # node or dist, an unreadable owner source, a write failure, an unexpected answer): the caller
 # then does not start the agent, as the dashboard refuses it (fail closed).
 agent_sandbox_flag() {
-  local OUT
-  OUT="$(node "$INSTALL_DIR/scripts/bash-sandbox-sync.mjs" "$1" 2>>"$LOG")" || return 1
+  local NODE OUT
+  NODE="$(dashboard_node)"
+  [ -n "$NODE" ] || return 1
+  OUT="$("$NODE" "$INSTALL_DIR/scripts/bash-sandbox-sync.mjs" "$1" 2>>"$LOG")" || return 1
   case "$OUT" in
     "settings=") return 0 ;;
     *"'"*|*$'\n'*) return 1 ;;
@@ -280,7 +299,9 @@ request_open_redelivery() {
 DASHBOARD_PID=$(ps -ef | grep "node dist/index.js" | grep -v grep | awk '{print $2}' | head -1)
 if [ -z "$DASHBOARD_PID" ]; then
   echo "$(timestamp) [watchdog] Dashboard down, restarting..." >> "$LOG"
-  cd "$INSTALL_DIR" && nohup npm start >> "$INSTALL_DIR/logs/dashboard.log" 2>&1 &
+  # WDSANDBOXNODE1119: npm and the node it starts come from the dashboard's own node directory first.
+  NODE_BIN="$(dashboard_node)"
+  cd "$INSTALL_DIR" && PATH="${NODE_BIN:+$(dirname "$NODE_BIN"):}$PATH" nohup npm start >> "$INSTALL_DIR/logs/dashboard.log" 2>&1 &
   sleep 5
   NEW_PID=$(ps -ef | grep "node dist/index.js" | grep -v grep | awk '{print $2}' | head -1)
   echo "$(timestamp) [watchdog] Dashboard restarted (PID: ${NEW_PID:-?})" >> "$LOG"

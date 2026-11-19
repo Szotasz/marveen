@@ -150,6 +150,10 @@ export const PROTECTED_INSTALL_PATHS = [
   // break-glass CLI on the machine; deleting it no longer turns the factor off (dashboard_users.totp_enabled, a
   // security table, keeps it on and the login fails closed), but a write could swap a secret or reset the replay step.
   { rel: 'store/.dashboard-totp.json' },
+  // The node the dashboard runs on, recorded at its start for scripts/watchdog.sh (WDSANDBOXNODE1119), which runs it
+  // (the Bash sandbox helper, npm start). Only the dashboard's start writes it; an edited path would be run by the
+  // watchdog, a deleted one only makes it fall back to the node on its PATH.
+  { rel: 'store/.dashboard-node' },
   // The per-agent launch files the dashboard derives from the owner's switches and every restart path reads
   // (WDSANDBOXMARKER1119): store/bash-sandbox/<id>.settings.json, the --settings file of an agent on
   // BASH_SANDBOX_AGENTS, and store/code-mode/<id>.on, the Code Mode marker. Only the dashboard's start and the
@@ -2183,7 +2187,7 @@ export const DB_GATE_MSG =
 export const INSTALL_FILE_GATE_MSG =
   'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
-  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json, store/.owner-slack-target, store/.net-target-hosts.json, store/custom-providers.json, store/context-guard.json es store/.dashboard-totp.json fajljat (GATEFILES1110, DOCKERHTTPS1119: ezeket az owner-kapus API-ut irja), ' +
+  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json, store/.owner-slack-target, store/.net-target-hosts.json, store/custom-providers.json, store/context-guard.json es store/.dashboard-totp.json fajljat (GATEFILES1110, DOCKERHTTPS1119: ezeket az owner-kapus API-ut irja), sem a store/.dashboard-node fajlt (WDSANDBOXNODE1119: csak a dashboard inditasa irja), ' +
   'sem a store/bash-sandbox/ es store/code-mode/ mappat (WDSANDBOXMARKER1119: ezeket csak a dashboard inditasa es a watchdog irja), ' +
   'sem BARMELY agens agents/<nev>/.claude/settings.json, settings.local.json es .claude-config/settings.json fajljat (ezeket csak a dashboard irja; Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
