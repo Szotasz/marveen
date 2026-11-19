@@ -298,6 +298,9 @@ INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # CLI flag parsing -- runs before the interactive wizard.
 # WEB_PORT can also be set as an env var (env var wins if --port is not given).
+# The loop shifts every argument away; the self-reclone re-exec below forwards this copy
+# (INSTEXECARGS1118).
+INSTALL_ARGS=("$@")
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --port|--web-port)
@@ -906,7 +909,7 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
   echo -e "  Telepito ujrainditasa a checkoutbol..."
   # Forward argv so a run from outside the repo (curl bootstrap, or an explicit
   # `install-linux.sh --port N`) keeps its flags across the self-reclone exec.
-  exec bash "$TARGET_DIR/install-linux.sh" "$@"
+  exec bash "$TARGET_DIR/install-linux.sh" "${INSTALL_ARGS[@]}"
 fi
 
 INSTALL_STEP="claude-bun-install"
