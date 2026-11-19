@@ -351,8 +351,9 @@ export function packageDiskFiles(pkg: VerifiedPackage): Array<{ path: string; by
 /**
  * PRI3HARDEN1118: a recursive mkdir follows a symlink standing on its path, so a same-user process could swap a
  * folder for a link between step 2 and the write and send the package files elsewhere (e.g. into the global skills
- * root, past the quarantine). Each folder component is made on its own and checked with lstat, so nothing is created
- * or written past a link.
+ * root, past the quarantine). Each folder component is made on its own and checked with lstat, so a link already
+ * standing on the path stops the write. This narrows the window, it does not close it: a swap between the lstat and
+ * the write is still possible (Node has no openat/O_NOFOLLOW-per-component here).
  */
 function mkdirInsideAgentDir(dir: string, folder: string): void {
   const rel = relative(dir, folder)
@@ -363,7 +364,7 @@ function mkdirInsideAgentDir(dir: string, folder: string): void {
     try { mkdirSync(cur, { mode: 0o755 }) } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
     }
-    // One component at a time, never followed: a link (or anything but a plain folder) stops the write here.
+    // One component at a time: a link (or anything but a plain folder) found here stops the write.
     if (!lstatSync(cur).isDirectory()) throw new Error('package folder resolves outside the agent directory')
   }
 }
