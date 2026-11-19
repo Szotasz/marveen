@@ -51,13 +51,15 @@ The dashboard listens on the server's `127.0.0.1:3420` only. Plain http on a pub
   ```bash
   MARVEEN_DOMAIN=marveen.example.com docker compose --profile tls up -d
   ```
-  Caddy gets a certificate automatically and forwards to the dashboard. Open `https://marveen.example.com/?token=...`, using the token from the log.
+  Caddy gets a certificate automatically and forwards to the dashboard. Open `https://marveen.example.com/?token=...`, using the token from the log. Only ports 80 and 443 open to the internet (Caddy's); the dashboard's 3420 stays on `127.0.0.1`. Caddy's config is written from `MARVEEN_DOMAIN` when it starts (HTTPS with HSTS, no referrer), so there is no file to edit. `COMPOSE_PROFILES=tls` in the environment does the same as `--profile tls`.
 
 The link carries the install's access token. Set the dashboard password in the wizard's first step; after that you log in with it, and the token link is not needed.
 
 ## On a Hostinger VPS
 
-Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/hostinger-compose.yml), the file the "Deploy on Hostinger" button points at. It is the same Marveen and Ollama as `docker-compose.yml`, made for a panel that gets this one file and not the repository: a pinned Marveen version, no `build:`, no Caddy, and a default for every setting (the language is English unless you set `MARVEEN_LANG`).
+Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/hostinger-compose.yml), the file the "Deploy on Hostinger" button points at. It is the same Marveen and Ollama as `docker-compose.yml`, made for a panel that gets this one file and not the repository: a pinned Marveen version, no `build:`, and a default for every setting (the language is English unless you set `MARVEEN_LANG`).
+
+- **HTTPS on the VPS's own name (optional):** set two environment variables for the project: `MARVEEN_DOMAIN` to the VPS's host name (Hostinger gives each VPS one, e.g. `srv123456.hstgr.cloud`, or use your own domain pointed at the VPS) and `COMPOSE_PROFILES=tls`. Caddy then gets a certificate and serves the dashboard at `https://<that name>`; only ports 80 and 443 open, 3420 stays on `127.0.0.1`. Without these two variables nothing changes.
 
 - **The dashboard link:** in Docker Manager, open the project's **⋮** menu and choose **View logs**; the link is in the `marveen` container's output.
 - **Opening the dashboard:** it listens on the VPS's `127.0.0.1:3420` only, as above. Use the Marveen Bridge, or an SSH tunnel from your computer (Hostinger's Docker VPS template logs you in as `root`):
