@@ -31,7 +31,11 @@ const between = (src: string, from: string, to: string) => {
 }
 const NEXT = between(APP, "document.getElementById('wizardNextBtn').addEventListener('click'", "const statusEl = document.getElementById('wizardGenStatus')")
 const CREATE_BODY = between(APP, "const res = await fetch('/api/agents', {", '})')
-const POST = between(ROUTE, "if (path === '/api/agents' && method === 'POST') {", "logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')")
+// AGENTCREATEPR2-1119: the route's body is createAgentFromSpec in agent-create.ts; the route calls it.
+const CREATE_SRC = readFileSync(new URL('../web/agent-create.ts', import.meta.url), 'utf-8')
+const POST = ROUTE.includes('const result = await createAgentFromSpec(data)')
+  ? between(CREATE_SRC, 'export async function createAgentFromSpec(', "logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')")
+  : ''
 
 describe('the wizard sends a custom provider apart from the model id', () => {
   it('the parts were found', () => {
@@ -73,7 +77,7 @@ describe('POST /api/agents stores the custom provider', () => {
     const callWrite = POST.indexOf('writeAgentBase(name, {')
     expect(callCheck).toBeGreaterThan(-1)
     expect(callWrite).toBeGreaterThan(callCheck)
-    expect(POST.slice(callCheck, callWrite)).toContain('if (refusal) { json(res, refusal.body, refusal.status); return true }')
+    expect(POST.slice(callCheck, callWrite)).toContain('if (refusal) return { status: refusal.status, body: refusal.body }')
     const writeModel = writes.indexOf('writeAgentModel(name, base.model)')
     const writeProvider = writes.indexOf('if (base.customProvider) writeAgentCustomProvider(name, base.customProvider)')
     expect(writeModel).toBeGreaterThan(-1)

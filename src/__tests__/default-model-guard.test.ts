@@ -101,9 +101,13 @@ describe('every default launch path is wired to the guard', () => {
     expect(src).toContain('return { model: i.launchableDefault(), source: \'default\', unlaunchable: null }')
   })
   it('agent create without a model: guarded, not the raw default', () => {
-    const src = readFileSync(join(SRC, 'web', 'routes', 'agents.ts'), 'utf-8')
-    expect(src).toContain("rawModel || await launchableInstallDefault('agent-create', { fresh: true })")
-    expect(src).not.toMatch(/rawModel \|\| DEFAULT_MODEL/)
+    // AGENTCREATEPR2-1119: the create body is createAgentFromSpec (agent-create.ts); the agent_create spec resolves the
+    // model the same way at request time (agent-create-spec.ts).
+    for (const f of [['web', 'agent-create.ts'], ['web', 'agent-create-spec.ts']]) {
+      const src = readFileSync(join(SRC, ...f), 'utf-8')
+      expect(src).toContain("rawModel || await launchableInstallDefault('agent-create', { fresh: true })")
+      expect(src).not.toMatch(/rawModel \|\| DEFAULT_MODEL/)
+    }
   })
   it('main respawn: the distribution-default layer is guarded', () => {
     const src = readFileSync(join(SRC, 'web', 'channel-monitor.ts'), 'utf-8')

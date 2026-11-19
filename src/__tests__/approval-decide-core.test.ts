@@ -59,14 +59,36 @@ describe('decideApproval: pending, the same hash, before the timeout, once', () 
     expect(decideApproval({ approvalId: 'nope', status: 'approved', evidence: TEAMS })).toEqual({ outcome: 'not_pending', approval: undefined })
   })
 
-  it('the expected hash: another hash, or NULL against a hash, is content_changed; equal (NULL to NULL too) decides', () => {
+  // AGENTCREATEPR2-1119 (Samu, #2903): a null is never a hash the owner was shown, so it matches nothing, a NULL-hash
+  // request included (before, NULL to NULL decided).
+  const NULL_HASH = null as unknown as string
+  it('the expected hash: another hash, or a null one (against a hash or against NULL), is content_changed', () => {
     const a = request()
     expect(decideApproval({ approvalId: a.id, status: 'approved', evidence: TEAMS, expectedContentHash: 'b'.repeat(64) }).outcome).toBe('content_changed')
-    expect(decideApproval({ approvalId: a.id, status: 'approved', evidence: TEAMS, expectedContentHash: null }).outcome).toBe('content_changed')
+    expect(decideApproval({ approvalId: a.id, status: 'approved', evidence: TEAMS, expectedContentHash: NULL_HASH }).outcome).toBe('content_changed')
     expect(getApproval(a.id)!.status).toBe('pending')
     const b = request({ content_hash: null })
     expect(decideApproval({ approvalId: b.id, status: 'approved', evidence: TEAMS, expectedContentHash: HASH }).outcome).toBe('content_changed')
-    expect(decideApproval({ approvalId: b.id, status: 'approved', evidence: TEAMS, expectedContentHash: null }).outcome).toBe('decided')
+    expect(decideApproval({ approvalId: b.id, status: 'approved', evidence: TEAMS, expectedContentHash: NULL_HASH }).outcome).toBe('content_changed')
+    expect(getApproval(b.id)!.status).toBe('pending')
+  })
+
+  it('a hash-bound category (agent_create) is approved only with a stored hash that the adapter showed', () => {
+    const shown = request({ category: 'agent_create' })
+    const unshown = request({ category: 'agent_create' })
+    const noHash = request({ category: 'agent_create', content_hash: null })
+    const emptyHash = request({ category: 'agent_create', content_hash: '' })
+    expect(decideApproval({ approvalId: unshown.id, status: 'approved', evidence: TEAMS }).outcome).toBe('content_changed')
+    expect(decideApproval({ approvalId: noHash.id, status: 'approved', evidence: TEAMS }).outcome).toBe('content_changed')
+    expect(decideApproval({ approvalId: emptyHash.id, status: 'approved', evidence: TEAMS, expectedContentHash: '' }).outcome).toBe('content_changed')
+    expect([unshown, noHash, emptyHash].map((r) => getApproval(r.id)!.status)).toEqual(['pending', 'pending', 'pending'])
+    expect(decideApproval({ approvalId: shown.id, status: 'approved', evidence: TEAMS, expectedContentHash: HASH }).outcome).toBe('decided')
+  })
+
+  it('a hash-bound category can always be rejected, hash or not', () => {
+    const a = request({ category: 'agent_create', content_hash: null })
+    expect(decideApproval({ approvalId: a.id, status: 'rejected', evidence: TEAMS }).outcome).toBe('decided')
+    expect(getApproval(a.id)!.status).toBe('rejected')
   })
 
   it('no expected hash: the hash is not compared (the Slack adapter binds the message text instead)', () => {
@@ -166,6 +188,15 @@ describe('the category consumer: once, after an approval the core decided, on ev
   it('one consumer per category: a second registration throws', () => {
     const { category } = consumerFor()
     expect(() => registerApprovalConsumer(category, () => {})).toThrow(/already registered/)
+  })
+
+  it('called inside a caller\'s transaction, the consumer never runs and the caller\'s transaction rolls back', () => {
+    const { category, seen } = consumerFor()
+    const a = request({ category })
+    expect(() => getDb().transaction(() => { decideApproval({ approvalId: a.id, status: 'approved', evidence: TEAMS }) })())
+      .toThrow(/inside a transaction/)
+    expect(seen).toEqual([])
+    expect(getApproval(a.id)!.status).toBe('pending')
   })
 
   it('the consumer runs after the commit: a consumer reading through another statement sees the decision', () => {

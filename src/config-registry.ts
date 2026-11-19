@@ -1137,6 +1137,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
   },
   {
+    // AGENTCREATEPR2-1119: a new way to create an agent (a request the owner approves in a channel), so off by default
+    // and switching it on needs the owner's session.
+    key: 'AGENT_CREATE_VIA_APPROVAL',
+    type: 'string',
+    default: 'off',
+    description: 'Ügynök-létrehozás jóváhagyással (AGENTCREATEPR2-1119): bekapcsolva (on) egy ügynök a közös tokennel is LEADHAT egy ügynök-specifikációt (POST /api/agent-specs); létrehozni nem tud. A szerver ellenőrzi és eltárolja a specifikációt, és jóváhagyást kér a gazdától; a gazdának mutatott szöveget a szerver állítja össze a tárolt specifikációból. Csak a gazda jóváhagyása után, a szerver hozza létre az ügynököt, ugyanazon az úton, mint a dashboardos létrehozás. Titok (bot-token) csak vault-hivatkozásként szerepelhet. Alapból KI.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
+  },
+  {
     // TEAMSAPPROVECARD1118 (Samu D3): one more way to approve, so off by default and switching it on needs the owner.
     key: 'APPROVAL_TEAMS_CARDS',
     type: 'string',

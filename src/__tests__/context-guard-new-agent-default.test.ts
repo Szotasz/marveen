@@ -96,8 +96,11 @@ describe('the creation path actually calls it', () => {
     const seed = base.indexOf('seedContextGuardForNewAgent(name)')
     expect(scaffold, 'scaffoldAgentDir call not found').toBeGreaterThan(-1)
     expect(seed, 'guard seed call not found').toBeGreaterThan(scaffold)
-    const write = routeSrc.indexOf('writeAgentBase(name, {')
-    const generate = routeSrc.indexOf("'Generating agent CLAUDE.md and SOUL.md...'")
+    // AGENTCREATEPR2-1119: the route's body is createAgentFromSpec (agent-create.ts); the route only calls it.
+    const create = createSrc.slice(createSrc.indexOf('export async function createAgentFromSpec('))
+    expect(routeSrc).toContain('const result = await createAgentFromSpec(data)')
+    const write = create.indexOf('writeAgentBase(name, {')
+    const generate = create.indexOf("'Generating agent CLAUDE.md and SOUL.md...'")
     expect(write, 'writeAgentBase call not found').toBeGreaterThan(-1)
     expect(generate, 'personality generation log not found').toBeGreaterThan(write)
   })

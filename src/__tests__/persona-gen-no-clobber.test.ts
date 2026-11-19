@@ -91,11 +91,12 @@ describe('persona write guard: hand-edited files are never overwritten', () => {
 // handler awaits real Claude CLI calls and writes into the live agents dir, so
 // what is pinned is that BOTH completion paths go through the guard.
 describe('POST /api/agents routes both personality writes through the guard', () => {
-  const code = readFileSync(join(import.meta.dirname, '..', 'web/routes/agents.ts'), 'utf8')
+  // AGENTCREATEPR2-1119: the handler's body is createAgentFromSpec in agent-create.ts.
+  const code = readFileSync(join(import.meta.dirname, '..', 'web/agent-create.ts'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   // The base writes (the scaffold among them) are one call since MIOAGENTINSTALL1114 PR-I0: writeAgentBase, agent-create.ts.
   const start = code.indexOf('writeAgentBase(name')
-  const body = code.slice(start, code.indexOf('json(res, { ok: true, name })', start))
+  const body = code.slice(start, code.indexOf('return { status: 200, body: { ok: true, name } }', start))
 
   it('no unguarded write of CLAUDE.md / SOUL.md in the create handler', () => {
     expect(start).toBeGreaterThan(-1)

@@ -25,7 +25,8 @@ import { join } from 'node:path'
 // is what is asserted.
 
 const SRC = join(import.meta.dirname, '..')
-const FILE = 'web/routes/agents.ts'
+// AGENTCREATEPR2-1119: the handler's body is createAgentFromSpec in agent-create.ts since the agent_create approval PR.
+const FILE = 'web/agent-create.ts'
 
 function read(): string {
   return readFileSync(join(SRC, FILE), 'utf8')
@@ -40,7 +41,7 @@ function stripComments(src: string): string {
 function createHandlerBody(code: string): string {
   const start = code.indexOf('writeAgentBase(name')
   expect(start, 'writeAgentBase call not found').toBeGreaterThan(-1)
-  const end = code.indexOf("json(res, { ok: true, name })", start)
+  const end = code.indexOf('return { status: 200, body: { ok: true, name } }', start)
   expect(end, 'create-handler success response not found').toBeGreaterThan(-1)
   return code.slice(start, end)
 }

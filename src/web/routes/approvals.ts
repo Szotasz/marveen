@@ -6,7 +6,7 @@ import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
-  createAgentMessage, setApprovalTelegramMessageId,
+  createAgentMessage, setApprovalTelegramMessageId, decideApproval,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -25,6 +25,7 @@ import { sendTeamsMessage } from '../../teams-send.js'
 import { readTeamsCreds, channelStateDir } from '../../channel-provider.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
+import { fileAgentSpecRequest, AGENT_CREATE_CATEGORY } from '../agent-create-approval.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
 // (the born-approved POST and PATCH status=approved) take an owner credential. Measured before:
@@ -508,6 +509,22 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // POST /api/agent-specs -- AGENTCREATEPR2-1119: an agent files an agent_create REQUEST (the shared token too: nothing
+  // is created here). The server validates and stores the spec, and opens an approval bound to its hash. Off unless
+  // AGENT_CREATE_VIA_APPROVAL=on. Who asked is informational (a per-agent token's name, else the self-declared header).
+  if (path === '/api/agent-specs' && method === 'POST') {
+    const raw = await readBodyOrRefuse(req, res, { maxBytes: 64 * 1024 })
+    if (!raw) return true
+    let body: unknown
+    try { body = JSON.parse(raw.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    const header = req.headers['x-agent-id']
+    const declared = typeof header === 'string' && /^[a-z0-9_-]{1,64}$/i.test(header) ? header : 'unknown'
+    const requestedBy = ctx.auth?.kind === 'token' && ctx.auth.tokenAgent ? ctx.auth.tokenAgent : declared
+    const r = await fileAgentSpecRequest(body, requestedBy, { setting: (k) => String(getEffectiveSettingValue(k) ?? ''), lang: approvalTextLang() })
+    json(res, r.body, r.status)
+    return true
+  }
+
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
     let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown; owner_approved_message_id?: unknown; for_agent?: unknown }
@@ -741,7 +758,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // PATCH /api/approvals/:id -- resolve (approve/reject/timeout)
   if (idMatch && method === 'PATCH') {
-    let body: { status?: unknown; resolved_by?: unknown; telegram_message_id?: unknown }
+    let body: { status?: unknown; resolved_by?: unknown; telegram_message_id?: unknown; content_hash?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -774,6 +791,21 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // It catches naive/accidental self-approvals; the real control lives on the
     // main-agent side (approval-request-handling skill).
     const target = getApproval(idMatch[1])
+    // AGENTCREATEPR2-1119 (Samu 81167): an agent_create request is approved here only by the owner's session (the owner
+    // gate above), and only through the decision core with the hash the dashboard showed the owner: never by a plain
+    // status write. Rejecting it stays a status write.
+    if (target?.category === AGENT_CREATE_CATEGORY && status === 'approved') {
+      const shown = body.content_hash
+      if (typeof shown !== 'string' || !/^[0-9a-f]{64}$/.test(shown)) {
+        json(res, { error: 'content_hash (the hash the owner was shown) is required to approve an agent_create request' }, 400)
+        return true
+      }
+      const d = decideApproval({ approvalId: target.id, status: 'approved', evidence: { channel: 'dashboard', mode: 'owner' }, expectedContentHash: shown })
+      if (d.outcome !== 'decided') { json(res, { error: `Not approved: ${d.outcome}` }, 409); return true }
+      logger.info({ id: target.id }, 'agent_create approved by the owner on the dashboard')
+      json(res, d.approval)
+      return true
+    }
     if (target && resolved_by.trim() === target.agent_id) {
       json(res, { error: 'The requesting agent cannot approve its own request' }, 403)
       return true

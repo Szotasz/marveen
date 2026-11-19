@@ -331,7 +331,8 @@ describe('channel setup route binding (routes/agents.ts)', () => {
     expect(branch).not.toBeNull()
   })
   it('extra:true is refused for the main agent and for the primary provider itself', () => {
-    expect(SRC).toContain("if (isMain) { json(res, { error: 'The main agent co-listens through CHANNEL_PLUGINS_EXTRA in .env, not through extraChannels' }, 400); return true }")
+    // AGENTCREATEPR2-1119: the setup body is setupAgentChannel (same file), which returns the answer instead of writing it.
+    expect(SRC).toContain("if (isMain) { return { status: 400, body: { error: 'The main agent co-listens through CHANNEL_PLUGINS_EXTRA in .env, not through extraChannels' } } }")
     expect(SRC).toContain('if (resolveAgentProvider(name) === provider) {')
   })
   it('DELETE of a co-listen provider removes only that extra, never the primary', () => {

@@ -11,7 +11,7 @@ import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody, scheduleMainRestartWake, wantsMainRestartWake } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
+import { listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
   getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards, requeueDeliveredOpenForAgent } from '../../db.js'
 import { nicknameFor } from '../team-nicknames.js'
 import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
@@ -20,11 +20,11 @@ import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-mess
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from '../code-mode-caveats.js'
-import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
+
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { hasLaunchTrace, hasPackageManifestFile, startsWithPackageShell } from '../agent-package/marker.js'
 import { packageDescription, packageSummaryField } from '../agent-package/install.js'
-import { launchableInstallDefault } from '../default-model-guard.js'
+
 import { claudeSupportForCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
@@ -36,7 +36,6 @@ import {
   readFileOr,
   extractDescriptionFromClaudeMd,
   findAvatarForAgent,
-  resolveModelId,
   readAgentModel,
   resolveAgentModelDetailed,
   readModelProfileMap,
@@ -119,10 +118,8 @@ import {
 import {
   writeAgentSettingsFromProfile,
   ensureFleetRosterSection,
-  generateClaudeMd,
-  generateSoulMd,
 } from '../agent-scaffold.js'
-import { agentTextLang } from '../agent-text-lang.js'
+
 import {
   isAgentRunning,
   agentRunState,
@@ -176,9 +173,9 @@ import {
   resolveProfileTemplate,
   resolveProfilePlaceholders,
 } from '../profiles.js'
-import { sanitizeAgentName, safeJoin } from '../sanitize.js'
+import { safeJoin } from '../sanitize.js'
 import { AGENT_NAME_RE } from '../../config-registry.js'
-import { checkAgentCreatable, writeAgentBase, refuseIfCliCannotLaunch } from '../agent-create.js'
+import { refuseIfCliCannotLaunch, createAgentFromSpec } from '../agent-create.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, readBodyOrRefuse, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
 import { serializeSkillsDir } from '../skills-dir-queue.js'
@@ -253,104 +250,7 @@ const TRANSCRIPT_CALLER_KINDS = ['session', 'device'] as const
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
-// Dropped into the agent dir when personality generation failed and the agent was
-// kept on a template instead of being deleted. Its presence means "this agent
-// works, but its CLAUDE.md/SOUL.md are placeholders".
-//
-// It does NOT mean the agent is waiting for anything. NOTHING reads this file:
-// there is no regeneration job, no queue, no retry. It is a marker for an
-// operator (and for whoever builds regeneration later), and the way out today is
-// editing, via PUT /api/agents/:name. Do not reword this into a promise -- three
-// separate copies of "awaiting regeneration" had to be removed once already.
-export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
-
-// Minimal placeholders used when generateClaudeMd/generateSoulMd fail, in the language
-// of what they stand in for: the generators write Hungarian, or English on an install
-// whose AGENT_TEXT_LANG is en (PERSONAESC1107; the English twins below, same rules). Deliberately NOT an imitation
-// of a generated personality -- the first line says it is a template, so a
-// stand-in never silently becomes the agent's identity.
-//
-// Two things this text must keep. It says "ugynok", not "agens": this lands in
-// the wizard's editor directly under the notice banner and under a modal titled
-// "Uj ugynok letrehozasa", and two words for one thing on one screen reads as
-// carelessness. And it does NOT promise regeneration -- an earlier wording said
-// "Ujrageneralasig ez marad ervenyben", but nothing reads
-// PERSONALITY_PENDING_SENTINEL, so there is no regeneration to wait for. It
-// points at editing, which is what actually exists.
-function fallbackClaudeMd(name: string, description: string, model: string): string {
-  if (agentTextLang() === 'en') return fallbackClaudeMdEn(name, description, model)
-  return `# ${name}
-
-> **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a
-> létrehozáskor, ezért ez a fájl helyőrző. Az ügynök használható, de a saját
-> CLAUDE.md-je még nem készült el. Írd át itt, vagy az ügynök beállításainál.
-
-## Szerepkör
-
-${description}
-
-## Alapelvek
-
-- Végrehajtás. Ne magyarázd el, mit fogsz csinálni, csak csináld.
-- Tömör válaszok, lényegre törően.
-- Ha nem tudsz valamit, mondd meg egyszerűen.
-- Kód, kommentek, technikai dokumentáció angolul; a felhasználóval magyarul.
-
-## Modell
-
-${model}
-`
-}
-
-function fallbackSoulMd(name: string, description: string): string {
-  if (agentTextLang() === 'en') return fallbackSoulMdEn(name, description)
-  return `# ${name} - SOUL
-
-> **FIGYELEM: ez egy SABLON.** A generálás nem sikerült, ez helyőrző szöveg.
-
-${description}
-
-Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiséget
-itt írhatod meg.
-`
-}
-
-// The English twins: "agent" throughout, and no promise of regeneration either.
-export function fallbackClaudeMdEn(name: string, description: string, model: string): string {
-  return `# ${name}
-
-> **NOTE: this is a TEMPLATE.** Generating the agent's personality failed when it
-> was created, so this file is a placeholder. The agent can be used, but its own
-> CLAUDE.md has not been written yet. Rewrite it here, or on the agent's page.
-
-## Role
-
-${description}
-
-## Principles
-
-- Execution. Do not explain what you are going to do, just do it.
-- Short answers, to the point.
-- If you do not know something, say so plainly.
-- Code, comments and technical documentation in English; with the user, the user's language (English by default).
-
-## Model
-
-${model}
-`
-}
-
-export function fallbackSoulMdEn(name: string, description: string): string {
-  return `# ${name} - SOUL
-
-> **NOTE: this is a TEMPLATE.** Generation failed, this is placeholder text.
-
-${description}
-
-Default tone: concise, precise, no exaggeration. You can write the detailed personality
-here.
-`
-}
+export { PERSONALITY_PENDING_SENTINEL } from '../agent-create.js'
 
 // Short-TTL caches so the synchronous, frequently-polled status endpoints
 // (`/api/agents` on load, `/api/agents/activity` every 3s) don't issue a fresh
@@ -900,6 +800,224 @@ function paneActivityLabel(running: boolean, pane: string | null, paneCommand: s
 // checks moved there (they call it); re-exported so its importers keep this address.
 export { refuseIfCliCannotLaunch }
 
+
+// AGENTCREATEPR2-1119: the channel setup after its owner gate, lifted out of the route unchanged so that the approved
+// agent_create consumer sets a channel up through the SAME code (agent-channel-setup-characterization.test.ts pins it).
+export async function setupAgentChannel(name: string, provider: ChannelProviderType, data: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+  const isMain = name === MAIN_AGENT_ID
+
+  // Google Chat is creds-based (service-account key + Pub/Sub), not a bot
+  // token. Handle it on its own path: write the channel .env + identity
+  // access.json, enable the plugin, and restart.
+  if (provider === 'googlechat') {
+    const { saKeyPath, projectId, subscription, owner, allowDomain } =
+      data as { saKeyPath?: string; projectId?: string; subscription?: string; owner?: string; allowDomain?: string }
+    if (!saKeyPath?.trim() || !projectId?.trim() || !subscription?.trim() || !owner?.trim()) {
+      return { status: 400, body: { error: 'Google Chat: saKeyPath, projectId, subscription és owner kötelező' } }
+    }
+    // Each goes into the channel .env as one KEY=value line (ENVTEAMSNAME1028).
+    if (![saKeyPath, projectId, subscription].every((v) => isSingleLineEnvValue(v.trim()))) {
+      return { status: 400, body: { error: 'Google Chat: a mezők nem tartalmazhatnak sortörést' } }
+    }
+    const gcDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
+    mkdirSync(gcDir, { recursive: true })
+    const gcEnv =
+      `GOOGLE_APPLICATION_CREDENTIALS=${saKeyPath.trim()}\n` +
+      `GOOGLECHAT_PROJECT_ID=${projectId.trim()}\n` +
+      `GOOGLECHAT_SUBSCRIPTION=${subscription.trim()}\n`
+    atomicWriteFileSync(join(gcDir, '.env'), gcEnv, { mode: 0o600 })
+    atomicWriteFileSync(join(gcDir, 'access.json'), JSON.stringify({
+      policy: allowDomain?.trim() ? 'domain' : 'allowlist',
+      owner: owner.trim(),
+      allowFrom: [],
+      allowDomains: allowDomain?.trim() ? [allowDomain.trim()] : [],
+      roles: {},
+      spaces: {},
+      flatReplies: true,
+    }, null, 2))
+    let gcRestarted = false
+    let gcWasRunning = false
+    let gcRestartError: string | undefined
+    if (isMain) {
+      const gcOutcome = mainChannelsRestartOutcome(hardRestartMarveenChannels())
+      gcRestarted = gcOutcome.restarted
+      gcRestartError = gcOutcome.restartError
+      if (gcRestartError) logger.error({ error: gcRestartError }, 'Channel save (googlechat): channels restart FAILED')
+      gcWasRunning = true
+    } else {
+      writeAgentChannelProvider(name, provider)
+      setAgentEnabledPlugins(name, provider)
+      gcWasRunning = isAgentRunning(name)
+      // This is a stop -> (2s) -> start unit, so it holds the shared restart
+      // slot like every other one: a context-guard rescue landing in the 2s
+      // gap would start with ITS options (fresh:true) while this path
+      // reported restarted:true. When a managed restart is already in
+      // flight, skip loudly -- the config was written BEFORE the stop, so
+      // the in-flight restart's own start picks it up (PR1014KONFIG821).
+      if (gcWasRunning && !beginRestart(name)) {
+        logger.info({ name }, 'Channel-config restart skipped -- a managed restart is already in flight; it will start with the new config')
+      } else if (gcWasRunning) {
+        try {
+          const stopRes = await stopAgentProcess(name)
+          if (stopRes.ok) {
+            await delay(2000)
+            // 'Agent is already running' here means the 60s reconcile sweep
+            // raced us in the stop..start gap and started the agent with the
+            // NEW config (written above, before the stop) -- the end state is
+            // exactly what a restart promises, only the starter differs
+            // (PR1014KONFIG821).
+            const gcStartRes = await startAgentProcess(name)
+            gcRestarted = gcStartRes.ok || gcStartRes.error === 'Agent is already running'
+          }
+        } finally {
+          endRestart(name)
+        }
+      }
+    }
+    return { status: 200, body: { ok: true, botName: 'Google Chat', restarted: gcRestarted, wasRunning: gcWasRunning, ...(gcRestartError ? { restartError: gcRestartError, restartCommand: channelsRestartCommand() } : {}) } }
+  }
+
+  const { botToken, appToken, channelId, extra, allowFrom } = data as { botToken: string; appToken?: string; channelId?: string; extra?: unknown; allowFrom?: unknown }
+  if (!botToken?.trim()) { return { status: 400, body: { error: 'botToken is required' } } }
+  // Each token goes into the channel .env as one KEY=value line (ENVTEAMSNAME1028); refused before any network check.
+  if (![botToken, appToken ?? '', channelId ?? ''].every((v) => typeof v === 'string' && isSingleLineEnvValue(v.trim()))) {
+    return { status: 400, body: { error: 'A token nem tartalmazhat sortörést' } }
+  }
+
+  // AGENTEXTRACH1006: `extra: true` connects this provider NEXT TO the
+  // agent's primary channel instead of replacing it. The primary's
+  // channelProvider and enabledPlugins stay untouched; the provider is
+  // appended to agent-config extraChannels and the launcher co-listens.
+  const asExtra = extra === true
+  if (asExtra) {
+    if (isMain) { return { status: 400, body: { error: 'The main agent co-listens through CHANNEL_PLUGINS_EXTRA in .env, not through extraChannels' } } }
+    if (resolveAgentProvider(name) === provider) { return { status: 400, body: { error: `${provider} is already this agent's primary channel` } } }
+  }
+  // Optional explicit allowlist (AGENTEXTRACH1006): a non-empty list of user
+  // ids writes dmPolicy 'allowlist' instead of 'pairing', so an operator
+  // wiring a known owner does not have to pair by hand. Anything that is not
+  // a plain id is refused rather than written into an access policy.
+  let accessAllowFrom: string[] | null = null
+  if (allowFrom !== undefined) {
+    if (!Array.isArray(allowFrom) || allowFrom.length === 0 || !allowFrom.every(v => typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v))) {
+      return { status: 400, body: { error: 'allowFrom must be a non-empty array of user ids' } }
+    }
+    accessAllowFrom = [...new Set(allowFrom as string[])]
+  }
+
+  // Discord-specific channelId guard: the dashboard ships the channel where
+  // the bot will post by default; without it the plugin spins up but cannot
+  // resolve a default channel, and on the main Marveen agent the missing
+  // value would still trigger hardRestartMarveenChannels and bounce the
+  // live session for no useful reason. Reject before any state write.
+  if (provider === 'discord') {
+    const cidCheck = validateDiscordChannelId(channelId)
+    if (!cidCheck.ok) { return { status: 400, body: { error: cidCheck.error } } }
+  }
+
+  const channelProvider = getProvider(provider)
+  const validation = await channelProvider.validateToken(botToken.trim())
+  if (!validation.ok) { return { status: 400, body: { error: validation.error || 'Invalid token' } } }
+
+  const dupeOwner = findBotTokenDuplicate(provider, botToken.trim(), name)
+  if (dupeOwner) {
+    return { status: 409, body: { error: `This bot token is already used by agent "${dupeOwner}". Each agent needs its own bot token to avoid getUpdates conflicts.` } }
+  }
+
+  // MCPTOKEN807: a token reused from a PREVIOUS install (webhook bound, or a
+  // poller still running elsewhere) passes getMe and the local dupe check,
+  // then kills the plugin at runtime with an opaque -32000. Probe at save
+  // time and answer with the remedy. Skipped when re-saving the token this
+  // agent already runs with -- its OWN live poller would read as busy.
+  if (provider === 'telegram') {
+    const preEnvPath = join(isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name)), '.env')
+    const currentToken = readChannelToken(provider, preEnvPath)
+    if (botToken.trim() !== currentToken) {
+      const busyCheck = await checkTelegramTokenBusy(botToken.trim())
+      if (busyCheck.busy) { return { status: 409, body: { error: busyCheck.error } } }
+    }
+  }
+
+  if (provider === 'slack' && !isManagedSettingsReady()) {
+    const displayName = readAgentDisplayName(name) || name
+    return { status: 409, body: {
+      error: 'managed-settings-missing',
+      sudoCommand: getManagedSettingsSudoCommand(),
+      slackAppManifest: generateSlackAppManifest(displayName),
+      slackAppInstructions: getSlackAppSetupInstructions(),
+    } }
+  }
+
+  // Main agent's channel state lives under ~/.claude/channels/<provider>,
+  // sub-agents under agents/<name>/.claude/channels/<provider>.
+  const stateDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
+  mkdirSync(stateDir, { recursive: true })
+  const tokenKey = provider === 'slack' ? 'SLACK_BOT_TOKEN'
+    : provider === 'discord' ? 'DISCORD_BOT_TOKEN'
+    : 'TELEGRAM_BOT_TOKEN'
+  let envContent = `${tokenKey}=${botToken.trim()}\n`
+  if (provider === 'slack' && appToken?.trim()) {
+    envContent += `SLACK_APP_TOKEN=${appToken.trim()}\n`
+  }
+  if (provider === 'discord' && channelId?.trim()) {
+    envContent += `DISCORD_CHANNEL_ID=${channelId.trim()}\n`
+  }
+  atomicWriteFileSync(join(stateDir, '.env'), envContent, { mode: 0o600 })
+  atomicWriteFileSync(join(stateDir, 'access.json'), JSON.stringify({
+    dmPolicy: accessAllowFrom ? 'allowlist' : 'pairing',
+    allowFrom: accessAllowFrom ?? [],
+    groups: {},
+    pending: {},
+  }, null, 2))
+
+  // Main agent doesn't have an agent-config.json or enabled-plugins entry
+  // (the channels session reuses the system claude install), so skip the
+  // sub-agent-specific bookkeeping. Restart goes through the dedicated
+  // marveen-channels helper instead of the agent process lifecycle.
+  let restarted = false
+  let wasRunning = false
+  let restartError: string | undefined
+  if (isMain) {
+    const outcome = mainChannelsRestartOutcome(hardRestartMarveenChannels())
+    restarted = outcome.restarted
+    restartError = outcome.restartError
+    if (restartError) logger.error({ error: restartError }, 'Channel save: channels restart FAILED')
+    wasRunning = true
+  } else {
+    if (asExtra) {
+      writeAgentExtraChannels(name, [...readAgentExtraChannels(name), provider])
+    } else {
+      writeAgentChannelProvider(name, provider)
+      setAgentEnabledPlugins(name, provider)
+    }
+    if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
+    wasRunning = isAgentRunning(name)
+    // Same restart-slot discipline as the GC branch above: this too is a
+    // stop -> (2s) -> start unit; skip loudly when a managed restart is in
+    // flight (the pre-stop config write means that restart's start already
+    // yields the new provider config).
+    if (wasRunning && !beginRestart(name)) {
+      logger.info({ name }, 'Channel-config restart skipped -- a managed restart is already in flight; it will start with the new config')
+    } else if (wasRunning) {
+      try {
+        const stopRes = await stopAgentProcess(name)
+        if (stopRes.ok) {
+          await delay(2000)
+          const startRes = await startAgentProcess(name)
+          // Same reconcile-race as the GC branch above: an 'already running'
+          // start after our own stop means the agent IS up with the new
+          // provider config (PR1014KONFIG821).
+          restarted = startRes.ok || startRes.error === 'Agent is already running'
+        }
+      } finally {
+        endRestart(name)
+      }
+    }
+  }
+
+  return { status: 200, body: { ok: true, botName: validation.botName, restarted, wasRunning, ...(restartError ? { restartError, restartCommand: channelsRestartCommand() } : {}), ...(asExtra ? { extra: true } : {}) } }
+}
+
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -1311,179 +1429,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { ...OWNER_SESSION_REQUIRED, error: 'Creating an agent needs the dashboard login (an owner session).' }, 403)
       return true
     }
-    const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    const { description, model: rawModel, profile: rawProfile } = data as { name: string; description: string; model?: string; profile?: string }
-    // A custom provider is stored apart from the model id, as the editor's PUT does. The wizard used to send its
-    // picker value ("custom:<id>") as the model, so the agent ran that string as a model and the provider was on no
-    // record: its delete named no agent, and the agent could not start.
-    const customProvider = typeof data.customProvider === 'string' && data.customProvider.trim() ? data.customProvider.trim() : null
-    const rawName = typeof data.name === 'string' ? data.name.trim() : ''
-    const name = sanitizeAgentName(rawName)
-    // DEFAULTCLIGUARD927: no model in the request = the install default,
-    // guarded (fresh probe, like the gate below) so a create on a CLI that
-    // cannot run the shipped default gets the previous tier, not a 422 for a
-    // model the caller never picked.
-    const model = resolveModelId(rawModel || await launchableInstallDefault('agent-create', { fresh: true }))
-    const profileId = (rawProfile || 'default').trim() || 'default'
-
-    // Every refusal (name, model id, custom provider, the CLI gate, description, the main agent's id, a
-    // reserved id, an existing directory), in that order and before anything is created: agent-create.ts.
-    const refusal = await checkAgentCreatable(name, model, customProvider, { requireDescription: true, description })
-    if (refusal) { json(res, refusal.body, refusal.status); return true }
-
-    // The synchronous base writes (scaffold, model, provider, security profile and settings, the armed
-    // context guard, display name). They come before the personality generation below, the one step
-    // that can fail and fall back to a template.
-    writeAgentBase(name, { model, profileId, customProvider, displayName: rawName })
-
-    logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
-    // Set when the personality fell back to a template. The response is deferred
-    // to after the notification block so that BOTH outcomes announce the agent:
-    // a template-personality agent exists and is usable, so the fleet has to hear
-    // about it for the same reason a fully generated one does.
-    let personalityPendingDetail: string | null = null
-    // PERSONANOCLOBBER923: the agent dir is visible from scaffoldAgentDir() on,
-    // and generation below can take many minutes. Snapshot the personality files
-    // NOW, and let both completion paths write only while each file is still
-    // exactly this -- an operator who wrote it in the meantime wins. See
-    // persona-write-guard.ts for the measured incident.
-    const personaFiles = (['CLAUDE.md', 'SOUL.md'] as const).map(file => {
-      const path = join(agentDir(name), file)
-      return { file, path, baseline: snapshotPersonaFile(path) }
-    })
-    const [claudeMdFile, soulMdFile] = personaFiles
-    // Files a completion path left alone because they changed under it.
-    const personaSkipped: Array<{ file: string; sidecarPath: string | null }> = []
-    // Files the success path already wrote, so a throw after the first write
-    // does not have the fallback report our own generated file as "changed".
-    const personaWrittenByUs = new Set<string>()
-    try {
-      const [claudeMd, soulMd] = await Promise.all([
-        generateClaudeMd(name, description, model),
-        generateSoulMd(name, description),
-      ])
-      for (const [f, content] of [[claudeMdFile, claudeMd], [soulMdFile, soulMd]] as const) {
-        const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: true })
-        if (r.written) personaWrittenByUs.add(f.file)
-        else personaSkipped.push({ file: f.file, sidecarPath: r.sidecarPath })
-      }
-      if (personaSkipped.length > 0) {
-        logger.warn({ name, skipped: personaSkipped }, 'Agent created; generated personality NOT written over files changed during generation (saved as *.generated.md)')
-      } else {
-        logger.info({ name }, 'Agent created successfully')
-      }
-    } catch (err) {
-      // NO DESTRUCTIVE ROLLBACK. This used to be
-      //   rmSync(agentDir(name), { recursive: true, force: true })
-      // which deleted the WHOLE agent directory when personality generation
-      // failed. Reported by a user whose agent card showed on the dashboard
-      // while the terminal answered "Agent not found" and restarting could not
-      // help, because there was nothing left to start.
-      //
-      // Deleting was disproportionate. By this point scaffoldAgentDir() has
-      // already produced a COMPLETE, valid agent -- .claude/{skills,hooks,
-      // agents}, the channel state dir, memory/MEMORY.md, .mcp.json, the
-      // quarantine-reader sub-agent -- and the model, security profile,
-      // settings and display name are all written. The only thing missing is
-      // the two PERSONALITY files, produced by the single most failure-prone
-      // step: an LLM call that can time out, hit missing auth, a CLI error or a
-      // network fault. Throwing away everything that succeeded because the
-      // least essential part failed turns a slow generation into silent data
-      // loss.
-      //
-      // So fall back to a minimal template and keep the agent usable. The
-      // sentinel marks that the personality is a placeholder, and the response
-      // says so and points at editing -- not at a regeneration that does not
-      // exist.
-      const detail = err instanceof Error ? err.message : 'Unknown error'
-      logger.error({ err, name }, 'Agent personality generation failed -- falling back to template, agent kept')
-      // PERSONANOCLOBBER923: the template goes only where the file is still
-      // untouched. A failed generation must NEVER replace content somebody
-      // wrote while it ran -- that is exactly the measured incident. No sidecar
-      // here: a placeholder has nothing worth keeping.
-      let templateWritten = false
-      try {
-        for (const [f, content] of [
-          [claudeMdFile, fallbackClaudeMd(name, description, model)],
-          [soulMdFile, fallbackSoulMd(name, description)],
-        ] as const) {
-          if (personaWrittenByUs.has(f.file)) continue
-          const r = writePersonaFileIfUnchanged(f.path, f.baseline, content, { saveSidecarOnSkip: false })
-          if (r.written) templateWritten = true
-          else personaSkipped.push({ file: f.file, sidecarPath: null })
-        }
-        // The sentinel says "this agent's personality is a placeholder", so it
-        // is written only when a placeholder actually landed.
-        if (templateWritten) {
-          atomicWriteFileSync(join(agentDir(name), PERSONALITY_PENDING_SENTINEL), `${new Date().toISOString()}\n${detail}\n`)
-        }
-      } catch (fallbackErr) {
-        // Even the template write failed (disk full, permissions). Still do NOT
-        // delete: a half-built agent an operator can inspect beats a vanished
-        // one they cannot.
-        logger.error({ err: fallbackErr, name }, 'Fallback template write failed; agent left in place for inspection')
-      }
-      if (personaSkipped.length > 0) {
-        logger.warn({ name, skipped: personaSkipped }, 'Personality generation failed; fallback template NOT written over files changed during generation')
-      }
-      if (templateWritten) personalityPendingDetail = detail
-    }
-
-    // A skip is never silent: besides the log line, the main agent hears which
-    // files were left alone, because the HTTP caller may be long gone by the
-    // time a slow generation finishes.
-    if (personaSkipped.length > 0) {
-      try {
-        const list = personaSkipped
-          .map(s => s.sidecarPath ? `${s.file} (a generált változat: ${s.sidecarPath})` : s.file)
-          .join(', ')
-        createAgentMessage('system', MAIN_AGENT_ID, `Az új ügynök (${name}) személyiség-generálása NEM írta felül ezeket a fájlokat, mert a generálás közben valaki módosította őket: ${list}. A kézi tartalom maradt érvényben.`)
-      } catch (err) {
-        logger.warn({ err, name }, 'Personality write skipped, and the main-agent notice about it failed')
-      }
-    }
-
-    // Notifications are deliberately OUTSIDE the try above. They used to sit
-    // inside it, after the "Agent created successfully" log, so a failure here
-    // (DB busy, a dead target session) ran the catch and deleted a fully
-    // created agent. A greeting that does not go out must never cost the agent.
-    //
-    // This also runs on the template-fallback path, deliberately, and with the
-    // SAME text. The agent exists and works either way, so a silent creation
-    // would be a second silent outcome in the same handler. That the personality
-    // is a placeholder is the response's job to say, not the greeting's: the
-    // other agents are being told who joined, not how well it went.
-    try {
-      const runningAgents = listAgentNames().filter(a => a !== name && isAgentRunning(a))
-      for (const target of [MAIN_AGENT_ID, ...runningAgents]) {
-        createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${description}. Udv neki ha legkozelebb beszeltek!`)
-      }
-    } catch (err) {
-      logger.warn({ err, name }, 'Agent created, but the team notification failed')
-    }
-
-    const skippedField = personaSkipped.length > 0
-      ? { personalitySkipped: personaSkipped.map(s => ({ file: s.file, generatedPath: s.sidecarPath })) }
-      : {}
-
-    if (personalityPendingDetail !== null) {
-      // The warning says what actually happens next. An earlier wording promised
-      // "It is queued for regeneration", and there is no queue: the sentinel is
-      // written by this handler and read by nothing (grep PERSONALITY_PENDING_SENTINEL).
-      // What DOES exist is PUT /api/agents/:name with claudeMd/soulMd, so that is
-      // what the message points at. The sentinel stays as a marker for whenever a
-      // regeneration path gets built; it just must not be described as one today.
-      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.', detail: personalityPendingDetail, ...skippedField }, 200)
-      return true
-    }
-
-    if (personaSkipped.length > 0) {
-      json(res, { ok: true, name, ...skippedField })
-      return true
-    }
-
-    json(res, { ok: true, name })
+    const data = JSON.parse((await readBody(req)).toString())
+    const result = await createAgentFromSpec(data)
+    json(res, result.body, result.status)
     return true
   }
 
@@ -1655,221 +1603,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
 
-    const body = await readBody(req)
-
-    // Google Chat is creds-based (service-account key + Pub/Sub), not a bot
-    // token. Handle it on its own path: write the channel .env + identity
-    // access.json, enable the plugin, and restart.
-    if (provider === 'googlechat') {
-      const { saKeyPath, projectId, subscription, owner, allowDomain } =
-        JSON.parse(body.toString()) as { saKeyPath?: string; projectId?: string; subscription?: string; owner?: string; allowDomain?: string }
-      if (!saKeyPath?.trim() || !projectId?.trim() || !subscription?.trim() || !owner?.trim()) {
-        json(res, { error: 'Google Chat: saKeyPath, projectId, subscription és owner kötelező' }, 400); return true
-      }
-      // Each goes into the channel .env as one KEY=value line (ENVTEAMSNAME1028).
-      if (![saKeyPath, projectId, subscription].every((v) => isSingleLineEnvValue(v.trim()))) {
-        json(res, { error: 'Google Chat: a mezők nem tartalmazhatnak sortörést' }, 400); return true
-      }
-      const gcDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
-      mkdirSync(gcDir, { recursive: true })
-      const gcEnv =
-        `GOOGLE_APPLICATION_CREDENTIALS=${saKeyPath.trim()}\n` +
-        `GOOGLECHAT_PROJECT_ID=${projectId.trim()}\n` +
-        `GOOGLECHAT_SUBSCRIPTION=${subscription.trim()}\n`
-      atomicWriteFileSync(join(gcDir, '.env'), gcEnv, { mode: 0o600 })
-      atomicWriteFileSync(join(gcDir, 'access.json'), JSON.stringify({
-        policy: allowDomain?.trim() ? 'domain' : 'allowlist',
-        owner: owner.trim(),
-        allowFrom: [],
-        allowDomains: allowDomain?.trim() ? [allowDomain.trim()] : [],
-        roles: {},
-        spaces: {},
-        flatReplies: true,
-      }, null, 2))
-      let gcRestarted = false
-      let gcWasRunning = false
-      let gcRestartError: string | undefined
-      if (isMain) {
-        const gcOutcome = mainChannelsRestartOutcome(hardRestartMarveenChannels())
-        gcRestarted = gcOutcome.restarted
-        gcRestartError = gcOutcome.restartError
-        if (gcRestartError) logger.error({ error: gcRestartError }, 'Channel save (googlechat): channels restart FAILED')
-        gcWasRunning = true
-      } else {
-        writeAgentChannelProvider(name, provider)
-        setAgentEnabledPlugins(name, provider)
-        gcWasRunning = isAgentRunning(name)
-        // This is a stop -> (2s) -> start unit, so it holds the shared restart
-        // slot like every other one: a context-guard rescue landing in the 2s
-        // gap would start with ITS options (fresh:true) while this path
-        // reported restarted:true. When a managed restart is already in
-        // flight, skip loudly -- the config was written BEFORE the stop, so
-        // the in-flight restart's own start picks it up (PR1014KONFIG821).
-        if (gcWasRunning && !beginRestart(name)) {
-          logger.info({ name }, 'Channel-config restart skipped -- a managed restart is already in flight; it will start with the new config')
-        } else if (gcWasRunning) {
-          try {
-            const stopRes = await stopAgentProcess(name)
-            if (stopRes.ok) {
-              await delay(2000)
-              // 'Agent is already running' here means the 60s reconcile sweep
-              // raced us in the stop..start gap and started the agent with the
-              // NEW config (written above, before the stop) -- the end state is
-              // exactly what a restart promises, only the starter differs
-              // (PR1014KONFIG821).
-              const gcStartRes = await startAgentProcess(name)
-              gcRestarted = gcStartRes.ok || gcStartRes.error === 'Agent is already running'
-            }
-          } finally {
-            endRestart(name)
-          }
-        }
-      }
-      json(res, { ok: true, botName: 'Google Chat', restarted: gcRestarted, wasRunning: gcWasRunning, ...(gcRestartError ? { restartError: gcRestartError, restartCommand: channelsRestartCommand() } : {}) })
-      return true
-    }
-
-    const { botToken, appToken, channelId, extra, allowFrom } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string; extra?: unknown; allowFrom?: unknown }
-    if (!botToken?.trim()) { json(res, { error: 'botToken is required' }, 400); return true }
-    // Each token goes into the channel .env as one KEY=value line (ENVTEAMSNAME1028); refused before any network check.
-    if (![botToken, appToken ?? '', channelId ?? ''].every((v) => typeof v === 'string' && isSingleLineEnvValue(v.trim()))) {
-      json(res, { error: 'A token nem tartalmazhat sortörést' }, 400); return true
-    }
-
-    // AGENTEXTRACH1006: `extra: true` connects this provider NEXT TO the
-    // agent's primary channel instead of replacing it. The primary's
-    // channelProvider and enabledPlugins stay untouched; the provider is
-    // appended to agent-config extraChannels and the launcher co-listens.
-    const asExtra = extra === true
-    if (asExtra) {
-      if (isMain) { json(res, { error: 'The main agent co-listens through CHANNEL_PLUGINS_EXTRA in .env, not through extraChannels' }, 400); return true }
-      if (resolveAgentProvider(name) === provider) { json(res, { error: `${provider} is already this agent's primary channel` }, 400); return true }
-    }
-    // Optional explicit allowlist (AGENTEXTRACH1006): a non-empty list of user
-    // ids writes dmPolicy 'allowlist' instead of 'pairing', so an operator
-    // wiring a known owner does not have to pair by hand. Anything that is not
-    // a plain id is refused rather than written into an access policy.
-    let accessAllowFrom: string[] | null = null
-    if (allowFrom !== undefined) {
-      if (!Array.isArray(allowFrom) || allowFrom.length === 0 || !allowFrom.every(v => typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v))) {
-        json(res, { error: 'allowFrom must be a non-empty array of user ids' }, 400); return true
-      }
-      accessAllowFrom = [...new Set(allowFrom as string[])]
-    }
-
-    // Discord-specific channelId guard: the dashboard ships the channel where
-    // the bot will post by default; without it the plugin spins up but cannot
-    // resolve a default channel, and on the main Marveen agent the missing
-    // value would still trigger hardRestartMarveenChannels and bounce the
-    // live session for no useful reason. Reject before any state write.
-    if (provider === 'discord') {
-      const cidCheck = validateDiscordChannelId(channelId)
-      if (!cidCheck.ok) { json(res, { error: cidCheck.error }, 400); return true }
-    }
-
-    const channelProvider = getProvider(provider)
-    const validation = await channelProvider.validateToken(botToken.trim())
-    if (!validation.ok) { json(res, { error: validation.error || 'Invalid token' }, 400); return true }
-
-    const dupeOwner = findBotTokenDuplicate(provider, botToken.trim(), name)
-    if (dupeOwner) {
-      json(res, { error: `This bot token is already used by agent "${dupeOwner}". Each agent needs its own bot token to avoid getUpdates conflicts.` }, 409)
-      return true
-    }
-
-    // MCPTOKEN807: a token reused from a PREVIOUS install (webhook bound, or a
-    // poller still running elsewhere) passes getMe and the local dupe check,
-    // then kills the plugin at runtime with an opaque -32000. Probe at save
-    // time and answer with the remedy. Skipped when re-saving the token this
-    // agent already runs with -- its OWN live poller would read as busy.
-    if (provider === 'telegram') {
-      const preEnvPath = join(isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name)), '.env')
-      const currentToken = readChannelToken(provider, preEnvPath)
-      if (botToken.trim() !== currentToken) {
-        const busyCheck = await checkTelegramTokenBusy(botToken.trim())
-        if (busyCheck.busy) { json(res, { error: busyCheck.error }, 409); return true }
-      }
-    }
-
-    if (provider === 'slack' && !isManagedSettingsReady()) {
-      const displayName = readAgentDisplayName(name) || name
-      json(res, {
-        error: 'managed-settings-missing',
-        sudoCommand: getManagedSettingsSudoCommand(),
-        slackAppManifest: generateSlackAppManifest(displayName),
-        slackAppInstructions: getSlackAppSetupInstructions(),
-      }, 409)
-      return true
-    }
-
-    // Main agent's channel state lives under ~/.claude/channels/<provider>,
-    // sub-agents under agents/<name>/.claude/channels/<provider>.
-    const stateDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
-    mkdirSync(stateDir, { recursive: true })
-    const tokenKey = provider === 'slack' ? 'SLACK_BOT_TOKEN'
-      : provider === 'discord' ? 'DISCORD_BOT_TOKEN'
-      : 'TELEGRAM_BOT_TOKEN'
-    let envContent = `${tokenKey}=${botToken.trim()}\n`
-    if (provider === 'slack' && appToken?.trim()) {
-      envContent += `SLACK_APP_TOKEN=${appToken.trim()}\n`
-    }
-    if (provider === 'discord' && channelId?.trim()) {
-      envContent += `DISCORD_CHANNEL_ID=${channelId.trim()}\n`
-    }
-    atomicWriteFileSync(join(stateDir, '.env'), envContent, { mode: 0o600 })
-    atomicWriteFileSync(join(stateDir, 'access.json'), JSON.stringify({
-      dmPolicy: accessAllowFrom ? 'allowlist' : 'pairing',
-      allowFrom: accessAllowFrom ?? [],
-      groups: {},
-      pending: {},
-    }, null, 2))
-
-    // Main agent doesn't have an agent-config.json or enabled-plugins entry
-    // (the channels session reuses the system claude install), so skip the
-    // sub-agent-specific bookkeeping. Restart goes through the dedicated
-    // marveen-channels helper instead of the agent process lifecycle.
-    let restarted = false
-    let wasRunning = false
-    let restartError: string | undefined
-    if (isMain) {
-      const outcome = mainChannelsRestartOutcome(hardRestartMarveenChannels())
-      restarted = outcome.restarted
-      restartError = outcome.restartError
-      if (restartError) logger.error({ error: restartError }, 'Channel save: channels restart FAILED')
-      wasRunning = true
-    } else {
-      if (asExtra) {
-        writeAgentExtraChannels(name, [...readAgentExtraChannels(name), provider])
-      } else {
-        writeAgentChannelProvider(name, provider)
-        setAgentEnabledPlugins(name, provider)
-      }
-      if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
-      wasRunning = isAgentRunning(name)
-      // Same restart-slot discipline as the GC branch above: this too is a
-      // stop -> (2s) -> start unit; skip loudly when a managed restart is in
-      // flight (the pre-stop config write means that restart's start already
-      // yields the new provider config).
-      if (wasRunning && !beginRestart(name)) {
-        logger.info({ name }, 'Channel-config restart skipped -- a managed restart is already in flight; it will start with the new config')
-      } else if (wasRunning) {
-        try {
-          const stopRes = await stopAgentProcess(name)
-          if (stopRes.ok) {
-            await delay(2000)
-            const startRes = await startAgentProcess(name)
-            // Same reconcile-race as the GC branch above: an 'already running'
-            // start after our own stop means the agent IS up with the new
-            // provider config (PR1014KONFIG821).
-            restarted = startRes.ok || startRes.error === 'Agent is already running'
-          }
-        } finally {
-          endRestart(name)
-        }
-      }
-    }
-
-    json(res, { ok: true, botName: validation.botName, restarted, wasRunning, ...(restartError ? { restartError, restartCommand: channelsRestartCommand() } : {}), ...(asExtra ? { extra: true } : {}) })
+    const data = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
+    const result = await setupAgentChannel(name, provider, data)
+    json(res, result.body, result.status)
     return true
   }
 
