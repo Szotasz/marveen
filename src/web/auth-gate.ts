@@ -124,6 +124,21 @@ export function isFederationWireEndpoint(path: string, method: string): boolean 
   )
 }
 
+// DOCKERHTTPS1119 (Dani 81108 N1): on the public listener a request with NO principal reaches only these
+// unauthenticated /api/ paths: the probes and the sign-in steps the page needs before a cookie exists. Every other
+// path requiresAuth() leaves open (avatars, the Teams card callback, the operator key login, ...) answers 404 there
+// unless a browser cookie came with it, so a future exception in requiresAuth does not reach the internet by itself.
+export const PUBLIC_LISTENER_OPEN_PATHS: ReadonlyArray<readonly [method: string, path: string]> = [
+  ['GET', '/api/auth/status'],
+  ['POST', '/api/auth/login'],
+  ['POST', '/api/auth/login/totp'],
+  ['POST', '/api/auth/setup-code'],
+]
+
+export function publicListenerOpenPath(path: string, method: string): boolean {
+  return PUBLIC_LISTENER_OPEN_PATHS.some(([m, p]) => m === method && p === path)
+}
+
 // Public (ungated) surfaces. These mirror the old inline exceptions exactly,
 // plus the new POST /api/auth/login (public + throttled) so the login form can
 // reach the server before a session exists.
@@ -626,6 +641,11 @@ export async function gateRequest(
   opts: { dashboardToken: string; resolveAgentToken?: AgentTokenResolver; mainAgentId: string; identityLookups?: IdentityLookups; agentVaultAcl?: () => VaultAcl; publicListener?: boolean },
 ): Promise<AuthResult | null> {
   const auth = resolveAuth(req, url, path, method, opts.dashboardToken, opts.resolveAgentToken, opts.publicListener === true)
+  if (opts.publicListener === true && auth.kind === 'none' && path.startsWith('/api/') && !requiresAuth(path, method) && !publicListenerOpenPath(path, method)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Not found' }))
+    return null
+  }
   if (requiresAuth(path, method) && auth.kind === 'none') {
     if (isFederationWireEndpoint(path, method)) {
       // 401s are otherwise silent; federation-endpoint auth failures are the

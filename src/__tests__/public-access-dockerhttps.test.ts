@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, createDashboardUser } from '../db.js'
-import { resolveAuth, requiresAuth, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
+import { resolveAuth, requiresAuth, gateRequest, PUBLIC_LISTENER_OPEN_PATHS, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import { tryHandleAuth, mayActAsOwnerOrFirstRun, FIRST_RUN_PATHS, isHttps } from '../web/routes/auth.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 import { _resetThrottleForTest } from '../web/login-throttle.js'
@@ -109,6 +109,44 @@ describe('the public listener accepts browser cookies only', () => {
     expect(publicListenerPort({ WEB_PUBLIC_PORT: '3421' })).toBe(3421)
     expect(publicListenerPort({})).toBeNull()
     for (const bad of ['', 'abc', '0', '70000', '3421x']) expect(publicListenerPort({ WEB_PUBLIC_PORT: bad }), bad).toBeNull()
+  })
+})
+
+// Dani 81108 N1: with no principal, the public listener reaches only a closed list of unauthenticated /api/ paths.
+describe('the public listener with no cookie reaches only the closed list', () => {
+  async function gate(path: string, method: string, publicListener: boolean, headers: Record<string, string> = {}) {
+    const out = { status: 0 }
+    const res = { writeHead(s: number) { out.status = s; return res }, setHeader() {}, end() {} }
+    const url = new URL(`http://127.0.0.1:3421${path}`)
+    const auth = await gateRequest(mkReq(headers, publicListener), res as unknown as http.ServerResponse, url, path, method, { dashboardToken: TOKEN, mainAgentId: 'marveen', publicListener })
+    return { auth, status: out.status }
+  }
+
+  it('the Teams card callback, the operator key login, an avatar and the video file: 404 there, unchanged on 3420', async () => {
+    for (const [method, path] of [['POST', '/api/approvals/teams-card-action'], ['POST', '/api/operator/login'], ['GET', '/api/agents/zara/avatar'], ['GET', '/api/video-review/file']] as const) {
+      expect(requiresAuth(path, method), path).toBe(false)
+      const pub = await gate(path, method, true)
+      expect([pub.auth, pub.status], path).toEqual([null, 404])
+      const internal = await gate(path, method, false)
+      expect(internal.auth?.kind, path).toBe('none')
+      expect(internal.status, path).toBe(0)
+    }
+  })
+
+  it('the sign-in probes and steps stay open there', async () => {
+    for (const [method, path] of PUBLIC_LISTENER_OPEN_PATHS) {
+      // /api/auth/login/totp joins requiresAuth's open list with Geri's TOTP PR; until then the gate still asks for auth
+      if (requiresAuth(path, method)) continue
+      const r = await gate(path, method, true)
+      expect([r.auth?.kind, r.status], path).toEqual(['none', 0])
+    }
+  })
+
+  it('with the owner session cookie an avatar loads there', async () => {
+    const u = createDashboardUser('owner', 'x')
+    const sid = createSession({ userId: u.id, username: u.username })
+    const r = await gate('/api/agents/zara/avatar', 'GET', true, { cookie: `${SESSION_COOKIE_NAME}=${sid}` })
+    expect(r.auth?.kind).toBe('session')
   })
 })
 
