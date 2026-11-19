@@ -12,7 +12,7 @@
 // A rejection decides through the core directly (mxd has nothing to spend for a rejection).
 // Before every post, a capability probe (Samu 81756, 3): an mxd older than the decisions verbs leaves the adapter off,
 // loudly; an mxd that cannot be reached now is "not available", never "old".
-import { decideApproval, createAgentMessage, recordApprovalGromzoPost, pendingApprovalGromzoPosts, moveApprovalGromzoPost, type Approval } from '../db.js'
+import { decideApproval, createAgentMessage, recordApprovalGromzoPost, pendingApprovalGromzoPosts, consumingApprovalGromzoPosts, moveApprovalGromzoPost, type Approval } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { logger } from '../logger.js'
 import { renderAgentSpec } from './agent-create-spec.js'
@@ -112,11 +112,27 @@ export async function gromzoDecisionTick(deps: GromzoDecisionDeps = defaultDeps)
       out.push({ approvalId: id, outcome: 'approved' })
     } else {
       moveApprovalGromzoPost(id, 'consuming', 'failed', `commit_${outcome}`)
-      deps.alert(`[agent_create] A Gromzo-jóváhagyást az mxd elköltötte, de a kérést (${id}) nem tudtam jóváhagyni (${outcome}): ügynök NEM jött létre. Nézd meg a dashboardon.`)
+      // Samu 81801: a request the owner already decided elsewhere (the dashboard, another channel) is named as such
+      deps.alert(outcome === 'not_pending'
+        ? `[agent_create] A Gromzo-jóváhagyást az mxd elköltötte, de a kérésről (${id}) közben már máshol (dashboard vagy másik csatorna) döntöttek; ez a Gromzo-válasz nem hozott létre semmit.`
+        : `[agent_create] A Gromzo-jóváhagyást az mxd elköltötte, de a kérést (${id}) nem tudtam jóváhagyni (${outcome}): ügynök NEM jött létre. Nézd meg a dashboardon.`)
       out.push({ approvalId: id, outcome: `commit_${outcome}` })
     }
   }
   return out
+}
+
+/** At the watcher's start (Samu 81801): a row left in "consuming" (the server stopped between mxd's consume and the
+ *  commit) is never resumed: mxd may have spent the owner's answer already, and the request was not decided. It goes to
+ *  failed (interrupted), and the main agent is alerted, as a failed commit is. Nothing is created. */
+export function sweepGromzoConsumingOnStart(deps: GromzoDecisionDeps = defaultDeps): string[] {
+  const swept: string[] = []
+  for (const row of consumingApprovalGromzoPosts()) {
+    if (!moveApprovalGromzoPost(row.approval_id, 'consuming', 'failed', 'interrupted')) continue
+    swept.push(row.approval_id)
+    deps.alert(`[agent_create] A Gromzo-jóváhagyás feldolgozása (${row.approval_id}) megszakadt (újraindulás az mxd-költés és a jóváhagyás között): ügynök NEM jött létre. Nézd meg a dashboardon, és ha kell, kérd újra.`)
+  }
+  return swept
 }
 
 const TICK_MS = 15_000
@@ -124,6 +140,7 @@ let timer: ReturnType<typeof setTimeout> | null = null
 /** Starts the watcher (server start): one round every 15 s while the server runs; a round that throws is logged. */
 export function startGromzoDecisionWatch(deps: GromzoDecisionDeps = defaultDeps): void {
   if (timer) return
+  try { sweepGromzoConsumingOnStart(deps) } catch (err) { logger.error({ err: err instanceof Error ? err.message : String(err) }, 'agent_create Gromzo start-up sweep failed') }
   const loop = () => {
     timer = setTimeout(async () => {
       try { await gromzoDecisionTick(deps) } catch (err) { logger.error({ err: err instanceof Error ? err.message : String(err) }, 'agent_create Gromzo watcher round failed') }

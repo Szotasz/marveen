@@ -8291,6 +8291,10 @@ export function pendingApprovalGromzoPosts(limit = 50): ApprovalGromzoPost[] {
     WHERE g.state = 'pending' AND a.status = 'pending' ORDER BY g.posted_at ASC LIMIT ?
   `).all(limit) as ApprovalGromzoPost[]
 }
+/** Rows a stopped server left between mxd's consume and the commit (swept at the watcher's start). */
+export function consumingApprovalGromzoPosts(): ApprovalGromzoPost[] {
+  return db.prepare("SELECT * FROM approval_gromzo_posts WHERE state = 'consuming' ORDER BY posted_at ASC").all() as ApprovalGromzoPost[]
+}
 export function getApprovalGromzoPost(approvalId: string): ApprovalGromzoPost | undefined {
   return db.prepare('SELECT * FROM approval_gromzo_posts WHERE approval_id = ?').get(approvalId) as ApprovalGromzoPost | undefined
 }

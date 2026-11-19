@@ -5,8 +5,8 @@
 // in memory; mxd is a fake call.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import { initDatabase, createApproval, getApproval, getDb, getApprovalGromzoPost, type Approval } from '../db.js'
-import { postAgentCreateToGromzo, gromzoDecisionTick, type GromzoDecisionDeps } from '../web/agent-create-gromzo.js'
+import { initDatabase, createApproval, getApproval, getDb, getApprovalGromzoPost, moveApprovalGromzoPost, type Approval } from '../db.js'
+import { postAgentCreateToGromzo, gromzoDecisionTick, sweepGromzoConsumingOnStart, startGromzoDecisionWatch, stopGromzoDecisionWatchForTest, type GromzoDecisionDeps } from '../web/agent-create-gromzo.js'
 import { canonicalJson, renderAgentSpec, type AgentSpecV1 } from '../web/agent-create-spec.js'
 import type { MxdDashRequest, MxdDashReply } from '../web/mxd-dash.js'
 
@@ -135,6 +135,19 @@ describe('the watcher: the owner\'s answer and the double-spend order', () => {
     expect([...x, ...y].map((o) => o.outcome).sort()).toEqual(['approved', 'taken'])
     expect(getApproval(a.id)!.status).toBe('approved')
   })
+  it('decided elsewhere while mxd spent it (the dashboard): failed, and the alert names that it was decided elsewhere', async () => {
+    const a = await posted()
+    const f = fake((r) => {
+      if (r.verb === 'decision_get') return answered('approve')
+      getDb().prepare("UPDATE approvals SET status = 'rejected' WHERE id = ?").run(a.id)
+      return { ok: true }
+    })
+    const res = await gromzoDecisionTick(f.deps)
+    expect(res[0].outcome).toBe('commit_not_pending')
+    expect(getApprovalGromzoPost(a.id)!.state).toBe('failed')
+    expect(f.alerts).toHaveLength(1)
+    expect(f.alerts[0]).toContain('közben már máshol')
+  })
   it('reject: the core rejects it; mxd spends nothing', async () => {
     const a = await posted()
     const f = fake((r) => (r.verb === 'decision_get' ? answered('reject') : { ok: false, error: 'x' }))
@@ -150,6 +163,32 @@ describe('the watcher: the owner\'s answer and the double-spend order', () => {
     expect(f.calls.map((c) => c.verb)).toEqual(['decision_get'])
     expect(getApproval(a.id)!.status).toBe('pending')
     expect(getApprovalGromzoPost(a.id)!.state).toBe('failed')
+    expect(f.alerts).toHaveLength(1)
+  })
+})
+
+// Samu 81801: a stop between mxd's consume and the commit left the row in "consuming", which nobody read again.
+describe('the start-up sweep of interrupted rows', () => {
+  it('a row left in consuming goes to failed (interrupted), alerted; a pending row is left alone; nothing decided', async () => {
+    const stuck = await posted()
+    const waiting = await posted()
+    expect(moveApprovalGromzoPost(stuck.id, 'pending', 'consuming')).toBe(true)
+    const f = fake(() => ({ ok: false, error: 'x' }))
+    expect(sweepGromzoConsumingOnStart(f.deps)).toEqual([stuck.id])
+    expect(getApprovalGromzoPost(stuck.id)).toMatchObject({ state: 'failed', note: 'interrupted' })
+    expect(getApprovalGromzoPost(waiting.id)!.state).toBe('pending')
+    expect(f.alerts).toHaveLength(1)
+    expect(f.alerts[0]).toContain(stuck.id)
+    expect(getApproval(stuck.id)!.status).toBe('pending')
+    expect(f.calls).toEqual([])
+    expect(sweepGromzoConsumingOnStart(f.deps)).toEqual([])
+  })
+  it('the watcher\'s start runs the sweep', async () => {
+    const stuck = await posted()
+    moveApprovalGromzoPost(stuck.id, 'pending', 'consuming')
+    const f = fake(() => ({ ok: false, error: 'x' }))
+    try { startGromzoDecisionWatch(f.deps) } finally { stopGromzoDecisionWatchForTest() }
+    expect(getApprovalGromzoPost(stuck.id)!.state).toBe('failed')
     expect(f.alerts).toHaveLength(1)
   })
 })
