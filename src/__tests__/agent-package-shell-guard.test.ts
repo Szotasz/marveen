@@ -248,6 +248,18 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }
+    // reported: a symlink into a sibling folder whose name starts with this folder's name (agents/a1 -> agents/a1-sib)
+    const h = agent({ 'CLAUDE.md': I.packageShellText('lnk3', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': '@peer/x.md\n' })
+    const sib = `${h}-sib`
+    try {
+      mkdirSync(sib, { recursive: true })
+      writeFileSync(join(sib, 'x.md'), 'x\n')
+      symlinkSync(sib, join(h, 'peer'))
+      I.reportPackageLayersAtStart('lnk3', h)
+      expect(mine('lnk3')).toBe(1)
+    } finally {
+      rmSync(sib, { recursive: true, force: true })
+    }
     // a silent import does not hide a command after it, on the next line or the same line
     expect(run('cmd1', '@notes/team.md\nrun !`id` now\n').told).toBe(1)
     expect(run('cmd2', '@notes/team.md then !`id`\n').told).toBe(1)
