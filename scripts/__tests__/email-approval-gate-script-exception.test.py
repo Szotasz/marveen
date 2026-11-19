@@ -7,6 +7,8 @@ import json
 import os
 from unittest.mock import patch
 from pathlib import Path
+import shutil
+import re
 import sqlite3
 import subprocess
 import sys
@@ -23,6 +25,7 @@ def load_gate(path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.script_path_writable = lambda path: False
+    module.probe_node_version = lambda interp: "v22.22.2"
     return module
 
 
@@ -43,6 +46,7 @@ def main():
             "gate = importlib.util.module_from_spec(spec)\n"
             "spec.loader.exec_module(gate)\n"
             "gate.script_path_writable = lambda path: False\n"
+            "gate.probe_node_version = lambda interp: 'v22.22.2'\n"
             "gate.main()\n")
         for case in LOADER_CORPUS['cases']:
             assert gate.script_source_loads_only_builtins(case['source'].encode('utf-8')) == case['allowed'], case['name']
@@ -98,9 +102,38 @@ def main():
         script.write_bytes(script_body)
         script_sha = hashlib.sha256(script_body).hexdigest()
         entry = json.loads(json.dumps(CORPUS['entry']))
+        entry['readFiles'] = ['/absolute/path/to/extra.json']
         entry['scripts'] = [{'path': str(script), 'sha256': script_sha}]
         config = {'agents': {CORPUS['agentName']: entry}}
         bind = lambda cmd: cmd.replace('/absolute/path/to/runner.ext', str(script))  # noqa: E731
+        for version, expected in [
+                ('v22.13.0', True), ('v22.12.9', False), ('v23.5.0', True), ('v23.4.0', False),
+                ('v24.0.0', True), ('v21.9.9', False), ('v20.18.0', False), ('22.13.0', False),
+                ('v22.13', False), ('', False), ('v22.13.0\nextra', False)]:
+            assert real_gate.node_permission_version_ok(version) is expected, version
+        if shutil.which('node'):
+            assert re.fullmatch(r'v\d+\.\d+\.\d+', real_gate.probe_node_version('node'))
+        else:
+            print('SKIP: no node on PATH for real version probe')
+        positive = bind(CORPUS['cases'][0]['command'])
+        with patch.object(real_gate, 'script_path_writable', return_value=False):
+            for check_paths in (True, False):
+                with patch.object(real_gate, 'probe_node_version', return_value='v22.22.2'):
+                    assert real_gate.agent_script_exception(positive, CORPUS['agentName'], config, check_paths=check_paths)
+                for version in ('v22.12.0', None):
+                    with patch.object(real_gate, 'probe_node_version', return_value=version):
+                        assert real_gate.agent_script_exception(positive, CORPUS['agentName'], config, check_paths=check_paths) is None
+            with patch.object(real_gate.sys, 'platform', 'darwin'), patch.object(real_gate, 'probe_node_version', return_value='v22.22.2'):
+                assert real_gate.agent_script_exception(positive, CORPUS['agentName'], config) is None
+            with patch.object(real_gate, 'probe_node_version', return_value='v22.22.2') as probe:
+                assert real_gate.agent_script_exception(positive + ' --unknown x', CORPUS['agentName'], config) is None
+                probe.assert_not_called()
+        assert gate.valid_agent_send_exception({k: v for k, v in entry.items() if k != 'readFiles'})
+        for reads in ([], ['/a', '/b']):
+            assert gate.valid_agent_send_exception(dict(entry, readFiles=reads))
+        for reads in (['relative'], ['/a', '/a'], [1], '/a', [''], '/'):
+            assert not gate.valid_agent_send_exception(dict(entry, readFiles=reads)), reads
+        print('PASS: runtime versions, macOS refusal, last probe and readFiles schema')
         for case in CORPUS['cases']:
             actual = gate.agent_script_exception(bind(case['command']), CORPUS['agentName'], config)
             assert bool(actual) == case['match'], case['name']
@@ -269,7 +302,7 @@ def main():
         assert run()[0] == 2, 'expired approval'
         assert run(command.replace(' send ', ' draft ').replace(' --envelope-sha256 ' + envelope_digest, ''))[0] == 0, 'draft'
         rc, error = run(command.replace(str(body), 'body.txt'))
-        assert rc == 2 and 'sanctioned form' in error, error
+        assert rc == 2, error
         assert run(command.replace(str(attachment), 'attachment.bin'))[0] == 2, 'relative attachment'
         extra = command + ' --extra value'
         assert gate.agent_script_exception(extra, CORPUS['agentName'], config) is None

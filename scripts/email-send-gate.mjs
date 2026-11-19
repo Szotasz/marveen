@@ -32,6 +32,7 @@
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
 import { accessSync, constants, closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
@@ -60,7 +61,7 @@ try {
 
 // Install-local operator grants; never redirected by the checked agent's environment.
 export const AGENT_SEND_EXCEPTIONS_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'agent-send-exceptions.json')
-const EXCEPTION_KEYS = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'booleanArgs']
+const EXCEPTION_KEYS = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'booleanArgs', 'readFiles']
 // REPEATENVELOPE (card f2ccb0bb, round 2): the parser below returns only the FIRST
 // value of a repeatable flag (values.get(flag)?.[0]), so an entry that makes an
 // envelope flag repeatable would let the recipient verification here (and the py
@@ -115,6 +116,9 @@ export function validAgentSendException(entry) {
   if (!['modes', 'valueArgs', 'repeatableArgs', 'booleanArgs'].every(k => Array.isArray(entry[k])
     && entry[k].every(v => typeof v === 'string' && v.length > 0)
     && new Set(entry[k]).size === entry[k].length)) return false
+  if (Object.hasOwn(entry, 'readFiles') && (!Array.isArray(entry.readFiles)
+    || !entry.readFiles.every(v => typeof v === 'string' && v.length > 0 && isAbsolute(v))
+    || new Set(entry.readFiles).size !== entry.readFiles.length)) return false
   const flags = [...entry.valueArgs, ...entry.repeatableArgs, ...entry.booleanArgs]
   return validExceptionScripts(entry.scripts)
     && entry.modes.length > 0 && entry.modes.every(m => ['draft', 'send'].includes(m))
@@ -227,10 +231,48 @@ function scriptContentMatches(path, sha256) {
   } catch { return false }
 }
 
-// Intentionally small shell subset: whole literal words, optionally wholly quoted.
+export function nodePermissionVersionOk(versionText) {
+  if (typeof versionText !== 'string') return false
+  const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(versionText.trim())
+  if (!m) return false
+  const major = Number(m[1]), minor = Number(m[2])
+  return major >= 24 || (major === 23 && minor >= 5) || (major === 22 && minor >= 13)
+}
+
+export function probeNodeVersion(interp) {
+  try {
+    if (interp === '/usr/bin/env node') interp = 'node'
+    let resolved = interp
+    if (!isAbsolute(interp)) {
+      resolved = null
+      for (const dir of (process.env.PATH ?? '').split(':')) {
+        const candidate = join(dir, interp)
+        try {
+          accessSync(candidate, constants.X_OK)
+          if (statSync(candidate).isFile()) { resolved = candidate; break }
+        } catch { /* Continue to the next PATH entry. */ }
+      }
+      if (!resolved) return null
+      resolved = resolve(resolved)
+    }
+    return execFileSync(resolved, ['--version'], {
+      timeout: 2000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch { return null }
+}
+
+let nodeVersionProbeOverride = null
+export function setNodeVersionProbeOverride(fn) { nodeVersionProbeOverride = fn }
+
+// Literal whole-word shell subset; interpreter, --permission, exact read list, script, mode, args.
 // No expansion, escapes, quote concatenation, operators or comments, even in quotes.
+// The script is hash-bound; the text scanner is an early refusal only.
+// A belt against ACCIDENTAL loading: Node refuses reads outside the list, writes and child processes.
+// NOT a sandbox against malicious code: network is open; PATH / NODE_OPTIONS trust is unchanged.
+// macOS fails closed because the permission model was not measured there.
 // Keep in sync with agent_script_exception in scripts/hooks/email-approval-gate.py.
 export function agentScriptException(cmd, agentName, config) {
+  if (process.platform === 'darwin') return null
   if (!agentName || !Object.hasOwn(config?.agents ?? {}, agentName)) return null
   const entry = config.agents[agentName]
   if (!validAgentSendException(entry) || typeof cmd !== 'string'
@@ -246,8 +288,18 @@ export function agentScriptException(cmd, agentName, config) {
     tokens.push(m[1] ?? m[2] ?? m[3])
     offset = word.lastIndex
   }
-  if (tokens[0] === '/usr/bin/env' && tokens[1] === 'node') tokens.splice(0, 2)
-  else if (NODE_INTERPRETERS.includes(tokens[0] ?? '')) tokens.shift()
+  let interp
+  if (tokens[0] === '/usr/bin/env' && tokens[1] === 'node') { interp = 'node'; tokens.splice(0, 2) }
+  else if (NODE_INTERPRETERS.includes(tokens[0] ?? '')) interp = tokens.shift()
+  else return null
+  if (tokens.shift() !== '--permission') return null
+  const reads = new Set()
+  while (tokens[0]?.startsWith('--allow-fs-read=')) {
+    const path = tokens.shift().slice('--allow-fs-read='.length)
+    if (!path || !isAbsolute(path) || reads.has(path)) return null
+    reads.add(path)
+  }
+  if (!reads.size) return null
   const [script, mode, ...args] = tokens
   const grant = entry.scripts.find(s => s.path === script)
   // SCRIPTBIND: the path alone is not the grant -- the file's content must still
@@ -277,6 +329,11 @@ export function agentScriptException(cmd, agentName, config) {
     values.set(flag, [...(values.get(flag) ?? []), value])
   }
   if (mode === 'send' && envelopeSha256 === undefined) return null
+  const required = new Set([script, ...(values.get('--body-file') ?? []), ...(values.get('--attach') ?? [])])
+  const allowed = new Set([...required, ...(entry.readFiles ?? [])])
+  if ([...required].some(p => !reads.has(p)) || [...reads].some(p => !allowed.has(p))) return null
+  // Probe last: all shape, content and path checks must pass before spawning a process.
+  if (!nodePermissionVersionOk((nodeVersionProbeOverride ?? probeNodeVersion)(interp))) return null
   return { script, mode, ...(mode === 'send' ? { envelopeSha256 } : {}), to: values.get('--to')?.[0] ?? '', cc: values.get('--cc')?.[0] ?? '',
     subject: values.get('--subject')?.[0] ?? '', bodyFile: values.get('--body-file')?.[0] ?? '', attach: values.get('--attach') ?? [] }
 }

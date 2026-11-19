@@ -1664,6 +1664,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>, threadRep
 }
 
 export interface AgentSendException {
+  readFiles?: string[]
   scripts: { path: string; sha256: string }[]
   modes: string[]
   valueArgs: string[]
@@ -1686,12 +1687,15 @@ export function readAgentSendExceptions(name: string): AgentSendException | null
     if (!config?.agents || typeof config.agents !== 'object' || Array.isArray(config.agents)
       || !Object.hasOwn(config.agents, name)) return null
     const entry = config.agents[name]
-    const keys = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'booleanArgs']
+    const keys = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'booleanArgs', 'readFiles']
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)
       || Object.keys(entry).some(k => !keys.includes(k))) return null
     if (!['modes', 'valueArgs', 'repeatableArgs', 'booleanArgs'].every(k => Array.isArray(entry[k])
       && entry[k].every((v: unknown) => typeof v === 'string' && v.length > 0)
       && new Set(entry[k]).size === entry[k].length)) return null
+    if (Object.hasOwn(entry, 'readFiles') && (!Array.isArray(entry.readFiles)
+      || !entry.readFiles.every((v: unknown) => typeof v === 'string' && v.length > 0 && isAbsolute(v))
+      || new Set(entry.readFiles).size !== entry.readFiles.length)) return null
     const validScript = (s: unknown): s is { path: string; sha256: string } =>
       !!s && typeof s === 'object' && !Array.isArray(s)
       && Object.keys(s).length === 2

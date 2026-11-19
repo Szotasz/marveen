@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { createHash } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -49,7 +49,7 @@ vi.mock('node:fs', async original => {
   } }
 })
 // @ts-expect-error -- plain .mjs hook script, no types
-import { scriptSourceLoadsOnlyBuiltins, scriptPathWritable, agentScriptException, gateDecision, readAgentSendExceptions, validAgentSendException } from '../../scripts/email-send-gate.mjs'
+import { scriptSourceLoadsOnlyBuiltins, scriptPathWritable, agentScriptException, gateDecision, readAgentSendExceptions, validAgentSendException, nodePermissionVersionOk, probeNodeVersion, setNodeVersionProbeOverride } from '../../scripts/email-send-gate.mjs'
 // Namespace import: the unbound-binding deny builder arrives with the fix, and a
 // named import of a missing export would break the whole file at link time.
 // @ts-expect-error -- plain .mjs hook script, no types
@@ -67,7 +67,9 @@ writeFileSync(scriptFile, scriptBody)
 const scriptSha = createHash('sha256').update(scriptBody).digest('hex')
 afterAll(() => { rmSync(scriptDir, { recursive: true, force: true }) })
 const bind = (cmd: string) => cmd.replaceAll('/absolute/path/to/runner.ext', scriptFile)
-const entry = { ...corpus.entry, scripts: [{ path: scriptFile, sha256: scriptSha }] }
+beforeEach(() => { setNodeVersionProbeOverride(() => 'v22.22.2') })
+afterEach(() => { setNodeVersionProbeOverride(null) })
+const entry = { ...corpus.entry, readFiles: ['/absolute/path/to/extra.json'], scripts: [{ path: scriptFile, sha256: scriptSha }] }
 const cases = corpus.cases.map(c => ({ ...c, command: bind(c.command) }))
 const config = { agents: { [agentName]: entry } }
 const withScripts = (scripts: unknown) => ({ agents: { [agentName]: { ...entry, scripts } } })
@@ -117,7 +119,10 @@ describe('named-script exception', () => {
   // interpreter case now falls back to the ordinary script-send deny, node- and
   // nodejs-basename alike.
   const interpreterRed = cases.filter(c => !c.match && c.name.startsWith('interpreter '))
-  for (const c of cases.filter(c => !c.match && !c.name.startsWith('innocent') && !c.name.startsWith('interpreter '))) {
+  // 'shape-negative missing interpreter' starts with `--permission`, which no shell runs as a node script, so the
+  // ordinary analysis rightly sees no send; the parser conformance block still asserts it gets no exception.
+  for (const c of cases.filter(c => !c.match && !c.name.startsWith('innocent') && !c.name.startsWith('interpreter ')
+    && c.name !== 'shape-negative missing interpreter')) {
     it(`falls through to the existing deny: ${c.name}`, () => {
       expect(decide(c.command).deny).toBe(true)
     })
@@ -173,6 +178,19 @@ describe('parser conformance (also read by email-approval-gate-script-exception.
     for (const c of cases.filter(c => !c.match && c.command.split(/\s+/).includes('send')
       && !c.name.includes('envelope digest'))) {
       expect(c.command.match(/--envelope-sha256 [0-9a-f]{64}(?![0-9a-f])/g)).toHaveLength(1)
+    }
+  })
+  it('all existing cases retain a permission prefix and their required read list', () => {
+    for (const c of cases.filter(c => !c.name.startsWith('shape-negative '))) {
+      // Prefix wrappers, unknown interpreters and malformed quoting keep their own failure reason.
+      const m = c.command.match(/(?:^| )([^ ]+) --permission ((?:--allow-fs-read=\S+ )+)(\S+)/)!
+      expect(m, c.name).not.toBeNull()
+      const reads = m[2].trim().split(' ').map(v => v.slice('--allow-fs-read='.length))
+      const script = bind(m[3].replaceAll("'", '')) // a quote-concatenated token is only bound once de-quoted
+      const required = [script, ...Array.from(c.command.matchAll(/--(?:body-file|attach) (\S+)/g), m =>
+        m[1].startsWith('/') ? m[1] : `/absolute/path/to/${m[1]}`)]
+      expect(new Set(reads.filter(p => !entry.readFiles.includes(p))), c.name).toEqual(new Set(required))
+      expect(reads.length, c.name).toBe(new Set(reads).size)
     }
   })
   for (const c of cases) it(c.name, () => {
@@ -423,12 +441,12 @@ describe('script path writability', () => {
       symlinkSync(target, join(linkDir, 'via'))
       const viaPath = join(linkDir, 'via', 'runner.ext')
       const viaConfig = withScripts([{ path: viaPath, sha256: scriptSha }])
-      const viaCommand = command.replace(scriptFile, viaPath)
+      const viaCommand = command.replaceAll(scriptFile, viaPath)
       expect(viaCommand).not.toBe(command)
       accessProbe.mode = 'stub'
       // positive control: nothing writable -> the real path grant matches
       const realPath = join(realpathSync(target), 'runner.ext')
-      expect(agentScriptException(command.replace(scriptFile, realPath), agentName,
+      expect(agentScriptException(command.replaceAll(scriptFile, realPath), agentName,
         withScripts([{ path: realPath, sha256: scriptSha }]))).not.toBeNull()
       expect(scriptPathWritable(viaPath)).toBe(true)
       expect(agentScriptException(viaCommand, agentName, viaConfig)).toBeNull()
@@ -465,5 +483,53 @@ describe('loader and reserved envelope digest enforcement', () => {
   it('returns the valid send digest and keeps drafts unbound', () => {
     expect(agentScriptException(command, agentName, config).envelopeSha256).toBe('a'.repeat(64))
     expect(agentScriptException(draftCommand, agentName, config)).not.toHaveProperty('envelopeSha256')
+  })
+})
+
+describe('Node permission runtime and optional readFiles', () => {
+  for (const [version, expected] of [
+    ['v22.13.0', true], ['v22.12.9', false], ['v23.5.0', true], ['v23.4.0', false],
+    ['v24.0.0', true], ['v21.9.9', false], ['v20.18.0', false], ['22.13.0', false],
+    ['v22.13', false], ['', false], ['v22.13.0\nextra', false],
+  ] as const) it(`version ${JSON.stringify(version)}`, () => {
+    expect(nodePermissionVersionOk(version)).toBe(expected)
+  })
+  for (const version of ['v22.12.0', null]) it(`refuses runtime ${version}`, () => {
+    setNodeVersionProbeOverride(() => version)
+    expect(agentScriptException(command, agentName, config)).toBeNull()
+  })
+  it('probes only after every other check', () => {
+    const probe = vi.fn(() => 'v22.22.2')
+    setNodeVersionProbeOverride(probe)
+    expect(agentScriptException(command + ' --unknown value', agentName, config)).toBeNull()
+    expect(probe).not.toHaveBeenCalled()
+    expect(agentScriptException(command, agentName, config)).not.toBeNull()
+    expect(probe).toHaveBeenCalledWith('node')
+  })
+  it('fails closed on macOS', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    try {
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      expect(agentScriptException(command, agentName, config)).toBeNull()
+    } finally { Object.defineProperty(process, 'platform', platform) }
+  })
+  it('real probe returns the Node version when node is on PATH', async ctx => {
+    // accessSync is mocked for the script permission tests; use real fs for this control.
+    accessProbe.mode = 'real'
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs')
+    const found = (process.env.PATH ?? '').split(':').some(dir => {
+      try { fs.accessSync(join(dir, 'node'), constants.X_OK); return fs.statSync(join(dir, 'node')).isFile() }
+      catch { return false }
+    })
+    if (!found) { ctx.skip(); return }
+    expect(probeNodeVersion('node')).toMatch(/^v\d+\.\d+\.\d+$/)
+  })
+  it('validates optional readFiles', () => {
+    const { readFiles: _, ...absent } = entry
+    expect(validAgentSendException(absent)).toBe(true)
+    for (const readFiles of [[], ['/a', '/b']]) expect(validAgentSendException({ ...entry, readFiles })).toBe(true)
+    for (const readFiles of [['relative'], ['/a', '/a'], [1], '/a', [''], '/']) {
+      expect(validAgentSendException({ ...entry, readFiles })).toBe(false)
+    }
   })
 })

@@ -110,6 +110,8 @@ import importlib.util
 import json
 import os
 import re
+import shutil
+import subprocess
 import sqlite3
 import sys
 
@@ -132,7 +134,7 @@ STANDING_PATH = os.path.join(STORE_DIR, "email-standing-recipients.json")
 
 
 EXCEPTIONS_PATH = os.path.join(STORE_DIR, "agent-send-exceptions.json")
-_EXCEPTION_KEYS = ("scripts", "modes", "valueArgs", "repeatableArgs", "booleanArgs")
+_EXCEPTION_KEYS = ("scripts", "modes", "valueArgs", "repeatableArgs", "booleanArgs", "readFiles")
 # REPEATENVELOPE (card f2ccb0bb, round 2): the parser returns only the FIRST value of a
 # repeatable flag, so an entry that makes an envelope flag repeatable would let the
 # recipient verification (and this gate's envelope hash) see only the first recipient.
@@ -186,6 +188,12 @@ def valid_agent_send_exception(entry):
         values = entry.get(key)
         if (not isinstance(values, list) or not all(isinstance(v, str) and v for v in values)
                 or len(set(values)) != len(values)):
+            return False
+    if "readFiles" in entry:
+        reads = entry["readFiles"]
+        if (not isinstance(reads, list)
+                or not all(isinstance(v, str) and v and os.path.isabs(v) for v in reads)
+                or len(set(reads)) != len(reads)):
             return False
     flags = entry["valueArgs"] + entry["repeatableArgs"] + entry["booleanArgs"]
     # B1 (card f2ccb0bb R4): .get, not ["scripts"] -- an entry whose other four keys
@@ -305,12 +313,41 @@ def _script_content_matches(path, sha256):
         return False
 
 
-def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
-    """Literal whole-word shell subset; twin of agentScriptException in email-send-gate.mjs.
+def node_permission_version_ok(version_text):
+    if not isinstance(version_text, str):
+        return False
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", version_text.strip(), flags=re.ASCII)
+    if not match:
+        return False
+    major, minor, _ = map(int, match.groups())
+    return major >= 24 or (major == 23 and minor >= 5) or (major == 22 and minor >= 13)
 
-    check_paths=False is used only to DENY a recognized invocation with relative files.
-    The SCRIPTBIND content and path checks run on EVERY invocation, on both paths.
+
+def probe_node_version(interp):
+    try:
+        if interp == "/usr/bin/env node":
+            interp = "node"
+        resolved = interp if os.path.isabs(interp) else shutil.which(interp)
+        if not resolved:
+            return None
+        result = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=2, check=False)
+        return result.stdout.strip() if result.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
+    """Literal whole-word shell subset; interpreter, --permission, exact read list, script, mode, args.
+    The script is hash-bound; the text scanner is an early refusal only.
+    A belt against ACCIDENTAL loading: Node refuses reads outside the list, writes and child processes.
+    NOT a sandbox against malicious code: network is open; PATH / NODE_OPTIONS trust is unchanged.
+    macOS fails closed because the permission model was not measured there.
+    Twin of agentScriptException in scripts/email-send-gate.mjs.
+    check_paths=False is used only to DENY a recognized invocation with relative files;
+    the content, path and version checks run on EVERY invocation, on both paths.
     """
+    if sys.platform == "darwin":
+        return None
     agents = config.get("agents", {}) if isinstance(config, dict) else {}
     if not agent_name or not isinstance(agents, dict) or agent_name not in agents:
         return None
@@ -329,9 +366,21 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
         tokens.append(next(g for g in match.groups() if g is not None))
         offset = match.end()
     if tokens[:2] == ["/usr/bin/env", "node"]:
-        tokens = tokens[2:]
+        interp, tokens = "node", tokens[2:]
     elif tokens and tokens[0] in _NODE_INTERPRETERS:
-        tokens = tokens[1:]
+        interp, tokens = tokens[0], tokens[1:]
+    else:
+        return None
+    if not tokens or tokens.pop(0) != "--permission":
+        return None
+    reads = set()
+    while tokens and tokens[0].startswith("--allow-fs-read="):
+        path = tokens.pop(0)[len("--allow-fs-read="):]
+        if not path or not os.path.isabs(path) or path in reads:
+            return None
+        reads.add(path)
+    if not reads:
+        return None
     if len(tokens) < 2:
         return None
     script, mode, *args = tokens
@@ -370,6 +419,13 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
             return None
         values.setdefault(flag, []).append(value)
     if mode == "send" and envelope_sha256 is None:
+        return None
+    required = {script, *values.get("--body-file", []), *values.get("--attach", [])}
+    allowed = required | set(entry.get("readFiles", []))
+    if not required <= reads or not reads <= allowed:
+        return None
+    # Probe last: all shape, content and path checks pass before spawning a process.
+    if not node_permission_version_ok(probe_node_version(interp)):
         return None
     return {"script": script, "mode": mode, **({"envelopeSha256": envelope_sha256} if mode == "send" else {}), "to": values.get("--to", [""])[0],
             "cc": values.get("--cc", [""])[0], "subject": values.get("--subject", [""])[0],

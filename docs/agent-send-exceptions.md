@@ -20,13 +20,17 @@ environment variable redirects this file.
       "modes": ["draft", "send"],
       "valueArgs": ["--to", "--cc", "--subject", "--body-file"],
       "repeatableArgs": ["--attach"],
-      "booleanArgs": ["--confirm-send"]
+      "booleanArgs": ["--confirm-send"],
+      "readFiles": ["/absolute/path/to/extra.json"]
     }
   }
 }
 ```
 
-All five entry keys are required. `scripts` is an array of `{ "path", "sha256" }`
+The original five entry keys are required. The optional `readFiles` key is an
+array (possibly empty) of unique, nonempty absolute path strings. An absent
+`readFiles` means an empty list. It permits additional read paths in the
+invocation; these paths need not be included in every invocation. `scripts` is an array of `{ "path", "sha256" }`
 objects: at least one entry, no duplicate paths, an absolute `path` and a
 `sha256` of exactly 64 lowercase hex characters. The other four keys are
 arrays of distinct nonempty strings; modes are `draft` and `send`. Flag names
@@ -37,7 +41,8 @@ Missing, unreadable or invalid JSON grants no exceptions.
 
 The grant binds the script content and path. On every invocation both gates
 read the entry script ONCE, compare the sha256 of those bytes to the granted
-value, and run a conservative loader scan on the SAME bytes. Unreadable files,
+value, and run a conservative loader scan on the SAME bytes as an early refusal only.
+The scanner does not grant the exception; Node runtime restrictions are required. Unreadable files,
 hash mismatches and refused source all mean no exception. The scan requires
 strict UTF-8, refuses identifier Unicode escapes, dangerous loader/runtime
 names and options, and accepts only literal `node:` built-in specifiers in
@@ -56,34 +61,48 @@ never grants the exception.
 Sticky writable directories such as `/tmp` count as writable. A failed content or path check falls back to the
 ordinary gate decisions.
 
-The whole command must be one literal invocation: an optional interpreter
-prefix (the exact allowlist below), then the exact configured script path,
-mode and listed flags. Whole quoted arguments are accepted; expansions,
-escapes, quote concatenation, shell metacharacters, assignments, compound
-commands, pipes and redirections are not. Value flags take one value and
-cannot repeat; only repeatable value flags can repeat. Positional arguments
-and unlisted flags do not qualify. `--body-file` and every `--attach` value
-must be absolute paths. Other Bash send shapes retain the existing gate
-decisions.
+The whole command must be one literal invocation with this exact shape:
 
-The interpreter prefix is an exact allowlist (owner decision, 2026-11-17):
-the bare `node` or `nodejs` (as found on `PATH`), `/usr/bin/node`,
-`/usr/local/bin/node`, and the two-token `/usr/bin/env` + `node`. Every other
-absolute interpreter path -- `/usr/bin/nodejs`, `/usr/local/bin/nodejs`,
-`/tmp/x/node`, anything else -- gets no exception: the command no longer
-matches the grant and the ordinary gate decisions apply. For a command naming a
-sending or undecidable script that decision is the script-send deny: the
-ordinary analysis recognizes the `nodejs` basename as node-ish (2026-11-17) --
-including the extensionless-load rule (X, X.js, X.json) -- so a nodejs-basename
-interpreter outside the allowlist is denied exactly when the same script under
-`node` would be; a genuinely harmless script (see the `nodejs plain.mjs`
-corpus control) is not denied. The allowlist narrows the accepted shapes but
-is NOT a trust boundary: bare `node`/`nodejs` resolves through `PATH`, and
-`PATH`, `NODE_OPTIONS` and the shell start-up files the agent's commands run
-with are typically inside the same user boundary the agent runs in (for
-example on a typical macOS install, where the early PATH entries are
-user-writable). The exception trusts them as far as the agent's own process
-does.
+```text
+<interp> --permission --allow-fs-read=<P1> ... --allow-fs-read=<Pn> <script> <mode> <args...>
+```
+
+`--permission` must immediately follow the interpreter. At least one read flag
+is required, and only `--allow-fs-read=<absolute-path>` flags may occur before
+the script. Use **one flag per path**: a comma-joined list grants nothing on
+current Node (measured on v22.22.2), and the gate refuses it. The read values
+must be unique and include the script, the `--body-file` value if present,
+and every `--attach` value. Only paths in that required set or the grant's
+optional `readFiles` list may appear. Any subset of `readFiles` may be included.
+The allow flags may appear in any order. Other runtime flags, two-token read
+flags, relative read paths and the old command shape receive no exception.
+
+Whole quoted arguments are accepted; expansions, escapes, quote concatenation,
+shell metacharacters, assignments, compound commands, pipes and redirections
+are not. Value flags take one value and cannot repeat; only repeatable value
+flags can repeat. Positional arguments and unlisted flags do not qualify.
+`--body-file` and every `--attach` value must be absolute paths. Other Bash
+send shapes retain the existing gate decisions.
+
+The interpreter prefix remains the exact allowlist: bare `node` or `nodejs`
+(as found on `PATH`), `/usr/bin/node`, `/usr/local/bin/node`, and the two-token
+`/usr/bin/env node`. Direct script execution and other interpreter paths
+receive no exception. After all other checks pass, the gate resolves the
+interpreter and runs `--version` without a shell, with a two-second timeout.
+A missing interpreter, failed probe or invalid version receives no exception.
+The minimum is **22.13.0 on Node 22, 23.5.0 on Node 23, or any Node 24+**;
+other versions receive no exception. The history tables of the Node docs
+(https://nodejs.org/api/permissions.html, Permission Model, and
+https://nodejs.org/api/cli.html, `--permission`) record it as stable from
+v22.13.0 and v23.5.0. These minimums are taken from the docs; only v22.22.2
+was measured locally.
+
+**macOS receives no exception** because the permission model was not measured
+there. This is a belt against accidental loading, not a sandbox against
+malicious code: the script is hash-bound and Node refuses reads outside the
+list, writes and child processes. Network is open in the measured runtime;
+the trust boundary for `PATH` / `NODE_OPTIONS` is unchanged. The exception
+continues to trust them as the agent's own process does.
 
 ## Recipients and approval
 

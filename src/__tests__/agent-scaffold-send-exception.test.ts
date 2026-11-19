@@ -116,6 +116,18 @@ describe('send exception hook wiring', () => {
     }
   })
 
+  it('validates optional readFiles', () => {
+    for (const extra of [{}, { readFiles: [] }, { readFiles: ['/a', '/b'] }]) {
+      const grant = { ...entry, ...extra }
+      configFile.content = JSON.stringify({ agents: { [agentName]: grant } })
+      expect(readAgentSendExceptions(agentName)).toEqual(grant)
+    }
+    for (const readFiles of [['relative'], ['/a', '/a'], [1], '/a', [''], '/']) {
+      configFile.content = JSON.stringify({ agents: { [agentName]: { ...entry, readFiles } } })
+      expect(readAgentSendExceptions(agentName)).toBeNull()
+    }
+  })
+
   // REPEATENVELOPE (card f2ccb0bb, round 2): the mjs argument parser returns
   // only the FIRST value of a repeatable flag, so an entry that makes an
   // envelope flag (--to/--cc/--subject/--body-file) repeatable would let
