@@ -411,6 +411,13 @@ describe('the messenger POST limits', () => {
     const c = `${ROBOT}-len`
     const kc = keyFor(c)
     expect((await post(kc, c, 'é'.repeat(500))).status).toBe(200) // 1000 bytes, 500 characters
+    // content must be a string: an array or a number would slip past a length cap that measures strings only
+    for (const content of [['a'.repeat(600)], 600, null]) {
+      const r = await gateRaw('POST', '/api/messages', { authorization: `Bearer ${kc}`, 'content-type': 'application/json' },
+        { from: c, to: MAIN_AGENT_ID, content, origin_note: MESSENGER_ORIGIN_NOTE })
+      expect(r.status).toBe(403)
+      expect(r.body.rule).toBe('device-key-scope')
+    }
     const long = await post(kc, c, 'a'.repeat(501))
     expect(long.status).toBe(413)
     expect(long.body.rule).toBe('device-key-content-length')

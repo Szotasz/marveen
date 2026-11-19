@@ -671,6 +671,7 @@ export const MESSENGER_ALLOWLIST: readonly MessengerAllowEntry[] = [
       if (o.from !== c.device) return false
       if (o.origin_note !== MESSENGER_ORIGIN_NOTE) return false
       if (o.to !== c.mainAgentId) return false
+      if (typeof o.content !== 'string') return false // the length cap below measures a string (review on #2957)
       return MESSENGER_REFUSED_FIELDS.every((f) => !Object.prototype.hasOwnProperty.call(o, f))
     },
   },
