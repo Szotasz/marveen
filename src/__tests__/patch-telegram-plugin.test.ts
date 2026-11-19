@@ -1591,3 +1591,167 @@ describe('kbd: TELEGRAM_REPLY_BUTTONS off', () => {
     expect(JSON.parse(r.stdout)).toEqual(rows.map(([, , want]) => want))
   })
 })
+
+// TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS (owner request, 2026-11-08): a tap on a button of a question older than the
+// max age delivers nothing; the question's keyboard is taken off and the toast asks to type the answer. The age is
+// the question's own send time (Message.date). 0, the default, leaves the file exactly as it is without the setting.
+describe('kbd: answer buttons expire (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)', () => {
+  const EXPIRED = 'Ez a kérdés lejárt, írd be a választ.'
+  const expiryLines = (text: string) => kbdLines(text).filter(l => l.includes(EXPIRED))
+  const now = () => Math.floor(Date.now() / 1000)
+  let stateDir = ''
+  beforeEach(() => { stateDir = mkdtempSync(join(tmpdir(), 'tg-expire-state-')) })
+  afterEach(() => rmSync(stateDir, { recursive: true, force: true }))
+
+  it('0 (and no flag at all) adds no line: byte-identical to the file patched without the setting', () => {
+    expect(run().status).toBe(0)
+    const plain = readFileSync(server, 'utf-8')
+    expect(expiryLines(plain)).toEqual([])
+    copyFileSync(FIXTURE, server)
+    expect(run(['--buttons-max-age', '0']).status).toBe(0)
+    expect(readFileSync(server, 'utf-8')).toBe(plain)
+  })
+
+  it('24 hours: one kbd line with the age in seconds, after the "already answered" check and before the tap is recorded; the file parses', () => {
+    const state = join(stateDir, 's.json')
+    expect(run(['--state', state, '--buttons-max-age', '24']).status).toBe(0)
+    const text = readFileSync(server, 'utf-8')
+    const lines = expiryLines(text)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('Math.floor(Date.now() / 1000) - kbdMsg.date > 86400)')
+    expect(lines[0]).toContain(KBD)
+    const at = (needle: string) => text.indexOf(needle)
+    expect(at("if (marveenKbdAnswered.has(kbdKey)) { await kbdToast('Erre már válaszoltál.'); return }")).toBeLessThan(at(lines[0]))
+    expect(at(lines[0])).toBeLessThan(at('  marveenKbdAnswered.add(kbdKey)'))
+    expect(syntaxErrors(text)).toEqual([])
+    expect(JSON.parse(readFileSync(state, 'utf-8')).buttons_max_age_hours).toBe(24)
+  })
+
+  it('switching the value is the in-place rebuild: 0 -> 24 -> 48 -> 0 gives the fresh file each time, and a rerun is already', () => {
+    const fresh = (h: string) => { copyFileSync(FIXTURE, server); run(['--buttons-max-age', h]); return readFileSync(server, 'utf-8') }
+    const want = { '0': fresh('0'), '24': fresh('24'), '48': fresh('48') }
+    expect(want['24']).not.toBe(want['48'])
+    copyFileSync(FIXTURE, server)
+    for (const h of ['0', '24', '48', '0'] as const) {
+      expect(run(['--buttons-max-age', h]).status).toBe(0)
+      expect(readFileSync(server, 'utf-8'), h).toBe(want[h])
+    }
+    const state = join(stateDir, 's.json')
+    run(['--state', state, '--buttons-max-age', '0'])
+    expect(readState(state).files[0].patches.kbd).toBe('already')
+  })
+
+  it('works with TELEGRAM_REPLY_BUTTONS off too (a button sent before the switch still expires)', () => {
+    expect(run(['--buttons', 'off', '--buttons-max-age', '24']).status).toBe(0)
+    const text = readFileSync(server, 'utf-8')
+    expect(expiryLines(text)).toHaveLength(1)
+    expect(syntaxErrors(text)).toEqual([])
+  })
+
+  it('a --buttons-max-age value that is not whole hours from 0 to 8760: exit 2, nothing patched', () => {
+    for (const bad of ['-1', '1.5', 'x', '8761', '']) {
+      const r = run(['--buttons-max-age', bad])
+      expect(r.status, bad).toBe(2)
+      expect(r.stderr, bad).toMatch(/--buttons-max-age takes whole hours from 0 to 8760/)
+      expect(readFileSync(server, 'utf-8'), bad).toBe(readFileSync(FIXTURE, 'utf-8'))
+    }
+    expect(run(['--buttons-max-age', '8760']).status).toBe(0)
+  })
+
+  describe('a tap', () => {
+    let patched = ''
+    beforeEach(() => {
+      expect(run(['--buttons-max-age', '24']).status).toBe(0)
+      patched = readFileSync(server, 'utf-8')
+    })
+
+    it('on a question older than the max age: the toast, the keyboard taken off, nothing delivered, nothing recorded', async () => {
+      const h = callbackHarness(patched)
+      const r = await h.press({ data: 'kbd:1', extra: { date: now() - 24 * 3600 - 60 } })
+      expect(r.answers).toEqual([{ text: EXPIRED }])
+      expect(r.edits).toEqual([{ reply_markup: { inline_keyboard: [] } }])
+      expect(h.delivered).toHaveLength(0)
+      expect(h.set.size).toBe(0)
+      expect(h.gateCalls).toHaveLength(0)
+    })
+
+    it('on a younger question, or one without a date: delivered as before', async () => {
+      const h = callbackHarness(patched)
+      const r = await h.press({ data: 'kbd:1', messageId: 901, extra: { date: now() - 23 * 3600 } })
+      expect(r.answers).toEqual([{ text: '✓ Béta' }])
+      expect(h.delivered.map(d => d.text)).toEqual(['Béta'])
+      const r2 = await h.press({ data: 'kbd:0', messageId: 902 })
+      expect(r2.answers).toEqual([{ text: '✓ Alfa' }])
+      expect(h.delivered.map(d => d.text)).toEqual(['Béta', 'Alfa'])
+    })
+
+    it('an answered question that is also old still says "already answered"', async () => {
+      const state = kbdState()
+      state.answered.add('42:901')
+      const h = callbackHarness(patched, { state })
+      const r = await h.press({ data: 'kbd:1', messageId: 901, extra: { date: now() - 30 * 24 * 3600 } })
+      expect(r.answers).toEqual([{ text: 'Erre már válaszoltál.' }])
+      expect(r.edits).toHaveLength(0)
+      expect(h.delivered).toHaveLength(0)
+    })
+
+    it('takes the expired question off the open list, so a later typed answer edits nothing for it', async () => {
+      const state = kbdState()
+      state.open.set('42', new Set([901, 905]))
+      const h = callbackHarness(patched, { state })
+      await h.press({ data: 'kbd:1', messageId: 901, extra: { date: now() - 25 * 3600 } })
+      expect([...state.open.get('42')!]).toEqual([905])
+    })
+
+    it('a keyboard Telegram refuses to edit (too old) still gets the toast and delivers nothing', async () => {
+      const h = callbackHarness(patched)
+      const r = await h.press({ data: 'kbd:1', edit: 'fail', extra: { date: now() - 48 * 3600 } })
+      expect(r.answers).toEqual([{ text: EXPIRED }])
+      expect(h.delivered).toHaveLength(0)
+    })
+  })
+
+  it('without the flag the install setting decides: config-overrides.json, then .env, else 0; an invalid value is 0, logged', () => {
+    const py = [
+      'import importlib.util, json, os, sys, tempfile',
+      'spec = importlib.util.spec_from_file_location("patcher", sys.argv[1])',
+      'p = importlib.util.module_from_spec(spec); spec.loader.exec_module(p)',
+      'out = []',
+      'for overrides, env in json.load(sys.stdin):',
+      '    with tempfile.TemporaryDirectory() as install:',
+      '        os.mkdir(os.path.join(install, "store"))',
+      '        if overrides is not None:',
+      '            with open(os.path.join(install, "store", "config-overrides.json"), "w") as f: json.dump(overrides, f)',
+      '        if env is not None:',
+      '            with open(os.path.join(install, ".env"), "w") as f: f.write(env)',
+      '        out.append(p.max_age_setting(install))',
+      'print(json.dumps(out))',
+    ].join('\n')
+    const K = 'TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS'
+    const rows: Array<[unknown, string | null, number]> = [
+      [null, null, 0],
+      [null, `${K}=24\n`, 24],
+      [{ [K]: 48 }, `${K}=24\n`, 48],
+      [{ [K]: '12' }, null, 12],
+      [{ TELEGRAM_REPLY_BUTTONS: '1' }, `${K}= 6 \n`, 6],
+      [null, `${K}=\n`, 0],
+      [null, `${K}=-3\n`, 0],
+      [null, `${K}=1.5\n`, 0],
+      [{ [K]: 9999 }, null, 0],
+    ]
+    const r = spawnSync('python3', ['-c', py, SCRIPT], { input: JSON.stringify(rows.map(([o, e]) => [o, e])), encoding: 'utf-8', timeout: 30_000 })
+    expect(JSON.parse(r.stdout)).toEqual(rows.map(([, , want]) => want))
+    // the three invalid values, one log line each; an empty value is simply unset
+    expect(r.stderr.match(/TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=.* is not a whole number of hours between 0 and 8760; buttons do not expire/g)).toHaveLength(3)
+  })
+
+  it('the registry entry has the same bounds as the patcher, and both reference docs describe it', () => {
+    const reg = readFileSync(join(ROOT, 'src', 'config-registry.ts'), 'utf-8')
+    const entry = reg.slice(reg.indexOf("key: 'TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS'"))
+    expect(entry.slice(0, 200)).toMatch(/type: 'int',\s+default: 0,\s+min: 0,\s+max: 8760,/)
+    expect(readFileSync(SCRIPT, 'utf-8')).toContain('KBD_MAX_AGE_HOURS_MAX = 8760')
+    for (const doc of ['docs/config-reference.md', 'docs/en/config-reference.md']) {
+      expect(readFileSync(join(ROOT, doc), 'utf-8'), doc).toContain('#### `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`')
+    }
+  })
+})

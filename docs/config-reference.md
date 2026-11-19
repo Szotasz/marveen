@@ -191,6 +191,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
 | `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
+| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (0–8760) | `0` (nem jár le) | mind | igen (csatorna-indítás) |
 | `DISCORD_PLUGIN_EXT` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
 | `DISCORD_OWNER_USER_ID` | string | üres | mind | igen (csatorna-indítás) |
 | `DISCORD_BACKFILL` | boolean | `1` (be) | mind | igen (csatorna-indítás) |
@@ -329,6 +330,21 @@ kapcsolás előtt kiküldött gombra koppintás egyszer még válaszol.
 `.env`-ben `TELEGRAM_REPLY_BUTTONS=0`. A csatorna következő indításakor a script átírja a
 plugin forrását. Az ügynökök viszont addig a régi kóddal futnak, amíg a saját plugin-folyamatuk
 újra nem indul: a session újraindítása hozza el náluk.
+
+#### `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`: a válasz-gombok lejárata
+
+**Mire szolgál.** Egy régi kérdés gombjára akkor is rá lehet koppintani, amikor a beszélgetés
+már rég továbblépett. Beállítva (például `24`) egy ennél régebbi kérdés gombjára koppintás nem
+jut el az ügynökhöz: a csatorna leveszi a kérdés gombjait, és a felugró üzenet azt kéri, hogy a
+választ írd be. A kor a kérdés elküldési idejétől számít (a Telegram-üzenet saját időbélyege),
+így a plugin újraindítása után is érvényes. Egy már megválaszolt kérdésnél továbbra is az „Erre
+már válaszoltál.” üzenet jön. A gombokat csak koppintáskor veszi le, magától nem.
+
+**Beállítás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`*, vagy
+`.env`-ben például `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24`. Egész óra 0 és 8760 között; a `0`
+(alapértelmezés) kikapcsolja, és ilyenkor a plugin forrása pontosan a mai. Érvénytelen értéknél
+a gombok nem járnak le, és a `store/channels-failures.log` egy sorban jelzi. A csatorna következő
+indításakor lép életbe, a futó ügynököknél a session újraindításával.
 
 #### `DISCORD_PLUGIN_EXT`, `DISCORD_OWNER_USER_ID`, `DISCORD_BACKFILL`: a Marveen Discord-pluginja
 
