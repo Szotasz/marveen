@@ -20,7 +20,7 @@ import { writeAgentBase } from '../agent-create.js'
 import { ensureFleetRosterSection, fleetBaseRulesBlock } from '../agent-scaffold.js'
 import { appendSkillAudit, globalSkillsRoot, quarantineOn, scanSkillDir } from '../skill-quarantine.js'
 import {
-  AVATAR_PATH_RE, TEXT_PATH_RE, scanManifestText, scanPackageText, MANIFEST_TEXT_MAX_CHARS, VerifiedPackage,
+  AVATAR_PATH_RE, IMPORT_TOKEN_RE, TEXT_PATH_RE, scanManifestText, scanPackageText, MANIFEST_TEXT_MAX_CHARS, VerifiedPackage,
 } from './verify.js'
 import {
   PACKAGE_SHELL_PREFIX_TEXT, agentsBaseDir, dirIdentityOf, hasLaunchTrace, hasPackageManifestFile, installMarkerState,
@@ -675,7 +675,11 @@ export function packageStartRefusal(name: string, dir: string): string | null {
  * told again. One stamp for both paths, so a fallback after a normal start does not tell the same finding twice.
  */
 function reportLayerFinding(name: string, dir: string, pkg: string, local: string, kind: 'fallback_scan_finding' | 'start_scan_finding'): void {
-  const finding = scanPackageText(Buffer.from(`\n${pkg}\n\n\n${local}\n`, 'utf8'))
+  // An import line in LOCAL.md is the owner's own, legitimate setting: it is not reported (Samu 81367). Only the
+  // at-signs the import rule matches are neutralized, in LOCAL.md only, so every other finding there, and an import
+  // in PACKAGE.md, is still seen (the import rule ranks high, so skipping its finding would hide a later one).
+  const localForScan = local.replace(IMPORT_TOKEN_RE, '_')
+  const finding = scanPackageText(Buffer.from(`\n${pkg}\n\n\n${localForScan}\n`, 'utf8'))
   const stamp = join(leftoversDir(), 'layer-scan-noticed', `${name}.txt`)
   if (finding === null) {
     try { unlinkSync(stamp) } catch { /* none */ }
