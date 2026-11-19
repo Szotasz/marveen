@@ -19,7 +19,7 @@ import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
-import { agentIsolatedConfigDir, setCodeModeCaveats } from '../code-mode-caveats.js'
+import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from '../code-mode-caveats.js'
 import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { hasLaunchTrace, hasPackageManifestFile, startsWithPackageShell } from '../agent-package/marker.js'
@@ -3105,6 +3105,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // Q2 (Samu 81017): the owner's switch IS the acceptance of Code Mode's two confirmation windows. The keys go
       // into the agent's own isolated .claude.json while the switch is on and come out again when it goes off; no
       // file yet (never launched) is fine, the launch stamps it. An unreadable file refuses the switch, unchanged.
+      // CODEMODEFOLLOW1119: off removes the watchdog marker first, or a watchdog relaunch before the next start would
+      // turn Code Mode on in a config dir whose caveat keys just came out. On leaves it to the next start.
+      if (data.codeMode !== true) {
+        try {
+          syncCodeModeMarker(name, false)
+        } catch (err) {
+          logger.warn({ err, name }, 'codeMode: the watchdog marker could not be removed')
+          json(res, { error: 'codeMode: the watchdog marker could not be removed' }, 500)
+          return true
+        }
+      }
       try {
         setCodeModeCaveats(join(agentIsolatedConfigDir(name), '.claude.json'), data.codeMode === true, { groupShared: readAgentRunAsUser(name) != null })
       } catch (err) {
