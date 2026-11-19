@@ -142,8 +142,9 @@ _NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
 # path. "scripts" is an array of {"path", "sha256"} objects -- at least one entry, no
 # duplicate paths, an absolute path and a sha256 of exactly 64 lowercase hex characters --
 # and on EVERY invocation the matcher hashes and scans one read, and refuses a
-# writable file or ancestor directory. Keep in sync with validAgentSendException in
-# email-send-gate.mjs and readAgentSendExceptions in agent-scaffold.ts.
+# writable file or ancestor directory; the path must be its own real path (no
+# symlink anywhere in it), and a path that cannot be resolved fails closed. Keep in sync with
+# validAgentSendException in email-send-gate.mjs and readAgentSendExceptions in agent-scaffold.ts.
 _SCRIPT_SHA256_RX = re.compile(r"[0-9a-f]{64}")
 
 # B2 (card f2ccb0bb R4, leader decision okostodor 131617): the interpreter prefix is
@@ -243,16 +244,22 @@ def script_source_loads_only_builtins(data):
     return True
 
 
+def _any_path_component_writable(p):
+    while True:
+        if os.access(p, os.W_OK):
+            return True
+        parent = os.path.dirname(p)
+        if parent == p:
+            return False
+        p = parent
+
+
 def script_path_writable(path):
     try:
         p = os.fspath(path)
-        while True:
-            if os.access(p, os.W_OK):
-                return True
-            parent = os.path.dirname(p)
-            if parent == p:
-                return False
-            p = parent
+        if os.path.realpath(p, strict=True) != p:
+            return True
+        return _any_path_component_writable(p)
     except Exception:
         return True
 

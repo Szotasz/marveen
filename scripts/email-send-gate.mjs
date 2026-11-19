@@ -73,7 +73,9 @@ const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'
 // only its path. "scripts" is an array of {"path", "sha256"} objects -- at least
 // one entry, no duplicate paths, an absolute path and a sha256 of exactly 64
 // lowercase hex characters. On EVERY invocation the matcher hashes and scans
-// one read, and refuses a writable file or ancestor directory.
+// one read, and refuses a writable file or ancestor directory; the path must be
+// its own real path (no symlink anywhere in it), and a path that cannot be resolved
+// fails closed.
 // Keep in sync with valid_agent_send_exception in
 // scripts/hooks/email-approval-gate.py and readAgentSendExceptions in
 // agent-scaffold.ts.
@@ -192,8 +194,8 @@ export function scriptSourceLoadsOnlyBuiltins(buf) {
   return true
 }
 
-export function scriptPathWritable(path) {
-  for (let p = path; ; p = dirname(p)) {
+function anyPathComponentWritable(p) {
+  for (; ; p = dirname(p)) {
     try {
       accessSync(p, constants.W_OK)
       return true
@@ -201,6 +203,15 @@ export function scriptPathWritable(path) {
       if (!['EACCES', 'EPERM'].includes(err?.code)) return true
     }
     if (dirname(p) === p) return false
+  }
+}
+
+export function scriptPathWritable(path) {
+  try {
+    if (realpathSync(path) !== path) return true
+    return anyPathComponentWritable(path)
+  } catch {
+    return true
   }
 }
 

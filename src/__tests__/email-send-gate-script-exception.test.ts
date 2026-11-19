@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 // after node:os / node:path / node:url on purpose: importing node:fs runs the
 // vi.mock factory below, which closes over those -- an earlier position fails
 // with "Cannot access ... before initialization"
-import { accessSync, constants, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import corpus from './fixtures/agent-send-exception-cases.json' with { type: 'json' }
 
 import loaderCorpus from './fixtures/agent-send-exception-loader-cases.json' with { type: 'json' }
@@ -60,7 +60,7 @@ const { agentName } = corpus
 // corpus entry carries the SHAPE only (a placeholder path and sha256); the tests
 // bind it to a real temp script and compute the expected sha256 from the exact
 // bytes written at setup -- never a hardcoded digest of a nonexistent file.
-const scriptDir = mkdtempSync(join(tmpdir(), 'agent-send-exception-'))
+const scriptDir = realpathSync(mkdtempSync(join(tmpdir(), 'agent-send-exception-')))
 const scriptFile = join(scriptDir, 'runner.ext')
 const scriptBody = '#!/usr/bin/env node\nconsole.log("sanctioned runner")\n'
 writeFileSync(scriptFile, scriptBody)
@@ -70,6 +70,7 @@ const bind = (cmd: string) => cmd.replaceAll('/absolute/path/to/runner.ext', scr
 const entry = { ...corpus.entry, scripts: [{ path: scriptFile, sha256: scriptSha }] }
 const cases = corpus.cases.map(c => ({ ...c, command: bind(c.command) }))
 const config = { agents: { [agentName]: entry } }
+const withScripts = (scripts: unknown) => ({ agents: { [agentName]: { ...entry, scripts } } })
 const command = cases[0].command
 const draftCommand = cases.find(c => c.name === 'draft')!.command
 const verify = (address: string) => ['verified@example.invalid', 'copy@example.invalid'].includes(address)
@@ -290,7 +291,6 @@ describe('the grant binds the script content (sha256, checked per invocation)', 
     writeFileSync(scriptFile, scriptBody)
     file.content = '{invalid json'
   })
-  const withScripts = (scripts: unknown) => ({ agents: { [agentName]: { ...entry, scripts } } })
   // case[0] with the granted path swapped: every red command below keeps the
   // sanctioned shape, so only the content binding can fail it
   const commandAt = (granted: string) => corpus.cases[0].command.replaceAll('/absolute/path/to/runner.ext', granted)
@@ -375,13 +375,41 @@ describe('script path writability', () => {
   })
   it.skipIf(process.getuid?.() === 0)('accepts an unwritable system path on Linux', () => {
     accessProbe.mode = 'real'
-    expect(scriptPathWritable('/usr/bin/env')).toBe(false)
+    expect(scriptPathWritable(realpathSync('/usr/bin/env'))).toBe(false)
   })
   if (process.getuid?.() === 0) console.log('SKIP: unwritable system path check runs as root')
   it('fails closed on an unknown permission probe error', () => {
     accessProbe.errorCode = 'ENOENT'
     expect(scriptPathWritable(scriptFile)).toBe(true)
     expect(agentScriptException(command, agentName, config)).toBeNull()
+  })
+  it('refuses a symlinked path even when nothing is writable', () => {
+    const targetParent = mkdtempSync(join(tmpdir(), 'agent-send-target-'))
+    const target = join(targetParent, 'real')
+    const linkDir = mkdtempSync(join(tmpdir(), 'agent-send-link-'))
+    try {
+      mkdirSync(target)
+      writeFileSync(join(target, 'runner.ext'), scriptBody)
+      symlinkSync(target, join(linkDir, 'via'))
+      const viaPath = join(linkDir, 'via', 'runner.ext')
+      const viaConfig = withScripts([{ path: viaPath, sha256: scriptSha }])
+      const viaCommand = command.replace(scriptFile, viaPath)
+      expect(viaCommand).not.toBe(command)
+      accessProbe.mode = 'stub'
+      // positive control: nothing writable -> the real path grant matches
+      const realPath = join(realpathSync(target), 'runner.ext')
+      expect(agentScriptException(command.replace(scriptFile, realPath), agentName,
+        withScripts([{ path: realPath, sha256: scriptSha }]))).not.toBeNull()
+      expect(scriptPathWritable(viaPath)).toBe(true)
+      expect(agentScriptException(viaCommand, agentName, viaConfig)).toBeNull()
+    } finally {
+      rmSync(linkDir, { recursive: true, force: true })
+      rmSync(targetParent, { recursive: true, force: true })
+    }
+  })
+  it('fails closed when the real path cannot be resolved', () => {
+    accessProbe.mode = 'stub'
+    expect(scriptPathWritable(join(scriptDir, 'missing-dir', 'x.ext'))).toBe(true)
   })
   for (const path of [scriptFile, scriptDir]) it(`refuses writable path component: ${path}`, () => {
     accessProbe.writablePath = path

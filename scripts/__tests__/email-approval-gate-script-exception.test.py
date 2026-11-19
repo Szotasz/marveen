@@ -27,7 +27,7 @@ def load_gate(path):
 
 def main():
     with tempfile.TemporaryDirectory(prefix='script-approval-') as td:
-        install = Path(td)
+        install = Path(os.path.realpath(td))
         # Match email-approval-gate.test.py: abspath preserves this tmp install.
         (install / 'scripts').symlink_to(ROOT / 'scripts', target_is_directory=True)
         store = install / 'store'
@@ -58,13 +58,26 @@ def main():
         if os.getuid() == 0:
             print('SKIP: unwritable system path check runs as root')
         else:
-            assert real_gate.script_path_writable('/usr/bin/env') is False
+            assert real_gate.script_path_writable(os.path.realpath('/usr/bin/env')) is False
         with patch.object(real_gate.os, 'access', side_effect=OSError('unknown state')):
             assert real_gate.script_path_writable(str(probe_file)) is True
         # Only one ancestor writable also fails, even when the file itself is not.
         with patch.object(real_gate.os, 'access', side_effect=lambda path, mode: path == str(install)):
             assert real_gate.script_path_writable(str(probe_file)) is True
         print('PASS: real path writability and fail-closed probe')
+        target_parent = install / 'target-parent'
+        target = target_parent / 'real'
+        target.mkdir(parents=True)
+        (target / 'runner.ext').write_bytes(b'probe')
+        link_dir = install / 'link-dir'
+        link_dir.mkdir()
+        (link_dir / 'via').symlink_to(target, target_is_directory=True)
+        via_path = str(link_dir / 'via' / 'runner.ext')
+        with patch.object(real_gate.os, 'access', side_effect=lambda path, mode: False):
+            assert real_gate.script_path_writable(str(target / 'runner.ext')) is False
+            assert real_gate.script_path_writable(via_path) is True
+            assert real_gate.script_path_writable(str(install / 'missing-dir' / 'x.ext')) is True
+        print('PASS: symlinked path refused, real path accepted, unresolvable path fails closed')
         # SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT.
         # The corpus entry carries the SHAPE only (a placeholder path and sha256);
         # it is bound here to a real temp script, the expected sha256 computed from

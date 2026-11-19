@@ -46,8 +46,10 @@ harmless mentions can refuse a script. A script that needs a child process,
 a worker, vm, eval or a non-builtin module cannot use the exception.
 
 The script file and EVERY ancestor directory, up to and including `/`, must
-also be unwritable by the gate's own uid. Checks walk the absolute path as
-given without resolving symlinks first. Unknown permission states fail closed.
+also be unwritable by the gate's own uid. The configured path must be its own
+real path: a path with a symlink anywhere in it is refused even when every
+directory is unwritable (configure the output of `realpath <file>` instead), and
+a path that cannot be resolved fails closed. Unknown permission states fail closed.
 Sticky writable directories such as `/tmp` count as writable; a gate running
 as root never matches. A failed content or path check falls back to the
 ordinary gate decisions.
