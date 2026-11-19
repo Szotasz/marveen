@@ -17,6 +17,7 @@
 
 import { allowTargetSessionsForTest } from './helpers/allow-target-sessions.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MAIN_AGENT_ID } from '../config.js'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 
 const BANNER = "You're out of extra usage · resets 6am (Europe/Budapest)"
@@ -32,6 +33,8 @@ const LIMITED_PANE = [
 const CLEAN_PANE = LIMITED_PANE.replace(`  ⎿  ${BANNER}`, '● Nothing to drain.')
 
 const mockAppendTaskRun = vi.fn()
+const mockCreateAgentMessage = vi.fn()
+let textLang: 'hu' | 'en' = 'hu'
 const mockSendPrompt = vi.fn(async () => 'sent')
 const mockListScheduledTasks = vi.fn(() => [] as ScheduledTask[])
 const mockWarn = vi.fn()
@@ -68,7 +71,13 @@ type RetryRow = {
   attempt_count: number; last_reason: string | null; alert_sent_at: number | null; owner_alert_sent_at: number | null
 }
 let retryRows: RetryRow[] = []
+vi.mock('../web/agent-text-lang.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/agent-text-lang.js')>()),
+  agentTextLang: () => textLang,
+}))
+
 vi.mock('../db.js', () => ({
+  createAgentMessage: (...a: unknown[]) => mockCreateAgentMessage(...a),
   appendTaskRun: (...a: unknown[]) => mockAppendTaskRun(...a),
   listPendingTaskRetries: () => retryRows.map(r => ({ ...r })),
   deletePendingTaskRetry: vi.fn((task: string, agent: string) => {
@@ -167,6 +176,8 @@ const gateWarned = () =>
 describe('scheduler usage-limit gate (attemptFireTask)', () => {
   beforeEach(() => {
     vi.stubEnv('SCHEDULER_TZ', 'Europe/Budapest')
+    vi.stubEnv('USAGE_LIMIT_NOTICE_TO_MAIN_AGENT', '1')
+    textLang = 'hu'
     vi.clearAllMocks()
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-20T02:30:00.000Z'))
@@ -203,12 +214,62 @@ describe('scheduler usage-limit gate (attemptFireTask)', () => {
       expect(res.result).toBe('limitagent: usage-limited')
       expect(mockSendPrompt).not.toHaveBeenCalled()
       expect(gateWarned()).toBe(true)
-      // One owner notice for the episode, naming the banner.
-      expect(mockSendMessage).toHaveBeenCalledTimes(1)
-      expect((mockSendMessage.mock.calls[0] as unknown[])[1]).toBe(OWNER_CHAT)
-      expect(String((mockSendMessage.mock.calls[0] as unknown[])[2])).toContain(BANNER)
+      // One main-agent notice for the episode, naming the banner and agent.
+      expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
+      expect(mockCreateAgentMessage).toHaveBeenCalledWith('system', MAIN_AGENT_ID,
+        expect.stringContaining(BANNER))
+      expect(mockCreateAgentMessage.mock.calls[0][2]).toContain('limitagent')
+      expect(mockCreateAgentMessage.mock.calls[0][2]).toContain('[USAGE-LIMIT]')
+      expect(mockSendMessage).not.toHaveBeenCalled()
     })
   }
+
+  it('ULN1 setting off: the notice goes to the owner chat, not to the main agent', async () => {
+    vi.stubEnv('USAGE_LIMIT_NOTICE_TO_MAIN_AGENT', 'off')
+    gatePane = LIMITED_PANE
+    const res = await runNow(task({ name: 'uln-off' }))
+    expect(res.result).toBe('limitagent: usage-limited')
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    expect((mockSendMessage.mock.calls[0] as unknown[])[1]).toBe(OWNER_CHAT)
+    expect(String((mockSendMessage.mock.calls[0] as unknown[])[2])).toContain(BANNER)
+    expect(mockCreateAgentMessage).not.toHaveBeenCalled()
+  })
+
+  it('ULN2 the main agent itself out of usage: the notice goes to the owner chat', async () => {
+    gatePane = LIMITED_PANE
+    const res = await runNow(task({ name: 'uln-main', agent: MAIN_AGENT_ID }))
+    expect(res.result).toBe(`${MAIN_AGENT_ID}: usage-limited`)
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    expect((mockSendMessage.mock.calls[0] as unknown[])[1]).toBe(OWNER_CHAT)
+    expect(String((mockSendMessage.mock.calls[0] as unknown[])[2])).toContain(BANNER)
+    expect(mockCreateAgentMessage).not.toHaveBeenCalled()
+  })
+
+  it('ULN3 the inter-agent write throws: falls back to the owner chat', async () => {
+    mockCreateAgentMessage.mockImplementationOnce(() => { throw new Error('db down') })
+    gatePane = LIMITED_PANE
+    const res = await runNow(task({ name: 'uln-db-down' }))
+    expect(res.result).toBe('limitagent: usage-limited')
+    expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    expect((mockSendMessage.mock.calls[0] as unknown[])[1]).toBe(OWNER_CHAT)
+    expect(String((mockSendMessage.mock.calls[0] as unknown[])[2])).toContain(BANNER)
+    expect(mockWarn).toHaveBeenCalledWith(expect.objectContaining({ agent: 'limitagent', err: expect.any(Error) }),
+      'usage-limit notice to the main agent failed, falling back to the owner chat')
+  })
+
+  it('ULN4 English install: the main-agent text is English', async () => {
+    textLang = 'en'
+    gatePane = LIMITED_PANE
+    const res = await runNow(task({ name: 'uln-english' }))
+    expect(res.result).toBe('limitagent: usage-limited')
+    expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
+    expect(mockCreateAgentMessage).toHaveBeenCalledWith('system', MAIN_AGENT_ID,
+      expect.stringContaining('has run out of usage'))
+    expect(mockCreateAgentMessage.mock.calls[0][2]).toContain(BANNER)
+    expect(mockCreateAgentMessage.mock.calls[0][2]).not.toContain('kifogyott')
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
 
   it('forceSend does not bypass it -- an exhausted session cannot run a forced prompt either', async () => {
     gatePane = LIMITED_PANE
@@ -293,6 +354,18 @@ describe('scheduler usage-limit gate (attemptFireTask)', () => {
       expect(retryRows).toHaveLength(0)
     } finally {
       clearInterval(stop)
+    }
+  })
+})
+
+describe('readUsageLimitNoticeToMainAgent', () => {
+  it('ULN5 defaults on and only explicit off values disable it', async () => {
+    const { readUsageLimitNoticeToMainAgent } = await import('../web/schedule-runner.js')
+    for (const value of ['0', 'false', 'no', 'off', ' OFF ']) {
+      expect(readUsageLimitNoticeToMainAgent(() => value)).toBe(false)
+    }
+    for (const value of [undefined, '', '1', 'true', 'yes', 'garbage']) {
+      expect(readUsageLimitNoticeToMainAgent(() => value)).toBe(true)
     }
   })
 })

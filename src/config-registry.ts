@@ -1189,6 +1189,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
+    key: 'USAGE_LIMIT_NOTICE_TO_MAIN_AGENT',
+    type: 'boolean',
+    default: '1',
+    description: 'Hová menjen az ütemező jelzése, ha egy ügynök sessionje kifogyott a keretből (usage-limit). BE (alapértelmezés): a fő ágens kapja inter-agent üzenetként, ő dönt a beavatkozásról, és ő szól a gazdának, ha kell. KI (off/0): a régi út, a gazda privát chatje. Ha maga a fő ágens fogyott ki, vagy az üzenet nem írható be, a jelzés a gazda chatjébe megy. Azonnal hat, újraindítás nélkül.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     // ISSUE2556X (marveen#2556): with two paired DMs and the installer's ALLOWED_CHAT_ID=0 the alert resolver refuses
     // to guess, and every system alert was lost. This names the chat outright. Delivery only: it never makes anyone
     // the owner (the command gate and the ledger keep ALLOWED_CHAT_ID / the sole DM entry), and the memory key stays
