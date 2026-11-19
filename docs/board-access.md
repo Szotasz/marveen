@@ -65,6 +65,14 @@ The "locked" row is deliberate: a present file means the owner confined
 someone, and a typo must not reopen the full board to that agent. The file is
 read on each relevant request, so a fix applies immediately, without restart.
 
+Only the owner edits the file. It is on the db-write gate's protected list
+(`PROTECTED_INSTALL_PATHS` in `scripts/hooks/db-write-gate.mjs`), like the
+other owner-set policy files in `store/`: an agent's Write/Edit or Bash write
+to it (redirect, `tee`, `sed -i`, a rename onto it, `rm`) is denied, a read is
+allowed. Without this, a confined agent told "your board access gives an
+error, fix it" could set `"enabled": false` or give its person the role
+`all`, and the next request would read the new file.
+
 ## The gate
 
 Runs in `web.ts` after authentication and before any route handler:
@@ -127,10 +135,17 @@ of the colleague's agent that calls this endpoint and sends `text`.
   `store/.dashboard-token` (the master token) or another agent's token file
   can present it and is no longer scoped. File permissions cannot prevent
   that while the user is shared. Real isolation needs one OS user per agent.
+- **The database is not scoped.** The scope covers the HTTP API only. The
+  board itself lives in `store/claudeclaw.db`, and an agent that reads that
+  file directly (for example `sqlite3 store/claudeclaw.db "select * from
+  kanban_cards"`, which the fleet's own instructions present as a normal way
+  to read the kanban) sees every card. Without a deny on the database file,
+  the scope holds only for API calls.
 - **Recommendation for colleague-facing agents:** give them a security
-  profile whose permissions deny reading the master token and the other
-  agents' token files (for example deny `Read` and Bash access to
-  `store/.dashboard-token` and `agents/*/.dashboard-token` other than its own),
+  profile whose permissions deny reading the master token, the other
+  agents' token files and the database (for example deny `Read` and Bash
+  access to `store/.dashboard-token`, `agents/*/.dashboard-token` other than
+  its own, and `store/claudeclaw.db` with its `-wal` and `-shm` files),
   run with `AGENT_TOKENS=1` so the agent only ever holds its own token, and do
   not hand such an agent a shell recipe that embeds the master token. This
   raises the bar for a confused agent; it is still a permission layer, not an
