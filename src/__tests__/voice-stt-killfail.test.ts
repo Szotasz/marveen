@@ -1,7 +1,9 @@
 // 082e174b R2 BLOCKER A1 regression (both review legs, reproduced measured):
-// when the timeout-path `systemctl --user kill` child FAILS (exit 1) and the
-// transient service stays alive holding the supervisor's descriptors, the STT
-// caller must still settle within a bounded window, not stay pending forever.
+// a FAILED timeout-path `systemctl --user kill` (transient service stays alive
+// holding the supervisor's descriptors) must not jam the single-flight queue
+// forever. With the per-caller deadline the first caller itself settles null at
+// 160 s; the queue head is then released by runProc's 8 s settle grace, so a
+// second caller's whisper spawns ~8 s later and also settles at its own deadline.
 // This fake is voice-stt-scope.test.ts's harness with ONE change: the
 // systemctl branch finishes(1) and never closes the beheaded target.
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
@@ -125,31 +127,52 @@ beforeEach(() => {
 })
 
 describe('PROBE A1: failed systemctl kill must not block the caller forever', () => {
-  it('caller settles within a bounded window after the kill fails', async () => {
+  it('caller settles at its deadline and the queue is released by the settle grace after the kill fails', async () => {
+    const desc = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
     vi.useFakeTimers()
     try {
       const voice = await import('../web/routes/voice.js')
-      const p = voice.transcribeVoiceFile('FILEPROBE01', paths.stateDir)
-      // A flag set by p's own reaction, NOT Promise.race against an already
-      // resolved promise: that race reports "pending" even for a p that settled
-      // long ago (the resolved arm's reaction is queued first), so it can never
-      // pass and proves nothing.
+      const p1 = voice.transcribeVoiceFile('FILEPROBE01', paths.stateDir)
+      // Flags set by the promise's own reaction, NOT Promise.race against an
+      // already resolved promise: that race reports "pending" even for a promise
+      // that settled long ago, so it can never pass and proves nothing.
       let outcome: 'STILL-PENDING' | 'SETTLED' | 'SETTLED-REJECTED' = 'STILL-PENDING'
-      p.then(() => { outcome = 'SETTLED' }, () => { outcome = 'SETTLED-REJECTED' })
-      await vi.advanceTimersByTimeAsync(1) // spawn + probe
-      const stt = fake.recs.filter((r) => r.args.includes('transcribe') && r.cmd === 'systemd-run')
-      expect(stt).toHaveLength(1)
-      await vi.advanceTimersByTimeAsync(160_000) // STT budget: SIGKILL + failed systemctl kill
-      const kill = fake.recs.filter((r) => r.cmd === 'systemctl')
-      expect(kill).toHaveLength(1)
-      expect(outcome).toBe('STILL-PENDING') // the budget alone does not settle it: the descriptors are still held
-      // Generous bounded-settle window: the kill's own 5s cap + a wide margin.
-      await vi.advanceTimersByTimeAsync(6_000)
-      await vi.advanceTimersByTimeAsync(30_000)
-      // Desired behavior: bounded settlement even when the kill fails.
-      expect(outcome).toBe('SETTLED')
+      let value: string | null | undefined
+      p1.then((v) => { outcome = 'SETTLED'; value = v }, () => { outcome = 'SETTLED-REJECTED' })
+      await vi.advanceTimersByTimeAsync(1) // spawn
+      const stt = () => fake.recs.filter((r) => r.args.includes('transcribe') && r.cmd === 'systemd-run')
+      expect(stt()).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(160_000) // deadline: SIGKILL + failed systemctl kill
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(fake.recs.filter((r) => r.cmd === 'systemctl')).toHaveLength(1)
+      expect(outcome).toBe('SETTLED') // per-caller deadline; the descriptors are still held
+      expect(value).toBeNull()
+
+      const p2Deadline = Date.now() + 160_000
+      const p2 = voice.transcribeVoiceFile('FILEPROBE02', paths.stateDir)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(stt()).toHaveLength(1) // queue still held by the first run (its close never comes)
+
+      await vi.advanceTimersByTimeAsync(8_000) // the settle grace frees the queue
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(stt()).toHaveLength(2)
+      expect(stt()[1].args).toContain('FILEPROBE02')
+
+      // The late starter's systemd-run gets only the REST of p2's budget: it is
+      // SIGKILLed by p2's own deadline, not 160 s after it spawned (~8 s later).
+      await vi.advanceTimersByTimeAsync(p2Deadline - Date.now() - 1_000)
+      expect(stt()[1].killed).toBeNull()
+      await vi.advanceTimersByTimeAsync(1_000)
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(stt()[1].killed).toBe('SIGKILL')
+      expect(await p2).toBeNull()
     } finally {
       vi.useRealTimers()
+      Object.defineProperty(process, 'platform', desc!)
     }
   })
 })

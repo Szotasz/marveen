@@ -48,6 +48,7 @@ const VENV_PY = join(VOICE_DIR, 'venv', 'bin', 'python')
 // the caller sees a bare socket/hook timeout instead of the server's own
 // transcript=null -- the same "vanished with no reason" failure this change
 // exists to remove, just later. Raising one of the three alone changes nothing.
+// The budget is per CALLER, not per whisper run: queue wait + run share it (see runSttSingleFlight).
 const STT_TIMEOUT_MS = 160_000
 
 // Telegram file_ids are base64url + some punctuation; reject anything else.
@@ -233,32 +234,67 @@ async function sttUseIsolatedSpawn(): Promise<boolean> {
   )
   _sttIsolatedCache = probe.code === 0
   if (_sttIsolatedCache) {
-    logger.info('STT: systemd-run cgroup isolation enabled (probe ok)')
+    logger.info('STT: systemd-run transient unit available (probe ok; memory cap not verified)')
   } else {
     logger.warn({ code: probe.code }, 'STT: systemd-run probe failed, whisper stays in the dashboard cgroup (isolation off)')
   }
   return _sttIsolatedCache
 }
 
-// Single-flight lock for STT, process-wide. Concurrent callers queue in call
-// order through a promise chain; nobody is rejected, because every caller is a
-// real inbound voice note -- dropping one (or racing two whispers into one
-// cgroup, which is what started the incident) recreates exactly the failure
-// this route exists to prevent. The chain remembers settlement only, never
-// values, so one failed task cannot poison the tasks queued behind it.
+// Single-flight lock for STT, process-wide. Concurrent callers queue FIFO
+// through a promise chain; nobody is rejected, because every caller is a real
+// inbound voice note -- racing two whispers into one cgroup is what started the
+// incident. The chain is built from the task (never from the caller-facing
+// race), so a caller that gives up does NOT release the queue: the next whisper
+// starts only after the previous one's runProc settled. The chain remembers
+// settlement only, never values, so one failed task cannot poison the rest.
+//
+// Each caller has a deadline (call time + STT_TIMEOUT_MS): queue wait and run
+// share ONE budget, so the 160 s < 170 s < 180 s chain holds for queued callers
+// too. A caller whose deadline passes while queued gets null at its deadline
+// and its whisper is skipped without spawning when its turn comes.
+//
+// Same-file merge: the directive route and the router usually ask for the SAME
+// voice note. A second call for the same key while the first is queued or
+// running gets the same promise: one whisper, both get the transcript.
 let _sttChain: Promise<unknown> = Promise.resolve()
 // The running transcription plus everyone queued behind it; >1 after the
 // increment means "this caller had to wait", at queue position count-1.
 let _sttInOut = 0
+// Same-file merge: key -> the promise of the caller that is already queued or running for that file.
+const _sttInflight = new Map<string, Promise<string | null>>()
 
-function runSttSingleFlight<T>(fileId: string, fn: () => Promise<T>): Promise<T> {
+function runSttSingleFlight(
+  key: string,
+  fileId: string,
+  deadline: number,
+  fn: (deadline: number) => Promise<string | null>,
+): Promise<string | null> {
+  const existing = _sttInflight.get(key)
+  if (existing) return existing
   _sttInOut++
   if (_sttInOut > 1) {
     logger.warn({ fileId, queuePosition: _sttInOut - 1 }, 'transcribeVoiceFile: STT busy, caller queued behind in-flight transcription')
   }
-  const result = _sttChain.then(fn)
-  _sttChain = result.then(() => undefined, () => undefined)
-  void result.then(() => { _sttInOut-- }, () => { _sttInOut-- })
+  let abandoned = false
+  const task = _sttChain.then(() => {
+    if (abandoned || Date.now() >= deadline) return null
+    return fn(deadline)
+  })
+  _sttChain = task.then(() => undefined, () => undefined)
+  void task.then(() => { _sttInOut-- }, () => { _sttInOut-- })
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined
+  const expiry = new Promise<null>((resolve) => {
+    expiryTimer = setTimeout(() => {
+      abandoned = true
+      resolve(null)
+    }, Math.max(0, deadline - Date.now()))
+  })
+  const result: Promise<string | null> = Promise.race([task, expiry]).finally(() => {
+    clearTimeout(expiryTimer)
+    if (_sttInflight.get(key) === result) _sttInflight.delete(key)
+  })
+  _sttInflight.set(key, result)
   return result
 }
 
@@ -266,15 +302,21 @@ function runSttSingleFlight<T>(fileId: string, fn: () => Promise<T>): Promise<T>
 // unit, or the second systemd-run would collide with the first's unit.
 let _sttUnitSeq = 0
 
-async function runSttWhisper(fileId: string, stateDir: string): Promise<string | null> {
+async function runSttWhisper(fileId: string, stateDir: string, deadline: number): Promise<string | null> {
   let result: { stdout: string; stderr: string; code: number; timedOut: boolean }
-  if (await sttUseIsolatedSpawn()) {
+  const isolated = await sttUseIsolatedSpawn()
+  // Remaining budget, measured after the probe (which may take time).
+  const budgetMs = deadline - Date.now()
+  if (budgetMs <= 0) return null
+  if (isolated) {
     const unit = `marveen-stt-${process.pid}-${++_sttUnitSeq}`
-    // NOTE on environment: a transient unit does NOT inherit the dashboard's
-    // environ (systemd starts it from the user manager's environment), so
-    // _vtools.py's MARVEEN_WHISPER_MODEL override has to live in the user
-    // manager (`systemctl --user import-environment MARVEEN_WHISPER_MODEL`)
-    // on isolated hosts, or that host pinned to MARVEEN_STT_MODE=direct.
+    // NOTE on environment: a transient unit starts from the user manager's
+    // environment, NOT the dashboard's. The variables _vtools.py reads on the
+    // transcribe path (MARVEEN_WHISPER_MODEL) and the proxy variables for the
+    // Telegram download are forwarded by NAME with --setenv=NAME: systemd-run
+    // copies the value from its own environment (it is our child), so the
+    // value never reaches argv (a proxy URL can hold a password, and argv is
+    // visible in /proc and ps).
     // The STT_TIMEOUT_MS budget now guards systemd-run itself (--wait makes
     // it forward the unit's exit), so the wall-clock contract is unchanged.
     //
@@ -292,17 +334,22 @@ async function runSttWhisper(fileId: string, stateDir: string): Promise<string |
     // either). Fire-and-forget, NOT awaited: best-effort by contract (5s cap,
     // rc and spawn errors swallowed), and the STT call must settle when its
     // descriptors close, not after systemctl finishes.
+    const unitArgs: string[] = [
+      '--user', '--quiet', '--pipe', '--collect', '--wait',
+      '-p', `MemoryHigh=${sttMemoryLimitBytes('MARVEEN_STT_MEMORY_HIGH', STT_UNIT_MEMORY_HIGH_B)}`,
+      '-p', `MemoryMax=${sttMemoryLimitBytes('MARVEEN_STT_MEMORY_MAX', STT_UNIT_MEMORY_MAX_B)}`,
+      // Unit-side time limit: a unit outlives a dashboard restart by at most ~10 s beyond the budget.
+      '-p', `RuntimeMaxSec=${Math.ceil(budgetMs / 1000) + 10}`,
+    ]
+    for (const name of ['MARVEEN_WHISPER_MODEL', 'HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy']) {
+      if (process.env[name] !== undefined) unitArgs.push(`--setenv=${name}`)
+    }
+    unitArgs.push(`--unit=${unit}`, VENV_PY, VTOOLS_PY, 'transcribe', fileId, stateDir)
     result = await runProc(
       'systemd-run',
-      [
-        '--user', '--quiet', '--pipe', '--collect', '--wait',
-        '-p', `MemoryHigh=${sttMemoryLimitBytes('MARVEEN_STT_MEMORY_HIGH', STT_UNIT_MEMORY_HIGH_B)}`,
-        '-p', `MemoryMax=${sttMemoryLimitBytes('MARVEEN_STT_MEMORY_MAX', STT_UNIT_MEMORY_MAX_B)}`,
-        `--unit=${unit}`,
-        VENV_PY, VTOOLS_PY, 'transcribe', fileId, stateDir,
-      ],
+      unitArgs,
       {
-        timeoutMs: STT_TIMEOUT_MS,
+        timeoutMs: budgetMs,
         spawnErrorAsFailure: true,
         onTimeout: () => {
           void runProc(
@@ -315,7 +362,7 @@ async function runSttWhisper(fileId: string, stateDir: string): Promise<string |
   } else {
     // Direct spawn (non-Linux, MARVEEN_STT_MODE=direct, or failed probe): the
     // exact pre-incident call, semantics untouched.
-    result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: STT_TIMEOUT_MS })
+    result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: budgetMs })
   }
   // Exit-code semantics shared by both spawn modes, unchanged from before
   // isolation existed: non-zero (incl. killed-on-timeout) -> warn with the
@@ -334,9 +381,10 @@ async function runSttWhisper(fileId: string, stateDir: string): Promise<string |
 // coupled message delivery to the HTTP server and, under sustained voice
 // traffic, threw the event loop (progressive /api/agents latency 73ms -> 12s ->
 // timeout). Returns the transcript, or null on any failure (toolkit missing,
-// invalid input, whisper non-zero). The whisper subprocess keeps its own
-// STT_TIMEOUT_MS budget inside runProc, so a slow transcription can never hang
-// the caller. Calls are serialized process-wide (one whisper at a time, see
+// invalid input, whisper non-zero). Each caller has one
+// STT_TIMEOUT_MS budget measured from its own call, covering both the wait in
+// the queue and the whisper run, so a slow transcription can never hang the
+// caller. Calls are serialized process-wide (one whisper at a time, see
 // runSttSingleFlight) and on Linux run in an isolated transient systemd unit
 // (see runSttWhisper), so STT can no longer drag the dashboard's cgroup into
 // reclaim while it transcribes.
@@ -344,7 +392,8 @@ export async function transcribeVoiceFile(fileId: string, stateDir: string): Pro
   if (!isVoiceInstalled()) return null
   if (!SAFE_FILE_ID_RE.test(fileId)) return null
   if (!isSafeStateDir(stateDir)) return null
-  return runSttSingleFlight(fileId, () => runSttWhisper(fileId, stateDir))
+  const deadline = Date.now() + STT_TIMEOUT_MS
+  return runSttSingleFlight(`${stateDir}\u0000${fileId}`, fileId, deadline, (dl) => runSttWhisper(fileId, stateDir, dl))
 }
 
 /**
