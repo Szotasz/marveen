@@ -520,6 +520,45 @@ export function writeAgentMemoryIsolation(name: string, enabled: boolean): void 
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+// CODEMODEFLAG1119: opt-in per-agent Claude Code "Code Mode" (default OFF). When true, the launcher exports
+// CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 for this sub-agent; otherwise the variable is unset at launch, so an
+// inherited value can never switch it on. Absent/false = off.
+export function readAgentCodeMode(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    return config.codeMode === true
+  } catch { /* fall through */ }
+  return false
+}
+
+// Persist the opt-in codeMode flag. `false` removes the key, as for memoryIsolation.
+export function writeAgentCodeMode(name: string, enabled: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  if (enabled) config.codeMode = true
+  else delete config.codeMode
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// CODEMODEFLAG1119 (Q1): the mode the agent was last LAUNCHED in, recorded by startAgentProcess. A Code Mode session
+// resumed without Code Mode refuses to start, and a session started without it resumes without it even with the
+// variable set; so when the switch differs from this record the next start is fresh. Missing = launched without.
+export function readAgentCodeModeLaunched(name: string): boolean {
+  try {
+    return JSON.parse(readFileOr(join(agentDir(name), 'agent-config.json'), '{}')).codeModeLaunched === true
+  } catch { return false }
+}
+
+// `false` removes the key, so an agent that never ran in Code Mode keeps its agent-config.json as it was.
+export function writeAgentCodeModeLaunched(name: string, launched: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  if (launched) config.codeModeLaunched = true
+  else delete config.codeModeLaunched
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 // Opt-in per-agent agent-state-observer mod (default OFF, MODSTERMEK1005).
 // When true the launcher loads plugins/agent-state-observer for this agent's
 // session (see state-observer.ts for the version gate and what it writes).

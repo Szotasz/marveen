@@ -4497,6 +4497,9 @@ function applyMarveenReadonlyMode(readOnly) {
   if (authModeGroup) authModeGroup.hidden = readOnly
   const memoryIsolationGroup = document.getElementById('memoryIsolationGroup')
   if (memoryIsolationGroup) memoryIsolationGroup.hidden = readOnly
+  // CODEMODEFLAG1119: sub-agents only (the main agent does not start through the launcher that reads it)
+  const codeModeGroup = document.getElementById('codeModeGroup')
+  if (codeModeGroup) codeModeGroup.hidden = readOnly
   // #2727: the security profile and the Claude plan are per SUB-agent settings. openMarveenDetail never fills
   // their selects, so for the main agent they showed whatever the last opened sub-agent left there (or an empty
   // select on a fresh load), above a Save button that returns early for role 'main'. Hidden here, the one hook
@@ -4952,6 +4955,8 @@ async function openAgentDetail(agentName) {
   updateAuthModeUI(currentAgent.authMode || 'shared', currentAgent.hasApiKey || false)
   const memIsoToggle = document.getElementById('memoryIsolationToggle')
   if (memIsoToggle) memIsoToggle.checked = currentAgent.memoryIsolation === true
+  const codeModeToggle = document.getElementById('codeModeToggle')
+  if (codeModeToggle) codeModeToggle.checked = currentAgent.codeMode === true
   loadVoiceConfig(currentAgent.name)
   document.getElementById('editClaudeMd').value = currentAgent.claudeMd || currentAgent.content || ''
   document.getElementById('editSoulMd').value = currentAgent.soulMd || ''
@@ -6574,6 +6579,24 @@ document.getElementById('memoryIsolationToggle').addEventListener('change', asyn
     if (!res.ok) throw new Error()
     currentAgent.memoryIsolation = enabled
     showToast(t(enabled ? 'agents.toast.memory_isolation_on' : 'agents.toast.memory_isolation_off'))
+  } catch {
+    e.target.checked = !enabled
+    showToast(t('common.error_save'))
+  }
+})
+
+document.getElementById('codeModeToggle').addEventListener('change', async (e) => {
+  if (!currentAgent || currentAgent.role === 'main') return
+  const enabled = e.target.checked
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codeMode: enabled }),
+    })
+    if (!res.ok) throw new Error()
+    currentAgent.codeMode = enabled
+    showToast(t(enabled ? 'agents.toast.code_mode_on' : 'agents.toast.code_mode_off'))
   } catch {
     e.target.checked = !enabled
     showToast(t('common.error_save'))

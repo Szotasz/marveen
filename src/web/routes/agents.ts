@@ -19,6 +19,7 @@ import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { agentIsolatedConfigDir, setCodeModeCaveats } from '../code-mode-caveats.js'
 import { snapshotPersonaFile, writePersonaFileIfUnchanged } from '../persona-write-guard.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { hasLaunchTrace, hasPackageManifestFile, startsWithPackageShell } from '../agent-package/marker.js'
@@ -58,6 +59,8 @@ import {
   writeAgentClaudePlan,
   readAgentMemoryIsolation,
   writeAgentMemoryIsolation,
+  readAgentCodeMode,
+  writeAgentCodeMode,
   readAgentClaudeConfigDir,
   readAgentRemoteConfig,
   readAgentRunAsUser,
@@ -678,6 +681,7 @@ export interface AgentSummary {
 
 interface AgentDetail extends AgentSummary {
   memoryIsolation: boolean
+  codeMode: boolean
   customProvider: string | null
   claudeMd: string
   soulMd: string
@@ -852,6 +856,7 @@ function getAgentDetail(name: string): AgentDetail {
   return {
     ...summary,
     memoryIsolation: readAgentMemoryIsolation(name),
+    codeMode: readAgentCodeMode(name),
     customProvider: readAgentCustomProvider(name),
     claudeMd,
     soulMd,
@@ -3038,7 +3043,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
-      authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
+      authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean; codeMode?: boolean
       modelProfile?: string | null
       customProvider?: string | null
     }
@@ -3089,6 +3094,25 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         return true
       }
       writeAgentMemoryIsolation(name, data.memoryIsolation === true)
+    }
+    if (data.codeMode !== undefined) {
+      // CODEMODEFLAG1119: sub-agents only. The switch is read by startAgentProcess's launch command, and the main
+      // agent never starts through it (its lifecycle is service-managed: channels.sh and the channel-monitor respawn).
+      if (isMainChannelsAgent(name)) {
+        json(res, { error: 'codeMode is not applicable to the main agent' }, 400)
+        return true
+      }
+      // Q2 (Samu 81017): the owner's switch IS the acceptance of Code Mode's two confirmation windows. The keys go
+      // into the agent's own isolated .claude.json while the switch is on and come out again when it goes off; no
+      // file yet (never launched) is fine, the launch stamps it. An unreadable file refuses the switch, unchanged.
+      try {
+        setCodeModeCaveats(join(agentIsolatedConfigDir(name), '.claude.json'), data.codeMode === true, { groupShared: readAgentRunAsUser(name) != null })
+      } catch (err) {
+        logger.warn({ err, name }, 'codeMode: the isolated .claude.json could not be updated')
+        json(res, { error: 'codeMode: the agent\'s isolated .claude.json could not be updated' }, 500)
+        return true
+      }
+      writeAgentCodeMode(name, data.codeMode === true)
     }
     if (data.claudeMd !== undefined) {
       atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), claudeMdBytes ?? data.claudeMd)

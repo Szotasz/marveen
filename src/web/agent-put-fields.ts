@@ -15,18 +15,19 @@
 export const AGENT_PUT_WRITABLE_FIELDS = [
   'claudeMd', 'soulMd', 'mcpJson', 'model',
   'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
-  'modelProfile', 'customProvider',
+  'modelProfile', 'customProvider', 'codeMode',
 ] as const
 
 // APIAGENTWRITE1104: the fields that change what an agent is told (CLAUDE.md, SOUL.md), what it runs (.mcp.json: a
 // server there is a command started at the next launch), where its prompt goes (customProvider), which login or key it
-// runs under (authMode, apiKey, claudePlan) or its memory boundary (memoryIsolation). They need the owner, not the
+// runs under (authMode, apiKey, claudePlan), its memory boundary (memoryIsolation) or how Claude Code runs (codeMode,
+// CODEMODEFLAG1119: an experimental mode switched on by an env var at launch). They need the owner, not the
 // shared access token every sub-agent can read. model and modelProfile stay token-writable (Samu 69185): the id is
 // validated and changes neither a target nor an instruction, and the quota and install flows set it with the token.
 export const AGENT_PUT_OWNER_FIELDS = [
   'claudeMd', 'soulMd', 'mcpJson',
   'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
-  'customProvider',
+  'customProvider', 'codeMode',
 ] as const
 
 /** The owner-only fields present in a PUT body, in AGENT_PUT_OWNER_FIELDS order. A field set to null or '' counts:
