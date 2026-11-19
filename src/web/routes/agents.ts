@@ -929,12 +929,16 @@ export async function setupAgentChannel(name: string, provider: ChannelProviderT
   // then kills the plugin at runtime with an opaque -32000. Probe at save
   // time and answer with the remedy. Skipped when re-saving the token this
   // agent already runs with -- its OWN live poller would read as busy.
+  // INSTTGPOLLWARN1119: whether another install polls this bot cannot be checked from here; a new Telegram token's
+  // save says so (pollerNote), and is not blocked by it.
+  let pollerNote = false
   if (provider === 'telegram') {
     const preEnvPath = join(isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name)), '.env')
     const currentToken = readChannelToken(provider, preEnvPath)
     if (botToken.trim() !== currentToken) {
       const busyCheck = await checkTelegramTokenBusy(botToken.trim())
       if (busyCheck.busy) { return { status: 409, body: { error: busyCheck.error } } }
+      pollerNote = true
     }
   }
 
@@ -1015,7 +1019,7 @@ export async function setupAgentChannel(name: string, provider: ChannelProviderT
     }
   }
 
-  return { status: 200, body: { ok: true, botName: validation.botName, restarted, wasRunning, ...(restartError ? { restartError, restartCommand: channelsRestartCommand() } : {}), ...(asExtra ? { extra: true } : {}) } }
+  return { status: 200, body: { ok: true, botName: validation.botName, restarted, wasRunning, ...(restartError ? { restartError, restartCommand: channelsRestartCommand() } : {}), ...(asExtra ? { extra: true } : {}), ...(pollerNote ? { pollerNote: true } : {}) } }
 }
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {

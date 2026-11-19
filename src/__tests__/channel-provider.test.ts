@@ -181,16 +181,15 @@ describe('checkTelegramTokenBusy', () => {
     expect(r.error).not.toContain('TESTSECRETVALUE')
   })
 
-  it('reports a competing poller on getUpdates 409 with the stop-or-new-bot remedy', async () => {
-    const r = await checkTelegramTokenBusy(TOKEN, fakeFetch({
-      getWebhookInfo: { body: { ok: true, result: { url: '' } } },
-      getUpdates: { status: 409 },
-    }))
-    expect(r.busy).toBe(true)
-    expect(r.reason).toBe('poller')
-    expect(r.error).toContain('409')
-    expect(r.error).toContain('BotFather')
-    expect(r.error).not.toContain(TOKEN)
+  // INSTTGPOLLWARN1119: getUpdates?timeout=0 answers 200 next to a live poller (measured 2026-11-18), so a second
+  // poller is not probed at all; the save route says that it cannot be checked (pollerNote) instead.
+  it('does not probe getUpdates: no such call, and a 409 there could not make it busy', async () => {
+    const urls: string[] = []
+    const base = fakeFetch({ getWebhookInfo: { body: { ok: true, result: { url: '' } } }, getUpdates: { status: 409 } })
+    const r = await checkTelegramTokenBusy(TOKEN, (async (u: RequestInfo | URL) => { urls.push(String(u)); return base(u) }) as typeof fetch)
+    expect(r).toEqual({ busy: false })
+    expect(urls.some((u) => u.includes('getUpdates'))).toBe(false)
+    expect(urls.some((u) => u.includes('getWebhookInfo'))).toBe(true)
   })
 
   it('passes a free token', async () => {
@@ -216,6 +215,15 @@ describe('checkTelegramTokenBusy', () => {
     expect(src).toMatch(/checkTelegramTokenBusy\(botToken\.trim\(\)\)/)
     expect(src).toMatch(/botToken\.trim\(\) !== currentToken/)
     expect(src.indexOf('checkTelegramTokenBusy(botToken')).toBeGreaterThan(src.indexOf('findBotTokenDuplicate'))
+  })
+  // The note must reach both screens that save a Telegram token (the renderer-wiring lesson above).
+  it('both UI paths show the pollerNote, and both languages have its text', () => {
+    const app = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+    expect(app.match(/pollerNote[^\n]*t\('channel\.telegram\.poller_unverifiable'\)/g)?.length).toBe(2)
+    for (const lang of ['hu', 'en']) {
+      const text = readFileSync(join(__dirname, '..', '..', 'web', 'lang', `${lang}.js`), 'utf-8')
+      expect(text).toContain("'channel.telegram.poller_unverifiable':")
+    }
   })
 })
 

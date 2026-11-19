@@ -2067,6 +2067,7 @@ window._i18n.hu = {
 
   // --- Agent status/labels ---
   'agents.channel.connected':    'Csatlakozva',
+  'channel.telegram.poller_unverifiable': 'Nem ellenőrizhető, hogy más gép használja-e ezt a botot; ha igen, a két rendszer ütközni fog. Egy bot tokent egyszerre csak egy telepítés használhat.',
   'agents.channel.saved_restart_failed': '{provider} elmentve, de az ügynök újraindítása nem sikerült, ezért még nincs bekötve. Indítsd újra kézzel: {cmd} (macOS-en a grafikus bejelentkezés egy termináljából).',
   'agents.channel.disconnected': 'Nincs bekötve',
   'agents.channel.not_configured': 'Nincs beállított csatorna',

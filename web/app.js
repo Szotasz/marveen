@@ -7002,6 +7002,8 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     // #1878 (6): on the main agent the save restarts the channels session; a failed
     // restart must not read as "connected".
     if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), 12000)
+    // INSTTGPOLLWARN1119: another install polling the same bot cannot be checked; said, not blocked.
+    else if (result.pollerNote) showToast(t('channel.toast.connected', { provider: getProviderLabel() }) + ' ' + t('channel.telegram.poller_unverifiable'), 10000)
     else showToast(t('channel.toast.connected', { provider: getProviderLabel() }))
     // Refresh detail
     // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
@@ -16785,7 +16787,8 @@ function wireOnboarding(step) {
         // #1878 (6): a failed restart is said at once, not after the ~2 min wait below.
         if (d.restartError) { botBtn.disabled = false; onbMsg(t('onboarding.step2.saved_restart_failed', { cmd: d.restartCommand || '' }), true); return }
         onbMsg(d.restarted ? t('onboarding.step2.saved_restarted') : t('onboarding.step2.saved'))
-        onbMsg(t('onboarding.step2.waiting_channel'))
+        // INSTTGPOLLWARN1119: onbMsg replaces its text, so the note rides with the message that stays during the wait.
+        onbMsg(t('onboarding.step2.waiting_channel') + (d.pollerNote ? ' ' + t('channel.telegram.poller_unverifiable') : ''))
         const outcome = await waitForChannelLive(fetchOnboardingStatus, 3000, 40)  // ~2 min bound
         if (outcome === 'live') { await refreshOnboarding() }
         else { botBtn.disabled = false; onbMsg(t('onboarding.step2.channel_slow'), true) }

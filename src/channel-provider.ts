@@ -199,7 +199,7 @@ const telegramProvider: ChannelProvider = {
 export async function checkTelegramTokenBusy(
   token: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ busy: boolean; reason?: 'webhook' | 'poller'; error?: string }> {
+): Promise<{ busy: boolean; reason?: 'webhook'; error?: string }> {
   try {
     const wh = await fetchImpl(`https://api.telegram.org/bot${token}/getWebhookInfo`)
     const whData = await wh.json() as { ok: boolean; result?: { url?: string } }
@@ -213,16 +213,9 @@ export async function checkTelegramTokenBusy(
           + 'vagy készíts új botot a @BotFather-nél, és annak a tokenjét add meg itt.',
       }
     }
-    const up = await fetchImpl(`https://api.telegram.org/bot${token}/getUpdates?timeout=0&limit=1`)
-    if (up.status === 409) {
-      return {
-        busy: true,
-        reason: 'poller',
-        error: 'A bot token érvényes, de egy másik futó rendszer már használja (a Telegram 409 Conflict választ adott). '
-          + 'Egy bot tokent egyszerre csak egy telepítés használhat. Teendő: állítsd le a korábbi telepítést, '
-          + 'amelyik még ezzel a tokennel fut, vagy készíts új botot a @BotFather-nél, és annak a tokenjét add meg itt.',
-      }
-    }
+    // INSTTGPOLLWARN1119: a second running poller is NOT probed. getUpdates?timeout=0 answers 200 even while another
+    // poller is live (measured 2026-11-18), so the old 409 check never fired, and a long poll would disturb that
+    // poller. The save route tells the owner plainly that this cannot be checked (pollerNote), without blocking.
     return { busy: false }
   } catch {
     return { busy: false }
