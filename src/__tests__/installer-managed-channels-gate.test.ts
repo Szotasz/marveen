@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, readFileSync, rmSync, statSync, writeFileSync, mkdtempSync, mkdirSync, symlinkSync, readdirSync } from 'node:fs'
+import { chmodSync, lchmodSync, readFileSync, rmSync, statSync, writeFileSync, mkdtempSync, mkdirSync, symlinkSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -239,6 +239,9 @@ function runDirGate(o: {
     mkdirSync(target, { mode: 0o700 })
     chmodSync(target, 0o700)
     symlinkSync(target, dir)
+    // A symlink's own mode reads 0777 on Linux; BSD gives 0755, which would let the repair skip it for the wrong
+    // reason. Set it like Linux where the platform can (lchmod exists on macOS), so the symlink guard is what decides.
+    try { lchmodSync(dir, 0o777) } catch { /* no lchmod on this platform: Linux already reports 0777 */ }
   } else if (o.existing !== undefined) {
     mkdirSync(dir)
     chmodSync(dir, o.existing === 'other-owner' ? 0o700 : o.existing)
