@@ -953,6 +953,8 @@ function shellRunsOnly(segs, k, targets, text) {
       continue
     }
     if (name === 'chmod' || (READERS.has(name) && !PRINTERS.has(name) && !s.bodies.length)) continue
+    // F3: handed to a wrapper written here that runs it with a shell: a shell run of the file
+    if (startsFile && wrapperShellRunsTarget(segs, j, words.map((w) => w.value), targets)) { seen = true; continue }
     if (SHELL_RUNNERS.has(name) || name === 'source' || name === '.') {
       const runner = words.find((w) => w.value === name || w.value.endsWith('/' + name))
       if (!runner || (runner.value !== name && !SYSTEM_SHELL_RX.test(runner.value))) return false
@@ -1245,6 +1247,54 @@ function namedByUnknownProgram(name, rest, own, names, fns = new Set(), made = n
 // name): its run is judged like any program's. A redirect counts only when it carries another file's content
 // (cat /bin/sh > m): a script whose text the command itself writes (a heredoc, a here-string, echo/printf) is read
 // by the run rules when it runs, and the data handed to it stays data (the fleet meter's one false denial).
+// GATEPATHNORM1118 F3 (Dani 81542, his cases7.json): a program whose text this same command writes (a heredoc,
+// echo/printf), with a positional parameter in a run position ($1, "$@", ${1}, $* as the command, after exec, eval, a
+// shell (its options, -c too), source or .), runs what it is handed: its arguments are run positions too. A later
+// segment that runs such a program (by its name, or as a shell's script word) and hands it the written file runs it.
+const POSITIONAL = String.raw`["']?\$(?:\{[1-9@*]\}|[1-9@*])["']?`
+const RUNNER_PREFIX = String.raw`(?:(?:exec|eval|command|nohup|builtin)\s+)*(?:(?:\S*\/)?(?:ba|z|da|k)?sh(?:\s+-[A-Za-z]+)*\s+|source\s+|\.\s+)?`
+const POSITIONAL_RUN_RX = new RegExp(String.raw`(?:^|[;&|\n(]|\bthen\b|\bdo\b|\belse\b)\s*${RUNNER_PREFIX}${POSITIONAL}(?=\s|$|[;&|)])`, 'm')
+export function textRunsPositional(text) {
+  return POSITIONAL_RUN_RX.test(String(text))
+}
+// ...and when the wrapper hands it to a shell (sh "$1", . "$1", source, exec sh "$@"; never a shell's -c), that run is
+// a shell run of the file, judged as running it directly with sh would be (the fleet meter: a wrapper sourcing an
+// extracted function, which `sh redact.sh` itself passes).
+const SHELL_POSITIONAL_RUN_RX = new RegExp(String.raw`(?:^|[;&|\n(]|\bthen\b|\bdo\b|\belse\b)\s*(?:(?:exec|command|nohup|builtin)\s+)*(?:(?:\S*\/)?(?:ba|z|da|k)?sh(?:\s+-(?![A-Za-z]*c)[A-Za-z]+)*|source|\.)\s+${POSITIONAL}(?=\s|$|[;&|)])`, 'm')
+const WRAPPER_SHELL_RX = /^(?:\S*\/)?(?:(?:ba|z|da|k)?sh|source|\.)$/
+/** The wrapper a segment's words run and the arguments it gets, with the text this command wrote into it; null when
+ *  the program is not a file an earlier segment wrote with a readable text. */
+function hereWrittenWrapper(segs, j, vals) {
+  // the program word: the command itself, or a shell's / source's script word
+  let at = 0
+  if (WRAPPER_SHELL_RX.test(vals[0])) {
+    at = vals.findIndex((v, x) => x > 0 && !v.startsWith('-'))
+    if (at < 0) return null
+  }
+  const prog = lastPart(vals[at] ?? '')
+  if (!prog) return null
+  for (let i = j - 1; i >= 0; i--) {
+    const ws = shellWords(segs[i].own)
+    if (!ws || !(ws.redirects ?? []).some((r) => lastPart(r.value) === prog)) continue
+    const writer = lastPart(unwrapRun(ws).rest[0]?.value ?? '')
+    return { args: vals.slice(at + 1), text: scriptTextOf(segs[i].own, segs[i].bodies ?? [], writer), viaShell: at > 0 }
+  }
+  return null
+}
+function wrapperRunsItsArgs(segs, j, rest, names) {
+  const w = hereWrittenWrapper(segs, j, rest.map((x) => x.value))
+  if (!w || !w.args.some((v) => names.some((t) => wordNamesFile(v, t)))) return false
+  return textRunsPositional(w.text)
+}
+/** For shellRunsOnly: this segment hands one of `targets` to a wrapper written here that runs it with a shell. */
+function wrapperShellRunsTarget(segs, j, vals, targets) {
+  const w = hereWrittenWrapper(segs, j, vals)
+  if (!w || !w.args.some((v) => targets.includes(v))) return false
+  const line = w.text.split('\n', 1)[0]
+  if (!w.viaShell && line.startsWith('#!') && !SHELL_SHEBANG.test(line)) return false
+  return SHELL_POSITIONAL_RUN_RX.test(w.text)
+}
+
 export function madeFileParts(segs, upto) {
   const made = new Set()
   for (let i = 0; i < upto && i < segs.length; i++) {
@@ -1319,6 +1369,7 @@ export function runsWrittenFile(segs, k, targets, cmd) {
     if (rest.length && optionProgramRuns(name, rest, names)) return true
     // GATEPATHNORM1118 (b)(c)(d): any other program naming it, and an assignment before the command that names it
     if (rest.length && namedByUnknownProgram(name, rest, s.own, names, fns, madeFileParts(segs, j))) return true
+    if (rest.length && wrapperRunsItsArgs(segs, j, rest, names)) return true
     if (rest.length && assigns.some((a) => names.some((t) => wordNamesFile(a.value, t)))) return true
     if (subsName && substAsCode(rest, name)) return true
     // (e) a here-string to a shell holding a substitution that reads the file (bash <<< "$(cat f)") needs no rule here:
