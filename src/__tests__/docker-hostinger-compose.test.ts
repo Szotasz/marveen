@@ -64,7 +64,7 @@ describe('docker/hostinger-compose.yml', () => {
       const run = (domain: string) => spawnSync('/bin/sh', ['-c', runnable], { env: { PATH: process.env.PATH, MARVEEN_DOMAIN: domain }, encoding: 'utf-8' })
       const ok = run('srv2127946.hstgr.cloud')
       expect(ok.status).toBe(0)
-      expect(ok.stdout).toBe('srv2127946.hstgr.cloud {\n\theader Strict-Transport-Security "max-age=31536000"\n\theader Referrer-Policy "no-referrer"\n\treverse_proxy marveen:3421\n}\n')
+      expect(ok.stdout).toBe('{\n\tlog {\n\t\tformat filter {\n\t\t\twrap console\n\t\t\tfields {\n\t\t\t\trequest>uri query {\n\t\t\t\t\tdelete token\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\nsrv2127946.hstgr.cloud {\n\theader Strict-Transport-Security "max-age=31536000"\n\theader Referrer-Policy "no-referrer"\n\treverse_proxy marveen:3421\n}\n')
       for (const bad of ['', 'a b', 'x{y', 'evil.example}\n:80 {', 'a;b']) {
         const r = run(bad)
         expect(r.status, JSON.stringify(bad)).toBe(1)
