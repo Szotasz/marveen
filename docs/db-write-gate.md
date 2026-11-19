@@ -68,6 +68,11 @@ the run rules read its text, and the data handed to it stays data. On a case-ins
 a case variant of the written file's path is the same file. `$PWD` and `${PWD}` stand for the directory the segment
 runs in.
 
+There is one exception to "the data stays data": a wrapper written here whose text runs a positional parameter. That
+means `$1`, `"$@"`, `${1}` or `$*` as the command, or after `exec`, `eval`, a shell with its options, `source` or `.`
+(for example `exec sh "$@"`). Its arguments are run positions, so handing it the written file runs that file. A
+wrapper that only reads or prints its argument (`wc -l "$1"`, `echo "$1"`) does not count.
+
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file
 written in an earlier Bash call (or with the Write tool) and run in a later one is not read either. What the caller's
