@@ -979,9 +979,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         // DCEXT1111 A1: a thread under an opted-in channel the bot answered in is followed without @mention. // MARVEEN-EXT
         if (post) botThreads.add(post.id) // DCEXT1111 C4: the post is the bot's own thread // MARVEEN-EXT
+        else if (ch?.isThread() && ch.parentId !== null && ch.parentId in loadAccess().groups) botThreads.add(ch.id) // MARVEEN-EXT
         const answered = doneMarks.take(chat_id) // DCEXT1111 D4 // MARVEEN-EXT
         if (answered) void answered.react(DONE_REACTION).catch(() => {}) // MARVEEN-EXT
-        else if (ch?.isThread() && ch.parentId !== null && ch.parentId in loadAccess().groups) botThreads.add(ch.id) // MARVEEN-EXT
 
         const result =
           sentIds.length === 1
@@ -1057,14 +1057,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT)) // MARVEEN-EXT
         const parts = chunk(args.text as string, limit, access.chunkMode ?? 'length') // MARVEEN-EXT
         if (parts.length > MAX_REPLY_CHUNKS) throw new Error(`the edit would be ${parts.length} messages (max ${MAX_REPLY_CHUNKS}): nothing changed`) // MARVEEN-EXT
+        // #2787 review: the rest needs a channel we can send to; know it before the edit, not after. // MARVEEN-EXT
+        if (parts.length > 1 && !('send' in ch)) throw new Error(`the edit would need ${parts.length - 1} new message(s) and this channel takes none: nothing changed`) // MARVEEN-EXT
         const msg = await ch.messages.fetch(args.message_id as string)
         const edited = await msg.edit(parts[0]!) // MARVEEN-EXT
         const more: string[] = [] // MARVEEN-EXT
-        for (const part of parts.slice(1)) { // MARVEEN-EXT
-          if (!('send' in ch)) break // MARVEEN-EXT
-          const sent = await ch.send({ content: part }) // MARVEEN-EXT
-          noteSent(sent.id) // MARVEEN-EXT
-          more.push(sent.id) // MARVEEN-EXT
+        try { // MARVEEN-EXT
+          for (const part of parts.slice(1)) { // MARVEEN-EXT
+            const sent = await (ch as unknown as { send(p: unknown): Promise<{ id: string }> }).send({ content: part }) // MARVEEN-EXT
+            noteSent(sent.id) // MARVEEN-EXT
+            more.push(sent.id) // MARVEEN-EXT
+          } // MARVEEN-EXT
+        } catch (err) { // MARVEEN-EXT
+          const why = err instanceof Error ? err.message : String(err) // MARVEEN-EXT
+          throw new Error(`edited (id: ${edited.id}), then failed after ${more.length} of ${parts.length - 1} new message(s) sent: ${why}`) // MARVEEN-EXT
         } // MARVEEN-EXT
         return { content: [{ type: 'text', text: more.length ? `edited (id: ${edited.id}), the rest in ${more.length} new message(s) (ids: ${more.join(', ')})` : `edited (id: ${edited.id})` }] } // MARVEEN-EXT
       }

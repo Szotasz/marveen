@@ -449,7 +449,7 @@ const OUTBOUND_SITES = [
   '.startThread({ name })',
   'await ch.threads.create({ name })',
   'const edited = await msg.edit(parts[0]!)',
-  'const sent = await ch.send({ content: part })',
+  'const sent = await (ch as unknown as { send(p: unknown): Promise<{ id: string }> }).send({ content: part })',
   "await interaction.reply({ content: 'Not authorized.', ephemeral: true })",
   "await interaction.reply({ content: 'Already answered.', ephemeral: true })",
   "await interaction.reply({ content: 'Details no longer available.', ephemeral: true })",
@@ -1429,12 +1429,12 @@ describe('C4: a reply to a forum channel opens a post', () => {
   })
 
   // The reply case itself, run with fakes: what goes to Discord, in which order.
-  function replyHarness(o: { forum: boolean; text: string; files?: string[]; reply_to?: string; doneMarks?: unknown; failSend?: boolean }) {
+  function replyHarness(o: { forum: boolean; text: string; files?: string[]; reply_to?: string; doneMarks?: unknown; failSend?: boolean; threadParent?: string; groups?: Record<string, unknown> }) {
     const calls: Array<{ op: string; arg: Record<string, unknown> }> = []
     const added: string[] = []
     const post = { id: id(50), send: async (p: Record<string, unknown>) => { calls.push({ op: 'post.send', arg: p }); return { id: id(51 + calls.length) } } }
     const forum = o.forum ? { threads: { create: async (a: Record<string, unknown>) => { calls.push({ op: 'threads.create', arg: a }); return post } } } : null
-    const ch = { isThread: () => false, parentId: null, send: async (p: Record<string, unknown>) => { if (o.failSend) throw new Error('Missing Access'); calls.push({ op: 'ch.send', arg: p }); return { id: id(60 + calls.length) } } }
+    const ch = { id: '1438000000000000800', isThread: () => o.threadParent !== undefined, parentId: o.threadParent ?? null, send: async (p: Record<string, unknown>) => { if (o.failSend) throw new Error('Missing Access'); calls.push({ op: 'ch.send', arg: p }); return { id: id(60 + calls.length) } } }
     const chunk = new Function(`${slice('function chunk(', 'async function fetchTextChannel(')}\nreturn chunk`)()
     const raw = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1447,7 +1447,7 @@ describe('C4: a reply to a forum channel opens a post', () => {
       `${wrapped}\nreturn replyCase`,
     )(
       () => [], ext.embedSpec, ext.selectSpec, 5, class {}, class {}, async () => forum,
-      async () => ch, () => {}, () => ({ size: 1 }), 25 * 1024 * 1024, () => ({ groups: {} }), 2000, chunk, 8,
+      async () => ch, () => {}, () => ({ size: 1 }), 25 * 1024 * 1024, () => ({ groups: o.groups ?? {} }), 2000, chunk, 8,
       { stop: () => {} }, ext.forumPostTitle, () => {}, { add: (t: string) => added.push(t) }, o.doneMarks ?? new ext.DoneMarks(), ext.DONE_REACTION,
     ) as (a: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>
     return { go: () => run({ chat_id: '1438000000000000800', text: o.text, files: o.files, reply_to: o.reply_to }), calls, added }
@@ -1467,6 +1467,27 @@ describe('C4: a reply to a forum channel opens a post', () => {
   })
 
   replyHarnessRef.fn = replyHarness
+
+  it('reply, run: into a thread under an opted-in channel with a pending done mark -> the thread is followed AND the mark is set (#2787 review B1)', async () => {
+    const reacted: string[] = []
+    const marks = new ext.DoneMarks()
+    marks.note('1438000000000000800', { react: async (e: string) => { reacted.push(e) } })
+    const h = replyHarness({ forum: false, text: 'kész', threadParent: '1438000000000000700', groups: { '1438000000000000700': {} }, doneMarks: marks })
+    await h.go()
+    expect(h.added).toEqual(['1438000000000000800'])
+    expect(reacted).toEqual([ext.DONE_REACTION])
+    expect(marks.take('1438000000000000800')).toBeUndefined() // taken once
+  })
+
+  it('reply, run: a thread whose parent is not opted in is not followed; the done mark is still set', async () => {
+    const reacted: string[] = []
+    const marks = new ext.DoneMarks()
+    marks.note('1438000000000000800', { react: async (e: string) => { reacted.push(e) } })
+    const h = replyHarness({ forum: false, text: 'kész', threadParent: '1438000000000000900', groups: { '1438000000000000700': {} }, doneMarks: marks })
+    await h.go()
+    expect(h.added).toEqual([])
+    expect(reacted).toEqual([ext.DONE_REACTION])
+  })
 
   it('reply, run: not a forum -> the channel path exactly as before (quote on the first part, no post)', async () => {
     const h = replyHarness({ forum: false, text: 'szia', reply_to: id(3) })
@@ -1766,6 +1787,13 @@ describe('A9: another bot\'s message, only on an explicit mention, within the lo
     expect(t.pass(t.msg(`<@${SELF}> y`))).toBe(false) // same parent channel: the cooldown holds across the thread
   })
 
+  it('the overlay\'s gate, run: our own message never passes, even listed and holding a listed role (#2787 review)', () => {
+    const g = botGate({ groups: { [CH]: { allowFrom: [SELF] } }, policy: { [CH]: { allowRoles: [ROLE] } } })
+    expect(g.pass(g.msg(`<@${SELF}> x`, { author: SELF, roles: [ROLE] }))).toBe(false)
+    const control = botGate({ groups: { [CH]: { allowFrom: [BOT] } }, policy: { [CH]: { allowRoles: [ROLE] } } })
+    expect(control.pass(control.msg(`<@${SELF}> x`, { roles: [ROLE] }))).toBe(true) // the same shape from another bot passes
+  })
+
   it('wiring: messageCreate drops a bot unless the gate passes; the meta says is_bot="1"; edits and recovery still skip bots', () => {
     expect(SERVER).toContain('  if (msg.author.bot && !botMessageMayPass(msg)) return // DCEXT1111 A9 // MARVEEN-EXT')
     expect(SERVER).not.toMatch(/^  if \(msg\.author\.bot\) return$/m)
@@ -1886,16 +1914,21 @@ describe('D4: the "done" mark after the reply, with or without an ack', () => {
 })
 
 describe('D5: edit_message over 2000 characters', () => {
-  function editHarness(o: { textChunkLimit?: number } = {}) {
+  function editHarness(o: { textChunkLimit?: number; noSend?: boolean; failSendAfter?: number } = {}) {
     const calls: Array<{ op: string; arg: unknown }> = []
+    let sends = 0
     const raw = SERVER.slice(SERVER.indexOf("      case 'edit_message': {"), SERVER.indexOf("      case 'download_attachment': {"))
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const tsc = require('typescript')
     const js = tsc.transpileModule(`async function call(args: any) { switch ('edit_message') { ${raw} } }`, { compilerOptions: { target: tsc.ScriptTarget.ES2022 } }).outputText
     const chunk = new Function(`${slice('function chunk(', 'async function fetchTextChannel(')}\nreturn chunk`)()
-    const ch = {
-      send: async (p: { content: string }) => { calls.push({ op: 'send', arg: p.content.length }); return { id: id(90 + calls.length) } },
-      messages: { fetch: async (mid: string) => ({ id: mid, edit: async (t: string) => { calls.push({ op: 'edit', arg: t.length }); return { id: mid } } }) },
+    const messages = { fetch: async (mid: string) => ({ id: mid, edit: async (t: string) => { calls.push({ op: 'edit', arg: t.length }); return { id: mid } } }) }
+    const ch = o.noSend ? { messages } : {
+      send: async (p: { content: string }) => {
+        if (o.failSendAfter !== undefined && sends++ >= o.failSendAfter) throw new Error('Missing Permissions')
+        calls.push({ op: 'send', arg: p.content.length }); return { id: id(90 + calls.length) }
+      },
+      messages,
     }
     const call = new Function('fetchAllowedChannel', 'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'MAX_REPLY_CHUNKS', 'noteSent', `${js}\nreturn call`)(
       async () => ch, () => ({ textChunkLimit: o.textChunkLimit }), 2000, chunk, 8, () => {},
@@ -1917,5 +1950,19 @@ describe('D5: edit_message over 2000 characters', () => {
     const long = editHarness()
     await expect(long.run('y'.repeat(2000 * 8 + 1))).rejects.toThrow(/9 messages \(max 8\): nothing changed/)
     expect(long.calls).toEqual([])
+  })
+
+  it('the case, run: a channel that takes no new message refuses a long edit BEFORE editing; a short one still edits (#2787 review)', async () => {
+    const h = editHarness({ noSend: true })
+    await expect(h.run('x'.repeat(2500))).rejects.toThrow(/1 new message\(s\) and this channel takes none: nothing changed/)
+    expect(h.calls).toEqual([])
+    const s = editHarness({ noSend: true })
+    expect((await s.run('rövid')).content[0]!.text).toBe(`edited (id: ${id(5)})`)
+  })
+
+  it('the case, run: a failed follow-up says the edit happened and how many new messages went out (#2787 review)', async () => {
+    const h = editHarness({ failSendAfter: 1 })
+    await expect(h.run('x'.repeat(5000))).rejects.toThrow(new RegExp(`^edited \\(id: ${id(5)}\\), then failed after 1 of 2 new message\\(s\\) sent: Missing Permissions`))
+    expect(h.calls).toEqual([{ op: 'edit', arg: 2000 }, { op: 'send', arg: 2000 }])
   })
 })
