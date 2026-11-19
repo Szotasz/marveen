@@ -1487,8 +1487,14 @@ probe_telegram_token() {
   _ptt_t="$1"
   [ -n "$_ptt_t" ] || return 0
   # The token goes into a curl config line below: a quote or a line break in it would end that line. A bot token is
-  # digits, a colon and [A-Za-z0-9_-]; anything else is refused before any call ([[ =~ ]] anchors the whole value).
-  if ! [[ "$_ptt_t" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+  # digits, a colon and [A-Za-z0-9_-]; anything else is refused before any call. Checked with case patterns on the
+  # value itself: no [[ =~ ]] (it leaves a second copy of the token in BASH_REMATCH, which bash 3.2 cannot unset) and
+  # no $(...) (it would drop a trailing line break before the check). A bracket class matches a line break too.
+  _ptt_bad=0
+  case "$_ptt_t" in [0-9]*:?*) ;; *) _ptt_bad=1 ;; esac
+  case "${_ptt_t%%:*}" in *[!0-9]*) _ptt_bad=1 ;; esac
+  case "${_ptt_t#*:}" in *[!A-Za-z0-9_-]*) _ptt_bad=1 ;; esac
+  if [ "$_ptt_bad" = 1 ]; then
     warn "A megadott bot token alakja ERVENYTELEN (szamok, kettospont, betuk; pl. 123456789:AAF...)."
     echo -e "    ${DIM}Ellenorizd a @BotFather-tol kapott tokent. A telepites folytatodik, de a bot ezzel a tokennel nem fog valaszolni.${NC}"
     return 0

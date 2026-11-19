@@ -71,8 +71,8 @@ assert_eq "two curl calls" 2 "$CALLS"
 assert_contains "webhook warning" "$OUT" "WEBHOOKRA"
 assert_not_contains "the token is not in the curl argv" "$ARGV" "$TOKEN"
 
-echo "4. a token that is not a bot token (a quote, a line break): no call at all, the shape warning"
-for bad in 'abc' '123:AA"x' "$(printf '123:AAx\nurl = "http://example.invalid/"')"; do
+echo "4. a token that is not a bot token (a quote, a line break, a trailing line break, no id, a letter in the id, empty after the colon): no call, the shape warning"
+for bad in 'abc' '123:AA"x' "$(printf '123:AAx\nurl = "http://example.invalid/"')" $'123:AAx\n' ':AAx' '12a:AAx' '123:'; do
   TOKEN="$bad"
   run_case '{"ok":true}' '{"ok":true,"result":{"url":""}}' 409
   assert_eq "no curl call" 0 "$CALLS"
