@@ -44,7 +44,11 @@ widened what counts as running it: a copy of it under another name (a copier, a 
 its text), a run behind a wrapper, a leading assignment or a compound command's reserved word, a shell start-up variable
 naming it, a program that takes it as its code file through an option (or make's default makefile), its text used as
 code through a command substitution, and a run in the directory a wrapper moves to or after a directory change this
-gate cannot follow. Text that is only written, copied, read or sent on still passes.
+gate cannot follow. Text that is only written, copied, read or sent on still passes. GATEPATHNORM1118: the file is the
+same file under any spelling of its path (a relative name after a directory change, `./`, `../`, a doubled slash, `/./`,
+or an absolute path for a file written by a relative name, and the same for a copy of it): every name a later segment
+uses is resolved at the directory that segment runs in. Where that directory cannot be followed, a name with the same
+last path part counts.
 
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file
