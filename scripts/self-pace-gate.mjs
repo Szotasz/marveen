@@ -2190,8 +2190,25 @@ export function shellScriptWord(name, args) {
     if (v === '-' || !/^[-+]/.test(v)) return v === '-' ? null : v
     if (/^[-+][A-Za-z]*c[A-Za-z]*$/.test(v)) return null
     if (/^[-+][A-Za-z]*[oO]$/.test(v)) i++
+    // F6: bash's long options that take the next word (--rcfile RC, --init-file RC); --name=value holds its own
+    else if (v === '--rcfile' || v === '--init-file') i++
   }
   return null
+}
+
+/** F6: the rc files a shell run names (--rcfile RC, --init-file RC, --rcfile=RC): an interactive shell runs them. */
+export function shellRcFiles(name, args) {
+  if (!SHELL_NAME_RX.test(name)) return []
+  const out = []
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i]
+    if (v === '--') break
+    if (v === '--rcfile' || v === '--init-file') { if (args[i + 1] !== undefined) out.push(args[i + 1]); i++; continue }
+    const m = /^--(?:rcfile|init-file)=(.+)$/.exec(v)
+    if (m) out.push(m[1])
+    else if (!/^[-+]/.test(v)) break
+  }
+  return out
 }
 
 export function laterRuns(segs, k, targets) {
@@ -2211,7 +2228,9 @@ export function laterRuns(segs, k, targets) {
       // GATEPATHNORM1118 F5: a shell option that takes an argument (-o NAME, +o NAME, -O NAME, +O NAME) is not the script
       // word. Read in addition to the word above, never instead of it, so no run read before is lost.
       const optScript = shellScriptWord(name, words.slice(1).map((w) => w.value))
-      if (stdin || code || (script && targets.includes(script.value)) || (optScript !== null && targets.includes(optScript))) return true
+      // F6: an rc file the shell is told to read runs too (an interactive shell runs it; judged fail-closed)
+      const rc = shellRcFiles(name, words.slice(1).map((w) => w.value)).some((v) => targets.includes(v))
+      if (stdin || code || rc || (script && targets.includes(script.value)) || (optScript !== null && targets.includes(optScript))) return true
       continue
     }
     if (FILE_RUNNERS.has(name)) return true
