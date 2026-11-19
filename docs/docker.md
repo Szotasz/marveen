@@ -67,6 +67,7 @@ Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/ho
   ssh -L 3420:127.0.0.1:3420 root@<your VPS's IP>
   ```
   then open the link from the log on your computer.
+- **Locked out (lost password or phone):** see [Locked out](#locked-out-lost-password-or-phone); on Hostinger with `docker exec -it <name>-marveen-1 ...` over SSH.
 
 ## The setup wizard
 
@@ -95,6 +96,21 @@ EOF
 `bad_name_patterns` is a list of Python regular expressions for the wrong forms; `correction` is the line the check shows next to a hit. A file that cannot be read as this shape stops outgoing e-mail until it is fixed, so check the JSON before you save it.
 
 If you decide you need no name rule, say so in the file, and the warning stops: `{"bad_name_patterns": [], "no_name_rule": true, "no_name_rule_reason": "<why>"}`.
+
+## Locked out: lost password or phone
+
+The break-glass commands run inside the container, on the server (being on the machine is the proof). The image has no TypeScript runner, so they run with node, not `npm run`:
+
+```bash
+# the two-step sign-in off (lost phone and backup codes)
+docker compose exec marveen node dist/dashboard-user-cli.js totp:off <username>
+# a new dashboard password (asks for it twice)
+docker compose exec marveen node dist/dashboard-user-cli.js reset-password <username>
+# list the logins
+docker compose exec marveen node dist/dashboard-user-cli.js list
+```
+
+On a Hostinger VPS there is no `docker compose` project folder of your own: log in with SSH, find the container with `docker ps` (its name ends in `-marveen-1`), and run the same command with `docker exec -it <that name> node dist/dashboard-user-cli.js ...`. Each command leaves an audit line and, when a channel is set up, tells the owner.
 
 ## What is where
 
