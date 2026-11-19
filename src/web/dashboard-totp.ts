@@ -6,12 +6,18 @@
 // let any process of the same OS user turn the second factor off by deleting it. On = the flag or a record; off (the
 // default) = neither. The secret is never logged and never in an API response after the setup step; the backup codes
 // are stored hashed only. The agent DB-write gate protects both the file (writes) and the table.
+// The limit: the agents run as the same OS user, so a process of that user can read this file; the second factor
+// protects against a remote attacker who knows the password, not against a process on the machine (which still does
+// not have the password: only its hash is stored). The sub-agents' Read deny on the file (SUBAGENT_TOTP_STORE_DENY in
+// agent-scaffold.ts) is a text fence on the Read tool, not an OS boundary.
 //
 // Fail closed: a file that exists but cannot be read or parsed THROWS (TotpStoreError), and so does a user whose flag is
 // on with no record in the file (getTotpForUser). Reading either as "off" would turn a damaged or deleted file into a
-// password-only login; the login answers 503 instead. The way back is on the machine: npm run dashboard-user --
-// totp:off <username> clears the flag and the record (with a damaged file, repair or remove the file after it); the
-// bearer token keeps working meanwhile.
+// password-only login; the login answers 503 instead. One narrowing, at the password login only (Dani, #2911
+// review): a user whose flag is OFF signs in with the password even when the file is damaged. The flag is the source of
+// truth; a record without it only comes from a crash between the enable's record write and its flag write. A user whose
+// flag is on stays at 503. The way back is on the machine: npm run dashboard-user -- totp:off <username> clears the flag
+// and the record (with a damaged file, repair or remove the file after it); the bearer token keeps working meanwhile.
 //
 // In memory only (a dashboard restart drops them, which costs the owner one more password or one more setup):
 //   - the pending sign-in: the password was right, the code is still due (PENDING_LOGIN_TTL_S);

@@ -24,8 +24,10 @@ npm run dashboard-user -- totp:off <felhasznalo>        # kétlépcsős belépé
 A `totp:off` a `reset-password`-höz hasonlóan semmilyen bizonyítékot nem kér a gépen futáson kívül, ezért ugyanúgy
 audit-bejegyzést (`security.break_glass_totp_off`) és értesítést hagy. Hogy a kétlépcsős belépés be van-e kapcsolva,
 az adatbázis is őrzi (`dashboard_users.totp_enabled`), ezért a `store/.dashboard-totp.json` törlése NEM kapcsolja ki:
-ha a fájl hiányzik vagy sérült, a belépés 503-at ad, sosem enged be csak jelszóval. Ilyenkor előbb a `totp:off`
-(törli a jelzőt, és szól, ha a fájl sérült), utána a sérült fájl javítása vagy törlése a gépen.
+ha a fájl hiányzik vagy sérült, a bekapcsolt jelzőjű felhasználó belépése 503-at ad, sosem enged be csak jelszóval
+(akinél a jelző nincs bekapcsolva, az sérült fájl mellett is beléphet a jelszavával). Ilyenkor előbb a `totp:off`
+(törli a jelzőt, és szól, ha a fájl sérült), utána a sérült fájl javítása vagy törlése a gépen. A weben (jelszóval
+és kóddal) kikapcsolt kétlépcsős belépésről is értesítés megy a gazdának.
 
 A `reset-password` nem kéri a régi jelszót (ez a lényege), ezért minden
 futásáról audit-bejegyzés készül és -- ha van bekötött csatorna -- Telegram-
