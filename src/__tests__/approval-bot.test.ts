@@ -209,6 +209,18 @@ describe('presses that must change nothing', () => {
     expect(await handleCallback(bot, press(bot, p.data('a'), { message: p.msg }))).toBe('expired')
     expect(getApproval(p.a.id)?.status).toBe('pending')
   })
+  it('a confirm after the timeout is refused by the decision core, not only by the pre-check (#2876 R1)', async () => {
+    const { api, calls } = fakeApi()
+    const bot = makeBot(api)
+    // The bot's clock still sees the request open; the timeout has passed on the real clock the core reads.
+    clock = Math.floor(Date.now() / 1000) - 610
+    const p = await prompted(bot, { timeoutIn: 600 })
+    expect(await handleCallback(bot, press(bot, p.data('a'), { message: p.msg }))).toBe('confirm-asked')
+    clock += 30
+    expect(await handleCallback(bot, press(bot, p.data('c'), { message: p.msg }))).toBe('expired')
+    expect(getApproval(p.a.id)).toMatchObject({ status: 'pending', resolved_by: null })
+    expect(lastAnswer(calls)).toBe('Ez a kérés lejárt.')
+  })
   it('a request already decided on the dashboard: the message shows the result, nothing changes', async () => {
     const { api, calls } = fakeApi()
     const bot = makeBot(api)

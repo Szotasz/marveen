@@ -49,7 +49,7 @@ server gets the press from Telegram over TLS, inside the server process.
 - a: `confirm_at = now`; the message is rewritten from the DATABASE (agent, category, action, expiry) with
   [Megerősítem] [Mégse]. Defence a: whatever an agent edited into the text is replaced by the real action
   right before the decision.
-- c: `resolveApproval(id, 'approved', 'telegram_button')`; the message becomes the DB action with the result.
+- c: `decideApproval({ approvalId, status: 'approved', evidence: { channel: 'telegram', mode: 'button' } })` (the decision core; resolved_by `telegram_button`); the message becomes the DB action with the result.
   Defence c.
 - r: rejected, same rewrite. One step: rejecting gains nobody anything.
 - x: `confirm_at = NULL`, back to the first keyboard.

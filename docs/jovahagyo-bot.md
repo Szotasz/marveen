@@ -60,6 +60,9 @@ eldöntötték vagy lejárt, a gomb ezt írja ki, és nem változtat semmit.
 - Védekezés a tokennel való visszaélés ellen: az `api.telegram.org` ne kerüljön egyetlen sub-ágens
   egress-listájára sem. A sandboxolt ágensek (Bash sandbox) eleve nem érik el. A token és a kulcs fájlját
   a self-pace kapu védett fájljai közé vettük, így a sub-ágensek Write/Edit eszközzel nem írhatják.
+- A self-pace kapu olvasás-tiltása a fájlokra sub-ágens kapu. A fő ágensnél csak a `.claude/settings.json`
+  Read-tiltása áll; ha egy Telegram-egressel bíró fő ágens más úton olvassa ki a tokent, az a fenti
+  megmaradó kockázat része.
 - A párosító kódot bárki "elégetheti", aki ismeri a bot nevét: öt rossz `/start` után a kód érvénytelen.
   Hozzáférést ez nem ad, csak új kódot kell kérni.
 - Csak Telegramon. Discordon, Slacken a jóváhagyás a dashboardon marad.

@@ -38,8 +38,8 @@ import { APP_TZ, STORE_DIR } from './config.js'
 import { logger } from './logger.js'
 import { isSettingOn } from './setting-flag.js'
 import {
-  getApproval, resolveApproval, recordApprovalBotMessage, getApprovalBotMessage, setApprovalBotConfirmAt,
-  getApprovalBotPairing, setApprovalBotPairing, HASH_BOUND_APPROVAL_CATEGORIES, type Approval,
+  getApproval, decideApproval, approvalResolvedBy, recordApprovalBotMessage, getApprovalBotMessage, setApprovalBotConfirmAt,
+  getApprovalBotPairing, setApprovalBotPairing, HASH_BOUND_APPROVAL_CATEGORIES, type Approval, type ApprovalEvidence,
 } from './db.js'
 import { getUpdates, TelegramApiError, type RawUpdate, type RawMessage } from './channel-coordinator/telegram-client.js'
 
@@ -47,7 +47,10 @@ export const APPROVAL_BOT_SETTING = 'APPROVAL_BOT_ENABLED'
 export const TOKEN_FILE = '.approval-bot-token'
 export const KEY_FILE = '.approval-bot-key'
 export const CONFIRM_WINDOW_SEC = 5 * 60
-export const RESOLVED_BY = 'telegram_button'
+// The bot keeps its own decision row (approval_bot_messages), so the evidence names no ids, as the Teams card's does:
+// resolved_by stays 'telegram_button', the value the owner-lane checks already know.
+const EVIDENCE: ApprovalEvidence = { channel: 'telegram', mode: 'button' }
+export const RESOLVED_BY = approvalResolvedBy(EVIDENCE)
 
 export type Op = 'a' | 'c' | 'x' | 'r'
 export interface InlineButton { text: string; callback_data: string }
@@ -309,14 +312,16 @@ async function decide(bot: ApprovalBot, cq: CallbackQuery): Promise<CallbackOutc
     }
   }
   const status = parsed.op === 'c' ? 'approved' : 'rejected'
-  // Never a plain status write for a hash-bound approval, even on a message recorded before it was refused buttons.
-  if (status === 'approved' && HASH_BOUND_APPROVAL_CATEGORIES.has(a.category)) { await answer(REFUSAL_ANSWER); return 'hash-bound' }
-  if (!resolveApproval(a.id, status, RESOLVED_BY)) {
-    const now2 = getApproval(a.id) ?? a
-    await answer(`Ez a kérés már el van döntve: ${STATUS_LABEL[now2.status]}.`)
+  // The decision core decides (#2876 R1): the timeout inside the same UPDATE, the hash-bound rule (a hash-bound
+  // approval is never a plain button press), the category's consumer. The checks above only shape the conversation.
+  const { outcome, approval } = decideApproval({ approvalId: a.id, status, evidence: EVIDENCE })
+  if (outcome === 'expired') { await answer('Ez a kérés lejárt.'); return 'expired' }
+  if (outcome === 'content_changed') { await answer(REFUSAL_ANSWER); return 'hash-bound' }
+  if (outcome === 'not_pending') {
+    await answer(`Ez a kérés már el van döntve: ${STATUS_LABEL[(approval ?? a).status]}.`)
     return 'already-decided'
   }
-  const done = getApproval(a.id) ?? a
+  const done = approval ?? a
   await bot.api.editMessageText(chatId, messageId, resultText(done), null).catch(() => {})
   await answer(status === 'approved' ? 'Jóváhagyva.' : 'Elutasítva.')
   logger.info({ approvalId: a.id, status, callbackQueryId: cq.id }, 'approval resolved by the owner\'s button press')
