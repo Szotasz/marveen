@@ -1751,6 +1751,29 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at)`)
+  // 80d0e3c6: the approval bot's question for a row -- the chat it went to and the message the buttons sit
+  // on. A press counts only on this exact message (src/approval-bot.ts); confirm_at marks step 1 of the
+  // two-step approve.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_bot_messages (
+      approval_id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      message_id INTEGER NOT NULL,
+      sent_at INTEGER NOT NULL,
+      confirm_at INTEGER
+    )
+  `)
+  // #2160 review 1: the one owner the approval bot answers. Paired from the dashboard with the owner's session (a
+  // one-time code the owner sends to the bot as /start <code>), so the approver never comes from a file an agent's
+  // OS user can write (access.json, .env). One row at most.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_bot_pairing (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      from_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      paired_at INTEGER NOT NULL
+    )
+  `)
   // EMAILKAPU901 PR2: content-hash anchor + one-shot consumption. content_hash
   // pins an approval to the EXACT letter (sha256 over to+cc+subject+body,
   // computed by scripts/hooks/email-approval-gate.py); consumed_at is flipped
@@ -8371,6 +8394,38 @@ export function decideApprovalFromTeams(p: {
   })()
   if (res.outcome === 'decided') runApprovalConsumer(p.approvalId)
   return res
+}
+
+export interface ApprovalBotMessage {
+  approval_id: string
+  chat_id: string
+  message_id: number
+  sent_at: number
+  confirm_at: number | null
+}
+
+export function recordApprovalBotMessage(approvalId: string, chatId: string, messageId: number, now = Math.floor(Date.now() / 1000)): void {
+  db.prepare('INSERT OR REPLACE INTO approval_bot_messages (approval_id, chat_id, message_id, sent_at, confirm_at) VALUES (?, ?, ?, ?, NULL)')
+    .run(approvalId, chatId, messageId, now)
+}
+
+export function getApprovalBotMessage(approvalId: string): ApprovalBotMessage | undefined {
+  return db.prepare('SELECT * FROM approval_bot_messages WHERE approval_id = ?').get(approvalId) as ApprovalBotMessage | undefined
+}
+
+export interface ApprovalBotPairing { from_id: string; chat_id: string; paired_at: number }
+
+export function getApprovalBotPairing(): ApprovalBotPairing | undefined {
+  return db.prepare('SELECT from_id, chat_id, paired_at FROM approval_bot_pairing WHERE id = 1').get() as ApprovalBotPairing | undefined
+}
+
+/** Replaces the pairing: a new pairing is the owner's decision (it takes a fresh code from the owner's session). */
+export function setApprovalBotPairing(fromId: string, chatId: string, now = Math.floor(Date.now() / 1000)): void {
+  db.prepare('INSERT OR REPLACE INTO approval_bot_pairing (id, from_id, chat_id, paired_at) VALUES (1, ?, ?, ?)').run(fromId, chatId, now)
+}
+
+export function setApprovalBotConfirmAt(approvalId: string, confirmAt: number | null): void {
+  db.prepare('UPDATE approval_bot_messages SET confirm_at = ? WHERE approval_id = ?').run(confirmAt, approvalId)
 }
 
 // The CREATE path stamps the owner-notification message id onto the row
