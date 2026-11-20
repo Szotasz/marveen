@@ -118,6 +118,11 @@ def main():
         tid = re.search(r'\bmessage_thread_id="(\d+)"', b)
         if not cid:
             continue
+        # An owner reaction (TELEGRAM_REACTIONS_ENABLED; the plugin patch tags it reaction="..."): it is no message
+        # to answer, so no placeholder and no pending entry, or the Stop hook would demand a reply to every emoji.
+        if re.search(r'\breaction="', b):
+            log(sd, "[submit] reaction, no placeholder")
+            continue
         chat_id = cid.group(1)
         src_mid = mid.group(1) if mid else None
         thread = {"message_thread_id": int(tid.group(1))} if tid else {}

@@ -16143,11 +16143,23 @@ async function runUpdate(autoStash, rebaseApproval) {
   }
 }
 
+// How long the UI waits for the update verdict (UPDATEUIPLAFON1120, #2991). The
+// finalizer in update.sh runs _health up to twice (after the restart, and again
+// after a rollback), each bounded by its 120 s deadline plus one last
+// `curl -m 3` and `sleep 1` started just before it. The headroom covers
+// git pull + npm ci + build and the rollback's own npm ci + build. A dead new
+// build then still ends in "rolled back" / "failed" on a slow box, not in
+// "did not arrive in time". update-poll-cap.test.ts derives the health figure
+// from update.sh, so raising that window fails the test until this follows.
+const FINALIZER_HEALTH_WORST_S = 124
+const UPDATE_BUILD_HEADROOM_S = 300
+const UPDATE_POLL_CAP_MS = (2 * FINALIZER_HEALTH_WORST_S + UPDATE_BUILD_HEADROOM_S) * 1000
+
 // Poll /api/updates/status until the run finishes (pidfile gone AND a fresh
 // result is present), then show the true outcome. Reload only on success.
 async function pollUpdateOutcome(resetBtn) {
   const startedAt = Date.now()
-  const deadline = startedAt + 5 * 60_000   // hard cap: 5 min
+  const deadline = startedAt + UPDATE_POLL_CAP_MS
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3000))
     let data

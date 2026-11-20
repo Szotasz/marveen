@@ -89,3 +89,24 @@ os.replace(tmp, path)
 PYEOF
   printf ' --settings "%s"' "$file"
 }
+
+# main_disallowed_tools_flag <install_dir>: the main agent's share of AGENT_DISALLOWED_TOOLS (the sub-agents get it
+# in agent-process.ts disallowedToolsFlag). Filtered to the same closed list as src/config-registry.ts
+# DISABLEABLE_TOOLS. Prints ` --disallowedTools 'A,B'` (leading space) or nothing.
+# shortcut: reads only the dashboard override (store/config-overrides.json), not .env; add .env if a key ever lives there.
+main_disallowed_tools_flag() {
+  local list
+  list="$(python3 -I -c 'import json, re, sys
+ok = ["Artifact", "Workflow", "SendFeedback", "ReportFindings", "ScheduleWakeup"]
+try:
+    v = str(json.load(open(sys.argv[1])).get("AGENT_DISALLOWED_TOOLS", ""))
+except Exception:
+    v = ""
+seen = []
+for t in re.split(r"[\s,]+", v):
+    if t in ok and t not in seen:
+        seen.append(t)
+print(",".join(seen))' "$1/store/config-overrides.json" 2>/dev/null)"
+  [ -n "$list" ] && printf " --disallowedTools '%s'" "$list"
+  return 0
+}

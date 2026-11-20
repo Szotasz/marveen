@@ -372,6 +372,12 @@ export const AGENT_TOKEN_ALLOWLIST: readonly AgentAllowEntry[] = [
   { methods: ['POST'], pattern: /^\/api\/kanban$/, why: 'create card' },
   { methods: ['PUT'], pattern: /^\/api\/kanban\/[^/]+$/, why: 'update card' },
   { methods: ['POST'], pattern: /^\/api\/kanban\/[^/]+\/(?:claim|release|move|comments|archive|unarchive|labels|blockers)$/, why: 'claim/release/move/comment/archive' },
+  // The scoped board (board-access.ts). Only an agent board-access.json lists gets past the board gate in web.ts;
+  // for such an agent the board gate closes the /api/kanban* entries above.
+  { methods: ['GET', 'POST'], pattern: /^\/api\/board\/cards$/, why: 'scoped board: list / create visible cards' },
+  { methods: ['GET'], pattern: /^\/api\/board\/cards\/[^/]+$/, why: 'scoped board: read one visible card' },
+  { methods: ['POST'], pattern: /^\/api\/board\/cards\/[^/]+\/(?:comments|move)$/, why: 'scoped board: comment on / move a visible card' },
+  { methods: ['GET'], pattern: /^\/api\/board\/report$/, why: 'scoped board: daily report' },
   { methods: ['GET'], pattern: /^\/api\/memories(?:\/.*)?$/, why: 'memory search/read' },
   { methods: ['POST'], pattern: /^\/api\/memories$/, why: 'memory save (PreCompact prompt)' },
   { methods: ['PUT', 'PATCH'], pattern: /^\/api\/memories\/\d+$/, why: 'memory tier move / edit; DELETE stays out' },

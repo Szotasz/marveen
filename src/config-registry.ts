@@ -170,6 +170,16 @@ function validUnitFraction(v: string): string | null {
 // A '' (nobody) or a comma-separated list of agent names, e.g. "pm,reviewer".
 // Exported for the sub-agent rotation stage (claude-plan-subagent-rotation.ts), which puts a name into a heartbeat line.
 export const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$/
+
+/** AGENT_DISALLOWED_TOOLS may only name these: built-in tools whose schema rides in every call and that no fleet
+ *  workflow depends on. A closed list, so the shared token cannot take Bash or Edit away from an agent.
+ *  scripts/main-extra-plugins-settings.sh repeats it for the main agent's launch (a test pins the two). */
+export const DISABLEABLE_TOOLS = ['Artifact', 'Workflow', 'SendFeedback', 'ReportFindings', 'ScheduleWakeup'] as const
+
+/** The AGENT_DISALLOWED_TOOLS entries that are on DISABLEABLE_TOOLS, in order, without repeats. */
+export function disallowedToolList(v: string): string[] {
+  return [...new Set(v.split(/[\s,]+/).filter((t) => (DISABLEABLE_TOOLS as readonly string[]).includes(t)))]
+}
 function validAgentNameList(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -1039,6 +1049,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'AGENT_DISALLOWED_TOOLS',
+    type: 'string',
+    default: '',
+    validate: (v) =>
+      v.split(/[\s,]+/).filter(Boolean).every((t) => (DISABLEABLE_TOOLS as readonly string[]).includes(t))
+        ? null
+        : `Csak ezek közül, vesszővel elválasztva: ${DISABLEABLE_TOOLS.join(', ')}.`,
+    description: 'Beépített Claude Code eszközök, amelyeket egyik ügynök (a fő ágens is) NEM kap meg: a leírásuk így nem utazik minden hívásban (kevesebb token). Csak a nem használt eszközök közül választható: Artifact, Workflow, SendFeedback, ReportFindings, ScheduleWakeup. Vesszővel elválasztva; üres = mind megmarad. Az ügynök következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'NOTIFY_SLACK_TARGET',
     type: 'string',
     default: '',
@@ -1300,6 +1323,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     min: 0,
     max: 8760,
     description: 'Válasz-gombok lejárata órában. Ha be van állítva (például 24), egy ennél régebbi kérdés gombjára koppintás nem jut el az ügynökhöz: a felugró üzenet azt kéri, hogy a választ írd be, és a kérdés gombjai helyére egyetlen „⏱ Lejárt, írd be a választ” gomb kerül. A kor a kérdés elküldési idejétől számít, így a plugin újraindítása után is érvényes. 0 = a gombok nem járnak le (a mai működés). A beállítást a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: 0. A módosítás a csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    // TELEGRAM_REACTIONS_ENABLED (owner request, 2026-11-09): the owner's emoji reactions reach the agent. Baked into
+    // the plugin source by scripts/patch-telegram-plugin.py at the channel start (the tgreact1119 patch).
+    key: 'TELEGRAM_REACTIONS_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Telegram-reakciók továbbítása: bekapcsolva ha a párosított tulajdonos a privát chatben egy üzenetre emoji-reakciót tesz, az ügynök megkapja „(reaction 👍)” alakban, a reagált üzenet azonosítójával, és ha az ügynök küldte a plugin indulása óta, egy rövid kivonatával. Csak a hozzáadott reakció megy tovább, a levétel nem. Minden reakció egy újabb kör az ügynöknek, ezért alapból ki van kapcsolva. A kapcsolót a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: kikapcsolva. A módosítás a csatorna következő indításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,

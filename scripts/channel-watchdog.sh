@@ -183,6 +183,7 @@ fi
 . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
 # shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
 EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$PRIMARY_PLUGIN_ID" $CHANNEL_PLUGINS_EXTRA)"
+EXTRA_SETTINGS_FLAG="${EXTRA_SETTINGS_FLAG}$(main_disallowed_tools_flag "$INSTALL_DIR")"
 
 # NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
 # session); assigning the binary path to it corrupts server-socket detection.
