@@ -240,10 +240,11 @@ export async function brokerExecFile(file: string, args: string[], options: Brok
   if (reply.marker) {
     if (reply.marker !== 'BROKER_DOWN' && !meta.readOnly) throw transportError(reply.marker)
     return new Promise((resolve, reject) => {
-      execFile(file, args, { ...options, cwd: r.cwd, env: r.env, encoding: 'utf-8' }, (err, stdout, stderr) => {
+      const child = execFile(file, args, { ...options, cwd: r.cwd, env: r.env, encoding: 'utf-8' }, (err, stdout, stderr) => {
         if (err) reject(Object.assign(err, { stdout, stderr }))
         else resolve({ stdout, stderr })
       })
+      child?.stdin?.end()
     })
   }
   return asyncResult(reply, file, args)
@@ -255,9 +256,14 @@ const READ_ONLY_TMUX_VERBS = new Set([
 ])
 export function isReadOnlyTmuxChain(tmuxArgs: string[]): boolean {
   let needsVerb = true
+  let needsPrint = false
   for (const arg of tmuxArgs) {
-    if (arg === ';') { if (needsVerb) return false; needsVerb = true }
-    else if (needsVerb) { if (!READ_ONLY_TMUX_VERBS.has(arg)) return false; needsVerb = false }
+    if (arg === ';') { if (needsVerb || needsPrint) return false; needsVerb = true }
+    else if (needsVerb) {
+      if (!READ_ONLY_TMUX_VERBS.has(arg)) return false
+      needsVerb = false
+      needsPrint = arg === 'capture-pane' || arg === 'display-message'
+    } else if (arg === '-p') needsPrint = false
   }
-  return !needsVerb
+  return !needsVerb && !needsPrint
 }

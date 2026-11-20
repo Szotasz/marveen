@@ -17,18 +17,23 @@ const execute = r => {
   const kill = () => child.kill(r.killSignal || 'SIGTERM');
   const collect = (name, chunk) => {
     if (maxBufferExceeded) return;
-    sizes[name] += chunk.length;
+    const length = r.sync ? chunk.length : Buffer.byteLength(chunk, 'utf8');
+    sizes[name] += length;
     // spawnSync limits the combined buffers; execFile limits each stream.
     const size = r.sync ? sizes.stdout + sizes.stderr : sizes[name];
     if (size > limit) {
       maxBufferExceeded = name;
-      chunks[name].push(r.sync ? chunk : chunk.subarray(0, Math.max(0, limit - (sizes[name] - chunk.length))));
+      chunks[name].push(r.sync ? chunk : chunk.slice(0, Math.max(0, limit - (sizes[name] - length))));
       kill();
     } else chunks[name].push(chunk);
   };
   try {
     child = spawn(r.file, r.args, { cwd: r.cwd, env: r.env,
       stdio: ['ignore', r.stdout, 'pipe'] });
+    if (!r.sync) {
+      child.stdout?.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+    }
     child.stdout?.on('data', chunk => collect('stdout', chunk));
     child.stderr.on('data', chunk => collect('stderr', chunk));
     child.on('error', err => { error = errors(err); });
@@ -36,8 +41,8 @@ const execute = r => {
     child.on('close', (status, signal) => {
       clearTimeout(timer);
       send({ id: r.id, pid: child.pid || 0, status: status < 0 ? null : status, signal,
-        stdout: r.stdout === 'ignore' ? null : Buffer.concat(chunks.stdout).toString('base64'),
-        stderr: Buffer.concat(chunks.stderr).toString('base64'), error, timedOut, maxBufferExceeded });
+        stdout: r.stdout === 'ignore' ? null : (r.sync ? Buffer.concat(chunks.stdout) : Buffer.from(chunks.stdout.join(''), 'utf8')).toString('base64'),
+        stderr: (r.sync ? Buffer.concat(chunks.stderr) : Buffer.from(chunks.stderr.join(''), 'utf8')).toString('base64'), error, timedOut, maxBufferExceeded });
     });
   } catch (err) {
     send({ id: r.id, pid: 0, status: null, signal: null, stdout: r.stdout === 'ignore' ? null : '',

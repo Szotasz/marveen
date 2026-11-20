@@ -105,13 +105,16 @@ describe('A2 synchronous parity with real execFileSync', () => {
 })
 
 function asyncSnapshot(err: ExecFileException | null, stdout: string, stderr: string) {
-  return { stdout, stderr, error: err ? Object.fromEntries(
+  return { stdout, stderr, constructor: err?.constructor.name, error: err ? Object.fromEntries(
     ['message', 'code', 'killed', 'signal', 'cmd'].map(key => [key, (err as unknown as Record<string, unknown>)[key]]),
   ) : null }
 }
 describe('A2 asynchronous parity with real execFile', () => {
   it('matches the callback parity matrix', async () => {
-    for (const c of cases) {
+    for (const c of [...cases, {
+      name: 'multi-byte maxBuffer exceeded', file: process.execPath,
+      args: ['-e', "require('node:fs').writeSync(1, 'é'.repeat(128))"], extra: { maxBuffer: 128 },
+    }]) {
       const opts = { timeout: 1000, ...c.extra, encoding: 'utf-8' as const }
       const direct = await new Promise(resolve => execFile(c.file, c.args, opts, (err, stdout, stderr) => resolve(asyncSnapshot(err, stdout, stderr))))
       const broker = await brokerExecFile(c.file, c.args, opts, readOnly).then(
@@ -159,6 +162,14 @@ describe('A3 broker failure handling', () => {
       expect(output).toEqual(sync ? directSync : directAsync)
       expect(readFileSync(marker, 'utf8')).toBe('once\n')
     }
+  })
+  it('ends stdin in the async direct fallback when the broker is stopped', async () => {
+    await stopSpawnBroker()
+    const started = performance.now()
+    const result = await brokerExecFile('/bin/sh', ['-c', 'cat >/dev/null; echo done'],
+      { timeout: 2000, killSignal: 'SIGKILL', encoding: 'utf-8' }, { readOnly: false })
+    expect(result.stdout).toBe('done\n')
+    expect(performance.now() - started).toBeLessThan(1500)
   })
   it('starts idempotently and is inactive after stop, so helpers use their existing direct path', async () => {
     const pid = brokerPid()
@@ -339,7 +350,14 @@ it('classifies only wholly read-only tmux chains', () => {
   for (const verb of ['capture-pane', 'list-sessions', 'list-panes', 'list-windows', 'list-clients', 'display-message', 'has-session', 'show-options', 'show-environment', 'show-window-options']) {
     expect(isReadOnlyTmuxChain([verb, '-p'])).toBe(true)
   }
-  expect(isReadOnlyTmuxChain(['capture-pane', '-t', '=a:', ';', 'list-panes'])).toBe(true)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-t', '=a:', '-p', ';', 'list-panes'])).toBe(true)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-t', 'x'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-t', 'x', '-e', '-p'])).toBe(true)
+  expect(isReadOnlyTmuxChain(['display-message', 'hello'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['display-message', '-p', 'm', ';', 'capture-pane', '-t', 'x', '-e', '-p'])).toBe(true)
+  expect(isReadOnlyTmuxChain(['display-message', '-p', 'm', ';', 'capture-pane', '-t', 'x'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-t', 'x', ';', 'list-panes'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['display-message', 'hello', ';', 'list-panes', '-p'])).toBe(false)
   expect(isReadOnlyTmuxChain(['capture-pane', ';', 'send-keys', 'Enter'])).toBe(false)
   expect(isReadOnlyTmuxChain(['send-keys'])).toBe(false)
   expect(isReadOnlyTmuxChain([])).toBe(false)
