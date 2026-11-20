@@ -2231,6 +2231,14 @@ class SL(Q):
         os.ftruncate(self.fd, 0)
         os.write(self.fd, ("token=t pid=1 unit=%s since=x label=holder\n" % self.unit).encode())
 
+    def release(self):
+        """A real holder releases only after its job, and so its scope, ended: the fake scope goes
+        first. The next holder rewrites the record only after it left the queue, so a waiter can
+        read this holder's record in between; with the scope still there it was admitted beside a
+        holder that was gone (#2967 and #2876 CI, sl_fifo; HEAVYJOBFIFO1120)."""
+        shutil.rmtree(self.scope)
+        Q.release(self)
+
     def go(self, name, args=(), sec=0.3, wait_sec=30):
         """Start a gate call without waiting for its wait line (a side-lane job has none)."""
         return subprocess.Popen(self.argv(name, wait_sec, args, sec=sec), env=self.env(),
