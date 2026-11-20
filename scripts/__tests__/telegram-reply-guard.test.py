@@ -332,6 +332,33 @@ def main():
         check(f"gromzo does NOT ask for chat_id=gz ({provider} configured)", "chat_id=gz" in r, False)
         check(f"gromzo does NOT name the configured tool ({provider})", SLACK_TOOL in r or TG_TOOL in r, False)
 
+    # 10c. GROMZOOWNERQUOTETEST1107: the Gromzo OWNER branch of the quote. A Gromzo row
+    # marked sender_role="owner" is quoted as is (the owner's words, not escaped, no
+    # "NEM a tulaj" label), and the reference is the ledger key, never a chat_id. The
+    # text holds characters escape_untrusted would turn into entities, so an escaped
+    # quote cannot pass for the verbatim one.
+    GZ_TEXT = 'nezd meg a <b>"fontos"</b> & surgos levelet'
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "gz65f616902edb4df70eba", "gze3244e20d0b3c09f6ebb", GZ_TEXT,
+                    "2026-11-04T06:49:17.123Z", source="plugin:gromzo-channel:gromzo",
+                    sender_role="owner")
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "telegram"})
+    check("gromzo owner row blocks", d, "block")
+    check("gromzo owner text quoted verbatim", f'"{GZ_TEXT}"' in r, True)
+    check("gromzo owner text not escaped", "&lt;b&gt;" in r or "&quot;" in r, False)
+    check("gromzo owner row not labelled 'NEM a tulaj'", "NEM a tulaj" in r, False)
+    check("gromzo owner reference is the ledger key", "(napló-kulcs: gz65f616902edb4df70eba)" in r, True)
+    check("gromzo owner reference is not a chat_id", "chat_id=gz" in r, False)
+    # Control: the same Gromzo text from a row without the owner role IS escaped and named.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_inbound(AGENT, "gz65f616902edb4df70eba", "gze3244e20d0b3c09f6ecc", GZ_TEXT,
+                    "2026-11-04T06:50:17.123Z", source="plugin:gromzo-channel:gromzo")
+    d, r, _ = run_hook(db, extra_env={"CHANNEL_PROVIDER": "telegram"})
+    check("gromzo role-less row: escaped (control)", "&lt;b&gt;" in r and f'"{GZ_TEXT}"' not in r, True)
+    check("gromzo role-less row: named 'NEM a tulaj' (control)", "NEM a tulaj" in r, True)
+
     # 11. Legacy row (source NULL, written before the column existed) -> still
     # blocks, and names the CONFIGURED channel's verified tool (Marveen 32905:
     # the #1606 provider, NOT the generic wording); with a provider whose tool is
