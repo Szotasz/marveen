@@ -83,7 +83,7 @@ const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'
 // agent-scaffold.ts.
 const SCRIPT_SHA256_RX = /^[0-9a-f]{64}$/
 
-// B2 (card f2ccb0bb R4, leader decision okostodor 131617): the interpreter prefix is an
+// B2 (card f2ccb0bb R4, maintainer decision): the interpreter prefix is an
 // EXACT allowlist, not a path shape. Only the bare node/nodejs (on PATH), /usr/bin/node
 // and /usr/local/bin/node strip the interpreter (plus the two-token '/usr/bin/env' +
 // 'node' handled in the matcher); every other absolute interpreter path -- a writable
@@ -135,6 +135,11 @@ export function readAgentSendExceptions() {
   } catch { return {} }
 }
 
+// EXACTAPPROVALBIND (card 90a639ef): the approval hook command exactly as the
+// scaffold writes it. Keep this byte-identical to EMAIL_APPROVAL_COMMAND in
+// src/web/agent-scaffold.ts; the approval command drift test pins the equality.
+export const EMAIL_APPROVAL_GATE_COMMAND = 'if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"; else python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"; fi; rc=$?; [ "$rc" = 0 ] || [ "$rc" = 2 ] || { echo "governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent." >&2; exit 2; }; exit "$rc"'
+
 // SENDAPPROVALBIND (card f2ccb0bb, round 2): is the py approval gate actually
 // BOUND for this agent? The exception config above is read live, but the
 // scaffold (writeAgentSettingsFromProfile in agent-scaffold.ts) binds the
@@ -145,8 +150,11 @@ export function readAgentSendExceptions() {
 // The settings path mirrors agentSettingsPath exactly: the main agent
 // (MAIN_AGENT_ID in <root>/.env) -> ~/.claude/settings.json, otherwise
 // <root>/agents/<name>/.claude/settings.json (<root> = one level above
-// scripts/, as in knownAgents). Any read error, a missing file, or no such
-// hook means NOT bound (fail-closed).
+// scripts/, as in knownAgents). Any read error, a missing file, or no PreToolUse
+// hook whose command is EXACTLY the scaffold's approval command means NOT bound
+// (fail-closed). A command that merely mentions the gate does not count: the
+// binding check uses the same exact match as removeEmailApprovalGate
+// (EXACTAPPROVALREMOVE in agent-scaffold.ts).
 export function agentApprovalGateBound(agentName) {
   if (!agentName || typeof agentName !== 'string') return false
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -163,7 +171,7 @@ export function agentApprovalGateBound(agentName) {
     const ptu = settings?.hooks?.PreToolUse
     if (!Array.isArray(ptu)) return false
     return ptu.some(e => Array.isArray(e?.hooks)
-      && e.hooks.some(h => typeof h?.command === 'string' && h.command.includes('email-approval-gate.py')))
+      && e.hooks.some(h => typeof h?.command === 'string' && h.command === EMAIL_APPROVAL_GATE_COMMAND))
   } catch { return false }
 }
 
@@ -424,12 +432,12 @@ const SENDPY = /^send\.py$/i
 // the free-threaded python3.13t) is the same python; the old /^python3?$/ let it
 // through as "not an interpreter".
 const PYTHON = /^python(3(\.\d+t?)?)?$/i
-// F2CCB0BB R5 (leader decision okostodor 131632): 'nodejs' is node-ish. The ordinary Bash
+// F2CCB0BB R5 (maintainer decision): 'nodejs' is node-ish. The ordinary Bash
 // analysis must recognize a nodejs-basename interpreter -- the bare `nodejs` on PATH,
 // /usr/bin/nodejs, /usr/local/bin/nodejs, any absolute path -- so a script send run that
 // way gets the script-send deny instead of passing ungated (measured R4 gap). This is the
 // ORDINARY analysis only; the exception matcher's exact interpreter allowlist
-// (NODE_INTERPRETERS, owner decision 131617) is unchanged on purpose.
+// (NODE_INTERPRETERS, maintainer decision) is unchanged on purpose.
 const NODEISH = /^(node|nodejs|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i

@@ -1718,7 +1718,7 @@ const EMAIL_APPROVAL_MATCHERS = [
   ...EMAIL_GATE_MATCHER.split('|').slice(0, 6),
   EMAIL_GATE_MATCHER.split('|').slice(6).join('|'),
 ]
-const EMAIL_APPROVAL_COMMAND = failClosedGateRun(
+export const EMAIL_APPROVAL_COMMAND = failClosedGateRun(
   'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"', 'email-approval-gate.py', 10,
 )
 

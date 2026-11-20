@@ -55,6 +55,7 @@ import { scriptSourceLoadsOnlyBuiltins, scriptPathWritable, agentScriptException
 // @ts-expect-error -- plain .mjs hook script, no types
 import * as sendGate from '../../scripts/email-send-gate.mjs'
 
+const { EMAIL_APPROVAL_GATE_COMMAND } = sendGate
 const { agentName } = corpus
 // SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT. The
 // corpus entry carries the SHAPE only (a placeholder path and sha256); the tests
@@ -81,7 +82,7 @@ const decide = (cmd = command, agent: string | null = agentName, cfg: unknown = 
 // A settings file with the approval-gate PreToolUse hook bound, as the scaffold
 // writes it at spawn time when the grant exists.
 const boundSettings = JSON.stringify({ hooks: { PreToolUse: [
-  { matcher: '.*send_email.*', hooks: [{ type: 'command', command: 'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"', timeout: 10 }] },
+  { matcher: '.*send_email.*', hooks: [{ type: 'command', command: EMAIL_APPROVAL_GATE_COMMAND, timeout: 10 }] },
 ] } })
 // The grant existed at spawn time, so the scaffold bound the gate.
 agentSettings.content = boundSettings
@@ -114,7 +115,7 @@ describe('named-script exception', () => {
   // B2 (card f2ccb0bb R4): an interpreter outside the exact allowlist leaves the
   // command without an exception. The matcher-level deny is pinned case by case in
   // the parser conformance block below; at the gate level the property that matters
-  // is that none of them can pass AS the exception. R5 (okostodor 131632) closed the
+  // is that none of them can pass AS the exception. R5 (maintainer decision) closed the
   // nodejs-basename gap: the ordinary Bash analysis recognizes `nodejs`, so EVERY red
   // interpreter case now falls back to the ordinary script-send deny, node- and
   // nodejs-basename alike.
@@ -241,9 +242,40 @@ describe('send exception requires the bound approval gate (SEND mode only)', () 
 
   it('a hook elsewhere in the file does not satisfy the binding: only PreToolUse counts', () => {
     agentSettings.content = JSON.stringify({ hooks: { PostToolUse: [
-      { matcher: '.*send_email.*', hooks: [{ type: 'command', command: 'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"' }] },
+      { matcher: '.*send_email.*', hooks: [{ type: 'command', command: EMAIL_APPROVAL_GATE_COMMAND }] },
     ] } })
     expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
+  })
+
+  it('a command that only mentions the gate is not the binding', () => {
+    for (const command of [
+      `${EMAIL_APPROVAL_GATE_COMMAND} --stale`,
+      'echo email-approval-gate.py',
+      'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"',
+    ]) {
+      agentSettings.content = JSON.stringify({ hooks: { PreToolUse: [
+        { matcher: 'Bash', hooks: [{ type: 'command', command, timeout: 10 }] },
+      ] } })
+      expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
+    }
+  })
+
+  it('the exact hook next to sibling hooks in the same entry is bound', () => {
+    agentSettings.content = JSON.stringify({ hooks: { PreToolUse: [
+      { matcher: 'Bash', hooks: [
+        { type: 'command', command: 'echo sibling' },
+        { type: 'command', command: EMAIL_APPROVAL_GATE_COMMAND, timeout: 10 },
+      ] },
+    ] } })
+    expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
+  })
+
+  it('a lookalike entry does not hide an exact entry', () => {
+    agentSettings.content = JSON.stringify({ hooks: { PreToolUse: [
+      { matcher: 'Bash', hooks: [{ type: 'command', command: `${EMAIL_APPROVAL_GATE_COMMAND} --stale`, timeout: 10 }] },
+      { matcher: 'Bash', hooks: [{ type: 'command', command: EMAIL_APPROVAL_GATE_COMMAND, timeout: 10 }] },
+    ] } })
+    expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
   })
 
   it('drafts are untouched by the binding check', () => {

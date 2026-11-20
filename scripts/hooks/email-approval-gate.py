@@ -153,7 +153,7 @@ _NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
 # validAgentSendException in email-send-gate.mjs and readAgentSendExceptions in agent-scaffold.ts.
 _SCRIPT_SHA256_RX = re.compile(r"[0-9a-f]{64}")
 
-# B2 (card f2ccb0bb R4, leader decision okostodor 131617): the interpreter prefix is
+# B2 (card f2ccb0bb R4, maintainer decision): the interpreter prefix is
 # an EXACT allowlist, not a path shape. Only the bare node/nodejs (on PATH),
 # /usr/bin/node and /usr/local/bin/node strip the interpreter (plus the two-token
 # "/usr/bin/env" + "node" handled in the matcher): every other absolute interpreter

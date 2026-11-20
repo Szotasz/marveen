@@ -25,8 +25,10 @@ vi.mock('../web/agent-config.js', async original => ({
 import {
   injectEmailSendGate, injectEmailApprovalGate, ensureGovernanceGateCommands,
   readAgentSendExceptions, writeAgentSettingsFromProfile, agentSettingsPath, hookCommand, EMAIL_AGENT_FLAG, EMAIL_THREAD_REPLY_FLAG,
-  removeEmailApprovalGate, failClosedGateRun,
+  removeEmailApprovalGate, failClosedGateRun, EMAIL_APPROVAL_COMMAND,
 } from '../web/agent-scaffold.js'
+// @ts-expect-error -- plain .mjs hook script, no types
+import { EMAIL_APPROVAL_GATE_COMMAND } from '../../scripts/email-send-gate.mjs'
 import { PROJECT_ROOT } from '../config.js'
 import { loadProfileTemplate } from '../web/profiles.js'
 
@@ -38,6 +40,20 @@ const approvalEntries = (settings: Record<string, unknown>) => entries(settings)
 const readSettings = () => JSON.parse(readFileSync(agentSettingsPath(agentName), 'utf8'))
 const profile = loadProfileTemplate('default')!
 afterAll(() => rmSync(agentRoot, { recursive: true, force: true }))
+
+describe('approval command drift (send gate vs scaffold)', () => {
+  it('keeps the send gate command byte-identical to the scaffold command', () => {
+    expect(EMAIL_APPROVAL_COMMAND).toBe(EMAIL_APPROVAL_GATE_COMMAND)
+  })
+
+  it('writes the exact send gate command into every injected approval hook', () => {
+    const settings = {}
+    injectEmailApprovalGate(settings)
+    const hooks = entries(settings).flatMap(e => (e as { hooks: { command: string }[] }).hooks)
+    expect(hooks.length).toBeGreaterThan(0)
+    for (const hook of hooks) expect(hook.command).toBe(EMAIL_APPROVAL_GATE_COMMAND)
+  })
+})
 
 describe('send exception hook wiring', () => {
   it('includes the identity, with the optional thread flag', () => {

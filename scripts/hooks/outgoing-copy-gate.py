@@ -119,12 +119,12 @@ _PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
 # felismeres-szemantikat visel, es ezt kozos eset-lista orzi
 # (send-invocation-cases.json + konformancia-teszt): a divergencia
 # teszt-hibakent jelenjen meg, ne incidenskent (Marveen, msg 14289).
-# F2CCB0BB R5 (leader decision okostodor 131632): 'nodejs' is node-ish. The ordinary Bash
+# F2CCB0BB R5 (maintainer decision): 'nodejs' is node-ish. The ordinary Bash
 # analysis must recognize a nodejs-basename interpreter -- the bare `nodejs` on PATH,
 # /usr/bin/nodejs, /usr/local/bin/nodejs, any absolute path -- so a script send run that
 # way gets the script-send deny instead of passing ungated (measured R4 gap). This is the
 # ORDINARY analysis only; the exception matcher's exact interpreter allowlist
-# (_NODE_INTERPRETERS, owner decision 131617) is unchanged on purpose.
+# (_NODE_INTERPRETERS, maintainer decision) is unchanged on purpose.
 _NODEISH = re.compile(r"^(node|nodejs|tsx|ts-node|deno|bun|npx)$", re.I)
 _GRAPHMAIL = re.compile(r"^graph-mail(\.ts|\.js)?$", re.I)
 _WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
