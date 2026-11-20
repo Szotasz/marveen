@@ -11,9 +11,10 @@
 // Writes go through the db helpers the kanban routes use (createKanbanCard,
 // moveKanbanCard, addKanbanComment) plus the move route's side effects
 // (dispatch on in_progress, dependents freed on done), so events and
-// notifications behave the same as on /api/kanban. The done-gate is kept too:
-// a move to done without evidence is held at testing, since the writer here is
-// always an agent.
+// notifications behave the same as on /api/kanban. The done-gate is kept for
+// agents: an agent's move to done without evidence is held at testing. A
+// colleague board session is a human writer, so, as a human on /api/kanban, it
+// is not held (maintainer decision on #2929, option a).
 
 import { randomUUID } from 'node:crypto'
 import {
@@ -50,7 +51,16 @@ function header(ctx: RouteContext, name: string): string | undefined {
   return Array.isArray(v) ? v[0] : v
 }
 
-interface Principal { agent: string; person: BoardPerson; visible: VisibleAssignees }
+interface Principal {
+  agent: string
+  person: BoardPerson
+  visible: VisibleAssignees
+  /**
+   * Set ONLY for a colleague session cookie (auth kind 'colleague'): the account name, the human writer. It exempts
+   * the move from the done-gate and is the actor on the status event. Every token path leaves it undefined.
+   */
+  humanAccount?: string
+}
 
 /**
  * Resolves the caller to one person, or writes the refusal and returns null.
@@ -69,7 +79,7 @@ function principal(ctx: RouteContext): Principal | null {
       json(ctx.res, { error: 'the board is not available for this account', rule: 'board-scope' }, 403)
       return null
     }
-    return { agent: `colleague:${ctx.auth.colleague}`, person, visible: visibleAssignees(cfg, person.id) }
+    return { agent: `colleague:${ctx.auth.colleague}`, person, visible: visibleAssignees(cfg, person.id), humanAccount: ctx.auth.colleague }
   }
   const agent = ctx.auth?.kind === 'token' ? ctx.auth.tokenAgent : undefined
   const cfg = readBoardAccess()
@@ -389,10 +399,12 @@ export async function tryHandleBoard(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const evidence = typeof body.evidence === 'string' && body.evidence.trim() ? body.evidence : undefined
-    const actor = p.person.name
-    // The done-gate of /api/kanban/:id/move: the writer here is always a sub-agent (the person's
-    // name is only the actor on the record), so a close without evidence is held at testing.
-    const needsEvidence = status === 'done' && !evidence
+    // A colleague session is the human writer: its account name is the actor on the status event, so the card's
+    // history shows which colleague moved it. An agent token keeps the person's name as the actor.
+    const actor = p.humanAccount ?? p.person.name
+    // The done-gate of /api/kanban/:id/move, for agents only: an agent's close without evidence is held at testing.
+    // A colleague session is a human, and a human on /api/kanban is not held (isAgentActor); neither is it here.
+    const needsEvidence = status === 'done' && !evidence && p.humanAccount === undefined
     const effectiveStatus: KanbanCard['status'] = needsEvidence ? 'testing' : status
     // Compare-and-set on the status this request saw: a concurrent change answers 409, never a blind overwrite.
     if (!moveKanbanCard(card.id, effectiveStatus, 0, actor, { expectedStatus: card.status, ...(evidence ? { evidence } : {}) })) {

@@ -114,7 +114,7 @@ Runs in `web.ts` after authentication and before any route handler:
 | `GET /api/board/cards/:id` | | the card plus `comments`; 404 when missing, archived OR invisible (one answer for all three) |
 | `POST /api/board/cards` | `{ title, description?, assignee?, priority?, due_date?, project? }` | new `planned` card; `title` at most 300 characters (400 above that); `assignee` defaults to the person's first assignee and must be inside the visible set (403 otherwise) |
 | `POST /api/board/cards/:id/comments` | `{ content }` | comment authored by the person's `name`, set server-side; a `#hex8` card reference becomes `#seq` only for a card the person can see |
-| `POST /api/board/cards/:id/move` | `{ status, evidence? }` | moved with the person's `name` as audit actor; compare-and-set on the status read (409 on a concurrent change); `done` without `evidence` is held at `testing` |
+| `POST /api/board/cards/:id/move` | `{ status, evidence? }` | moved with the person's `name` as audit actor (a colleague session: its account name); compare-and-set on the status read (409 on a concurrent change); an agent's `done` without `evidence` is held at `testing` |
 | `GET /api/board/report` | `?date=YYYY-MM-DD` (optional, default today in `APP_TZ`) | `{ person, date, timezone, groups, text }` |
 
 Bodies are strict: an unknown field, a non-object body or an unknown query
@@ -123,14 +123,21 @@ as `/api/kanban` (`createKanbanCard`, `moveKanbanCard`, `addKanbanComment`) and
 the move keeps the kanban move's side effects (dispatch on `in_progress`,
 dependents freed on `done`).
 
-**Done needs evidence, the same as on `/api/kanban`.** The writer on these
-routes is always a sub-agent; the person's name is only the actor recorded on
-the card. So the done-gate of `/api/kanban/:id/move` applies here too: a move
+**An agent's done needs evidence, the same as on `/api/kanban`.** For a
+sub-agent token the person's name is only the actor recorded on the card. So
+the done-gate of `/api/kanban/:id/move` applies here too: a move
 to `done` without a non-empty `evidence` lands in `testing`, and the answer is
 `{ ok: false, status: "testing", evidence_required: true, note }`. The agent
 moves it to `done` again with `evidence` saying what was checked (for example
 the person's own confirmation, a document or a photo). A person's word is not a
 way around the gate; the owner decided this when the route was reviewed.
+
+A colleague board session (see "Colleague login" below) is a human writer, so,
+like a human on `/api/kanban`, it is not held: its move to `done` closes the
+card (`ok: true`), and the status event's actor is the colleague's account
+name, so the card's history shows which colleague closed it. The exemption is
+keyed on the colleague session cookie only; every token path, a scoped agent
+token included, still gets the hold.
 
 **Title length.** The `kanban_cards` insert trigger cuts a title above 300
 characters to 300 and moves the full text into a comment, silently. The board

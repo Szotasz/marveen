@@ -15,7 +15,7 @@ const H = vi.hoisted(() => {
 })
 vi.mock('../config.js', async (orig) => ({ ...(await orig<typeof import('../config.js')>()), STORE_DIR: H.store }))
 
-import { initDatabase, createKanbanCard, getKanbanCard, getKanbanComments, getDb } from '../db.js'
+import { initDatabase, createKanbanCard, getKanbanCard, getKanbanComments, getKanbanCardEvents, getDb } from '../db.js'
 import { gateRequest, resolveAuth, requiresAuth, type AuthResult } from '../web/auth-gate.js'
 import { boardGateDecision, readBoardAccess } from '../web/board-access.js'
 import { colleagueGateDecision, COLLEAGUE_STATIC_PATHS } from '../web/colleague-gate.js'
@@ -300,6 +300,20 @@ describe('colleague login end to end', () => {
     const mv = await http_('POST', '/api/board/cards/c-alice/move', { cookie, body: { status: 'waiting' } })
     expect(mv.status).toBe(200)
     expect(getKanbanCard('c-alice')!.status).toBe('waiting')
+  })
+
+  it('a colleague session closes its own card to done without evidence; the status event names the account', async () => {
+    // Maintainer decision on #2929 (option a): a colleague session is a human writer, so the board's done-gate,
+    // which holds an AGENT's close at testing (board-access.test.ts pins that side), does not hold it.
+    // The account is 'bob' and its person's display name is 'Bob', so the actor assertion tells the two apart.
+    const cookie = cookieFrom(await login('bob'))
+    const mv = await http_('POST', '/api/board/cards/c-bob/move', { cookie, body: { status: 'done' } })
+    expect(mv.status).toBe(200)
+    expect(mv.body).toMatchObject({ ok: true, status: 'done' })
+    expect(mv.body.evidence_required).toBeUndefined()
+    expect(getKanbanCard('c-bob')!.status).toBe('done')
+    const last = getKanbanCardEvents('c-bob').at(-1)!
+    expect(last).toMatchObject({ from_status: 'planned', to_status: 'done', actor: 'bob' })
   })
 
   it('me names the session\'s person; logout ends the session', async () => {
