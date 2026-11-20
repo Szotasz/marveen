@@ -30,7 +30,7 @@ describe('the new-skill form', () => {
     expect(check).toBeGreaterThan(-1)
     const block = HANDLER.slice(check, HANDLER.indexOf('return', check))
     expect(block).toContain(`document.getElementById('${id}').focus()`)
-    expect(block).toContain(`showToast(t('${key}'))`)
+    expect(block).toContain(`showToast(t('${key}'), 'warn')`)
     expect(HANDLER.slice(0, check)).not.toMatch(/\bfetch\(/)
     expect(HANDLER.indexOf('fetch(')).toBeGreaterThan(check)
     expect(HU).toContain(`'${key}':`)

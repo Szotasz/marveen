@@ -20,7 +20,7 @@ describe('the idea form', () => {
   })
 
   it('an empty title gets the focus and its own toast, before any request', () => {
-    const stop = SAVE.indexOf("if (!title) { document.getElementById('ideaTitleInput').focus(); showToast(t('ideas.form.title_required'), 'error'); return }")
+    const stop = SAVE.indexOf("if (!title) { document.getElementById('ideaTitleInput').focus(); showToast(t('ideas.form.title_required'), 'warn'); return }")
     expect(stop).toBeGreaterThan(-1)
     expect(SAVE.slice(0, stop)).not.toMatch(/\bfetch\(/)
     expect(SAVE).not.toContain("t('common.title') + ' ' + t('common.error')")

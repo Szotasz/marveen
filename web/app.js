@@ -1166,7 +1166,7 @@ async function renderKanbanSummary() {
     chip.addEventListener('click', () => {
       const target = kanbanCards.find((c) => c.id === ref.id)
       if (target) showCardDetail(target)
-      else showToast(t('kanban.toast.blocker_not_on_board'))
+      else showToast(t('kanban.toast.blocker_not_on_board'), 'warn')
     })
     return chip
   }
@@ -2691,7 +2691,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
         if (res.status === 409 && e.conflict === 'stale_version') {
           // The modal STAYS OPEN: the typed text is the only copy of it, and closing
           // would destroy it to report that something else was nearly destroyed.
-          showToast(t('kanban.toast.stale_version_form'), 8000)
+          showToast(t('kanban.toast.stale_version_form'), { kind: 'warn', duration: 8000 })
           return
         }
         throw new Error(e.error || res.status)
@@ -2903,7 +2903,7 @@ async function renderCardBlockersSection(card) {
     link.addEventListener('click', () => {
       const target = kanbanCards.find((c) => c.id === ref.id)
       if (target) showCardDetail(target)
-      else showToast(t('kanban.toast.blocker_not_on_board'))
+      else showToast(t('kanban.toast.blocker_not_on_board'), 'warn')
     })
     row.appendChild(link)
     const state = document.createElement('span')
@@ -3135,7 +3135,7 @@ async function showCardDetail(card) {
           const e = await r.json().catch(() => ({}))
           if (e.conflict === 'stale_version') {
             assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
-            showToast(t('kanban.toast.stale_version'), 6000)
+            showToast(t('kanban.toast.stale_version'), { kind: 'warn', duration: 6000 })
             loadKanban && loadKanban()
             return
           }
@@ -3217,7 +3217,7 @@ async function showCardDetail(card) {
         if (Number.isInteger(saved.version)) card.version = saved.version
         card.parent_id = newParentId; showToast(label); loadKanban(); showCardDetail(card)
       } else if (r.status === 409 && (await r.json().catch(() => ({}))).conflict === 'stale_version') {
-        showToast(t('kanban.toast.stale_version'), 6000)
+        showToast(t('kanban.toast.stale_version'), { kind: 'warn', duration: 6000 })
         loadKanban()
       } else showToast(t('kanban.toast.save_error'), 'error')
     }
@@ -3260,7 +3260,7 @@ async function showCardDetail(card) {
     const content = document.getElementById('commentContent').value.trim()
     const author = document.getElementById('commentAuthor').value
     if (!content) { document.getElementById('commentContent').focus(); return }
-    if (!author) { showToast(t('kanban.toast.comment_no_author')); return }
+    if (!author) { showToast(t('kanban.toast.comment_no_author'), 'warn'); return }
     try {
       const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/comments`, {
         method: 'POST',
@@ -3520,7 +3520,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
     const description = breakdownSubtasks[idx]?.description || ''
     accepted.push({ title, assignee, priority, description })
   })
-  if (accepted.length === 0) { showToast(t('kanban.breakdown.select_one')); return }
+  if (accepted.length === 0) { showToast(t('kanban.breakdown.select_one'), 'warn'); return }
   try {
     if (breakdownMode === 'idea') {
       const successCriteria = document.getElementById('breakdownSuccessCriteria')?.value.trim() || undefined
@@ -3705,7 +3705,7 @@ async function canActAsOwnerNow() {
 // Wizard open: without the owner, the login comes first, so no create starts that the server would refuse halfway.
 addBtn.addEventListener('click', async () => {
   if (!(await canActAsOwnerNow())) {
-    showToast(t('common.owner_session_required'))
+    showToast(t('common.owner_session_required'), 'warn')
     if (typeof window.mvShowLogin === 'function') window.mvShowLogin({ cancellable: true })
     return
   }
@@ -3937,7 +3937,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
   const customModelId = customProvider ? customModelInput.value.trim() : ''
   if (!name) { agentName.focus(); return }
   if (!desc) { agentDesc.focus(); return }
-  if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }
+  if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required'), 'warn'); return }
 
   wizardStep = 2
   updateWizardUI()
@@ -4400,7 +4400,7 @@ document.getElementById('saveContextGuardBtn').addEventListener('click', async (
   const actPct = Number(cgActPct.value) / 100
   const hardPct = Number(cgHardPct.value) / 100
   if (hardPct < actPct) {
-    showToast(t('agents.settings.ctx_guard_pct_hint'))
+    showToast(t('agents.settings.ctx_guard_pct_hint'), 'warn')
     return
   }
 
@@ -5279,11 +5279,11 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
 
   async function handleAvatarFile(file) {
     if (!file.type.match(/^image\/(png|jpe?g|webp)$/)) {
-      showToast(t('agents.toast.avatar_format'))
+      showToast(t('agents.toast.avatar_format'), 'warn')
       return
     }
     if (file.size > MAX_SIZE) {
-      showToast(t('agents.toast.avatar_size'))
+      showToast(t('agents.toast.avatar_size'), 'warn')
       return
     }
     previewImg.src = URL.createObjectURL(file)
@@ -5361,11 +5361,11 @@ function resetCreateAvatarUpload() {
 
   function handleCreateAvatarFile(file) {
     if (!file.type.match(/^image\/(png|jpe?g|webp)$/)) {
-      showToast(t('agents.toast.avatar_format'))
+      showToast(t('agents.toast.avatar_format'), 'warn')
       return
     }
     if (file.size > MAX_SIZE) {
-      showToast(t('agents.toast.avatar_size'))
+      showToast(t('agents.toast.avatar_size'), 'warn')
       return
     }
     // Custom upload and gallery pick are mutually exclusive.
@@ -5464,7 +5464,7 @@ document.getElementById('mainAuthApplyBtn').addEventListener('click', async () =
       return
     }
     document.getElementById('mainAuthApiKey').value = ''
-    if (reply.body.verified === false) showToast(t('agents.main_auth.unverified'))
+    if (reply.body.verified === false) showToast(t('agents.main_auth.unverified'), 'warn')
     const restarted = await restartMainAgentGated()
     showToast(t(restarted ? 'agents.main_auth.saved_restarting' : 'agents.main_auth.saved_not_restarted'))
     setTimeout(() => { loadMainAuthPanel() }, 20000)
@@ -6093,7 +6093,7 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
   // The model id is required with a custom provider: the picker value ("custom:<id>") used to be saved as the model.
   const customModelInput = document.getElementById('editAgentModelCustomModelId')
   const customModelId = isCustom ? customModelInput.value.trim() : ''
-  if (isCustom && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }
+  if (isCustom && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required'), 'warn'); return }
   const newModel = isCustom ? customModelId : selectVal
   const name = currentAgent.name
   try {
@@ -7611,13 +7611,13 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
   const name = document.getElementById('skillName').value.trim()
   if (!name) {
     document.getElementById('skillName').focus()
-    showToast(t('skills.toast.name_required'))
+    showToast(t('skills.toast.name_required'), 'warn')
     return
   }
   const description = document.getElementById('skillDescription').value.trim()
   if (!description) {
     document.getElementById('skillDescription').focus()
-    showToast(t('skills.toast.desc_required'))
+    showToast(t('skills.toast.desc_required'), 'warn')
     return
   }
 
@@ -7662,8 +7662,8 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
 // Import skill
 document.getElementById('importSkillBtn').addEventListener('click', async () => {
   const isGlobal = skillModalScope === 'global'
-  if (!skillFile) { showToast(t('skills.toast.select_file')); return }
-  if (!isGlobal && !currentAgent) { showToast(t('skills.toast.select_file')); return }
+  if (!skillFile) { showToast(t('skills.toast.select_file'), 'warn'); return }
+  if (!isGlobal && !currentAgent) { showToast(t('skills.toast.select_file'), 'warn'); return }
 
   const btn = document.getElementById('importSkillBtn')
   btn.disabled = true
@@ -8590,7 +8590,7 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
     applyBtn.className = 'btn-primary btn-compact'
     applyBtn.innerHTML = `<span class="btn-text">${t('tasks.expand.apply_btn')}</span><span class="btn-loading" hidden><span class="spinner"></span></span>`
     applyBtn.addEventListener('click', async () => {
-      if (expandAnswers.length === 0) { showToast(t('tasks.expand.need_answer')); return }
+      if (expandAnswers.length === 0) { showToast(t('tasks.expand.need_answer'), 'warn'); return }
       applyBtn.disabled = true
       applyBtn.querySelector('.btn-text').hidden = true
       applyBtn.querySelector('.btn-loading').hidden = false
@@ -8639,7 +8639,7 @@ saveScheduleBtn.addEventListener('click', async () => {
 
   if (!name) { document.getElementById('scheduleName').focus(); return }
   if (!prompt) { document.getElementById('schedulePrompt').focus(); return }
-  if (!schedule) { showToast(t('tasks.toast.select_schedule')); return }
+  if (!schedule) { showToast(t('tasks.toast.select_schedule'), 'warn'); return }
 
   saveScheduleBtn.disabled = true
   saveScheduleBtn.querySelector('.btn-text').hidden = true
@@ -10207,7 +10207,7 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
     const val = input.value.trim()
     if (!val) {
       input.focus()
-      showToast(t('connectors.toast.required_field', { key }))
+      showToast(t('connectors.toast.required_field', { key }), 'warn')
       return
     }
     envData[key] = val
@@ -11311,7 +11311,7 @@ function openSshKeygenModal(callback) {
   submitBtn.addEventListener('click', async () => {
     const label = document.getElementById('sshKeygenLabelInput').value.trim()
     const username = document.getElementById('sshKeygenUserInput').value.trim()
-    if (!label || !username) { showToast(t('vault.ssh.toast.label_user_required')); return }
+    if (!label || !username) { showToast(t('vault.ssh.toast.label_user_required'), 'warn'); return }
 
     document.getElementById('sshKeygenForm').hidden = true
     document.getElementById('sshKeygenSpinner').hidden = false
@@ -11572,7 +11572,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
       : !host ? ['sshHostInput', 'vault.ssh.form.host_required']
       : !user ? ['sshUserInput', 'vault.ssh.form.user_required']
       : null
-    if (missing) { document.getElementById(missing[0]).focus(); showToast(t(missing[1])); return }
+    if (missing) { document.getElementById(missing[0]).focus(); showToast(t(missing[1]), 'warn'); return }
     const isEdit = !!_sshEditingId
     try {
       const res = await fetch(
@@ -12042,7 +12042,7 @@ function renderVaultGrid(secrets) {
       })
     }
 
-    if (imports.length === 0) { showToast(t('vault.scan.none_selected')); return }
+    if (imports.length === 0) { showToast(t('vault.scan.none_selected'), 'warn'); return }
 
     importBtn.disabled = true
     importBtn.textContent = t('common.importing')
@@ -13028,7 +13028,7 @@ async function parseFileToChunks(file) {
 // Import button click
 memImportSaveBtn.addEventListener('click', async () => {
   if (!memImportFiles.length) {
-    showToast(t('memories.toast.select_files'))
+    showToast(t('memories.toast.select_files'), 'warn')
     return
   }
 
@@ -13052,7 +13052,7 @@ memImportSaveBtn.addEventListener('click', async () => {
       memImportSaveBtn.querySelector('.btn-text').hidden = false
       memImportSaveBtn.querySelector('.btn-loading').hidden = true
       memImportSaveBtn.disabled = false
-      showToast(t('memories.toast.no_content'))
+      showToast(t('memories.toast.no_content'), 'warn')
       return
     }
 
@@ -13314,7 +13314,7 @@ document.getElementById('fleetExportBtn').addEventListener('click', async () => 
 document.getElementById('fleetDryRunBtn').addEventListener('click', async () => {
   const fileInput = document.getElementById('fleetImportFile')
   if (!fileInput.files.length) {
-    showToast(t('fleet.import.no_file'))
+    showToast(t('fleet.import.no_file'), 'warn')
     return
   }
 
@@ -14138,7 +14138,7 @@ async function saveTeamReportsTo(childId, parentId, ctx) {
   const { byId, parentOf, descendantsOf, mainAgentId } = ctx
   if (!childId || childId === parentId || childId === mainAgentId) return
   if (parentOf.get(childId) === parentId) return  // already the parent
-  if (descendantsOf(childId).has(parentId)) { showToast(t('team.drop.cycle')); return }
+  if (descendantsOf(childId).has(parentId)) { showToast(t('team.drop.cycle'), 'warn'); return }
   try {
     const r = await fetch(`/api/agents/${encodeURIComponent(childId)}/team`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -14146,7 +14146,7 @@ async function saveTeamReportsTo(childId, parentId, ctx) {
     })
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const result = await r.json().catch(() => ({}))
-    if (result.cycleRejected) { showToast(t('team.drop.cycle')); return }
+    if (result.cycleRejected) { showToast(t('team.drop.cycle'), 'warn'); return }
     const childLabel = (byId.get(childId) || {}).label || childId
     const parentLabel = (byId.get(parentId) || {}).label || parentId
     showToast(t('team.drop.saved', { child: childLabel, parent: parentLabel }))
@@ -17248,8 +17248,8 @@ async function loadBgTasksPage() {
 async function startBgTask() {
   const agent = document.getElementById('bgAgent').value
   const prompt = document.getElementById('bgPrompt').value.trim()
-  if (!agent) { showToast(t('bgTasks.select_agent')); return }
-  if (!prompt) { showToast(t('bgTasks.enter_task')); return }
+  if (!agent) { showToast(t('bgTasks.select_agent'), 'warn'); return }
+  if (!prompt) { showToast(t('bgTasks.enter_task'), 'warn'); return }
 
   const btn = document.getElementById('bgStartBtn')
   btn.disabled = true
@@ -18723,7 +18723,7 @@ function wireFleetFreeze() {
     try {
       const res = await fetch('/api/fleet/unfreeze', { method: 'POST' })
       const data = await res.json().catch(() => ({}))
-      if (res.status === 403) { showToast(t('fleet_freeze.toast.owner_only'), 8000); return }
+      if (res.status === 403) { showToast(t('fleet_freeze.toast.owner_only'), { kind: 'warn', duration: 8000 }); return }
       if (!res.ok) { showToast(data.error || ('HTTP ' + res.status), 'error'); return }
       renderFleetFreeze({ frozen: false })
       showToast(t('fleet_freeze.toast.unfrozen'))
@@ -19942,7 +19942,7 @@ function openAddProviderModal(container, editProvider = null) {
       : !baseUrl ? ['#cpBaseUrl', 'providers.form.base_url_required']
       : (authHeader !== 'none' && !vaultKey) ? ['#cpVaultKey', 'providers.form.vault_key_required']
       : null
-    if (missing) { overlay.querySelector(missing[0]).focus(); showToast(t(missing[1])); return }
+    if (missing) { overlay.querySelector(missing[0]).focus(); showToast(t(missing[1]), 'warn'); return }
     try {
       const r = await fetch('/api/custom-providers', {
         method: 'POST',
@@ -20312,7 +20312,7 @@ async function resetSettingsGroupToDefault(group) {
   updateSettingsSaveBar()
   loadClaudePlansReadiness()
   if (failed) {
-    showToast(t('settings.toast.reset_tab_partial'), 6000)
+    showToast(t('settings.toast.reset_tab_partial'), { kind: 'error', duration: 6000 })
   } else {
     const base = t('settings.toast.reset_tab')
     showToast(needsRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base)
@@ -21870,7 +21870,7 @@ function openIdeaEdit(id) {
 
 async function saveIdea() {
   const title = document.getElementById('ideaTitleInput').value.trim()
-  if (!title) { document.getElementById('ideaTitleInput').focus(); showToast(t('ideas.form.title_required'), 'error'); return }
+  if (!title) { document.getElementById('ideaTitleInput').focus(); showToast(t('ideas.form.title_required'), 'warn'); return }
   const impactRaw = document.getElementById('ideaImpactInput').value
   const effortRaw = document.getElementById('ideaEffortInput').value
   const body = {
@@ -22160,7 +22160,7 @@ async function openIdeaBreakdown(id) {
     const res = await fetch(`/api/ideas/${id}/breakdown`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
     const data = await res.json()
     if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed'), 'error'); return }
-    if (!data.subtasks || !data.subtasks.length) { showToast(t('ideas.toast.no_subtasks')); return }
+    if (!data.subtasks || !data.subtasks.length) { showToast(t('ideas.toast.no_subtasks'), 'warn'); return }
     breakdownMode = 'idea'
     breakdownIdeaId = id
     breakdownSubtasks = data.subtasks
@@ -22343,7 +22343,7 @@ function openTerminalModal(agentName) {
     if (!terminalInputEnabled) {
       // Read-only mode: input gate is OFF. Drop the keystroke locally (server
       // would 403 it anyway) and nudge the user to the toggle.
-      showToast(t('terminal.input_off'))
+      showToast(t('terminal.input_off'), 'warn')
       return
     }
     const special = ESC_TO_SPECIAL[data]
