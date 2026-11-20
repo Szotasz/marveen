@@ -153,6 +153,18 @@ for prov in telegram slack; do
   fi
 done
 
+# --- Unit PATH (BREWPREFIXREST1107) ---
+# Report only: a warn here never fails the run. See scripts/lib/unit-path-check.sh.
+echo -e "\n${BOLD}Unit PATH${RESET}"
+. "$INSTALL_DIR/scripts/lib/unit-path-check.sh"
+unit_path_check "$(uname -s)" "$SERVICE_ID_DOC" | while IFS='|' read -r level msg; do
+  case "$level" in
+    ok)   ok "$msg" ;;
+    warn) warn "$msg" ;;
+    *)    echo "  - $msg" ;;
+  esac
+done
+
 # --- Channel keepalive ---
 echo -e "\n${BOLD}Keepalive${RESET}"
 KA_FILE="store/.channel-keepalive"
