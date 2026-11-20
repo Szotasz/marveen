@@ -1328,6 +1328,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    // TELEGRAM_REACTIONS_ENABLED (owner request, 2026-11-09): the owner's emoji reactions reach the agent. Baked into
+    // the plugin source by scripts/patch-telegram-plugin.py at the channel start (the tgreact1119 patch).
+    key: 'TELEGRAM_REACTIONS_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Telegram-reakciók továbbítása: bekapcsolva ha a párosított tulajdonos a privát chatben egy üzenetre emoji-reakciót tesz, az ügynök megkapja „(reaction 👍)” alakban, a reagált üzenet azonosítójával, és ha az ügynök küldte a plugin indulása óta, egy rövid kivonatával. Csak a hozzáadott reakció megy tovább, a levétel nem. Minden reakció egy újabb kör az ügynöknek, ezért alapból ki van kapcsolva. A kapcsolót a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: kikapcsolva. A módosítás a csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     // DCEXT1111: Marveen's version of the Discord plugin (vendor/discord-plugin) over the official one. Off puts the
     // official file back, and with it the official permission relay that asks EVERY paired DM: a loosening.
     key: 'DISCORD_PLUGIN_EXT',
