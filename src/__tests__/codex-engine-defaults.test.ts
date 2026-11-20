@@ -8,6 +8,7 @@ import {
   CODEX_RELAY_PERMISSION_PROFILE,
   codexRelayDeniedReadRoots,
   codexRelayFilesystemEntries,
+  codexRelayMxdRunDir,
   omitDefaultCodexIdentity,
   relayShimPath,
   relayDroppedMcpServers,
@@ -41,11 +42,12 @@ afterEach(() => {
 })
 
 const WS = '/tmp/cxdef-ws'
-const RELAY = { profile: 'relay' as const, agentName: 'a' }
+const RELAY = { profile: 'relay' as const, agentName: 'a', codexHome: '/tmp/cxdef-home' }
 const dash = { command: 'node', env: { X: '${X}' } }
 const plain = { command: 'uvx' }
-// Overrides seats must not supply permissions tables, even ones matching the renderer.
+// Overrides seats must not supply relay permissions or web/apps settings, even matching ones.
 const withoutPermissionsTable = (content: string) => content.replace(/\n\[permissions\.marveen-relay\.filesystem\][\s\S]*?(?=\n\[|$)/, '')
+  .replace('web_search = "disabled"\n', '').replace('[features]\napps = false\n', '')
 
 describe('relay default', () => {
   it('resolveCodexSandbox', () => {
@@ -122,7 +124,7 @@ describe('existing config.toml under relay', () => {
       const without = fixture(renderCodexConfig(WS, {}, RELAY))
       const check = (content: string) => {
         const home = tmp()
-        writeFileSync(join(home, 'config.toml'), content)
+        writeFileSync(join(home, 'config.toml'), content.replaceAll(JSON.stringify(RELAY.codexHome), JSON.stringify(home)))
         assertCodexSeatConfigCompatible(home, WS, identity, RELAY)
       }
       const header = without.slice(0, without.indexOf('[mcp_servers]'))
@@ -213,7 +215,7 @@ describe('B3 relay seat sandbox compatibility', () => {
   const fresh = () => renderCodexConfig(WS, { 'marveen-dashboard': dash }, RELAY)
   const check = (content: string, opts: CodexRenderOptions = RELAY, identity: CodexIdentity = 'seat') => {
     const home = tmp()
-    writeFileSync(join(home, 'config.toml'), content)
+    writeFileSync(join(home, 'config.toml'), content.replaceAll(JSON.stringify(RELAY.codexHome), JSON.stringify(home)))
     assertCodexSeatConfigCompatible(home, WS, identity, opts)
   }
 
@@ -255,7 +257,7 @@ describe('B3 relay seat sandbox compatibility', () => {
 describe('B4-overrides relay seat permissions compatibility', () => {
   const check = (content?: string, opts: CodexRenderOptions = RELAY) => {
     const home = tmp()
-    if (content !== undefined) writeFileSync(join(home, 'config.toml'), content)
+    if (content !== undefined) writeFileSync(join(home, 'config.toml'), content.replaceAll(JSON.stringify(RELAY.codexHome), JSON.stringify(home)))
     assertCodexSeatConfigCompatible(home, WS, 'overrides', opts)
   }
 
@@ -269,7 +271,10 @@ describe('B4-overrides relay seat permissions compatibility', () => {
     ['default_permissions after a table header', '[projects."/w"]\ndefault_permissions = "other"\n'],
     ['permissions in a value', 'model = "permissions"\n'],
   ])('B4-overrides refuses %s', (_label, content) => {
-    expect(() => check(content)).toThrow(/codexSandbox=relay refuses the existing .*config\.toml: .*relay profile table would be merged with this file's permissions settings\./)
+    const refusal = _label === 'profile default_permissions'
+      ? /codexSandbox=relay refuses the existing .*config\.toml: it sets Codex web search, ChatGPT apps, tools or a config profile \(\[profiles\.p\]\), which could re-enable them over the relay overrides/
+      : /codexSandbox=relay refuses the existing .*config\.toml: .*relay profile table would be merged with this file's permissions settings\./
+    expect(() => check(content)).toThrow(refusal)
   })
 
   it.each([
@@ -305,7 +310,7 @@ describe('B4 named relay permissions', () => {
   const storeLine = () => `${JSON.stringify(join(projectRoot!, 'store'))} = "none"`
   const check = (content: string, identity: CodexIdentity = 'seat') => {
     const home = tmp()
-    writeFileSync(join(home, 'config.toml'), content)
+    writeFileSync(join(home, 'config.toml'), content.replaceAll(JSON.stringify(RELAY.codexHome), JSON.stringify(home)))
     assertCodexSeatConfigCompatible(home, WS, identity, RELAY)
   }
 
@@ -316,6 +321,7 @@ describe('B4 named relay permissions', () => {
       'sandbox_mode = "workspace-write"',
       'approval_policy = "on-request"',
       'default_permissions = "marveen-relay"',
+      'web_search = "disabled"',
       '', '[sandbox_workspace_write]',
       'network_access = false',
       'exclude_slash_tmp = true',
@@ -324,6 +330,9 @@ describe('B4 named relay permissions', () => {
       '"/" = "read"',
       '"/tmp/cxdef-ws" = "write"',
       '"/marveen-b4-fixed-root/store" = "none"',
+      `${JSON.stringify(RELAY.codexHome)} = "none"`,
+      `${JSON.stringify(codexRelayMxdRunDir())} = "none"`,
+      '', '[features]', 'apps = false',
       '', '[projects."/tmp/cxdef-ws"]',
       'trust_level = "trusted"', '', '[mcp_servers]', '',
     ].join('\n'))
@@ -331,10 +340,12 @@ describe('B4 named relay permissions', () => {
       'sandbox_mode="workspace-write"',
       'approval_policy="on-request"',
       'default_permissions="marveen-relay"',
+      'web_search="disabled"',
       'sandbox_workspace_write.network_access=false',
       'sandbox_workspace_write.exclude_slash_tmp=true',
       'sandbox_workspace_write.exclude_tmpdir_env_var=true',
-      'permissions.marveen-relay.filesystem={"/"="read","/tmp/cxdef-ws"="write","/marveen-b4-fixed-root/store"="none"}',
+      `permissions.marveen-relay.filesystem={"/"="read","/tmp/cxdef-ws"="write","/marveen-b4-fixed-root/store"="none",${JSON.stringify(RELAY.codexHome)}="none",${JSON.stringify(codexRelayMxdRunDir())}="none"}`,
+      'features.apps=false',
       'projects./tmp/cxdef-ws.trust_level="trusted"',
     ])
   })
@@ -349,8 +360,9 @@ describe('B4 named relay permissions', () => {
     const target = tmp()
     symlinkSync(target, lexical)
     expect(codexRelayDeniedReadRoots()).toEqual([lexical, target])
-    expect(codexRelayFilesystemEntries(WS)).toEqual([
+    expect(codexRelayFilesystemEntries(WS, RELAY.codexHome)).toEqual([
       ['/', 'read'], [WS, 'write'], [lexical, 'none'], [target, 'none'],
+      [RELAY.codexHome, 'none'], [codexRelayMxdRunDir(), 'none'],
     ])
     const out = fresh()
     expect(out).toContain(`${JSON.stringify(target)} = "none"`)
@@ -413,7 +425,7 @@ describe('B4 named relay permissions', () => {
     const out = fresh()
     expect(out).toContain('default_permissions = "marveen-relay"')
     expect(() => check(out.replace(storeLine(), storeLine() + ' # hidden store'))).not.toThrow()
-    expect(() => check(out.replace('default_permissions = "marveen-relay"\n', ''), 'overrides')).toThrow(/relay profile table would be merged/)
+    expect(() => check(out.replace('default_permissions = "marveen-relay"\n', '').replace('web_search = "disabled"\n', ''), 'overrides')).toThrow(/relay profile table would be merged/)
   })
 })
 

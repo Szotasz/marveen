@@ -4,6 +4,7 @@ import { PROJECT_ROOT } from '../config.js'
 import { expandAndValidateConfigDir } from '../config-dir-path.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
+import { MXD_AGENT_SOCK_DEFAULT } from './agent-extra-channels.js'
 
 export type AgentEngine = 'claude' | 'codex'
 
@@ -24,8 +25,8 @@ export type CodexIdentity = 'seat' | 'overrides'
 //    the file-relay MCP shim (scripts/codex-relay/mcp-shim.mjs), which holds no
 //    secret. Codex starts this MCP server outside the command sandbox (measured
 //    on Codex 0.163.0, Linux); the token stays with the relay daemon. The spool
-//    lives under store/, which the relay profile hides from the sandbox.
-//    Other inherited MCP servers are dropped.
+//    lives under store/, hidden along with the Codex home and mxd run dir.
+//    web_search = "disabled" and features.apps = false; other MCP servers are dropped.
 //  - 'full-access': explicit, owner-only opt-in that REMOVES the sandbox
 //    (danger-full-access: the agent can write anywhere the dashboard user can
 //    and has the network), never asks for approval, and passes the inherited
@@ -113,6 +114,8 @@ export interface CodexRenderOptions {
   profile?: CodexSandboxProfile
   /** Required by profile 'relay': names the agent in the MCP shim's env. */
   agentName?: string
+  /** Required by profile 'relay': the Codex home (CODEX_HOME) the agent runs with; the relay sandbox hides it (auth.json, sessions, history). */
+  codexHome?: string
 }
 
 // The one MCP entry the relay profile rewrites: the inherited dashboard server
@@ -122,6 +125,8 @@ export interface CodexRenderOptions {
 // directory -- the token stays with the daemon outside the sandbox. Every
 // other server entry is dropped under 'relay'; under 'full-access' (or with
 // opts omitted) NOTHING is replaced.
+// Relay also hides store/, the Codex home and mxd run dir, and sets
+// web_search = "disabled" and features.apps = false.
 const DASHBOARD_MCP_SERVER = 'marveen-dashboard'
 export const CODEX_RELAY_PERMISSION_PROFILE = 'marveen-relay'
 
@@ -137,8 +142,28 @@ export function codexRelayDeniedReadRoots(): string[] {
   return roots
 }
 
-export function codexRelayFilesystemEntries(workspace: string): Array<[string, 'read' | 'write' | 'none']> {
-  return [['/', 'read'], [workspace, 'write'], ...codexRelayDeniedReadRoots().map((path): [string, 'none'] => [path, 'none'])]
+/** The mxd run dir (agent.sock, dash.sock, per-agent token files); hidden from the relay sandbox. */
+export function codexRelayMxdRunDir(): string {
+  return dirname(MXD_AGENT_SOCK_DEFAULT)
+}
+
+export function codexRelayFilesystemEntries(workspace: string, codexHome: string): Array<[string, 'read' | 'write' | 'none']> {
+  if (typeof codexHome !== 'string' || !codexHome || !isAbsolute(codexHome)) {
+    throw new Error('relay sandbox profile needs the absolute Codex home (codexConfigDir) to hide it from the sandbox')
+  }
+  const runDir = codexRelayMxdRunDir()
+  const denied = [...codexRelayDeniedReadRoots(), resolve(codexHome), codexPhysicalPath(codexHome),
+    runDir, codexPhysicalPath(runDir)]
+  const entries: Array<[string, 'read' | 'write' | 'none']> = [
+    ['/', 'read'], [workspace, 'write'],
+    ...denied.map((path): [string, 'none'] => [path, 'none']),
+  ]
+  const seen = new Set<string>()
+  return entries.filter(([path]) => {
+    if (seen.has(path)) return false
+    seen.add(path)
+    return true
+  })
 }
 // Read at call time: PROJECT_ROOT may be a lazily mocked getter in tests, which an import-time read would break.
 export function relayShimPath(): string {
@@ -183,14 +208,17 @@ export function renderCodexConfig(workspace: string, servers: Record<string, unk
   const rendered = relayServers(servers, opts)
   // workspace-write has no full-access warning to hide, so under 'relay' the
   // [notice] block is omitted entirely (and the sandbox is nailed to the
-  // workspace with the network off).
+  // workspace with the network off). Hide store/, the Codex home and mxd run
+  // dir; set web_search = "disabled" and features.apps = false.
   const lines = opts.profile === 'relay'
     ? ['sandbox_mode = "workspace-write"', 'approval_policy = "on-request"',
       `default_permissions = ${JSON.stringify(CODEX_RELAY_PERMISSION_PROFILE)}`,
+      'web_search = "disabled"',
       '', '[sandbox_workspace_write]', 'network_access = false',
       'exclude_slash_tmp = true', 'exclude_tmpdir_env_var = true', '',
       `[permissions.${CODEX_RELAY_PERMISSION_PROFILE}.filesystem]`,
-      ...codexRelayFilesystemEntries(workspace).map(([path, access]) => `${JSON.stringify(path)} = ${JSON.stringify(access)}`), '',
+      ...codexRelayFilesystemEntries(workspace, opts.codexHome!).map(([path, access]) => `${JSON.stringify(path)} = ${JSON.stringify(access)}`), '',
+      '[features]', 'apps = false', '',
       `[projects.${JSON.stringify(workspace)}]`, 'trust_level = "trusted"', '', '[mcp_servers]']
     : ['sandbox_mode = "danger-full-access"', 'approval_policy = "never"',
       '', '[notice]', 'hide_full_access_warning = true', '',
@@ -251,7 +279,8 @@ function withheldFromCodex(key: string): boolean {
 /**
  * codexIdentity='overrides': the SAME settings renderCodexConfig writes into the
  * seat's config.toml, expressed as `codex -c key=value` overrides (value side is
- * valid TOML, strings via JSON.stringify). Relay resolves store/ at call time.
+ * valid TOML, strings via JSON.stringify). Relay hides store/, the Codex home
+ * and mxd run dir; sets web_search = "disabled" and features.apps = false.
  * Neither renderer expands `${VAR}`; here the result also lands on argv
  * (visible in `ps`), so only env_vars forwarding is allowed for secrets.
  */
@@ -260,7 +289,7 @@ export function renderCodexOverrides(workspace: string, servers: Record<string, 
     throw new Error(`codexIdentity=overrides needs an absolute workspace path of letters, digits, '_', '-' and '/' only (no '.', quotes, '=' or whitespace): ${JSON.stringify(workspace)}`)
   }
   const rendered = relayServers(servers, opts)
-  const entries = opts.profile === 'relay' ? codexRelayFilesystemEntries(workspace) : []
+  const entries = opts.profile === 'relay' ? codexRelayFilesystemEntries(workspace, opts.codexHome!) : []
   if (entries.some(([path]) => path.includes('\n') || path.includes('\0'))) {
     throw new Error('relay filesystem entry path must not contain a newline or NUL')
   }
@@ -271,10 +300,12 @@ export function renderCodexOverrides(workspace: string, servers: Record<string, 
       'sandbox_mode="workspace-write"',
       'approval_policy="on-request"',
       `default_permissions=${JSON.stringify(CODEX_RELAY_PERMISSION_PROFILE)}`,
+      'web_search="disabled"',
       'sandbox_workspace_write.network_access=false',
       'sandbox_workspace_write.exclude_slash_tmp=true',
       'sandbox_workspace_write.exclude_tmpdir_env_var=true',
       `permissions.${CODEX_RELAY_PERMISSION_PROFILE}.filesystem={${entries.map(([path, access]) => `${JSON.stringify(path)}=${JSON.stringify(access)}`).join(',')}}`,
+      'features.apps=false',
       `projects.${workspace}.trust_level="trusted"`,
     ]
     : [
@@ -355,15 +386,20 @@ function stripTomlComment(line: string): string {
   return line
 }
 
+function relayKeySegments(line: string): string[] {
+  const key = line.startsWith('[') ? line.slice(1, line.lastIndexOf(']')) : line.split('=', 1)[0]
+  // A quoted bare key is the same TOML key; a quoted path is not.
+  return key.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, s => /^[A-Za-z0-9_-]+$/.test(s.slice(1, -1)) ? s.slice(1, -1) : '""').split(/[.\[\]\s]+/).filter(Boolean)
+}
+
+function relayWebAppsKey(line: string): boolean {
+  return relayKeySegments(line).some(key => ['web_search', 'features', 'profile', 'profiles', 'tools'].includes(key))
+}
+
 /**
- * codexSandbox=relay must refuse a seat config.toml left over from an earlier
- * full-access life of the same agent. Both renderers keep an existing
- * config.toml (preflight returns early, scaffold never rewrites), so an
- * operator switching an agent to 'relay' would otherwise silently keep
- * sandbox_mode = "danger-full-access" and/or a marveen-dashboard MCP entry
- * whose env carries the dashboard token -- the exact containment the relay
- * profile promises would never happen. No-op unless the profile is 'relay' or
- * the file is absent, so the default profile is untouched.
+ * Relay refuses stale sandbox or MCP settings in the config.toml both renderers
+ * preserve. It hides store/, the Codex home and mxd run dir, and requires
+ * web_search = "disabled" and features.apps = false. No-op for full-access.
  */
 export function assertCodexSeatConfigCompatible(home: string, workspace: string, identity: CodexIdentity, opts: CodexRenderOptions = {}): void {
   if (opts.profile !== 'relay') return
@@ -402,6 +438,9 @@ export function assertCodexSeatConfigCompatible(home: string, workspace: string,
       if (line.startsWith('[')) tableSeen = true
       if (line.includes('permissions') && !(!tableSeen && /^default_permissions\s*=/.test(line))) {
         refuseSeatConfig(mergeReason)
+      }
+      if (relayWebAppsKey(line)) {
+        refuseSeatConfig(`it sets Codex web search, ChatGPT apps, tools or a config profile (${line}), which could re-enable them over the relay overrides`)
       }
     }
   }
@@ -463,16 +502,30 @@ export function assertCodexSeatConfigCompatible(home: string, workspace: string,
   let sandboxHeaders = 0
   const filesystemHeader = `[permissions.${CODEX_RELAY_PERMISSION_PROFILE}.filesystem]`
   const filesystemLines = new Set(identity === 'seat'
-    ? codexRelayFilesystemEntries(workspace).map(([path, access]) => `${JSON.stringify(path)} = ${JSON.stringify(access)}`)
+    ? codexRelayFilesystemEntries(workspace, home).map(([path, access]) => `${JSON.stringify(path)} = ${JSON.stringify(access)}`)
     : [])
   const filesystemSeen = new Set<string>()
   let filesystemHeaders = 0
   let defaultPermissionsSeen = false
+  let webSearchSeen = false
+  let featuresHeaders = 0
+  let appsSeen = false
   let tableSeen = false
   for (const rawLine of content.split('\n')) {
     const line = stripTomlComment(rawLine).trim()
     if (!line) continue
     if (identity === 'seat') {
+      const refuseWebApps = (): never => refuseSeatConfig(`Codex web search and ChatGPT apps settings other than the relay's web_search = "disabled" and [features] apps = false are not allowed (${line})`)
+      if (line === 'web_search = "disabled"' && !tableSeen && !webSearchSeen) {
+        webSearchSeen = true
+      } else if (line === '[features]' && featuresHeaders === 0) {
+        featuresHeaders += 1
+      } else if (!line.startsWith('[') && currentKey === '[features]') {
+        if (line !== 'apps = false' || appsSeen) refuseWebApps()
+        appsSeen = true
+      } else if (relayWebAppsKey(line)) {
+        refuseWebApps()
+      }
       if (line.includes('writable_roots')) refuseSeatConfig(`writable_roots is not allowed (${line})`)
       if (line.includes('default_permissions')) {
         if (line !== `default_permissions = ${JSON.stringify(CODEX_RELAY_PERMISSION_PROFILE)}` || tableSeen || defaultPermissionsSeen) {
@@ -546,6 +599,9 @@ export function assertCodexSeatConfigCompatible(home: string, workspace: string,
   if (identity === 'seat' && (filesystemHeaders !== 1 || filesystemSeen.size !== filesystemLines.size)) {
     refuseSeatConfig('the relay filesystem table must contain exactly the rendered filesystem entries for this workspace')
   }
+  if (identity === 'seat' && (!webSearchSeen || featuresHeaders !== 1 || !appsSeen)) {
+    refuseSeatConfig('the relay config must disable Codex web search (web_search = "disabled", before any table) and ChatGPT apps ([features] apps = false) exactly once')
+  }
   if (dashboardSeen && (!commandSeen || !argsSeen)) refuseShimEntry('missing command/args')
   // Last, so the specific shim-entry and permissions refusals above keep priority.
   if (identity === 'seat' && (content.includes("'''") || content.includes('"""'))) {
@@ -612,63 +668,66 @@ export function assertNoProjectCodexConfig(workspace: string, opts: CodexRenderO
   }
 }
 
-export function assertCodexHomeOutsideWorkspace(home: string, workspace: string, opts: CodexRenderOptions = {}): void {
-  if (opts.profile !== 'relay') return
-  const physicalPath = (p: string): string => {
-    let cur = resolve(p)
-    const tail: string[] = []
-    for (;;) {
-      try {
-        return join(realpathSync(cur), ...tail)
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code
-        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-          throw new Error(`codexSandbox=relay cannot resolve ${p} (${code}); refusing to start (fail closed)`)
-        }
-        const parent = dirname(cur)
-        if (parent === cur) throw new Error(`codexSandbox=relay cannot resolve ${p} (${code}); refusing to start (fail closed)`)
-        tail.unshift(cur.slice(parent.length).replace(/^[\\/]+/, ''))
-        cur = parent
+function codexPhysicalPath(p: string): string {
+  let cur = resolve(p)
+  const tail: string[] = []
+  for (;;) {
+    try {
+      return join(realpathSync(cur), ...tail)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        throw new Error(`codexSandbox=relay cannot resolve ${p} (${code}); refusing to start (fail closed)`)
       }
+      const parent = dirname(cur)
+      if (parent === cur) throw new Error(`codexSandbox=relay cannot resolve ${p} (${code}); refusing to start (fail closed)`)
+      tail.unshift(cur.slice(parent.length).replace(/^[\\/]+/, ''))
+      cur = parent
     }
   }
+}
+
+export function assertCodexHomeOutsideWorkspace(home: string, workspace: string, opts: CodexRenderOptions = {}): void {
+  if (opts.profile !== 'relay') return
   const inside = (a: string, b: string): boolean => a === b || a.startsWith(b.endsWith(sep) ? b : b + sep)
-  if (inside(resolve(home), resolve(workspace)) || inside(physicalPath(home), physicalPath(workspace))) {
+  if (inside(resolve(home), resolve(workspace)) || inside(codexPhysicalPath(home), codexPhysicalPath(workspace))) {
     throw new Error(`codexSandbox=relay refuses codexConfigDir ${home}: it is inside the agent workspace ${workspace}, which the sandboxed agent can write, so the agent could rewrite its own Codex config. Move codexConfigDir outside the workspace`)
   }
 }
 
 export function preflightCodexHome(home: string, workspace: string, servers: Record<string, unknown>, identity: CodexIdentity = 'seat', opts: CodexRenderOptions = {}): void {
-  assertCodexHomeOutsideWorkspace(home, workspace, opts)
-  assertCodexSeatConfigCompatible(home, workspace, identity, opts)
-  assertNoProjectCodexConfig(workspace, opts)
+  const renderOpts = { ...opts, codexHome: home }
+  assertCodexHomeOutsideWorkspace(home, workspace, renderOpts)
+  assertCodexSeatConfigCompatible(home, workspace, identity, renderOpts)
+  assertNoProjectCodexConfig(workspace, renderOpts)
   // Validation only, before anything is written: in overrides mode the seat's
   // config.toml (which may belong to another agent) is deliberately not consulted.
   if (identity === 'overrides') {
-    renderCodexOverrides(workspace, servers, opts)
+    renderCodexOverrides(workspace, servers, renderOpts)
     return
   }
   if (existsSync(join(home, 'config.toml'))) return
-  renderCodexConfig(workspace, servers, opts)
+  renderCodexConfig(workspace, servers, renderOpts)
 }
 
 /** Seed only once: operator edits remain the source of truth on subsequent starts. */
 export function scaffoldCodexHome(home: string, workspace: string, servers: Record<string, unknown>, identity: CodexIdentity = 'seat', opts: CodexRenderOptions = {}): void {
-  assertCodexHomeOutsideWorkspace(home, workspace, opts)
-  assertCodexSeatConfigCompatible(home, workspace, identity, opts)
-  assertNoProjectCodexConfig(workspace, opts)
-  const dropped = relayDroppedMcpServers(servers, opts)
+  const renderOpts = { ...opts, codexHome: home }
+  assertCodexHomeOutsideWorkspace(home, workspace, renderOpts)
+  assertCodexSeatConfigCompatible(home, workspace, identity, renderOpts)
+  assertNoProjectCodexConfig(workspace, renderOpts)
+  const dropped = relayDroppedMcpServers(servers, renderOpts)
   if (dropped.length) logger.warn({ workspace, dropped }, 'codexSandbox=relay: inherited MCP servers are not rendered; only the dashboard relay shim runs under relay')
   if (identity === 'overrides') {
     // Shared seat: never create or touch <home>/config.toml, and never chmod the
     // home directory. The agent's identity lives in its OWN workspace, mode 0600
     // (it names the MCP server and can carry literal token values).
-    atomicWriteFileSync(join(workspace, '.codex-overrides'), `${renderCodexOverrides(workspace, servers, opts).join('\n')}\n`, { mode: 0o600 })
+    atomicWriteFileSync(join(workspace, '.codex-overrides'), `${renderCodexOverrides(workspace, servers, renderOpts).join('\n')}\n`, { mode: 0o600 })
     syncCodexInstructions(workspace)
     return
   }
   const configPath = join(home, 'config.toml')
-  const config = existsSync(configPath) ? null : renderCodexConfig(workspace, servers, opts)
+  const config = existsSync(configPath) ? null : renderCodexConfig(workspace, servers, renderOpts)
   mkdirSync(home, { recursive: true, mode: 0o700 })
   chmodSync(home, 0o700)
   if (config !== null) {

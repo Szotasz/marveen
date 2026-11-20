@@ -309,8 +309,8 @@ describe('relay profile refuses an incompatible existing seat config', () => {
     mkdirSync(home, { recursive: true })
     // Shim-only fixtures need the same valid sandbox/profile prefix as a fresh seat. Under overrides
     // the shared seat's file may carry no permissions table (F4), so the prefix stops before it there.
-    const rendered = renderCodexConfig(relayWorkspace, {}, relayOpts).split('[mcp_servers]')[0]
-    const prefix = identity === 'overrides' ? rendered.split('[permissions.')[0] : rendered
+    const rendered = renderCodexConfig(relayWorkspace, {}, { ...relayOpts, codexHome: home }).split('[mcp_servers]')[0]
+    const prefix = identity === 'overrides' ? rendered.split('[permissions.')[0].replace('web_search = "disabled"\n', '') : rendered
     writeFileSync(join(home, 'config.toml'), (configToml.startsWith('[mcp_servers') ? prefix : '') + configToml)
     return home
   }

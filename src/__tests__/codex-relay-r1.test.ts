@@ -104,7 +104,7 @@ describe('R1 codexConfigDir outside the workspace', () => {
 describe('R1 seat config with TOML multi-line strings', () => {
   it.each(["'''", '"""'])('refuses %s', quote => {
     const { root, ws } = fixture()
-    const rendered = renderCodexConfig(ws, {}, opts)
+    const rendered = renderCodexConfig(ws, {}, { ...opts, codexHome: join(root, 'seat-home') })
     const line = `default_permissions = "${CODEX_RELAY_PERMISSION_PROFILE}"`
     expect(rendered.includes(line + '\n')).toBe(true)
     const home = join(root, 'seat-home')
@@ -117,7 +117,7 @@ describe('R1 seat config with TOML multi-line strings', () => {
     const { root, ws } = fixture()
     const home = join(root, 'seat-home')
     mkdirSync(home)
-    writeFileSync(join(home, 'config.toml'), renderCodexConfig(ws, {}, opts))
+    writeFileSync(join(home, 'config.toml'), renderCodexConfig(ws, {}, { ...opts, codexHome: home }))
     expect(() => assertCodexSeatConfigCompatible(home, ws, 'seat', opts)).not.toThrow()
   })
 })

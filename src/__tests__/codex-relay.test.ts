@@ -37,14 +37,16 @@ const dashboardServerOverrides = {
 
 // A workspace path both renderers accept (overrides mode allows no '.').
 const WORKSPACE = '/tmp/marveen-relay-ws'
+const CODEX_HOME = '/tmp/marveen-relay-home'
 
 describe('renderCodexConfig relay profile', () => {
   it('B3 renders the external spool and restricted sandbox with the shim', () => {
-    const out = renderCodexConfig(WORKSPACE, { 'marveen-dashboard': dashboardServerSeat }, { profile: 'relay', agentName: 'relay-agent' })
+    const out = renderCodexConfig(WORKSPACE, { 'marveen-dashboard': dashboardServerSeat }, { profile: 'relay', codexHome: CODEX_HOME, agentName: 'relay-agent' })
     expect(out.startsWith([
       'sandbox_mode = "workspace-write"',
       'approval_policy = "on-request"',
       'default_permissions = "marveen-relay"',
+      'web_search = "disabled"',
       '',
       '[sandbox_workspace_write]',
       'network_access = false',
@@ -52,8 +54,9 @@ describe('renderCodexConfig relay profile', () => {
       'exclude_tmpdir_env_var = true',
       '',
       '[permissions.marveen-relay.filesystem]',
-      ...codexRelayFilesystemEntries(WORKSPACE).map(([path, access]) => `${JSON.stringify(path)} = ${JSON.stringify(access)}`),
+      ...codexRelayFilesystemEntries(WORKSPACE, CODEX_HOME).map(([path, access]) => `${JSON.stringify(path)} = ${JSON.stringify(access)}`),
       '',
+      '[features]', 'apps = false', '',
       `[projects.${JSON.stringify(WORKSPACE)}]`,
       'trust_level = "trusted"',
       '',
@@ -75,7 +78,7 @@ describe('renderCodexConfig relay profile', () => {
   })
 
   it('replaces the forwarded-env dashboard entry too', () => {
-    const out = renderCodexConfig(WORKSPACE, { 'marveen-dashboard': dashboardServerOverrides }, { profile: 'relay', agentName: 'relay-agent' })
+    const out = renderCodexConfig(WORKSPACE, { 'marveen-dashboard': dashboardServerOverrides }, { profile: 'relay', codexHome: CODEX_HOME, agentName: 'relay-agent' })
     expect(out).toContain('"MARVEEN_AGENT_NAME" = "relay-agent"')
     expect(out).not.toContain('MARVEEN_DASHBOARD_TOKEN')
     expect(out).not.toContain('env_vars')
@@ -86,12 +89,12 @@ describe('renderCodexConfig relay profile', () => {
       'marveen-dashboard': dashboardServerSeat,
       'other-server': { command: 'uvx', args: ['mcp-server-fetch'], env: { FETCH_TIMEOUT: '${FETCH_TIMEOUT}' } },
     }
-    const out = renderCodexConfig(WORKSPACE, servers, { profile: 'relay', agentName: 'relay-agent' })
+    const out = renderCodexConfig(WORKSPACE, servers, { profile: 'relay', codexHome: CODEX_HOME, agentName: 'relay-agent' })
     expect(out).not.toContain('other-server')
     expect(out).not.toContain('uvx')
     expect(out).not.toContain('FETCH_TIMEOUT')
     expect(out).toContain('"MARVEEN_AGENT_NAME" = "relay-agent"')
-    const overrides = renderCodexOverrides(WORKSPACE, servers, { profile: 'relay', agentName: 'relay-agent' })
+    const overrides = renderCodexOverrides(WORKSPACE, servers, { profile: 'relay', codexHome: CODEX_HOME, agentName: 'relay-agent' })
     expect(overrides.some(line => line.includes('other-server'))).toBe(false)
   })
 })
@@ -101,15 +104,17 @@ describe('renderCodexOverrides relay profile', () => {
     // The seat-style entry (literal token path) would be REFUSED under the
     // existing validator in full-access mode; under relay it is replaced first,
     // so the rendering succeeds and no credential reaches argv.
-    const overrides = renderCodexOverrides(WORKSPACE, { 'marveen-dashboard': dashboardServerSeat }, { profile: 'relay', agentName: 'relay-agent' })
-    expect(overrides.slice(0, 8)).toEqual([
+    const overrides = renderCodexOverrides(WORKSPACE, { 'marveen-dashboard': dashboardServerSeat }, { profile: 'relay', codexHome: CODEX_HOME, agentName: 'relay-agent' })
+    expect(overrides.slice(0, 10)).toEqual([
       'sandbox_mode="workspace-write"',
       'approval_policy="on-request"',
       'default_permissions="marveen-relay"',
+      'web_search="disabled"',
       'sandbox_workspace_write.network_access=false',
       'sandbox_workspace_write.exclude_slash_tmp=true',
       'sandbox_workspace_write.exclude_tmpdir_env_var=true',
-      `permissions.marveen-relay.filesystem={${codexRelayFilesystemEntries(WORKSPACE).map(([path, access]) => `${JSON.stringify(path)}=${JSON.stringify(access)}`).join(',')}}`,
+      `permissions.marveen-relay.filesystem={${codexRelayFilesystemEntries(WORKSPACE, CODEX_HOME).map(([path, access]) => `${JSON.stringify(path)}=${JSON.stringify(access)}`).join(',')}}`,
+      'features.apps=false',
       `projects.${WORKSPACE}.trust_level="trusted"`,
     ])
     expect(overrides.some(line => line.startsWith('notice.'))).toBe(false)
@@ -188,12 +193,12 @@ describe('default rendering unchanged', () => {
 describe('relay profile requires the agent name', () => {
   const message = 'relay sandbox profile needs the agent name for the MCP shim entry'
   it('renderCodexConfig throws without an agentName', () => {
-    expect(() => renderCodexConfig(WORKSPACE, {}, { profile: 'relay' })).toThrow(message)
-    expect(() => renderCodexConfig(WORKSPACE, {}, { profile: 'relay', agentName: '' })).toThrow(message)
+    expect(() => renderCodexConfig(WORKSPACE, {}, { profile: 'relay', codexHome: CODEX_HOME })).toThrow(message)
+    expect(() => renderCodexConfig(WORKSPACE, {}, { profile: 'relay', codexHome: CODEX_HOME, agentName: '' })).toThrow(message)
   })
   it('renderCodexOverrides throws without an agentName', () => {
-    expect(() => renderCodexOverrides(WORKSPACE, {}, { profile: 'relay' })).toThrow(message)
-    expect(() => renderCodexOverrides(WORKSPACE, {}, { profile: 'relay', agentName: '' })).toThrow(message)
+    expect(() => renderCodexOverrides(WORKSPACE, {}, { profile: 'relay', codexHome: CODEX_HOME })).toThrow(message)
+    expect(() => renderCodexOverrides(WORKSPACE, {}, { profile: 'relay', codexHome: CODEX_HOME, agentName: '' })).toThrow(message)
   })
 })
 
