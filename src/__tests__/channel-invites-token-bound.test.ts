@@ -1,7 +1,7 @@
 // INVITETOKENBIND1120 (card 1fff5453): the invite monitor approves a Telegram pending entry ONLY when its sender came
 // with that live invite's own token, i.e. the patched plugin left invite-claims/<senderId> = sha256(token). Before, ANY
-// sender who messaged the bot while an invite was live (24 h) took it. Slack has no deep-link token: its invites keep the
-// old rule. Everything runs in a temp dir; the main agent's state dirs are pointed into it too.
+// sender who messaged the bot while an invite was live (24 h) took it. Slack approves nothing automatically
+// (SLACKINVBIND1120). Everything runs in a temp dir; the main agent's state dirs are pointed into it too.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -87,6 +87,16 @@ describe('the invite monitor binds an approval to the invite token (Telegram)', 
     expect(invites[TOK_B].usedBy).toBe('10')
   })
 
+  it('one token, two senders who both hold its claim, in one tick: only the oldest gets in, the other stays pending', () => {
+    const d = setup({ pending: { c1: { senderId: '10', createdAt: 1 }, c2: { senderId: '20', createdAt: 2 } }, tokens: [TOK_A], claims: { '10': sha(TOK_A), '20': sha(TOK_A) } })
+    runInviteMonitorTick('main', AGENTS)
+    const { access, invites } = read(d)
+    expect(access.allowFrom).toEqual(['1', '10'])
+    expect(Object.keys(access.pending)).toEqual(['c2'])
+    expect(invites[TOK_A].usedBy).toBe('10')
+    expect(existsSync(join(d, 'approved', '20'))).toBe(false)
+  })
+
   it('a claim that matches no live token (guessed, used, or another install\'s) lets nobody in', () => {
     const d = setup({ pending: { c1: { senderId: '4242', createdAt: 1 } }, tokens: [TOK_A], claims: { '4242': sha(TOK_B) } })
     runInviteMonitorTick('main', AGENTS)
@@ -114,12 +124,24 @@ describe('the invite monitor binds an approval to the invite token (Telegram)', 
   })
 })
 
-describe('Slack keeps the old rule (no deep-link token there)', () => {
-  it('the oldest pending entry takes the live invite, as before', () => {
+describe('Slack approves nothing automatically (SLACKINVBIND1120: no token can reach a claim there)', () => {
+  it('a live invite and a pending sender: not let in, the code stays for the owner, the invite stays unused', () => {
     const d = setup({ provider: 'slack', pending: { c1: { senderId: 'U9', createdAt: 1 } }, tokens: [TOK_A] })
     runInviteMonitorTick('main', AGENTS)
     const { access, invites } = read(d)
-    expect(access.allowFrom).toEqual(['1', 'U9'])
-    expect(invites[TOK_A].usedBy).toBe('U9')
+    expect(access.allowFrom).toEqual(['1'])
+    expect(Object.keys(access.pending)).toEqual(['c1'])
+    expect(access.dmPolicy).toBe('pairing')
+    expect(invites[TOK_A].used).toBe(false)
+    expect(existsSync(join(d, 'approved', 'U9'))).toBe(false)
+  })
+
+  it('one live invite, two senders in one tick: neither gets in, both codes stay for the owner', () => {
+    const d = setup({ provider: 'slack', pending: { c1: { senderId: 'U1', createdAt: 1 }, c2: { senderId: 'U2', createdAt: 2 } }, tokens: [TOK_A] })
+    runInviteMonitorTick('main', AGENTS)
+    const { access, invites } = read(d)
+    expect(access.allowFrom).toEqual(['1'])
+    expect(Object.keys(access.pending).sort()).toEqual(['c1', 'c2'])
+    expect(invites[TOK_A].used).toBe(false)
   })
 })
