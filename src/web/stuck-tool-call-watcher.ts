@@ -180,6 +180,10 @@ export function paneLooksRecovered(pane: string | null): boolean {
 // #2989: the bottom of the capture the idle-prompt guard judged, for the recovery WARN. Trailing blank
 // rows are dropped first, because a pane drawn high would otherwise log only empty lines. Capped so one
 // log entry stays small; the logger masks secret shapes in every string field.
+// A deliberate diagnostic exception to "no conversation content in the log" (channel-mcp-reconnect.ts
+// paneDiagSignature): on an idle session the tail holds the end of the last reply. It is written only
+// when this watcher respawns the session, it stays on the host (agent-process.ts lastScreen does the
+// same), and it goes once #2989 is explained.
 const RECOVERY_PANE_TAIL_LINES = 8
 const RECOVERY_PANE_TAIL_CHARS = 1500
 export function recoveryPaneTail(pane: string): string {
