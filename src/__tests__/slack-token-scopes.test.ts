@@ -90,7 +90,7 @@ describe('wiring', () => {
     // coerces to 1 ms and the warning vanishes unseen (Samu, #1760 review).
     expect(app).toMatch(/function showToast\(msg, duration = \d+\)/)
     expect(app).toContain("const msg = t('channel.toast.missing_scopes', { scopes: missing.join(', ') })")
-    expect(app).toContain('showToast(msg, 12000)')
+    expect(app).toContain("showToast(msg, { kind: 'warn', duration: 12000 })")
     expect(app).toContain('if (missing.length > 0) {')
     for (const f of ['web/lang/hu.js', 'web/lang/en.js']) {
       expect(read(f)).toMatch(/'channel\.toast\.missing_scopes':\s*'[^']*\{scopes\}/)

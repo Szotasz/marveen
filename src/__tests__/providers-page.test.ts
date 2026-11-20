@@ -43,7 +43,7 @@ describe('the provider form says which field is missing', () => {
   })
 
   it('a failed save shows the server\'s reason or a translated toast', () => {
-    expect(SAVE).toContain("showToast(err.error || t('providers.toast.save_error'))")
+    expect(SAVE).toContain("showToast(err.error || t('providers.toast.save_error'), 'error')")
     expect(SAVE).toContain("catch { showToast(t('providers.toast.save_error'), 'error') }")
   })
 

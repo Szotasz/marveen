@@ -178,7 +178,7 @@ describe('the handlers speak the dashboard language', () => {
     ['hu', 'Hiba: Ismeretlen'],
     ['en', 'Error: Unknown'],
   ] as const)('the memory import refused without a server error (%s)', async (lang, want) => {
-    expect(MEM_IMPORT).toContain("showToast(`${t('common.error')}: ${data.error || t('common.unknown')}`)")
+    expect(MEM_IMPORT).toContain("showToast(`${t('common.error')}: ${data.error || t('common.unknown')}`, 'error')")
     const t = makeT(lang)
     // Without a server error the toast is the two keys joined, as the line above builds it.
     expect(`${t('common.error')}: ${t('common.unknown')}`).toBe(want)

@@ -186,12 +186,11 @@ describe('the callers', () => {
 
 // Block 2: whatever a catch clause shows is an error (a failed fetch, a thrown refusal, a bad file). The typescript
 // parser finds the clauses, so a nested function or a try inside a catch is counted the way the code runs it.
-describe('the catch toasts', () => {
-  // The one catch toast that is not an error: the invite was created, only copying its link to the clipboard failed,
-  // and the toast says the invite is there.
-  const NOT_ERRORS = ['channel.toast.invite_created']
+// Every showToast call, from the typescript parser: its line, its text, its message argument, the kind (null when there
+// is none, or when it is not a plain word or { kind: '...' }), and whether a catch clause shows it.
+type Toast = { line: number; text: string; msg: string; kind: string | null; caught: boolean }
+const TOASTS: Toast[] = (() => {
   const sf = ts.createSourceFile('app.js', APP, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
-  const inCatch: Array<{ line: number; text: string; kind: string | null }> = []
   const kindOf = (a: ts.Expression | undefined): string | null => {
     if (!a) return null
     if (ts.isStringLiteral(a)) return a.text
@@ -201,18 +200,29 @@ describe('the catch toasts', () => {
     }
     return null
   }
+  const out: Toast[] = []
   const visit = (n: ts.Node, caught: boolean): void => {
     if (ts.isCatchClause(n)) caught = true
-    if (caught && ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'showToast') {
-      inCatch.push({
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'showToast') {
+      out.push({
         line: sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1,
         text: n.getText(sf).replace(/\s+/g, ' '),
+        msg: n.arguments[0] ? n.arguments[0].getText(sf).replace(/\s+/g, ' ') : '',
         kind: kindOf(n.arguments[1]),
+        caught,
       })
     }
     ts.forEachChild(n, ch => visit(ch, caught))
   }
   visit(sf, false)
+  return out
+})()
+
+describe('the catch toasts', () => {
+  // The one catch toast that is not an error: the invite was created, only copying its link to the clipboard failed,
+  // and the toast says the invite is there.
+  const NOT_ERRORS = ['channel.toast.invite_created']
+  const inCatch = TOASTS.filter(c => c.caught)
 
   it('the catch toasts were found', () => {
     expect(inCatch.length).toBeGreaterThanOrEqual(120)
@@ -234,6 +244,52 @@ describe('the catch toasts', () => {
   it('a duration the catch toast had is kept next to the kind', () => {
     for (const k of ['channel.toast.reconnect_error', 'channel.smoke_test.error', 'updates.rebase.plan_error']) {
       expect(inCatch.find(c => c.text.includes(`'${k}'`))?.text).toMatch(/\{ kind: 'error', duration: \d+ \}\)$/)
+    }
+  })
+})
+
+// Block 3: a failure outside a catch. A toast whose message is an error key (…_error, …error_…, …failed, …errors) or
+// the error the server sent (data.error, err.error, 'HTTP ' + status) is an error toast, or a warning where the step
+// was not lost: the save went through and only the restart failed, the rebase plan only predicts a failure, the
+// status poll ran out without an outcome, the update applied but needs a human, a probe was throttled. A rolled-back
+// update is a failure without an error key, so it is named. What the owner chose (a request denied, a skill or a breakdown rejected)
+// carries no error key and stays neutral.
+describe('the failures outside a catch', () => {
+  const ERROR_SHAPED = /'[\w.]*[._](error|errors|failed)(_\w+)?'|\b(data|err|e|body|approval|plan)\.errors?\b|'HTTP '/
+  const WARN = ['agents.channel.saved_restart_failed', 'updates.rebase.will_fail', 'updates.toast.status_timeout',
+    'updates.toast.warning', 'settings.claude_plans.probe_throttled']
+  const shaped = TOASTS.filter(c => ERROR_SHAPED.test(c.msg))
+
+  it('the error-shaped toasts were found', () => {
+    expect(shaped.filter(c => !c.caught).length).toBeGreaterThanOrEqual(60)
+  })
+
+  it('every error-shaped toast is an error toast, or one of the warnings', () => {
+    const bad = shaped.filter(c => (WARN.some(k => c.msg.includes(`'${k}'`)) ? c.kind !== 'warn' : c.kind !== 'error'))
+    expect(bad.map(c => `${c.line}: ${c.text}`)).toEqual([])
+  })
+
+  it('the warnings are still there, each a warning; a rolled-back update is an error', () => {
+    for (const k of WARN) {
+      const hits = TOASTS.filter(c => c.msg.includes(`'${k}'`))
+      expect(hits.length).toBeGreaterThanOrEqual(1)
+      expect(hits.every(c => c.kind === 'warn')).toBe(true)
+    }
+    // The Slack scopes the token lacks: the message is built into msg first.
+    expect(APP).toContain("const msg = t('channel.toast.missing_scopes'")
+    expect(APP).toContain("showToast(msg, { kind: 'warn', duration: 12000 })")
+    expect(TOASTS.filter(c => c.msg.includes("'updates.toast.rolled_back'")).map(c => c.kind)).toEqual(['error'])
+  })
+
+  it('a model saved for a stopped agent is no failure; a failed restart is', () => {
+    expect(APP).toContain("if (restartRes.status === 409) showToast(t('agents.toast.model_saved_stopped'))\n      else showToast(t('agents.restart_failed'), 'error')")
+  })
+
+  it("what the owner chose stays neutral", () => {
+    for (const k of ['channel.toast.denied', 'kanban.toast.breakdown_rejected', 'skills.pending.rejected']) {
+      const hits = TOASTS.filter(c => c.msg.includes(`'${k}'`))
+      expect(hits.length).toBe(1)
+      expect(hits[0].kind).toBeNull()
     }
   })
 })
