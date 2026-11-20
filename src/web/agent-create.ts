@@ -15,7 +15,7 @@ import { isValidModelId, InvalidModelIdError } from '../model-id.js'
 import { isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../claude-cli-support.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { loadCustomProvider } from './custom-providers.js'
-import { agentDir, writeAgentModel, writeAgentCustomProvider, writeAgentSecurityProfile, writeAgentDisplayName, resolveModelId, listAgentNames, DEFAULT_MODEL } from './agent-config.js'
+import { agentDir, writeAgentModel, writeAgentCustomProvider, writeAgentSecurityProfile, writeAgentDisplayName, resolveModelId, listAgentNames, DEFAULT_MODEL, readJsonObjectForWrite } from './agent-config.js'
 import { scaffoldAgentDir, writeAgentSettingsFromProfile, generateClaudeMd, generateSoulMd, inheritedMcpConfigForNewAgent } from './agent-scaffold.js'
 import { validateAgentEngine, preflightCodexHome, syncCodexInstructions, omitDefaultCodexIdentity, type AgentEngineConfig } from './agent-engine.js'
 import { agentTextLang } from './agent-text-lang.js'
@@ -267,10 +267,12 @@ export async function createAgentFromSpec(data: Record<string, unknown>, engine?
   // that can fail and fall back to a template.
   writeAgentBase(name, { model, profileId, customProvider, displayName: rawName })
 
-  // The engine config is part of the base writes too, but only when the request carries engine
-  // fields: a plain claude agent keeps no agent-config.json.
+  // A plain Claude agent's agent-config.json carries no engine fields. When the request carries
+  // engine fields, merge them into the base config, never replace it.
   if (engine?.explicit) {
-    atomicWriteFileSync(join(agentDir(name), 'agent-config.json'), JSON.stringify(omitDefaultCodexIdentity(engineConfig), null, 2))
+    const configPath = join(agentDir(name), 'agent-config.json')
+    const currentConfig = readJsonObjectForWrite(configPath)
+    atomicWriteFileSync(configPath, JSON.stringify(omitDefaultCodexIdentity({ ...currentConfig, ...engineConfig }), null, 2))
   }
 
   logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')

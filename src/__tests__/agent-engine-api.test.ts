@@ -259,7 +259,10 @@ it('T18 creates a Codex agent with persisted engine config and synchronized inst
     expect(response.status).toBeLessThan(300)
     const configPath = join(dir, 'agent-config.json')
     expect(existsSync(configPath)).toBe(true)
-    expect(JSON.parse(readFileSync(configPath, 'utf-8')).engine).toBe('codex')
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    expect(config.engine).toBe('codex')
+    expect.soft(config.model).toEqual(expect.stringMatching(/\S/))
+    expect.soft(config.securityProfile).toEqual(expect.stringMatching(/\S/))
     expect(readAgentEngineConfig('t18-codex').engine).toBe('codex')
     expect(existsSync(join(dir, 'AGENTS.md'))).toBe(true)
     const claudeMd = readFileSync(join(dir, 'CLAUDE.md'), 'utf-8')
@@ -287,5 +290,23 @@ it('T19 creates a plain Claude agent without engine config or Codex instructions
     expect(existsSync(join(dir, 'AGENTS.md'))).toBe(false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+it('T20 preserves the display name alongside the engine config when creating a Codex agent', async () => {
+  const displayName = 'T20 Codex Display'
+  const dir = agentDir('t20-codex-display')
+  const home = join(sandbox, 't20-codex-home')
+  try {
+    // The route sanitizes this name to t20-codex-display and stores the original as displayName.
+    const response = await request('/api/agents', 'POST', { name: displayName, description: 'x', engine: 'codex', codexConfigDir: home })
+    expect(response.status).toBeGreaterThanOrEqual(200)
+    expect(response.status).toBeLessThan(300)
+    const config = JSON.parse(readFileSync(join(dir, 'agent-config.json'), 'utf-8'))
+    expect(config.displayName).toBe(displayName)
+    expect(config.engine).toBe('codex')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
   }
 })
