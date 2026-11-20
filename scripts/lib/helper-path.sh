@@ -41,7 +41,7 @@ helper_brew_prefix_bin() {
 
 # _helper_path_dir_bad DIR KIND -- the owner/mode rule for one existing directory: prints why it
 # fails, nothing when it passes. Owned by the installing user ($EUID) or root, writable by neither
-# the group nor others; KIND=ancestor also passes a writable dir with the sticky bit (/private/tmp,
+# the group (on macOS the admin group may) nor others; KIND=ancestor also passes a writable dir with the sticky bit (/private/tmp,
 # /tmp: there only an entry's owner can rename the entry). $EUID and an absolute find:
 # helper_launchd_path also runs under an empty PATH (builtins only).
 _helper_path_dir_bad() {
@@ -49,7 +49,14 @@ _helper_path_dir_bad() {
     echo "is owned by neither the installing user nor root"; return 0
   fi
   if [ "$2" = ancestor ] && [ -n "$(/usr/bin/find "$1" -maxdepth 0 -perm -1000 2>/dev/null)" ]; then return 0; fi
-  if [ -n "$(/usr/bin/find "$1" -maxdepth 0 -perm -020 2>/dev/null)" ]; then echo "is group-writable"; return 0; fi
+  # macOS only: write access for the admin group (gid 80) does not count, its members can sudo
+  # anyway (Homebrew keeps its bin drwxrwxr-x <user>:admin). Any other group still counts, and
+  # writable by others always does.
+  if [ -n "$(/usr/bin/find "$1" -maxdepth 0 -perm -020 2>/dev/null)" ]; then
+    if [ "$(/usr/bin/uname -s 2>/dev/null)" != "Darwin" ] || [ -z "$(/usr/bin/find "$1" -maxdepth 0 -group 80 2>/dev/null)" ]; then
+      echo "is group-writable"; return 0
+    fi
+  fi
   if [ -n "$(/usr/bin/find "$1" -maxdepth 0 -perm -002 2>/dev/null)" ]; then echo "is writable by others"; return 0; fi
   return 0
 }

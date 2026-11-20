@@ -55,11 +55,12 @@ export function plistPathDirOk(dir: string): boolean {
 
 // The owner/mode rule for one directory (scripts/lib/helper-path.sh _helper_path_dir_bad): owned by the installing
 // user or root, writable by neither the group nor others; an ancestor may be writable when its sticky bit is set
-// (/private/tmp, /tmp: there only an entry's owner can rename the entry).
-function dirOwnerModeProblem(st: Stats, uid: number | undefined, ancestor: boolean): string | null {
+// (/private/tmp, /tmp: there only an entry's owner can rename the entry). On macOS write access for the admin group
+// (gid 80) does not count: its members can sudo anyway (Homebrew keeps its bin drwxrwxr-x <user>:admin).
+function dirOwnerModeProblem(st: Stats, uid: number | undefined, ancestor: boolean, os: NodeJS.Platform): string | null {
   if (st.uid !== uid && st.uid !== 0) return 'is owned by neither the installing user nor root'
   if (ancestor && st.mode & 0o1000) return null
-  if (st.mode & 0o020) return 'is group-writable'
+  if (st.mode & 0o020 && !(os === 'darwin' && st.gid === 80)) return 'is group-writable'
   if (st.mode & 0o002) return 'is writable by others'
   return null
 }
@@ -68,8 +69,12 @@ function dirOwnerModeProblem(st: Stats, uid: number | undefined, ancestor: boole
 // The rule of scripts/lib/helper-path.sh _helper_path_unsafe: a real directory (not a symlink) that passes
 // dirOwnerModeProblem, and so does every ancestor up to / (whoever can write a parent can put their own dir in its
 // place), for the path as given (a symlinked ancestor is skipped, its parent is checked) and its real path. Returns
-// why the dir is refused, null when it may be learned. uid: the installing user (process.getuid()).
-export function learnedPathDirProblem(dir: string, uid: number | undefined = process.getuid?.()): string | null {
+// why the dir is refused, null when it may be learned. uid: the installing user (process.getuid()); os: the platform.
+export function learnedPathDirProblem(
+  dir: string,
+  uid: number | undefined = process.getuid?.(),
+  os: NodeJS.Platform = process.platform,
+): string | null {
   let st: Stats
   try {
     st = lstatSync(dir)
@@ -78,7 +83,7 @@ export function learnedPathDirProblem(dir: string, uid: number | undefined = pro
   }
   if (st.isSymbolicLink()) return 'is a symlink'
   if (!st.isDirectory()) return 'is not a directory'
-  const own = dirOwnerModeProblem(st, uid, false)
+  const own = dirOwnerModeProblem(st, uid, false, os)
   if (own) return own
   let phys: string
   try {
@@ -96,7 +101,7 @@ export function learnedPathDirProblem(dir: string, uid: number | undefined = pro
         return `has a parent ${a} that cannot be read`
       }
       if (ast.isSymbolicLink()) continue
-      const why = dirOwnerModeProblem(ast, uid, true)
+      const why = dirOwnerModeProblem(ast, uid, true, os)
       if (why) return `has a parent ${a} that ${why}`
     }
   }

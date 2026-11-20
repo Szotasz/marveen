@@ -268,6 +268,24 @@ describe('learnedPathDirProblem (platform.ts) = helper-path.sh _helper_path_unsa
     `has a parent ${realpathSync(w777)} that is group-writable`])
   writeFileSync(join(root, 'file'), '')
   cases.push(['a file', join(root, 'file'), 'is not a directory'])
+  // macOS: the admin group (gid 80) may write (Samu, #2985); another group and others may not. Needs macOS and
+  // membership of the admin group to make such dirs; the Linux branch is run here through the os parameter.
+  const adminDirs = (() => {
+    if (process.platform !== 'darwin') return null
+    try {
+      const adm = mk('adm', 0o775); execFileSync('chgrp', ['80', adm]); chmodSync(adm, 0o775)
+      const stf = mk('stf', 0o775); execFileSync('chgrp', ['20', stf]); chmodSync(stf, 0o775)
+      const admo = mk('admo', 0o775); execFileSync('chgrp', ['80', admo]); chmodSync(admo, 0o777)
+      return { adm, stf, admo }
+    } catch {
+      return null
+    }
+  })()
+  if (adminDirs) {
+    cases.push(['darwin: admin-group-writable 0775', adminDirs.adm, null])
+    cases.push(['darwin: staff-group-writable 0775', adminDirs.stf, 'is group-writable'])
+    cases.push(['darwin: admin group, 0777', adminDirs.admo, 'is writable by others'])
+  }
   for (const [name, dir, why] of cases) {
     it(`${name} -> ${why ?? 'learned'} in TS and bash`, () => {
       expect(learnedPathDirProblem(dir)).toBe(why)
@@ -276,6 +294,10 @@ describe('learnedPathDirProblem (platform.ts) = helper-path.sh _helper_path_unsa
       expect(out.trim() || null).toBe(why)
     })
   }
+  it.skipIf(!adminDirs)('linux: the admin-group exception does not apply (os parameter)', () => {
+    expect(learnedPathDirProblem(adminDirs!.adm, process.getuid?.(), 'linux')).toBe('is group-writable')
+    expect(learnedPathDirProblem(adminDirs!.adm, process.getuid?.(), 'darwin')).toBe(null)
+  })
   it('a dir owned by another user -> refused (TS, with another installing uid)', () => {
     expect(learnedPathDirProblem(own, (process.getuid?.() ?? 0) + 4242)).toBe('is owned by neither the installing user nor root')
     expect(learnedPathDirProblem('/usr/sbin', (process.getuid?.() ?? 0) + 4242)).toBe(null)

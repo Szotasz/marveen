@@ -87,6 +87,22 @@ assert_contains "A6 a parent writable by others only (0757) -> left out, named" 
 ln -s "$TMP/st" "$TMP/okvia"
 assert_eq "A5 (control) through a symlink to the sticky parent -> learned as given" "$TMP/okvia/bin:|" "$(learn "$TMP/okvia/bin")"
 
+echo "macOS: write access for the admin group (gid 80) does not count; any other group and others do"
+if [ "$(uname -s)" = "Darwin" ] && mkdir -p "$TMP/adm/bin" "$TMP/stf/bin" "$TMP/admo/bin" \
+   && chgrp 80 "$TMP/adm/bin" "$TMP/admo/bin" 2>/dev/null && chgrp 20 "$TMP/stf/bin" 2>/dev/null; then
+  chmod 775 "$TMP/adm/bin" "$TMP/stf/bin"; chmod 777 "$TMP/admo/bin"
+  assert_eq "G1 darwin: an admin-group-writable 0775 bin (like /opt/homebrew/bin) -> learned" "$TMP/adm/bin:|" \
+    "$(learn "$TMP/adm/bin")"
+  assert_contains "G2 darwin: a staff-group (20) writable 0775 bin -> left out" "$(learn "$TMP/stf/bin")" \
+    "the dir $TMP/stf/bin is group-writable"
+  assert_contains "G3 darwin: admin group but also writable by others (0777) -> left out" "$(learn "$TMP/admo/bin")" \
+    "the dir $TMP/admo/bin is writable by others"
+  mkdir -p "$TMP/admp/bin"; chmod 755 "$TMP/admp/bin"; chgrp 80 "$TMP/admp"; chmod 775 "$TMP/admp"
+  assert_eq "G4 darwin: an admin-group-writable parent -> learned" "$TMP/admp/bin:|" "$(learn "$TMP/admp/bin")"
+else
+  echo "  SKIP: G1-G4 need macOS and membership of the admin group (chgrp 80); on Linux D2/A3 hold for every group"
+fi
+
 echo "under an empty PATH (builtins only) the check still works"
 got="$(PATH="" ; learn "$TMP/ok")"
 assert_eq "D8 own 0755 dir learned with PATH empty" "$TMP/ok:|" "$got"
