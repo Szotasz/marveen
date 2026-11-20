@@ -1,4 +1,5 @@
 import { logger } from './logger.js'
+import { APP_TZ } from './config.js'
 import { graphError, graphFetch, loadCredentials, userPath } from './graph-client.js'
 
 // Microsoft Graph calendar for the agent's own M365 mailbox, app-only, on the
@@ -11,7 +12,7 @@ import { graphError, graphFetch, loadCredentials, userPath } from './graph-clien
 // create or change anything). If reading works and writing 403s, that is the
 // missing role, not a bug here.
 //
-// TIME ZONE: everything the agent does is Europe/Budapest (CLAUDE.md).
+// TIME ZONE: the install's one zone, APP_TZ (src/config.ts: APP_TZ / SCHEDULER_TZ, else the host zone).
 // Outgoing times carry an explicit timeZone, and reads send the
 // `Prefer: outlook.timezone` header so Graph returns local time instead of
 // UTC. Without that header Graph answers in UTC and every displayed hour is
@@ -19,7 +20,7 @@ import { graphError, graphFetch, loadCredentials, userPath } from './graph-clien
 // invisible in winter and wrong all summer.
 
 const PREFIX = 'graph-calendar'
-export const DEFAULT_TIME_ZONE = 'Europe/Budapest'
+export const DEFAULT_TIME_ZONE = APP_TZ
 
 export interface GraphDateTime {
   dateTime: string
