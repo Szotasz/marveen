@@ -29,6 +29,7 @@ import {
 } from '../config.js'
 import { ownerAlertChatOverride, resolveOwnerChatId, configuredOwnerChatFor, normalizeChatId } from '../owner-chat.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { AGENT_NAME_RE } from '../config-registry.js'
 import {
   appendTaskRun,
   getHeartbeatKanbanLive,
@@ -1230,11 +1231,10 @@ export function readScheduledDeliveryDefault(
 
 export type UsageLimitNoticeRoute = 'both' | 'owner' | 'main'
 
-/** Read fresh on every call: process.env as an operator/test override, then the settings store. Unknown or empty -> 'both'. */
+/** Read fresh from the settings store only: override, else a tightening .env line, else the default.
+ * process.env is never read. Unknown or empty -> 'both'. */
 export function readUsageLimitNoticeRoute(
   read: () => string | undefined = () => {
-    const fromProcess = process.env.USAGE_LIMIT_NOTICE_ROUTE
-    if (fromProcess !== undefined && fromProcess.trim() !== '') return fromProcess
     try { return String(getEffectiveSettingValue('USAGE_LIMIT_NOTICE_ROUTE') ?? '') } catch { return undefined }
   },
 ): UsageLimitNoticeRoute {
@@ -1954,12 +1954,13 @@ const usageLimitEpisodes = new Map<string, UsageLimitEpisode>()
 // text: the banner is a verbatim screen line whose tail is arbitrary. Only the
 // agent name, the fact, and scheduler-authored text (the probe time is computed
 // here, not read from the screen). The owner's copy keeps the banner.
-function usageLimitMainAgentText(agentName: string, skipUntilMs: number, route: UsageLimitNoticeRoute): string {
+export function usageLimitMainAgentText(agentName: string, skipUntilMs: number, route: UsageLimitNoticeRoute): string {
   const minutes = Math.round(USAGE_LIMIT_PROBE_INTERVAL_MS / 60_000)
   if (agentTextLang() === 'hu') {
+    const safeAgentName = AGENT_NAME_RE.test(agentName) ? agentName : '[ismeretlen ügynöknév]'
     const probeAt = new Date(skipUntilMs).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', timeZone: APP_TZ })
     return [
-      `[USAGE-LIMIT] A(z) ${agentName} session kifogyott a keretből (usage-limit).`,
+      `[USAGE-LIMIT] A(z) ${safeAgentName} session kifogyott a keretből (usage-limit).`,
       'Az ütemezett feladatokat nem küldöm bele, mert úgysem tudná lefuttatni őket: a sűrűn futó (skipIfBusy) feladatok "skipped-usage-limit" státusszal kimaradnak, a többi "usage-limited" okkal a várakozó sorba kerül, és a próba vagy a keret visszatérése után lefut.',
       `${minutes} percenként egy feladatot átengedek próbának (a következőt ${probeAt} után); amint a keret visszajön, a szokásos rend helyreáll.`,
       route === 'main'
@@ -1967,9 +1968,10 @@ function usageLimitMainAgentText(agentName: string, skipUntilMs: number, route: 
         : 'A gazda ugyanezt a jelzést a privát chatjében is megkapja. Döntsd el, kell-e beavatkozni (például az ágens átállítása másik keretre vagy a munkája átosztása).',
     ].join('\n')
   }
+  const safeAgentName = AGENT_NAME_RE.test(agentName) ? agentName : '[unrecognised agent name]'
   const probeAt = new Date(skipUntilMs).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: APP_TZ })
   return [
-    `[USAGE-LIMIT] The ${agentName} session has run out of usage (usage-limited).`,
+    `[USAGE-LIMIT] The ${safeAgentName} session has run out of usage (usage-limited).`,
     'Scheduled tasks are not typed into it, because it could not run them: frequent (skipIfBusy) tasks are recorded as "skipped-usage-limit", the others are queued with reason "usage-limited" and run after the probe or once the usage is back.',
     `Every ${minutes} minutes one task is let through as a probe (the next one after ${probeAt}); once the usage is back, the normal order resumes.`,
     route === 'main'
