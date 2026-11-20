@@ -3,8 +3,16 @@
 // hand (smoke test, quick read, one-off send) without writing code.
 //
 //   tsx scripts/graph-mail.ts verify
-//   tsx scripts/graph-mail.ts list [--unread] [--top N] [--folder inbox|sentitems]
+//   tsx scripts/graph-mail.ts list [--unread] [--top N] [--folder inbox|sentitems] [--since 2h|30m|3d|ISO]
+//   tsx scripts/graph-mail.ts read --id <id from list> [--html]
 //   tsx scripts/graph-mail.ts send --to a@b.hu[,c@d.hu] --subject "..." --body "..." [--cc ...] [--html] [--attach FILE]
+//                                  [--signature] [--reply-to <id>]
+//
+// --signature: --body is plain text; it is sent as the house HTML letter with
+// the graphic signature (store/email-signature) and its inline images.
+// --reply-to: answer that message of this mailbox in its own conversation
+// (Graph /reply). The subject is then set by Graph ("RE: ..."), --subject is
+// still required so the outgoing gates see a complete envelope.
 //
 // --attach does NOT take an arbitrary path. The file must sit inside the
 // attachment drop directory (GRAPH_MAIL_ATTACH_DIR, default
@@ -23,7 +31,11 @@
 // exit 3 with the reason on stderr. `--flag value` and `--flag=value` are both
 // read.
 
-import { listMessages, sendMail, verifyAccess } from '../src/graph-mail.js'
+// Only the three calls every subcommand shares are imported statically. read
+// (getMessage) and --signature (graph-client, mail-html) load their modules
+// on use, so a plain send needs nothing beyond sendMail -- which is also what
+// the shipped sender-check test's stub transport provides.
+import { listMessages, sendMail, verifyAccess, type InlineImage } from '../src/graph-mail.js'
 import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -31,6 +43,45 @@ import { basename, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
+const SIGNATURE_DIR = resolve(REPO_ROOT, 'store/email-signature')
+// The address the signature file was written for (MAIL_SIGNATURE_OLD_ADDRESS); replaced by the M365 mailbox. Empty: no swap.
+const SIGNATURE_OLD_ADDRESS = process.env.MAIL_SIGNATURE_OLD_ADDRESS ?? ''
+
+/**
+ * --signature: the plain-text --body becomes the house HTML letter with the
+ * graphic signature and its three inline images. The text itself still comes
+ * from the command line, so the outgoing gates read the same words that go out.
+ */
+async function signedLetter(text: string): Promise<{ html: string; inlineImages: InlineImage[] }> {
+  const { loadCredentials } = await import('../src/graph-client.js')
+  const { renderLetterHtml, SIGNATURE_IMAGES } = await import('../src/mail-html.js')
+  const html = renderLetterHtml(
+    text,
+    readFileSync(resolve(SIGNATURE_DIR, 'bekezdes-sablon.html'), 'utf-8'),
+    readFileSync(resolve(SIGNATURE_DIR, 'signature.html'), 'utf-8'),
+    SIGNATURE_OLD_ADDRESS,
+    loadCredentials('graph-mail').mailbox,
+  )
+  const inlineImages = SIGNATURE_IMAGES.map((img) => ({
+    cid: img.cid,
+    name: img.file,
+    contentType: img.contentType,
+    contentBytes: readFileSync(resolve(SIGNATURE_DIR, img.file)).toString('base64'),
+  }))
+  return { html, inlineImages }
+}
+
+/** --since 2h / 30m / 3d, or an ISO timestamp. */
+function parseSince(raw: string): string {
+  const m = /^(\d+)([mhd])$/.exec(raw)
+  if (m) {
+    const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as 'm' | 'h' | 'd']
+    return new Date(Date.now() - Number(m[1]) * unit).toISOString()
+  }
+  const t = new Date(raw)
+  if (Number.isNaN(t.getTime())) throw new Error(`graph-mail: cannot read --since ${raw} (use 2h, 30m, 3d or ISO)`)
+  return t.toISOString()
+}
 
 /**
  * Resolve --attach against the attachment drop directory and refuse anything
@@ -129,6 +180,7 @@ async function main(): Promise<void> {
         top: flag('top') ? Number(flag('top')) : undefined,
         folder: flag('folder'),
         unreadOnly: has('unread'),
+        since: flag('since') ? parseSince(flag('since')!) : undefined,
       })
       if (msgs.length === 0) {
         console.log('(no messages)')
@@ -138,8 +190,35 @@ async function main(): Promise<void> {
         const from = m.from?.emailAddress?.address ?? '?'
         const when = m.receivedDateTime ?? ''
         const unread = m.isRead === false ? '● ' : '  '
-        console.log(`${unread}${when}  ${from}\n    ${m.subject ?? '(no subject)'}\n    ${m.bodyPreview ?? ''}\n`)
+        const clip = m.hasAttachments ? ' [melleklet]' : ''
+        console.log(
+          `${unread}${when}  ${from}${clip}\n    ${m.subject ?? '(no subject)'}\n    ${m.bodyPreview ?? ''}\n    id: ${m.id}\n`,
+        )
       }
+      break
+    }
+    case 'read': {
+      const id = flag('id')
+      if (!id) {
+        console.error('read requires --id (from list)')
+        process.exit(2)
+      }
+      const { getMessage } = await import('../src/graph-mail.js')
+      const m = await getMessage(id, !has('html'))
+      const addr = (xs?: Array<{ emailAddress?: { address?: string } }>) =>
+        (xs ?? []).map((x) => x.emailAddress?.address ?? '?').join(', ')
+      const header = [
+        `From: ${m.from?.emailAddress?.name ?? ''} <${m.from?.emailAddress?.address ?? '?'}>`,
+        `To: ${addr(m.toRecipients)}`,
+        ...(m.ccRecipients?.length ? [`Cc: ${addr(m.ccRecipients)}`] : []),
+        `Date: ${m.receivedDateTime ?? ''}`,
+        `Subject: ${m.subject ?? ''}`,
+        `Id: ${m.id}`,
+        `Message-ID: ${m.internetMessageId ?? ''}`,
+        `Conversation: ${m.conversationId ?? ''}`,
+        ...(m.hasAttachments ? ['Attachments: yes'] : []),
+      ]
+      console.log(`${header.join('\n')}\n\n${m.body?.content ?? ''}`)
       break
     }
     case 'send': {
@@ -152,14 +231,24 @@ async function main(): Promise<void> {
         console.error('send requires --to, --subject and --body')
         process.exit(2)
       }
+      if (has('signature') && has('html')) {
+        console.error('--signature builds the HTML from a plain-text --body; do not combine it with --html')
+        process.exit(2)
+      }
+      const replyToId = flag('reply-to')
       const toList = to.split(',').map((a) => a.trim()).filter(Boolean)
       const ccRaw = flag('cc')
       const ccList = ccRaw?.split(',').map((a) => a.trim()).filter(Boolean) ?? []
+      // The check reads the plain words the caller typed (--body), as the
+      // outgoing gates do; the render mode names how they go out, so an
+      // approval of a plain letter does not cover the signed HTML one, and a
+      // threaded reply names its original so the approval binds to it too.
       senderCheckOrExit({
         to: toList,
         cc: ccList,
         text: `${subject}\n${body}`,
-        render: has('html') ? '--html' : '',
+        render: has('signature') ? '--signature' : has('html') ? '--html' : '',
+        ...(replyToId ? { reply_to: ['graph', replyToId] } : {}),
         attachments: (attachments ?? []).map((a) => {
           const bytes = Buffer.from(a.contentBytes, 'base64')
           return { name: a.name, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length }
@@ -169,19 +258,22 @@ async function main(): Promise<void> {
         explicit_to: [to],
         explicit_cc: ccRaw ? [ccRaw] : [],
       })
+      const signed = has('signature') ? await signedLetter(body) : undefined
       await sendMail({
         attachments,
         to: toList,
         subject,
-        body,
+        body: signed ? signed.html : body,
         cc: ccList.length ? ccList : undefined,
-        contentType: has('html') ? 'HTML' : 'Text',
+        contentType: signed || has('html') ? 'HTML' : 'Text',
+        inlineImages: signed?.inlineImages,
+        replyToId,
       })
-      console.log(`sent to ${to}`)
+      console.log(replyToId ? `replied to ${replyToId} -> ${to}` : `sent to ${to}`)
       break
     }
     default:
-      console.error('usage: graph-mail.ts <verify|list|send> [options] (see file header)')
+      console.error('usage: graph-mail.ts <verify|list|read|send> [options] (see file header)')
       process.exit(2)
   }
 }

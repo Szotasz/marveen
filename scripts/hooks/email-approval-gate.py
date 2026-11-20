@@ -1000,7 +1000,11 @@ def ledger_gate(kind: str, tool_input: dict, cmd: str, tool: str = "") -> None:
 # before.
 _SENDER_FLAGS = {
     "send.py": ({"--to", "--cc", "--subject", "--body", "--attach"}, {"--no-owner-cc", "--html", "--html-wrap"}),
-    "graph-mail.ts": ({"--to", "--cc", "--subject", "--body", "--attach"}, {"--html"}),
+    # --signature / --reply-to: the sender folds both into the envelope it
+    # anchors (render "--signature", reply_to ["graph", id]), so they are its own
+    # flags like --html; without them here a signed or threaded send of the
+    # project's own sender was denied as non-canonical.
+    "graph-mail.ts": ({"--to", "--cc", "--subject", "--body", "--attach", "--reply-to"}, {"--html", "--signature"}),
 }
 _CANONICAL_RELATIVE = {"scripts/support-mail/send.py": "send.py", "scripts/graph-mail.ts": "graph-mail.ts"}
 

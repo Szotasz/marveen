@@ -1606,6 +1606,22 @@ with tempfile.TemporaryDirectory() as td:
     check("a chat server's messages tool is NOT gated as mail (mcp__slack__messages)",
           code == 0, f"exit={code}")
 
+# graph-mail.ts --signature / --reply-to are the sender's own flags (it anchors
+# them itself, sender_check.py): a literal signed or threaded send of THIS
+# project's sender is passed through like --html, an unknown flag still is not.
+_gm_spec = importlib.util.spec_from_file_location("eag_gm_flags", GATE)
+_gm = importlib.util.module_from_spec(_gm_spec)
+_gm_spec.loader.exec_module(_gm)
+if os.path.realpath(_gm._ROOT) == _gm._ROOT:
+    _gm_base = (f"npx tsx {_gm._ROOT}/scripts/graph-mail.ts send --to a@b.hu "
+                "--subject 'Teszt' --body 'Kedves Ugyfel!'")
+    for extra, want in ((" --signature", True), (" --reply-to AAMkAGI-orig", True),
+                        (" --signature --reply-to AAMkAGI-orig", True), (" --reply-to=AAMkAGI-orig", True),
+                        (" --reply-to --signature", False), (" --nonsense", False)):
+        check(f"graph-mail canonical send with{extra}: {'passed through' if want else 'not canonical'}",
+              _gm.canonical_sender_send(_gm_base + extra, "/") is want)
+else:
+    print("  [SKIP] graph-mail canonical-flag check: the checkout path runs through a symlink")
 
 print()
 if failed:

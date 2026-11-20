@@ -141,8 +141,9 @@ def check(letter):
 
     letter: {"to": [...], "cc": [...]   the addresses the sender delivers to,
              "text": subject + "\\n" + body,
-             "render": "" | "--html" | "--html-wrap",
+             "render": "" | "--html" | "--html-wrap" | "--signature",
              "attachments": [{"name", "sha256", "size"}]   (optional),
+             "reply_to": ["graph", <message id>]   (optional, graph-mail --reply-to),
              "raw_to": str, "raw_cc": str | None   the values as the sender got them,
              "explicit_to": [...], "explicit_cc": [...]   what the caller typed
                 (no configured default), for the standing list,
@@ -170,6 +171,11 @@ def check(letter):
         env["render"] = str(letter["render"])
     if letter.get("attachments"):
         env["attachments"] = letter["attachments"]
+    # graph-mail.ts --reply-to: the threaded reply names its original
+    # (["graph", <message id>]), so an approval binds to that thread too. Absent
+    # for every other letter, so their anchors stay byte-identical.
+    if letter.get("reply_to"):
+        env["reply_to"] = [str(v) for v in letter["reply_to"]]
 
     # The standing list, exactly as the hook applies it: the view is what the
     # caller typed (the hook never saw a sender's configured default CC).

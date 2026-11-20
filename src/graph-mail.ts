@@ -1,7 +1,12 @@
-import { readFileSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { logger } from './logger.js'
+import {
+  type GraphCredentials,
+  graphError,
+  graphFetch,
+  loadCredentials,
+  parseCredentials as parseCredentialsShared,
+  userPath,
+} from './graph-client.js'
 
 // Microsoft Graph mail for a single M365 mailbox (marveen@pecibt.hu), via the
 // app-only client-credentials flow. The app registration holds NO tenant-wide
@@ -9,25 +14,17 @@ import { logger } from './logger.js'
 // Online RBAC ManagementScope, so this module can only ever touch that box.
 // See the m365-graph-mailbox-scoping skill for the full provisioning story.
 //
-// No @azure/msal-node dependency: the client-credentials flow is a single
-// form-POST to the token endpoint, and Graph calls are plain fetch with a
-// Bearer header. Adding an SDK for that would be more moving parts, not fewer.
+// The credentials file, the token cache and the fetch wrapper now live in
+// graph-client.ts, shared with graph-calendar and graph-files. The public API
+// of this module is unchanged.
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const PROJECT_ROOT = join(__dirname, '..')
+const PREFIX = 'graph-mail'
 
-// Gitignored KEY=value credentials file at the repo root. Path is overridable
-// so an operator can relocate it (e.g. outside the repo) without code changes.
-const CREDS_PATH = process.env.MARVEEN_MAIL_CREDS || join(PROJECT_ROOT, 'marveen-mail-ugyfelkod')
+/** Re-exported so existing callers keep importing it from here. */
+export type MailCredentials = GraphCredentials
 
-const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
-const REQUEST_TIMEOUT_MS = 20_000
-
-export interface MailCredentials {
-  tenantId: string
-  clientId: string
-  clientSecret: string
-  mailbox: string
+export function parseCredentials(content: string): GraphCredentials {
+  return parseCredentialsShared(content, PREFIX)
 }
 
 export interface GraphMessage {
@@ -39,6 +36,27 @@ export interface GraphMessage {
   bodyPreview?: string
   isRead?: boolean
   webLink?: string
+  conversationId?: string
+  hasAttachments?: boolean
+}
+
+/** One message read in full: the list fields plus the body and the threading ids. */
+export interface GraphFullMessage extends GraphMessage {
+  ccRecipients?: Array<{ emailAddress?: { name?: string; address?: string } }>
+  internetMessageId?: string
+  body?: { contentType?: string; content?: string }
+}
+
+/**
+ * An image embedded in an HTML body and referenced from it as `cid:<cid>`
+ * (the signature logo and icons). Graph sends it as an inline fileAttachment.
+ */
+export interface InlineImage {
+  cid: string
+  /** base64, as Graph expects it */
+  contentBytes: string
+  contentType: string
+  name?: string
 }
 
 export interface SendMailOptions {
@@ -57,6 +75,16 @@ export interface SendMailOptions {
    * simple /sendMail would otherwise surface as an opaque request failure.
    */
   attachments?: { name: string; contentBytes: string; contentType?: string }[]
+  /** Images referenced from an HTML body as cid:<cid>. Counted into the attachment cap. */
+  inlineImages?: InlineImage[]
+  /**
+   * Graph id of a message in this mailbox to answer. When set, the mail goes
+   * out through /messages/{id}/reply, so it lands in the same conversation on
+   * the recipient's side (sendMail cannot set In-Reply-To: Graph only accepts
+   * custom x- headers). Graph builds the "RE:" subject itself, so `subject`
+   * is not sent on this path.
+   */
+  replyToId?: string
 }
 
 /**
@@ -73,139 +101,12 @@ export interface ListMessagesOptions {
   folder?: string
   /** Only unread messages (Graph $filter isRead eq false). */
   unreadOnly?: boolean
-}
-
-// Credentials cache with mtime invalidation -- same reasoning as google-api.ts:
-// the file is edited out-of-process (operator rotates the secret), and a stale
-// in-memory copy would keep authenticating with a revoked secret until a
-// restart. Re-read whenever the file's mtime advances.
-let cachedCreds: { value: MailCredentials; mtimeMs: number } | null = null
-
-// Parse the gitignored KEY=value credentials file. Exported so the pure
-// parsing logic is unit-testable without touching the filesystem.
-export function parseCredentials(content: string): MailCredentials {
-  const map: Record<string, string> = {}
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const eqIdx = trimmed.indexOf('=')
-    if (eqIdx === -1) continue
-    const key = trimmed.slice(0, eqIdx).trim()
-    let value = trimmed.slice(eqIdx + 1).trim()
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1)
-    }
-    map[key] = value
-  }
-  const creds: MailCredentials = {
-    tenantId: map.TENANT_ID ?? '',
-    clientId: map.CLIENT_ID ?? '',
-    clientSecret: map.CLIENT_SECRET ?? '',
-    mailbox: map.MAILBOX ?? '',
-  }
-  const missing = (Object.keys(creds) as Array<keyof MailCredentials>).filter((k) => !creds[k])
-  if (missing.length > 0) {
-    throw new Error(
-      `graph-mail: incomplete credentials, missing ${missing.join(', ')} ` +
-        `(expected TENANT_ID / CLIENT_ID / CLIENT_SECRET / MAILBOX in ${CREDS_PATH})`,
-    )
-  }
-  return creds
-}
-
-function loadCredentials(): MailCredentials {
-  let currentMtime = 0
-  try {
-    currentMtime = statSync(CREDS_PATH).mtimeMs
-  } catch {
-    throw new Error(
-      `graph-mail: credentials file not found at ${CREDS_PATH}. ` +
-        `Set MARVEEN_MAIL_CREDS or create the file with TENANT_ID / CLIENT_ID / CLIENT_SECRET / MAILBOX.`,
-    )
-  }
-  if (!cachedCreds || cachedCreds.mtimeMs !== currentMtime) {
-    cachedCreds = { value: parseCredentials(readFileSync(CREDS_PATH, 'utf-8')), mtimeMs: currentMtime }
-  }
-  return cachedCreds.value
-}
-
-// Access-token cache. The client-credentials token lasts ~1h; we refresh once
-// it is within 60s of expiry so an in-flight request never races the cutover.
-let cachedToken: { value: string; expiresAt: number; clientId: string } | null = null
-
-async function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
-  try {
-    return await fn(controller.signal)
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-async function getToken(): Promise<string> {
-  const creds = loadCredentials()
-  // Bind the cache to the clientId so a rotated app registration doesn't reuse
-  // a token minted for the old client.
-  if (cachedToken && cachedToken.clientId === creds.clientId && cachedToken.expiresAt > Date.now() + 60_000) {
-    return cachedToken.value
-  }
-  const url = `https://login.microsoftonline.com/${creds.tenantId}/oauth2/v2.0/token`
-  const body = new URLSearchParams({
-    client_id: creds.clientId,
-    client_secret: creds.clientSecret,
-    scope: 'https://graph.microsoft.com/.default',
-    grant_type: 'client_credentials',
-  })
-  const res = await withTimeout((signal) =>
-    fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-      signal,
-    }),
-  )
-  const text = await res.text()
-  if (!res.ok) {
-    // Do not log the response body verbatim -- AADSTS errors sometimes echo
-    // request parameters. Log status + the short error code only.
-    let code = 'unknown'
-    try {
-      code = JSON.parse(text).error ?? 'unknown'
-    } catch {
-      /* non-JSON body */
-    }
-    throw new Error(`graph-mail: token request failed (${res.status} ${code})`)
-  }
-  const json = JSON.parse(text) as { access_token: string; expires_in: number }
-  cachedToken = {
-    value: json.access_token,
-    expiresAt: Date.now() + json.expires_in * 1000,
-    clientId: creds.clientId,
-  }
-  return json.access_token
-}
-
-async function graphFetch(path: string, init?: RequestInit): Promise<Response> {
-  const token = await getToken()
-  return withTimeout((signal) =>
-    fetch(`${GRAPH_BASE}${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        ...(init?.headers ?? {}),
-      },
-      signal,
-    }),
-  )
+  /** Only messages received at or after this instant (ISO 8601, UTC). */
+  since?: string
 }
 
 function mailboxPath(): string {
-  return `/users/${encodeURIComponent(loadCredentials().mailbox)}`
+  return userPath(PREFIX)
 }
 
 function toRecipientList(addrs: string | string[]): Array<{ emailAddress: { address: string } }> {
@@ -222,49 +123,108 @@ export async function listMessages(options: ListMessagesOptions = {}): Promise<G
   const params = new URLSearchParams({
     $top: String(top),
     $orderby: 'receivedDateTime desc',
-    $select: 'id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,webLink',
+    $select: 'id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,webLink,conversationId,hasAttachments',
   })
-  if (options.unreadOnly) params.set('$filter', 'isRead eq false')
-  const res = await graphFetch(`${mailboxPath()}/mailFolders/${encodeURIComponent(folder)}/messages?${params}`)
-  if (!res.ok) {
-    throw new Error(`graph-mail: listMessages failed (${res.status} ${await res.text()})`)
-  }
+  const filters: string[] = []
+  // Graph wants the $orderby property to appear first in a combined $filter.
+  if (options.since) filters.push(`receivedDateTime ge ${new Date(options.since).toISOString()}`)
+  if (options.unreadOnly) filters.push('isRead eq false')
+  if (filters.length) params.set('$filter', filters.join(' and '))
+  const res = await graphFetch(
+    `${mailboxPath()}/mailFolders/${encodeURIComponent(folder)}/messages?${params}`,
+    { prefix: PREFIX },
+  )
+  if (!res.ok) throw await graphError(PREFIX, 'listMessages', res)
   const json = (await res.json()) as { value?: GraphMessage[] }
   return json.value ?? []
 }
 
-/** Send mail from the scoped mailbox via Graph /sendMail. */
-export async function sendMail(options: SendMailOptions): Promise<void> {
+/**
+ * Build the Graph message resource for a send or a reply. Pure, so the
+ * attachment cap and the inline-image shape are testable without a network.
+ */
+export function buildMessage(options: SendMailOptions): Record<string, unknown> {
   const message: Record<string, unknown> = {
-    subject: options.subject,
     body: { contentType: options.contentType ?? 'Text', content: options.body },
     toRecipients: toRecipientList(options.to),
   }
+  if (!options.replyToId) message.subject = options.subject
   if (options.cc) message.ccRecipients = toRecipientList(options.cc)
-  if (options.attachments?.length) {
-    const total = options.attachments.reduce((n, a) => n + a.contentBytes.length, 0)
+  const files = options.attachments ?? []
+  const inline = options.inlineImages ?? []
+  if (inline.length && (options.contentType ?? 'Text') !== 'HTML') {
+    throw new Error('graph-mail: inline images need an HTML body (contentType HTML)')
+  }
+  if (files.length || inline.length) {
+    const total = [...files, ...inline].reduce((n, a) => n + a.contentBytes.length, 0)
     if (total > MAX_TOTAL_ATTACHMENT_BASE64_BYTES) {
       throw new Error(
         `graph-mail: attachments too large (${total} base64 bytes across ` +
-          `${options.attachments.length} file(s); limit ${MAX_TOTAL_ATTACHMENT_BASE64_BYTES}). ` +
+          `${files.length + inline.length} file(s); limit ${MAX_TOTAL_ATTACHMENT_BASE64_BYTES}). ` +
           'Send fewer or smaller files, or share a link instead.',
       )
     }
-    message.attachments = options.attachments.map((a) => ({
-      '@odata.type': '#microsoft.graph.fileAttachment',
-      name: a.name,
-      contentType: a.contentType ?? 'application/octet-stream',
-      contentBytes: a.contentBytes,
-    }))
+    message.attachments = [
+      ...files.map((a) => ({
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name: a.name,
+        contentType: a.contentType ?? 'application/octet-stream',
+        contentBytes: a.contentBytes,
+      })),
+      ...inline.map((img) => ({
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name: img.name ?? img.cid,
+        contentType: img.contentType,
+        contentBytes: img.contentBytes,
+        contentId: img.cid,
+        isInline: true,
+      })),
+    ]
   }
-  const res = await graphFetch(`${mailboxPath()}/sendMail`, {
-    method: 'POST',
-    body: JSON.stringify({ message, saveToSentItems: options.saveToSentItems ?? true }),
-  })
+  return message
+}
+
+/**
+ * Send mail from the scoped mailbox via Graph /sendMail, or answer a message
+ * of this mailbox via /messages/{id}/reply when `replyToId` is set.
+ */
+export async function sendMail(options: SendMailOptions): Promise<void> {
+  const message = buildMessage(options)
+  const res = options.replyToId
+    ? await graphFetch(`${mailboxPath()}/messages/${encodeURIComponent(options.replyToId)}/reply`, {
+        method: 'POST',
+        prefix: PREFIX,
+        body: JSON.stringify({ message }),
+      })
+    : await graphFetch(`${mailboxPath()}/sendMail`, {
+        method: 'POST',
+        prefix: PREFIX,
+        body: JSON.stringify({ message, saveToSentItems: options.saveToSentItems ?? true }),
+      })
   if (!res.ok && res.status !== 202) {
-    throw new Error(`graph-mail: sendMail failed (${res.status} ${await res.text()})`)
+    throw await graphError(PREFIX, options.replyToId ? 'reply' : 'sendMail', res)
   }
-  logger.info({ to: options.to, subject: options.subject }, 'graph-mail: sent')
+  logger.info(
+    { to: options.to, subject: options.subject, reply: Boolean(options.replyToId) },
+    'graph-mail: sent',
+  )
+}
+
+/**
+ * Read one message in full. `asText` asks Graph for a plain-text body
+ * (Prefer: outlook.body-content-type="text"), which is what a reader needs;
+ * the default keeps the body as stored.
+ */
+export async function getMessage(id: string, asText = false): Promise<GraphFullMessage> {
+  const select =
+    'id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,bodyPreview,isRead,' +
+    'webLink,conversationId,internetMessageId,hasAttachments'
+  const res = await graphFetch(`${mailboxPath()}/messages/${encodeURIComponent(id)}?$select=${select}`, {
+    prefix: PREFIX,
+    headers: asText ? { Prefer: 'outlook.body-content-type="text"' } : undefined,
+  })
+  if (!res.ok) throw await graphError(PREFIX, 'getMessage', res)
+  return (await res.json()) as GraphFullMessage
 }
 
 /**
@@ -274,11 +234,9 @@ export async function sendMail(options: SendMailOptions): Promise<void> {
  * mailbox is denied) -- that is verified once, out of band, at provisioning.
  */
 export async function verifyAccess(): Promise<{ mailbox: string; messageCount: number }> {
-  const creds = loadCredentials()
-  const res = await graphFetch(`${mailboxPath()}/messages?$top=1&$select=id`)
-  if (!res.ok) {
-    throw new Error(`graph-mail: verifyAccess failed for ${creds.mailbox} (${res.status} ${await res.text()})`)
-  }
+  const creds = loadCredentials(PREFIX)
+  const res = await graphFetch(`${mailboxPath()}/messages?$top=1&$select=id`, { prefix: PREFIX })
+  if (!res.ok) throw await graphError(PREFIX, `verifyAccess for ${creds.mailbox}`, res)
   const json = (await res.json()) as { value?: unknown[] }
   return { mailbox: creds.mailbox, messageCount: json.value?.length ?? 0 }
 }

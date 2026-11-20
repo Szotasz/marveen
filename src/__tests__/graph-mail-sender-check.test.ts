@@ -151,6 +151,30 @@ describe('graph-mail.ts enforces the email_send level itself', () => {
     expect(send(LETTER).status).toBe(0)
   })
 
+  // Local flags (--signature: the signed house HTML letter; --reply-to: a
+  // threaded Graph reply) are part of the anchored envelope: the plain
+  // letter's approval covers neither, and each one has its own anchor.
+  it('level 2: an approved plain letter cannot go out signed or as a threaded reply', () => {
+    writeLevel(2)
+    const plain = anchorOf(send(LETTER).stderr)!
+    approve(plain)
+    const signed = send([...LETTER, '--signature'])
+    const reply = send([...LETTER, '--reply-to', 'AAMkAGI-orig'])
+    const replyOther = send([...LETTER, '--reply-to', 'AAMkAGI-other'])
+    for (const r of [signed, reply, replyOther]) {
+      expect(r.status, r.stderr).toBe(3)
+      expect(stubSent(r.stdout)).toBe(null)
+    }
+    const anchors = [plain, anchorOf(signed.stderr), anchorOf(reply.stderr), anchorOf(replyOther.stderr)]
+    expect(anchors.every(Boolean), anchors.join(' ')).toBe(true)
+    expect(new Set(anchors).size).toBe(4)
+    expect(consumed()).toBe(false)
+    approve(anchorOf(reply.stderr)!, 'ap-r')
+    const ok = send([...LETTER, '--reply-to', 'AAMkAGI-orig'])
+    expect(ok.status, ok.stderr).toBe(0)
+    expect(consumed('ap-r')).toBe(true)
+  })
+
   it('level 2: the anchor carries the attachment digest', () => {
     writeLevel(2)
     const r = send([...LETTER, '--attach', 'offer.pdf'])
