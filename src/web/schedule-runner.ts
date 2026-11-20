@@ -30,6 +30,7 @@ import { ownerAlertChatOverride, resolveOwnerChatId, configuredOwnerChatFor, nor
 import { getEffectiveSettingValue } from '../settings-store.js'
 import {
   appendTaskRun,
+  markTaskRunFireError,
   getHeartbeatKanbanLive,
   hasHeartbeatDigestSince,
   hasAgentMessageStartingWith,
@@ -2317,6 +2318,8 @@ async function attemptFireTask(
     }
   }
 
+  // TASKRUNERRDUP1109: declared before the try, so the catch knows whether this attempt already opened its run row.
+  let firedRunId: number | null = null
   try {
     let prefix: string
     const silentTag = silentTaskTag(task)
@@ -2484,7 +2487,6 @@ async function attemptFireTask(
     // caught up, without any new alert/polling path that could race other
     // running tasks. Read-only w.r.t. everything else in this function.
     // Bookkeeping id for the run we are about to open; the watchdog closes it.
-    let firedRunId: number | null = null
     if (lateCatchUpMs != null) {
       firedRunId = appendTaskRun(task.name, agentName, 'fired_late')
       logger.warn(
@@ -2682,9 +2684,20 @@ async function attemptFireTask(
     return 'fired'
   } catch (err) {
     logger.warn({ err, task: task.name }, 'Failed to fire scheduled task')
-    appendTaskRun(task.name, agentName, 'error')
+    recordFireError(task.name, agentName, firedRunId)
     return 'error'
   }
+}
+
+/**
+ * TASKRUNERRDUP1109: a fire that failed is ONE error run. When the attempt already opened its run row (the throw came
+ * after the 'fired'/'fired_late'/'fired_busy' row was written), that row becomes the error and is closed; only an
+ * attempt that failed before any row writes a new 'error' row. A second row used to make one failed attempt count as
+ * two runs on the tasks-today tile.
+ */
+export function recordFireError(name: string, agent: string, firedRunId: number | null): void {
+  if (firedRunId != null && markTaskRunFireError(firedRunId)) return
+  appendTaskRun(name, agent, 'error')
 }
 
 // A worksource agent takes this prompt through its queue instead of the

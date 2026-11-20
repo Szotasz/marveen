@@ -6198,6 +6198,15 @@ export function setTaskRunDelivery(runId: number, verdict: string): boolean {
   return info.changes > 0
 }
 
+/**
+ * TASKRUNERRDUP1109: an attempt that opened its run row and then failed: that row becomes the 'error' run and is closed
+ * now (an already-closed row keeps its completed_at). No second row. Returns true when the row was updated.
+ */
+export function markTaskRunFireError(runId: number, now = Date.now()): boolean {
+  const info = db.prepare("UPDATE task_runs SET status = 'error', completed_at = COALESCE(completed_at, ?) WHERE id = ?").run(now, runId)
+  return info.changes > 0
+}
+
 export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, completedAt = Date.now()): boolean {
   const info = db.prepare(
     'UPDATE task_runs SET completed_at = ?, outcome = ? WHERE id = ? AND completed_at IS NULL'
@@ -6302,10 +6311,9 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
 // not counted until someone decides it opens a run.
 //   fired, fired_late, fired_busy: the scheduler's typed and queued fires
 //   sent-direct: the direct heartbeat digest (DIRECT_DIGEST_RUN_STATUS)
-//   error: a fire that failed. Kept as before: when the send throws after the
-//     'fired' row was written, this is a second row for the same attempt, and
-//     the row alone cannot tell that case apart from a fire that failed before
-//     any row was opened.
+//   error: a fire that failed. One row per failed attempt: when the throw comes
+//     after the run row was written, that row is turned into the error
+//     (markTaskRunFireError, TASKRUNERRDUP1109) instead of a second row.
 const RUN_OPENING_STATUSES = ['fired', 'fired_late', 'fired_busy', 'sent-direct', 'error'] as const
 const RAN_STATUS_SQL = `status IN (${RUN_OPENING_STATUSES.map(s => `'${s}'`).join(', ')})`
 
