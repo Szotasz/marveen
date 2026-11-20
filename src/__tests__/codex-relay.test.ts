@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { renderCodexConfig, renderCodexOverrides, scaffoldCodexHome } from '../web/agent-engine.js'
+import { codexRelayDir, codexRelayFilesystemEntries, renderCodexConfig, renderCodexOverrides, scaffoldCodexHome } from '../web/agent-engine.js'
 import { readAgentEngineConfig, AGENTS_BASE_DIR } from '../web/agent-config.js'
 
 const RELAY_MJS = fileURLToPath(new URL('../../scripts/codex-relay/relay.mjs', import.meta.url))
@@ -39,14 +39,20 @@ const dashboardServerOverrides = {
 const WORKSPACE = '/tmp/marveen-relay-ws'
 
 describe('renderCodexConfig relay profile', () => {
-  it('renders workspace-write, on-request approval, no network, and replaces the dashboard entry with the shim', () => {
+  it('B3 renders the external spool and restricted sandbox with the shim', () => {
     const out = renderCodexConfig(WORKSPACE, { 'marveen-dashboard': dashboardServerSeat }, { profile: 'relay', agentName: 'relay-agent' })
     expect(out.startsWith([
       'sandbox_mode = "workspace-write"',
       'approval_policy = "on-request"',
+      'default_permissions = "marveen-relay"',
       '',
       '[sandbox_workspace_write]',
       'network_access = false',
+      'exclude_slash_tmp = true',
+      'exclude_tmpdir_env_var = true',
+      '',
+      '[permissions.marveen-relay.filesystem]',
+      ...codexRelayFilesystemEntries(WORKSPACE).map(([path, access]) => `${JSON.stringify(path)} = ${JSON.stringify(access)}`),
       '',
       `[projects.${JSON.stringify(WORKSPACE)}]`,
       'trust_level = "trusted"',
@@ -55,11 +61,12 @@ describe('renderCodexConfig relay profile', () => {
     ].join('\n') + '\n')).toBe(true)
     expect(out).not.toContain('danger-full-access')
     expect(out).not.toContain('hide_full_access_warning')
+    expect(out).not.toContain('writable_roots')
     // The shim entry: node + the mcp-shim script, nothing else in env.
     expect(out).toContain('command = "node"')
     expect(out).toMatch(new RegExp(`args = \\[.*${SHIM_PATH_SUFFIX.replaceAll('/', '\\/')}"\\]`))
     expect(out).toContain(`"MARVEEN_AGENT_NAME" = "relay-agent"`)
-    expect(out).toContain(`"MARVEEN_RELAY_DIR" = ${JSON.stringify(join(WORKSPACE, '.dashboard-relay'))}`)
+    expect(out).toContain(`"MARVEEN_RELAY_DIR" = ${JSON.stringify(codexRelayDir('relay-agent'))}`)
     // No token path and no dashboard URL anywhere in the rendered config.
     expect(out).not.toContain('MARVEEN_DASHBOARD_TOKEN')
     expect(out).not.toContain('MARVEEN_DASHBOARD_URL')
@@ -90,22 +97,27 @@ describe('renderCodexConfig relay profile', () => {
 })
 
 describe('renderCodexOverrides relay profile', () => {
-  it('renders the -c form and passes the two shim env names as literals', () => {
+  it('B3 renders the external spool and restricted sandbox as overrides', () => {
     // The seat-style entry (literal token path) would be REFUSED under the
     // existing validator in full-access mode; under relay it is replaced first,
     // so the rendering succeeds and no credential reaches argv.
     const overrides = renderCodexOverrides(WORKSPACE, { 'marveen-dashboard': dashboardServerSeat }, { profile: 'relay', agentName: 'relay-agent' })
-    expect(overrides.slice(0, 4)).toEqual([
+    expect(overrides.slice(0, 8)).toEqual([
       'sandbox_mode="workspace-write"',
       'approval_policy="on-request"',
+      'default_permissions="marveen-relay"',
       'sandbox_workspace_write.network_access=false',
+      'sandbox_workspace_write.exclude_slash_tmp=true',
+      'sandbox_workspace_write.exclude_tmpdir_env_var=true',
+      `permissions.marveen-relay.filesystem={${codexRelayFilesystemEntries(WORKSPACE).map(([path, access]) => `${JSON.stringify(path)}=${JSON.stringify(access)}`).join(',')}}`,
       `projects.${WORKSPACE}.trust_level="trusted"`,
     ])
     expect(overrides.some(line => line.startsWith('notice.'))).toBe(false)
+    expect(overrides.join('\n')).not.toContain('writable_roots')
     expect(overrides).toContain('mcp_servers.marveen-dashboard.command="node"')
     expect(overrides.some(line => line.startsWith('mcp_servers.marveen-dashboard.args=[') && line.includes(SHIM_PATH_SUFFIX))).toBe(true)
     expect(overrides).toContain('mcp_servers.marveen-dashboard.env.MARVEEN_AGENT_NAME="relay-agent"')
-    expect(overrides).toContain(`mcp_servers.marveen-dashboard.env.MARVEEN_RELAY_DIR="${join(WORKSPACE, '.dashboard-relay')}"`)
+    expect(overrides).toContain(`mcp_servers.marveen-dashboard.env.MARVEEN_RELAY_DIR="${codexRelayDir('relay-agent')}"`)
     expect(overrides.some(line => line.includes('MARVEEN_DASHBOARD_TOKEN'))).toBe(false)
     expect(overrides.some(line => line.includes('MARVEEN_DASHBOARD_URL'))).toBe(false)
     expect(overrides.some(line => line.includes('notice.hide'))).toBe(false)
@@ -113,6 +125,30 @@ describe('renderCodexOverrides relay profile', () => {
 })
 
 describe('default rendering unchanged', () => {
+  it('keeps full-access output byte-identical to f8893083 for both renderers', () => {
+    // Golden strings from the full-access branches at f8893083.
+    const servers = { 'marveen-dashboard': dashboardServerOverrides }
+    const config = [
+      'sandbox_mode = "danger-full-access"', 'approval_policy = "never"',
+      '', '[notice]', 'hide_full_access_warning = true', '',
+      '[projects."/tmp/marveen-relay-ws"]', 'trust_level = "trusted"', '', '[mcp_servers]',
+      '', '[mcp_servers."marveen-dashboard"]', 'command = "node"',
+      'args = ["dist/dashboard-mcp.js"]',
+      'env_vars = ["MARVEEN_DASHBOARD_TOKEN","MARVEEN_DASHBOARD_URL"]', '',
+    ].join('\n')
+    const overrides = [
+      'sandbox_mode="danger-full-access"', 'approval_policy="never"',
+      'notice.hide_full_access_warning=true', 'projects./tmp/marveen-relay-ws.trust_level="trusted"',
+      'mcp_servers.marveen-dashboard.command="node"',
+      'mcp_servers.marveen-dashboard.args=["dist/dashboard-mcp.js"]',
+      'mcp_servers.marveen-dashboard.env_vars=["MARVEEN_DASHBOARD_TOKEN","MARVEEN_DASHBOARD_URL"]',
+    ]
+    for (const opts of [undefined, { profile: 'full-access' as const, agentName: 'relay-agent' }]) {
+      expect(renderCodexConfig(WORKSPACE, servers, opts)).toBe(config)
+      expect(renderCodexOverrides(WORKSPACE, servers, opts)).toEqual(overrides)
+    }
+  })
+
   it('keeps today\'s seat output and does not replace the dashboard entry', () => {
     expect(() => renderCodexConfig(WORKSPACE, { 'marveen-dashboard': dashboardServerSeat }))
       .toThrow(/MARVEEN_DASHBOARD_TOKEN of server marveen-dashboard would be written into config.toml as a literal value/)
@@ -161,6 +197,14 @@ describe('relay profile requires the agent name', () => {
   })
 })
 
+describe('B1 relay directory validation', () => {
+  it.each(['', '.', '..', 'a/b', 'a\\b', 'a\0b'])('refuses agent name %j', agentName => {
+    expect(codexRelayDir).toBeTypeOf('function')
+    expect(() => codexRelayDir(agentName)).toThrow()
+  })
+
+})
+
 // Spec §2 last bullet: scaffoldCodexHome accepts the same opts and passes them
 // through -- this is the path the agent-scaffold call-site feeds, so a relay
 // agent's seeded config/overrides must carry the sandbox and the shim entry,
@@ -180,7 +224,10 @@ describe('scaffoldCodexHome relay profile', () => {
       expect(config).toContain('"MARVEEN_AGENT_NAME" = "relay-agent"')
       expect(config.includes('MARVEEN_DASHBOARD_TOKEN')).toBe(false)
 
-      scaffoldCodexHome(home, workspace, { 'marveen-dashboard': dashboardServerOverrides }, 'overrides', { profile: 'relay', agentName: 'relay-agent' })
+      // Overrides rides on a shared seat, never on the seat-mode home rendered above (F4 refuses its permissions table).
+      const sharedSeat = join(tmp, 'shared-seat')
+      scaffoldCodexHome(sharedSeat, workspace, { 'marveen-dashboard': dashboardServerOverrides }, 'overrides', { profile: 'relay', agentName: 'relay-agent' })
+      expect(existsSync(join(sharedSeat, 'config.toml'))).toBe(false)
       const overrides = readFileSync(join(workspace, '.codex-overrides'), 'utf-8')
       expect(overrides).toContain('sandbox_mode="workspace-write"')
       expect(overrides).toContain('sandbox_workspace_write.network_access=false')
@@ -244,7 +291,10 @@ describe('relay.mjs integration', () => {
         res.end(JSON.stringify({ ok: true, echo: req.url }))
       })
     })
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
     const dashboardUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/` // trailing '/' on purpose
 
     const child = spawn(process.execPath, [RELAY_MJS,

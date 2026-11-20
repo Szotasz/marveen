@@ -75,7 +75,10 @@ async function withRelay(
       }, hold.ms)
     })
   })
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
   const dashboardUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   const child = spawn(process.execPath, [
     ...(opts?.preload ? ['--import', pathToFileURL(opts.preload).href] : []),

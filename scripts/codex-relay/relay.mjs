@@ -2,12 +2,14 @@
 // CARD 2436459e -- dashboard relay daemon for codexSandbox=relay.
 //
 // Runs OUTSIDE the Codex workspace-write sandbox, spawned by the dashboard host
-// (startAgentProcess). The in-sandbox MCP shim (mcp-shim.mjs) writes one JSON
+// (startAgentProcess). Codex also starts the MCP shim outside the command sandbox
+// (measured on Codex 0.163.0, Linux). The shim holds no secret and writes one JSON
 // request file per dashboard call into <relay-dir>/requests and polls for the
 // matching responses/<id>.json; this daemon is the ONLY side that holds the
 // agent's dashboard token, and it references that token exclusively as a FILE
 // PATH -- the token's content never appears in argv, in stdout logs, or in any
-// file under the relay dir. Plain node, no npm dependencies.
+// file under the relay dir. The spool lives under store/, which the relay
+// profile hides from the sandbox. Plain node, no npm dependencies.
 
 import { appendFileSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -77,9 +79,9 @@ function sleep(ms) {
 
 // The spool directories must be REAL directories, never symlinks: mkdirSync
 // succeeds silently when the path is an existing symlink to a directory, and
-// the sandboxed agent can swap responses/ (or requests/, or the relay dir
-// itself) for a symlink -- every tmp-write + rename would then land OUTSIDE
-// the sandbox. The 'wx' flags protect only the final/temp NAMES, never the
+// a host process could swap responses/ (or requests/, or the relay dir
+// itself) for a symlink -- every tmp-write + rename would then land outside
+// the spool. The 'wx' flags protect only the final/temp NAMES, never the
 // parent directory, so this is checked at startup AND at the top of every
 // poll tick: any violation exits before this tick reads or writes anything.
 // Fail-closed: uncollected requests then time out at the shim side, which is
@@ -102,7 +104,7 @@ function assertRealDir(label, path) {
 
 // Atomic outcome writes: the shim polls for the file's existence, so it must
 // never observe a half-written response. The temp name is unique per call and
-// created EXCLUSIVELY ('wx'): the responses dir is sandbox-writable, so a
+// created EXCLUSIVELY ('wx'): even though store/ is hidden from the sandbox, a
 // guessed or pre-planted path (a symlink to an outside file, say) must be
 // refused, never written through. renameSync then replaces the final path's
 // directory entry itself, so a symlink planted THERE is swapped out, not
@@ -634,7 +636,7 @@ assertRealDir('responses dir', responsesDir)
 // Ready marker: drop any stale one, then create ours EXCLUSIVELY, with this
 // daemon's pid as the content -- the starter counts the marker as proof of
 // readiness only when it names the pid it spawned. 'wx' refuses a marker
-// somebody pre-created in the sandbox-writable relay dir (a plain file or a
+// somebody pre-created in the relay dir (a plain file or a
 // symlink), which fail-closes the daemon instead of silently adopting it.
 try { unlinkSync(join(relayDir, 'relay.ready')) } catch { /* ENOENT fine */ }
 try {
@@ -646,8 +648,8 @@ try {
 
 for (;;) {
   // Re-verify on EVERY tick, before this tick reads or writes anything: the
-  // sandbox can swap a spool dir for a symlink at any moment, and a single
-  // unchecked tick would write outside the sandbox.
+  // host could swap a spool dir for a symlink at any moment, and a single
+  // unchecked tick would write outside the spool.
   assertRealDir('relay dir', relayDir)
   assertRealDir('requests dir', requestsDir)
   assertRealDir('responses dir', responsesDir)

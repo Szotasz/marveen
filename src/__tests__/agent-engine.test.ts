@@ -35,13 +35,31 @@ function binary(version: string): string {
   writeFileSync(path, `#!/bin/sh\nif [ "$1" = --version ]; then echo 'codex-cli ${version}'; else env; fi\n`, { mode: 0o700 })
   return path
 }
-function compose(bin: string): string {
+function compose(bin: string, extraEnv: NodeJS.ProcessEnv = {}): string {
   return execFileSync('bash', [script, home, workspace], {
-    encoding: 'utf-8', env: { ...process.env, MARVEEN_CODEX_BIN: bin }, stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf-8', env: { ...process.env, MARVEEN_CODEX_SANDBOX: undefined, MARVEEN_CODEX_BIN: bin, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'],
   }).trim()
 }
 
 describe('per-agent engine pilot', () => {
+  it('B4-version refuses relay before 0.163.0 with the found version', () => {
+    let message = ''
+    try { compose(binary('0.162.9'), { MARVEEN_CODEX_SANDBOX: 'relay' }) } catch (err) { message = (err as Error).message }
+    expect(message).toContain('Codex launch error: codexSandbox=relay requires codex >= 0.163.0 (found codex-cli 0.162.9)')
+  })
+
+  it.each([
+    ['relay', '0.163.0'], ['relay', '1.0.0'], ['full-access', '0.150.0'], [undefined, '0.150.0'], ['', '0.150.0'],
+  ])('B4-version composes sandbox=%s version=%s', (profile, version) => {
+    const bin = binary(version!)
+    expect(compose(bin, { MARVEEN_CODEX_SANDBOX: profile })).toContain(bin)
+  })
+
+  it('B4-version refuses an unknown sandbox value', () => {
+    expect(() => compose(binary('0.163.0'), { MARVEEN_CODEX_SANDBOX: 'bogus' }))
+      .toThrow('Codex launch error: unknown MARVEEN_CODEX_SANDBOX value: bogus')
+  })
+
   it('golden Claude default preserves the original composed command and env byte for byte', () => {
     expect(resolveAgentEngine(undefined)).toBe('claude')
     expect(resolveAgentEngine('')).toBe('claude')
@@ -285,10 +303,14 @@ describe('relay profile refuses an incompatible existing seat config', () => {
   const relayWorkspace = join(relayRoot, 'relay-seat-workspace')
   const relayOpts = { profile: 'relay' as const, agentName: 'relay-agent' }
 
-  const seatHomeWith = (name: string, configToml: string): string => {
+  const seatHomeWith = (name: string, configToml: string, identity: 'seat' | 'overrides' = 'seat'): string => {
     const home = mkdtempSync(join(sandbox, name))
     mkdirSync(home, { recursive: true })
-    writeFileSync(join(home, 'config.toml'), configToml)
+    // Shim-only fixtures need the same valid sandbox/profile prefix as a fresh seat. Under overrides
+    // the shared seat's file may carry no permissions table (F4), so the prefix stops before it there.
+    const rendered = renderCodexConfig(relayWorkspace, {}, relayOpts).split('[mcp_servers]')[0]
+    const prefix = identity === 'overrides' ? rendered.split('[permissions.')[0] : rendered
+    writeFileSync(join(home, 'config.toml'), (configToml.startsWith('[mcp_servers') ? prefix : '') + configToml)
     return home
   }
 
@@ -315,7 +337,7 @@ describe('relay profile refuses an incompatible existing seat config', () => {
       '',
     ].join('\n')
     for (const identity of ['seat', 'overrides'] as const) {
-      expect(() => preflightCodexHome(seatHomeWith(`relay-nonsm-${identity}-`, nonShim), relayWorkspace, {}, identity, relayOpts))
+      expect(() => preflightCodexHome(seatHomeWith(`relay-nonsm-${identity}-`, nonShim, identity), relayWorkspace, {}, identity, relayOpts))
         .toThrow('codexSandbox=relay')
     }
     // The relay shim form the renderer itself seeds: no throw.
@@ -328,10 +350,10 @@ describe('relay profile refuses an incompatible existing seat config', () => {
       '',
     ].join('\n')
     for (const identity of ['seat', 'overrides'] as const) {
-      expect(() => preflightCodexHome(seatHomeWith(`relay-shim-home-${identity}-`, shim), relayWorkspace, {}, identity, relayOpts)).not.toThrow()
+      expect(() => preflightCodexHome(seatHomeWith(`relay-shim-home-${identity}-`, shim, identity), relayWorkspace, {}, identity, relayOpts)).not.toThrow()
       const wrongPath = shim.replace(JSON.stringify([relayShimPath()]), JSON.stringify(['/repo/scripts/codex-relay/mcp-shim.mjs']))
       expect(wrongPath).not.toBe(shim)
-      expect(() => preflightCodexHome(seatHomeWith(`relay-shim-path-${identity}-`, wrongPath), relayWorkspace, {}, identity, relayOpts)).toThrow('codexSandbox=relay')
+      expect(() => preflightCodexHome(seatHomeWith(`relay-shim-path-${identity}-`, wrongPath, identity), relayWorkspace, {}, identity, relayOpts)).toThrow('codexSandbox=relay')
     }
   })
 
@@ -369,7 +391,7 @@ describe('relay profile refuses an incompatible existing seat config', () => {
       '',
     ].join('\n')
     for (const identity of ['seat', 'overrides'] as const) {
-      expect(() => preflightCodexHome(seatHomeWith(`relay-bare-${identity}-`, bareKey), relayWorkspace, {}, identity, relayOpts))
+      expect(() => preflightCodexHome(seatHomeWith(`relay-bare-${identity}-`, bareKey, identity), relayWorkspace, {}, identity, relayOpts))
         .toThrow('codexSandbox=relay')
     }
   })
@@ -387,8 +409,8 @@ describe('relay profile refuses an incompatible existing seat config', () => {
       '',
     ].join('\n')
     for (const identity of ['seat', 'overrides'] as const) {
-      expect(() => preflightCodexHome(seatHomeWith(`relay-bareshim-${identity}-`, bareShim), relayWorkspace, {}, identity, relayOpts)).toThrow('codexSandbox=relay')
-      expect(() => preflightCodexHome(seatHomeWith(`relay-exactbare-${identity}-`, exactBareShim), relayWorkspace, {}, identity, relayOpts)).not.toThrow()
+      expect(() => preflightCodexHome(seatHomeWith(`relay-bareshim-${identity}-`, bareShim, identity), relayWorkspace, {}, identity, relayOpts)).toThrow('codexSandbox=relay')
+      expect(() => preflightCodexHome(seatHomeWith(`relay-exactbare-${identity}-`, exactBareShim, identity), relayWorkspace, {}, identity, relayOpts)).not.toThrow()
     }
   })
 
@@ -405,9 +427,9 @@ describe('relay profile refuses an incompatible existing seat config', () => {
       '',
     ].join('\n')
     for (const identity of ['seat', 'overrides'] as const) {
-      expect(() => preflightCodexHome(seatHomeWith(`relay-cmt-line-${identity}-`, commentOnly), relayWorkspace, {}, identity, relayOpts))
+      expect(() => preflightCodexHome(seatHomeWith(`relay-cmt-line-${identity}-`, commentOnly, identity), relayWorkspace, {}, identity, relayOpts))
         .toThrow('codexSandbox=relay')
-      expect(() => preflightCodexHome(seatHomeWith(`relay-cmt-trail-${identity}-`, trailingComment), relayWorkspace, {}, identity, relayOpts))
+      expect(() => preflightCodexHome(seatHomeWith(`relay-cmt-trail-${identity}-`, trailingComment, identity), relayWorkspace, {}, identity, relayOpts))
         .toThrow('codexSandbox=relay')
     }
   })
@@ -421,7 +443,7 @@ describe('relay profile refuses an incompatible existing seat config', () => {
       '',
     ].join('\n')
     for (const identity of ['seat', 'overrides'] as const) {
-      expect(() => preflightCodexHome(seatHomeWith(`relay-shimcmt-${identity}-`, shimWithComment), relayWorkspace, {}, identity, relayOpts)).not.toThrow()
+      expect(() => preflightCodexHome(seatHomeWith(`relay-shimcmt-${identity}-`, shimWithComment, identity), relayWorkspace, {}, identity, relayOpts)).not.toThrow()
     }
   })
 
@@ -440,7 +462,7 @@ describe('relay profile refuses an incompatible existing seat config', () => {
       '',
     ].join('\n')
     for (const identity of ['seat', 'overrides'] as const) {
-      expect(() => preflightCodexHome(seatHomeWith(`relay-spaced-${identity}-`, spacedHeader), relayWorkspace, {}, identity, relayOpts))
+      expect(() => preflightCodexHome(seatHomeWith(`relay-spaced-${identity}-`, spacedHeader, identity), relayWorkspace, {}, identity, relayOpts))
         .toThrow('codexSandbox=relay')
     }
   })
@@ -468,7 +490,7 @@ describe('relay profile refuses an incompatible existing seat config', () => {
       '',
     ].join('\r\n')
     for (const identity of ['seat', 'overrides'] as const) {
-      expect(() => preflightCodexHome(seatHomeWith(`relay-crlf-${identity}-`, crlfNonShim), relayWorkspace, {}, identity, relayOpts))
+      expect(() => preflightCodexHome(seatHomeWith(`relay-crlf-${identity}-`, crlfNonShim, identity), relayWorkspace, {}, identity, relayOpts))
         .toThrow('codexSandbox=relay')
     }
   })
@@ -486,7 +508,7 @@ describe('relay profile refuses an incompatible existing seat config', () => {
       '',
     ].join('\n')
     for (const identity of ['seat', 'overrides'] as const) {
-      expect(() => preflightCodexHome(seatHomeWith(`relay-mixed-${identity}-`, mixedHeader), relayWorkspace, {}, identity, relayOpts))
+      expect(() => preflightCodexHome(seatHomeWith(`relay-mixed-${identity}-`, mixedHeader, identity), relayWorkspace, {}, identity, relayOpts))
         .toThrow('codexSandbox=relay')
     }
   })

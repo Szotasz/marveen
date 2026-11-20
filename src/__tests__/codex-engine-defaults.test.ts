@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   assertCodexSeatConfigCompatible,
+  codexRelayDir,
+  CODEX_RELAY_PERMISSION_PROFILE,
+  codexRelayDeniedReadRoots,
+  codexRelayFilesystemEntries,
   omitDefaultCodexIdentity,
   relayShimPath,
   relayDroppedMcpServers,
@@ -13,8 +17,15 @@ import {
   scaffoldCodexHome,
   validateAgentEngine,
   type CodexIdentity,
+  type CodexRenderOptions,
 } from '../web/agent-engine.js'
 import { logger } from '../logger.js'
+
+let projectRoot: string | undefined
+vi.mock('../config.js', async original => {
+  const config = await original<typeof import('../config.js')>()
+  return { ...config, get PROJECT_ROOT() { return projectRoot ?? config.PROJECT_ROOT } }
+})
 
 const dirs: string[] = []
 function tmp(): string {
@@ -25,6 +36,7 @@ function tmp(): string {
 }
 afterEach(() => {
   vi.restoreAllMocks()
+  projectRoot = undefined
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
 })
 
@@ -32,6 +44,8 @@ const WS = '/tmp/cxdef-ws'
 const RELAY = { profile: 'relay' as const, agentName: 'a' }
 const dash = { command: 'node', env: { X: '${X}' } }
 const plain = { command: 'uvx' }
+// Overrides seats must not supply permissions tables, even ones matching the renderer.
+const withoutPermissionsTable = (content: string) => content.replace(/\n\[permissions\.marveen-relay\.filesystem\][\s\S]*?(?=\n\[|$)/, '')
 
 describe('relay default', () => {
   it('resolveCodexSandbox', () => {
@@ -103,12 +117,13 @@ describe('config.toml env by reference', () => {
 describe('existing config.toml under relay', () => {
   for (const identity of ['seat', 'overrides'] as CodexIdentity[]) {
     describe(identity, () => {
-      const withDash = renderCodexConfig(WS, { 'marveen-dashboard': dash }, RELAY)
-      const without = renderCodexConfig(WS, {}, RELAY)
+      const fixture = (content: string) => identity === 'overrides' ? withoutPermissionsTable(content) : content
+      const withDash = fixture(renderCodexConfig(WS, { 'marveen-dashboard': dash }, RELAY))
+      const without = fixture(renderCodexConfig(WS, {}, RELAY))
       const check = (content: string) => {
         const home = tmp()
         writeFileSync(join(home, 'config.toml'), content)
-        assertCodexSeatConfigCompatible(home, identity, RELAY)
+        assertCodexSeatConfigCompatible(home, WS, identity, RELAY)
       }
       const header = without.slice(0, without.indexOf('[mcp_servers]'))
 
@@ -129,7 +144,11 @@ describe('existing config.toml under relay', () => {
           withDash + '\n["mcp\\u005Fservers".fetch]\ncommand = "uvx"\n',
           withDash.replace('[mcp_servers]', '"mcp\\u005Fservers".fetch.command = "uvx"\n[mcp_servers]'),
         ]
-        for (const c of cases) expect(() => check(c)).toThrow(/defines an MCP server other than marveen-dashboard/)
+        for (const c of cases) {
+          expect(() => check(c)).toThrow(identity === 'overrides' && c.includes('\\')
+            ? /backslash/
+            : /defines an MCP server other than marveen-dashboard/)
+        }
       })
 
       it('refuses a dashboard entry that is not the exact shim entry', () => {
@@ -166,18 +185,19 @@ describe('existing config.toml under relay', () => {
         ]
         for (const c of cases) {
           expect(c).not.toBe(withDash)
-          expect(() => check(c)).toThrow(/is not the relay shim entry/)
+          expect(() => check(c)).toThrow(identity === 'overrides' && c.includes('\\')
+            ? /backslash/
+            : /is not the relay shim entry/)
         }
       })
 
       it('an escaped value in the seat config', () => {
         const escaped = without.replace('sandbox_mode = "workspace-write"', 'sandbox_mode = "danger-\\u0066ull-access"')
         expect(escaped).not.toBe(without)
-        if (identity === 'seat') expect(() => check(escaped)).toThrow(/backslash/)
-        else expect(() => check(escaped)).not.toThrow()
+        expect(() => check(escaped)).toThrow(/backslash/)
       })
 
-      it('accepts the exact relay rendering', () => {
+      it('accepts the relay fixture for this identity', () => {
         expect(() => check(withDash)).not.toThrow()
         expect(() => check(without)).not.toThrow()
         expect(() => check(withDash + '\n# [mcp_servers."fetch"]\n')).not.toThrow()
@@ -187,6 +207,209 @@ describe('existing config.toml under relay', () => {
       })
     })
   }
+})
+
+describe('B3 relay seat sandbox compatibility', () => {
+  const fresh = () => renderCodexConfig(WS, { 'marveen-dashboard': dash }, RELAY)
+  const check = (content: string, opts: CodexRenderOptions = RELAY, identity: CodexIdentity = 'seat') => {
+    const home = tmp()
+    writeFileSync(join(home, 'config.toml'), content)
+    assertCodexSeatConfigCompatible(home, WS, identity, opts)
+  }
+
+  it('B4 accepts a fresh render for the same workspace and agent', () => {
+    const content = fresh()
+    expect(content).toContain('exclude_slash_tmp = true\nexclude_tmpdir_env_var = true\n')
+    expect(content).toContain('default_permissions = "marveen-relay"')
+    expect(() => check(content)).not.toThrow()
+  })
+
+  it.each([
+    ['old workspace spool', (s: string) => s.replace(JSON.stringify(codexRelayDir('a')), JSON.stringify(join(WS, '.dashboard-relay')))],
+    ['missing exclude_slash_tmp', (s: string) => s.replace('exclude_slash_tmp = true\n', '')],
+    ['false exclude_slash_tmp', (s: string) => s.replace('exclude_slash_tmp = true', 'exclude_slash_tmp = false')],
+    ['writable_roots inside the table', (s: string) => s.replace('network_access = false', 'network_access = false\nwritable_roots = []')],
+    ['writable_roots outside the table', (s: string) => 'writable_roots = ["/tmp"]\n' + s],
+    ['dotted sandbox key', (s: string) => 'sandbox_workspace_write.exclude_slash_tmp = false\n' + s],
+    ['duplicate sandbox table', (s: string) => s + '\n[sandbox_workspace_write]\n'],
+    ['duplicate sandbox setting', (s: string) => s.replace('network_access = false', 'network_access = false\nnetwork_access = false')],
+    ['foreign agent name', (s: string) => s.replace('"MARVEEN_AGENT_NAME" = "a"', '"MARVEEN_AGENT_NAME" = "other"')],
+  ] as const)('refuses %s', (_name, mutate) => {
+    const content = fresh()
+    const stale = mutate(content)
+    expect(stale).not.toBe(content)
+    expect(() => check(stale)).toThrow(/codexSandbox=relay refuses the existing .*Delete the file and start the agent so it is re-rendered/)
+  })
+
+  it('requires the agent name for seat identity', () => {
+    expect(() => check(fresh(), { profile: 'relay' })).toThrow(/codexSandbox=relay refuses/)
+  })
+
+  it('keeps sandbox and shim env checks unchanged for overrides identity', () => {
+    const stale = withoutPermissionsTable(fresh()).replace('exclude_slash_tmp = true\n', '')
+      .replace(JSON.stringify(codexRelayDir('a')), '"/old/relay"')
+    expect(() => check(stale, RELAY, 'overrides')).not.toThrow()
+  })
+})
+
+describe('B4-overrides relay seat permissions compatibility', () => {
+  const check = (content?: string, opts: CodexRenderOptions = RELAY) => {
+    const home = tmp()
+    if (content !== undefined) writeFileSync(join(home, 'config.toml'), content)
+    assertCodexSeatConfigCompatible(home, WS, 'overrides', opts)
+  }
+
+  it.each([
+    ['extra filesystem write entry', '[permissions.marveen-relay.filesystem]\n"/home" = "write"\n'],
+    ['dotted permissions key', 'permissions.marveen-relay.filesystem."/x" = "write"\n'],
+    ['inline permissions', 'permissions = { x = 1 }\n'],
+    ['profile default_permissions', '[profiles.p]\ndefault_permissions = "x"\n'],
+    ['quoted permissions header', '["permissions"."marveen-relay".filesystem]\n'],
+    ['dotted profile default_permissions', 'profiles.p.default_permissions = "x"\n'],
+    ['default_permissions after a table header', '[projects."/w"]\ndefault_permissions = "other"\n'],
+    ['permissions in a value', 'model = "permissions"\n'],
+  ])('B4-overrides refuses %s', (_label, content) => {
+    expect(() => check(content)).toThrow(/codexSandbox=relay refuses the existing .*config\.toml: .*relay profile table would be merged with this file's permissions settings\./)
+  })
+
+  it.each([
+    ['escaped permissions key', '"permi\\u0073sions" = { x = 1 }\n'],
+    ['escaped value', 'model = "x\\u0079"\n'],
+    ['backslash in a comment', '# \\ forbidden even in comments\n'],
+  ])('B4-overrides refuses %s', (_label, content) => {
+    expect(() => check(content)).toThrow(/codexSandbox=relay refuses the existing .*config\.toml: .*backslash.*relay profile table would be merged with this file's permissions settings/)
+  })
+
+  it.each([
+    ['a missing file', undefined],
+    ['unrelated settings', 'model = "x"\n[projects."/w"]\ntrust_level = "trusted"\n'],
+    ['top-level default_permissions', '  default_permissions \t= "other" # permissions overridden\n[projects."/w"]\n'],
+    ['permissions only in comments', '# [permissions.marveen-relay.filesystem]\nmodel = "x" # permissions = {}\n'],
+    ['a hash inside a quoted value followed by a comment', 'model = "x#y" # permissions = {}\n'],
+  ])('B4-overrides accepts %s', (_label, content) => {
+    expect(() => check(content)).not.toThrow()
+  })
+
+  it('B4-overrides leaves full-access configs unchanged', () => {
+    expect(() => check('permissions = { x = 1 }\n# \\\n', { profile: 'full-access' })).not.toThrow()
+  })
+})
+
+describe('B4 named relay permissions', () => {
+  const fresh = () => renderCodexConfig(WS, { 'marveen-dashboard': dash }, RELAY)
+  const storeLine = () => `${JSON.stringify(join(projectRoot!, 'store'))} = "none"`
+  const check = (content: string, identity: CodexIdentity = 'seat') => {
+    const home = tmp()
+    writeFileSync(join(home, 'config.toml'), content)
+    assertCodexSeatConfigCompatible(home, WS, identity, RELAY)
+  }
+
+  it('B4 renders the exact profile and overrides for a fixed workspace', () => {
+    projectRoot = '/marveen-b4-fixed-root'
+    expect(CODEX_RELAY_PERMISSION_PROFILE).toBe('marveen-relay')
+    expect(renderCodexConfig(WS, {}, RELAY)).toBe([
+      'sandbox_mode = "workspace-write"',
+      'approval_policy = "on-request"',
+      'default_permissions = "marveen-relay"',
+      '', '[sandbox_workspace_write]',
+      'network_access = false',
+      'exclude_slash_tmp = true',
+      'exclude_tmpdir_env_var = true',
+      '', '[permissions.marveen-relay.filesystem]',
+      '"/" = "read"',
+      '"/tmp/cxdef-ws" = "write"',
+      '"/marveen-b4-fixed-root/store" = "none"',
+      '', '[projects."/tmp/cxdef-ws"]',
+      'trust_level = "trusted"', '', '[mcp_servers]', '',
+    ].join('\n'))
+    expect(renderCodexOverrides(WS, {}, RELAY)).toEqual([
+      'sandbox_mode="workspace-write"',
+      'approval_policy="on-request"',
+      'default_permissions="marveen-relay"',
+      'sandbox_workspace_write.network_access=false',
+      'sandbox_workspace_write.exclude_slash_tmp=true',
+      'sandbox_workspace_write.exclude_tmpdir_env_var=true',
+      'permissions.marveen-relay.filesystem={"/"="read","/tmp/cxdef-ws"="write","/marveen-b4-fixed-root/store"="none"}',
+      'projects./tmp/cxdef-ws.trust_level="trusted"',
+    ])
+  })
+
+  it('B4 denies the lexical and physical store roots, resolving PROJECT_ROOT at call time', () => {
+    projectRoot = tmp()
+    const lexical = join(projectRoot, 'store')
+    expect(codexRelayDeniedReadRoots()).toEqual([lexical]) // ENOENT
+    mkdirSync(lexical)
+    expect(codexRelayDeniedReadRoots()).toEqual([lexical])
+    rmSync(lexical, { recursive: true })
+    const target = tmp()
+    symlinkSync(target, lexical)
+    expect(codexRelayDeniedReadRoots()).toEqual([lexical, target])
+    expect(codexRelayFilesystemEntries(WS)).toEqual([
+      ['/', 'read'], [WS, 'write'], [lexical, 'none'], [target, 'none'],
+    ])
+    const out = fresh()
+    expect(out).toContain(`${JSON.stringify(target)} = "none"`)
+    expect(() => check(out)).not.toThrow()
+    expect(() => check(out.replace(`${JSON.stringify(target)} = "none"\n`, ''))).toThrow(/codexSandbox=relay refuses/)
+    projectRoot = tmp()
+    expect(codexRelayDeniedReadRoots()).toEqual([join(projectRoot, 'store')])
+  })
+
+  it('B4 fails closed for realpath errors other than ENOENT', () => {
+    projectRoot = tmp()
+    symlinkSync('store', join(projectRoot, 'store')) // ELOOP, independent of user privileges
+    expect(() => codexRelayDeniedReadRoots()).toThrow(/ELOOP/)
+    expect(() => fresh()).toThrow(/ELOOP/)
+    expect(() => renderCodexOverrides(WS, {}, RELAY)).toThrow(/ELOOP/)
+  })
+
+  it.each(['\n', '\0'])('B4 refuses filesystem override paths containing %j', bad => {
+    projectRoot = `/marveen${bad}root`
+    expect(() => renderCodexOverrides(WS, {}, RELAY)).toThrow()
+  })
+
+  it('B4 refuses a physical store root containing a newline', () => {
+    projectRoot = tmp()
+    const target = join(tmp(), 'store\nphysical')
+    mkdirSync(target)
+    symlinkSync(target, join(projectRoot, 'store'))
+    expect(() => renderCodexOverrides(WS, {}, RELAY)).toThrow(/newline or NUL/)
+  })
+
+  it.each([
+    ['missing default_permissions', (s: string) => s.replace('default_permissions = "marveen-relay"\n', '')],
+    ['other default_permissions', (s: string) => s.replace('default_permissions = "marveen-relay"', 'default_permissions = "other"')],
+    ['default_permissions inside a table', (s: string) => s.replace('default_permissions = "marveen-relay"\n', '') + '\ndefault_permissions = "marveen-relay"\n'],
+    ['duplicate default_permissions', (s: string) => 'default_permissions = "marveen-relay"\n' + s],
+    ['missing store entry', (s: string) => s.replace(storeLine() + '\n', '')],
+    ['readable store', (s: string) => s.replace(storeLine(), storeLine().replace('"none"', '"read"'))],
+    ['extra write entry', (s: string) => s.replace('[permissions.marveen-relay.filesystem]', '[permissions.marveen-relay.filesystem]\n"/home" = "write"')],
+    ['extends table', (s: string) => s + '\n[permissions.marveen-relay]\nextends = ":workspace"\n'],
+    ['second profile table', (s: string) => s + '\n[permissions.marveen-relay.filesystem]\n'],
+    ['missing profile table', (s: string) => s.replace('[permissions.marveen-relay.filesystem]', '[filesystem]')],
+    ['duplicate filesystem entry', (s: string) => s.replace(storeLine(), storeLine() + '\n' + storeLine())],
+    ['different workspace', (s: string) => s.replace(`"${WS}" = "write"`, '"/other" = "write"')],
+    ['permissions parent table', (s: string) => s + '\n[permissions]\n'],
+    ['other profile', (s: string) => s + '\n[permissions.x.filesystem]\n'],
+    ['permissions array table', (s: string) => s + '\n[[permissions.marveen-relay.filesystem]]\n'],
+    ['dotted permissions key', (s: string) => 'permissions.x.filesystem = {}\n' + s],
+    ['extends outside the profile', (s: string) => 'extends = ":workspace"\n' + s],
+    ['extends header outside the profile', (s: string) => s + '\n[extends]\n'],
+  ] as const)('B4 seat refuses %s', (_label, mutate) => {
+    projectRoot = tmp()
+    const content = fresh()
+    const changed = mutate(content)
+    expect(changed).not.toBe(content)
+    expect(() => check(changed)).toThrow(/codexSandbox=relay refuses the existing .*Delete the file and start the agent so it is re-rendered/)
+  })
+
+  it('B4 validates comment-stripped entry lines and refuses permissions tables for overrides', () => {
+    projectRoot = tmp()
+    const out = fresh()
+    expect(out).toContain('default_permissions = "marveen-relay"')
+    expect(() => check(out.replace(storeLine(), storeLine() + ' # hidden store'))).not.toThrow()
+    expect(() => check(out.replace('default_permissions = "marveen-relay"\n', ''), 'overrides')).toThrow(/relay profile table would be merged/)
+  })
 })
 
 describe('scaffold logging', () => {

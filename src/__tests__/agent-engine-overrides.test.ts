@@ -21,7 +21,7 @@ const launcher = resolve('scripts/codex-agent.sh')
 
 // bash's %q, so the expected pane command stays exact whatever the temp dir path.
 function shellQuote(value: string): string {
-  return execFileSync('bash', ['-c', 'printf %q "$1"', 'quote', value], { encoding: 'utf-8' })
+  return execFileSync('bash', ['-c', 'printf %q "$1"', 'quote', value], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 function scratch(prefix: string): string {

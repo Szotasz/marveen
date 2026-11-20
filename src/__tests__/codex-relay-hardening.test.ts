@@ -1,8 +1,5 @@
-// R1 review round (card 2436459e) regression tests for the codex-relay
-// hardening fixes. The original codex-relay.test.ts stays byte-identical, so
-// these live here; every case asserts the POST-FIX behavior only and fails on
-// the pre-fix code.
-import { describe, it, expect } from 'vitest'
+// Regression tests for Codex relay hardening.
+import { describe, it, expect, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import { type AddressInfo } from 'node:net'
@@ -11,7 +8,16 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { PROJECT_ROOT } from '../config.js'
+import { codexRelayDir } from '../web/agent-engine.js'
 import { stopDashboardRelay } from '../web/agent-process.js'
+
+function stopFixture(): { name: string; dir: string } {
+  const name = `relay-stop-${randomBytes(6).toString('hex')}`
+  const dir = join(PROJECT_ROOT, 'store', 'codex-relay', name)
+  mkdirSync(dir, { recursive: true })
+  return { name, dir }
+}
 
 const RELAY_MJS = fileURLToPath(new URL('../../scripts/codex-relay/relay.mjs', import.meta.url))
 const MCP_SHIM_MJS = fileURLToPath(new URL('../../scripts/codex-relay/mcp-shim.mjs', import.meta.url))
@@ -49,7 +55,10 @@ async function mockDashboard(): Promise<{ server: Server; url: string; received:
       res.end(JSON.stringify({ ok: true, echo: req.url }))
     })
   })
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
   return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, received }
 }
 
@@ -356,10 +365,10 @@ describe('mcp-shim.mjs R1 hardening', () => {
 
 describe('stopDashboardRelay pid guard', () => {
   it('discards a malformed relay.pid without signalling', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'marveen-relay-stop-'))
+    const { name, dir } = stopFixture()
     try {
       writeFileSync(join(dir, 'relay.pid'), '123junk')
-      await expect(stopDashboardRelay(dir)).resolves.toBeUndefined()
+      await expect(stopDashboardRelay(name)).resolves.toBeUndefined()
       expect(existsSync(join(dir, 'relay.pid'))).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -367,7 +376,7 @@ describe('stopDashboardRelay pid guard', () => {
   })
 
   it('never signals a live pid the relay.pid names but does not own', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'marveen-relay-stop-'))
+    const { name, dir } = stopFixture()
     // A live, unrelated process: bare node sleeping for a minute.
     const helper = spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], { stdio: 'ignore' })
     try {
@@ -375,7 +384,7 @@ describe('stopDashboardRelay pid guard', () => {
         try { process.kill(helper.pid!, 0); return true } catch { return null }
       })
       writeFileSync(join(dir, 'relay.pid'), String(helper.pid))
-      await expect(stopDashboardRelay(dir)).resolves.toBeUndefined()
+      await expect(stopDashboardRelay(name)).resolves.toBeUndefined()
       // Still alive: no SIGTERM and no SIGKILL reached it, and the forged pid
       // file is gone.
       expect(() => process.kill(helper.pid!, 0)).not.toThrow()
@@ -392,41 +401,40 @@ describe('stopDashboardRelay pid guard', () => {
   // meanwhile -- an unconditional SIGKILL at the deadline could then hit an
   // unrelated process, so the cmdline is re-verified first.
   it('spares a pid the kernel reused between the pre-signal check and the SIGKILL deadline', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'marveen-relay-reuse-'))
+    const { name, dir } = stopFixture()
     // Ignores SIGTERM and keeps running, with argv that REALLY looks like this
-    // agent's relay daemon (the script path plus the --relay-dir value): the
-    // real /proc cmdline matches the guard, so only the injected readCmdline
-    // can tell the two moments apart. The ready marker lands only AFTER the
+    // agent's relay daemon (the script path plus the --relay-dir value). The
+    // injected ps output tells the two moments apart. The ready marker lands only AFTER the
     // SIGTERM handler is installed -- waiting for the marker (not merely for
     // the pid to exist, which is true before the -e script even runs) is what
     // keeps the helper alive through the SIGTERM the stopper sends next.
     const readyMarker = join(dir, 'helper-ready')
     const helper = spawn(process.execPath, [
       '-e',
-      'process.on("SIGTERM",()=>{});require("fs").writeFileSync(process.argv[1],"ready");setTimeout(()=>{},60000)',
+      'process.on("SIGTERM",()=>{});const tick=()=>require("fs").writeFileSync(process.argv[1],String(Date.now()));tick();setInterval(tick,50)',
       readyMarker,
-      'x/codex-relay/relay.mjs',
-      join(dir, '.dashboard-relay'),
+      join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs'),
+      '--relay-dir', dir, '--token-file', 'token',
     ], { stdio: 'ignore' })
     try {
       await waitFor(() => (existsSync(readyMarker) ? true : null))
-      const realCmdline = readFileSync(join('/proc', String(helper.pid), 'cmdline'), 'utf-8')
+      const realCmdline = `${process.execPath} ${join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')} --relay-dir ${dir} --token-file token\n`
       writeFileSync(join(dir, 'relay.pid'), String(helper.pid))
       let calls = 0
       const readCmdline = (_pid: number) => {
         calls += 1
         // Pre-signal check: the real daemon. Every later call (the deadline
         // re-verification): the kernel already handed the pid to somebody else.
-        return calls === 1 ? realCmdline : 'unrelated\0process'
+        return calls === 1 ? realCmdline : 'unrelated process\n'
       }
       // The poll window makes this take ~2s.
-      await expect(stopDashboardRelay(dir, { readCmdline })).resolves.toBeUndefined()
+      await expect(stopDashboardRelay(name, { readCmdline })).resolves.toBeUndefined()
       // The reused pid got no SIGKILL: it is still alive, and relay.pid is gone.
       // kill(pid, 0) alone cannot prove liveness here: a SIGKILLed child that
       // the parent has not reaped yet is a zombie, and signal 0 succeeds on a
-      // zombie -- so the probe must also require a non-zombie /proc state.
-      const stat = readFileSync(join('/proc', String(helper.pid), 'stat'), 'utf-8')
-      expect(/\) [^Z] /.test(stat)).toBe(true)
+      // zombie -- so require a fresh heartbeat from the helper after stopping.
+      const heartbeat = readFileSync(readyMarker, 'utf-8')
+      await waitFor(() => readFileSync(readyMarker, 'utf-8') !== heartbeat)
       expect(() => process.kill(helper.pid!, 0)).not.toThrow()
       expect(existsSync(join(dir, 'relay.pid'))).toBe(false)
     } finally {
@@ -437,9 +445,9 @@ describe('stopDashboardRelay pid guard', () => {
   }, 30_000)
 
   it('treats a cmdline gone unreadable by the deadline as a dead daemon: no error, pid file removed', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'marveen-relay-gone-'))
+    const { name, dir } = stopFixture()
     try {
-      // A pid nobody owns: /proc/<pid>/cmdline cannot be read for it, which is
+      // A pid nobody owns: ps cannot read its command, which is
       // exactly what the deadline re-check sees once a daemon exits and its
       // pid is reaped.
       let pid = 999_999
@@ -451,13 +459,53 @@ describe('stopDashboardRelay pid guard', () => {
       let calls = 0
       const readCmdline = (_pid: number) => {
         calls += 1
-        if (calls === 1) return `${process.execPath}\0x/codex-relay/relay.mjs\0${join(dir, '.dashboard-relay')}\0`
-        throw new Error(`ENOENT: no such file or directory, open '/proc/${pid}/cmdline'`)
+        if (calls === 1) return `${process.execPath} ${join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')} --relay-dir ${dir} --token-file token\n`
+        throw new Error(`ps exited non-zero for pid ${pid}`)
       }
       // The unreadable deadline read must be swallowed, never surfaced.
-      await expect(stopDashboardRelay(dir, { readCmdline })).resolves.toBeUndefined()
+      await expect(stopDashboardRelay(name, { readCmdline })).resolves.toBeUndefined()
       expect(existsSync(join(dir, 'relay.pid'))).toBe(false)
     } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('B5 ps process identity', () => {
+  it.each(['node', '/opt/homebrew/bin/node'])('signals a matching daemon using %s', async node => {
+    const { name, dir } = stopFixture()
+    const pid = 123456
+    writeFileSync(join(dir, 'relay.pid'), String(pid))
+    const kill = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+      if (signal === 0) throw new Error('ESRCH')
+      return true
+    })
+    try {
+      await stopDashboardRelay(name, {
+        readCmdline: () => `${node} ${join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')} --agent ${name} --relay-dir ${dir} --token-file token\n`,
+      })
+      expect(kill).toHaveBeenCalledWith(pid, 'SIGTERM')
+      expect(kill).not.toHaveBeenCalledWith(pid, 'SIGKILL')
+      expect(existsSync(join(dir, 'relay.pid'))).toBe(false)
+      expect(codexRelayDir(name)).toBe(dir)
+    } finally {
+      kill.mockRestore()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['other agent', 'end of line', 'longer path', 'foreign script'])('refuses %s without signalling and removes the pid', async variant => {
+    const { name, dir } = stopFixture()
+    writeFileSync(join(dir, 'relay.pid'), '123456')
+    const script = variant === 'foreign script' ? '/foreign/scripts/codex-relay/relay.mjs' : join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')
+    const tail = variant === 'other agent' ? `${dir}-other --token-file token` : variant === 'end of line' ? dir : variant === 'longer path' ? `${dir}x --token-file token` : `${dir} --token-file token`
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true)
+    try {
+      await stopDashboardRelay(name, { readCmdline: () => `node ${script} --agent ${name} --relay-dir ${tail}\n` })
+      expect(kill).not.toHaveBeenCalled()
+      expect(existsSync(join(dir, 'relay.pid'))).toBe(false)
+    } finally {
+      kill.mockRestore()
       rmSync(dir, { recursive: true, force: true })
     }
   })

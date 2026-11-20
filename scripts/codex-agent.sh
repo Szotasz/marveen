@@ -42,11 +42,29 @@ fi
 # Do not inherit Claude authentication even during the version probe.
 unset CLAUDE_CONFIG_DIR CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
 version=$("$codex_bin" --version) || { echo 'Codex launch error: version probe failed' >&2; exit 1; }
-if [[ ! "$version" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]] ||
-   (( BASH_REMATCH[1] == 0 && BASH_REMATCH[2] < 150 )); then
+if [[ ! "$version" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
   echo 'Codex launch error: codex >= 0.150 is required' >&2
   exit 1
 fi
+major=${BASH_REMATCH[1]}
+minor=${BASH_REMATCH[2]}
+if (( major == 0 && minor < 150 )); then
+  echo 'Codex launch error: codex >= 0.150 is required' >&2
+  exit 1
+fi
+case "${MARVEEN_CODEX_SANDBOX:-}" in
+  ''|full-access) ;;
+  relay)
+    if (( major == 0 && minor < 163 )); then
+      echo "Codex launch error: codexSandbox=relay requires codex >= 0.163.0 (found $version)" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Codex launch error: unknown MARVEEN_CODEX_SANDBOX value: $MARVEEN_CODEX_SANDBOX" >&2
+    exit 1
+    ;;
+esac
 # The overrides file decides this agent's identity, so it must be the file the
 # dashboard wrote: absolute, an existing regular file, and not a symlink pointed
 # somewhere else (a relative path would resolve inside the pane's cd target).

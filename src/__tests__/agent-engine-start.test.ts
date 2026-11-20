@@ -1,12 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { CHANNEL_TOKEN_UNSET } from '../web/agent-engine.js'
 
 const harness = vi.hoisted(() => ({
-  calls: [] as { file: string; args: string[] }[],
+  calls: [] as { file: string; args: string[]; env?: NodeJS.ProcessEnv }[],
+  launcherError: null as Error | null,
+  tmuxError: null as Error | null,
   // command is the expected tmux command; launcherOutput is the unsanitized launcher result.
   command: 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR && export CODEX_HOME=/x && exec codex',
   launcherOutput: 'export CODEX_HOME=/x && exec codex',
@@ -22,16 +24,26 @@ vi.mock('../config.js', async original => ({
   get STORE_DIR() { return join(sandbox, 'store') },
   CHANNEL_PROVIDER: 'telegram',
 }))
-vi.mock('node:child_process', async original => ({
-  ...await original<typeof import('node:child_process')>(),
-  execFileSync: vi.fn((file: string, args: readonly string[] = []) => {
-    harness.calls.push({ file, args: [...args] })
-    if (file === 'bash' && args[0] === join(sandbox, 'scripts/codex-agent.sh')) {
-      return `${harness.launcherOutput}\n`
-    }
-    return ''
-  }),
-}))
+vi.mock('node:child_process', async original => {
+  const childProcess = await original<typeof import('node:child_process')>()
+  return {
+    ...childProcess,
+    execFileSync: vi.fn((file: string, args: readonly string[] = [], options?: { env?: NodeJS.ProcessEnv }) => {
+      harness.calls.push({ file, args: [...args], ...(options?.env ? { env: { ...options.env } } : {}) })
+      if (file === 'ps') return spawnSync(file, [...args], { encoding: 'utf-8' }).stdout
+      if (file === 'bash' && args[0] === join(sandbox, 'scripts/codex-agent.sh')) {
+        if (harness.launcherError) throw harness.launcherError
+        return `${harness.launcherOutput}\n`
+      }
+      if (file === 'tmux' && args.includes('new-session') && harness.tmuxError) throw harness.tmuxError
+      return ''
+    }),
+    spawn: vi.fn((file: string, args: readonly string[] = [], options?: import('node:child_process').SpawnOptions) => {
+      harness.calls.push({ file, args: [...args] })
+      return childProcess.spawn(file, args, options ?? {})
+    }),
+  }
+})
 vi.mock('../platform.js', async original => ({
   ...await original<typeof import('../platform.js')>(),
   makeLazyBinResolver: (name: string) => () => name,
@@ -52,6 +64,10 @@ const sleep = (ms: number) => new Promise<void>(timer => setTimeout(timer, ms))
 beforeEach(() => {
   vi.restoreAllMocks()
   harness.calls.length = 0
+  harness.launcherError = null
+  harness.tmuxError = null
+  vi.mocked(spawn).mockClear()
+  rmSync(join(sandbox, 'store', 'codex-relay'), { recursive: true, force: true })
   rmSync(join(sandbox, 'agents'), { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
@@ -87,7 +103,7 @@ describe('Codex agent start behaviour', () => {
 
   it('dispatches a Codex agent to the Codex launcher and tmux command before the Claude path', async () => {
     expect(await startAgentProcess(name)).toEqual({ ok: true })
-    expect(launcherCalls()).toEqual([{ file: 'bash', args: [join(sandbox, 'scripts/codex-agent.sh'), codexConfigDir, dir] }])
+    expect(launcherCalls()).toEqual([{ file: 'bash', args: [join(sandbox, 'scripts/codex-agent.sh'), codexConfigDir, dir], env: expect.objectContaining({ MARVEEN_CODEX_SANDBOX: 'full-access' }) }])
     expect(sessionCalls()).toHaveLength(1)
     expect(sessionCalls()[0].args).toEqual(['new-session', '-d', '-s', `agent-${name}`, harness.command])
     for (const call of harness.calls) {
@@ -102,7 +118,7 @@ describe('Codex agent start behaviour', () => {
       oauthTokenFile: 'relative-token',
     }))
     expect(await startAgentProcess(name)).toEqual({ ok: true })
-    expect(launcherCalls()).toEqual([{ file: 'bash', args: [join(sandbox, 'scripts/codex-agent.sh'), codexConfigDir, dir, join(dir, '.codex-overrides')] }])
+    expect(launcherCalls()).toEqual([{ file: 'bash', args: [join(sandbox, 'scripts/codex-agent.sh'), codexConfigDir, dir, join(dir, '.codex-overrides')], env: expect.objectContaining({ MARVEEN_CODEX_SANDBOX: 'full-access' }) }])
     expect(sessionCalls()).toHaveLength(1)
   })
 
@@ -118,7 +134,7 @@ describe('Codex agent start behaviour', () => {
     expect(sessionCalls()).toHaveLength(0)
   })
 
-  it('starts a codexSandbox=relay agent only once the real relay daemon is ready', async () => {
+  it.each([false, true])('B4-version B1 B2 composes before starting the daemon with private files (existing dirs: %s)', async existing => {
     // startDashboardRelayDaemon spawns PROJECT_ROOT/scripts/codex-relay/relay.mjs
     // and PROJECT_ROOT is this suite's sandbox, so stage the real daemon script
     // there: the spawn must be the REAL internal one, not another harness fake.
@@ -130,23 +146,139 @@ describe('Codex agent start behaviour', () => {
     writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
       engine: 'codex', codexConfigDir, codexIdentity: 'seat', codexSandbox: 'relay',
     }))
-    const readyMarker = join(dir, '.dashboard-relay', 'relay.ready')
+    const relayDir = join(sandbox, 'store', 'codex-relay', name)
+    const readyMarker = join(relayDir, 'relay.ready')
+    const gitignore = join(dir, '.gitignore')
+    if (existing) {
+      for (const path of [relayDir, join(relayDir, 'requests'), join(relayDir, 'responses')]) {
+        mkdirSync(path, { recursive: true })
+        chmodSync(path, 0o755)
+      }
+      writeFileSync(gitignore, 'keep-this-exactly')
+      const victim = join(sandbox, 'pid-victim')
+      writeFileSync(victim, 'keep-pid-victim')
+      symlinkSync(victim, join(relayDir, 'relay.pid'))
+    }
     try {
       expect(await startAgentProcess(name)).toEqual({ ok: true })
-      // The start reported ok only after the ready marker named the spawned
-      // pid, and the launcher ran strictly after that: the fail-closed ordering
-      // the relay profile exists for.
+      // Compose validates first; readiness is still required before tmux starts.
+      const composeIndex = harness.calls.indexOf(launcherCalls()[0])
+      const daemonIndex = harness.calls.findIndex(call => call.args[0] === join(sandbox, 'scripts', 'codex-relay', 'relay.mjs'))
+      expect(composeIndex).toBeGreaterThanOrEqual(0)
+      expect(daemonIndex).toBeGreaterThan(composeIndex)
+      expect(harness.calls.indexOf(sessionCalls()[0])).toBeGreaterThan(daemonIndex)
+      expect(launcherCalls()[0].env?.MARVEEN_CODEX_SANDBOX).toBe('relay')
       expect(existsSync(readyMarker)).toBe(true)
+      for (const path of [relayDir, join(relayDir, 'requests'), join(relayDir, 'responses')]) {
+        expect(statSync(path).mode & 0o777).toBe(0o700)
+      }
+      if (!existing) expect(statSync(join(sandbox, 'store', 'codex-relay')).mode & 0o777).toBe(0o700)
+      for (const file of ['relay.log', 'relay.pid']) {
+        expect(statSync(join(relayDir, file)).mode & 0o777).toBe(0o600)
+        expect(existsSync(join(dir, file))).toBe(false)
+      }
+      expect(readFileSync(join(relayDir, 'relay.pid'), 'utf-8')).toBe(readFileSync(readyMarker, 'utf-8'))
+      expect(existsSync(join(dir, '.dashboard-relay'))).toBe(false)
+      if (existing) {
+        expect(readFileSync(gitignore, 'utf-8')).toBe('keep-this-exactly')
+        expect(readFileSync(join(sandbox, 'pid-victim'), 'utf-8')).toBe('keep-pid-victim')
+      } else expect(existsSync(gitignore)).toBe(false)
       expect(launcherCalls().length).toBeGreaterThanOrEqual(1)
     } finally {
       // Before the assertions that can throw and before the next beforeEach
       // wipes this dir: a leaked daemon would outlive its relay dir.
-      await stopDashboardRelay(dir)
+      await stopDashboardRelay(name)
     }
     // SIGTERM makes the daemon unlink its own marker; give that unlink a moment.
     const deadline = Date.now() + 5000
     while (existsSync(readyMarker) && Date.now() < deadline) await sleep(50)
     expect(existsSync(readyMarker)).toBe(false)
+  })
+
+  it('B2-cleanup stops the relay daemon when tmux new-session throws and preserves the tmux error', async () => {
+    mkdirSync(join(sandbox, 'scripts', 'codex-relay'), { recursive: true })
+    copyFileSync(resolve('scripts/codex-relay/relay.mjs'), join(sandbox, 'scripts', 'codex-relay', 'relay.mjs'))
+    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
+      engine: 'codex', codexConfigDir, codexSandbox: 'relay',
+    }))
+    harness.tmuxError = new Error('tmux new-session failed')
+    const relayDir = join(sandbox, 'store', 'codex-relay', name)
+    try {
+      expect(await startAgentProcess(name)).toEqual({ ok: false, error: harness.tmuxError.message })
+      expect(sessionCalls()).toHaveLength(1)
+      expect(spawn).toHaveBeenCalledTimes(1)
+      const child = vi.mocked(spawn).mock.results[0].value as import('node:child_process').ChildProcess
+      expect(child.pid).toBeGreaterThan(0)
+      expect(() => process.kill(child.pid!, 0)).toThrow()
+      expect(existsSync(join(relayDir, 'relay.pid'))).toBe(false)
+      // Same shutdown marker observation as the successful-start relay test.
+      const deadline = Date.now() + 5000
+      while (existsSync(join(relayDir, 'relay.ready')) && Date.now() < deadline) await sleep(50)
+      expect(existsSync(join(relayDir, 'relay.ready'))).toBe(false)
+    } finally {
+      // A failing regression assertion must not leak the real daemon.
+      await stopDashboardRelay(name)
+    }
+  })
+
+  it('B2-cleanup never attempts relay stop for a full-access agent when tmux throws', async () => {
+    const relayDir = join(sandbox, 'store', 'codex-relay', name)
+    mkdirSync(relayDir, { recursive: true })
+    const pidPath = join(relayDir, 'relay.pid')
+    // stopDashboardRelay would discard this file even without a running daemon.
+    writeFileSync(pidPath, 'not-a-relay-pid')
+    harness.tmuxError = new Error('full-access tmux new-session failed')
+    expect(await startAgentProcess(name)).toEqual({ ok: false, error: harness.tmuxError.message })
+    expect(sessionCalls()).toHaveLength(1)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(readFileSync(pidPath, 'utf-8')).toBe('not-a-relay-pid')
+  })
+
+  it('B2 refuses a pre-planted relay.log symlink before spawning or starting tmux', async () => {
+    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
+      engine: 'codex', codexConfigDir, codexSandbox: 'relay',
+    }))
+    const relayDir = join(sandbox, 'store', 'codex-relay', name)
+    mkdirSync(relayDir, { recursive: true })
+    const victim = join(sandbox, 'log-victim')
+    writeFileSync(victim, 'keep-log-victim')
+    symlinkSync(victim, join(relayDir, 'relay.log'))
+    const result = await startAgentProcess(name)
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/ELOOP|symbolic link/i)
+    expect(readFileSync(victim, 'utf-8')).toBe('keep-log-victim')
+    expect(existsSync(join(relayDir, 'relay.pid'))).toBe(false)
+    expect(existsSync(join(dir, '.gitignore'))).toBe(false)
+    expect(launcherCalls()).toHaveLength(1)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(sessionCalls()).toHaveLength(0)
+  })
+
+  it('B4-version launcher failure starts neither relay nor tmux', async () => {
+    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
+      engine: 'codex', codexConfigDir, codexSandbox: 'relay',
+    }))
+    harness.launcherError = new Error('launcher requires codex >= 0.163.0 (found 0.162.9)')
+    expect(await startAgentProcess(name)).toEqual({ ok: false, error: harness.launcherError.message })
+    expect(launcherCalls()).toHaveLength(1)
+    expect(launcherCalls()[0].env?.MARVEEN_CODEX_SANDBOX).toBe('relay')
+    expect(spawn).not.toHaveBeenCalled()
+    expect(existsSync(join(sandbox, 'store', 'codex-relay', name))).toBe(false)
+    expect(sessionCalls()).toHaveLength(0)
+  })
+
+  it('B4-version full-access overrides an inherited relay environment', async () => {
+    const previous = process.env.MARVEEN_CODEX_SANDBOX
+    process.env.MARVEEN_CODEX_SANDBOX = 'relay'
+    try {
+      expect(await startAgentProcess(name)).toEqual({ ok: true })
+      expect(launcherCalls()[0].env?.MARVEEN_CODEX_SANDBOX).toBe('full-access')
+      expect(process.env.MARVEEN_CODEX_SANDBOX).toBe('relay')
+      expect(spawn).not.toHaveBeenCalled()
+    } finally {
+      if (previous === undefined) delete process.env.MARVEEN_CODEX_SANDBOX
+      else process.env.MARVEEN_CODEX_SANDBOX = previous
+    }
   })
 })
 

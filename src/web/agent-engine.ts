@@ -22,8 +22,10 @@ export type CodexIdentity = 'seat' | 'overrides'
 //  - 'relay' (default for engine codex): workspace-write sandbox with
 //    network_access off. Only the dashboard MCP entry is rendered, replaced by
 //    the file-relay MCP shim (scripts/codex-relay/mcp-shim.mjs), which holds no
-//    secret: the relay daemon outside the sandbox (scripts/codex-relay/relay.mjs)
-//    owns the token. Other inherited MCP servers are dropped.
+//    secret. Codex starts this MCP server outside the command sandbox (measured
+//    on Codex 0.163.0, Linux); the token stays with the relay daemon. The spool
+//    lives under store/, which the relay profile hides from the sandbox.
+//    Other inherited MCP servers are dropped.
 //  - 'full-access': explicit, owner-only opt-in that REMOVES the sandbox
 //    (danger-full-access: the agent can write anywhere the dashboard user can
 //    and has the network), never asks for approval, and passes the inherited
@@ -121,17 +123,43 @@ export interface CodexRenderOptions {
 // other server entry is dropped under 'relay'; under 'full-access' (or with
 // opts omitted) NOTHING is replaced.
 const DASHBOARD_MCP_SERVER = 'marveen-dashboard'
+export const CODEX_RELAY_PERMISSION_PROFILE = 'marveen-relay'
+
+export function codexRelayDeniedReadRoots(): string[] {
+  const lexical = join(PROJECT_ROOT, 'store')
+  const roots = [lexical]
+  try {
+    const physical = realpathSync(lexical)
+    if (physical !== lexical) roots.push(physical)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+  return roots
+}
+
+export function codexRelayFilesystemEntries(workspace: string): Array<[string, 'read' | 'write' | 'none']> {
+  return [['/', 'read'], [workspace, 'write'], ...codexRelayDeniedReadRoots().map((path): [string, 'none'] => [path, 'none'])]
+}
 // Read at call time: PROJECT_ROOT may be a lazily mocked getter in tests, which an import-time read would break.
 export function relayShimPath(): string {
   return join(PROJECT_ROOT, 'scripts', 'codex-relay', 'mcp-shim.mjs')
 }
 
-function relayServers(workspace: string, servers: Record<string, unknown>, opts: CodexRenderOptions): Record<string, unknown> {
+// Like relayShimPath, resolve PROJECT_ROOT only when called.
+export function codexRelayDir(agentName: string): string {
+  if (!agentName || agentName === '.' || agentName === '..' || /[/\\\0]/.test(agentName)) {
+    throw new Error('relay agent name must be non-empty, not dot or dot-dot, and contain no slash, backslash or NUL')
+  }
+  return join(PROJECT_ROOT, 'store', 'codex-relay', agentName)
+}
+
+function relayServers(servers: Record<string, unknown>, opts: CodexRenderOptions): Record<string, unknown> {
   if (opts.profile !== 'relay') return servers
   const agentName = opts.agentName
   if (typeof agentName !== 'string' || !agentName) {
     throw new Error('relay sandbox profile needs the agent name for the MCP shim entry')
   }
+  const relayDir = codexRelayDir(agentName)
   if (!(DASHBOARD_MCP_SERVER in servers)) return {}
   return {
     [DASHBOARD_MCP_SERVER]: {
@@ -139,7 +167,7 @@ function relayServers(workspace: string, servers: Record<string, unknown>, opts:
       args: [relayShimPath()],
       env: {
         MARVEEN_AGENT_NAME: agentName,
-        MARVEEN_RELAY_DIR: join(workspace, '.dashboard-relay'),
+        MARVEEN_RELAY_DIR: relayDir,
       },
     },
   }
@@ -152,13 +180,17 @@ export function relayDroppedMcpServers(servers: Record<string, unknown>, opts: C
 }
 
 export function renderCodexConfig(workspace: string, servers: Record<string, unknown>, opts: CodexRenderOptions = {}): string {
-  const rendered = relayServers(workspace, servers, opts)
+  const rendered = relayServers(servers, opts)
   // workspace-write has no full-access warning to hide, so under 'relay' the
   // [notice] block is omitted entirely (and the sandbox is nailed to the
   // workspace with the network off).
   const lines = opts.profile === 'relay'
     ? ['sandbox_mode = "workspace-write"', 'approval_policy = "on-request"',
-      '', '[sandbox_workspace_write]', 'network_access = false', '',
+      `default_permissions = ${JSON.stringify(CODEX_RELAY_PERMISSION_PROFILE)}`,
+      '', '[sandbox_workspace_write]', 'network_access = false',
+      'exclude_slash_tmp = true', 'exclude_tmpdir_env_var = true', '',
+      `[permissions.${CODEX_RELAY_PERMISSION_PROFILE}.filesystem]`,
+      ...codexRelayFilesystemEntries(workspace).map(([path, access]) => `${JSON.stringify(path)} = ${JSON.stringify(access)}`), '',
       `[projects.${JSON.stringify(workspace)}]`, 'trust_level = "trusted"', '', '[mcp_servers]']
     : ['sandbox_mode = "danger-full-access"', 'approval_policy = "never"',
       '', '[notice]', 'hide_full_access_warning = true', '',
@@ -219,7 +251,7 @@ function withheldFromCodex(key: string): boolean {
 /**
  * codexIdentity='overrides': the SAME settings renderCodexConfig writes into the
  * seat's config.toml, expressed as `codex -c key=value` overrides (value side is
- * valid TOML, strings via JSON.stringify). PURE: no I/O, no environment reads.
+ * valid TOML, strings via JSON.stringify). Relay resolves store/ at call time.
  * Neither renderer expands `${VAR}`; here the result also lands on argv
  * (visible in `ps`), so only env_vars forwarding is allowed for secrets.
  */
@@ -227,14 +259,22 @@ export function renderCodexOverrides(workspace: string, servers: Record<string, 
   if (!isAbsolute(workspace) || !CODEX_OVERRIDE_WORKSPACE_ALLOWED.test(workspace)) {
     throw new Error(`codexIdentity=overrides needs an absolute workspace path of letters, digits, '_', '-' and '/' only (no '.', quotes, '=' or whitespace): ${JSON.stringify(workspace)}`)
   }
-  const rendered = relayServers(workspace, servers, opts)
+  const rendered = relayServers(servers, opts)
+  const entries = opts.profile === 'relay' ? codexRelayFilesystemEntries(workspace) : []
+  if (entries.some(([path]) => path.includes('\n') || path.includes('\0'))) {
+    throw new Error('relay filesystem entry path must not contain a newline or NUL')
+  }
   // Same settings as the relay branch of renderCodexConfig, in -c form; no
   // notice.hide_full_access_warning line (there is no warning to hide).
   const overrides = opts.profile === 'relay'
     ? [
       'sandbox_mode="workspace-write"',
       'approval_policy="on-request"',
+      `default_permissions=${JSON.stringify(CODEX_RELAY_PERMISSION_PROFILE)}`,
       'sandbox_workspace_write.network_access=false',
+      'sandbox_workspace_write.exclude_slash_tmp=true',
+      'sandbox_workspace_write.exclude_tmpdir_env_var=true',
+      `permissions.${CODEX_RELAY_PERMISSION_PROFILE}.filesystem={${entries.map(([path, access]) => `${JSON.stringify(path)}=${JSON.stringify(access)}`).join(',')}}`,
       `projects.${workspace}.trust_level="trusted"`,
     ]
     : [
@@ -325,9 +365,15 @@ function stripTomlComment(line: string): string {
  * profile promises would never happen. No-op unless the profile is 'relay' or
  * the file is absent, so the default profile is untouched.
  */
-export function assertCodexSeatConfigCompatible(home: string, identity: CodexIdentity, opts: CodexRenderOptions = {}): void {
+export function assertCodexSeatConfigCompatible(home: string, workspace: string, identity: CodexIdentity, opts: CodexRenderOptions = {}): void {
   if (opts.profile !== 'relay') return
   const configPath = join(home, 'config.toml')
+  const refuseSeatConfig = (reason: string): never => {
+    throw new Error(
+      `codexSandbox=relay refuses the existing ${configPath}: ${reason}. Delete the file and start the agent so it is re-rendered`)
+  }
+  if (identity === 'seat' && !opts.agentName) refuseSeatConfig('the relay seat needs the agent name')
+  const relayDir = identity === 'seat' ? codexRelayDir(opts.agentName!) : undefined
   let content: string
   try {
     content = readFileSync(configPath, 'utf-8')
@@ -336,6 +382,23 @@ export function assertCodexSeatConfigCompatible(home: string, identity: CodexIde
     // absent file is the no-op case above; anything else is a real read error.
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
     throw err
+  }
+  // F4: measured on Codex 0.163.0, Linux: -c filesystem tables merge with
+  // the seat's permissions tables, so overrides cannot remove extra grants.
+  if (identity === 'overrides') {
+    const mergeReason = "the relay profile table would be merged with this file's permissions settings"
+    if (content.includes('\\')) {
+      refuseSeatConfig(`it contains a backslash (a TOML escape), which this check cannot decode; ${mergeReason}`)
+    }
+    let tableSeen = false
+    for (const rawLine of content.split('\n')) {
+      const line = stripTomlComment(rawLine).trim()
+      if (!line) continue
+      if (line.startsWith('[')) tableSeen = true
+      if (line.includes('permissions') && !(!tableSeen && /^default_permissions\s*=/.test(line))) {
+        refuseSeatConfig(mergeReason)
+      }
+    }
   }
   if (identity === 'seat' && content.includes('danger-full-access')) {
     throw new Error(
@@ -363,8 +426,8 @@ export function assertCodexSeatConfigCompatible(home: string, identity: CodexIde
       // it is acceptable only when at least one ASSIGNMENT line carries
       // mcp-shim.mjs -- a mention inside a comment does not count. Applies to
       // BOTH identity modes: overrides mode never rewrites config.toml
-      // either, and the stale entry's env literals still reach the sandbox
-      // process.
+      // either, and the stale entry would still start a token-holding MCP
+      // process outside the command sandbox.
       const nextHeader = content.indexOf('\n[', markerAt + 1)
       const section = content.slice(markerAt, nextHeader === -1 ? undefined : nextHeader)
       const shimAssignment = section.split('\n').some(line => DASHBOARD_ENTRY_ASSIGNMENT.test(line) && stripTomlComment(line).includes('mcp-shim.mjs'))
@@ -386,9 +449,56 @@ export function assertCodexSeatConfigCompatible(home: string, identity: CodexIde
     throw new Error(
       `codexSandbox=relay refuses the existing ${configPath}: its marveen-dashboard entry is not the relay shim entry (${line}); under relay only command = "node" with args = [the dashboard's mcp-shim.mjs] and the shim's MARVEEN_AGENT_NAME / MARVEEN_RELAY_DIR env keys are accepted. Delete the file and start the agent so it is re-rendered`)
   }
+  const sandboxLines = new Set([
+    'network_access = false',
+    'exclude_slash_tmp = true',
+    'exclude_tmpdir_env_var = true',
+  ])
+  const sandboxSeen = new Set<string>()
+  let sandboxHeaders = 0
+  const filesystemHeader = `[permissions.${CODEX_RELAY_PERMISSION_PROFILE}.filesystem]`
+  const filesystemLines = new Set(identity === 'seat'
+    ? codexRelayFilesystemEntries(workspace).map(([path, access]) => `${JSON.stringify(path)} = ${JSON.stringify(access)}`)
+    : [])
+  const filesystemSeen = new Set<string>()
+  let filesystemHeaders = 0
+  let defaultPermissionsSeen = false
+  let tableSeen = false
   for (const rawLine of content.split('\n')) {
     const line = stripTomlComment(rawLine).trim()
     if (!line) continue
+    if (identity === 'seat') {
+      if (line.includes('writable_roots')) refuseSeatConfig(`writable_roots is not allowed (${line})`)
+      if (line.includes('default_permissions')) {
+        if (line !== `default_permissions = ${JSON.stringify(CODEX_RELAY_PERMISSION_PROFILE)}` || tableSeen || defaultPermissionsSeen) {
+          refuseSeatConfig(`unexpected or duplicate default_permissions setting (${line})`)
+        }
+        defaultPermissionsSeen = true
+      }
+      if (line.startsWith('[')) {
+        tableSeen = true
+        if (line === filesystemHeader) {
+          filesystemHeaders += 1
+          if (filesystemHeaders > 1) refuseSeatConfig('the relay filesystem table must appear exactly once')
+        } else if (line.includes('permissions') || line.includes('extends')) {
+          refuseSeatConfig(`unexpected permissions table (${line})`)
+        }
+      } else if (currentKey === filesystemHeader) {
+        if (!filesystemLines.has(line) || filesystemSeen.has(line)) refuseSeatConfig(`unexpected or duplicate relay filesystem setting (${line})`)
+        filesystemSeen.add(line)
+      } else if (line.includes('permissions.') || line.includes('extends')) {
+        refuseSeatConfig(`permissions settings outside the relay filesystem table (${line})`)
+      }
+      if (line === '[sandbox_workspace_write]') {
+        sandboxHeaders += 1
+        if (sandboxHeaders > 1) refuseSeatConfig('the sandbox_workspace_write table must appear exactly once')
+      } else if (!line.startsWith('[') && currentKey === '[sandbox_workspace_write]') {
+        if (!sandboxLines.has(line) || sandboxSeen.has(line)) refuseSeatConfig(`unexpected or duplicate sandbox_workspace_write setting (${line})`)
+        sandboxSeen.add(line)
+      } else if (['sandbox_workspace_write', 'writable_roots', 'exclude_slash_tmp', 'exclude_tmpdir_env_var', 'network_access'].some(key => line.includes(key))) {
+        refuseSeatConfig(`sandbox settings outside the sandbox_workspace_write table (${line})`)
+      }
+    }
     let violation = false
     // Compare headers as written: any whitespace inside a header mentioning mcp_servers is refused,
     // because the dashboard entry is located by its exact header text. Quoted or escaped table names
@@ -414,11 +524,22 @@ export function assertCodexSeatConfigCompatible(home: string, identity: CodexIde
       // The whole line must be one shim key and a one-line string without quotes or escapes: a value that opens a
       // multi-line string or array could make a later line look like a table header to this scan.
       if (!/^(?:"MARVEEN_AGENT_NAME"|MARVEEN_AGENT_NAME|"MARVEEN_RELAY_DIR"|MARVEEN_RELAY_DIR)\s*=\s*"[^"\\]*"$/.test(line)) refuseShimEntry(line)
+      if (identity === 'seat') {
+        const [, key, value] = line.match(/^"?(MARVEEN_AGENT_NAME|MARVEEN_RELAY_DIR)"?\s*=\s*"([^"\\]*)"$/)!
+        if (value !== (key === 'MARVEEN_AGENT_NAME' ? opts.agentName : relayDir)) refuseSeatConfig(`incorrect ${key} in the relay shim env`)
+      }
     }
     if (violation) {
       throw new Error(
         `codexSandbox=relay refuses the existing ${configPath}: it defines an MCP server other than marveen-dashboard (${line}), and under relay only the dashboard relay shim may run. Remove that entry from ${configPath}, or delete the file and start the agent so it is re-rendered`)
     }
+  }
+  if (identity === 'seat' && (sandboxHeaders !== 1 || sandboxSeen.size !== sandboxLines.size)) {
+    refuseSeatConfig('the sandbox_workspace_write table must contain exactly the three relay sandbox settings')
+  }
+  if (identity === 'seat' && !defaultPermissionsSeen) refuseSeatConfig('default_permissions must name the relay profile exactly once before any table')
+  if (identity === 'seat' && (filesystemHeaders !== 1 || filesystemSeen.size !== filesystemLines.size)) {
+    refuseSeatConfig('the relay filesystem table must contain exactly the rendered filesystem entries for this workspace')
   }
   if (dashboardSeen && (!commandSeen || !argsSeen)) refuseShimEntry('missing command/args')
   if (identity === 'seat' && content.includes('\\')) {
@@ -483,7 +604,7 @@ export function assertNoProjectCodexConfig(workspace: string, opts: CodexRenderO
 }
 
 export function preflightCodexHome(home: string, workspace: string, servers: Record<string, unknown>, identity: CodexIdentity = 'seat', opts: CodexRenderOptions = {}): void {
-  assertCodexSeatConfigCompatible(home, identity, opts)
+  assertCodexSeatConfigCompatible(home, workspace, identity, opts)
   assertNoProjectCodexConfig(workspace, opts)
   // Validation only, before anything is written: in overrides mode the seat's
   // config.toml (which may belong to another agent) is deliberately not consulted.
@@ -497,7 +618,7 @@ export function preflightCodexHome(home: string, workspace: string, servers: Rec
 
 /** Seed only once: operator edits remain the source of truth on subsequent starts. */
 export function scaffoldCodexHome(home: string, workspace: string, servers: Record<string, unknown>, identity: CodexIdentity = 'seat', opts: CodexRenderOptions = {}): void {
-  assertCodexSeatConfigCompatible(home, identity, opts)
+  assertCodexSeatConfigCompatible(home, workspace, identity, opts)
   assertNoProjectCodexConfig(workspace, opts)
   const dropped = relayDroppedMcpServers(servers, opts)
   if (dropped.length) logger.warn({ workspace, dropped }, 'codexSandbox=relay: inherited MCP servers are not rendered; only the dashboard relay shim runs under relay')

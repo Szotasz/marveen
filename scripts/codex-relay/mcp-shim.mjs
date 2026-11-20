@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// CARD 2436459e -- in-sandbox MCP shim for the dashboard relay
+// CARD 2436459e -- MCP shim for the dashboard relay
 // (codexSandbox=relay).
 //
-// MCP stdio server (newline-delimited JSON-RPC over stdin/stdout) that runs
-// INSIDE the Codex workspace-write sandbox. It reads ONLY two env vars
+// MCP stdio server (newline-delimited JSON-RPC over stdin/stdout) that Codex
+// starts outside the command sandbox (measured on Codex 0.163.0, Linux).
+// It reads ONLY two env vars
 // (MARVEEN_AGENT_NAME, MARVEEN_RELAY_DIR), does NO network access and reads NO
 // token: every dashboard call becomes a request file under the relay dir that
 // the daemon OUTSIDE the sandbox (relay.mjs) services, so no secret ever
-// reaches the sandbox. Plain node, no npm dependencies.
+// reaches the sandbox. The spool lives under store/, which the relay profile
+// hides from the sandbox. Plain node, no npm dependencies.
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -287,9 +289,10 @@ async function callRelay(method, path, body) {
   for (;;) {
     if (existsSync(responsePath)) {
       const raw = readFileSync(responsePath, 'utf-8')
+      // The shim is outside the command sandbox, so unlink normally succeeds.
       try {
         unlinkSync(responsePath)
-      } catch { /* already collected */ }
+      } catch { /* The daemon's RESPONSE_TTL_MS sweep is the fallback for uncollected responses. */ }
       return JSON.parse(raw)
     }
     if (Date.now() >= deadline) return null
