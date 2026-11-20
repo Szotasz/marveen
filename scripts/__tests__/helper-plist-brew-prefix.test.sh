@@ -21,6 +21,9 @@
 # system tools WITHOUT tmux, and uname / launchctl stubs; nothing is loaded.
 
 set -u
+# The dirs made here stand for a normal install dir: a group-writable one is refused as a learned
+# PATH dir (PATHDIROWNER1120), so the run must not depend on the caller's umask.
+umask 022
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }

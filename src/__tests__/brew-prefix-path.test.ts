@@ -2,12 +2,12 @@
 // dashboard's probe list and the main session's PATH did not have. Both now derive <prefix>/bin from the node@22 keg
 // entry every installed launchd PATH starts with (<prefix>/opt/node@22/bin). Tested with stub dirs only: no brew,
 // no launchd. The channels.sh block is RUN, cut out between its markers, not read as text.
-import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { brewPrefixBin, knownBinDirs, plistPathDirOk, tryResolveFromPath } from '../platform.js'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { brewPrefixBin, knownBinDirs, learnedPathDirProblem, plistPathDirOk, tryResolveFromPath } from '../platform.js'
 
 const REPO = process.cwd()
 const dirs: string[] = []
@@ -188,9 +188,11 @@ describe('channels.sh --resolve-main-model: the CLI probe finds the claude in <p
 describe('scripts/setup.ts: the dashboard plist PATH', () => {
   it('puts brewPrefixBin(process.env.PATH) in front of the fixed list', () => {
     const src = readFileSync(join(REPO, 'scripts', 'setup.ts'), 'utf-8')
-    expect(src).toMatch(/import \{ brewPrefixBin, plistPathDirOk \} from '\.\.\/src\/platform\.js'/)
+    expect(src).toMatch(/import \{ brewPrefixBin, learnedPathDirProblem, plistPathDirOk \} from '\.\.\/src\/platform\.js'/)
     expect(src).toContain('const foundBrewBin = brewPrefixBin(process.env.PATH)')
-    expect(src).toContain('const brewBin = foundBrewBin && plistPathDirOk(foundBrewBin) ? foundBrewBin : null')
+    expect(src).toContain(": learnedPathDirProblem(foundBrewBin, process.getuid?.(), process.platform, brewNotes)")
+    expect(src).toContain('if (!brewProblem) for (const n of brewNotes) console.warn(n)')
+    expect(src).toContain('const brewBin = foundBrewBin && !brewProblem ? foundBrewBin : null')
     expect(src).toContain("<string>${brewBin ? `${brewBin}:` : ''}/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>")
   })
 })
@@ -199,9 +201,16 @@ describe('scripts/setup.ts: the dashboard plist PATH', () => {
 // (XML markup) or the PATH (a colon). plistPathDirOk refuses exactly what helper-path.sh _helper_path_learn refuses:
 // each case is RUN through the bash function too, so the two sets cannot drift apart.
 describe('plistPathDirOk (platform.ts) = helper-path.sh _helper_path_learn', () => {
+  // the kept cases are real 0755 dirs: bash also refuses a dir that is not there (PATHDIROWNER1120)
+  const root = mkdtempSync(join(tmpdir(), 'ppd-'))
+  afterAll(() => rmSync(root, { recursive: true, force: true }))
+  for (const d of ['custombrew/bin', 'a b/homebrew/bin']) {
+    mkdirSync(join(root, d), { recursive: true })
+    chmodSync(join(root, d), 0o755)
+  }
   const cases: Array<[string, boolean]> = [
-    ['/opt/custombrew/bin', true],
-    ['/Users/a b/homebrew/bin', true],
+    [join(root, 'custombrew/bin'), true],
+    [join(root, 'a b/homebrew/bin'), true],
     ['', false],
     ['/opt/a:b/bin', false],
     ['/opt/</string><key>X</key><string>/bin', false],
@@ -224,4 +233,88 @@ describe('plistPathDirOk (platform.ts) = helper-path.sh _helper_path_learn', () 
       expect(out === `${dir}:`).toBe(ok)
     })
   }
+})
+
+// PATHDIROWNER1120: a learned dir goes in front of a launchd PATH only when no one but the installing user or root
+// can write it. learnedPathDirProblem (setup.ts) and helper-path.sh _helper_path_unsafe (the helper plists) apply the
+// same rule: each case is RUN through both and the reasons compared.
+describe('learnedPathDirProblem (platform.ts) = helper-path.sh _helper_path_unsafe', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pdo-'))
+  afterAll(() => rmSync(root, { recursive: true, force: true }))
+  const mk = (name: string, mode: number) => { const d = join(root, name); mkdirSync(d); chmodSync(d, mode); return d }
+  const own = mk('own', 0o755)
+  const cases: Array<[string, string, string | null]> = [
+    ['own 0755', own, null],
+    ['own 0700', mk('own700', 0o700), null],
+    ['group-writable 0775', mk('gw', 0o775), 'is group-writable'],
+    ['writable by others 0757', mk('ow', 0o757), 'is writable by others'],
+    ['root-owned 0755', '/usr/sbin', null],
+    ['missing', join(root, 'missing'), 'is not a directory'],
+  ]
+  symlinkSync(own, join(root, 'link'))
+  cases.push(['symlink to an own 0755 dir', join(root, 'link'), 'is a symlink'])
+  // R1 (Dani, #2985): every ancestor up to / passes the rule; a sticky ancestor may be writable
+  const w777 = mk('w777', 0o755); mkdirSync(join(w777, 'bin'), { mode: 0o755 }); chmodSync(w777, 0o777)
+  const st = mk('st', 0o755); mkdirSync(join(st, 'bin'), { mode: 0o755 }); chmodSync(st, 0o1777)
+  const gwp = mk('gwp', 0o755); mkdirSync(join(gwp, 'bin'), { mode: 0o755 }); chmodSync(gwp, 0o775)
+  const o757 = mk('o757', 0o755); mkdirSync(join(o757, 'bin'), { mode: 0o755 }); chmodSync(o757, 0o757)
+  symlinkSync(w777, join(root, 'vialink'))
+  // 0777: the group rule decides first
+  cases.push(['own 0755 bin under a 0777 parent', join(w777, 'bin'), `has a parent ${w777} that is group-writable`])
+  cases.push(['own 0755 bin under a 0757 parent', join(o757, 'bin'), `has a parent ${o757} that is writable by others`])
+  cases.push(['own 0755 bin under a sticky 1777 parent', join(st, 'bin'), null])
+  cases.push(['own 0755 bin under a 0775 parent', join(gwp, 'bin'), `has a parent ${gwp} that is group-writable`])
+  // the real path is checked: the parent is named as realpath gives it
+  cases.push(['through a symlink whose target parent is 0777', join(root, 'vialink', 'bin'),
+    `has a parent ${realpathSync(w777)} that is group-writable`])
+  writeFileSync(join(root, 'file'), '')
+  cases.push(['a file', join(root, 'file'), 'is not a directory'])
+  // Dani (#2985): a relative path is refused at once (the ancestor walk would never reach /)
+  cases.push(['a relative path', 'scripts', 'is not an absolute path'])
+  cases.push(['a relative path with a slash', 'a/b', 'is not an absolute path'])
+  // macOS: the admin group (gid 80) may write (Samu, #2985); another group and others may not. Needs macOS and
+  // membership of the admin group to make such dirs; the Linux branch is run here through the os parameter.
+  const adminDirs = (() => {
+    if (process.platform !== 'darwin') return null
+    try {
+      const adm = mk('adm', 0o775); execFileSync('chgrp', ['80', adm]); chmodSync(adm, 0o775)
+      const stf = mk('stf', 0o775); execFileSync('chgrp', ['20', stf]); chmodSync(stf, 0o775)
+      const admo = mk('admo', 0o775); execFileSync('chgrp', ['80', admo]); chmodSync(admo, 0o777)
+      return { adm, stf, admo }
+    } catch {
+      return null
+    }
+  })()
+  if (adminDirs) {
+    cases.push(['darwin: admin-group-writable 0775', adminDirs.adm, null])
+    cases.push(['darwin: staff-group-writable 0775', adminDirs.stf, 'is group-writable'])
+    cases.push(['darwin: admin group, 0777', adminDirs.admo, 'is writable by others'])
+  }
+  for (const [name, dir, why] of cases) {
+    it(`${name} -> ${why ?? 'learned'} in TS and bash`, () => {
+      const notes: string[] = []
+      expect(learnedPathDirProblem(dir, process.getuid?.(), process.platform, notes)).toBe(why)
+      const r = spawnSync('bash', ['-c', '. "$1/scripts/lib/helper-path.sh"; _helper_path_unsafe "$2"', 'x', REPO, dir],
+        { encoding: 'utf-8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' }, timeout: 10000 })
+      expect(r.stdout.trim() || null).toBe(why)
+      // the HELPER-PATH-ADMIN lines name the same dirs on both sides
+      expect(r.stderr.split('\n').filter((l) => l.startsWith('HELPER-PATH-ADMIN:'))).toEqual(notes)
+    })
+  }
+  it.skipIf(!adminDirs)('darwin: a dir that passed only through the admin exception is named in the notes', () => {
+    const notes: string[] = []
+    expect(learnedPathDirProblem(adminDirs!.adm, process.getuid?.(), 'darwin', notes)).toBe(null)
+    expect(notes).toEqual([`HELPER-PATH-ADMIN: ${adminDirs!.adm} is writable by the admin group (gid 80); allowed on macOS, its members can sudo`])
+    const none: string[] = []
+    expect(learnedPathDirProblem(own, process.getuid?.(), 'darwin', none)).toBe(null)
+    expect(none).toEqual([])
+  })
+  it.skipIf(!adminDirs)('linux: the admin-group exception does not apply (os parameter)', () => {
+    expect(learnedPathDirProblem(adminDirs!.adm, process.getuid?.(), 'linux')).toBe('is group-writable')
+    expect(learnedPathDirProblem(adminDirs!.adm, process.getuid?.(), 'darwin')).toBe(null)
+  })
+  it('a dir owned by another user -> refused (TS, with another installing uid)', () => {
+    expect(learnedPathDirProblem(own, (process.getuid?.() ?? 0) + 4242)).toBe('is owned by neither the installing user nor root')
+    expect(learnedPathDirProblem('/usr/sbin', (process.getuid?.() ?? 0) + 4242)).toBe(null)
+  })
 })

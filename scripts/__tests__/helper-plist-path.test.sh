@@ -16,6 +16,9 @@
 # system tools WITHOUT tmux, and uname / launchctl stubs; nothing is loaded.
 
 set -u
+# The dirs made here stand for a normal install dir: a group-writable one is refused as a learned
+# PATH dir (PATHDIROWNER1120), so the run must not depend on the caller's umask.
+umask 022
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
@@ -86,7 +89,8 @@ else
   assert_eq "U1 INVARIANS brew tmux (/opt/homebrew/bin) -> unchanged" "$BASE" "$(helper_launchd_path /opt/homebrew/bin/tmux)"
   assert_eq "U2 INVARIANS /usr/local/bin/tmux -> unchanged" "$BASE" "$(helper_launchd_path /usr/local/bin/tmux)"
   assert_eq "U3 INVARIANS /usr/bin/tmux -> unchanged" "$BASE" "$(helper_launchd_path /usr/bin/tmux)"
-  assert_eq "U4 ~/.local/bin/tmux -> its dir in front" "/Users/x/.local/bin:$BASE" "$(helper_launchd_path /Users/x/.local/bin/tmux)"
+  mkdir -p "$TMP/u4/.local/bin"  # a real dir: a learned dir must exist (PATHDIROWNER1120)
+  assert_eq "U4 ~/.local/bin/tmux -> its dir in front" "$TMP/u4/.local/bin:$BASE" "$(helper_launchd_path "$TMP/u4/.local/bin/tmux")"
   assert_eq "U5 a relative hit -> unchanged" "$BASE" "$(helper_launchd_path relativ/tmux 2>/dev/null)"
   for bad in "/a:b/tmux" "/a<b/tmux" "/a&b/tmux" '/a"b/tmux'; do
     out="$(helper_launchd_path "$bad" 2>"$TMP/err")"
