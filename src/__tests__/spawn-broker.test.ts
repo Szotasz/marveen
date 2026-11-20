@@ -76,6 +76,7 @@ function result(fn: () => unknown) {
 const cases = [
   { name: 'success', file: '/bin/sh', args: ['-c', 'printf hello; printf warning >&2'] },
   { name: 'exit 1 with stderr', file: '/bin/sh', args: ['-c', 'printf partial; printf failure >&2; exit 1'] },
+  { name: 'exit 1 with empty args', file: '/bin/false', args: [] },
   { name: 'timeout', file: process.execPath, args: ['-e', 'setTimeout(() => {}, 5000)'], extra: { timeout: 300, killSignal: 'SIGKILL' as const } },
   { name: 'ENOENT', file: '/nonexistent-marveen-spawn-broker-program', args: ['argument'] },
   { name: 'maxBuffer exceeded', file: process.execPath, args: ['-e', "require('node:fs').writeSync(1,'x'.repeat(512))"], extra: { maxBuffer: 128 } },
@@ -358,6 +359,19 @@ it('classifies only wholly read-only tmux chains', () => {
   expect(isReadOnlyTmuxChain(['display-message', '-p', 'm', ';', 'capture-pane', '-t', 'x'])).toBe(false)
   expect(isReadOnlyTmuxChain(['capture-pane', '-t', 'x', ';', 'list-panes'])).toBe(false)
   expect(isReadOnlyTmuxChain(['display-message', 'hello', ';', 'list-panes', '-p'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-b', '-p', '-t', '=s:'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['display-message', '--', '-p'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-t', '-p'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-p', '-b', 'buf'])).toBe(true)
+  expect(isReadOnlyTmuxChain(['display-message', '-p', '--', 'x'])).toBe(true)
+  expect(isReadOnlyTmuxChain(['display-message', '--', 'x', ';', 'capture-pane', '-p'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['capture-pane', '--', ';', 'display-message', '-p'])).toBe(false)
+  for (const verb of ['capture-pane', 'display-message']) {
+    for (const flag of ['-b', '-E', '-S', '-t', '-c', '-d', '-F']) {
+      expect(isReadOnlyTmuxChain([verb, flag, '-p']), `${verb} ${flag} -p`).toBe(false)
+    }
+  }
+  expect(isReadOnlyTmuxChain(['display-message', '-p', '--', 'x', ';', 'capture-pane', '-p'])).toBe(true)
   expect(isReadOnlyTmuxChain(['capture-pane', ';', 'send-keys', 'Enter'])).toBe(false)
   expect(isReadOnlyTmuxChain(['send-keys'])).toBe(false)
   expect(isReadOnlyTmuxChain([])).toBe(false)

@@ -164,7 +164,8 @@ function syncResult(r: Reply, file: string, args: string[], options: BrokerSyncO
     }, result)
   }
   if (r.status !== 0 || r.signal) {
-    throw Object.assign(new Error(`Command failed: ${file} ${args.join(' ')}${stderr?.length ? `\n${stderr}` : ''}`), result)
+    const cmd = args.length ? `${file} ${args.join(' ')}` : file
+    throw Object.assign(new Error(`Command failed: ${cmd}${stderr?.length ? `\n${stderr}` : ''}`), result)
   }
   return stdout ?? null
 }
@@ -257,13 +258,26 @@ const READ_ONLY_TMUX_VERBS = new Set([
 export function isReadOnlyTmuxChain(tmuxArgs: string[]): boolean {
   let needsVerb = true
   let needsPrint = false
+  let previousToken = ''
+  let seenDoubleDash = false
   for (const arg of tmuxArgs) {
-    if (arg === ';') { if (needsVerb || needsPrint) return false; needsVerb = true }
+    if (arg === ';') {
+      if (needsVerb || needsPrint) return false
+      needsVerb = true
+      previousToken = ''
+      seenDoubleDash = false
+    }
     else if (needsVerb) {
       if (!READ_ONLY_TMUX_VERBS.has(arg)) return false
       needsVerb = false
       needsPrint = arg === 'capture-pane' || arg === 'display-message'
-    } else if (arg === '-p') needsPrint = false
+      previousToken = ''
+      seenDoubleDash = false
+    } else {
+      if (arg === '--') seenDoubleDash = true
+      if (arg === '-p' && !seenDoubleDash && !['-b', '-E', '-S', '-t', '-c', '-d', '-F'].includes(previousToken)) needsPrint = false
+      previousToken = arg
+    }
   }
   return !needsVerb && !needsPrint
 }
