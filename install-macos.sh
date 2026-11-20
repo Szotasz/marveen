@@ -485,7 +485,7 @@ if ! command -v brew &>/dev/null; then
   _bp_brew=""
   while IFS= read -r -d : _bp_dir; do
     case "$_bp_dir" in
-      /*/opt/node@[0-9]/bin|/*/opt/node@[0-9][0-9]/bin) ;;
+      /?*/opt/node@[0-9]/bin|/?*/opt/node@[0-9][0-9]/bin) ;;
       *) continue ;;
     esac
     if [ -x "${_bp_dir%/opt/node@*/bin}/bin/brew" ]; then
