@@ -411,6 +411,24 @@ def collect_codex():
 # Claude collector -- authoritative endpoint, else local-transcript estimate
 # --------------------------------------------------------------------------
 
+def _keychain_reads_disabled():
+    """MARVEEN_NO_KEYCHAIN_READS=1 (process env wins, else .env): never call
+    `security` from this unattended job (a locked login Keychain pops a GUI
+    password dialog). Same rule as src/keychain-policy.ts."""
+    raw = os.environ.get("MARVEEN_NO_KEYCHAIN_READS")
+    if raw is None:
+        raw = ""
+        try:
+            with open(ENV_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("MARVEEN_NO_KEYCHAIN_READS="):
+                        raw = line.split("=", 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            pass
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _read_keychain_token():
     """macOS only: Claude Code keeps its OAuth credentials in the login
     Keychain, NOT in ~/.claude/.credentials.json (that file simply does not
@@ -420,6 +438,10 @@ def _read_keychain_token():
     call can be denied or block on a GUI prompt, so it is bounded by a
     timeout and falls through to the next source instead of raising."""
     if sys.platform != "darwin":
+        return None
+    if _keychain_reads_disabled():
+        print("INFO: MARVEEN_NO_KEYCHAIN_READS=1: usage-collect skips the Keychain read "
+              "(the macOS login Keychain is not touched)", file=sys.stderr)
         return None
     try:
         proc = subprocess.run(

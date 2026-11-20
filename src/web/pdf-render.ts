@@ -58,6 +58,8 @@ export function networkLockdownArgs(docOrigin: string | null): string[] {
 export function chromeArgs(profileDir: string, pdfOut: string, target: string, lockdown: string[] | null): string[] {
   return [
     '--headless', '--disable-gpu', '--no-pdf-header-footer', `--user-data-dir=${profileDir}`,
+    // Never touch the macOS login Keychain ("Google Chrome wants to use the login keychain" dialog).
+    '--use-mock-keychain', '--password-store=basic',
     ...(lockdown ?? []),
     `--print-to-pdf=${pdfOut}`, target,
   ]

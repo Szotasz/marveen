@@ -17,6 +17,7 @@ import { getCalendarEvents, type CalendarEvent } from './google-api.js'
 import { runAgent } from './agent.js'
 import { notifyOwner } from './notify.js'
 import { logger } from './logger.js'
+import { skipKeychainRead } from './keychain-policy.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
 import { getMainParkedState } from './web/agent-process.js'
 import { CHANNEL_PLUGIN_IDS } from './web/plugin-ids.js'
@@ -284,6 +285,7 @@ function lstatSyncSafe(p: string): ReturnType<typeof lstatSync> | null {
 // so this function intentionally does nothing.
 function readClaudeCodeOauthJson(): string | null {
   if (process.platform !== 'darwin') return null
+  if (skipKeychainRead('heartbeat credentials')) return null
   try {
     const out = execFileSync(
       '/usr/bin/security',
