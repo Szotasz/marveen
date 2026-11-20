@@ -102,6 +102,57 @@ caller_run "$SANDBOX/plain-block.sh" plain
 check "3 control: a plain & child dies with the caller's group (so test 1 can fail)" \
   "$([ ! -e "$SANDBOX/plain.out" ] && echo 0 || echo 1)"
 
+# 5-7: --scope returns the finalizer's exit code, even when it started correctly.
+SETSID="$(command -v setsid || true)"
+if [ -z "$SETSID" ]; then
+  echo "SKIP: cases 5-7 require setsid"
+else
+  SCOPE_BIN="$SANDBOX/scope-bin"; mkdir -p "$SCOPE_BIN"
+  for t in bash sleep rm; do ln -s "$(command -v "$t")" "$SCOPE_BIN/$t"; done
+  ln -s "$PY" "$SCOPE_BIN/python3"
+  ln -s "$SETSID" "$SCOPE_BIN/setsid"
+  cat > "$SCOPE_BIN/systemd-run" <<'SD'
+#!/usr/bin/env bash
+[ "${FAKE_SDRUN_FAIL:-0}" = 1 ] && exit 1
+while [[ "${1:-}" == --* ]]; do shift; done
+"$@"
+SD
+  chmod +x "$SCOPE_BIN/systemd-run"
+  cat > "$SANDBOX/scope-finalize.sh" <<'SF'
+echo run >> "$1"
+exit "$2"
+SF
+
+  scope_run() { # tag, finalizer exit code, optional scope startup failure
+    (
+      export PATH="$SCOPE_BIN" FAKE_SDRUN_FAIL="${3:-0}"
+      FINALIZE_SCRIPT="$SANDBOX/scope-finalize.sh"
+      FINALIZE_ARGS=("$SANDBOX/$1.runs" "$2")
+      FINALIZE_LOG="$SANDBOX/$1.log"
+      XDG_RUN="$SANDBOX"
+      . "$SANDBOX/launch-block.sh"
+      # Wait for the whole background list, including any fallback, so an
+      # early first run cannot hide a second run still in flight.
+      wait "$!"
+    )
+  }
+
+  scope_run rolled-back 6
+  runs="$(grep -c '^run$' "$SANDBOX/rolled-back.runs" 2>/dev/null)"
+  check "5 finalizer exits 6: exactly one run" \
+    "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+
+  scope_run scope-failed 6 1
+  runs="$(grep -c '^run$' "$SANDBOX/scope-failed.runs" 2>/dev/null)"
+  check "6 systemd-run cannot start: fallback runs exactly once" \
+    "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+
+  scope_run success 0
+  runs="$(grep -c '^run$' "$SANDBOX/success.runs" 2>/dev/null)"
+  check "7 finalizer exits 0: exactly one run" \
+    "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+fi
+
 echo
 if [ "$FAILS" -gt 0 ]; then echo "$FAILS FAILED of $N" >&2; exit 1; fi
 echo "OK: $N checks passed."

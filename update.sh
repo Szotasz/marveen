@@ -2149,7 +2149,12 @@ _notify() { # status [message]
   bash "$INSTALL_DIR/scripts/notify.sh" "$msg" >/dev/null 2>&1 || true
 }
 _finish() { _write "$1" "$2" "$3" "$4"; _notify "$1" "$4"; exit "$3"; }
-_health() { local i=0; while [ "$i" -lt 20 ]; do
+# FINHEALTHWIN1120: the old window was 20 attempts. A measured v1.51.0 start
+# listened only after 20 s, then blocked its event loop for 22.3 s, so the window
+# ran out and a good build was rolled back. The attempt bound keeps the loop
+# finite when sleep returns at once; the time bound does so when every curl
+# hangs for its full 3 s.
+_health() { local i=0 deadline=$(( SECONDS + 120 )); while [ "$i" -lt 120 ] && [ "$SECONDS" -lt "$deadline" ]; do
   curl -fsS -m 3 -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null && return 0
   sleep 1; i=$(( i + 1 )); done; return 1; }
 _restart() { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
@@ -2275,10 +2280,15 @@ if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   #
   # setsid is NOT hoisted out of this branch on purpose: macOS has no setsid at
   # all (measured), and this branch only runs where systemd-run exists.
+  FINALIZE_STARTED="${FINALIZE_SCRIPT%.sh}.started"; rm -f "$FINALIZE_STARTED"
+  # FINONCE1120: systemd-run --scope returns the command's exit code. A
+  # rolled-back/failed finalizer used to run twice, and the second run wrote
+  # a false success. The marker limits the fallback to the case where
+  # systemd-run did not start the finalizer.
   XDG_RUNTIME_DIR="$XDG_RUN" setsid systemd-run --user --scope --collect --quiet \
-    bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
+    bash -c ': > "$1"; shift; exec "$@"' finalize-start "$FINALIZE_STARTED" bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
     < /dev/null >> "$FINALIZE_LOG" 2>&1 \
-    || setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
+    || { [ -e "$FINALIZE_STARTED" ] || setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1; } &
 elif command -v setsid >/dev/null 2>&1; then
   # macOS/launchd or no user-systemd: no cgroup self-kill. Detach in the
   # background so a parent signal during restart cannot abort the health/

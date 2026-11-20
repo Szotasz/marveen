@@ -43,9 +43,16 @@ cat > "$F/scripts/start.sh" <<'ST'
 [ "${SEND_TERM:-0}" = "1" ] && kill -TERM "$PPID"
 exit 0
 ST
-# curl: the dashboard answers unless HEALTH_DOWN=1
+# curl: optionally count attempts, fail forever, or answer after LATE_UP failures.
 cat > "$F/bin/curl" <<'CU'
 #!/usr/bin/env bash
+if [ -n "${CURL_COUNT:-}" ]; then
+  n=0
+  [ -f "$CURL_COUNT" ] && read -r n < "$CURL_COUNT"
+  n=$((n+1))
+  echo "$n" > "$CURL_COUNT"
+  [ "$n" -le "${LATE_UP:-0}" ] && exit 7
+fi
 [ "${HEALTH_DOWN:-0}" = "1" ] && exit 7
 exit 0
 CU
@@ -71,12 +78,14 @@ check "1 no signal line when nothing signals the finalizer" \
 
 # 2. rollback path (the dashboard never answers)
 rm -f "$F/store/res.json"
-out="$(fin_run HEALTH_DOWN=1)"
+out="$(fin_run HEALTH_DOWN=1 CURL_COUNT="$F/curl-count")"
 got="$(stages <<<"$out")"
 check "2 rollback path: stage order is restart unit-drift health rollback" \
   "$([ "$got" = "restart unit-drift health rollback" ] && echo 0 || echo 1)" "got: $got"
 check "2 rollback path writes the failed verdict" \
   "$(grep -q '"status":"failed"' "$F/store/res.json" 2>/dev/null && echo 0 || echo 1)"
+check "2 both health checks exhaust 120 attempts each" \
+  "$([ "$(cat "$F/curl-count")" = 240 ] && echo 0 || echo 1)" "calls: $(cat "$F/curl-count")"
 
 # 3. TERM during the restart
 rm -f "$F/store/res.json"
@@ -88,6 +97,17 @@ check "3 the trap line comes after stage=restart and before stage=unit-drift" \
 
 check "3 the finalizer survives the TERM and still writes the success verdict" \
   "$(grep -q '"status":"success"' "$F/store/res.json" 2>/dev/null && echo 0 || echo 1)"
+
+# 4. a slow dashboard answers on attempt 31, within the extended health window
+rm -f "$F/store/res.json" "$F/curl-count"
+out="$(fin_run LATE_UP=30 CURL_COUNT="$F/curl-count")"
+got="$(stages <<<"$out")"
+check "4 late dashboard writes the success verdict" \
+  "$(grep -q '"status":"success"' "$F/store/res.json" 2>/dev/null && echo 0 || echo 1)"
+check "4 late dashboard: stage order is restart unit-drift health write-verdict" \
+  "$([ "$got" = "restart unit-drift health write-verdict" ] && echo 0 || echo 1)" "got: $got"
+check "4 late dashboard succeeds on attempt 31" \
+  "$([ "$(cat "$F/curl-count")" = 31 ] && echo 0 || echo 1)" "calls: $(cat "$F/curl-count")"
 
 echo
 if [ "$FAILS" -gt 0 ]; then echo "$FAILS FAILED of $N" >&2; exit 1; fi
