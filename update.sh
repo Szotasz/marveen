@@ -2284,9 +2284,10 @@ if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   # FINONCE1120: systemd-run --scope returns the command's exit code. A
   # rolled-back/failed finalizer used to run twice, and the second run wrote
   # a false success. The marker limits the fallback to the case where
-  # systemd-run did not start the finalizer.
+  # systemd-run did not start the finalizer. If writing the marker fails, the
+  # wrapper exits before running the finalizer so the fallback runs it once.
   XDG_RUNTIME_DIR="$XDG_RUN" setsid systemd-run --user --scope --collect --quiet \
-    bash -c ': > "$1"; shift; exec "$@"' finalize-start "$FINALIZE_STARTED" bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
+    bash -c ': > "$1" || exit 1; shift; exec "$@"' finalize-start "$FINALIZE_STARTED" bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
     < /dev/null >> "$FINALIZE_LOG" 2>&1 \
     || { [ -e "$FINALIZE_STARTED" ] || setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1; } &
 elif command -v setsid >/dev/null 2>&1; then

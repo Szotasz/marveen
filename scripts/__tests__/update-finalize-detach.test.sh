@@ -17,6 +17,11 @@
 #   3. positive control: a plain `&` child (the pre-fix macOS branch) does NOT
 #      survive the same kill, so test 1 can fail;
 #   4. exactly one finalizer ran (the python3 path must not also take the fallback).
+#   5. a scope finalizer that exits 6 runs exactly once;
+#   6. when systemd-run cannot start, the fallback runs exactly once;
+#   7. a scope finalizer that exits 0 runs exactly once;
+#   8. when the start marker cannot be written, the fallback runs exactly once
+#      (requires a non-root user).
 #
 # Run:  bash scripts/__tests__/update-finalize-detach.test.sh
 set -uo pipefail
@@ -102,10 +107,10 @@ caller_run "$SANDBOX/plain-block.sh" plain
 check "3 control: a plain & child dies with the caller's group (so test 1 can fail)" \
   "$([ ! -e "$SANDBOX/plain.out" ] && echo 0 || echo 1)"
 
-# 5-7: --scope returns the finalizer's exit code, even when it started correctly.
+# 5-8: --scope returns the finalizer's exit code; marker failures need a fallback.
 SETSID="$(command -v setsid || true)"
 if [ -z "$SETSID" ]; then
-  echo "SKIP: cases 5-7 require setsid"
+  echo "SKIP: cases 5-8 require setsid"
 else
   SCOPE_BIN="$SANDBOX/scope-bin"; mkdir -p "$SCOPE_BIN"
   for t in bash sleep rm; do ln -s "$(command -v "$t")" "$SCOPE_BIN/$t"; done
@@ -123,10 +128,10 @@ echo run >> "$1"
 exit "$2"
 SF
 
-  scope_run() { # tag, finalizer exit code, optional scope startup failure
+  scope_run() { # tag, finalizer exit code, optional scope startup failure, optional script path
     (
       export PATH="$SCOPE_BIN" FAKE_SDRUN_FAIL="${3:-0}"
-      FINALIZE_SCRIPT="$SANDBOX/scope-finalize.sh"
+      FINALIZE_SCRIPT="${4:-$SANDBOX/scope-finalize.sh}"
       FINALIZE_ARGS=("$SANDBOX/$1.runs" "$2")
       FINALIZE_LOG="$SANDBOX/$1.log"
       XDG_RUN="$SANDBOX"
@@ -151,6 +156,19 @@ SF
   runs="$(grep -c '^run$' "$SANDBOX/success.runs" 2>/dev/null)"
   check "7 finalizer exits 0: exactly one run" \
     "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+
+  if [ "$(id -u)" = 0 ]; then
+    echo "SKIP: case 8 requires a non-root user"
+  else
+    mkdir "$SANDBOX/ro"
+    cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/ro/scope-finalize.sh"
+    chmod 555 "$SANDBOX/ro"
+    scope_run marker-failed 6 0 "$SANDBOX/ro/scope-finalize.sh"
+    runs="$(grep -c '^run$' "$SANDBOX/marker-failed.runs" 2>/dev/null)"
+    check "8 marker cannot be written: the finalizer runs exactly once (via the fallback)" \
+      "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+    chmod 755 "$SANDBOX/ro"
+  fi
 fi
 
 echo
