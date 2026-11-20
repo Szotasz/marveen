@@ -25,6 +25,9 @@
 #   9-11. an old start marker that rm -f cannot clear (a folder, or a file in a
 #      folder that is not writable) still lets the finalizer run exactly once
 #      (FINMARKERCLEAR1120; 11 requires a non-root user).
+#   12-13. the replacement marker an earlier run with the same pid left behind
+#      (a file, or a folder rm -f cannot clear) still lets the finalizer run
+#      exactly once.
 #
 # Run:  bash scripts/__tests__/update-finalize-detach.test.sh
 set -uo pipefail
@@ -208,6 +211,27 @@ SF
       "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
     chmod 755 "$SANDBOX/ro11"
   fi
+
+  # 12-13 (FINMARKERCLEAR1120, PID reuse): the replacement marker of an earlier
+  # run is named after that run's pid; a later run with the same pid finds it
+  # still there. The block runs inside scope_run's subshell, where $$ is this
+  # script's pid, so the stale replacement is pre-created under that name.
+  mkdir -p "$SANDBOX/m12/scope-finalize.started/keep"
+  cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/m12/scope-finalize.sh"
+  : > "$SANDBOX/m12/scope-finalize.started.$$"
+  scope_run stale-own-scope-failed 6 1 "$SANDBOX/m12/scope-finalize.sh"
+  runs="$(grep -c '^run$' "$SANDBOX/stale-own-scope-failed.runs" 2>/dev/null)"
+  check "12 a stale replacement marker with this run's pid, systemd-run cannot start: exactly one run" \
+    "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+
+  mkdir -p "$SANDBOX/m13/scope-finalize.started/keep" "$SANDBOX/m13/scope-finalize.started.$$/keep"
+  cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/m13/scope-finalize.sh"
+  scope_run stuck-own-scope-ok 6 0 "$SANDBOX/m13/scope-finalize.sh"
+  runs="$(grep -c '^run$' "$SANDBOX/stuck-own-scope-ok.runs" 2>/dev/null)"
+  check "13 neither marker can be removed, systemd-run starts: exactly one run" \
+    "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+  grep -q 'could not be removed' "$SANDBOX/stuck-own-scope-ok.log" 2>/dev/null; logged=$?
+  check "13b the log says why" "$([ "$logged" = 0 ] && echo 0 || echo 1)" "log grep rc: $logged"
 fi
 
 echo
