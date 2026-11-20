@@ -31,9 +31,9 @@ const between = (src: string, from: string, to: string) => {
 }
 const NEXT = between(APP, "document.getElementById('wizardNextBtn').addEventListener('click'", "const statusEl = document.getElementById('wizardGenStatus')")
 const CREATE_BODY = between(APP, "const res = await fetch('/api/agents', {", '})')
-// AGENTCREATEPR2-1119: the route's body is createAgentFromSpec in agent-create.ts; the route calls it.
+// AGENTCREATEPR2-1119: the route's body is createAgentFromSpec in agent-create.ts; the route calls it; since #2652 it passes the validated engine config as the second argument.
 const CREATE_SRC = readFileSync(new URL('../web/agent-create.ts', import.meta.url), 'utf-8')
-const POST = ROUTE.includes('const result = await createAgentFromSpec(data)')
+const POST = ROUTE.includes('const result = await createAgentFromSpec(data, { engineConfig, explicit: data.engine !== undefined || data.codexConfigDir !== undefined })')
   ? between(CREATE_SRC, 'export async function createAgentFromSpec(', "logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')")
   : ''
 
