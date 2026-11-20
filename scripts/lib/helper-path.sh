@@ -14,13 +14,55 @@
 
 HELPER_PATH_BASE="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
+# ISSUE1968BREWPREFIX (#1968): a Homebrew in a custom prefix keeps tmux, claude and npm in <prefix>/bin.
+# helper_brew_prefix_bin prints that dir, by the rule scripts/channels.sh and src/platform.ts brewPrefixBin
+# apply: the first PATH entry <prefix>/opt/node@NN/bin (node@22's keg, which every launchd PATH the installer
+# wrote starts with) whose <prefix>/bin exists and is not one of the fixed dirs. Nothing when there is none.
+helper_brew_prefix_bin() {
+  _hbp_rest="${PATH:-}:"
+  while [ -n "$_hbp_rest" ]; do
+    _hbp_dir="${_hbp_rest%%:*}"
+    _hbp_rest="${_hbp_rest#*:}"
+    case "$_hbp_dir" in
+      /?*/opt/node@[0-9]/bin|/?*/opt/node@[0-9][0-9]/bin) ;;
+      *) continue ;;
+    esac
+    _hbp_bin="${_hbp_dir%/opt/node@*/bin}/bin"
+    case ":$HELPER_PATH_BASE:" in
+      *":$_hbp_bin:"*) continue ;;
+    esac
+    if [ -d "$_hbp_bin" ]; then
+      printf '%s\n' "$_hbp_bin"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# _helper_path_learn DIR WHAT -- appends "DIR:" to _hlp_learned when DIR is neither
+# on the fixed list nor already learned; a DIR that cannot sit in a PATH value is
+# left out and says so on stderr (HELPER-PATH-ELVETVE), naming it as WHAT.
+_helper_path_learn() {
+  case "$1" in
+    ""|*:*|*"<"*|*">"*|*"&"*|*'"'*|*"'"*|*[[:cntrl:]]*)
+      echo "HELPER-PATH-ELVETVE: $2 cannot go into a PATH value; it is left out" >&2
+      return 0 ;;
+  esac
+  case ":$_hlp_learned$HELPER_PATH_BASE:" in
+    *":$1:"*) ;;
+    *) _hlp_learned="$_hlp_learned$1:" ;;
+  esac
+}
+
 # helper_launchd_path [TMUX] -- the PATH value for a helper plist: the fixed list,
-# with the dir tmux was found in put in front when that dir is not already on it.
+# with the learned dirs put in front when they are not already on it: first the dir
+# tmux was found in, then the custom Homebrew prefix bin (helper_brew_prefix_bin).
 # TMUX is the absolute path of the tmux binary; without it the installer's PATH is
 # searched first, then ~/.local/bin (a non-interactive SSH install does not have it
 # on PATH). A tmux in a listed dir, no tmux, a relative hit, or a dir that cannot
-# sit in a PATH value all give the fixed list, byte for byte; the last of those says
-# so on stderr (HELPER-PATH-ELVETVE); a control character (newline, tab, CR) counts.
+# sit in a PATH value add nothing; the last of those says so on stderr
+# (HELPER-PATH-ELVETVE); a control character (newline, tab, CR) counts. With no
+# custom prefix either, the fixed list comes out byte for byte.
 helper_launchd_path() {
   _hlp_tmux="${1:-}"
   if [ -z "$_hlp_tmux" ]; then
@@ -30,19 +72,13 @@ helper_launchd_path() {
       _hlp_tmux=""
     fi
   fi
+  _hlp_learned=""
   case "$_hlp_tmux" in
-    /*) ;;
-    *) printf '%s\n' "$HELPER_PATH_BASE"; return 0 ;;
+    /*) _helper_path_learn "${_hlp_tmux%/*}" "the dir of $_hlp_tmux" ;;
   esac
-  _hlp_dir="${_hlp_tmux%/*}"
-  case "$_hlp_dir" in
-    ""|*:*|*"<"*|*">"*|*"&"*|*'"'*|*"'"*|*[[:cntrl:]]*)
-      echo "HELPER-PATH-ELVETVE: the dir of $_hlp_tmux cannot go into a PATH value; the fixed list stays" >&2
-      printf '%s\n' "$HELPER_PATH_BASE"
-      return 0 ;;
-  esac
-  case ":$HELPER_PATH_BASE:" in
-    *":$_hlp_dir:"*) printf '%s\n' "$HELPER_PATH_BASE" ;;
-    *) printf '%s\n' "$_hlp_dir:$HELPER_PATH_BASE" ;;
-  esac
+  _hlp_brew="$(helper_brew_prefix_bin)"
+  if [ -n "$_hlp_brew" ]; then
+    _helper_path_learn "$_hlp_brew" "the Homebrew prefix bin $_hlp_brew"
+  fi
+  printf '%s\n' "$_hlp_learned$HELPER_PATH_BASE"
 }

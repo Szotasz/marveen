@@ -67,6 +67,13 @@ if [ -n "$PINNED_TZ" ]; then
 fi
 
 retire_legacy_helper_label "$PROJECT_DIR" stuck-modal-guard "$LABEL" "$HOME/Library/LaunchAgents"
+# The learned dirs of scripts/lib/helper-path.sh (the dir tmux was found in, a custom
+# Homebrew prefix bin: ISSUE1968BREWPREFIX) go right after ~/.local/bin, which keeps
+# leading (NATIVECLAUDEFIRST1011). None learned = the list as before.
+. "$SCRIPT_DIR/lib/helper-path.sh"
+HELPER_LEARNED="$(helper_launchd_path)"
+HELPER_LEARNED="${HELPER_LEARNED%"$HELPER_PATH_BASE"}"
+HELPER_LEARNED="${HELPER_LEARNED#"$HOME/.local/bin:"}"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -92,7 +99,7 @@ cat > "$PLIST" <<PLIST_EOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>$HOME/.local/bin:/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>$HOME/.local/bin:${HELPER_LEARNED}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>$HOME</string>
     <key>USER</key>

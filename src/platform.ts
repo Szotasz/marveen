@@ -45,6 +45,14 @@ export function brewPrefixBin(pathEnv: string | undefined, isDir: (p: string) =>
   return null
 }
 
+// BREWPREFIXREST1107: a dir that goes into a plist <string> PATH value must not carry a PATH separator or XML markup:
+// the same set scripts/lib/helper-path.sh _helper_path_learn refuses (empty, : < > & " ' and control characters).
+// False = leave the dir out (brewPrefixBin's regex accepts any character in the prefix).
+export function plistPathDirOk(dir: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return dir !== '' && !/[:<>&"'\x00-\x1f\x7f]/.test(dir)
+}
+
 // The probe list, worked out at call time (the PATH can change under a running process). The derived Homebrew bin
 // goes right after ~/.local/bin, the same place channels.sh puts it, so both lookups pick the same binary.
 export function knownBinDirs(pathEnv: string | undefined = process.env.PATH): string[] {
