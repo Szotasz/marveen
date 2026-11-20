@@ -80,7 +80,8 @@ describe('no toast in app.js is a hardcoded string any more', () => {
 
   it('the seven error toasts use the "<common.error>: <message>" pattern', () => {
     for (const [name, src] of Object.entries(ERROR_SITES)) {
-      expect(src, name).toContain("showToast(`${t('common.error')}: ${err.message}`)")
+      // the kind (toast-kinds.test.ts) may follow; the text is what this pins
+      expect(src, name).toMatch(/showToast\(`\$\{t\('common\.error'\)\}: \$\{err\.message\}`(, 'error')?\)/)
       expect(src, name).not.toContain('Hiba')
     }
   })

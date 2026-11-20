@@ -3025,6 +3025,11 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   white-space: nowrap;
 }
 .toast.visible { transform: translateX(-50%) translateY(0); }
+/* The kind showToast() was given: an error red, a success green, a warning amber, the same in both themes. White
+   text keeps at least 4.5:1 on each (--danger 4.8:1; --success itself is only 3.7:1, so a darker shade of it). */
+.toast.toast-error { background: var(--danger); color: #fff; }
+.toast.toast-success { background: #5f7148; color: #fff; }
+.toast.toast-warn { background: #b45309; color: #fff; }
 
 /* === Tasks === */
 .tasks-empty {
