@@ -3,7 +3,7 @@
 // entry every installed launchd PATH starts with (<prefix>/opt/node@22/bin). Tested with stub dirs only: no brew,
 // no launchd. The channels.sh block is RUN, cut out between its markers, not read as text.
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
@@ -252,6 +252,20 @@ describe('learnedPathDirProblem (platform.ts) = helper-path.sh _helper_path_unsa
   ]
   symlinkSync(own, join(root, 'link'))
   cases.push(['symlink to an own 0755 dir', join(root, 'link'), 'is a symlink'])
+  // R1 (Dani, #2985): every ancestor up to / passes the rule; a sticky ancestor may be writable
+  const w777 = mk('w777', 0o755); mkdirSync(join(w777, 'bin'), { mode: 0o755 }); chmodSync(w777, 0o777)
+  const st = mk('st', 0o755); mkdirSync(join(st, 'bin'), { mode: 0o755 }); chmodSync(st, 0o1777)
+  const gwp = mk('gwp', 0o755); mkdirSync(join(gwp, 'bin'), { mode: 0o755 }); chmodSync(gwp, 0o775)
+  const o757 = mk('o757', 0o755); mkdirSync(join(o757, 'bin'), { mode: 0o755 }); chmodSync(o757, 0o757)
+  symlinkSync(w777, join(root, 'vialink'))
+  // 0777: the group rule decides first
+  cases.push(['own 0755 bin under a 0777 parent', join(w777, 'bin'), `has a parent ${w777} that is group-writable`])
+  cases.push(['own 0755 bin under a 0757 parent', join(o757, 'bin'), `has a parent ${o757} that is writable by others`])
+  cases.push(['own 0755 bin under a sticky 1777 parent', join(st, 'bin'), null])
+  cases.push(['own 0755 bin under a 0775 parent', join(gwp, 'bin'), `has a parent ${gwp} that is group-writable`])
+  // the real path is checked: the parent is named as realpath gives it
+  cases.push(['through a symlink whose target parent is 0777', join(root, 'vialink', 'bin'),
+    `has a parent ${realpathSync(w777)} that is group-writable`])
   writeFileSync(join(root, 'file'), '')
   cases.push(['a file', join(root, 'file'), 'is not a directory'])
   for (const [name, dir, why] of cases) {

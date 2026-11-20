@@ -66,6 +66,27 @@ else
   echo "  SKIP: D7 no dir owned by another non-root user found on this machine"
 fi
 
+echo "every ancestor up to / passes the same rule (R1: a writable parent can swap the dir)"
+mkdir -p "$TMP/w777/bin" "$TMP/st/bin" "$TMP/gwp/bin"
+chmod 755 "$TMP/w777/bin" "$TMP/st/bin" "$TMP/gwp/bin"
+chmod 777 "$TMP/w777"; chmod 1777 "$TMP/st"; chmod 775 "$TMP/gwp"
+out="$(learn "$TMP/w777/bin")"
+assert_eq "A1 own 0755 bin under a 0777 parent -> left out" "|" "${out%%|*}|"
+assert_contains "A1 names the parent and why (0777: the group rule decides first)" "$out" \
+  "the dir $TMP/w777/bin has a parent $TMP/w777 that is group-writable"
+assert_eq "A2 own 0755 bin under a sticky 1777 parent -> learned" "$TMP/st/bin:|" "$(learn "$TMP/st/bin")"
+out="$(learn "$TMP/gwp/bin")"
+assert_contains "A3 a group-writable 0775 parent -> left out, named" "$out" "has a parent $TMP/gwp that is group-writable"
+ln -s "$TMP/w777" "$TMP/vialink"
+out="$(learn "$TMP/vialink/bin")"
+assert_contains "A4 reached through a symlink whose target's parent is 0777 -> left out (the real path is checked)" \
+  "$out" "has a parent $(cd -P "$TMP/w777" && pwd -P) that is group-writable"
+mkdir -p "$TMP/o757/bin"; chmod 755 "$TMP/o757/bin"; chmod 757 "$TMP/o757"
+assert_contains "A6 a parent writable by others only (0757) -> left out, named" "$(learn "$TMP/o757/bin")" \
+  "has a parent $TMP/o757 that is writable by others"
+ln -s "$TMP/st" "$TMP/okvia"
+assert_eq "A5 (control) through a symlink to the sticky parent -> learned as given" "$TMP/okvia/bin:|" "$(learn "$TMP/okvia/bin")"
+
 echo "under an empty PATH (builtins only) the check still works"
 got="$(PATH="" ; learn "$TMP/ok")"
 assert_eq "D8 own 0755 dir learned with PATH empty" "$TMP/ok:|" "$got"
