@@ -355,6 +355,12 @@ see it, and the conversation ledger does not record it. Nothing waits for an ans
 no "Dolgozom rajta…" placeholder, the Stop hook does not demand a Telegram reply, and instead of
 the mandatory-reply directive the agent gets a short note that this is a reaction, not a question.
 
+A reaction is not an approval either. The note says so, and also when a reaction arrives together
+with a message: if a step needs the owner's explicit go-ahead (an approval, something outward-facing
+or irreversible), the agent asks for it in writing and waits for a text answer. A thumbs-up on a
+"Mehet?" is one tap with no evidence row, and it does not say what it approves. The formal approval
+paths go through the approvals API, which a reaction never reaches.
+
 **Setting it.** Dashboard: *Settings → Channels → `TELEGRAM_REACTIONS_ENABLED`*, or
 `TELEGRAM_REACTIONS_ENABLED=1` in `.env`. Every reaction is one more turn for the agent, so it is
 off by default; off, the plugin source is exactly what it is today, and Telegram goes back to the

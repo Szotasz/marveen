@@ -37,12 +37,26 @@ describe('telegram-reply-directive.py', () => {
     const r = directive(REACTION + '\n' + REACTION.replace('👍', '🔥').replace('👍', '🔥'))
     expect(r.code).toBe(0)
     expect(r.stdout).toBe('[TELEGRAM-REAKCIÓ] Ez egy emoji-reakció egy korábbi üzenetre (reply_to_message_id, és ha megvan, ' +
-      'reply_to_text), nem kérdés: választ nem vár. Csak akkor írj a reply toollal, ha a reakció miatt tenned kell valamit.\n')
+      'reply_to_text), nem kérdés: választ nem vár. Csak akkor írj a reply toollal, ha a reakció miatt tenned kell valamit. ' +
+      NOT_CONSENT + '\n')
   })
 
-  it('a reaction ahead of a message in the same delivery: the plain directive, for the message', () => {
+  // #2958 security review (R1): a thumbs-up on "Mehet?" must not read as the owner's go-ahead.
+  const NOT_CONSENT = 'A reakció nem jóváhagyás: ha a lépéshez a tulajdonos kifejezett engedélye kell (jóváhagyás, ' +
+    'kifelé ható vagy visszafordíthatatlan lépés), kérd írásban, és várd meg a szöveges választ.'
+  it('the reaction note says a reaction is no approval, and asks for it in writing', () => {
+    const r = directive(REACTION)
+    expect(r.stdout).toContain(NOT_CONSENT)
+    expect(r.stdout.match(/nem jóváhagyás/g)).toHaveLength(1)
+  })
+
+  it('a reaction ahead of a message in the same delivery: the plain directive for the message, then the same warning', () => {
     const r = directive(REACTION + '\n<channel source="plugin:telegram:telegram" chat_id="42" message_id="41" user="owner">szia</channel>')
-    expect(r.stdout).toBe(PLAIN)
+    expect(r.stdout).toBe(PLAIN + '[TELEGRAM-REAKCIÓ] Ebben a kézbesítésben reakció is van. ' + NOT_CONSENT + '\n')
+  })
+
+  it('a message without a reaction gets no reaction warning', () => {
+    expect(directive('<channel source="plugin:telegram:telegram" chat_id="42" message_id="41" user="owner">Mehet? 👍</channel>').stdout).toBe(PLAIN)
   })
 
   it('not a Telegram turn: silent', () => {

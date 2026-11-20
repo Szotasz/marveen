@@ -29,6 +29,15 @@ def _attr(attrs, name):
     return m.group(1) if m else None
 
 
+# A reaction is the weakest consent there is: one tap, no message id or evidence row of its own, and it does not say
+# what it approves. Next to reply_to_text a model would read a thumbs-up on "Mehet?" as a yes, so the note says it is
+# not one (#2958 security review, R1). The formal approvals go through the approvals API, which a reaction never reaches.
+NOT_CONSENT = (
+    "A reakció nem jóváhagyás: ha a lépéshez a tulajdonos kifejezett engedélye kell (jóváhagyás, kifelé ható vagy "
+    "visszafordíthatatlan lépés), kérd írásban, és várd meg a szöveges választ."
+)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -46,7 +55,7 @@ def main():
         sys.stdout.write(
             "[TELEGRAM-REAKCIÓ] Ez egy emoji-reakció egy korábbi üzenetre (reply_to_message_id, és ha megvan, "
             "reply_to_text), nem kérdés: választ nem vár. Csak akkor írj a reply toollal, ha a reakció miatt "
-            "tenned kell valamit.\n"
+            f"tenned kell valamit. {NOT_CONSENT}\n"
         )
         sys.exit(0)
     m = messages[0]
@@ -63,6 +72,9 @@ def main():
         f"tmux-ba. Ha csak nyugtázás kell (ok/köszi), akkor sem baj, de érdemi "
         f"választ MINDIG a reply toollal küldj.\n"
     )
+    # A reaction next to the message is just as weak a yes as one on its own (#2958 security review, R1).
+    if len(messages) < len(blocks):
+        sys.stdout.write(f"[TELEGRAM-REAKCIÓ] Ebben a kézbesítésben reakció is van. {NOT_CONSENT}\n")
     sys.exit(0)
 
 

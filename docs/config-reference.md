@@ -366,6 +366,12 @@ beszélgetés-napló (ledger) sem rögzíti. Választ sem vár rá semmi: a „D
 nem jelenik meg, a Stop hook nem követel rá Telegram-választ, és a kötelező-válasz direktíva
 helyett az ügynök egy rövid jelzést kap, hogy ez reakció, nem kérdés.
 
+A reakció jóváhagyás sem. A jelzés ezt is kimondja, akkor is, ha a reakció egy üzenettel együtt
+érkezik: ha a lépéshez a tulajdonos kifejezett engedélye kell (jóváhagyás, kifelé ható vagy
+visszafordíthatatlan lépés), az ügynök írásban kéri, és szöveges választ vár. Egy „Mehet?”-re
+adott hüvelykujj egyetlen koppintás bizonyíték-sor nélkül, és nem mondja meg, mit hagy jóvá. A
+hivatalos jóváhagyások az approvals API-n mennek, oda reakció nem jut el.
+
 **Beállítás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_REACTIONS_ENABLED`*, vagy
 `.env`-ben `TELEGRAM_REACTIONS_ENABLED=1`. Minden reakció egy újabb kör az ügynöknek, ezért
 alapból ki van kapcsolva; kikapcsolva a plugin forrása pontosan a mai, és a Telegram a következő
