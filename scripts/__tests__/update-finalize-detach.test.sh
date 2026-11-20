@@ -169,6 +169,36 @@ SF
       "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
     chmod 755 "$SANDBOX/ro"
   fi
+
+  # 9-11 (FINMARKERCLEAR1120): an old start marker that rm -f cannot clear must
+  # not stop the finalizer. The marker sits next to the finalizer script.
+  mkdir -p "$SANDBOX/m9/scope-finalize.started/keep"
+  cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/m9/scope-finalize.sh"
+  scope_run marker-dir-scope-ok 6 0 "$SANDBOX/m9/scope-finalize.sh"
+  runs="$(grep -c '^run$' "$SANDBOX/marker-dir-scope-ok.runs" 2>/dev/null)"
+  check "9 the marker path is a non-empty folder, systemd-run starts: exactly one run" \
+    "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+
+  mkdir -p "$SANDBOX/m10/scope-finalize.started/keep"
+  cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/m10/scope-finalize.sh"
+  scope_run marker-dir-scope-failed 6 1 "$SANDBOX/m10/scope-finalize.sh"
+  runs="$(grep -c '^run$' "$SANDBOX/marker-dir-scope-failed.runs" 2>/dev/null)"
+  check "10 the marker path is a non-empty folder, systemd-run cannot start: exactly one run" \
+    "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+
+  if [ "$(id -u)" = 0 ]; then
+    echo "SKIP: case 11 requires a non-root user"
+  else
+    mkdir "$SANDBOX/ro11"
+    cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/ro11/scope-finalize.sh"
+    : > "$SANDBOX/ro11/scope-finalize.started"
+    chmod 555 "$SANDBOX/ro11"
+    scope_run stale-marker-scope-failed 6 1 "$SANDBOX/ro11/scope-finalize.sh"
+    runs="$(grep -c '^run$' "$SANDBOX/stale-marker-scope-failed.runs" 2>/dev/null)"
+    check "11 an old marker file that cannot be removed, systemd-run cannot start: exactly one run" \
+      "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+    chmod 755 "$SANDBOX/ro11"
+  fi
 fi
 
 echo
