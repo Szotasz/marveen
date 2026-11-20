@@ -158,6 +158,13 @@ describe('tryAcquirePidLock: clock steps cannot reclaim a live holder (round 4)'
     expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: LEGACY, reason: 'held' })
     expect(d.argvOf).not.toHaveBeenCalled()
   })
+
+  it('C7 /proc is read before ps, the other way round: a foreign /proc argv is stale even when ps would answer coordinator', () => {
+    writeFileSync(file, String(LEGACY))
+    const d = deps({ alive: true, argv: COORD, proc: () => '/usr/bin/node server.js' })
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: true, reclaimed: LEGACY })
+    expect(d.argvOf).not.toHaveBeenCalled()
+  })
 })
 
 describe('tryAcquirePidLock: new-format locks ("pid boot_id tick")', () => {
@@ -437,5 +444,14 @@ describe('round 3: zombie holder, unsafe tick, no-start deps', () => {
     const d2 = deps({ alive: true, argv: 'node server.js', boot: BOOT, ticks: () => undefined })
     writeFileSync(file, `31337 ${BOOT} 999000`)
     expect(tryAcquirePidLock(file, SELF, d2)).toEqual({ ok: true, reclaimed: 31337 })
+  })
+
+  it('A3d new-format lock, unreadable tick, neither /proc nor ps can read argv: unknown (fail closed), lock untouched', () => {
+    writeFileSync(file, `31337 ${BOOT} 999000`)
+    const d = deps({ alive: true, argv: undefined, boot: BOOT, ticks: () => undefined, proc: () => undefined })
+    expect(tryAcquirePidLock(file, SELF, d)).toEqual({ ok: false, holder: 31337, reason: 'unknown' })
+    expect(d.procArgvOf).toHaveBeenCalledWith(31337)
+    expect(d.argvOf).toHaveBeenCalledWith(31337)
+    expect(readFileSync(file, 'utf-8').trim()).toBe(`31337 ${BOOT} 999000`)
   })
 })
