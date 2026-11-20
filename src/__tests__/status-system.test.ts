@@ -370,7 +370,7 @@ describe('Telegram plugin-patch row', () => {
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
       { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'anchor-missing:approvals function' } },
     ] }))
-    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (meghívó-szöveg): 0.0.8 (anchor-missing:approvals function) · a meghívóval érkező párosító kódot kap, amit a meghívó pár másodperc múlva érvénytelenít')
+    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (meghívó-szöveg): 0.0.8 (anchor-missing:approvals function) · a meghívó link senkit nem enged be (a monitor csak a saját tokennel érkezőt hagyja jóvá), marad a dashboardos párosító kód')
   })
 
   it('a plugin version that arrived after the start is measured now, not taken from the state file', () => {

@@ -517,6 +517,11 @@ PAIRTEXT_PATCH = {"name": "pairtext", "fallback": PAIRTEXT_FALLBACK}
 #     install's language instead of "Paired! Say hi to Claude." (for a dashboard code approval too).
 # Without a live invite nothing changes: the pairing code and its text are as before. Whole lines only, each carrying the
 # marker, so taking it back is deleting those lines; the language is AGENT_TEXT_LANG, like the pairtext patch.
+# Token binding (INVITETOKENBIND1120, card 1fff5453): the monitor used to approve ANY pending sender while an invite was
+# live. Now /start invite-<token> acts only when <token> itself is a live invite in invites.json, and then leaves a claim,
+# invite-claims/<senderId> = sha256(token) (0600, in a 0700 dir); the monitor approves a pending entry only with a claim
+# that matches a live invite. The "letting you in" answer of the pair branch goes only to a sender with a claim; anyone
+# else gets the ordinary pairing code (which only the dashboard approves).
 INVITE_MARKER = "// MARVEEN-PATCH(invitetext): an invitee gets no pairing code"
 INVITE_TEXT = {
     "hu": {"wait": "Meghívóval érkeztél, beengedlek. Pár másodperc, és szólok, hogy írhatsz.",
@@ -528,11 +533,16 @@ INVITE_TEXT = {
 }
 INVITE_HELPERS = [
     "const MARVEEN_INVITE_TEXT = {texts}",
-    "function marveenInviteLive(): boolean {{ try {{ const s = JSON.parse(readFileSync(join(STATE_DIR, 'invites.json'), 'utf8')); const now = Date.now(); "
-    "return Object.values(s?.invites ?? {{}}).some((i: any) => !!i && i.used !== true && typeof i.expiresAt === 'number' && i.expiresAt >= now) }} catch {{ return false }} }}",
-    "function marveenInviteStart(ctx: Context): boolean {{ const p = typeof ctx.match === 'string' ? ctx.match.trim() : ''; "
-    "if (!p.startsWith('invite-') || !marveenInviteLive()) return false; const r = gate(ctx); if (r.action === 'drop') return true; "
-    "void ctx.reply(r.action === 'deliver' ? MARVEEN_INVITE_TEXT.already : MARVEEN_INVITE_TEXT.wait).catch(() => {{}}); return true }}",
+    "function marveenInviteToken(t: string): boolean {{ if (!/^[A-Za-z0-9_-]{{16,64}}$/.test(t)) return false; try {{ "
+    "const s = JSON.parse(readFileSync(join(STATE_DIR, 'invites.json'), 'utf8')); const i = s?.invites && Object.prototype.hasOwnProperty.call(s.invites, t) ? s.invites[t] : null; "
+    "return !!i && i.used !== true && typeof i.expiresAt === 'number' && i.expiresAt >= Date.now() }} catch {{ return false }} }}",
+    "function marveenInviteClaimed(id: string): boolean {{ if (!/^-?[0-9]{{1,20}}$/.test(id)) return false; "
+    "try {{ return Date.now() - statSync(join(STATE_DIR, 'invite-claims', id)).mtimeMs <= 3600000 }} catch {{ return false }} }}",
+    "async function marveenInviteStart(ctx: Context): Promise<boolean> {{ const p = typeof ctx.match === 'string' ? ctx.match.trim() : ''; const t = p.slice(7); "
+    "if (!p.startsWith('invite-') || !ctx.from || !marveenInviteToken(t)) return false; const r = gate(ctx); if (r.action === 'drop') return true; "
+    "if (r.action === 'pair') {{ try {{ const h = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t))), b => b.toString(16).padStart(2, '0')).join(''); "
+    "const d = join(STATE_DIR, 'invite-claims'); mkdirSync(d, {{ recursive: true, mode: 0o700 }}); writeFileSync(join(d, String(ctx.from.id)), h + '\\n', {{ mode: 0o600 }}) }} catch {{ return false }} }} "
+    "await ctx.reply(r.action === 'deliver' ? MARVEEN_INVITE_TEXT.already : MARVEEN_INVITE_TEXT.wait).catch(() => {{}}); return true }}",
 ]
 INVITE_ANCHORS = [
     # helpers: before checkApprovals (module level, after gate(), STATE_DIR and the fs/path imports)
@@ -543,12 +553,12 @@ INVITE_ANCHORS = [
      "process.stderr.write(`telegram channel: failed to send approval confirm: ${err}\\n`); rmSync(file, { force: true }) }); continue"),
     # /start: right after its DM gate, before the pairtext line (if any)
     ("start gate", re.compile(r"^bot\.command\('start', async ctx => \{\n( *)if \(!dmCommandGate\(ctx\)\) return\n", re.MULTILINE), "after",
-     "if (marveenInviteStart(ctx)) return"),
+     "if (await marveenInviteStart(ctx)) return"),
     # the pair branch: first line inside it
     ("pair branch", re.compile(r"^( *)if \(result\.action === 'pair'\) \{\n", re.MULTILINE), "after",
-     "  if (marveenInviteLive()) { await ctx.reply(MARVEEN_INVITE_TEXT.wait); return }"),
+     "  if (marveenInviteClaimed(String(ctx.from?.id ?? ''))) { await ctx.reply(MARVEEN_INVITE_TEXT.wait); return }"),
 ]
-INVITE_FALLBACK = "an invitee still gets a pairing code the invite monitor makes useless a few seconds later"
+INVITE_FALLBACK = "an invite link lets nobody in (the monitor approves only a sender with a token claim); the dashboard pairing code still works"
 
 
 def strip_invitetext(text):

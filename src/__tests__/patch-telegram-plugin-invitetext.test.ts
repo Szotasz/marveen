@@ -10,6 +10,7 @@ import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSy
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import ts from 'typescript'
+import { createHash } from 'node:crypto'
 
 const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
@@ -57,57 +58,74 @@ function syntaxErrors(code: string): string[] {
   return (out.diagnostics ?? []).map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
 }
 
-// The three module-level helper lines, run with fakes for what they reach for (the plugin's fs/path imports, STATE_DIR, gate).
-function helpers(patched: string, o: { invites?: unknown; raw?: string; gate?: () => { action: string } } = {}) {
-  const lines = ours(patched).filter((l) => /^(const MARVEEN_INVITE_TEXT|function marveenInvite)/.test(l))
-  expect(lines).toHaveLength(3)
+// The four module-level helper lines, run with fakes for what they reach for (the plugin's fs/path imports, STATE_DIR,
+// gate) and Node's own Web Crypto (the plugin runs on Bun, which has the same crypto.subtle).
+const TOK = 'AbCdEfGhIjKlMnOpQrStUv' // 22 chars, the dashboard's base64url shape
+const sha = (t: string) => createHash('sha256').update(t, 'utf8').digest('hex')
+function helpers(patched: string, o: { invites?: unknown; raw?: string; gate?: () => { action: string }; claims?: Record<string, number>; writeFails?: boolean } = {}) {
+  const lines = ours(patched).filter((l) => /^(const MARVEEN_INVITE_TEXT|function marveenInvite|async function marveenInvite)/.test(l))
+  expect(lines).toHaveLength(4)
   const reads: string[] = []
   const gateCalls: unknown[] = []
+  const written: Array<{ path: string; data: string; mode?: number }> = []
+  const dirs: Array<{ path: string; mode?: number }> = []
   const readFileSync = (p: string) => {
     reads.push(p)
     if (o.raw !== undefined) return o.raw
     if (o.invites === undefined) throw new Error('ENOENT')
     return JSON.stringify(o.invites)
   }
+  const statSync = (p: string) => {
+    const id = p.split('/').pop()!
+    if (!o.claims || !(id in o.claims)) throw new Error('ENOENT')
+    return { mtimeMs: o.claims[id] }
+  }
+  const mkdirSync = (p: string, opt: { mode?: number }) => { dirs.push({ path: p, mode: opt?.mode }) }
+  const writeFileSync = (p: string, data: string, opt: { mode?: number }) => {
+    if (o.writeFails) throw new Error('EACCES')
+    written.push({ path: p, data, mode: opt?.mode })
+  }
   const gate = (ctx: unknown) => { gateCalls.push(ctx); return (o.gate ?? (() => ({ action: 'pair' })))() }
-  const api = new Function('readFileSync', 'join', 'STATE_DIR', 'gate',
-    transpile(lines.join('\n')) + '\nreturn { live: marveenInviteLive, start: marveenInviteStart, text: MARVEEN_INVITE_TEXT }')(
-    readFileSync, (...p: string[]) => p.join('/'), '/state', gate)
-  return { ...api, reads, gateCalls }
+  const api = new Function('readFileSync', 'statSync', 'mkdirSync', 'writeFileSync', 'join', 'STATE_DIR', 'gate',
+    transpile(lines.join('\n')) + '\nreturn { token: marveenInviteToken, claimed: marveenInviteClaimed, start: marveenInviteStart, text: MARVEEN_INVITE_TEXT }')(
+    readFileSync, statSync, mkdirSync, writeFileSync, (...p: string[]) => p.join('/'), '/state', gate)
+  return { ...api, reads, gateCalls, written, dirs }
 }
-function fakeCtx(match: string | undefined) {
+function fakeCtx(match: string | undefined, fromId: number | null = 4242) {
   const replies: string[] = []
-  return { ctx: { match, reply: (t: string) => { replies.push(t); return Promise.resolve() } }, replies }
+  return { ctx: { match, from: fromId === null ? undefined : { id: fromId }, reply: (t: string) => { replies.push(t); return Promise.resolve() } }, replies }
 }
 const DAY = 24 * 3600 * 1000
-const liveInvite = () => ({ invites: { tok1: { createdAt: Date.now() - 1000, expiresAt: Date.now() + DAY, used: false } } })
+const invitesWith = (token: string, e: Record<string, unknown> = {}) => ({ invites: { [token]: { createdAt: Date.now() - 1000, expiresAt: Date.now() + DAY, used: false, ...e } } })
 
 describe('the invitetext patch', () => {
-  it('puts its six lines in four places, Hungarian by default, and the file still parses', () => {
+  it('puts its seven lines in four places, Hungarian by default, and the file still parses', () => {
     const { state } = run()
     expect(state.files[0].patches.invitetext).toBe('patched')
     expect(state.files[0].patches.pairtext).toBe('patched')
     const text = readFileSync(server, 'utf-8')
     const lines = ours(text)
-    expect(lines).toHaveLength(6)
+    expect(lines).toHaveLength(7)
     expect(syntaxErrors(text)).toEqual([])
     const all = text.split('\n')
     // helpers right before checkApprovals, at module level
     const fn = all.indexOf('function checkApprovals(): void {')
-    expect(all.slice(fn - 3, fn).every((l) => l.endsWith(' ' + MARKER))).toBe(true)
-    expect(all[fn - 3]).toContain(JSON.stringify(HU.wait))
+    expect(all.slice(fn - 4, fn).every((l) => l.endsWith(' ' + MARKER))).toBe(true)
+    expect(all[fn - 4]).toContain(JSON.stringify(HU.wait))
     // the confirmation: ours first, the plugin's own send kept right under it
     const confirm = all.findIndex((l) => l.includes('MARVEEN_INVITE_TEXT.welcome'))
     expect(all[confirm + 1]).toMatch(/^ *void bot\.api\.sendMessage\(senderId, "Paired! Say hi to Claude\."\)\.then\($/)
     expect(all[confirm]).toMatch(/; continue \/\/ MARVEEN-PATCH\(invitetext\)/)
     // /start: right under the DM gate, ABOVE the pairtext line
-    const start = all.findIndex((l) => l.trim().startsWith('if (marveenInviteStart(ctx)) return'))
+    const start = all.findIndex((l) => l.trim().startsWith('if (await marveenInviteStart(ctx)) return'))
     expect(all[start - 1]).toMatch(/^ *if \(!dmCommandGate\(ctx\)\) return$/)
     expect(all[start + 1].endsWith(' ' + PAIRTEXT_MARKER)).toBe(true)
     // the pair branch: first line inside it, before the plugin's `const lead` and the pairtext line
-    const pair = all.findIndex((l) => l.includes('if (marveenInviteLive()) { await ctx.reply(MARVEEN_INVITE_TEXT.wait); return }'))
+    const pair = all.findIndex((l) => l.includes("if (marveenInviteClaimed(String(ctx.from?.id ?? ''))) { await ctx.reply(MARVEEN_INVITE_TEXT.wait); return }"))
     expect(all[pair - 1]).toMatch(/^ *if \(result\.action === 'pair'\) \{$/)
     expect(all[pair + 1]).toMatch(/const lead = result\.isResend/)
+    // no new import: the claim's sha256 is Web Crypto
+    expect(lines.some((l) => l.startsWith('import '))).toBe(false)
   })
 
   it('is idempotent, and taking it back is deleting its lines', () => {
@@ -132,7 +150,7 @@ describe('the invitetext patch', () => {
     const en = readFileSync(server, 'utf-8')
     expect(en).toContain(JSON.stringify(EN_WELCOME))
     expect(en).not.toContain(HU.welcome)
-    expect(ours(en)).toHaveLength(6)
+    expect(ours(en)).toHaveLength(7)
     writeFileSync(join(install, '.env'), 'AGENT_TEXT_LANG=hu\n')
     run()
     expect(readFileSync(server, 'utf-8')).toBe(hu)
@@ -148,49 +166,82 @@ describe('the invitetext patch', () => {
     expect(stderr).toMatch(/invitetext/)
   })
 
-  it('a live invite: /start invite-... makes the pending entry (gate) and answers "letting you in", no code', () => {
+  it('/start invite-<a live token>: the pending entry (gate), a claim = sha256(token) at 0600 in a 0700 dir, "letting you in", no code', async () => {
     run()
-    const h = helpers(readFileSync(server, 'utf-8'), { invites: liveInvite() })
-    const c = fakeCtx('invite-AbC123')
-    expect(h.start(c.ctx)).toBe(true)
+    const h = helpers(readFileSync(server, 'utf-8'), { invites: invitesWith(TOK) })
+    const c = fakeCtx('invite-' + TOK, 4242)
+    expect(await h.start(c.ctx)).toBe(true)
     expect(h.gateCalls).toHaveLength(1)
     expect(c.replies).toEqual([HU.wait])
     expect(h.reads).toEqual(['/state/invites.json'])
-    // already approved: told so, nothing else
-    const d = helpers(readFileSync(server, 'utf-8'), { invites: liveInvite(), gate: () => ({ action: 'deliver' }) })
-    const c2 = fakeCtx('invite-AbC123')
-    expect(d.start(c2.ctx)).toBe(true)
-    expect(c2.replies).toEqual([HU.already])
-    // the plugin's gate drops (third reply, pending cap): silent, and the pairing text is not sent either
-    const g = helpers(readFileSync(server, 'utf-8'), { invites: liveInvite(), gate: () => ({ action: 'drop' }) })
-    const c3 = fakeCtx('invite-AbC123')
-    expect(g.start(c3.ctx)).toBe(true)
-    expect(c3.replies).toEqual([])
+    expect(h.dirs).toEqual([{ path: '/state/invite-claims', mode: 0o700 }])
+    expect(h.written).toEqual([{ path: '/state/invite-claims/4242', data: sha(TOK) + '\n', mode: 0o600 }])
+    expect(h.written[0].data).not.toContain(TOK) // the token itself is never copied
   })
 
-  it('no live invite, or no invite payload: /start goes on to the pairing text as before, gate untouched', () => {
+  it('/start invite-<live token> for an approved sender: "already in", no claim; a gate drop: silent, no claim', async () => {
     run()
     const patched = readFileSync(server, 'utf-8')
-    const now = Date.now()
+    const d = helpers(patched, { invites: invitesWith(TOK), gate: () => ({ action: 'deliver' }) })
+    const c = fakeCtx('invite-' + TOK)
+    expect(await d.start(c.ctx)).toBe(true)
+    expect(c.replies).toEqual([HU.already])
+    expect(d.written).toEqual([])
+    const g = helpers(patched, { invites: invitesWith(TOK), gate: () => ({ action: 'drop' }) })
+    const c2 = fakeCtx('invite-' + TOK)
+    expect(await g.start(c2.ctx)).toBe(true)
+    expect(c2.replies).toEqual([])
+    expect(g.written).toEqual([])
+  })
+
+  it('a claim that cannot be written: /start falls back to the plugin (false), no "letting you in"', async () => {
+    run()
+    const h = helpers(readFileSync(server, 'utf-8'), { invites: invitesWith(TOK), writeFails: true })
+    const c = fakeCtx('invite-' + TOK)
+    expect(await h.start(c.ctx)).toBe(false)
+    expect(c.replies).toEqual([])
+  })
+
+  it('no claim and no special answer without THIS live token: another token, used, expired, malformed, no file, plain /start', async () => {
+    run()
+    const patched = readFileSync(server, 'utf-8')
+    const other = 'ZzZzZzZzZzZzZzZzZzZzZz'
     const cases: Array<[string, Parameters<typeof helpers>[1], string | undefined]> = [
-      ['no invites.json', {}, 'invite-x'],
-      ['unreadable invites.json', { raw: '{not json' }, 'invite-x'],
-      ['only a used invite', { invites: { invites: { a: { createdAt: now - 10, expiresAt: now + DAY, used: true } } } }, 'invite-x'],
-      ['only an expired invite', { invites: { invites: { a: { createdAt: now - DAY, expiresAt: now - 1, used: false } } } }, 'invite-x'],
-      ['an invite with no expiry', { invites: { invites: { a: { createdAt: now, used: false } } } }, 'invite-x'],
-      ['plain /start', { invites: liveInvite() }, ''],
-      ['other payload', { invites: liveInvite() }, 'hello'],
-      ['no match field', { invites: liveInvite() }, undefined],
+      ['a different (guessed) token, another invite live', { invites: invitesWith(TOK) }, 'invite-' + other],
+      ['the token, used', { invites: invitesWith(TOK, { used: true }) }, 'invite-' + TOK],
+      ['the token, expired', { invites: invitesWith(TOK, { expiresAt: Date.now() - 1 }) }, 'invite-' + TOK],
+      ['the token, no expiry', { invites: invitesWith(TOK, { expiresAt: undefined }) }, 'invite-' + TOK],
+      ['a prototype key as token', { invites: invitesWith(TOK) }, 'invite-constructor__proto__x'],
+      ['too short', { invites: invitesWith('short') }, 'invite-short'],
+      ['odd characters', { invites: invitesWith(TOK) }, 'invite-' + TOK + '/../x'],
+      ['no invites.json', {}, 'invite-' + TOK],
+      ['unreadable invites.json', { raw: '{not json' }, 'invite-' + TOK],
+      ['plain /start', { invites: invitesWith(TOK) }, ''],
+      ['other payload', { invites: invitesWith(TOK) }, 'hello'],
+      ['no match field', { invites: invitesWith(TOK) }, undefined],
     ]
     for (const [name, o, match] of cases) {
       const h = helpers(patched, o)
       const c = fakeCtx(match)
-      expect(h.start(c.ctx), name).toBe(false)
+      expect(await h.start(c.ctx), name).toBe(false)
       expect(h.gateCalls, name).toHaveLength(0)
+      expect(h.written, name).toEqual([])
       expect(c.replies, name).toEqual([])
     }
-    expect(helpers(patched, { invites: liveInvite() }).live()).toBe(true)
-    expect(helpers(patched, {}).live()).toBe(false)
+    const n = helpers(patched, { invites: invitesWith(TOK) })
+    const c = fakeCtx('invite-' + TOK, null) // no sender on the update
+    expect(await n.start(c.ctx)).toBe(false)
+  })
+
+  it('marveenInviteClaimed: a claim file younger than an hour, for a numeric id only', () => {
+    run()
+    const patched = readFileSync(server, 'utf-8')
+    const h = helpers(patched, { claims: { '4242': Date.now() - 1000, '77': Date.now() - 2 * 3600 * 1000 } })
+    expect(h.claimed('4242')).toBe(true)
+    expect(h.claimed('77')).toBe(false) // stale
+    expect(h.claimed('5')).toBe(false) // none
+    expect(h.claimed('../4242')).toBe(false)
+    expect(h.claimed('')).toBe(false)
   })
 
   it('the approval confirmation says "you are in" and still removes the marker; a failed send removes it too', async () => {
@@ -216,17 +267,19 @@ describe('the invitetext patch', () => {
     }
   })
 
-  it('the pair branch line: a live invite answers "letting you in" and returns before the code', async () => {
+  it('the pair branch line: only a sender with a claim gets "letting you in"; anyone else the plugin\'s code', async () => {
     run()
     const patched = readFileSync(server, 'utf-8')
-    const line = ours(patched).find((l) => l.includes('if (marveenInviteLive())'))!
-    for (const live of [true, false]) {
+    const line = ours(patched).find((l) => l.includes('if (marveenInviteClaimed('))!
+    for (const [fromId, claimed] of [[4242, true], [9999, false]] as const) {
       const replies: string[] = []
-      const ctx = { reply: (t: string) => { replies.push(t); return Promise.resolve() } }
-      const f = new Function('ctx', 'marveenInviteLive', 'MARVEEN_INVITE_TEXT',
+      const asked: string[] = []
+      const ctx = { from: { id: fromId }, reply: (t: string) => { replies.push(t); return Promise.resolve() } }
+      const f = new Function('ctx', 'marveenInviteClaimed', 'MARVEEN_INVITE_TEXT',
         'return (async () => { ' + transpile(line) + '\n await ctx.reply("CODE") })()')
-      await f(ctx, () => live, HU)
-      expect(replies).toEqual(live ? [HU.wait] : ['CODE'])
+      await f(ctx, (id: string) => { asked.push(id); return claimed }, HU)
+      expect(asked).toEqual([String(fromId)])
+      expect(replies).toEqual(claimed ? [HU.wait] : ['CODE'])
     }
   })
 })
