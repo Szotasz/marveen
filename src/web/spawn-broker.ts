@@ -275,7 +275,7 @@ export function isReadOnlyTmuxChain(tmuxArgs: string[]): boolean {
       seenDoubleDash = false
     } else {
       if (arg === '--') seenDoubleDash = true
-      if (arg === '-p' && !seenDoubleDash && !['-b', '-E', '-S', '-t', '-c', '-d', '-F'].includes(previousToken)) needsPrint = false
+      if (arg === '-p' && !seenDoubleDash && !/^-[^-]*[bEStcdF]$/.test(previousToken)) needsPrint = false
       previousToken = arg
     }
   }

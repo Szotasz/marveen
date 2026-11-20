@@ -377,4 +377,14 @@ it('classifies only wholly read-only tmux chains', () => {
   expect(isReadOnlyTmuxChain([])).toBe(false)
   expect(isReadOnlyTmuxChain([';', 'capture-pane'])).toBe(false)
   expect(isReadOnlyTmuxChain(['capture-pane', ';'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-eb', '-p', '-t', '=s:'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-t', '=s:', '-eb', '-p'])).toBe(false)
+  expect(isReadOnlyTmuxChain(['display-message', '-vc', '-p'])).toBe(false)
+  for (const verb of ['capture-pane', 'display-message']) {
+    for (const flag of ['b', 'E', 'S', 't', 'c', 'd', 'F']) {
+      expect(isReadOnlyTmuxChain([verb, `-e${flag}`, '-p']), `${verb} -e${flag} -p`).toBe(false)
+    }
+  }
+  expect(isReadOnlyTmuxChain(['capture-pane', '-S', '-', '-p'])).toBe(true)
+  expect(isReadOnlyTmuxChain(['capture-pane', '-eJ', '-p'])).toBe(true)
 })
