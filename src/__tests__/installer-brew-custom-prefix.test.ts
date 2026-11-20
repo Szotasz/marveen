@@ -114,6 +114,14 @@ describe('install-macos.sh brew probe (real block, stubbed brew and curl)', () =
     expect(r.out).toContain('Homebrew not found')
     expect(r.calls).toContain('curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh')
     expect(r.out).not.toContain('ERRTRAP')
+    expect(r.out).not.toMatch(/No such file|command not found/)
+  })
+
+  it('the first keg entry WITH a brew wins: a brew-less keg before it is skipped', () => {
+    const r = run({ custom: true }, (d) => `${d.stub}:/nonexistent-prefix/opt/node@20/bin:${d.keg}:${SYS}`)
+    expect(r.code).toBe(0)
+    expect(r.out).not.toContain('Homebrew not found')
+    expect(r.calls).toContain(`${r.custom}/bin/brew shellenv`)
   })
 
   it('default /opt/homebrew: found as before; the keg rule does not override it', () => {
