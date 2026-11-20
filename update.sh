@@ -2280,7 +2280,15 @@ if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   #
   # setsid is NOT hoisted out of this branch on purpose: macOS has no setsid at
   # all (measured), and this branch only runs where systemd-run exists.
-  FINALIZE_STARTED="${FINALIZE_SCRIPT%.sh}.started"; rm -f "$FINALIZE_STARTED"
+  FINALIZE_STARTED="${FINALIZE_SCRIPT%.sh}.started"; rm -f "$FINALIZE_STARTED" 2>/dev/null
+  # FINMARKERCLEAR1120: an old marker that rm -f cannot clear (a folder, or a
+  # file in a folder that is not writable) made the fallback below believe the
+  # finalizer had started, so no finalizer ran at all. This run then uses a
+  # marker name of its own; plain shell only, the PATH here may be minimal.
+  if [ -e "$FINALIZE_STARTED" ] || [ -L "$FINALIZE_STARTED" ]; then
+    echo "[update] the old finalizer start marker $FINALIZE_STARTED could not be removed; this run uses ${FINALIZE_SCRIPT%.sh}.started.$$" >> "$FINALIZE_LOG" 2>/dev/null
+    FINALIZE_STARTED="${FINALIZE_SCRIPT%.sh}.started.$$"
+  fi
   # FINONCE1120: systemd-run --scope returns the command's exit code. A
   # rolled-back/failed finalizer used to run twice, and the second run wrote
   # a false success. The marker limits the fallback to the case where

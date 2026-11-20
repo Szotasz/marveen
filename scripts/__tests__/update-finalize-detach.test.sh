@@ -22,6 +22,9 @@
 #   7. a scope finalizer that exits 0 runs exactly once;
 #   8. when the start marker cannot be written, the fallback runs exactly once
 #      (requires a non-root user).
+#   9-11. an old start marker that rm -f cannot clear (a folder, or a file in a
+#      folder that is not writable) still lets the finalizer run exactly once
+#      (FINMARKERCLEAR1120; 11 requires a non-root user).
 #
 # Run:  bash scripts/__tests__/update-finalize-detach.test.sh
 set -uo pipefail
@@ -178,6 +181,12 @@ SF
   runs="$(grep -c '^run$' "$SANDBOX/marker-dir-scope-ok.runs" 2>/dev/null)"
   check "9 the marker path is a non-empty folder, systemd-run starts: exactly one run" \
     "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+  # The one run must come through systemd-run (the wrapper wrote this run's own
+  # marker), not through the fallback, and the log must say why.
+  own=0; for m in "$SANDBOX"/m9/scope-finalize.started.*; do [ -f "$m" ] && own=1; done
+  grep -q 'could not be removed' "$SANDBOX/marker-dir-scope-ok.log" 2>/dev/null; logged=$?
+  check "9b the run came through systemd-run with its own marker, and the log says so" \
+    "$([ "$own" = 1 ] && [ "$logged" = 0 ] && echo 0 || echo 1)" "own marker: $own, log grep rc: $logged"
 
   mkdir -p "$SANDBOX/m10/scope-finalize.started/keep"
   cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/m10/scope-finalize.sh"
