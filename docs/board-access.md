@@ -245,6 +245,12 @@ exists but cannot be read signs nobody in, ends every colleague session and is
 never overwritten by the CLI or the API; fix or remove it by hand. In an entry,
 only a literal `"disabled": false` keeps an account usable.
 
+Only the owner writes the file, through the owner API or the CLI. Like
+`store/board-access.json`, it is on the db-write gate's protected list: an
+agent's Write/Edit or Bash write to it is denied, a read is allowed. Without
+this, an agent could add an account with a hash it knows, or point an existing
+account at another person, and sign in as that colleague.
+
 ### How a colleague session is kept apart from the owner
 
 - **Its own cookie, table and principal.** The login sets `mv_colleague`

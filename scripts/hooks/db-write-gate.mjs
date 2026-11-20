@@ -166,6 +166,9 @@ export const PROTECTED_INSTALL_PATHS = [
   // The scoped board's confinement (PR #2912 review B1, Dani): read on each request, so an agent that writes it
   // (enabled false, or its person's role set to all) un-scopes itself at once. Only the owner edits it.
   { rel: 'store/board-access.json' },
+  // The scoped board's colleague logins (PR #2929, same class as #2912 B1): an agent that adds an account with a hash it
+  // knows, or bumps a person's role, signs in as that colleague. Only the owner API and the CLI write it.
+  { rel: 'store/colleague-accounts.json' },
   // The main checkout's git wiring (Samu 56299 2, Dani 56284): its remote, its remote-tracking refs and its hooks. A
   // worktree shares them, so a ref or a URL changed from a worktree is changed for the install's pull as well.
   { rel: '.git/config' },

@@ -40,6 +40,7 @@ function scaffold(dir: string): void {
   writeFileSync(join(dir, 'store', 'autonomy-config.json'), '{}')
   writeFileSync(join(dir, 'store', 'agent-sender-role-gates.json'), '{}')
   writeFileSync(join(dir, 'store', 'board-access.json'), '{}')
+  writeFileSync(join(dir, 'store', 'colleague-accounts.json'), '{}')
 }
 // The install is a main checkout (a .git directory), the worktree has a .git file, as git makes them.
 function gitScaffold(): void {
@@ -235,11 +236,13 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     // WDSANDBOXMARKER1119: the per-agent launch files every restart path reads (a file under each directory)
     'store/bash-sandbox/soma.settings.json', 'store/code-mode/soma.on',
     // PR #2912 review B1 (Dani): the scoped board's confinement, read on each request.
-    'store/board-access.json']
+    'store/board-access.json',
+    // PR #2929: the colleague logins of the scoped board, the same class as B1.
+    'store/colleague-accounts.json']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.dashboard-node', 'store/bash-sandbox', 'store/code-mode', 'store/board-access.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.dashboard-node', 'store/bash-sandbox', 'store/code-mode', 'store/board-access.json', 'store/colleague-accounts.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json',
       // SUPPORTKULCS1109 D5: the support state of this machine, one folder
@@ -532,6 +535,15 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a temp file renamed onto it', `echo '{}' > /tmp/b.json && mv /tmp/b.json @ROOT@/store/board-access.json`],
     ['rm of it', `rm store/board-access.json`],
   ])('the board confinement: %s is denied in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_FILE)
+  })
+  // PR #2929: the colleague logins. An agent that writes an account (a hash it knows) signs in as that colleague.
+  it.each([
+    ['a redirect', `echo '{"accounts":[]}' > store/colleague-accounts.json`],
+    ['sed -i', `sed -i 's/"generation":1/"generation":0/' store/colleague-accounts.json`],
+    ['python writing it', `python3 -c "open('store/colleague-accounts.json','w').write('{}')"`],
+    ['rm of it', `rm store/colleague-accounts.json`],
+  ])('the colleague logins: %s is denied in the install', (_, cmd) => {
     expect(bash(cmd)).toEqual(DENY_FILE)
   })
   it('the board confinement: a read passes in the install, a write passes in the worktree', () => {
