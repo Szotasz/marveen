@@ -3,6 +3,7 @@
 // { kind, duration }), and the kind colours it. The first block marks every refusal the server gave as an error.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import ts from 'typescript'
 
 const APP = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf-8')
 const CSS = readFileSync(new URL('../../web/style.css', import.meta.url), 'utf-8')
@@ -180,5 +181,59 @@ describe('the callers', () => {
     }
     expect(n).toBeGreaterThanOrEqual(6)
     expect(missed).toEqual([])
+  })
+})
+
+// Block 2: whatever a catch clause shows is an error (a failed fetch, a thrown refusal, a bad file). The typescript
+// parser finds the clauses, so a nested function or a try inside a catch is counted the way the code runs it.
+describe('the catch toasts', () => {
+  // The one catch toast that is not an error: the invite was created, only copying its link to the clipboard failed,
+  // and the toast says the invite is there.
+  const NOT_ERRORS = ['channel.toast.invite_created']
+  const sf = ts.createSourceFile('app.js', APP, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  const inCatch: Array<{ line: number; text: string; kind: string | null }> = []
+  const kindOf = (a: ts.Expression | undefined): string | null => {
+    if (!a) return null
+    if (ts.isStringLiteral(a)) return a.text
+    if (ts.isObjectLiteralExpression(a)) {
+      const p = a.properties.find(p => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === 'kind')
+      return p && ts.isPropertyAssignment(p) && ts.isStringLiteral(p.initializer) ? p.initializer.text : null
+    }
+    return null
+  }
+  const visit = (n: ts.Node, caught: boolean): void => {
+    if (ts.isCatchClause(n)) caught = true
+    if (caught && ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'showToast') {
+      inCatch.push({
+        line: sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1,
+        text: n.getText(sf).replace(/\s+/g, ' '),
+        kind: kindOf(n.arguments[1]),
+      })
+    }
+    ts.forEachChild(n, ch => visit(ch, caught))
+  }
+  visit(sf, false)
+
+  it('the catch toasts were found', () => {
+    expect(inCatch.length).toBeGreaterThanOrEqual(120)
+  })
+
+  it('every toast in a catch clause is an error toast', () => {
+    const missed = inCatch.filter(c => c.kind !== 'error' && !NOT_ERRORS.some(k => c.text.includes(`'${k}'`)))
+    expect(missed.map(c => `${c.line}: ${c.text}`)).toEqual([])
+  })
+
+  it('the exception is still a catch toast, and still neutral', () => {
+    for (const k of NOT_ERRORS) {
+      const hits = inCatch.filter(c => c.text.includes(`'${k}'`))
+      expect(hits.length).toBe(1)
+      expect(hits[0].kind).toBeNull()
+    }
+  })
+
+  it('a duration the catch toast had is kept next to the kind', () => {
+    for (const k of ['channel.toast.reconnect_error', 'channel.smoke_test.error', 'updates.rebase.plan_error']) {
+      expect(inCatch.find(c => c.text.includes(`'${k}'`))?.text).toMatch(/\{ kind: 'error', duration: \d+ \}\)$/)
+    }
   })
 })

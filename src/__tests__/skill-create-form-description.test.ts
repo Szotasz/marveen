@@ -42,7 +42,7 @@ describe('the new-skill form', () => {
   })
 
   it('the error toast is translated, not a hard-coded "Hiba"', () => {
-    expect(HANDLER).toContain("showToast(`${t('common.error')}: ${err.message}`)")
+    expect(HANDLER).toContain("showToast(`${t('common.error')}: ${err.message}`, 'error')")
     expect(HANDLER).not.toContain('Hiba')
   })
 })

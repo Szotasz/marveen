@@ -77,7 +77,7 @@ describe('the Channels tab toasts come from the language files', () => {
 
   it('an error is shown as "<common.error>: <message>" at all seven places', () => {
     for (const src of [CONNECT, APPROVE_PAIRING, REMOVE_ALLOWED, GENERATE_INVITE, REVOKE_INVITE, SUBMIT_APPROVE, DENY_REQUEST]) {
-      expect(src).toContain("showToast(`${t('common.error')}: ${err.message}`)")
+      expect(src).toContain("showToast(`${t('common.error')}: ${err.message}`, 'error')")
     }
   })
 
