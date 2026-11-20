@@ -2534,6 +2534,31 @@ export function resolveCodeModeLaunch(name: string, claudeConfigDir: string | nu
   return false
 }
 
+// Null when `path` is (now) a real directory; otherwise the reason it is not.
+// Creates a missing directory non-recursively (its parent was checked first).
+function ensureRealRelayDir(path: string): string | null {
+  const unreachable = (err: unknown) => `relay spool path is unreachable (${(err as NodeJS.ErrnoException)?.code ?? (err instanceof Error ? err.message : String(err))}): ${path}`
+  let st
+  try {
+    st = lstatSync(path)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return unreachable(err)
+    try {
+      try {
+        mkdirSync(path, { mode: 0o700 })
+      } catch (mkErr) {
+        if ((mkErr as NodeJS.ErrnoException).code !== 'EEXIST') throw mkErr
+      }
+      st = lstatSync(path)
+    } catch (err2) {
+      return unreachable(err2)
+    }
+  }
+  if (st.isSymbolicLink()) return `relay spool path is a symlink: ${path}`
+  if (!st.isDirectory()) return `relay spool path is not a directory: ${path}`
+  return null
+}
+
 // codexSandbox=relay (CARD 2436459e): the dashboard relay daemon runs OUTSIDE
 // the Codex workspace-write sandbox and is the only holder of the agent's
 // dashboard token. Codex starts the MCP shim outside the command sandbox
@@ -2542,11 +2567,14 @@ export function resolveCodeModeLaunch(name: string, claudeConfigDir: string | nu
 // after launcher validation and before tmux, so readiness failure leaves no session.
 async function startDashboardRelayDaemon(name: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const relayDir = codexRelayDir(name)
-  mkdirSync(join(PROJECT_ROOT, 'store', 'codex-relay'), { recursive: true, mode: 0o700 })
-  for (const path of [relayDir, join(relayDir, 'requests'), join(relayDir, 'responses')]) {
-    mkdirSync(path, { recursive: true, mode: 0o700 })
-    chmodSync(path, 0o700)
+  mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true, mode: 0o700 })
+  // Verify the whole spool chain (parent first) before any chmod, rm or open.
+  const auditDir = join(PROJECT_ROOT, 'store', 'codex-relay-audit')
+  for (const path of [join(PROJECT_ROOT, 'store', 'codex-relay'), relayDir, join(relayDir, 'requests'), join(relayDir, 'responses'), auditDir]) {
+    const reason = ensureRealRelayDir(path)
+    if (reason) return { ok: false, error: reason }
   }
+  for (const path of [relayDir, join(relayDir, 'requests'), join(relayDir, 'responses')]) chmodSync(path, 0o700)
   // A marker left behind by a SIGKILLed daemon would make a daemon that never
   // comes up look ready, so any stale one goes before the spawn; the fresh
   // daemon re-creates it naming its own pid, and readiness is that pid.
@@ -2555,8 +2583,6 @@ async function startDashboardRelayDaemon(name: string): Promise<{ ok: true } | {
   const logFd = openSync(join(relayDir, 'relay.log'), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
   // The per-request audit trail lives under store/, OUTSIDE the sandbox-writable
   // workspace, alongside the relay's protected spool, log and pid file.
-  const auditDir = join(PROJECT_ROOT, 'store', 'codex-relay-audit')
-  mkdirSync(auditDir, { recursive: true, mode: 0o700 })
   const relayChild = spawn(process.execPath, [
     join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs'),
     '--agent', name,
@@ -2594,11 +2620,21 @@ async function startDashboardRelayDaemon(name: string): Promise<{ ok: true } | {
 // spawned detached, outside the tmux session, so it survives kill-session and
 // must be stopped on its own pid. SIGTERM makes relay.mjs unlink relay.ready
 // and exit 0; escalate to SIGKILL only if it is still alive after 2s.
-// True when ps still proves the pid is THIS agent's relay daemon: the full
-// script path, plus exactly this agent's --relay-dir followed by more args.
-function isRelayDaemonCommand(command: string, relayDir: string): boolean {
+// True when ps still proves the pid is THIS agent's relay daemon: interpreter,
+// then exactly this script, this agent, this relay dir, then --token-file.
+function isRelayDaemonCommand(command: string, name: string, relayDir: string): boolean {
   const text = command.trim()
-  return text.includes(join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')) && text.includes(` --relay-dir ${relayDir} `)
+  const script = join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')
+  const expected = ` ${script} --agent ${name} --relay-dir ${relayDir} --token-file`
+  // argv[0] is the interpreter: this process's own execPath (which may contain spaces) or one whitespace-free token.
+  let rest: string
+  if (text.startsWith(`${process.execPath} `)) rest = text.slice(process.execPath.length)
+  else {
+    const m = /^\S+( .*)$/s.exec(text)
+    if (!m) return false
+    rest = m[1]
+  }
+  return rest === expected || rest.startsWith(`${expected} `)
 }
 
 export async function stopDashboardRelay(name: string, opts: { readCmdline?: (pid: number) => string } = {}): Promise<void> {
@@ -2631,8 +2667,8 @@ export async function stopDashboardRelay(name: string, opts: { readCmdline?: (pi
     discardPidFile(`cannot read ps command for pid ${pid} (${err instanceof Error ? err.message : String(err)})`, pid)
     return
   }
-  if (!isRelayDaemonCommand(cmdline, relayDir)) {
-    discardPidFile(`pid ${pid} is not this agent's relay daemon (cmdline lacks the relay.mjs script path or the --relay-dir value ${relayDir})`, pid)
+  if (!isRelayDaemonCommand(cmdline, name, relayDir)) {
+    discardPidFile(`pid ${pid} is not this agent's relay daemon (cmdline is not <interpreter> ${join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')} --agent ${name} --relay-dir ${relayDir} --token-file ...)`, pid)
     return
   }
   try {
@@ -2658,7 +2694,7 @@ export async function stopDashboardRelay(name: string, opts: { readCmdline?: (pi
         /* ps command unreadable: the process is gone, nothing to signal */
       }
       if (cmdlineAtDeadline !== undefined) {
-        if (!isRelayDaemonCommand(cmdlineAtDeadline, relayDir)) {
+        if (!isRelayDaemonCommand(cmdlineAtDeadline, name, relayDir)) {
           logger.warn({ relayDir, pid }, 'stopDashboardRelay: pid no longer this agent\'s relay daemon at SIGKILL time (pid reuse?); skipping SIGKILL')
         } else {
           try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }

@@ -418,7 +418,7 @@ describe('stopDashboardRelay pid guard', () => {
     ], { stdio: 'ignore' })
     try {
       await waitFor(() => (existsSync(readyMarker) ? true : null))
-      const realCmdline = `${process.execPath} ${join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')} --relay-dir ${dir} --token-file token\n`
+      const realCmdline = `${process.execPath} ${join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')} --agent ${name} --relay-dir ${dir} --token-file token\n`
       writeFileSync(join(dir, 'relay.pid'), String(helper.pid))
       let calls = 0
       const readCmdline = (_pid: number) => {
@@ -459,7 +459,7 @@ describe('stopDashboardRelay pid guard', () => {
       let calls = 0
       const readCmdline = (_pid: number) => {
         calls += 1
-        if (calls === 1) return `${process.execPath} ${join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')} --relay-dir ${dir} --token-file token\n`
+        if (calls === 1) return `${process.execPath} ${join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')} --agent ${name} --relay-dir ${dir} --token-file token\n`
         throw new Error(`ps exited non-zero for pid ${pid}`)
       }
       // The unreadable deadline read must be swallowed, never surfaced.
@@ -494,14 +494,19 @@ describe('B5 ps process identity', () => {
     }
   })
 
-  it.each(['other agent', 'end of line', 'longer path', 'foreign script'])('refuses %s without signalling and removes the pid', async variant => {
+  it.each(['other agent', 'end of line', 'longer path', 'foreign script', 'backup script', 'node -e helper', 'agent missing'])('refuses %s without signalling and removes the pid', async variant => {
     const { name, dir } = stopFixture()
     writeFileSync(join(dir, 'relay.pid'), '123456')
     const script = variant === 'foreign script' ? '/foreign/scripts/codex-relay/relay.mjs' : join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs')
     const tail = variant === 'other agent' ? `${dir}-other --token-file token` : variant === 'end of line' ? dir : variant === 'longer path' ? `${dir}x --token-file token` : `${dir} --token-file token`
     const kill = vi.spyOn(process, 'kill').mockReturnValue(true)
+    const full: Record<string, string> = {
+      'backup script': `node ${script}.backup --agent ${name} --relay-dir ${dir} --token-file token`,
+      'node -e helper': `${process.execPath} -e "require('fs')" marker ${script} --agent ${name} --relay-dir ${dir} --token-file token`,
+      'agent missing': `node ${script} --relay-dir ${dir} --token-file token`,
+    }
     try {
-      await stopDashboardRelay(name, { readCmdline: () => `node ${script} --agent ${name} --relay-dir ${tail}\n` })
+      await stopDashboardRelay(name, { readCmdline: () => (full[variant] ?? `node ${script} --agent ${name} --relay-dir ${tail}`) + '\n' })
       expect(kill).not.toHaveBeenCalled()
       expect(existsSync(join(dir, 'relay.pid'))).toBe(false)
     } finally {

@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { expandAndValidateConfigDir } from '../config-dir-path.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -547,6 +547,10 @@ export function assertCodexSeatConfigCompatible(home: string, workspace: string,
     refuseSeatConfig('the relay filesystem table must contain exactly the rendered filesystem entries for this workspace')
   }
   if (dashboardSeen && (!commandSeen || !argsSeen)) refuseShimEntry('missing command/args')
+  // Last, so the specific shim-entry and permissions refusals above keep priority.
+  if (identity === 'seat' && (content.includes("'''") || content.includes('"""'))) {
+    refuseSeatConfig('it contains a TOML multi-line string (\'\'\' or \"\"\"), which this line-based check cannot parse, so it could hide or fake a setting')
+  }
   if (identity === 'seat' && content.includes('\\')) {
     throw new Error(
       `codexSandbox=relay refuses the existing ${configPath}: it contains a backslash (a TOML escape), which this check cannot decode, so an escaped 'danger-full-access' could hide behind it. Delete the file and start the agent so it is re-rendered`)
@@ -608,7 +612,34 @@ export function assertNoProjectCodexConfig(workspace: string, opts: CodexRenderO
   }
 }
 
+export function assertCodexHomeOutsideWorkspace(home: string, workspace: string, opts: CodexRenderOptions = {}): void {
+  if (opts.profile !== 'relay') return
+  const physicalPath = (p: string): string => {
+    let cur = resolve(p)
+    const tail: string[] = []
+    for (;;) {
+      try {
+        return join(realpathSync(cur), ...tail)
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+          throw new Error(`codexSandbox=relay cannot resolve ${p} (${code}); refusing to start (fail closed)`)
+        }
+        const parent = dirname(cur)
+        if (parent === cur) throw new Error(`codexSandbox=relay cannot resolve ${p} (${code}); refusing to start (fail closed)`)
+        tail.unshift(cur.slice(parent.length).replace(/^[\\/]+/, ''))
+        cur = parent
+      }
+    }
+  }
+  const inside = (a: string, b: string): boolean => a === b || a.startsWith(b.endsWith(sep) ? b : b + sep)
+  if (inside(resolve(home), resolve(workspace)) || inside(physicalPath(home), physicalPath(workspace))) {
+    throw new Error(`codexSandbox=relay refuses codexConfigDir ${home}: it is inside the agent workspace ${workspace}, which the sandboxed agent can write, so the agent could rewrite its own Codex config. Move codexConfigDir outside the workspace`)
+  }
+}
+
 export function preflightCodexHome(home: string, workspace: string, servers: Record<string, unknown>, identity: CodexIdentity = 'seat', opts: CodexRenderOptions = {}): void {
+  assertCodexHomeOutsideWorkspace(home, workspace, opts)
   assertCodexSeatConfigCompatible(home, workspace, identity, opts)
   assertNoProjectCodexConfig(workspace, opts)
   // Validation only, before anything is written: in overrides mode the seat's
@@ -623,6 +654,7 @@ export function preflightCodexHome(home: string, workspace: string, servers: Rec
 
 /** Seed only once: operator edits remain the source of truth on subsequent starts. */
 export function scaffoldCodexHome(home: string, workspace: string, servers: Record<string, unknown>, identity: CodexIdentity = 'seat', opts: CodexRenderOptions = {}): void {
+  assertCodexHomeOutsideWorkspace(home, workspace, opts)
   assertCodexSeatConfigCompatible(home, workspace, identity, opts)
   assertNoProjectCodexConfig(workspace, opts)
   const dropped = relayDroppedMcpServers(servers, opts)

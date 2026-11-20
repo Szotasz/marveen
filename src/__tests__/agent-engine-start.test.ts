@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
@@ -68,6 +68,7 @@ beforeEach(() => {
   harness.tmuxError = null
   vi.mocked(spawn).mockClear()
   rmSync(join(sandbox, 'store', 'codex-relay'), { recursive: true, force: true })
+  rmSync(join(sandbox, 'spool-victim'), { recursive: true, force: true })
   rmSync(join(sandbox, 'agents'), { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
@@ -250,6 +251,55 @@ describe('Codex agent start behaviour', () => {
     expect(existsSync(join(relayDir, 'relay.pid'))).toBe(false)
     expect(existsSync(join(dir, '.gitignore'))).toBe(false)
     expect(launcherCalls()).toHaveLength(1)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(sessionCalls()).toHaveLength(0)
+  })
+
+  it('R1-spool refuses a symlinked store/codex-relay before writing through it', async () => {
+    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
+      engine: 'codex', codexConfigDir, codexSandbox: 'relay',
+    }))
+    const victim = join(sandbox, 'spool-victim')
+    mkdirSync(victim)
+    mkdirSync(join(sandbox, 'store'), { recursive: true })
+    symlinkSync(victim, join(sandbox, 'store', 'codex-relay'))
+    const result = await startAgentProcess(name)
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/relay spool path is a symlink/)
+    expect(readdirSync(victim)).toEqual([])
+    expect(spawn).not.toHaveBeenCalled()
+    expect(sessionCalls()).toHaveLength(0)
+  })
+
+  it('R1-spool refuses a symlinked relay dir before writing through it', async () => {
+    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
+      engine: 'codex', codexConfigDir, codexSandbox: 'relay',
+    }))
+    const victim = join(sandbox, 'spool-victim')
+    mkdirSync(victim)
+    mkdirSync(join(sandbox, 'store', 'codex-relay'), { recursive: true })
+    symlinkSync(victim, join(sandbox, 'store', 'codex-relay', name))
+    const result = await startAgentProcess(name)
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/relay spool path is a symlink/)
+    expect(readdirSync(victim)).toEqual([])
+    expect(spawn).not.toHaveBeenCalled()
+    expect(sessionCalls()).toHaveLength(0)
+  })
+
+  it('R1-spool refuses a symlinked requests dir before writing through it', async () => {
+    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
+      engine: 'codex', codexConfigDir, codexSandbox: 'relay',
+    }))
+    const victim = join(sandbox, 'spool-victim')
+    mkdirSync(victim)
+    const relayDir = join(sandbox, 'store', 'codex-relay', name)
+    mkdirSync(relayDir, { recursive: true })
+    symlinkSync(victim, join(relayDir, 'requests'))
+    const result = await startAgentProcess(name)
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/relay spool path is a symlink/)
+    expect(readdirSync(victim)).toEqual([])
     expect(spawn).not.toHaveBeenCalled()
     expect(sessionCalls()).toHaveLength(0)
   })

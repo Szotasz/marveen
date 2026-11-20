@@ -86,6 +86,10 @@ function sleep(ms) {
 // poll tick: any violation exits before this tick reads or writes anything.
 // Fail-closed: uncollected requests then time out at the shim side, which is
 // the intended availability trade.
+function lstatExists(path) {
+  try { lstatSync(path); return true } catch { return false }
+}
+
 function assertRealDir(label, path) {
   const fail = detail => {
     process.stderr.write(`relay: ${label} is not a real directory (${detail}): ${path}\n`)
@@ -626,10 +630,14 @@ function shutdown() {
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
 
+assertRealDir('relay root', dirname(relayDir))
+// A not-yet-created relay dir is fine here (the mkdir below makes it, then the gate re-checks).
+if (lstatExists(relayDir)) assertRealDir('relay dir', relayDir)
 mkdirSync(requestsDir, { recursive: true })
 mkdirSync(responsesDir, { recursive: true })
 // Startup sanity gate: all three dirs must be real directories BEFORE the
 // ready marker is written -- a symlinked spool never becomes "ready".
+// The relay root (parent of the relay dir) is checked too.
 assertRealDir('relay dir', relayDir)
 assertRealDir('requests dir', requestsDir)
 assertRealDir('responses dir', responsesDir)
@@ -650,6 +658,7 @@ for (;;) {
   // Re-verify on EVERY tick, before this tick reads or writes anything: the
   // host could swap a spool dir for a symlink at any moment, and a single
   // unchecked tick would write outside the spool.
+  assertRealDir('relay root', dirname(relayDir))
   assertRealDir('relay dir', relayDir)
   assertRealDir('requests dir', requestsDir)
   assertRealDir('responses dir', responsesDir)
