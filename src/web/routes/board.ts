@@ -10,7 +10,9 @@
 // Writes go through the db helpers the kanban routes use (createKanbanCard,
 // moveKanbanCard, addKanbanComment) plus the move route's side effects
 // (dispatch on in_progress, dependents freed on done), so events and
-// notifications behave the same as on /api/kanban.
+// notifications behave the same as on /api/kanban. The done-gate is kept too:
+// a move to done without evidence is held at testing, since the writer here is
+// always an agent.
 
 import { randomUUID } from 'node:crypto'
 import {
@@ -29,7 +31,9 @@ import { fireKanbanDispatch, notifyUnblockedCards, statusChangeExtras, KANBAN_EV
 import type { RouteContext } from './types.js'
 
 const BODY_MAX_BYTES = 64 * 1024
-const TITLE_MAX = 500
+// The kanban_cards insert trigger cuts a title above 300 characters to 300 and moves the
+// full text into a comment, silently; refusing up front keeps the person's title whole.
+const TITLE_MAX = 300
 const DESCRIPTION_MAX = 10_000
 const PROJECT_MAX = 200
 const COMMENT_MAX = 10_000
@@ -70,6 +74,19 @@ function visibleCard(p: Principal, rawId: string): KanbanCard | undefined {
   const card = getKanbanCard(id)
   if (!card || card.archived_at != null || !cardVisible(p.visible, card)) return undefined
   return card
+}
+
+/**
+ * The #hex8 -> #seq lookup for a comment, limited to the cards this caller may see.
+ * Resolving against the whole board would answer, in the stored comment, whether an
+ * invisible card exists and what its seq is; an invisible card's reference stays as typed.
+ */
+export function visibleSeqLookup(visible: VisibleAssignees): (prefix: string) => number | null {
+  return (prefix) => {
+    const card = getKanbanCard(prefix)
+    if (!card || card.archived_at != null || !cardVisible(visible, card)) return null
+    return getKanbanSeqByIdPrefix(prefix)
+  }
 }
 
 /** A strict JSON-object body: unknown keys are a 400 naming the accepted ones. null = a response was written. */
@@ -329,7 +346,8 @@ export async function tryHandleBoard(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `content is required (a non-empty string, at most ${COMMENT_MAX} characters)` }, 400)
       return true
     }
-    const comment = addKanbanComment(card.id, p.person.name, normalizeKanbanRefs(body.content, getKanbanSeqByIdPrefix))
+    const comment = addKanbanComment(card.id, p.person.name, normalizeKanbanRefs(body.content, visibleSeqLookup(p.visible)))
+    logger.info({ id: card.id, agent: p.agent, person: p.person.id }, 'board: comment added')
     json(res, comment)
     return true
   }
@@ -354,17 +372,32 @@ export async function tryHandleBoard(ctx: RouteContext): Promise<boolean> {
     }
     const evidence = typeof body.evidence === 'string' && body.evidence.trim() ? body.evidence : undefined
     const actor = p.person.name
+    // The done-gate of /api/kanban/:id/move: the writer here is always a sub-agent (the person's
+    // name is only the actor on the record), so a close without evidence is held at testing.
+    const needsEvidence = status === 'done' && !evidence
+    const effectiveStatus: KanbanCard['status'] = needsEvidence ? 'testing' : status
     // Compare-and-set on the status this request saw: a concurrent change answers 409, never a blind overwrite.
-    if (!moveKanbanCard(card.id, status, 0, actor, { expectedStatus: card.status, ...(evidence ? { evidence } : {}) })) {
+    if (!moveKanbanCard(card.id, effectiveStatus, 0, actor, { expectedStatus: card.status, ...(evidence ? { evidence } : {}) })) {
       const now = getKanbanCard(card.id)
       if (!now || now.archived_at != null || !cardVisible(p.visible, now)) { json(res, { error: NOT_FOUND }, 404); return true }
       json(res, { error: 'status_conflict', current_status: now.status }, 409)
       return true
     }
-    if (status === 'in_progress') fireKanbanDispatch(card.id, actor)
+    logger.info({ id: card.id, agent: p.agent, person: p.person.id, status: effectiveStatus }, 'board: card moved')
+    if (effectiveStatus === 'in_progress') fireKanbanDispatch(card.id, actor)
     const moved = getKanbanCard(card.id)
     if (card.status !== 'done' && moved?.status === 'done') notifyUnblockedCards(card.id, actor)
-    json(res, { ok: true, id: card.id, status: moved?.status ?? status, ...statusChangeExtras(card.id, card, status, actor, { evidenceGiven: !!evidence }) })
+    json(res, {
+      // ok is false when the close was held: a client that reads only ok must not report a closed card.
+      ok: !needsEvidence,
+      id: card.id,
+      status: moved?.status ?? effectiveStatus,
+      ...(needsEvidence ? {
+        evidence_required: true,
+        note: 'A card is closed only with "evidence" (what was checked: the person\'s confirmation, a document, a photo, a measured number). Without it the card was moved to testing, not done. Move it to done again with "evidence" set.',
+      } : {}),
+      ...statusChangeExtras(card.id, card, effectiveStatus, actor, { evidenceGiven: !!evidence }),
+    })
     return true
   }
 

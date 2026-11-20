@@ -264,14 +264,14 @@ describe('gateRequest + board gate (as web.ts composes them)', () => {
 // ---- routes over a real (in-memory) database -------------------------------------------------
 
 interface Resp { status: number; body: any }
-async function call(method: string, path: string, opts: { agent?: string; headers?: Record<string, string>; body?: unknown } = {}): Promise<Resp> {
+async function call(method: string, path: string, opts: { agent?: string; headers?: Record<string, string>; body?: unknown; bodyStream?: AsyncIterable<Buffer> } = {}): Promise<Resp> {
   const out: Resp = { status: 0, body: undefined }
   const res = {
     writeHead(c: number) { out.status = c; return res },
     setHeader() { return res },
     end(d?: unknown) { try { out.body = JSON.parse(String(d ?? '')) } catch { out.body = d } },
   } as unknown as http.ServerResponse
-  const req = Readable.from(opts.body === undefined ? [] : [Buffer.from(typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body))]) as unknown as http.IncomingMessage
+  const req = Readable.from(opts.bodyStream ?? (opts.body === undefined ? [] : [Buffer.from(typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body))])) as unknown as http.IncomingMessage
   ;(req as unknown as { headers: Record<string, string> }).headers = opts.headers ?? {}
   const url = new URL(`http://127.0.0.1${path}`)
   const ctx: RouteContext = {
@@ -396,6 +396,73 @@ describe('/api/board routes', () => {
     const today = await call('GET', '/api/board/report', { agent: 'alice-bot' })
     expect(today.status).toBe(200)
     expect(today.body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('principal(): the route repeats the scope check itself (board-scope), not only the person lookup', async () => {
+    // An unlisted agent and a listed agent with the feature off are refused by the route's own
+    // scope check, whatever the person lookup would say: the route never trusts the gate before it.
+    const unlisted = await call('GET', '/api/board/cards', { agent: 'worker' })
+    expect(unlisted.status).toBe(403)
+    expect(unlisted.body.rule).toBe('board-scope')
+    writeCfg({ ...RAW, enabled: false })
+    const off = await call('GET', '/api/board/cards', { agent: 'alice-bot' })
+    expect(off.status).toBe(403)
+    expect(off.body.rule).toBe('board-scope')
+  })
+
+  it('move to done without evidence is held at testing (the done-gate of /api/kanban); with evidence it closes', async () => {
+    const held = await call('POST', '/api/board/cards/c-alice/move', { agent: 'alice-bot', body: { status: 'done' } })
+    expect(held.status).toBe(200)
+    expect(held.body).toMatchObject({ ok: false, status: 'testing', evidence_required: true })
+    expect(getKanbanCard('c-alice')!.status).toBe('testing')
+    const blank = await call('POST', '/api/board/cards/c-alice/move', { agent: 'alice-bot', body: { status: 'done', evidence: '   ' } })
+    expect(blank.body).toMatchObject({ ok: false, status: 'testing' })
+    const closed = await call('POST', '/api/board/cards/c-alice/move', { agent: 'alice-bot', body: { status: 'done', evidence: 'Alice confirmed on Telegram' } })
+    expect(closed.status).toBe(200)
+    expect(closed.body).toMatchObject({ ok: true, status: 'done' })
+    expect(closed.body.evidence_required).toBeUndefined()
+    expect(getKanbanCard('c-alice')!.status).toBe('done')
+  })
+
+  it('move 409 path: a card that became invisible between the read and the compare-and-set answers 404, not 409', async () => {
+    // The body is read after the visibility check; while it streams in, the card is reassigned
+    // away from Alice and its status changes, so the compare-and-set fails on an invisible card.
+    async function* reassignWhileReading(): AsyncGenerator<Buffer> {
+      getDb().prepare("UPDATE kanban_cards SET assignee = 'bob', status = 'waiting' WHERE id = 'c-alice'").run()
+      yield Buffer.from(JSON.stringify({ status: 'planned' }))
+    }
+    const r = await call('POST', '/api/board/cards/c-alice/move', { agent: 'alice-bot', bodyStream: reassignWhileReading() })
+    expect(r.status).toBe(404)
+    expect(r.body).toEqual({ error: 'card not found' })
+    // control: the same race on a card that stays visible is the 409 with the current status
+    async function* statusOnly(): AsyncGenerator<Buffer> {
+      getDb().prepare("UPDATE kanban_cards SET status = 'waiting' WHERE id = 'c-dave'").run()
+      yield Buffer.from(JSON.stringify({ status: 'in_progress' }))
+    }
+    const c = await call('POST', '/api/board/cards/c-dave/move', { agent: 'team-bot', headers: { 'x-board-person': 'bob' }, bodyStream: statusOnly() })
+    expect(c.status).toBe(409)
+    expect(c.body).toEqual({ error: 'status_conflict', current_status: 'waiting' })
+  })
+
+  it('comment #hex8 references resolve to #seq only for cards the caller can see', async () => {
+    createKanbanCard({ id: 'aaaa0001', title: 'Alice visible', assignee: 'alice' })
+    createKanbanCard({ id: 'bbbb0002', title: 'Bob hidden', assignee: 'bob' })
+    const seqOf = (id: string): number => (getDb().prepare('SELECT rowid AS seq FROM kanban_cards WHERE id = ?').get(id) as { seq: number }).seq
+    const r = await call('POST', '/api/board/cards/c-alice/comments', { agent: 'alice-bot', body: { content: 'see #aaaa0001 and #bbbb0002' } })
+    expect(r.status).toBe(200)
+    expect(r.body.content).toBe(`see #${seqOf('aaaa0001')} and #bbbb0002`)
+    // a lead who sees Bob's card gets it resolved
+    const lead = await call('POST', '/api/board/cards/c-dave/comments', { agent: 'team-bot', headers: { 'x-board-person': 'bob' }, body: { content: 'ref #bbbb0002' } })
+    expect(lead.body.content).toBe(`ref #${seqOf('bbbb0002')}`)
+  })
+
+  it('title is capped at 300 characters (the database trigger would cut a longer one silently)', async () => {
+    const ok = await call('POST', '/api/board/cards', { agent: 'alice-bot', body: { title: 'x'.repeat(300) } })
+    expect(ok.status).toBe(200)
+    expect(getKanbanCard(ok.body.id)!.title).toHaveLength(300)
+    const long = await call('POST', '/api/board/cards', { agent: 'alice-bot', body: { title: 'y'.repeat(301) } })
+    expect(long.status).toBe(400)
+    expect(long.body.error).toContain('at most 300 characters')
   })
 
   it('a broken config closes the routes too', async () => {
