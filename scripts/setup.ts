@@ -204,8 +204,11 @@ async function main() {
       // cannot sit in the plist PATH value (plistPathDirOk, the helper-path.sh set), or that someone else could
       // write (learnedPathDirProblem, PATHDIROWNER1120), is left out, with a warning naming the dir and why.
       const foundBrewBin = brewPrefixBin(process.env.PATH)
+      const brewNotes: string[] = []
       const brewProblem = foundBrewBin === null ? null
-        : !plistPathDirOk(foundBrewBin) ? 'cannot go into a PATH value' : learnedPathDirProblem(foundBrewBin)
+        : !plistPathDirOk(foundBrewBin) ? 'cannot go into a PATH value'
+          : learnedPathDirProblem(foundBrewBin, process.getuid?.(), process.platform, brewNotes)
+      if (!brewProblem) for (const n of brewNotes) console.warn(n)
       const brewBin = foundBrewBin && !brewProblem ? foundBrewBin : null
       if (foundBrewBin && brewProblem) {
         console.warn(`HELPER-PATH-ELVETVE: the Homebrew prefix bin ${JSON.stringify(foundBrewBin)} ${brewProblem}; it is left out`)

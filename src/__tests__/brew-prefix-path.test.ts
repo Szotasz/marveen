@@ -2,7 +2,7 @@
 // dashboard's probe list and the main session's PATH did not have. Both now derive <prefix>/bin from the node@22 keg
 // entry every installed launchd PATH starts with (<prefix>/opt/node@22/bin). Tested with stub dirs only: no brew,
 // no launchd. The channels.sh block is RUN, cut out between its markers, not read as text.
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -190,7 +190,8 @@ describe('scripts/setup.ts: the dashboard plist PATH', () => {
     const src = readFileSync(join(REPO, 'scripts', 'setup.ts'), 'utf-8')
     expect(src).toMatch(/import \{ brewPrefixBin, learnedPathDirProblem, plistPathDirOk \} from '\.\.\/src\/platform\.js'/)
     expect(src).toContain('const foundBrewBin = brewPrefixBin(process.env.PATH)')
-    expect(src).toContain(": !plistPathDirOk(foundBrewBin) ? 'cannot go into a PATH value' : learnedPathDirProblem(foundBrewBin)")
+    expect(src).toContain(": learnedPathDirProblem(foundBrewBin, process.getuid?.(), process.platform, brewNotes)")
+    expect(src).toContain('if (!brewProblem) for (const n of brewNotes) console.warn(n)')
     expect(src).toContain('const brewBin = foundBrewBin && !brewProblem ? foundBrewBin : null')
     expect(src).toContain("<string>${brewBin ? `${brewBin}:` : ''}/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>")
   })
@@ -268,6 +269,9 @@ describe('learnedPathDirProblem (platform.ts) = helper-path.sh _helper_path_unsa
     `has a parent ${realpathSync(w777)} that is group-writable`])
   writeFileSync(join(root, 'file'), '')
   cases.push(['a file', join(root, 'file'), 'is not a directory'])
+  // Dani (#2985): a relative path is refused at once (the ancestor walk would never reach /)
+  cases.push(['a relative path', 'scripts', 'is not an absolute path'])
+  cases.push(['a relative path with a slash', 'a/b', 'is not an absolute path'])
   // macOS: the admin group (gid 80) may write (Samu, #2985); another group and others may not. Needs macOS and
   // membership of the admin group to make such dirs; the Linux branch is run here through the os parameter.
   const adminDirs = (() => {
@@ -288,12 +292,23 @@ describe('learnedPathDirProblem (platform.ts) = helper-path.sh _helper_path_unsa
   }
   for (const [name, dir, why] of cases) {
     it(`${name} -> ${why ?? 'learned'} in TS and bash`, () => {
-      expect(learnedPathDirProblem(dir)).toBe(why)
-      const out = execFileSync('bash', ['-c', '. "$1/scripts/lib/helper-path.sh"; _helper_path_unsafe "$2"', 'x', REPO, dir],
-        { encoding: 'utf-8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' } })
-      expect(out.trim() || null).toBe(why)
+      const notes: string[] = []
+      expect(learnedPathDirProblem(dir, process.getuid?.(), process.platform, notes)).toBe(why)
+      const r = spawnSync('bash', ['-c', '. "$1/scripts/lib/helper-path.sh"; _helper_path_unsafe "$2"', 'x', REPO, dir],
+        { encoding: 'utf-8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' }, timeout: 10000 })
+      expect(r.stdout.trim() || null).toBe(why)
+      // the HELPER-PATH-ADMIN lines name the same dirs on both sides
+      expect(r.stderr.split('\n').filter((l) => l.startsWith('HELPER-PATH-ADMIN:'))).toEqual(notes)
     })
   }
+  it.skipIf(!adminDirs)('darwin: a dir that passed only through the admin exception is named in the notes', () => {
+    const notes: string[] = []
+    expect(learnedPathDirProblem(adminDirs!.adm, process.getuid?.(), 'darwin', notes)).toBe(null)
+    expect(notes).toEqual([`HELPER-PATH-ADMIN: ${adminDirs!.adm} is writable by the admin group (gid 80); allowed on macOS, its members can sudo`])
+    const none: string[] = []
+    expect(learnedPathDirProblem(own, process.getuid?.(), 'darwin', none)).toBe(null)
+    expect(none).toEqual([])
+  })
   it.skipIf(!adminDirs)('linux: the admin-group exception does not apply (os parameter)', () => {
     expect(learnedPathDirProblem(adminDirs!.adm, process.getuid?.(), 'linux')).toBe('is group-writable')
     expect(learnedPathDirProblem(adminDirs!.adm, process.getuid?.(), 'darwin')).toBe(null)

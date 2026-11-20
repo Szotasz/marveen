@@ -52,12 +52,18 @@ _helper_path_dir_bad() {
   # macOS only: write access for the admin group (gid 80) does not count, its members can sudo
   # anyway (Homebrew keeps its bin drwxrwxr-x <user>:admin). Any other group still counts, and
   # writable by others always does.
+  _hdb_admin=""
   if [ -n "$(/usr/bin/find "$1" -maxdepth 0 -perm -020 2>/dev/null)" ]; then
     if [ "$(/usr/bin/uname -s 2>/dev/null)" != "Darwin" ] || [ -z "$(/usr/bin/find "$1" -maxdepth 0 -group 80 2>/dev/null)" ]; then
       echo "is group-writable"; return 0
     fi
+    _hdb_admin=1
   fi
   if [ -n "$(/usr/bin/find "$1" -maxdepth 0 -perm -002 2>/dev/null)" ]; then echo "is writable by others"; return 0; fi
+  # passed only through the admin exception: say so (on a machine with several admins it shows)
+  if [ -n "$_hdb_admin" ]; then
+    echo "HELPER-PATH-ADMIN: $1 is writable by the admin group (gid 80); allowed on macOS, its members can sudo" >&2
+  fi
   return 0
 }
 
@@ -70,13 +76,17 @@ _helper_path_dir_bad() {
 # ancestor such as /var is skipped, its own parent is on the list) and the physical one
 # (pwd -P, where the symlinks lead). The fixed list itself is not checked.
 _helper_path_unsafe() {
+  # a relative path would never reach / in the ancestor walk below
+  case "$1" in /*) ;; *) echo "is not an absolute path"; return 0 ;; esac
   if [ -L "$1" ]; then echo "is a symlink"; return 0; fi
   if [ ! -d "$1" ]; then echo "is not a directory"; return 0; fi
   _hpu_why="$(_helper_path_dir_bad "$1" leaf)"
   if [ -n "$_hpu_why" ]; then echo "$_hpu_why"; return 0; fi
   _hpu_phys="$(cd -P "$1" 2>/dev/null && pwd -P)" || _hpu_phys=""
   if [ -z "$_hpu_phys" ]; then echo "cannot be resolved"; return 0; fi
-  for _hpu_a in "$1" "$_hpu_phys"; do
+  # the real path only when it differs (one walk, one note per dir, in the common case)
+  [ "$_hpu_phys" = "$1" ] && _hpu_phys=""
+  for _hpu_a in "$1" ${_hpu_phys:+"$_hpu_phys"}; do
     while [ "$_hpu_a" != "/" ]; do
       _hpu_a="${_hpu_a%/*}"; [ -n "$_hpu_a" ] || _hpu_a="/"
       [ -L "$_hpu_a" ] && continue
