@@ -205,6 +205,7 @@ describe('plistPathDirOk (platform.ts) = helper-path.sh _helper_path_learn', () 
     ['', false],
     ['/opt/a:b/bin', false],
     ['/opt/</string><key>X</key><string>/bin', false],
+    ['/opt/a<b/bin', false],
     ['/opt/a>b/bin', false],
     ['/opt/a&b/bin', false],
     ['/opt/a"b/bin', false],
