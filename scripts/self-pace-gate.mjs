@@ -3004,17 +3004,21 @@ function optionValueCount(v) {
 // as code strings (-c; for fish also -C, --command, --init-command), and
 // { stdin } when no code string is given, so the word may read its code from
 // stdin (whatever its operand is).
-function shellWordRuns(words, i) {
+// strictStdin (Refs #2974, #2975, the db-write-gate's shell-code reading): a non-fish shell reads its code from stdin
+// only with no script operand, or with -s; `bash script.sh <<'E' ... E` hands the body to the script as data. The
+// default (false) keeps the wider reading for the other callers.
+function shellWordRuns(words, i, strictStdin = false) {
   const fish = baseName(words[i].value) === 'fish'
   const codes = []
   let cGiven = false
+  let sGiven = false
   let mainGiven = false
   let operand = false
   for (let j = i + 1; j < words.length; j++) {
     const v = words[j].value
     if (!/^[-+]/.test(v) || v === '--') {
       // fish: a -c/-C/--command/--init-command anywhere still runs code
-      if (!fish) break
+      if (!fish) { operand = v !== '--' || j + 1 < words.length; break }
       operand = true
       continue
     }
@@ -3042,6 +3046,7 @@ function shellWordRuns(words, i) {
       continue
     }
     if (/^-[A-Za-z]+$/.test(v) && v.includes('c')) cGiven = true
+    if (/^-[A-Za-z]+$/.test(v) && v.includes('s')) sGiven = true
     j += optionValueCount(v)
   }
   if (!fish && cGiven) {
@@ -3055,7 +3060,7 @@ function shellWordRuns(words, i) {
     }
     if (words[j]) codes.push(words[j])
   }
-  return { codes, stdin: fish ? !mainGiven : !cGiven }
+  return { codes, stdin: fish ? !mainGiven : !cGiven && (!strictStdin || !operand || sGiven) }
 }
 
 // shellSegments cuts at an escaped `\;` (tmux's own command separator); glue
@@ -3615,7 +3620,7 @@ export function substitutionInCommandPosition(command, { heredoc: asHeredocBody 
   return found
 }
 
-function scanShellCode(command) {
+function scanShellCode(command, strictStdin = false) {
   const segs = codeSegments(command)
   const codes = []
   const seen = new Set()
@@ -3672,7 +3677,7 @@ function scanShellCode(command) {
       const base = baseName(v)
       if (base === 'tmux') for (const c of tmuxGlobalOptions(args, i + 1).codes) push(c)
       if (!SHELL_NAMES.has(base)) continue
-      const runs = shellWordRuns(args, i)
+      const runs = shellWordRuns(args, i, strictStdin)
       for (const c of runs.codes) push(c)
       if (!runs.stdin) continue
       for (const c of stdinCodes()) push(c)
@@ -3681,8 +3686,8 @@ function scanShellCode(command) {
   return { codes, bad }
 }
 
-export function shellCodeStrings(command) {
-  return scanShellCode(command).codes.map((c) => c.value)
+export function shellCodeStrings(command, opts = {}) {
+  return scanShellCode(command, opts.strictStdin === true).codes.map((c) => c.value)
 }
 
 // tmux takes an exact command name or alias first, otherwise a prefix that only

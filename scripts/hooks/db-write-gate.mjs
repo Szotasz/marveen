@@ -59,6 +59,7 @@ import {
   globMatchesName,
   isReadOnlyFsCommand,
   laterRuns,
+  shellCodeStrings,
   shellScriptWord,
   nameForms,
   normalizePathSegments,
@@ -2490,7 +2491,10 @@ export function mcpDecision(toolName, toolInput, opts = {}) {
   return { deny: true, reason: 'mcp-install-file' }
 }
 
-function decide(toolName, toolInput, opts = {}) {
+// Refs #2974, #2975: how deep a shell code inside a shell code is still read (bash -c "sh -c '...'"); deeper denies.
+const SHELL_CODE_DEPTH = 8
+
+function decide(toolName, toolInput, opts = {}, depth = 0) {
   const name = String(toolName ?? '')
   if (/^mcp__/i.test(name)) return mcpDecision(name, toolInput, opts) ?? { deny: false }
   // A deny that only the sub-agent list gives gets its own message (ENVRELAXGATE1104).
@@ -2508,6 +2512,16 @@ function decide(toolName, toolInput, opts = {}) {
     const file = installFileDeny(command, opts)
     if (file === true && subOnly() && !installFileDeny(command, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
     if (file) return { deny: true, reason: file === 'git' ? 'git' : 'install-file' }
+    // Refs #2974, #2975: the code this command hands to a shell (sh/bash -c, eval, trap, a shell reading a heredoc or a
+    // here-string, source) runs as a command of its own, so it is judged as one, with every rule above: the file-level
+    // database rule (#2974) and a `cd` to an unknown directory read as the install (#2975) reach it too. It is judged in
+    // the caller's cwd. This only adds denies: the outer command was already judged and passed.
+    const codes = shellCodeStrings(command, { strictStdin: true })
+    if (codes.length && depth >= SHELL_CODE_DEPTH) return { deny: true, reason: 'install-file' }
+    for (const code of codes) {
+      const inner = decide('Bash', { command: code }, opts, depth + 1)
+      if (inner.deny) return inner
+    }
   }
   return { deny: false }
 }
