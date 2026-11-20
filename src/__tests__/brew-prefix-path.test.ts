@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { brewPrefixBin, knownBinDirs, tryResolveFromPath } from '../platform.js'
+import { brewPrefixBin, knownBinDirs, plistPathDirOk, tryResolveFromPath } from '../platform.js'
 
 const REPO = process.cwd()
 const dirs: string[] = []
@@ -188,8 +188,39 @@ describe('channels.sh --resolve-main-model: the CLI probe finds the claude in <p
 describe('scripts/setup.ts: the dashboard plist PATH', () => {
   it('puts brewPrefixBin(process.env.PATH) in front of the fixed list', () => {
     const src = readFileSync(join(REPO, 'scripts', 'setup.ts'), 'utf-8')
-    expect(src).toMatch(/import \{ brewPrefixBin \} from '\.\.\/src\/platform\.js'/)
-    expect(src).toContain('const brewBin = brewPrefixBin(process.env.PATH)')
+    expect(src).toMatch(/import \{ brewPrefixBin, plistPathDirOk \} from '\.\.\/src\/platform\.js'/)
+    expect(src).toContain('const foundBrewBin = brewPrefixBin(process.env.PATH)')
+    expect(src).toContain('const brewBin = foundBrewBin && plistPathDirOk(foundBrewBin) ? foundBrewBin : null')
     expect(src).toContain("<string>${brewBin ? `${brewBin}:` : ''}/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>")
   })
+})
+
+// BREWPREFIXREST1107 R1 (Dani, #2978): setup.ts leaves out a prefix bin that would break the plist <string>
+// (XML markup) or the PATH (a colon). plistPathDirOk refuses exactly what helper-path.sh _helper_path_learn refuses:
+// each case is RUN through the bash function too, so the two sets cannot drift apart.
+describe('plistPathDirOk (platform.ts) = helper-path.sh _helper_path_learn', () => {
+  const cases: Array<[string, boolean]> = [
+    ['/opt/custombrew/bin', true],
+    ['/Users/a b/homebrew/bin', true],
+    ['', false],
+    ['/opt/a:b/bin', false],
+    ['/opt/</string><key>X</key><string>/bin', false],
+    ['/opt/a>b/bin', false],
+    ['/opt/a&b/bin', false],
+    ['/opt/a"b/bin', false],
+    ["/opt/a'b/bin", false],
+    ['/opt/a\nb/bin', false],
+    ['/opt/a\tb/bin', false],
+    ['/opt/a\rb/bin', false],
+    ['/opt/a\x7fb/bin', false],
+  ]
+  for (const [dir, ok] of cases) {
+    it(`${JSON.stringify(dir)} -> ${ok ? 'kept' : 'left out'} in TS and bash`, () => {
+      expect(plistPathDirOk(dir)).toBe(ok)
+      const out = execFileSync('bash', ['-c',
+        '. "$1/scripts/lib/helper-path.sh"; _hlp_learned=""; _helper_path_learn "$2" dir 2>/dev/null; printf "%s" "$_hlp_learned"',
+        'x', REPO, dir], { encoding: 'utf-8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' } })
+      expect(out === `${dir}:`).toBe(ok)
+    })
+  }
 })
