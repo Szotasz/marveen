@@ -135,6 +135,8 @@ SNIP="$FIX/doctor-block.sh"
 {
   echo 'BOLD=""; RESET=""; FAIL=0'
   echo 'ok(){ echo "OK $1"; }; warn(){ echo "WARN $1"; }; fail(){ echo "FAILCALL $1"; FAIL=1; }'
+  # The fixture is a macOS one (plists): the test names the OS, so the run is the same on a Linux CI runner.
+  echo 'uname(){ echo Darwin; }'
   echo "$block"
   echo 'echo "FAIL=$FAIL"'
 } > "$SNIP"
