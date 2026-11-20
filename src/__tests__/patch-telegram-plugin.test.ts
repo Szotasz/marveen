@@ -2,17 +2,21 @@
 // /help away from the Telegram channel plugin so the command hook can answer
 // them. Run for real on a copy of the 0.0.7 plugin excerpt (verbatim blocks,
 // fixtures/telegram-plugin-0.0.7/server.ts.txt) in a scratch plugins cache.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, existsSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { scratchPatcher } from './helpers/scratch-patcher.js'
 import ts from 'typescript'
 import { checkWriteEvidence, findEvidence, readEvidenceLines } from '../web/write-evidence.js'
 import { telegramPluginPatchStatus } from '../web/system-status.js'
 
 const ROOT = join(__dirname, '..', '..')
-const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
+// A copy in an empty scratch install (helpers/scratch-patcher.ts): the checkout's own .env never decides a test.
+const PATCHER = scratchPatcher()
+const SCRIPT = PATCHER.script
+afterAll(() => PATCHER.remove())
 const FIXTURE = join(__dirname, 'fixtures', 'telegram-plugin-0.0.7', 'server.ts.txt')
 
 let cache = ''
@@ -42,6 +46,13 @@ function syntaxErrors(text: string): string[] {
 }
 
 describe('patch-telegram-plugin.py', () => {
+  it('runs from a copy in an empty scratch install, so the checkout\'s own .env never decides a test', () => {
+    expect(SCRIPT.startsWith(ROOT)).toBe(false)
+    expect(existsSync(join(PATCHER.install, '.env'))).toBe(false)
+    expect(existsSync(join(PATCHER.install, 'store'))).toBe(false)
+    expect(readFileSync(SCRIPT, 'utf-8')).toBe(readFileSync(join(ROOT, 'scripts', 'patch-telegram-plugin.py'), 'utf-8'))
+  })
+
   it('1st run patches: /help, /status handlers and the plugin menu gone, /start kept, still parses', () => {
     const r = run()
     expect(r.status).toBe(0)
@@ -1795,7 +1806,7 @@ describe('kbd: answer buttons expire (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)', ()
 
 // channels.sh runs the patcher with no switch at all, so the install's own settings are the path every real install
 // takes: main() reads them from <install>/store/config-overrides.json, then <install>/.env, where <install> is the
-// folder above the script. Run here from a copy of the script in a scratch install, and compared byte for byte with
+// folder above scripts/. Run here from a copy of the script in a scratch install, and compared byte for byte with
 // the run that passes the same value as an explicit switch (Geri on #2897: with the setting line in main() replaced
 // by a constant, every other test stayed green).
 describe("the install's own settings reach the patch (no switch, as channels.sh runs it)", () => {
@@ -1818,7 +1829,8 @@ describe("the install's own settings reach the patch (no switch, as channels.sh 
     expect(r.status, r.stderr).toBe(0)
     return { text: readFileSync(server, 'utf-8'), state: JSON.parse(readFileSync(state, 'utf-8')) }
   }
-  // The explicit-switch run, all three switches given, so the repo's own .env never decides anything.
+  // The explicit-switch run, all three switches given. SCRIPT is the copy in an empty scratch install, so
+  // AGENT_TEXT_LANG (no switch) is unset on both sides too, and no .env decides anything.
   function withSwitches({ topics = 'off', buttons = 'on', maxAge = '0' } = {}) {
     copyFileSync(FIXTURE, server)
     expect(run(['--topics', topics, '--buttons', buttons, '--buttons-max-age', maxAge]).status).toBe(0)

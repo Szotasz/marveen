@@ -5,15 +5,18 @@
 //  - the patched plugin code itself, RUN with stubbed bot/mcp objects: with the
 //    switch off, and with it on but no topic in play, every Bot API call and
 //    every inbound meta must be exactly what the unswitched patcher produces.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { tmpdir } from 'node:os'
+import { scratchPatcher } from './helpers/scratch-patcher.js'
 import ts from 'typescript'
 
-const ROOT = join(__dirname, '..', '..')
-const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
+// A copy in an empty scratch install (helpers/scratch-patcher.ts): the checkout's own .env never decides a test.
+const PATCHER = scratchPatcher()
+const SCRIPT = PATCHER.script
+afterAll(() => PATCHER.remove())
 const FIXTURE = join(__dirname, 'fixtures', 'telegram-plugin-0.0.7', 'server.ts.txt')
 const TAG = 'MARVEEN-PATCH(tgtopics)'
 

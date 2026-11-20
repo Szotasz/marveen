@@ -1,14 +1,17 @@
 // `silent` on the Telegram reply tool (disable_notification), a separate patch in
 // scripts/patch-telegram-plugin.py. Run for real on a copy of the 0.0.7 plugin excerpt.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { tmpdir } from 'node:os'
+import { scratchPatcher } from './helpers/scratch-patcher.js'
 import ts from 'typescript'
 
-const ROOT = join(__dirname, '..', '..')
-const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
+// A copy in an empty scratch install (helpers/scratch-patcher.ts): the checkout's own .env never decides a test.
+const PATCHER = scratchPatcher()
+const SCRIPT = PATCHER.script
+afterAll(() => PATCHER.remove())
 const FIXTURE = join(__dirname, 'fixtures', 'telegram-plugin-0.0.7', 'server.ts.txt')
 const SIL = 'MARVEEN-PATCH(tgsilent)'
 const KBD = 'MARVEEN-PATCH(c67f5f34-kbd)'
