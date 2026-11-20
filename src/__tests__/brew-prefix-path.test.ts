@@ -6,8 +6,8 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { brewPrefixBin, knownBinDirs, plistPathDirOk, tryResolveFromPath } from '../platform.js'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { brewPrefixBin, knownBinDirs, learnedPathDirProblem, plistPathDirOk, tryResolveFromPath } from '../platform.js'
 
 const REPO = process.cwd()
 const dirs: string[] = []
@@ -188,9 +188,10 @@ describe('channels.sh --resolve-main-model: the CLI probe finds the claude in <p
 describe('scripts/setup.ts: the dashboard plist PATH', () => {
   it('puts brewPrefixBin(process.env.PATH) in front of the fixed list', () => {
     const src = readFileSync(join(REPO, 'scripts', 'setup.ts'), 'utf-8')
-    expect(src).toMatch(/import \{ brewPrefixBin, plistPathDirOk \} from '\.\.\/src\/platform\.js'/)
+    expect(src).toMatch(/import \{ brewPrefixBin, learnedPathDirProblem, plistPathDirOk \} from '\.\.\/src\/platform\.js'/)
     expect(src).toContain('const foundBrewBin = brewPrefixBin(process.env.PATH)')
-    expect(src).toContain('const brewBin = foundBrewBin && plistPathDirOk(foundBrewBin) ? foundBrewBin : null')
+    expect(src).toContain(": !plistPathDirOk(foundBrewBin) ? 'cannot go into a PATH value' : learnedPathDirProblem(foundBrewBin)")
+    expect(src).toContain('const brewBin = foundBrewBin && !brewProblem ? foundBrewBin : null')
     expect(src).toContain("<string>${brewBin ? `${brewBin}:` : ''}/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>")
   })
 })
@@ -199,9 +200,16 @@ describe('scripts/setup.ts: the dashboard plist PATH', () => {
 // (XML markup) or the PATH (a colon). plistPathDirOk refuses exactly what helper-path.sh _helper_path_learn refuses:
 // each case is RUN through the bash function too, so the two sets cannot drift apart.
 describe('plistPathDirOk (platform.ts) = helper-path.sh _helper_path_learn', () => {
+  // the kept cases are real 0755 dirs: bash also refuses a dir that is not there (PATHDIROWNER1120)
+  const root = mkdtempSync(join(tmpdir(), 'ppd-'))
+  afterAll(() => rmSync(root, { recursive: true, force: true }))
+  for (const d of ['custombrew/bin', 'a b/homebrew/bin']) {
+    mkdirSync(join(root, d), { recursive: true })
+    chmodSync(join(root, d), 0o755)
+  }
   const cases: Array<[string, boolean]> = [
-    ['/opt/custombrew/bin', true],
-    ['/Users/a b/homebrew/bin', true],
+    [join(root, 'custombrew/bin'), true],
+    [join(root, 'a b/homebrew/bin'), true],
     ['', false],
     ['/opt/a:b/bin', false],
     ['/opt/</string><key>X</key><string>/bin', false],
@@ -224,4 +232,38 @@ describe('plistPathDirOk (platform.ts) = helper-path.sh _helper_path_learn', () 
       expect(out === `${dir}:`).toBe(ok)
     })
   }
+})
+
+// PATHDIROWNER1120: a learned dir goes in front of a launchd PATH only when no one but the installing user or root
+// can write it. learnedPathDirProblem (setup.ts) and helper-path.sh _helper_path_unsafe (the helper plists) apply the
+// same rule: each case is RUN through both and the reasons compared.
+describe('learnedPathDirProblem (platform.ts) = helper-path.sh _helper_path_unsafe', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pdo-'))
+  afterAll(() => rmSync(root, { recursive: true, force: true }))
+  const mk = (name: string, mode: number) => { const d = join(root, name); mkdirSync(d); chmodSync(d, mode); return d }
+  const own = mk('own', 0o755)
+  const cases: Array<[string, string, string | null]> = [
+    ['own 0755', own, null],
+    ['own 0700', mk('own700', 0o700), null],
+    ['group-writable 0775', mk('gw', 0o775), 'is group-writable'],
+    ['writable by others 0757', mk('ow', 0o757), 'is writable by others'],
+    ['root-owned 0755', '/usr/sbin', null],
+    ['missing', join(root, 'missing'), 'is not a directory'],
+  ]
+  symlinkSync(own, join(root, 'link'))
+  cases.push(['symlink to an own 0755 dir', join(root, 'link'), 'is a symlink'])
+  writeFileSync(join(root, 'file'), '')
+  cases.push(['a file', join(root, 'file'), 'is not a directory'])
+  for (const [name, dir, why] of cases) {
+    it(`${name} -> ${why ?? 'learned'} in TS and bash`, () => {
+      expect(learnedPathDirProblem(dir)).toBe(why)
+      const out = execFileSync('bash', ['-c', '. "$1/scripts/lib/helper-path.sh"; _helper_path_unsafe "$2"', 'x', REPO, dir],
+        { encoding: 'utf-8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' } })
+      expect(out.trim() || null).toBe(why)
+    })
+  }
+  it('a dir owned by another user -> refused (TS, with another installing uid)', () => {
+    expect(learnedPathDirProblem(own, (process.getuid?.() ?? 0) + 4242)).toBe('is owned by neither the installing user nor root')
+    expect(learnedPathDirProblem('/usr/sbin', (process.getuid?.() ?? 0) + 4242)).toBe(null)
+  })
 })

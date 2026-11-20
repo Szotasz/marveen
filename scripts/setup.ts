@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { homedir, platform } from 'node:os'
 import { SERVICE_ID, BRAND_NAME, appServiceLabel, LEGACY_SERVICE_ID, LEGACY_APP_SERVICE_LABEL } from '../src/config.js'
-import { brewPrefixBin, plistPathDirOk } from '../src/platform.js'
+import { brewPrefixBin, learnedPathDirProblem, plistPathDirOk } from '../src/platform.js'
 import { writeEnvFileFresh } from '../src/env.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -201,11 +201,14 @@ async function main() {
       const nodePath = execSync('which node', { encoding: 'utf-8' }).trim()
       // ISSUE1968BREWPREFIX (#1968): a custom Homebrew prefix bin, by the rule of src/platform.ts brewPrefixBin
       // (from the PATH's node@NN keg entry), goes in front of the fixed list. None = the list as before. A dir that
-      // cannot sit in the plist PATH value (plistPathDirOk, the helper-path.sh set) is left out, with a warning.
+      // cannot sit in the plist PATH value (plistPathDirOk, the helper-path.sh set), or that someone else could
+      // write (learnedPathDirProblem, PATHDIROWNER1120), is left out, with a warning naming the dir and why.
       const foundBrewBin = brewPrefixBin(process.env.PATH)
-      const brewBin = foundBrewBin && plistPathDirOk(foundBrewBin) ? foundBrewBin : null
-      if (foundBrewBin && !brewBin) {
-        console.warn(`HELPER-PATH-ELVETVE: the Homebrew prefix bin ${JSON.stringify(foundBrewBin)} cannot go into a PATH value; it is left out`)
+      const brewProblem = foundBrewBin === null ? null
+        : !plistPathDirOk(foundBrewBin) ? 'cannot go into a PATH value' : learnedPathDirProblem(foundBrewBin)
+      const brewBin = foundBrewBin && !brewProblem ? foundBrewBin : null
+      if (foundBrewBin && brewProblem) {
+        console.warn(`HELPER-PATH-ELVETVE: the Homebrew prefix bin ${JSON.stringify(foundBrewBin)} ${brewProblem}; it is left out`)
       }
 
       const plist = `<?xml version="1.0" encoding="UTF-8"?>

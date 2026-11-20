@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -51,6 +51,25 @@ export function brewPrefixBin(pathEnv: string | undefined, isDir: (p: string) =>
 export function plistPathDirOk(dir: string): boolean {
   // eslint-disable-next-line no-control-regex
   return dir !== '' && !/[:<>&"'\x00-\x1f\x7f]/.test(dir)
+}
+
+// PATHDIROWNER1120: a learned dir goes in FRONT of a launchd PATH, so whoever can write it decides what the job runs.
+// The rule of scripts/lib/helper-path.sh _helper_path_unsafe: a real directory (not a symlink), owned by the
+// installing user or root, writable by neither the group nor others. Returns why the dir is refused, null when it
+// may be learned. uid: the installing user (process.getuid()).
+export function learnedPathDirProblem(dir: string, uid: number | undefined = process.getuid?.()): string | null {
+  let st
+  try {
+    st = lstatSync(dir)
+  } catch {
+    return 'is not a directory'
+  }
+  if (st.isSymbolicLink()) return 'is a symlink'
+  if (!st.isDirectory()) return 'is not a directory'
+  if (st.uid !== uid && st.uid !== 0) return 'is owned by neither the installing user nor root'
+  if (st.mode & 0o020) return 'is group-writable'
+  if (st.mode & 0o002) return 'is writable by others'
+  return null
 }
 
 // The probe list, worked out at call time (the PATH can change under a running process). The derived Homebrew bin

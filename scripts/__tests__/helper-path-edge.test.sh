@@ -11,6 +11,9 @@
 # Hermetic: a throwaway HOME; the installers run with uname / launchctl stubs.
 
 set -u
+# The dirs made here stand for a normal install dir: a group-writable one is refused as a learned
+# PATH dir (PATHDIROWNER1120), so the run must not depend on the caller's umask.
+umask 022
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
@@ -28,11 +31,13 @@ stub_tmux() { mkdir -p "$1"; printf '#!/bin/sh\nexit 0\n' > "$1/tmux"; chmod +x 
 . "$REPO/scripts/lib/helper-path.sh"
 
 echo "dirs that are valid in a PATH value go in front as they are"
-assert_eq "E1 a space in the dir" "/Users/a b/.local/bin:$BASE" "$(helper_launchd_path '/Users/a b/.local/bin/tmux' 2>&1)"
-assert_eq "E2 a dollar sign in the dir" '/Users/a$x/bin:'"$BASE" "$(helper_launchd_path '/Users/a$x/bin/tmux' 2>&1)"
-assert_eq "E3 a backslash in the dir" '/Users/a\b/bin:'"$BASE" "$(helper_launchd_path '/Users/a\b/bin/tmux' 2>&1)"
-assert_eq "E4 a hash in the dir" "/Users/a#b/bin:$BASE" "$(helper_launchd_path '/Users/a#b/bin/tmux' 2>&1)"
-assert_eq "E5 a doubled slash in the dir" "/a//b:$BASE" "$(helper_launchd_path '/a//b/tmux' 2>&1)"
+# real dirs: a learned dir must exist (PATHDIROWNER1120)
+mkdir -p "$TMP/a b/.local/bin" "$TMP/"'a$x/bin' "$TMP/"'a\b/bin' "$TMP/a#b/bin" "$TMP/a/b"
+assert_eq "E1 a space in the dir" "$TMP/a b/.local/bin:$BASE" "$(helper_launchd_path "$TMP/a b/.local/bin/tmux" 2>&1)"
+assert_eq "E2 a dollar sign in the dir" "$TMP/"'a$x/bin:'"$BASE" "$(helper_launchd_path "$TMP/"'a$x/bin/tmux' 2>&1)"
+assert_eq "E3 a backslash in the dir" "$TMP/"'a\b/bin:'"$BASE" "$(helper_launchd_path "$TMP/"'a\b/bin/tmux' 2>&1)"
+assert_eq "E4 a hash in the dir" "$TMP/a#b/bin:$BASE" "$(helper_launchd_path "$TMP/a#b/bin/tmux" 2>&1)"
+assert_eq "E5 a doubled slash in the dir" "$TMP/a//b:$BASE" "$(helper_launchd_path "$TMP/a//b/tmux" 2>&1)"
 
 echo "control characters cannot go in a PATH value"
 tab="$(printf '\t')"; cr="$(printf '\r')"; nl="$(printf '\n_')"; nl="${nl%_}"; ctl="$(printf '\001')"
