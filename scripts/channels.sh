@@ -280,11 +280,16 @@ _resolve_main_model_raw() {
   # probe exactly as on the TS side (empty = unmeasured).
   # The probe needs the SAME binary the launch runs. The watchdogs call this
   # seam under a narrow launchd PATH, so after PATH try the dirs the TS side
-  # probes (platform.ts KNOWN_BIN_DIRS); a miss is unmeasured = fail-open.
+  # probes (platform.ts knownBinDirs(): the custom Homebrew prefix bin, from
+  # scripts/lib/helper-path.sh helper_brew_prefix_bin by the rule of the block
+  # below marked ISSUE1968BREWPREFIX, right after ~/.local/bin); a miss is
+  # unmeasured = fail-open.
   local _claude="${CLAUDE:-}"
   [ -z "$_claude" ] && _claude="$(command -v claude 2>/dev/null || true)"
   if [ -z "$_claude" ]; then
-    for _c in "$HOME/.local/bin/claude" "$HOME/.bun/bin/claude" /opt/homebrew/bin/claude /usr/local/bin/claude /usr/bin/claude /bin/claude; do
+    local _bpc
+    _bpc="$(. "$INSTALL_DIR/scripts/lib/helper-path.sh" 2>/dev/null && helper_brew_prefix_bin)" || _bpc=""
+    for _c in "$HOME/.local/bin/claude" ${_bpc:+"$_bpc/claude"} "$HOME/.bun/bin/claude" /opt/homebrew/bin/claude /usr/local/bin/claude /usr/bin/claude /bin/claude; do
       [ -x "$_c" ] && { _claude="$_c"; break; }
     done
   fi
@@ -747,7 +752,7 @@ unset TMUX
 # NATIVECLAUDEFIRST1011 (#1896): $HOME/.local/bin leads, so `command -v claude`
 # below picks the install user's native launcher (~/.local/bin/claude) over a
 # Homebrew/npm copy in /opt/homebrew/bin -- the order the dashboard's launchd
-# PATH and platform.ts KNOWN_BIN_DIRS already use. With /opt/homebrew/bin first,
+# PATH and platform.ts knownBinDirs() already use. With /opt/homebrew/bin first,
 # a Mac that also had an older shared claude there ran the main session on that
 # one while the sub-agents ran the native build, and claude_is_native looked at
 # the wrong binary. Every other directory keeps its relative order.
@@ -761,12 +766,12 @@ unset TMUX
 BREW_PREFIX_BIN=""
 while IFS= read -r -d : _bp_dir; do
   case "$_bp_dir" in
-    /*/opt/node@[0-9]/bin|/*/opt/node@[0-9][0-9]/bin) ;;
+    /?*/opt/node@[0-9]/bin|/?*/opt/node@[0-9][0-9]/bin) ;;
     *) continue ;;
   esac
   _bp_bin="${_bp_dir%/opt/node@*/bin}/bin"
   case "$_bp_bin" in
-    /opt/homebrew/bin|/usr/local/bin) continue ;;
+    /opt/homebrew/bin|/usr/local/bin|/usr/bin|/bin) continue ;;
   esac
   if [ -d "$_bp_bin" ]; then
     BREW_PREFIX_BIN="$_bp_bin:"

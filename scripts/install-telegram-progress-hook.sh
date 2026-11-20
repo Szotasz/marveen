@@ -141,6 +141,10 @@ if [ "$OS" = "Darwin" ]; then
   PLIST="$PLIST_DIR/$LABEL.plist"
   LOG="$HOME/.claude/channels/telegram-progress-watchdog.log"
   mkdir -p "$PLIST_DIR" "$HOME/.claude/channels"
+  # The fixed list, plus the dir tmux was found in and a custom Homebrew prefix bin
+  # (scripts/lib/helper-path.sh, ISSUE1968BREWPREFIX), then /usr/sbin:/sbin as before.
+  . "$INSTALL_DIR/scripts/lib/helper-path.sh"
+  HELPER_PATH="$(helper_launchd_path)"
   cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -161,7 +165,7 @@ if [ "$OS" = "Darwin" ]; then
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>$HELPER_PATH:/usr/sbin:/sbin</string>
         <key>MARVEEN_ROOT</key>
         <string>$INSTALL_DIR</string>
     </dict>
