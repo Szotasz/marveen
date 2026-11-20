@@ -192,10 +192,14 @@ describe('#2989: the recovery WARN names what the idle-prompt guard saw', () => 
     expect(fields?.paneTail).toBe(FROZEN_PANE.trimEnd())
   })
 
-  it('a pane drawn high logs its last drawn lines, not the blank rows below them', async () => {
-    h.pane = FROZEN_PANE + '\n'.repeat(20)
+  it('a pane drawn high logs its last 8 drawn lines, not the blank rows below them', async () => {
+    const scrollback = Array.from({ length: 12 }, (_, i) => `scrollback ${i}`).join('\n')
+    h.pane = `${scrollback}\n${FROZEN_PANE}${'\n'.repeat(20)}`
     await drive(30)
-    expect(String(recoveryWarn()?.paneTail).split('\n').pop()).toBe('✻ Baked for 20s')
+    const tail = String(recoveryWarn()?.paneTail).split('\n')
+    expect(tail).toHaveLength(8)
+    expect(tail[0]).toBe('scrollback 8')
+    expect(tail.pop()).toBe('✻ Baked for 20s')
   })
 
   it('a null capture at the verdict poll ends the spell instead of reaching the WARN', async () => {
