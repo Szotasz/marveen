@@ -515,7 +515,8 @@ PAIRTEXT_PATCH = {"name": "pairtext", "fallback": PAIRTEXT_FALLBACK}
 #   - the pair branch answers "letting you in" instead of the code;
 #   - the approval confirmation the plugin sends after the monitor's approved/ marker says "you are in, write" in the
 #     install's language instead of "Paired! Say hi to Claude." (for a dashboard code approval too).
-# Without a live invite nothing changes: the pairing code and its text are as before. Whole lines only, each carrying the
+# Without a live invite /start and the pair branch are as before (the code and its text); only the confirmation text
+# changes unconditionally (Revizor on #2994). Whole lines only, each carrying the
 # marker, so taking it back is deleting those lines; the language is AGENT_TEXT_LANG, like the pairtext patch.
 # Token binding (INVITETOKENBIND1120, card 1fff5453): the monitor used to approve ANY pending sender while an invite was
 # live. Now /start invite-<token> acts only when <token> itself is a live invite in invites.json, and then leaves a claim,
