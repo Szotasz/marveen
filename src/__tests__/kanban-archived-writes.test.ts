@@ -71,14 +71,14 @@ describe('a write on an ARCHIVED card says so; on a live card the answer is unch
   })
 
   it('move: {ok, archived:true} on the archived card, and the status still changes', async () => {
-    const out = await call(`/api/kanban/${GONE}/move`, 'POST', { status: 'waiting', actor: 'teszt' })
+    const out = await call(`/api/kanban/${GONE}/move`, 'POST', { status: 'waiting', actor: 'teszt', reason: 'a teszt külső eseményre vár' })
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, archived: true })
     expect(readCard(GONE).status).toBe('waiting')
   })
 
   it('NEGATIVE: move on a live card: exactly {ok:true}', async () => {
-    const out = await call(`/api/kanban/${LIVE}/move`, 'POST', { status: 'waiting', actor: 'teszt' })
+    const out = await call(`/api/kanban/${LIVE}/move`, 'POST', { status: 'waiting', actor: 'teszt', reason: 'a teszt külső eseményre vár' })
     expect(out.body).toEqual({ ok: true })
   })
 

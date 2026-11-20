@@ -1149,6 +1149,8 @@ window._i18n.en = {
   'settings.desc.KANBAN_AGING_CAUTION_COLOR':  'Aging badge color at the caution threshold (caution).',
   'settings.desc.KANBAN_AGING_CRITICAL_COLOR': 'Aging badge color at the critical threshold.',
   'settings.desc.KANBAN_SWIMLANE_DEFAULT_GROUP': 'Default board grouping on load. none = flat view.',
+  'settings.desc.KANBAN_DONE_EVIDENCE_MODE': 'What happens when a card becomes done without evidence (no "evidence" in the move and no non-system comment since the work started). warn (default) = the move succeeds, the response carries warning: "no_evidence" and a system comment lands on the card; block = the move is refused with 409 and the card is unchanged. An agent closing without evidence still lands in testing.',
+  'settings.desc.KANBAN_WAITING_REASON_MODE': 'What happens when a card enters waiting without a reason (no "reason" in the move and no non-system comment in the last 30 minutes). warn (default) = the move succeeds, the response carries warning: "no_waiting_reason" and a system comment lands on the card; block = the move is refused with 409 and the card is unchanged.',
   'settings.desc.KANBAN_SWIMLANE_SEPARATOR_COLOR': 'Background color of the swimlane separator header.',
   'settings.desc.DASHBOARD_PUBLIC_URL':        'Publicly accessible URL of the dashboard (e.g. https://{agentId}.example.com). Empty = no additional CORS whitelist.',
   'settings.desc.OLLAMA_URL':                  'Base URL for the Ollama API. Used for memory embedding and model suggestions.',

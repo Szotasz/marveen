@@ -222,6 +222,53 @@ describe('getStuckKanbanCards (KANBANSTUCKURES916 forrás-spec 5. fejezet)', () 
   })
 })
 
+// KANBANEVIDENCEWARN1120: a waiting card with no external event named -- no open blocker card,
+// no human comment from 30 minutes before it entered waiting onwards -- is listed.
+describe('waiting.without_reason', () => {
+  it('lists only the waiting cards that name nothing they wait for', () => {
+    const db = getDb()
+    const old = now() - 10 * DAY
+    const entered = now() - 5 * DAY
+    // no comment, no blocker: listed, waiting_days from the waiting event
+    insertCard(db, { id: 'n1', status: 'waiting', createdAt: old, updatedAt: entered })
+    insertEvent(db, 'n1', 'waiting', entered)
+    // a comment right before entering waiting (the agent recipe): has a reason
+    insertCard(db, { id: 'n2', status: 'waiting', createdAt: old, updatedAt: entered })
+    insertEvent(db, 'n2', 'waiting', entered)
+    insertComment(db, 'n2', entered - 60, { author: 'anyone' })
+    // only an old comment, from long before waiting: listed
+    insertCard(db, { id: 'n3', status: 'waiting', createdAt: old, updatedAt: entered })
+    insertEvent(db, 'n3', 'waiting', entered)
+    insertComment(db, 'n3', old + 60)
+    // only system and automated comments: listed
+    insertCard(db, { id: 'n4', status: 'waiting', createdAt: old, updatedAt: entered })
+    insertEvent(db, 'n4', 'waiting', entered)
+    insertComment(db, 'n4', entered + 60, { author: 'system' })
+    insertComment(db, 'n4', entered + 120, { author: 'sweep', automated: true })
+    // an open blocker card: has a reason; a done blocker does not count
+    insertCard(db, { id: 'n5', status: 'waiting', createdAt: old, updatedAt: entered })
+    insertEvent(db, 'n5', 'waiting', entered)
+    insertCard(db, { id: 'blk', status: 'in_progress', createdAt: old, updatedAt: now() })
+    db.prepare('INSERT INTO kanban_card_blockers (card_id, blocker_id, created_at) VALUES (?, ?, ?)').run('n5', 'blk', entered)
+    insertCard(db, { id: 'n6', status: 'waiting', createdAt: old, updatedAt: entered })
+    insertEvent(db, 'n6', 'waiting', entered)
+    insertCard(db, { id: 'blkdone', status: 'done', createdAt: old, updatedAt: now() })
+    db.prepare('INSERT INTO kanban_card_blockers (card_id, blocker_id, created_at) VALUES (?, ?, ?)').run('n6', 'blkdone', entered)
+    // NEGATIVE: not waiting at all
+    insertCard(db, { id: 'n7', status: 'planned', createdAt: old, updatedAt: old })
+    const r = getStuckKanbanCards(OPTS)
+    expect(r.waiting.without_reason.map((c) => c.id).sort()).toEqual(['n1', 'n3', 'n4', 'n6'])
+    expect(r.waiting.without_reason.find((c) => c.id === 'n1')!.waiting_days).toBe(5)
+  })
+
+  it('a waiting card with no waiting event is measured from its creation', () => {
+    const db = getDb()
+    insertCard(db, { id: 'x1', status: 'waiting', createdAt: now() - 3 * DAY, updatedAt: now() - 3 * DAY })
+    const r = getStuckKanbanCards(OPTS)
+    expect(r.waiting.without_reason.map((c) => [c.id, c.waiting_days])).toEqual([['x1', 3]])
+  })
+})
+
 describe('GET /api/kanban/stuck', () => {
   beforeEach(() => { initDatabase(':memory:') })
 

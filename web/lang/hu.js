@@ -1592,6 +1592,8 @@ window._i18n.hu = {
   'settings.desc.KANBAN_AGING_CAUTION_COLOR':  'Az aging-badge színe az óvatossági küszöbnél (caution).',
   'settings.desc.KANBAN_AGING_CRITICAL_COLOR': 'Az aging-badge színe a kritikus küszöbnél.',
   'settings.desc.KANBAN_SWIMLANE_DEFAULT_GROUP': 'A tábla alapértelmezett csoportosítása betöltéskor. none = lapos nézet.',
+  'settings.desc.KANBAN_DONE_EVIDENCE_MODE': 'Mi történjen, ha egy kártya bizonyíték nélkül lesz done (a mozgatás nem hoz "evidence" mezőt, és a munka kezdete óta nincs rajta nem-rendszer komment). warn (alapértelmezés) = a mozgatás lefut, a válasz warning: "no_evidence" mezőt kap, és rendszer-komment kerül a kártyára; block = a mozgatás 409-cel elutasítva, a kártya nem változik. Az ügynök bizonyíték nélküli lezárása ettől függetlenül testing-be kerül.',
+  'settings.desc.KANBAN_WAITING_REASON_MODE': 'Mi történjen, ha egy kártya indoklás nélkül kerül waiting-be (a mozgatás nem hoz "reason" mezőt, és az elmúlt 30 percben nincs rajta nem-rendszer komment). warn (alapértelmezés) = a mozgatás lefut, a válasz warning: "no_waiting_reason" mezőt kap, és rendszer-komment kerül a kártyára; block = a mozgatás 409-cel elutasítva, a kártya nem változik.',
   'settings.desc.KANBAN_SWIMLANE_SEPARATOR_COLOR': 'Az swimlane-elválasztó fejléc háttérszíne.',
   'settings.desc.DASHBOARD_PUBLIC_URL':        'A dashboard nyilvánosan elérhető URL-je (pl. https://{agentId}.example.com). Üres = nincs CORS whitelist bővítés.',
   'settings.desc.OLLAMA_URL':                  'Az Ollama API alap-URL-je. Memória-embedding és modell-javaslat ezt használja.',

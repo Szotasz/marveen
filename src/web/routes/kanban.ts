@@ -11,7 +11,7 @@ import {
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard, getCardsUnblockedBy, getLatestDoneTransitionAt,
   getBlockersForAllCards, blockerWouldCycle, parentWouldCycle,
-  claimKanbanCard, releaseKanbanCardClaim, isKanbanClaimActive, unblockDependentsOf, getDoneEvidence,
+  claimKanbanCard, releaseKanbanCardClaim, isKanbanClaimActive, unblockDependentsOf, getDoneEvidence, countRecentNonSystemComments,
   KANBAN_CLAIM_DEFAULT_TTL_SEC, KANBAN_CLAIM_MIN_TTL_SEC, KANBAN_CLAIM_MAX_TTL_SEC,
   type KanbanCard,
   listArchivedKanbanCards,
@@ -77,7 +77,7 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
 // rule as the PUT above.
-const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'expected_status', 'evidence'] as const
+const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'expected_status', 'evidence', 'reason'] as const
 
 // Evidence on done (one human, many agents). The owner cannot re-check every
 // card a fleet of agents closes, so an AGENT may only close a card by saying
@@ -646,6 +646,86 @@ export function statusChangeExtras(
   return extras
 }
 
+// Transition gates (KANBANEVIDENCEWARN1120, card 4d1e768e): "done" is claimed only with
+// evidence, "waiting" only with a reason (an external event the card waits for). Both are
+// soft by default: the move goes through, the answer carries `warning` and a system comment
+// lands on the card, so the board itself shows the gap. KANBAN_DONE_EVIDENCE_MODE and
+// KANBAN_WAITING_REASON_MODE (hot-reloaded, `warn` | `block`) turn either into a refusal
+// (409, card unchanged). Anything but `block` reads as `warn`: a typo must not start refusing.
+//   - no_evidence: the card becomes done, the request carried no "evidence", and there is
+//     no non-system comment since the work started (getDoneEvidence, the same measurement
+//     as evidence_warning).
+//   - no_waiting_reason: the card enters waiting, the request carried no "reason", and no
+//     non-system, non-automated comment was written in the last KANBAN_WAITING_REASON_WINDOW_SEC (the agent
+//     recipe comments first, then moves).
+// The system comment this writes never counts as evidence or reason (author 'system').
+export type KanbanGateMode = 'warn' | 'block'
+export type KanbanGateWarning = 'no_evidence' | 'no_waiting_reason'
+// Kept equal to db.ts WAITING_REASON_WINDOW_SEC (the audit's window); a test pins the two together.
+// A literal, not an import: several suites mock db.js without that export, and a module-level read would throw.
+export const KANBAN_WAITING_REASON_WINDOW_SEC = 30 * 60
+
+export function kanbanGateMode(key: 'KANBAN_DONE_EVIDENCE_MODE' | 'KANBAN_WAITING_REASON_MODE'): KanbanGateMode {
+  try {
+    return String(getEffectiveSettingValue(key)).trim().toLowerCase() === 'block' ? 'block' : 'warn'
+  } catch {
+    return 'warn'
+  }
+}
+
+export function kanbanTransitionGate(
+  id: string,
+  before: Pick<KanbanCard, 'status'> | undefined,
+  newStatus: unknown,
+  opts: { evidenceGiven: boolean; reasonGiven: boolean },
+): { warning: KanbanGateWarning; mode: KanbanGateMode } | null {
+  if (!before || before.status === newStatus) return null
+  try {
+    if (newStatus === 'done' && !opts.evidenceGiven) {
+      const ev = getDoneEvidence(id)
+      if (ev && ev.comments === 0) return { warning: 'no_evidence', mode: kanbanGateMode('KANBAN_DONE_EVIDENCE_MODE') }
+    }
+    if (newStatus === 'waiting' && !opts.reasonGiven) {
+      if (countRecentNonSystemComments(id, KANBAN_WAITING_REASON_WINDOW_SEC) === 0) {
+        return { warning: 'no_waiting_reason', mode: kanbanGateMode('KANBAN_WAITING_REASON_MODE') }
+      }
+    }
+  } catch (err) {
+    // A failed check must never stop a move: no gate rather than a 500.
+    logger.warn({ err, id }, 'Kanban transition gate check failed (treated as no warning)')
+  }
+  return null
+}
+
+const KANBAN_GATE_TEXT: Record<KanbanGateWarning, { comment: string; refusal: string; error: string }> = {
+  no_evidence: {
+    error: 'evidence_required',
+    comment: 'Automatikus jelzés: a kártya bizonyíték nélkül lett done. A mozgatás nem hozott bizonyítékot, és a munka kezdete óta nincs rajta komment. Írj eredmény-kommentet: mi lett a vége, mivel ellenőrizted (teszt, PR link, visszaolvasott fájl, mért szám).',
+    refusal: 'A kártya bizonyíték nélkül nem lehet done (KANBAN_DONE_EVIDENCE_MODE=block). Add meg az "evidence" mezőt (mivel ellenőrizted), vagy írj előbb eredmény-kommentet a kártyára. A kártya nem változott.',
+  },
+  no_waiting_reason: {
+    error: 'waiting_reason_required',
+    comment: 'Automatikus jelzés: a kártya indoklás nélkül került waiting-be. A mozgatás nem hozott okot, és az elmúlt 30 percben nincs rajta komment. Írd meg, mire vár (kire, milyen külső eseményre); ha nincs külső ok, a kártya nem waiting.',
+    refusal: 'A kártya indoklás nélkül nem kerülhet waiting-be (KANBAN_WAITING_REASON_MODE=block). Add meg a "reason" mezőt (mire vár: kire, milyen külső eseményre), vagy írj előbb kommentet a kártyára. A kártya nem változott.',
+  },
+}
+
+export function kanbanGateRefusal(gate: { warning: KanbanGateWarning }): Record<string, unknown> {
+  const t = KANBAN_GATE_TEXT[gate.warning]
+  return { error: t.error, warning: gate.warning, mode: 'block', note: t.refusal }
+}
+
+// After a move the gate let through: the system comment on the card, and the answer fields.
+export function kanbanGateWarn(id: string, gate: { warning: KanbanGateWarning }, actor?: string | null): Record<string, unknown> {
+  try {
+    addKanbanComment(id, 'system', KANBAN_GATE_TEXT[gate.warning].comment, { automated: true })
+  } catch (err) {
+    logger.warn({ err, id }, 'Kanban gate comment failed (card move still succeeded)')
+  }
+  logger.warn({ id, actor, warning: gate.warning }, 'Kanban transition without evidence/reason')
+  return { warning: gate.warning }
+}
+
 // Parses the optional claim TTL. undefined -> the default; anything that is not
 // a whole number of seconds inside the bounds -> null (the route answers 400
 // naming the bounds, rather than silently clamping a value the caller chose).
@@ -1148,6 +1228,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // dispatch path (KARTYADISPATCH1010). writeKanbanCard applies the shared
     // dispatched_at clear; no fireKanbanDispatch call belongs here.
     const before = getKanbanCard(id)
+    // The PUT carries neither "evidence" nor "reason": only the comments on the card count.
+    const putGate = kanbanTransitionGate(id, before, data.status ?? before?.status, { evidenceGiven: false, reasonGiven: false })
+    if (putGate?.mode === 'block') {
+      json(res, kanbanGateRefusal(putGate), 409)
+      return true
+    }
     const written = writeKanbanCard(id, data, who.actor, expectedVersion)
     if (written.ok) {
       const after = getKanbanCard(id)
@@ -1163,6 +1249,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         } : {}),
         ...archivedNote(after),
         ...statusChangeExtras(id, before, data.status ?? before?.status, who.actor),
+        ...(putGate ? kanbanGateWarn(id, putGate, who.actor) : {}),
       })
       return true
     }
@@ -1333,13 +1420,23 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `Unknown field(s): ${unknownMoveKeys.join(', ')}. Accepted: ${KANBAN_MOVE_FIELDS.join(', ')}` }, 400)
       return true
     }
-    const { status, sort_order, actor, expected_status, evidence } = moveBody as { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; expected_status?: unknown; evidence?: unknown }
+    const { status, sort_order, actor, expected_status, evidence, reason } = moveBody as { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; expected_status?: unknown; evidence?: unknown; reason?: unknown }
     if (evidence !== undefined && evidence !== null && typeof evidence !== 'string') {
       json(res, { error: 'evidence must be a string or null' }, 400)
       return true
     }
     if (typeof evidence === 'string' && evidence.length > KANBAN_EVIDENCE_MAX_CHARS) {
       json(res, { error: `evidence is longer than ${KANBAN_EVIDENCE_MAX_CHARS} characters` }, 400)
+      return true
+    }
+    // reason: why the card moves (for waiting: what it waits for). Stored as a comment by the
+    // mover once the move succeeds; same type and length rules as evidence.
+    if (reason !== undefined && reason !== null && typeof reason !== 'string') {
+      json(res, { error: 'reason must be a string or null' }, 400)
+      return true
+    }
+    if (typeof reason === 'string' && reason.length > KANBAN_EVIDENCE_MAX_CHARS) {
+      json(res, { error: `reason is longer than ${KANBAN_EVIDENCE_MAX_CHARS} characters` }, 400)
       return true
     }
     // Optional compare-and-set guard. Absent (undefined/null) keeps the old
@@ -1362,11 +1459,29 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const hasEvidence = typeof evidence === 'string' && evidence.trim() !== ''
     const needsEvidence = status === 'done' && !hasEvidence && isAgentActor(who.actor)
     const effectiveStatus: Parameters<typeof moveKanbanCard>[1] = needsEvidence ? 'testing' : status
+    const hasReason = typeof reason === 'string' && reason.trim() !== ''
     const moveOpts = {
       ...(hasExpected ? { expectedStatus: expected_status as Parameters<typeof moveKanbanCard>[1] } : {}),
       ...(hasEvidence ? { evidence: evidence as string } : {}),
     }
+    // Gate before the write: a block refuses with the card unchanged. With expected_status set
+    // and not holding, the conflict wins below (the gate looks only at a real transition from
+    // the row as read now, and refuses nothing on a card that is not where the caller thinks).
+    const moveGate = hasExpected && before && before.status !== expected_status
+      ? null
+      : kanbanTransitionGate(id, before, effectiveStatus, { evidenceGiven: hasEvidence, reasonGiven: hasReason })
+    if (moveGate?.mode === 'block') {
+      json(res, kanbanGateRefusal(moveGate), 409)
+      return true
+    }
     if (moveKanbanCard(id, effectiveStatus, sort_order ?? 0, who.actor, moveOpts)) {
+      if (hasReason) {
+        try {
+          addKanbanComment(id, who.actor ?? 'api', `${effectiveStatus === 'waiting' ? 'Várakozás oka' : 'Mozgatás oka'}: ${(reason as string).trim()}`)
+        } catch (err) {
+          logger.warn({ err, id }, 'Kanban move reason comment failed (card move still succeeded)')
+        }
+      }
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       if (effectiveStatus === 'in_progress') fireKanbanDispatch(id, who.actor)
@@ -1384,6 +1499,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         } : {}),
         ...archivedNote(moved),
         ...statusChangeExtras(id, before, effectiveStatus, who.actor, { evidenceGiven: hasEvidence }),
+        ...(moveGate ? kanbanGateWarn(id, moveGate, who.actor) : {}),
       })
       return true
     }

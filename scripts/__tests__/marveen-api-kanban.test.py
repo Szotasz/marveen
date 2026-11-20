@@ -259,6 +259,14 @@ rc, out, err, seen = run('kanban-move', 'abcd1234', 'done', '--evidence-file', f
 ok(rc == 2 and not seen and 'evidence is empty' in err, 'P20 kanban-move with a blank evidence file: exit 2, evidence is empty, nothing sent',
    'rc=%d n=%d %s' % (rc, len(seen), err[:160]))
 
+# --- P20b: --reason-file (KANBANEVIDENCEWARN1120): the waiting reason travels as "reason" ------------
+rc, out, err, seen = run('kanban-move', 'abcd1234', 'waiting', '--reason-file', fpath('ok.txt', 'Tom jovahagyasara var (Telegram 8400)\n'), '--actor', 'dani')
+g, d = one(seen, 'POST', '/api/kanban/abcd1234/move', {'status': 'waiting', 'reason': 'Tom jovahagyasara var (Telegram 8400)\n', 'actor': 'dani'})
+ok(rc == 0 and g, 'P20b kanban-move --reason-file: the file text goes as "reason"', 'rc=%d %s %s' % (rc, d, err[:160]))
+rc, out, err, seen = run('kanban-move', 'abcd1234', 'waiting', '--reason-file', fpath('ok-ures.txt', ' \n'))
+ok(rc == 2 and not seen and 'reason is empty' in err, 'P20c kanban-move with a blank reason file: exit 2, reason is empty, nothing sent',
+   'rc=%d n=%d %s' % (rc, len(seen), err[:160]))
+
 # --- P21-P23: the maintainer's review of #2080 -----------------------------------------------------
 # An empty title must never reach the board (nothing pinned it: removing the check stayed green).
 res = [run('kanban-create', 'dani', 'high', fpath('t-ures%d.txt' % i, c)) for i, c in enumerate(['', ' \n\t\n'])]
