@@ -154,6 +154,11 @@ export function codexRelayFilesystemEntries(workspace: string, codexHome: string
   const runDir = codexRelayMxdRunDir()
   const denied = [...codexRelayDeniedReadRoots(), resolve(codexHome), codexPhysicalPath(codexHome),
     runDir, codexPhysicalPath(runDir)]
+  const workspacePaths = [resolve(workspace), codexPhysicalPath(workspace)]
+  const hidden = denied.find(path => workspacePaths.includes(path))
+  if (hidden !== undefined) {
+    throw new Error(`relay sandbox profile refuses workspace ${workspace}: it is ${hidden}, which the relay hides from the sandbox (store/, the Codex home or the mxd run dir); the workspace grant would replace that denial`)
+  }
   const entries: Array<[string, 'read' | 'write' | 'none']> = [
     ['/', 'read'], [workspace, 'write'],
     ...denied.map((path): [string, 'none'] => [path, 'none']),
@@ -387,7 +392,8 @@ function stripTomlComment(line: string): string {
 }
 
 function relayKeySegments(line: string): string[] {
-  const key = line.startsWith('[') ? line.slice(1, line.lastIndexOf(']')) : line.split('=', 1)[0]
+  const prefix = line.match(/^(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^"'=])*/)![0]
+  const key = line.startsWith('[') ? line.slice(1, line.lastIndexOf(']')) : (line[prefix.length] === '=' ? prefix : line)
   // A quoted bare key is the same TOML key; a quoted path is not.
   return key.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, s => /^[A-Za-z0-9_-]+$/.test(s.slice(1, -1)) ? s.slice(1, -1) : '""').split(/[.\[\]\s]+/).filter(Boolean)
 }
@@ -514,6 +520,13 @@ export function assertCodexSeatConfigCompatible(home: string, workspace: string,
   for (const rawLine of content.split('\n')) {
     const line = stripTomlComment(rawLine).trim()
     if (!line) continue
+    // An exact rendered filesystem entry is "<path>" = "<access>" for a path derived above; its path may contain
+    // words the substring checks below look for (writable_roots, mcp_servers, features=...), so it skips them.
+    if (identity === 'seat' && currentKey === filesystemHeader && filesystemLines.has(line)) {
+      if (filesystemSeen.has(line)) refuseSeatConfig(`unexpected or duplicate relay filesystem setting (${line})`)
+      filesystemSeen.add(line)
+      continue
+    }
     if (identity === 'seat') {
       const refuseWebApps = (): never => refuseSeatConfig(`Codex web search and ChatGPT apps settings other than the relay's web_search = "disabled" and [features] apps = false are not allowed (${line})`)
       if (line === 'web_search = "disabled"' && !tableSeen && !webSearchSeen) {

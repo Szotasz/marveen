@@ -72,7 +72,7 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
     const store = codexRelayDeniedReadRoots()[0]
     const entries = codexRelayFilesystemEntries(ws, store)
     expect(entries.filter(([path]) => path === store)).toEqual([[store, 'none']])
-    expect(codexRelayFilesystemEntries(ws, ws).filter(([path]) => path === ws)).toEqual([[ws, 'write']])
+    expect(() => codexRelayFilesystemEntries(ws, ws)).toThrow(/relay sandbox profile refuses workspace/)
     expect(codexRelayFilesystemEntries(ws, codexRelayMxdRunDir()).filter(([path]) => path === codexRelayMxdRunDir()))
       .toEqual([[codexRelayMxdRunDir(), 'none']])
   })
@@ -216,5 +216,53 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
     mkdirSync(home)
     writeFileSync(join(home, 'config.toml'), 'model = "x"\n')
     expect(() => preflightCodexHome(home, ws, servers, 'overrides', opts)).not.toThrow()
+  })
+
+  it('R1 accepts its own seeded config when the home path holds "=" or checked words', () => {
+    for (const leaf of ['seat.features=relay', 'a.profile=x.tools', 'codex-writable_roots', 'mcp_servers.default_permissions']) {
+      home = join(root, leaf)
+      const content = validSeat()
+      expect(content).toContain(noneLine(resolve(home)))
+      expect(() => scaffoldCodexHome(home, ws, servers, 'seat', opts)).not.toThrow()
+      expect(() => preflightCodexHome(home, ws, servers, 'seat', opts)).not.toThrow()
+    }
+  })
+
+  it('R1 still refuses non-rendered or duplicate filesystem lines with those words', () => {
+    const content = validSeat()
+    const header = '[permissions.marveen-relay.filesystem]\n'
+    expect(content).toContain(header)
+    for (const extra of ['"/x/writable_roots" = "none"\n', '"/x/mcp_servers" = "none"\n', noneLine(resolve(home))]) {
+      expect(() => checkSeat(content.replace(header, header + extra))).toThrow(/codexSandbox=relay refuses/)
+    }
+  })
+
+  it.each([
+    'profile = "a=b"\n',
+    '"profile" = "x=y"\n',
+    "'web_search' = 'live=1'\n",
+    '"tools" = { web_search = "a=b" }\n',
+  ])('R1 still refuses a web/apps key whose value holds "=": %s', content => {
+    mkdirSync(home)
+    writeFileSync(join(home, 'config.toml'), content)
+    expect(() => preflightCodexHome(home, ws, servers, 'overrides', opts))
+      .toThrow(/it sets Codex web search, ChatGPT apps, tools or a config profile/)
+  })
+
+  it('R1 accepts a quoted path key holding "=" and a checked word in a shared home', () => {
+    mkdirSync(home)
+    writeFileSync(join(home, 'config.toml'), '[unrelated]\n"/srv/a.features=1" = "y"\n')
+    expect(() => preflightCodexHome(home, ws, servers, 'overrides', opts)).not.toThrow()
+  })
+
+  it('R1 refuses a workspace that is a hidden path, lexically or physically', () => {
+    const runDir = codexRelayMxdRunDir()
+    const store = codexRelayDeniedReadRoots()[0]
+    mkdirSync(store, { recursive: true })
+    symlinkSync(store, join(root, 'store-link'))
+    for (const workspace of [runDir, store, join(root, 'store-link')]) {
+      expect(() => codexRelayFilesystemEntries(workspace, home)).toThrow(/relay sandbox profile refuses workspace/)
+      expect(() => renderCodexOverrides(workspace, {}, { ...opts, codexHome: home })).toThrow(/relay sandbox profile refuses workspace/)
+    }
   })
 })
