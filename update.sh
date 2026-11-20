@@ -2285,9 +2285,20 @@ if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   # file in a folder that is not writable) made the fallback below believe the
   # finalizer had started, so no finalizer ran at all. This run then uses a
   # marker name of its own; plain shell only, the PATH here may be minimal.
+  # The replacement name is cleared first, because a recycled pid can find an
+  # earlier run's file there.
   if [ -e "$FINALIZE_STARTED" ] || [ -L "$FINALIZE_STARTED" ]; then
-    echo "[update] the old finalizer start marker $FINALIZE_STARTED could not be removed; this run uses ${FINALIZE_SCRIPT%.sh}.started.$$" >> "$FINALIZE_LOG" 2>/dev/null
-    FINALIZE_STARTED="${FINALIZE_SCRIPT%.sh}.started.$$"
+    FINALIZE_OWN="${FINALIZE_SCRIPT%.sh}.started.$$"; rm -f "$FINALIZE_OWN" 2>/dev/null
+    if [ ! -e "$FINALIZE_OWN" ] && [ ! -L "$FINALIZE_OWN" ]; then
+      echo "[update] the old finalizer start marker $FINALIZE_STARTED could not be removed; this run uses $FINALIZE_OWN" >> "$FINALIZE_LOG" 2>/dev/null
+      FINALIZE_STARTED="$FINALIZE_OWN"
+    else
+      echo "[update] the old finalizer start marker $FINALIZE_STARTED and $FINALIZE_OWN could not be removed; the finalizer starts through the fallback only" >> "$FINALIZE_LOG" 2>/dev/null
+      # With an empty marker path the wrapper's `: > "$1"` fails, so the wrapper
+      # exits 1 before running the finalizer, and the fallback's `[ -e "" ]` is
+      # false, so the finalizer runs exactly once, through the fallback.
+      FINALIZE_STARTED=""
+    fi
   fi
   # FINONCE1120: systemd-run --scope returns the command's exit code. A
   # rolled-back/failed finalizer used to run twice, and the second run wrote

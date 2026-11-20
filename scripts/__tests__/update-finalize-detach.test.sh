@@ -27,7 +27,8 @@
 #      (FINMARKERCLEAR1120; 11 requires a non-root user).
 #   12-13. the replacement marker an earlier run with the same pid left behind
 #      (a file, or a folder rm -f cannot clear) still lets the finalizer run
-#      exactly once.
+#      exactly once; 14. a stale replacement file is cleared, so the run still
+#      goes through systemd-run.
 #
 # Run:  bash scripts/__tests__/update-finalize-detach.test.sh
 set -uo pipefail
@@ -232,6 +233,17 @@ SF
     "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
   grep -q 'could not be removed' "$SANDBOX/stuck-own-scope-ok.log" 2>/dev/null; logged=$?
   check "13b the log says why" "$([ "$logged" = 0 ] && echo 0 || echo 1)" "log grep rc: $logged"
+
+  # 14: a stale replacement FILE is cleared, so the run still goes through
+  # systemd-run (its scope survives the service restart), not the fallback.
+  mkdir -p "$SANDBOX/m14/scope-finalize.started/keep"
+  cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/m14/scope-finalize.sh"
+  : > "$SANDBOX/m14/scope-finalize.started.$$"
+  scope_run stale-own-scope-ok 6 0 "$SANDBOX/m14/scope-finalize.sh"
+  runs="$(grep -c '^run$' "$SANDBOX/stale-own-scope-ok.runs" 2>/dev/null)"
+  grep -q "this run uses $SANDBOX/m14/scope-finalize.started.$$" "$SANDBOX/stale-own-scope-ok.log" 2>/dev/null; logged=$?
+  check "14 a stale replacement marker file is cleared: one run, through systemd-run" \
+    "$([ "$runs" = 1 ] && [ "$logged" = 0 ] && echo 0 || echo 1)" "runs: $runs, log grep rc: $logged"
 fi
 
 echo
