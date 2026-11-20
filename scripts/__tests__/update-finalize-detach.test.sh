@@ -32,6 +32,9 @@
 #      not inferred from the log).
 #   15. the folder is not writable and the leftover replacement is a writable
 #      file: the run still goes through systemd-run (inside its scope).
+#   16. a read-only leftover replacement file is not reused (one run, via the
+#      fallback); 17. a leftover replacement symlink is not written through
+#      (its target keeps its content).
 #
 # Run:  bash scripts/__tests__/update-finalize-detach.test.sh
 set -uo pipefail
@@ -267,6 +270,40 @@ SF
     check "15 the folder is not writable and both markers are writable files, systemd-run starts: exactly one run, inside the scope" \
       "$([ "$runs" = 1 ] && [ "$scopes" = 1 ] && echo 0 || echo 1)" "runs: $runs, scope: $scopes"
     chmod 755 "$SANDBOX/ro15"
+  fi
+  # 16: a read-only leftover replacement file must not be reused.
+  if [ "$(id -u)" = 0 ]; then
+    echo "SKIP: case 16 requires a non-root user"
+  else
+    mkdir "$SANDBOX/ro16"
+    cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/ro16/scope-finalize.sh"
+    : > "$SANDBOX/ro16/scope-finalize.started"
+    : > "$SANDBOX/ro16/scope-finalize.started.$$"
+    chmod 444 "$SANDBOX/ro16/scope-finalize.started.$$"
+    chmod 555 "$SANDBOX/ro16"
+    scope_run stuck-readonly-own 6 0 "$SANDBOX/ro16/scope-finalize.sh"
+    runs="$(grep -c '^run$' "$SANDBOX/stuck-readonly-own.runs" 2>/dev/null)"
+    check "16 the leftover replacement is a read-only file, systemd-run starts: exactly one run (via the fallback)" \
+      "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+    chmod 755 "$SANDBOX/ro16"
+  fi
+
+  # 17: a leftover replacement symlink must not be written through.
+  if [ "$(id -u)" = 0 ]; then
+    echo "SKIP: case 17 requires a non-root user"
+  else
+    echo keep > "$SANDBOX/target17"
+    mkdir "$SANDBOX/ro17"
+    cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/ro17/scope-finalize.sh"
+    : > "$SANDBOX/ro17/scope-finalize.started"
+    ln -s "$SANDBOX/target17" "$SANDBOX/ro17/scope-finalize.started.$$"
+    chmod 555 "$SANDBOX/ro17"
+    scope_run stuck-symlink-own 6 0 "$SANDBOX/ro17/scope-finalize.sh"
+    runs="$(grep -c '^run$' "$SANDBOX/stuck-symlink-own.runs" 2>/dev/null)"
+    content="$(cat "$SANDBOX/target17" 2>/dev/null)"
+    check "17 the leftover replacement is a symlink: its target is not truncated, exactly one run" \
+      "$([ "$runs" = 1 ] && [ "$content" = keep ] && echo 0 || echo 1)" "runs: $runs, target content: '$content'"
+    chmod 755 "$SANDBOX/ro17"
   fi
 fi
 
