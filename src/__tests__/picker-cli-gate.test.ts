@@ -147,9 +147,9 @@ describe('the writers are gated too (POST/PUT model)', () => {
     expect(put).toBeGreaterThan(-1)
     expect(src.slice(put, put + 400)).toContain('refuseIfCliCannotLaunch(String(data.model))')
     // The create checks live in agent-create.ts since MIOAGENTINSTALL1114 PR-I0: the gate is consulted there, and the
-    // POST handler runs those checks.
+    // POST handler runs those checks. A codex-engine agent never runs the Claude CLI, so the gate skips it.
     const create = readFileSync(join(REPO, 'src', 'web', 'agent-create.ts'), 'utf8')
-    const post = create.indexOf("const cliGate = await refuseIfCliCannotLaunch(model)")
+    const post = create.indexOf("const cliGate = opts.engine === 'codex' ? null : await refuseIfCliCannotLaunch(model)")
     expect(post).toBeGreaterThan(-1)
     // AGENTCREATEPR2-1119: the POST body runs them in createAgentFromSpec (agent-create.ts).
     expect(create.slice(create.indexOf('export async function createAgentFromSpec('))).toContain('await checkAgentCreatable(name, model, customProvider,')

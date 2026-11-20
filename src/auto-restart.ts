@@ -261,3 +261,6 @@ export function mainRelaunchSucceeded(
 ): boolean {
   return result === 'started' || result === 'grace'
 }
+
+/** Claude transcript supervision is unavailable for the Codex pilot. */
+export function autoRestartSupportsEngine(engine: string): boolean { return engine === 'claude' }

@@ -1,3 +1,5 @@
+import { autoRestartSupportsEngine } from '../auto-restart.js'
+import { readAgentEngineConfigSafe } from './agent-config.js'
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { logger } from '../logger.js'
@@ -129,6 +131,7 @@ async function performRestart(name: string, cfg: AutoRestartConfig): Promise<voi
 }
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
+  if (!autoRestartSupportsEngine(readAgentEngineConfigSafe(name).engine)) return
   const cfg = readAutoRestartConfig(name)
   if (!cfg.enabled) {
     lastRestart.delete(name) // re-seed cleanly if re-enabled later
@@ -303,3 +306,5 @@ export function startAutoRestartRunner(): NodeJS.Timeout {
   setTimeout(whileNotFrozen('auto-restart', sweep), INITIAL_DELAY_MS)
   return setInterval(whileNotFrozen('auto-restart', sweep), INTERVAL_MS)
 }
+
+export { checkAgent as checkAutoRestartAgent }

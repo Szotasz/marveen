@@ -53,9 +53,9 @@ describe('POST /api/agents refuses the main agent id', () => {
   const src = readFileSync(join(import.meta.dirname, '..', 'web/routes/agents.ts'), 'utf8')
   const create = readFileSync(join(import.meta.dirname, '..', 'web/agent-create.ts'), 'utf8')
   const checks = create.slice(create.indexOf('export async function checkAgentCreatable('), create.indexOf('export interface AgentBase'))
-  // AGENTCREATEPR2-1119: the route's body is createAgentFromSpec (agent-create.ts); the route calls it.
+  // AGENTCREATEPR2-1119: the route's body is createAgentFromSpec (agent-create.ts); the route calls it; since #2652 it passes the validated engine config as the second argument.
   const routeRunsChecksBeforeWrites = () => {
-    expect(src).toContain('const result = await createAgentFromSpec(data)')
+    expect(src).toContain('const result = await createAgentFromSpec(data, { engineConfig, explicit: data.engine !== undefined || data.codexConfigDir !== undefined })')
     const post = create.indexOf('export async function createAgentFromSpec(')
     const callCheck = create.indexOf('await checkAgentCreatable(name, model, customProvider,', post)
     const callWrite = create.indexOf('writeAgentBase(name, {', post)

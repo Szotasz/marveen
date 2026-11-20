@@ -14,6 +14,7 @@ vi.mock('../config.js', async (orig) => ({ ...(await orig<typeof import('../conf
 
 const { readAgentCodeMode, writeAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched } = await import('../web/agent-config.js')
 const { codeModeLaunchEnv, resolveCodeModeLaunch } = await import('../web/agent-process.js')
+const { CHANNEL_TOKEN_UNSET } = await import('../web/agent-engine.js')
 const { decideContinueFlag, CODE_MODE_SWITCH_REASON } = await import('../web/channel-continue-policy.js')
 const { CODE_MODE_MARKER_DIR, codeModeMarkerPath, syncCodeModeMarker } = await import('../web/code-mode-caveats.js')
 
@@ -134,7 +135,9 @@ describe('the launch command (startAgentProcess)', () => {
   const CMD_BEFORE = 'const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${helperTokenEnvPiece}${agentEgressEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()'
 
   it('the unset line is today\'s, unchanged (the explicit =0 export makes an unset redundant)', () => {
-    expect(lineAt('const unsetTokens = ').trim()).toBe(UNSET_BEFORE)
+    // Per-agent engine (PR #2652): the line reads the shared constant, whose value is today's literal.
+    expect(lineAt('const unsetTokens = ').trim()).toBe('const unsetTokens = CHANNEL_TOKEN_UNSET')
+    expect(`const unsetTokens = '${CHANNEL_TOKEN_UNSET}'`).toBe(UNSET_BEFORE)
   })
 
   it('the launch line is today\'s plus exactly ${codeModeEnv}, after the unset and before cd/claude', () => {
@@ -175,8 +178,8 @@ describe('the launch command (startAgentProcess)', () => {
 
   // The real shell, with the variable inherited from the parent the way the tmux server would hand it on: the unset
   // line and the piece, in the order the launch line puts them.
-  const unsetTokens = /const unsetTokens = '([^']+)'/.exec(FN)![1]
-  const seen = (enabled: boolean) => execFileSync('/bin/sh', ['-c', `${unsetTokens} && ${codeModeLaunchEnv(enabled)}printf '%s' "\${${VAR}-UNSET}"`], {
+  const unsetTokens = CHANNEL_TOKEN_UNSET
+  const seen =(enabled: boolean) => execFileSync('/bin/sh', ['-c', `${unsetTokens} && ${codeModeLaunchEnv(enabled)}printf '%s' "\${${VAR}-UNSET}"`], {
     encoding: 'utf-8', env: { ...process.env, [VAR]: '1' },
   })
 
