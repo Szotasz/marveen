@@ -477,12 +477,32 @@ check_cmd() {
 # mar meglevo Homebrew-t. Ezert a meres ELOTT betoltjuk a brew kornyezetet,
 # ha a binaris letezik -- ugyanaz a ket sor, amit a telepito ag a sajat
 # telepitese utan mar hasznal.
+# BREWPREFIXREST1107: a Homebrew in a custom prefix is in neither default place, so a non-interactive install
+# decided "no brew" and ran the Homebrew installer (measured: MEASURE-C). An explicit MARVEEN_BREW_PREFIX is honoured
+# first; after the defaults, the #2578 rule (scripts/channels.sh, src/platform.ts): the <prefix> of the first
+# <prefix>/opt/node@NN/bin entry on PATH that has an executable <prefix>/bin/brew.
 if ! command -v brew &>/dev/null; then
-  if [ -x /opt/homebrew/bin/brew ]; then
+  _bp_brew=""
+  while IFS= read -r -d : _bp_dir; do
+    case "$_bp_dir" in
+      /*/opt/node@[0-9]/bin|/*/opt/node@[0-9][0-9]/bin) ;;
+      *) continue ;;
+    esac
+    if [ -x "${_bp_dir%/opt/node@*/bin}/bin/brew" ]; then
+      _bp_brew="${_bp_dir%/opt/node@*/bin}/bin/brew"
+      break
+    fi
+  done <<< "${PATH:-}:"
+  if [ -n "${MARVEEN_BREW_PREFIX:-}" ] && [ -x "$MARVEEN_BREW_PREFIX/bin/brew" ]; then
+    eval "$("$MARVEEN_BREW_PREFIX/bin/brew" shellenv)"
+  elif [ -x /opt/homebrew/bin/brew ]; then
     eval "$(/opt/homebrew/bin/brew shellenv)"
   elif [ -x /usr/local/bin/brew ]; then
     eval "$(/usr/local/bin/brew shellenv)"
+  elif [ -n "$_bp_brew" ]; then
+    eval "$("$_bp_brew" shellenv)"
   fi
+  unset _bp_dir _bp_brew
 fi
 
 MISSING=0
