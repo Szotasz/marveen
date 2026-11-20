@@ -64,7 +64,9 @@ describe('the pairtext patch', () => {
     // Each line sits right before the plugin's own answer, which stays as published.
     const all = text.split('\n')
     const start = all.indexOf(lines[0])
-    expect(all[start - 1]).toMatch(/^ *if \(!dmCommandGate\(ctx\)\) return$/)
+    // (the invitetext patch's line, when there, sits between the DM gate and ours)
+    const above = all[start - 1].endsWith('// MARVEEN-PATCH(invitetext): an invitee gets no pairing code') ? start - 2 : start - 1
+    expect(all[above]).toMatch(/^ *if \(!dmCommandGate\(ctx\)\) return$/)
     expect(all[start + 2]).toContain('This bot bridges Telegram to a Claude Code session.')
     const pair = all.indexOf(lines[1])
     expect(all[pair - 1]).toMatch(/const lead = result\.isResend \? 'Still pending' : 'Pairing required'$/)

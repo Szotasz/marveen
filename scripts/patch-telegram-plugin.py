@@ -504,6 +504,87 @@ def apply_pairtext(text, lang):
 PAIRTEXT_PATCH = {"name": "pairtext", "fallback": PAIRTEXT_FALLBACK}
 
 
+# The invitetext patch (INVITEPAIRCODE1120, card 500495b9): an invitee is let in by the dashboard's invite monitor
+# (src/web/channel-invites.ts, every 3 s), which approves the oldest pending pairing while an invite is live. The plugin
+# knows nothing of invites: the invite link's /start answered "write me anything, you get a code", the next message got
+# a pairing code, the monitor approved it a few seconds later, and the user was left holding a code the dashboard no
+# longer knew ("lejárt a párosító kód", Prorab and Gyula 2026-11-20). With this patch, while an invite in invites.json
+# (next to access.json, the monitor's own sidecar) is live:
+#   - /start with an invite-... payload creates the pending entry itself (the plugin's gate) and answers "letting you in"
+#     instead of the pairing instructions, no code (an approved sender gets "you are already in");
+#   - the pair branch answers "letting you in" instead of the code;
+#   - the approval confirmation the plugin sends after the monitor's approved/ marker says "you are in, write" in the
+#     install's language instead of "Paired! Say hi to Claude." (for a dashboard code approval too).
+# Without a live invite nothing changes: the pairing code and its text are as before. Whole lines only, each carrying the
+# marker, so taking it back is deleting those lines; the language is AGENT_TEXT_LANG, like the pairtext patch.
+INVITE_MARKER = "// MARVEEN-PATCH(invitetext): an invitee gets no pairing code"
+INVITE_TEXT = {
+    "hu": {"wait": "Meghívóval érkeztél, beengedlek. Pár másodperc, és szólok, hogy írhatsz.",
+           "welcome": "Bent vagy, írhatsz. Amit ide írsz, az ügynökhöz jut.",
+           "already": "Már bent vagy, írhatsz."},
+    "en": {"wait": "You came with an invite, letting you in. Give it a few seconds, I will tell you when you can write.",
+           "welcome": "You are in, go ahead and write. What you send here reaches the agent.",
+           "already": "You are already in, go ahead and write."},
+}
+INVITE_HELPERS = [
+    "const MARVEEN_INVITE_TEXT = {texts}",
+    "function marveenInviteLive(): boolean {{ try {{ const s = JSON.parse(readFileSync(join(STATE_DIR, 'invites.json'), 'utf8')); const now = Date.now(); "
+    "return Object.values(s?.invites ?? {{}}).some((i: any) => !!i && i.used !== true && typeof i.expiresAt === 'number' && i.expiresAt >= now) }} catch {{ return false }} }}",
+    "function marveenInviteStart(ctx: Context): boolean {{ const p = typeof ctx.match === 'string' ? ctx.match.trim() : ''; "
+    "if (!p.startsWith('invite-') || !marveenInviteLive()) return false; const r = gate(ctx); if (r.action === 'drop') return true; "
+    "void ctx.reply(r.action === 'deliver' ? MARVEEN_INVITE_TEXT.already : MARVEEN_INVITE_TEXT.wait).catch(() => {{}}); return true }}",
+]
+INVITE_ANCHORS = [
+    # helpers: before checkApprovals (module level, after gate(), STATE_DIR and the fs/path imports)
+    ("approvals function", re.compile(r"^()function checkApprovals\(\): void \{\n", re.MULTILINE), "before", "helpers"),
+    # the confirmation: our send first, then continue (the plugin's send under it is not reached)
+    ("approval confirm", re.compile(r"^( *)void bot\.api\.sendMessage\(senderId, \"Paired! Say hi to Claude\.\"\)\.then\(\n", re.MULTILINE), "before",
+     "void bot.api.sendMessage(senderId, MARVEEN_INVITE_TEXT.welcome).then(() => rmSync(file, { force: true }), err => { "
+     "process.stderr.write(`telegram channel: failed to send approval confirm: ${err}\\n`); rmSync(file, { force: true }) }); continue"),
+    # /start: right after its DM gate, before the pairtext line (if any)
+    ("start gate", re.compile(r"^bot\.command\('start', async ctx => \{\n( *)if \(!dmCommandGate\(ctx\)\) return\n", re.MULTILINE), "after",
+     "if (marveenInviteStart(ctx)) return"),
+    # the pair branch: first line inside it
+    ("pair branch", re.compile(r"^( *)if \(result\.action === 'pair'\) \{\n", re.MULTILINE), "after",
+     "  if (marveenInviteLive()) { await ctx.reply(MARVEEN_INVITE_TEXT.wait); return }"),
+]
+INVITE_FALLBACK = "an invitee still gets a pairing code the invite monitor makes useless a few seconds later"
+
+
+def strip_invitetext(text):
+    """The text without the lines the invitetext patch inserted (they all end with ' ' + INVITE_MARKER)."""
+    return "".join(line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(" " + INVITE_MARKER))
+
+
+def apply_invitetext(text, lang):
+    """Returns (new_text, status). All four places or none: a missing anchor leaves the file as it was.
+    'already' when the lines are there in this language; a language change rewrites them ('patched')."""
+    if INVITE_MARKER in text and strip_invitetext(text).count(INVITE_MARKER):
+        return text, "damaged:invitetext marker"
+    base = strip_invitetext(text)
+    lang = lang if lang in INVITE_TEXT else "hu"
+    texts = "{ " + ", ".join("%s: %s" % (k, json.dumps(v, ensure_ascii=False)) for k, v in INVITE_TEXT[lang].items()) + " }"
+    out = base
+    for name, rx, where, body in INVITE_ANCHORS:
+        found = list(rx.finditer(out))
+        if len(found) != 1:
+            return text, f"anchor-missing:{name}"
+        m = found[0]
+        indent = m.group(1)
+        if body == "helpers":
+            lines = "".join(h.format(texts=texts) + " " + INVITE_MARKER + "\n" for h in INVITE_HELPERS)
+        else:
+            lines = indent + body + " " + INVITE_MARKER + "\n"
+        pos = m.start() if where == "before" else m.end()
+        out = out[:pos] + lines + out[pos:]
+    if out == text:
+        return text, "already"
+    return out, "patched"
+
+
+INVITE_PATCH = {"name": "invitetext", "fallback": INVITE_FALLBACK}
+
+
 def log(msg):
     sys.stderr.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} patch-telegram-plugin: {msg}\n")
 
@@ -602,8 +683,13 @@ def patch_text(text, topics=False, buttons=True, lang="hu"):
         text, status = patch["apply"](text, buttons) if "apply" in patch else apply_patch(text, patch)
         results.append((patch, status))
     # pairtext last: independent of the others (its own marker and anchors), all-or-nothing on its own.
-    text, status = apply_pairtext(text, lang)
+    # invitetext's /start line sits right under the DM gate, ABOVE the pairtext line, where the pairtext anchor looks
+    # for the plugin's own reply: so its lines come out first, pairtext runs on the plugin's shape, and they go back in.
+    before = text
+    text, status = apply_pairtext(strip_invitetext(text), lang)
     results.append((PAIRTEXT_PATCH, status))
+    text, status = apply_invitetext(text, lang)
+    results.append((INVITE_PATCH, "already" if status == "patched" and text == before else status))
     if topics:
         text, status = apply_topics(text)
         results.append((TOPICS_PATCH, status))
