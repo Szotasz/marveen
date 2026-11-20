@@ -492,6 +492,7 @@ run_guard() {
   if . "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh" 2>/dev/null; then
     # shellcheck disable=SC2086
     SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" "$_primary_id" $_extra)"
+    SETTINGS_FLAG="${SETTINGS_FLAG}$(main_disallowed_tools_flag "$INSTALL_DIR")"
   fi
 
   # CFGDIR686: the main-agent isolated-config decision belongs on EVERY respawn

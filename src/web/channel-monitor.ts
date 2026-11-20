@@ -38,6 +38,7 @@ import {
   answerFirstRunGates,
   shSingleQuote,
   fleetVenvPathPrefix,
+  disallowedToolsFlag,
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
@@ -1205,6 +1206,8 @@ export function buildMainSessionRespawnCmd(opts: {
   gromzoTokenFile?: string | null
   /** GROMZONOPROVIDER1108: test seam for mainGromzoPrimaryReady when the primary is the Gromzo plugin. */
   gromzoPrimaryReady?: boolean
+  /** AGENT_DISALLOWED_TOOLS as the launch flag (disallowedToolsFlag); absent: read from the settings. Test seam. */
+  disallowedTools?: string
   /**
    * CHANNELUNCONF1110: false when the primary is a token provider with no token (mainPrimaryConfigured): the respawn
    * then comes back WITHOUT the primary channel, exactly as channels.sh, channel-watchdog.sh and stuck-modal-guard.sh
@@ -1301,6 +1304,8 @@ export function buildMainSessionRespawnCmd(opts: {
     // allowlist is the belt, this is the braces). shSingleQuote makes the value
     // one inert shell word. See model-id-injection.test.ts.
     ...(opts.model ? ['--model', shSingleQuote(opts.model)] : []),
+    // Parity with channels.sh/channel-watchdog.sh: without it every recovery respawn drops AGENT_DISALLOWED_TOOLS.
+    ...[(opts.disallowedTools ?? disallowedToolsFlag()).trim()].filter(Boolean),
     ...(channelsList.length > 0 ? [['--channels', ...channelsList].join(' ')] : []),
   ].join(' ')
 }
