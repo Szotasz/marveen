@@ -290,6 +290,11 @@ describe('B4-overrides relay seat permissions compatibility', () => {
     expect(() => check(content)).not.toThrow()
   })
 
+  it('B4-overrides asks to edit the shared seat file, never to delete it', () => {
+    expect(() => check('permissions = { x = 1 }\n')).toThrow(/Remove those settings from it: under codexIdentity=overrides the dashboard never re-renders this shared seat file/)
+    expect(() => check('permissions = { x = 1 }\n')).not.toThrow(/Delete the file/)
+  })
+
   it('B4-overrides leaves full-access configs unchanged', () => {
     expect(() => check('permissions = { x = 1 }\n# \\\n', { profile: 'full-access' })).not.toThrow()
   })

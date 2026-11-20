@@ -368,9 +368,14 @@ function stripTomlComment(line: string): string {
 export function assertCodexSeatConfigCompatible(home: string, workspace: string, identity: CodexIdentity, opts: CodexRenderOptions = {}): void {
   if (opts.profile !== 'relay') return
   const configPath = join(home, 'config.toml')
+  // Under overrides the file is the shared seat's own and nothing re-renders it,
+  // so deleting it would only drop the seat's settings for everyone using it.
+  const remedy = identity === 'overrides'
+    ? 'Remove those settings from it: under codexIdentity=overrides the dashboard never re-renders this shared seat file'
+    : 'Delete the file and start the agent so it is re-rendered'
   const refuseSeatConfig = (reason: string): never => {
     throw new Error(
-      `codexSandbox=relay refuses the existing ${configPath}: ${reason}. Delete the file and start the agent so it is re-rendered`)
+      `codexSandbox=relay refuses the existing ${configPath}: ${reason}. ${remedy}`)
   }
   if (identity === 'seat' && !opts.agentName) refuseSeatConfig('the relay seat needs the agent name')
   const relayDir = identity === 'seat' ? codexRelayDir(opts.agentName!) : undefined
@@ -447,7 +452,7 @@ export function assertCodexSeatConfigCompatible(home: string, workspace: string,
   const argsLine = `args = ${JSON.stringify([relayShimPath()])}`
   const refuseShimEntry = (line: string): never => {
     throw new Error(
-      `codexSandbox=relay refuses the existing ${configPath}: its marveen-dashboard entry is not the relay shim entry (${line}); under relay only command = "node" with args = [the dashboard's mcp-shim.mjs] and the shim's MARVEEN_AGENT_NAME / MARVEEN_RELAY_DIR env keys are accepted. Delete the file and start the agent so it is re-rendered`)
+      `codexSandbox=relay refuses the existing ${configPath}: its marveen-dashboard entry is not the relay shim entry (${line}); under relay only command = "node" with args = [the dashboard's mcp-shim.mjs] and the shim's MARVEEN_AGENT_NAME / MARVEEN_RELAY_DIR env keys are accepted. ${remedy}`)
   }
   const sandboxLines = new Set([
     'network_access = false',
