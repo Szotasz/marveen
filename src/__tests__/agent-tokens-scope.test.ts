@@ -995,6 +995,8 @@ const ALLOWLIST_SAMPLES: Array<[string, string]> = [
   ['POST', '/api/kanban/abc123/claim'], ['POST', '/api/kanban/abc123/release'], ['POST', '/api/kanban/abc123/move'],
   ['POST', '/api/kanban/abc123/comments'], ['POST', '/api/kanban/abc123/archive'], ['POST', '/api/kanban/abc123/unarchive'],
   ['POST', '/api/kanban/abc123/labels'], ['POST', '/api/kanban/abc123/blockers'],
+  ['GET', '/api/board/cards'], ['POST', '/api/board/cards'], ['GET', '/api/board/cards/abc123'],
+  ['POST', '/api/board/cards/abc123/comments'], ['POST', '/api/board/cards/abc123/move'], ['GET', '/api/board/report'],
   ['GET', '/api/memories'], ['GET', '/api/memories/42'], ['POST', '/api/memories'], ['PATCH', '/api/memories/42'], ['PUT', '/api/memories/42'],
   ['GET', '/api/daily-log'], ['GET', '/api/daily-log/dates'], ['POST', '/api/daily-log'],
   ['GET', '/api/approvals'], ['GET', '/api/approvals/abc-123'], ['POST', '/api/approvals'], ['POST', '/api/approvals/abc-123/consume'],

@@ -12,6 +12,8 @@ import { isPublicRequest, issueSetupCode, markPublicRequest, publicListenerPort,
 import { createAgentTokenResolver } from './web/agent-tokens.js'
 import { operatorGateDecision } from './web/operator-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
+import { boardGateDecision, readBoardAccess } from './web/board-access.js'
+import { tryHandleBoard } from './web/routes/board.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { tryHandleSupportAccess } from './web/routes/support-access.js'
 import { startSupportReconcile } from './web/support-standby-runtime.js'
@@ -224,6 +226,16 @@ export function startWebServer(port = 3420): http.Server {
         res.end(JSON.stringify({ error: 'Forbidden for this credential', reason: operatorDenied }))
         return
       }
+      // Scoped board (board-access.ts): a sub-agent token listed in
+      // store/board-access.json is kept off the whole /api/kanban* family and
+      // served by /api/board/* only; /api/board/* is refused to everyone else.
+      const boardDenied = boardGateDecision(auth, path, () => readBoardAccess())
+      if (boardDenied) {
+        logger.warn({ path, method, agent: auth.kind === 'token' ? auth.tokenAgent : undefined, reason: boardDenied }, 'board gate: denied')
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Forbidden for this credential', rule: 'board-scope', reason: boardDenied }))
+        return
+      }
     }
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
@@ -262,6 +274,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleHomoglyphs(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
+      if (await tryHandleBoard(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return
       if (await tryHandleKanbanProjects(routeCtx)) return
       if (await tryHandleHeartbeat(routeCtx)) return
