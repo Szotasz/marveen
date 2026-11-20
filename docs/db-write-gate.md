@@ -83,6 +83,15 @@ positional is read however deep its modifier nests (`${1:-${2:-${3}}}`), and a f
 bash's `--rcfile RC` and `--init-file RC` take an argument, so the next word is the script; the rc file they name is a
 run too (an interactive shell runs it).
 
+**Shell code is a command of its own** (Refs #2974, #2975). The code a command hands to a shell (`sh`/`bash -c`, also
+behind a wrapper such as `timeout`, `eval`, `trap`, a nested `-c`, a shell reading a heredoc or a here-string on stdin)
+is judged as a command by every rule above, in the caller's own context (its cwd, main agent or sub-agent), down to
+eight levels; deeper nesting is denied. So a file-level database write (`bash -c 'rm store/claudeclaw.db'`) is denied
+like the same write at the top level, and a `cd` to an unknown directory counts as the install inside the code too
+(`bash -c 'cd $X && echo x > scripts/hooks/f'`). A shell with a script operand reads its stdin as the script's data,
+not as code (`bash x.sh <<'E' ... E`), unless `-s` is given. The inner code is judged in the cwd the command started
+in, not the one an earlier `cd` of the same command moved to.
+
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file
 written in an earlier Bash call (or with the Write tool) and run in a later one is not read either. What the caller's
