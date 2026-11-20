@@ -445,6 +445,10 @@ export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 
+// LAN colleague-only mode (web/lan-colleague-only.ts): 1 = a non-loopback connection reaches only the colleague
+// board surface, 0 = off, unset/auto = on when WEB_HOST is not loopback and store/colleague-accounts.json exists.
+export const DASHBOARD_LAN_COLLEAGUE_ONLY = env['DASHBOARD_LAN_COLLEAGUE_ONLY'] ?? ''
+
 // DOCKERHTTPS1119 (Geri's live run, 81231): first-boot writes WEB_PUBLIC_PORT into .env, not into the process
 // environment, so it is read from the file like WEB_HOST; public-access.ts publicListenerPort checks the value.
 export const WEB_PUBLIC_PORT = env['WEB_PUBLIC_PORT'] ?? ''

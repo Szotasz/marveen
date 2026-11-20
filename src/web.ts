@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
-import { PROJECT_ROOT, WEB_HOST, WEB_PUBLIC_PORT, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, WEB_PUBLIC_PORT, DASHBOARD_LAN_COLLEAGUE_ONLY, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { gateRequest, requiresAuth, type AuthResult } from './web/auth-gate.js'
@@ -17,6 +17,8 @@ import { tryHandleBoard } from './web/routes/board.js'
 import { colleagueGateDecision } from './web/colleague-gate.js'
 import { tryHandleColleague } from './web/routes/colleague.js'
 import { sweepExpiredColleagueSessions } from './web/colleague-sessions.js'
+import { COLLEAGUE_ACCOUNTS_PATH } from './web/colleague-accounts.js'
+import { isLoopbackRemote, lanColleagueOnlyActive, lanPathDecision, lanPrincipalDecision, parseLanColleagueOnlySetting, isLoopbackBindHost, LAN_COLLEAGUE_ONLY_ENV, type LanGateResult } from './web/lan-colleague-only.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { tryHandleSupportAccess } from './web/routes/support-access.js'
 import { startSupportReconcile } from './web/support-standby-runtime.js'
@@ -166,6 +168,27 @@ export function startWebServer(port = 3420): http.Server {
     ...DASHBOARD_ALLOWED_ORIGINS.split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
   ])
 
+  const lanSetting = parseLanColleagueOnlySetting(DASHBOARD_LAN_COLLEAGUE_ONLY)
+  if (lanSetting === 'off' && !isLoopbackBindHost(WEB_HOST)) {
+    logger.warn({ webHost: WEB_HOST }, `${LAN_COLLEAGUE_ONLY_ENV}=0: the whole dashboard is reachable from the network, colleague login or not`)
+  }
+  /** True when this request must stay on the colleague surface: LAN mode active, not loopback, not the public listener. */
+  const lanConfinedRequest = (req: http.IncomingMessage): boolean => {
+    if (isPublicRequest(req)) return false
+    if (isLoopbackRemote(req.socket?.remoteAddress)) return false
+    return lanColleagueOnlyActive(lanSetting, WEB_HOST, () => existsSync(COLLEAGUE_ACCOUNTS_PATH))
+  }
+  const sendLanRefusal = (res: http.ServerResponse, d: Exclude<LanGateResult, null>, path: string, method: string, remote: string | undefined): void => {
+    if (d.status === 302) {
+      res.writeHead(302, { Location: d.location, 'Cache-Control': 'no-store' })
+      res.end()
+      return
+    }
+    logger.warn({ path, method, remote, reason: d.reason }, 'lan colleague-only: denied')
+    res.writeHead(403, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Forbidden from the network', rule: 'lan-colleague-only', reason: d.reason }))
+  }
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const path = url.pathname
@@ -173,6 +196,15 @@ export function startWebServer(port = 3420): http.Server {
     // Card 12b0f698: every request slower than SLOW_REQUEST_MS leaves one line (method,
     // path without ids, query keys, status, size, time). Before anything can answer.
     trackSlowRequest(res, method, url)
+
+    // LAN colleague-only mode (lan-colleague-only.ts): a connection that is not from this machine reaches the
+    // colleague board surface only. Decided on the socket address, before CORS, CSRF, auth and every handler, so
+    // the owner login and the rest of the dashboard are not reachable from the network at all.
+    const lanConfined = lanConfinedRequest(req)
+    if (lanConfined) {
+      const lanDenied = lanPathDecision(path, method)
+      if (lanDenied) { sendLanRefusal(res, lanDenied, path, method, req.socket?.remoteAddress); return }
+    }
 
     const origin = req.headers.origin
     // Emit CORS headers for allowlisted origins AND for genuinely same-origin
@@ -219,6 +251,10 @@ export function startWebServer(port = 3420): http.Server {
       publicListener: isPublicRequest(req),
     })
     if (auth === null) return
+    if (lanConfined) {
+      const lanDenied = lanPrincipalDecision(auth.kind)
+      if (lanDenied) { sendLanRefusal(res, lanDenied, path, method, req.socket?.remoteAddress); return }
+    }
     // Colleague board login (colleague-gate.ts): a colleague session reaches
     // /api/board, /api/colleague and its own page only. Decided here, for EVERY
     // path (public ones and pages too), before any handler runs.

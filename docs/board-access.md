@@ -300,22 +300,69 @@ account at another person, and sign in as that colleague.
 ### Reaching it from the office network
 
 The dashboard listens on `WEB_HOST` (default `127.0.0.1`, this machine only).
-For colleagues on the company LAN, set `WEB_HOST` in `.env` to the machine's
-LAN address (for example `WEB_HOST=192.168.1.10`), or `0.0.0.0` for every
-interface, and restart the dashboard. Know what that means:
+For colleagues on the company LAN (or over a VPN into it), set `WEB_HOST` in
+`.env` to the machine's LAN address (for example `WEB_HOST=192.168.1.10`), or
+`0.0.0.0` for every interface, and restart the dashboard.
 
-- **The whole dashboard becomes reachable from the LAN**, not only the
-  colleague page: the owner login page, and the API for anyone holding the
-  access token. The colleague fence limits what a colleague LOGIN can do; it
-  does not hide the rest of the server from the network. Prefer the specific
-  LAN address over `0.0.0.0`, restrict the port to the office subnet in the
-  host firewall, and keep using `http://localhost:<port>` yourself on the
-  machine.
-- **LAN HTTP is unencrypted.** Passwords and session cookies cross the
-  network in clear text. Anyone who can sniff that network segment can take a
-  colleague's session or password. Do not reuse a password that matters
-  elsewhere, and put the dashboard behind HTTPS (a reverse proxy) if the
-  segment is not trusted. Never sign in as the owner over plain LAN HTTP.
+**LAN colleague-only mode** (`src/web/lan-colleague-only.ts`). Once `WEB_HOST`
+is not loopback and `store/colleague-accounts.json` exists, a connection that
+does not come from this machine reaches the colleague surface only:
+
+- the colleague page and its static files (`/colleague`, `/colleague.js`,
+  `/style.css`, the two language files);
+- `/api/colleague/*` (login, logout, "who am I");
+- `/api/board` and `/api/board/*`, and only with a colleague session.
+
+Everything else answers 403 from the network (any other page GET is a redirect
+to `/colleague`), before CORS, the CSRF check, authentication or any handler
+runs. That includes the owner login: from the LAN nobody can send the owner's
+password, use the owner's session cookie, or use up the owner login's
+throttle. The shared access token, a device key or a federation token arriving
+from the network is refused too, so the board cannot be driven as somebody
+else from the LAN. The owner keeps the whole dashboard on this machine
+(`http://localhost:<port>`).
+
+"From this machine" is the socket's address (`127.0.0.0/8`, `::1`), never a
+header such as `X-Forwarded-For`. A reverse proxy on this machine (Tailscale
+Serve, a local Caddy) connects from loopback, so whatever it forwards counts as
+local: that is a separate exposure the owner sets up on purpose. The Docker
+public listener (HTTPS, cookies only) is likewise exempt.
+
+The switch, `DASHBOARD_LAN_COLLEAGUE_ONLY` in `.env`:
+
+| Value | Effect |
+|---|---|
+| unset / `auto` | on when `WEB_HOST` is not loopback AND colleague accounts exist |
+| `1` | always on (a loopback connection is never affected) |
+| `0` | off: the whole dashboard is reachable from the network again (logged at start) |
+
+`auto` stays off for a `WEB_HOST=0.0.0.0` install without colleague accounts
+on purpose: the installer suggests that bind for reaching a VPS install
+remotely, and those owners would otherwise lose their own dashboard on update.
+Adding the first colleague account switches the mode on; from then on the
+owner reaches the dashboard only on the machine itself (or through a local
+reverse proxy / SSH tunnel). In a Docker install the mapped port is reached
+through the Docker bridge, not loopback, so with colleague accounts the owner
+uses the HTTPS public listener or sets `DASHBOARD_LAN_COLLEAGUE_ONLY=0`
+knowingly.
+
+What remains true with the mode on:
+
+- **LAN HTTP is unencrypted.** The colleague's password and the
+  `mv_colleague` cookie cross the network in clear text. Anyone who can sniff
+  that segment can take a colleague's session or password. Do not reuse a
+  password that matters elsewhere, and put the dashboard behind HTTPS (a
+  reverse proxy) if the segment is not trusted.
+- **The owner must never sign in through the LAN address over plain HTTP.**
+  The mode refuses the owner login from the network, but only while it is on;
+  with `DASHBOARD_LAN_COLLEAGUE_ONLY=0`, or before the first colleague account
+  exists, the owner login is reachable and the password would travel in clear
+  text.
+- **Colleague lockout.** Anyone on the LAN can use up the colleague login's
+  global failure cap and so block every colleague login for up to an hour.
+  The owner login and the fleet are not affected.
+- Prefer the specific LAN address over `0.0.0.0`, and restrict the port to the
+  office subnet (and the VPN range) in the host firewall.
 
 ### Threat model of the colleague login (honest)
 
@@ -328,5 +375,7 @@ interface, and restart the dashboard. Know what that means:
   account file and the database, so it is not confined by any of this. The
   colleague login is a network-facing permission layer, not an OS boundary.
 - **Not protected: the network path.** See "LAN HTTP is unencrypted" above.
+- **Not protected with `DASHBOARD_LAN_COLLEAGUE_ONLY=0`:** the rest of the
+  dashboard is then reachable from the network, as it was before the mode.
 - **Not in the pilot:** a second factor for colleague logins, and a
   self-service password change (the owner resets passwords).
