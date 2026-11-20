@@ -2040,12 +2040,12 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
     logger.warn({ plist: MAIN_CHANNELS_PLIST }, 'Hard restart: launchd channels plist absent -- falling back to respawn-pane')
   }
 
-  // Linux: respawn-pane ONLY -- NEVER `systemctl --user restart`. The channels
-  // unit (e.g. marveen-channels.service) runs with KillMode=control-group and
-  // the shared tmux SERVER lives in its cgroup, so restarting the unit kills the
-  // tmux server and with it EVERY agent session, not just the main one.
-  // respawn-pane replaces only the claude process in the main channels pane,
-  // leaving the server and all other sessions intact.
+  // Linux: respawn-pane, not `systemctl --user restart`. The shared tmux SERVER
+  // lives in the channels unit's cgroup; the shipped unit
+  // (scripts/systemd/marveen-channels.service) runs KillMode=process, so a unit
+  // restart no longer takes the fleet down (it did under the old
+  // control-group mode, 2026-06-26), but it reruns all of channels.sh.
+  // respawn-pane replaces only the claude process in the main channels pane.
   if (respawnMarveenSessionFresh()) {
     marveenLastHardRestart = Date.now()
     noteOwnHardRestartStamp(marveenLastHardRestart) // respawnMarveenSessionFresh wrote the stamp
