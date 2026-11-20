@@ -18,8 +18,13 @@
 //    On a match: marks that token used (in invites.json), moves the senderId into
 //    allowFrom (in access.json), drops the pending row and the claim, restores
 //    allowlist policy if no other invites are still active.
-//    Slack has no deep-link token: its invites keep the old rule (the oldest
-//    pending entry while an invite is live).
+//    Slack (SLACKINVBIND1120): nothing is approved automatically. The Slack
+//    plugin answers an unknown DM with a pairing code and never passes the
+//    message on, and a Slack link cannot carry the token, so the token cannot
+//    reach a claim without patching that third-party plugin. A Slack invite
+//    still opens pairing mode for its lifetime; the code is approved by the
+//    owner (dashboard or /slack-channel:access pair). The old rule (the oldest
+//    pending entry while an invite is live) let in whoever wrote first.
 //
 // Why a sidecar file: access.json is co-owned by the channel plugin (e.g.
 // telegram@claude-plugins-official). That plugin rewrites access.json from its
@@ -290,10 +295,8 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
           taken.add(hit[0])
           matches.push({ pCode, senderId: String(pEntry.senderId), token: hit[0], entry: hit[1] })
         }
-      } else {
-        const [pCode, pEntry] = pendingEntries[0]
-        matches.push({ pCode, senderId: String(pEntry.senderId), token: live[0][0], entry: live[0][1] })
       }
+      // Slack: no claim can exist (see the header), so no match: the pending entry waits for the owner's approval.
       if (matches.length === 0) continue
 
       if (!access.allowFrom) access.allowFrom = []
