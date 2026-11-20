@@ -42,7 +42,7 @@ unit_path_of() {
 _upc_brew_prefix_bin() {
   printf '%s\n' "$1" | tr ':' '\n' | while IFS= read -r _upc_d; do
     case "$_upc_d" in
-      /*/opt/node@[0-9]/bin|/*/opt/node@[0-9][0-9]/bin) ;;
+      /?*/opt/node@[0-9]/bin|/?*/opt/node@[0-9][0-9]/bin) ;;
       *) continue ;;
     esac
     _upc_b="${_upc_d%/opt/node@*/bin}/bin"
