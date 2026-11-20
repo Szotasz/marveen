@@ -83,3 +83,52 @@ export function kanbanLoadMap(
   }
   return out
 }
+
+/**
+ * Scheduled rounds that ACTUALLY REACHED THE MODEL, per day.
+ *
+ * WHY THIS REPLACES THE CRON SUM: the route used to derive this signal by
+ * summing cronFreqPerDay() over every enabled scheduled task. That counts
+ * INTENT, not delivery, and the two differ by more than rounding. MEASURED on
+ * a live install 2026-10-05: the cron sum said ~752 rounds/day for the main
+ * agent, while task_runs for the same 24 hours held 751 rows of which 720 were
+ * `skipped-precheck` from a 2-minute watcher that never invokes the model. The
+ * delivered figure was 29. The classifier reads >= 10 as "dense heartbeat, a
+ * smaller model is enough", so the inflated number argued for a downgrade on
+ * the strength of rounds that cost nothing.
+ *
+ * The error is systematic and one-directional: a precheck-style task is cheap
+ * BECAUSE it skips, and every skip inflates the number that claims the agent's
+ * work is lightweight.
+ *
+ * Averaged over a window rather than taken from the last 24h so one quiet or
+ * one busy day does not move the recommendation. Agents with no rows in the
+ * window are absent from the map: the route distinguishes "no entry"
+ * (undefined signal) from a measured zero, and an agent the scheduler has
+ * never fired for is the first one.
+ */
+export const DELIVERED_RUNS_SQL = `SELECT agent, COUNT(*) as cnt
+       FROM task_runs
+       WHERE status = 'fired' AND ts >= ?
+       GROUP BY agent`
+
+/** Window the route passes to DELIVERED_RUNS_SQL, and divides the counts by. */
+export const DELIVERED_RUNS_WINDOW_DAYS = 7
+
+export interface DeliveredRunsRow {
+  agent: string | null
+  cnt: number
+}
+
+export function deliveredRunsPerDayMap(
+  rows: readonly DeliveredRunsRow[],
+  windowDays: number = DELIVERED_RUNS_WINDOW_DAYS,
+): Map<string, number> {
+  const out = new Map<string, number>()
+  const days = windowDays > 0 ? windowDays : 1
+  for (const row of rows) {
+    if (!row.agent) continue
+    out.set(row.agent, (out.get(row.agent) ?? 0) + row.cnt / days)
+  }
+  return out
+}

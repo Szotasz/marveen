@@ -19,7 +19,11 @@ import {
   contextAvgPerCallMap,
   kanbanLoadMap,
   KANBAN_LOAD_SQL,
+  deliveredRunsPerDayMap,
+  DELIVERED_RUNS_SQL,
+  DELIVERED_RUNS_WINDOW_DAYS,
   type KanbanLoadRow,
+  type DeliveredRunsRow,
 } from '../web/model-suggest-signals.js'
 
 describe('contextAvgPerCallMap', () => {
@@ -134,5 +138,79 @@ describe('kanbanLoadMap', () => {
       { assignee: 'y', priority: 'normal', cnt: 1 },
     ])
     expect([...load.keys()]).toEqual(['y'])
+  })
+})
+
+// The scheduled-frequency signal. The defect it replaces is not a wrong query
+// but a wrong SOURCE: the route summed cron expressions, which describe what
+// the scheduler INTENDS, while the classifier reads the number as how much
+// work actually reaches the model. The two diverge wherever a task skips.
+
+describe('DELIVERED_RUNS_SQL', () => {
+  let db: Database.Database
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    db.exec(`CREATE TABLE task_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL, agent TEXT NOT NULL, ts INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'fired')`)
+  })
+  afterEach(() => db.close())
+
+  const add = (agent: string, status: string, n: number, ts: number) => {
+    const ins = db.prepare('INSERT INTO task_runs (name, agent, ts, status) VALUES (?,?,?,?)')
+    for (let i = 0; i < n; i++) ins.run('t', agent, ts, status)
+  }
+
+  it('counts only fired rows, so a skipping precheck cannot inflate the signal', () => {
+    // The live shape measured 2026-10-05: a 2-minute watcher produced 720
+    // skipped-precheck rows against 29 rounds that reached the model. Counting
+    // every row returns 749 and the classifier reads a busy, cheap agent.
+    const now = Date.now()
+    add('marveen', 'skipped-precheck', 720, now - 1000)
+    add('marveen', 'fired', 29, now - 1000)
+    const rows = db.prepare(DELIVERED_RUNS_SQL).all(now - 86400_000) as DeliveredRunsRow[]
+    expect(rows).toEqual([{ agent: 'marveen', cnt: 29 }])
+  })
+
+  it('excludes rows older than the window instead of averaging over all history', () => {
+    const now = Date.now()
+    add('marveen', 'fired', 5, now - 1000)
+    add('marveen', 'fired', 500, now - 90 * 86400_000)
+    const rows = db.prepare(DELIVERED_RUNS_SQL).all(now - 7 * 86400_000) as DeliveredRunsRow[]
+    expect(rows).toEqual([{ agent: 'marveen', cnt: 5 }])
+  })
+})
+
+describe('deliveredRunsPerDayMap', () => {
+  it('divides by the window so the signal is a daily rate, not a window total', () => {
+    const map = deliveredRunsPerDayMap([{ agent: 'a', cnt: 203 }], 7)
+    expect(map.get('a')).toBe(29)
+  })
+
+  it('leaves an agent with no rows ABSENT, so the route can tell it from a measured zero', () => {
+    const map = deliveredRunsPerDayMap([{ agent: 'a', cnt: 7 }], 7)
+    expect(map.has('a')).toBe(true)
+    expect(map.has('b')).toBe(false)
+    expect(map.get('b')).toBeUndefined()
+  })
+
+  it('skips null agents instead of creating an empty-name bucket', () => {
+    const map = deliveredRunsPerDayMap([
+      { agent: null, cnt: 9 },
+      { agent: 'y', cnt: 7 },
+    ], 7)
+    expect([...map.keys()]).toEqual(['y'])
+  })
+
+  it('never divides by zero when handed a nonsense window', () => {
+    expect(deliveredRunsPerDayMap([{ agent: 'a', cnt: 4 }], 0).get('a')).toBe(4)
+  })
+
+  it('defaults to the window the route uses, so the two cannot drift apart', () => {
+    const viaDefault = deliveredRunsPerDayMap([{ agent: 'a', cnt: 14 }])
+    const viaExplicit = deliveredRunsPerDayMap([{ agent: 'a', cnt: 14 }], DELIVERED_RUNS_WINDOW_DAYS)
+    expect(viaDefault.get('a')).toBe(viaExplicit.get('a'))
   })
 })

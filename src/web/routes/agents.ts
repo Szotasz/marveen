@@ -195,10 +195,13 @@ import {
   contextAvgPerCallMap,
   kanbanLoadMap,
   KANBAN_LOAD_SQL,
+  deliveredRunsPerDayMap,
+  DELIVERED_RUNS_SQL,
+  DELIVERED_RUNS_WINDOW_DAYS,
   type KanbanLoadRow,
+  type DeliveredRunsRow,
 } from '../model-suggest-signals.js'
 import { getTokenSummary } from '../token-usage.js'
-import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND, mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
@@ -1425,34 +1428,33 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const kanbanRows = db.prepare(KANBAN_LOAD_SQL).all() as KanbanLoadRow[]
     const kanbanMap = kanbanLoadMap(kanbanRows)
 
-    // Scheduled-task frequency: total estimated runs/day per agent (cron-derived)
-    function cronFreqPerDay(cron: string): number {
-      const parts = cron.trim().split(/\s+/)
-      if (parts.length < 5) return 1
-      const [min, hour] = parts
-      if (min.startsWith('*/')) {
-        const n = parseInt(min.slice(2), 10)
-        if (!isNaN(n) && n > 0) return Math.round((60 / n) * 24)
+    // Scheduled-round frequency: rounds that ACTUALLY REACHED THE MODEL, per
+    // day, averaged over a window. The cron sum this replaces counted intent,
+    // and a precheck-style task that skips without invoking the model inflated
+    // it by more than an order of magnitude -- see DELIVERED_RUNS_SQL for the
+    // measurement. The classifier reads this as "how busy is the agent", so an
+    // inflated value argues for a smaller model on the strength of free rounds.
+    const deliveredSince = Date.now() - DELIVERED_RUNS_WINDOW_DAYS * 24 * 60 * 60 * 1000
+    const schedFreqMap = (() => {
+      try {
+        const rows = db.prepare(DELIVERED_RUNS_SQL).all(deliveredSince) as DeliveredRunsRow[]
+        return deliveredRunsPerDayMap(rows)
+      } catch {
+        // task_runs may be empty or mid-migration; no signal beats a wrong one
+        return new Map<string, number>()
       }
-      if (hour === '*') return 24
-      if (hour.startsWith('*/')) {
-        const n = parseInt(hour.slice(2), 10)
-        if (!isNaN(n) && n > 0) return Math.round(24 / n)
-      }
-      return 1
-    }
-    const schedFreqMap = new Map<string, number>()
-    try {
-      for (const task of listScheduledTasks()) {
-        if (!task.enabled) continue
-        const freq = cronFreqPerDay(task.schedule)
-        schedFreqMap.set(task.agent, (schedFreqMap.get(task.agent) ?? 0) + freq)
-      }
-    } catch { /* scheduled-tasks dir may not exist yet */ }
+    })()
 
-    // MCP server count: read agents/<name>/.mcp.json
+    // MCP server count: read the agent's own .mcp.json. agentConfigRoot, not
+    // agentDir: the MAIN agent runs in PROJECT_ROOT, not agents/<name>, so the
+    // bare agentDir read returned a structural 0 for it (measured 2026-10-05:
+    // panel said "0 MCP szerver -- minimalis integracio" while three servers
+    // were loaded and two declared in the project .mcp.json). Same blind spot
+    // GATECTX910 fixed for contextTokens a few lines below; this field was
+    // simply left out of that fix. 0 MCP servers is a Haiku signal, so the
+    // false zero argued for a downgrade.
     function mcpServerCount(agentName: string): number {
-      const mcpPath = join(agentDir(agentName), '.mcp.json')
+      const mcpPath = join(agentConfigRoot(agentName), '.mcp.json')
       if (!existsSync(mcpPath)) return 0
       try {
         const cfg = JSON.parse(readFileSync(mcpPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
