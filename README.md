@@ -325,6 +325,7 @@ A token 1 évig érvényes. Ne állíts be `ANTHROPIC_API_KEY`-t mellé.
 - **RAM**: legalább 2 GB ajánlott (t3.small). 1 GB-os gépen az npm build swap nélkül elbukhat -- a telepítő figyelmeztet és felajánl swap-létrehozást.
 - **claude.ai MCP-k**: ha a claude.ai fiókodban sok MCP connector van engedélyezve, a headless claude session megpróbálja betölteni mindet, ami instabilitást okozhat. Telepítés előtt tiltsd le a felesleges MCP-ket a claude.ai Settings oldalán.
 - **Közvetlen futtatás**: `./install-linux.sh` (Linux) vagy `./install-macos.sh` (macOS) ha az OS-detekciót ki akarod hagyni.
+- **Egyedi Homebrew-prefix (macOS)**: ha a Homebrew nem a `/opt/homebrew` vagy `/usr/local` alatt van, és a telepítő shelljében a `brew` nincs a PATH-on (például SSH-n át, nem-interaktívan futtatva), add meg a prefixet: `MARVEEN_BREW_PREFIX=$HOME/homebrew ./install-macos.sh`. Enélkül a telepítő nem találja a meglévő Homebrew-t, és egy másodikat telepít.
 - **Kérdések nélküli (szkriptelt) telepítés**: `./install-linux.sh --non-interactive`, minden válasz környezeti változóból, a titkok fájlból. Részletek: [docs/install-non-interactive.md](docs/install-non-interactive.md).
 
 ## Követelmények
