@@ -28,7 +28,10 @@
 #   12-13. the replacement marker an earlier run with the same pid left behind
 #      (a file, or a folder rm -f cannot clear) still lets the finalizer run
 #      exactly once; 14. a stale replacement file is cleared, so the run still
-#      goes through systemd-run.
+#      goes through systemd-run (observed inside the fake scope, FAKE_IN_SCOPE,
+#      not inferred from the log).
+#   15. the folder is not writable and the leftover replacement is a writable
+#      file: the run still goes through systemd-run (inside its scope).
 #
 # Run:  bash scripts/__tests__/update-finalize-detach.test.sh
 set -uo pipefail
@@ -127,11 +130,13 @@ else
 #!/usr/bin/env bash
 [ "${FAKE_SDRUN_FAIL:-0}" = 1 ] && exit 1
 while [[ "${1:-}" == --* ]]; do shift; done
+export FAKE_IN_SCOPE=1
 "$@"
 SD
   chmod +x "$SCOPE_BIN/systemd-run"
   cat > "$SANDBOX/scope-finalize.sh" <<'SF'
 echo run >> "$1"
+[ "${FAKE_IN_SCOPE:-0}" = 1 ] && echo scope >> "$1.scope"
 exit "$2"
 SF
 
@@ -241,9 +246,28 @@ SF
   : > "$SANDBOX/m14/scope-finalize.started.$$"
   scope_run stale-own-scope-ok 6 0 "$SANDBOX/m14/scope-finalize.sh"
   runs="$(grep -c '^run$' "$SANDBOX/stale-own-scope-ok.runs" 2>/dev/null)"
+  scopes="$(grep -c '^scope$' "$SANDBOX/stale-own-scope-ok.runs.scope" 2>/dev/null)"
   grep -q "this run uses $SANDBOX/m14/scope-finalize.started.$$" "$SANDBOX/stale-own-scope-ok.log" 2>/dev/null; logged=$?
   check "14 a stale replacement marker file is cleared: one run, through systemd-run" \
-    "$([ "$runs" = 1 ] && [ "$logged" = 0 ] && echo 0 || echo 1)" "runs: $runs, log grep rc: $logged"
+    "$([ "$runs" = 1 ] && [ "$scopes" = 1 ] && [ "$logged" = 0 ] && echo 0 || echo 1)" "runs: $runs, scope: $scopes, log grep rc: $logged"
+
+  # 15: the folder is not writable but the leftover replacement is a writable
+  # file: the wrapper can reuse it, so the run stays inside the scope.
+  if [ "$(id -u)" = 0 ]; then
+    echo "SKIP: case 15 requires a non-root user"
+  else
+    mkdir "$SANDBOX/ro15"
+    cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/ro15/scope-finalize.sh"
+    : > "$SANDBOX/ro15/scope-finalize.started"
+    : > "$SANDBOX/ro15/scope-finalize.started.$$"
+    chmod 555 "$SANDBOX/ro15"
+    scope_run stuck-writable-scope-ok 6 0 "$SANDBOX/ro15/scope-finalize.sh"
+    runs="$(grep -c '^run$' "$SANDBOX/stuck-writable-scope-ok.runs" 2>/dev/null)"
+    scopes="$(grep -c '^scope$' "$SANDBOX/stuck-writable-scope-ok.runs.scope" 2>/dev/null)"
+    check "15 the folder is not writable and both markers are writable files, systemd-run starts: exactly one run, inside the scope" \
+      "$([ "$runs" = 1 ] && [ "$scopes" = 1 ] && echo 0 || echo 1)" "runs: $runs, scope: $scopes"
+    chmod 755 "$SANDBOX/ro15"
+  fi
 fi
 
 echo
