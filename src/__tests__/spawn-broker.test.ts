@@ -1,6 +1,6 @@
 import { createHook } from 'node:async_hooks'
 import { execFile, execFileSync, spawn, type ExecFileException } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -131,9 +131,10 @@ describe('A2 asynchronous parity with real execFile', () => {
     const env = process.env.SPAWN_BROKER_TEST_VALUE
     try {
       process.chdir(directory)
+      const expectedDirectory = realpathSync(directory)
       process.env.SPAWN_BROKER_TEST_VALUE = 'fresh value'
       const calls = [30, 0, 10].map(ms => brokerExecFile(process.execPath, ['-e', `setTimeout(()=>require('node:fs').writeSync(1,process.cwd()+'|'+process.env.SPAWN_BROKER_TEST_VALUE+'|'+${ms}),${ms})`], options, readOnly))
-      expect((await Promise.all(calls)).map(r => r.stdout)).toEqual([30, 0, 10].map(ms => `${directory}|fresh value|${ms}`))
+      expect((await Promise.all(calls)).map(r => r.stdout)).toEqual([30, 0, 10].map(ms => `${expectedDirectory}|fresh value|${ms}`))
     } finally {
       process.chdir(cwd)
       if (env === undefined) delete process.env.SPAWN_BROKER_TEST_VALUE
