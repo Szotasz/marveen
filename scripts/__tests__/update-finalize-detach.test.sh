@@ -271,6 +271,24 @@ SF
       "$([ "$runs" = 1 ] && [ "$scopes" = 1 ] && echo 0 || echo 1)" "runs: $runs, scope: $scopes"
     chmod 755 "$SANDBOX/ro15"
   fi
+
+  # 15c: as 15, but the wrapper inherits noclobber (set -C, exported SHELLOPTS),
+  # so its ": >" cannot truncate the leftover file: the run must still happen.
+  if [ "$(id -u)" = 0 ]; then
+    echo "SKIP: case 15c requires a non-root user"
+  else
+    mkdir "$SANDBOX/ro15c"
+    cp "$SANDBOX/scope-finalize.sh" "$SANDBOX/ro15c/scope-finalize.sh"
+    : > "$SANDBOX/ro15c/scope-finalize.started"
+    : > "$SANDBOX/ro15c/scope-finalize.started.$$"
+    chmod 555 "$SANDBOX/ro15c"
+    ( set -C; export SHELLOPTS; scope_run stuck-noclobber 6 0 "$SANDBOX/ro15c/scope-finalize.sh" )
+    runs="$(grep -c '^run$' "$SANDBOX/stuck-noclobber.runs" 2>/dev/null)"
+    check "15c as 15, but the wrapper inherits noclobber: exactly one run (via the fallback)" \
+      "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+    chmod 755 "$SANDBOX/ro15c"
+  fi
+
   # 16: a read-only leftover replacement file must not be reused.
   if [ "$(id -u)" = 0 ]; then
     echo "SKIP: case 16 requires a non-root user"
@@ -284,7 +302,8 @@ SF
     scope_run stuck-readonly-own 6 0 "$SANDBOX/ro16/scope-finalize.sh"
     runs="$(grep -c '^run$' "$SANDBOX/stuck-readonly-own.runs" 2>/dev/null)"
     check "16 the leftover replacement is a read-only file, systemd-run starts: exactly one run (via the fallback)" \
-      "$([ "$runs" = 1 ] && echo 0 || echo 1)" "runs: $runs"
+      "$([ "$runs" = 1 ] && [ ! -e "$SANDBOX/stuck-readonly-own.runs.scope" ] && echo 0 || echo 1)" \
+      "runs: $runs, scope file: $([ -e "$SANDBOX/stuck-readonly-own.runs.scope" ] && echo present || echo absent)"
     chmod 755 "$SANDBOX/ro16"
   fi
 
