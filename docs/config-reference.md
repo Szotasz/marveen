@@ -469,7 +469,7 @@ dashboard indulásakor is (ilyenkor a meglévő ágensekre is, újraindítás n�
 | `script` | igen | Relatív út a projekt gyökeréhez képest, a `local-hooks/` mappán belül (gitignore-olt), `.py`, `.mjs` vagy `.js`; csak betű, szám és `_ . / @ + -`, `..` nélkül |
 | `timeout` | nem | Másodperc, 1..600, alapból 10 |
 | `failClosed` | igen | `true`: a beépített kapukkal azonos burok (hiányzó interpreter vagy a 0-tól és 2-től eltérő kilépés = tiltás, a határidő 2 mp-cel a timeout előtt). Csak `PreToolUse`-on engedett, mert `UserPromptSubmit`-en egy összeomlás minden promptot blokkolna. `false`: sima hívás, egy összeomlás nem blokkol |
-| `scope` | nem | Csak `"subagents"` (az alapértelmezés); más érték esetén a bejegyzés kimarad |
+| `scope` | nem | `"subagents"` (az alapértelmezés): minden sub-ügynök generált beállítása. `"main"`: a fő ügynök projekt-helyi `.claude/settings.local.json`-ja, amit a fő session betölt (a `--main-scope` egress-parser is ezt használja), minden parancs előtt `[ "$CLAUDE_PROJECT_DIR" = '<gyökér>' ] \|\| exit 0;`: egy sub-ügynök sessionje is betölti ezt a fájlt, és ott a hook nem csinál semmit. Csak a megjelölt extra bejegyzések cserélődnek, a fájl többi kulcsa marad. Más érték esetén a bejegyzés kimarad |
 | `description` | nem | Szabad szöveg, a scaffold nem használja |
 
 Amit egy bejegyzés NEM tud: beépített hookot cserélni, törölni vagy átrendezni (a plusz hook az
