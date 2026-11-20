@@ -15,8 +15,9 @@ import { isValidModelId, InvalidModelIdError } from '../model-id.js'
 import { isModelUnsupportedByCli, CLAUDE_MODEL_MIN_CLI } from '../claude-cli-support.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { loadCustomProvider } from './custom-providers.js'
-import { agentDir, writeAgentModel, writeAgentCustomProvider, writeAgentSecurityProfile, writeAgentDisplayName, resolveModelId, listAgentNames } from './agent-config.js'
-import { scaffoldAgentDir, writeAgentSettingsFromProfile, generateClaudeMd, generateSoulMd } from './agent-scaffold.js'
+import { agentDir, writeAgentModel, writeAgentCustomProvider, writeAgentSecurityProfile, writeAgentDisplayName, resolveModelId, listAgentNames, DEFAULT_MODEL } from './agent-config.js'
+import { scaffoldAgentDir, writeAgentSettingsFromProfile, generateClaudeMd, generateSoulMd, inheritedMcpConfigForNewAgent } from './agent-scaffold.js'
+import { validateAgentEngine, preflightCodexHome, syncCodexInstructions, omitDefaultCodexIdentity, type AgentEngineConfig } from './agent-engine.js'
 import { agentTextLang } from './agent-text-lang.js'
 import { snapshotPersonaFile, writePersonaFileIfUnchanged } from './persona-write-guard.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -52,6 +53,9 @@ export interface AgentCreatableOpts {
    *  place in the order, between the CLI gate and the main-agent name, so the route's error order holds. */
   requireDescription: boolean
   description?: unknown
+  /** The resolved engine of the agent being created. A codex-engine agent never runs the Claude CLI,
+   *  so the CLI launch gate does not apply to it. */
+  engine?: string
 }
 
 /**
@@ -71,7 +75,7 @@ export async function checkAgentCreatable(
   if (customProvider && !loadCustomProvider(customProvider)) return { status: 400, body: { error: `Unknown custom provider: ${customProvider}` } }
   // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
   // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
-  const cliGate = await refuseIfCliCannotLaunch(model)
+  const cliGate = opts.engine === 'codex' ? null : await refuseIfCliCannotLaunch(model)
   if (cliGate) return { status: 422, body: cliGate }
   if (opts.requireDescription && !opts.description) return { status: 400, body: { error: 'Description is required' } }
   // The main agent lives in PROJECT_ROOT, not under agents/, so the existsSync
@@ -224,7 +228,8 @@ here.
 // route by agent-create-characterization.test.ts and agent-create-characterization-second-half.test.ts.
 export interface AgentCreateResult { status: number; body: Record<string, unknown> }
 
-export async function createAgentFromSpec(data: Record<string, unknown>): Promise<AgentCreateResult> {
+export async function createAgentFromSpec(data: Record<string, unknown>, engine?: { engineConfig: AgentEngineConfig; explicit: boolean }): Promise<AgentCreateResult> {
+  const engineConfig: AgentEngineConfig = engine?.engineConfig ?? validateAgentEngine({})
   const { description, model: rawModel, profile: rawProfile } = data as { name: string; description: string; model?: string; profile?: string }
   // A custom provider is stored apart from the model id, as the editor's PUT does. The wizard used to send its
   // picker value ("custom:<id>") as the model, so the agent ran that string as a model and the provider was on no
@@ -236,18 +241,37 @@ export async function createAgentFromSpec(data: Record<string, unknown>): Promis
   // guarded (fresh probe, like the gate below) so a create on a CLI that
   // cannot run the shipped default gets the previous tier, not a 422 for a
   // model the caller never picked.
-  const model = resolveModelId(rawModel || await launchableInstallDefault('agent-create', { fresh: true }))
+  // ENGINEPILOT: a codex agent has no launchable Claude install to guard, so it takes DEFAULT_MODEL directly.
+  const model = resolveModelId(rawModel || (engineConfig.engine === 'codex' ? DEFAULT_MODEL : await launchableInstallDefault('agent-create', { fresh: true })))
   const profileId = (rawProfile || 'default').trim() || 'default'
 
   // Every refusal (name, model id, custom provider, the CLI gate, description, the main agent's id, a
   // reserved id, an existing directory), in that order and before anything is created: agent-create.ts.
-  const refusal = await checkAgentCreatable(name, model, customProvider, { requireDescription: true, description })
+  // The engine is passed so the CLI launch gate can skip a codex-engine agent (it never runs the Claude CLI).
+  const refusal = await checkAgentCreatable(name, model, customProvider, { requireDescription: true, description, engine: engineConfig.engine })
   if (refusal) return { status: refusal.status, body: refusal.body }
+
+  // The codex preflight (inherited MCP shape, CODEX_HOME) is a refusal like the ones above: it runs
+  // before anything is created, so a rejected create leaves no agent directory behind.
+  if (engineConfig.engine === 'codex') {
+    try {
+      const inherited = inheritedMcpConfigForNewAgent(name, { log: false }).mcpServers
+      const servers = inherited && typeof inherited === 'object' && !Array.isArray(inherited)
+        ? inherited as Record<string, unknown> : {}
+      preflightCodexHome(engineConfig.codexConfigDir!, agentDir(name), servers, engineConfig.codexIdentity, { profile: engineConfig.codexSandbox, agentName: name })
+    } catch (err) { return { status: 400, body: { error: (err as Error).message } } }
+  }
 
   // The synchronous base writes (scaffold, model, provider, security profile and settings, the armed
   // context guard, display name). They come before the personality generation below, the one step
   // that can fail and fall back to a template.
   writeAgentBase(name, { model, profileId, customProvider, displayName: rawName })
+
+  // The engine config is part of the base writes too, but only when the request carries engine
+  // fields: a plain claude agent keeps no agent-config.json.
+  if (engine?.explicit) {
+    atomicWriteFileSync(join(agentDir(name), 'agent-config.json'), JSON.stringify(omitDefaultCodexIdentity(engineConfig), null, 2))
+  }
 
   logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
   // Set when the personality fell back to a template. The response is deferred
@@ -341,6 +365,8 @@ export async function createAgentFromSpec(data: Record<string, unknown>): Promis
     }
     if (templateWritten) personalityPendingDetail = detail
   }
+
+  if (engineConfig.engine === 'codex') syncCodexInstructions(agentDir(name))
 
   // A skip is never silent: besides the log line, the main agent hears which
   // files were left alone, because the HTTP caller may be long gone by the

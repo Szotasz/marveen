@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync } from 'node:fs'
+import { CHANNEL_TOKEN_UNSET } from './agent-engine.js'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync, openSync, closeSync } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
@@ -41,7 +42,7 @@ import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-b
 import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { readAgentEngineConfig, validateAgentEngineConfig, agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
@@ -109,7 +110,7 @@ import { loadProfileTemplate, profileWantsThinChiefHandoff, type ProfileTemplate
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { agentVendorHostsEnv } from './agent-egress-env.js'
-import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetBaseRulesSection, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './agent-scaffold.js'
+import { scaffoldAgentDir, enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetBaseRulesSection, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './agent-scaffold.js'
 import { packageStartRefusal, reportPackageLayersAtStart, prepareFallbackClaudeMd } from './agent-package/install.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
@@ -2533,6 +2534,160 @@ export function resolveCodeModeLaunch(name: string, claudeConfigDir: string | nu
   return false
 }
 
+// The relay spool, daemon log and pid file live in the agent's workspace; keep
+// the agent's own git tooling from committing them. Creates .gitignore when
+// missing, appends only the missing entries, never duplicates an existing one.
+function ensureRelayGitignore(dir: string): void {
+  const entries = ['.dashboard-relay/', 'relay.log', 'relay.pid']
+  const gitignorePath = join(dir, '.gitignore')
+  const current = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf-8') : ''
+  const lines = current.split('\n')
+  const missing = entries.filter(entry => !lines.includes(entry))
+  if (!missing.length) return
+  const base = current && !current.endsWith('\n') ? `${current}\n` : current
+  writeFileSync(gitignorePath, `${base}${missing.join('\n')}\n`)
+}
+
+// codexSandbox=relay (CARD 2436459e): the dashboard relay daemon runs OUTSIDE
+// the Codex workspace-write sandbox and is the only holder of the agent's
+// dashboard token -- the in-sandbox MCP shim (scripts/codex-relay/mcp-shim.mjs)
+// reaches the dashboard exclusively through the request/response files this
+// daemon services, so no secret ever enters the sandbox env, config or argv.
+// Spawned before the launcher command so a daemon that cannot come up refuses
+// the start with no tmux session left behind.
+async function startDashboardRelayDaemon(name: string, dir: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const relayDir = join(dir, '.dashboard-relay')
+  mkdirSync(join(relayDir, 'requests'), { recursive: true })
+  mkdirSync(join(relayDir, 'responses'), { recursive: true })
+  // A marker left behind by a SIGKILLed daemon would make a daemon that never
+  // comes up look ready, so any stale one goes before the spawn; the fresh
+  // daemon re-creates it naming its own pid, and readiness is that pid.
+  rmSync(join(relayDir, 'relay.ready'), { force: true })
+  ensureRelayGitignore(dir)
+  const dashboardUrl = process.env.MARVEEN_DASHBOARD_URL || 'http://localhost:3420'
+  const logFd = openSync(join(dir, 'relay.log'), 'a')
+  // The per-request audit trail lives under store/, OUTSIDE the sandbox-writable
+  // workspace (relay.log above is in the workspace, so the agent could edit it).
+  const auditDir = join(PROJECT_ROOT, 'store', 'codex-relay-audit')
+  mkdirSync(auditDir, { recursive: true, mode: 0o700 })
+  const relayChild = spawn(process.execPath, [
+    join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs'),
+    '--agent', name,
+    '--relay-dir', relayDir,
+    '--token-file', join(PROJECT_ROOT, 'store', 'agent-tokens', `${name}.token`),
+    '--dashboard-url', dashboardUrl,
+    '--audit-log', join(auditDir, `${name}.log`),
+  ], { detached: true, stdio: ['ignore', logFd, logFd] })
+  writeFileSync(join(dir, 'relay.pid'), String(relayChild.pid))
+  relayChild.unref()
+  const readyMarker = join(relayDir, 'relay.ready')
+  // Ready only when the marker names THE pid we spawned: a marker written by
+  // anyone else is not proof this daemon came up.
+  const daemonReady = () => {
+    try {
+      return readFileSync(readyMarker, 'utf-8').trim() === String(relayChild.pid)
+    } catch {
+      return false // absent or unreadable yet: keep polling until the deadline
+    }
+  }
+  const deadline = Date.now() + 3000
+  while (!daemonReady() && Date.now() < deadline) await delay(100)
+  if (!daemonReady()) {
+    relayChild.kill('SIGKILL')
+    rmSync(join(dir, 'relay.pid'), { force: true })
+    closeSync(logFd)
+    return { ok: false, error: 'relay daemon did not become ready' }
+  }
+  closeSync(logFd)
+  return { ok: true }
+}
+
+// Counterpart of startDashboardRelayDaemon for stopAgentProcess: the daemon was
+// spawned detached, outside the tmux session, so it survives kill-session and
+// must be stopped on its own pid. SIGTERM makes relay.mjs unlink relay.ready
+// and exit 0; escalate to SIGKILL only if it is still alive after 2s.
+// True when argv still proves the pid is THIS agent's relay daemon: the daemon
+// script path somewhere in argv, plus exactly this agent's --relay-dir value.
+function isRelayDaemonArgv(argv: string[], dir: string): boolean {
+  return argv.some(entry => entry.includes('codex-relay/relay.mjs')) && argv.includes(join(dir, '.dashboard-relay'))
+}
+
+export async function stopDashboardRelay(dir: string, opts: { readCmdline?: (pid: number) => string } = {}): Promise<void> {
+  const pidPath = join(dir, 'relay.pid')
+  if (!existsSync(pidPath)) return
+  // relay.pid lives in the agent's workspace, which the sandboxed agent can
+  // write -- so it is EVIDENCE, not instruction: anything but a bare positive
+  // integer is discarded, and before any signal the pid's own cmdline must
+  // prove it is THIS agent's relay daemon (the daemon script path plus this
+  // agent's --relay-dir value). Otherwise a forged or stale file, or a pid the
+  // kernel has since reused, would make the stop kill an unrelated process.
+  const discardPidFile = (reason: string, pid?: number) => {
+    logger.warn({ dir, pid, reason }, 'stopDashboardRelay: refusing relay.pid, removing the file without signalling')
+    rmSync(pidPath, { force: true })
+  }
+  // /proc/<pid>/cmdline: NUL-separated argv, no trailing newline. Injectable
+  // so tests can replay a pid the kernel reused (or a vanished process)
+  // between the pre-signal check and the SIGKILL-time re-check.
+  const readCmdline = opts.readCmdline ?? ((pid: number) => readFileSync(join('/proc', String(pid), 'cmdline'), 'utf-8'))
+  const rawPid = readFileSync(pidPath, 'utf-8').trim()
+  if (!/^[0-9]+$/.test(rawPid)) {
+    discardPidFile(`relay.pid content is not a bare non-negative integer: ${JSON.stringify(rawPid)}`)
+    return
+  }
+  const pid = Number.parseInt(rawPid, 10)
+  if (pid <= 0) {
+    discardPidFile('relay.pid content is not a positive pid', pid)
+    return
+  }
+  let cmdline: string
+  try {
+    cmdline = readCmdline(pid)
+  } catch (err) {
+    discardPidFile(`cannot read /proc/${pid}/cmdline (${err instanceof Error ? err.message : String(err)})`, pid)
+    return
+  }
+  const argv = cmdline.split('\0').filter(entry => entry !== '')
+  const relayDir = join(dir, '.dashboard-relay')
+  if (!isRelayDaemonArgv(argv, dir)) {
+    discardPidFile(`pid ${pid} is not this agent's relay daemon (cmdline lacks the relay.mjs script path or the --relay-dir value ${relayDir})`, pid)
+    return
+  }
+  try {
+    try { process.kill(pid, 'SIGTERM') } catch { /* ESRCH: already gone */ }
+    const deadline = Date.now() + 2000
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0)
+      } catch {
+        break // ESRCH: the daemon is gone.
+      }
+      await delay(100)
+    }
+    if (Date.now() >= deadline) {
+      // R2-1 review (fix 8): the identity check above ran before SIGTERM, and
+      // the daemon may have exited during the poll window with the kernel
+      // reusing the pid meanwhile -- an unconditional SIGKILL here could hit
+      // an unrelated process, so the cmdline is re-verified first.
+      let cmdlineAtDeadline: string | undefined
+      try {
+        cmdlineAtDeadline = readCmdline(pid)
+      } catch {
+        /* /proc/<pid>/cmdline unreadable: the process is gone, nothing to signal */
+      }
+      if (cmdlineAtDeadline !== undefined) {
+        const argvAtDeadline = cmdlineAtDeadline.split('\0').filter(entry => entry !== '')
+        if (!isRelayDaemonArgv(argvAtDeadline, dir)) {
+          logger.warn({ dir, pid }, 'stopDashboardRelay: pid no longer this agent\'s relay daemon at SIGKILL time (pid reuse?); skipping SIGKILL')
+        } else {
+          try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+        }
+      }
+    }
+  } finally {
+    rmSync(pidPath, { force: true })
+  }
+}
+
 export async function startAgentProcess(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
@@ -2545,6 +2700,39 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   // PRI3HARDEN1118 point 2 (Samu 81355): PACKAGE.md + LOCAL.md scanned in report mode on every start, as the EPERM
   // fallback does; nothing is blocked here.
   reportPackageLayersAtStart(name, dir)
+
+  // Dispatch before Claude authentication, plans, rotation or model resolution.
+  try {
+    const engineConfig = readAgentEngineConfig(name)
+    if (engineConfig.engine === 'codex') {
+      validateAgentEngineConfig(name, readJsonObjectForWrite(join(dir, 'agent-config.json')))
+      if (name === MAIN_AGENT_ID || agentHasChannel(name) || readAgentExtraChannels(name).length) {
+        return { ok: false, error: 'Codex agents cannot own channel bindings' }
+      }
+      if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
+      scaffoldAgentDir(name)
+      // codexSandbox=relay: bring up the out-of-sandbox relay daemon (and its
+      // spool) before the launcher, so a daemon that never becomes ready fails
+      // the start here instead of leaving a sandboxed agent without a dashboard.
+      if (engineConfig.codexSandbox === 'relay') {
+        const relay = await startDashboardRelayDaemon(name, dir)
+        if (!relay.ok) return { ok: false, error: relay.error }
+      }
+      // codexIdentity=overrides: the third launcher argument is the agent's own
+      // overrides file, so its identity rides on argv instead of the shared
+      // seat's config.toml (see renderCodexOverrides). Default stays two args.
+      const launcherArgs = engineConfig.codexIdentity === 'overrides'
+        ? [join(PROJECT_ROOT, 'scripts/codex-agent.sh'), engineConfig.codexConfigDir!, dir, join(dir, '.codex-overrides')]
+        : [join(PROJECT_ROOT, 'scripts/codex-agent.sh'), engineConfig.codexConfigDir!, dir]
+      const command = `${CHANNEL_TOKEN_UNSET} && ${execFileSync('bash', launcherArgs, { encoding: 'utf-8', timeout: 10000 }).trim()}`
+      const session = agentSessionName(name)
+      runTmux(agentTmuxTarget(name), ['new-session', '-d', '-s', session, command], { timeout: 10000 })
+      requeueAbandonedAndNotify(name)
+      return { ok: true }
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
@@ -3370,7 +3558,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // channel-less agent, whose tools then reported 'failed to connect' until
     // the agent was restarted. A channel agent
     // re-exports its OWN dir right after this, via channelSetup below.
-    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR'
+    const unsetTokens = CHANNEL_TOKEN_UNSET
     // CODEMODEFLAG1119: every launch sets the Code Mode variable explicitly, 1 or 0, so neither an inherited value nor
     // a settings.json env block decides it.
     const codeModeEnv = codeModeLaunchEnv(codeModeOn)
@@ -3705,6 +3893,13 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
       } catch (err) {
         logger.warn({ err, name }, 'post-stop gromzo-orphan reap failed')
       }
+    }
+    // codexSandbox=relay: the daemon is not a child of the tmux session, so it
+    // needs its own shutdown (no-op unless <dir>/relay.pid exists).
+    try {
+      await stopDashboardRelay(agentDir(name))
+    } catch (err) {
+      logger.warn({ err, name }, 'relay daemon stop failed')
     }
     logger.info({ name, session, host }, 'Agent tmux session stopped')
     return { ok: true }

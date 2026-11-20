@@ -102,12 +102,16 @@ describe('every default launch path is wired to the guard', () => {
   })
   it('agent create without a model: guarded, not the raw default', () => {
     // AGENTCREATEPR2-1119: the create body is createAgentFromSpec (agent-create.ts); the agent_create spec resolves the
-    // model the same way at request time (agent-create-spec.ts).
-    for (const f of [['web', 'agent-create.ts'], ['web', 'agent-create-spec.ts']]) {
-      const src = readFileSync(join(SRC, ...f), 'utf-8')
-      expect(src).toContain("rawModel || await launchableInstallDefault('agent-create', { fresh: true })")
-      expect(src).not.toMatch(/rawModel \|\| DEFAULT_MODEL/)
-    }
+    // model through the install guard at request time (agent-create-spec.ts), while the codex ternary lives in agent-create.ts.
+    const src = readFileSync(join(SRC, 'web', 'agent-create.ts'), 'utf-8')
+    // ENGINEPILOT: engine=codex has no launchable Claude install to guard, so
+    // the raw DEFAULT_MODEL shortcut exists ONLY inside the codex ternary in agent-create.ts; the
+    // claude path still resolves through the install guard.
+    expect(src).toContain("rawModel || (engineConfig.engine === 'codex' ? DEFAULT_MODEL : await launchableInstallDefault('agent-create', { fresh: true }))")
+    expect(src).not.toMatch(/rawModel \|\| DEFAULT_MODEL/)
+    const spec = readFileSync(join(SRC, 'web', 'agent-create-spec.ts'), 'utf-8')
+    expect(spec).toContain("rawModel || await launchableInstallDefault('agent-create', { fresh: true })")
+    expect(spec).not.toMatch(/rawModel \|\| DEFAULT_MODEL/)
   })
   it('main respawn: the distribution-default layer is guarded', () => {
     const src = readFileSync(join(SRC, 'web', 'channel-monitor.ts'), 'utf-8')
