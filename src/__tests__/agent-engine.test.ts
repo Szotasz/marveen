@@ -65,7 +65,8 @@ describe('per-agent engine pilot', () => {
     expect(resolveAgentEngine('')).toBe('claude')
     expect(validateAgentEngine({})).toEqual({ engine: 'claude', codexConfigDir: null, codexIdentity: 'seat', codexSandbox: 'full-access' })
     const source = readFileSync(join(root, 'src/web/agent-process.ts'), 'utf-8')
-    const expression = source.split('\n').find(line => line.trim().startsWith('const buildLaunchCmd ='))!.split('=> ')[1]
+    // Upstream develop adds ${disallowedToolsFlag()} after --model (#2987); it has its own pin (agent-disallowed-tools.test.ts), so the golden compares the line without it.
+    const expression = source.split('\n').find(line => line.trim().startsWith('const buildLaunchCmd ='))!.split('=> ')[1].replace('${disallowedToolsFlag()}', '')
     const golden = JSON.parse(readFileSync(join(root, 'src/__tests__/fixtures/agent-engine/claude-command.json'), 'utf-8')).expression
     // The captured pre-change expression includes every env component and flag.
     const names = ['umaskPrefix', 'venvPathPrefix', 'unsetTokens', 'stateFence', 'autoUpdaterEnv', 'byoUnsetEnv', 'promptSuggestionEnv', 'mcpEnv', 'channelSetup', 'apiKeyEnv', 'claudeConfigEnv', 'helperTokenEnvPiece', 'agentEgressEnv', 'oauthTokenEnv', 'providerEnv', 'stateObserverEnv', 'codeModeEnv', 'launchCwd', 'claudeBin', 'continueFlag', 'skipFlag', 'model', 'shSingleQuote', 'channelFlag', 'worksourceFlags', 'bashSandboxFlag']
