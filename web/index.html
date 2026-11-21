@@ -2286,6 +2286,11 @@
               <label data-i18n="federation.modal.abandon_label">Türelmi ablak percben (üresen: 60)</label>
               <input type="number" class="input" id="fedPeerAbandonWindow" min="5" max="10080" placeholder="60">
             </div>
+            <div class="form-group">
+              <label for="fedPeerAllowedAgents" data-i18n="federation.modal.allowed_label">Engedett ügynökei (üresen: mind)</label>
+              <input type="text" class="input" id="fedPeerAllowedAgents" autocomplete="off" placeholder="marveen" data-i18n-placeholder="federation.modal.allowed_placeholder">
+              <p style="font-size:12px;color:var(--text-muted);margin:4px 0 0" data-i18n="federation.modal.allowed_hint">A társ mely ügynökeit látod és címezheted, és kiktől fogadsz üzenetet. Vesszővel vagy szóközzel elválasztva. Üresen a társ minden ügynöke látszik. Ez címzési szabály, nem ügynökönkénti hitelesítés: a társ tokenje a rendszert azonosítja.</p>
+            </div>
           </div>
           <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end">
             <button class="btn-secondary" id="fedPeerModalCancel" data-i18n="common.btn.cancel">Mégse</button>

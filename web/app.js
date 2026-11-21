@@ -22837,7 +22837,14 @@ function fedOpenPeerModal(peer) {
   document.getElementById('fedPeerOutboundToken').value = ''
   document.getElementById('fedPeerOutboundToken').placeholder = peer && peer.hasOutboundToken ? t('federation.modal.outbound_keep') : ''
   document.getElementById('fedPeerAbandonWindow').value = peer && peer.abandonWindowMinutes ? String(peer.abandonWindowMinutes) : ''
+  // FEDALLOWUI1121: the peer's allowedAgents, editable here instead of only through the API.
+  document.getElementById('fedPeerAllowedAgents').value = peer && Array.isArray(peer.allowedAgents) ? peer.allowedAgents.join(', ') : ''
   openModal(document.getElementById('fedPeerModalOverlay'))
+}
+
+// FEDALLOWUI1121: "a, b c" -> ['a', 'b', 'c']; the server validates each id and folds the case.
+function fedParseAllowedAgents(raw) {
+  return String(raw || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
 }
 
 async function fedSavePeerModal() {
@@ -22847,6 +22854,7 @@ async function fedSavePeerModal() {
   const baseUrl = document.getElementById('fedPeerBaseUrl').value.trim()
   const outbound = document.getElementById('fedPeerOutboundToken').value.trim()
   const abandonRaw = document.getElementById('fedPeerAbandonWindow').value.trim()
+  const allowed = fedParseAllowedAgents(document.getElementById('fedPeerAllowedAgents').value)
   try {
     let res, data
     if (fedPeerModalEditId) {
@@ -22854,6 +22862,8 @@ async function fedSavePeerModal() {
       if (outbound) body.outboundToken = outbound
       if (abandonRaw) body.abandonWindowMinutes = parseInt(abandonRaw, 10)
       else body.abandonWindowMinutes = null
+      // An empty field clears the list (null), so every agent of the peer is visible again.
+      body.allowedAgents = allowed.length ? allowed : null
       res = await fetch(`/api/federation/peers/${encodeURIComponent(fedPeerModalEditId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       data = await res.json().catch(() => ({}))
       if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
@@ -22861,6 +22871,7 @@ async function fedSavePeerModal() {
     } else {
       const body = { id, baseUrl }
       if (outbound) body.outboundToken = outbound
+      if (allowed.length) body.allowedAgents = allowed
       res = await fetch('/api/federation/peers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       data = await res.json().catch(() => ({}))
       if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
