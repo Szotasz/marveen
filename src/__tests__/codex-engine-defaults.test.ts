@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -30,7 +30,8 @@ vi.mock('../config.js', async original => {
 
 const dirs: string[] = []
 function tmp(): string {
-  const d = mkdtempSync(join(tmpdir(), 'cxdef-'))
+  let d = mkdtempSync(join(tmpdir(), 'cxdef-'))
+  d = realpathSync(d) // macOS temp dirs live behind symlinks (/tmp, /var): use the physical path so lexical == physical
   mkdirSync(join(d, '.git')) // project root here: host /tmp state must not reach the relay project-config check
   dirs.push(d)
   return d
@@ -42,7 +43,7 @@ afterEach(() => {
 })
 
 const WS = '/tmp/cxdef-ws'
-const RELAY = { profile: 'relay' as const, agentName: 'a', codexHome: '/tmp/cxdef-home' }
+const RELAY = { profile: 'relay' as const, agentName: 'a', codexHome: '/marveen-cxdef-fixed/home' }
 const dash = { command: 'node', env: { X: '${X}' } }
 const plain = { command: 'uvx' }
 // Overrides seats must not supply relay permissions or web/apps settings, even matching ones.

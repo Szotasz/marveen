@@ -86,6 +86,20 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
     expect(codexRelayFilesystemEntries(ws, home)).toEqual(before)
   })
 
+  it('T2 seat round trip: a home below a symlinked parent renders both paths and passes its own check', () => {
+    mkdirSync(join(root, 'physical'))
+    symlinkSync(join(root, 'physical'), join(root, 'link'))
+    home = join(root, 'link', 'home')
+    const content = validSeat()
+    const physicalHome = join(realpathSync(join(root, 'physical')), 'home')
+    expect(physicalHome).not.toBe(resolve(home))
+    expect(content).toContain(noneLine(resolve(home)))
+    expect(content).toContain(noneLine(physicalHome))
+    expect(() => checkSeat(content)).not.toThrow()
+    expect(() => checkSeat(content.replace(noneLine(physicalHome), ''))).toThrow(/codexSandbox=relay refuses/)
+    expect(() => checkSeat(content.replace(noneLine(resolve(home)), ''))).toThrow(/codexSandbox=relay refuses/)
+  })
+
   it.each([undefined, '', 'relative/home'])('T3 requires an absolute home in both relay renderers (%j)', codexHome => {
     const renderOpts = { ...opts, codexHome }
     const message = 'relay sandbox profile needs the absolute Codex home (codexConfigDir) to hide it from the sandbox'
@@ -262,7 +276,10 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
     symlinkSync(store, join(root, 'store-link'))
     for (const workspace of [runDir, store, join(root, 'store-link')]) {
       expect(() => codexRelayFilesystemEntries(workspace, home)).toThrow(/relay sandbox profile refuses workspace/)
-      expect(() => renderCodexOverrides(workspace, {}, { ...opts, codexHome: home })).toThrow(/relay sandbox profile refuses workspace/)
+      const overridesMessage = /^\/[A-Za-z0-9_\/-]+$/.test(workspace)
+        ? /relay sandbox profile refuses workspace/
+        : /codexIdentity=overrides needs an absolute workspace path/
+      expect(() => renderCodexOverrides(workspace, {}, { ...opts, codexHome: home })).toThrow(overridesMessage)
     }
   })
 })
