@@ -271,6 +271,8 @@ export interface BoardGateAuth {
 
 /**
  * null = let it through; otherwise the reason for a 403 (rule 'board-scope').
+ * Two principals may reach /api/board: a sub-agent token board-access.json
+ * lists, and a colleague board session (kind 'colleague').
  * Decided before any route runs, for gated paths. Prefix-based on purpose: a
  * kanban route added later is closed to a scoped agent without editing a list.
  * The config is read only for a kanban-family request by a sub-agent token or
@@ -278,6 +280,16 @@ export interface BoardGateAuth {
  */
 export function boardGateDecision(auth: BoardGateAuth, path: string, getConfig: () => BoardAccessConfig): string | null {
   const board = isBoardPath(path)
+  // A colleague board login (colleague-sessions.ts). The colleague gate already keeps it off every other path; here
+  // the board itself must be on and readable. Which person it acts as is the session's, checked by the route.
+  if (auth.kind === 'colleague') {
+    // Off the board this gate has nothing to say: the colleague gate decided every other path already.
+    if (!board) return null
+    const cfg = getConfig()
+    if (cfg.broken) return 'board-access.json is unreadable; the board is closed until the owner fixes it'
+    if (!cfg.enabled) return 'the scoped board is turned off'
+    return null
+  }
   const tokenAgent = auth.kind === 'token' ? auth.tokenAgent : undefined
   if (!board && !(tokenAgent && isKanbanFamilyPath(path))) return null
   const cfg = getConfig()

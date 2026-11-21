@@ -49,6 +49,7 @@ export const UNGATED_ROUTES: ReadonlyArray<{ key: string; cls: RouteClass; why: 
   { key: "custom-commands.ts PUT ?", cls: "unreviewed", why: "custom slash commands; not reviewed route by route" },
   { key: "custom-providers.ts POST /api/custom-providers", cls: "pending", why: "custom model provider settings" },
   { key: "custom-providers.ts DELETE <delMatch>", cls: "pending", why: "custom model provider settings" },
+  { key: "colleague.ts POST /api/colleague/logout", cls: "own-check", why: "colleague board login: ends the caller's own colleague session (mv_colleague cookie); refused to every other principal" },
   { key: "board.ts POST /api/board/cards", cls: "own-check", why: "scoped board: only a board-access.json agent reaches it; the assignee must be inside its person's visible set" },
   { key: "board.ts POST <commentMatch>", cls: "own-check", why: "scoped board: only a visible card; the author is the resolved person, bound server-side" },
   { key: "board.ts POST <moveMatch>", cls: "own-check", why: "scoped board: only a visible card; the actor is the resolved person, bound server-side" },

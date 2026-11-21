@@ -14,6 +14,9 @@ import { operatorGateDecision } from './web/operator-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
 import { boardGateDecision, readBoardAccess } from './web/board-access.js'
 import { tryHandleBoard } from './web/routes/board.js'
+import { colleagueGateDecision } from './web/colleague-gate.js'
+import { tryHandleColleague } from './web/routes/colleague.js'
+import { sweepExpiredColleagueSessions } from './web/colleague-sessions.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { tryHandleSupportAccess } from './web/routes/support-access.js'
 import { startSupportReconcile } from './web/support-standby-runtime.js'
@@ -216,6 +219,21 @@ export function startWebServer(port = 3420): http.Server {
       publicListener: isPublicRequest(req),
     })
     if (auth === null) return
+    // Colleague board login (colleague-gate.ts): a colleague session reaches
+    // /api/board, /api/colleague and its own page only. Decided here, for EVERY
+    // path (public ones and pages too), before any handler runs.
+    const colleagueDenied = colleagueGateDecision(auth, path, method)
+    if (colleagueDenied) {
+      if (colleagueDenied.status === 302) {
+        res.writeHead(302, { Location: colleagueDenied.location, 'Cache-Control': 'no-store' })
+        res.end()
+        return
+      }
+      logger.warn({ path, method, colleague: auth.kind === 'colleague' ? auth.colleague : undefined, reason: colleagueDenied.reason }, 'colleague gate: denied')
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Forbidden for this credential', rule: 'colleague-scope', reason: colleagueDenied.reason }))
+      return
+    }
     // DASHOPERATOR1005: an operator-scoped key reaches /api/operator/* only,
     // decided here, before ANY handler (including network-info below) runs.
     if (requiresAuth(path, method)) {
@@ -244,6 +262,7 @@ export function startWebServer(port = 3420): http.Server {
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
       : auth.kind === 'setup' ? { kind: 'setup' as const }
+      : auth.kind === 'colleague' ? { kind: 'colleague' as const, colleague: auth.colleague, person: auth.person }
       : undefined
 
     // The mobile-login QR needs a URL the phone can actually reach. When the
@@ -261,6 +280,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleAuth(routeCtx)) return
       if (await tryHandleOperatorAccess(routeCtx)) return
       if (await tryHandleOperator(routeCtx, WEB_DIR)) return
+      if (await tryHandleColleague(routeCtx, WEB_DIR)) return
       if (await tryHandleSupportAccess(routeCtx)) return
       if (await tryHandleSecurity(routeCtx)) return
       if (await tryHandleBridgeServicePorts(routeCtx)) return
@@ -693,6 +713,8 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       if (swept > 0) logger.info({ swept }, 'Expired auth sessions swept')
       const sweptKeys = sweepExpiredDeviceKeys()
       if (sweptKeys > 0) logger.info({ swept: sweptKeys }, 'Expired device keys swept')
+      const sweptColleague = sweepExpiredColleagueSessions()
+      if (sweptColleague > 0) logger.info({ swept: sweptColleague }, 'Expired colleague board sessions swept')
     } catch (err) {
       logger.warn({ err }, 'Auth session sweep failed')
     }

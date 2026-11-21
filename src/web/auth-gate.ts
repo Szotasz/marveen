@@ -15,6 +15,8 @@
 //   4. SSE pane-stream ?token=<device key>        -> { kind: 'device' } (path-scoped)
 //   5. Federation inbound token, endpoint-scoped  -> { kind: 'federation', peer }
 //   6. mv_session cookie                          -> { kind: 'session', user }
+//   6b. mv_operator cookie                        -> { kind: 'device', scope: 'operator' }
+//   6c. mv_colleague cookie                       -> { kind: 'colleague', colleague, person }  (colleague-sessions.ts)
 //   7. none of the above                          -> { kind: 'none' }
 //
 // requiresAuth() is the separate "is this path gated at all" predicate: public
@@ -38,6 +40,7 @@ import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
 import { resolveDeviceKey, MESSENGER_ORIGIN_NOTE, type DeviceKeyScope } from './auth-device-keys.js'
 import { OPERATOR_COOKIE_NAME, resolveOperatorSession } from './operator-sessions.js'
+import { COLLEAGUE_COOKIE_NAME, resolveColleagueSession } from './colleague-sessions.js'
 import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { isKnownAgent } from './agent-config.js'
 import type { AgentTokenResolver } from './agent-tokens.js'
@@ -56,6 +59,9 @@ export type AuthResult =
   // DOCKERHTTPS1119: a redeemed one-time setup code, on the public listener, while no dashboard user exists. It opens
   // the first-run paths only (routes/auth.ts mayActAsOwnerOrFirstRun); every other owner gate refuses it.
   | { kind: 'setup' }
+  // A colleague board login (colleague-sessions.ts). Its own kind on purpose: every owner check trusts 'session', and
+  // the colleague gate (colleague-gate.ts) keeps this kind on /api/board and /api/colleague only.
+  | { kind: 'colleague'; colleague: string; person: string }
   | { kind: 'none' }
 
 export const SESSION_COOKIE_NAME = 'mv_session'
@@ -167,6 +173,9 @@ export function requiresAuth(path: string, method: string): boolean {
   // DASHOPERATOR1005: the operator page signs in with its key here, before any
   // cookie exists. The handler checks the key, the scope and the owner switch.
   if (path === '/api/operator/login' && method === 'POST') return false
+  // The colleague board login (routes/colleague.ts): public like the owner login, throttled, and it only ever mints a
+  // colleague session.
+  if (path === '/api/colleague/login' && method === 'POST') return false
   if (method === 'GET' && (path === '/api/marveen/avatar' || path === '/api/marveen/owner-avatar' || /^\/api\/agents\/[^/]+\/avatar$/.test(path))) return false
   if (path === '/.well-known/fleetq' && method === 'GET') return true
   // VIDEOREVIEW1002: <video src> cannot send a bearer header. The stream is
@@ -268,6 +277,14 @@ function resolveCookieAuth(req: http.IncomingMessage, publicListener: boolean): 
   //    (disabled ones counted: a login that was ever set up ends the first run for good).
   if (publicListener && isSetupSession(parseCookies(req.headers.cookie)[SETUP_COOKIE_NAME]) && countDashboardUsers(true) === 0) {
     return { kind: 'setup' }
+  }
+
+  // 8. Colleague board session. Last, so an owner, operator or setup session in the
+  //    same browser always wins; the colleague gate in web.ts then fences this kind.
+  const colleagueCookie = parseCookies(req.headers.cookie)[COLLEAGUE_COOKIE_NAME]
+  if (colleagueCookie) {
+    const c = resolveColleagueSession(colleagueCookie)
+    if (c) return { kind: 'colleague', colleague: c.username, person: c.person }
   }
 
   return { kind: 'none' }

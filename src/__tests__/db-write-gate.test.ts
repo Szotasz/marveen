@@ -40,6 +40,7 @@ function scaffold(dir: string): void {
   writeFileSync(join(dir, 'store', 'autonomy-config.json'), '{}')
   writeFileSync(join(dir, 'store', 'agent-sender-role-gates.json'), '{}')
   writeFileSync(join(dir, 'store', 'board-access.json'), '{}')
+  writeFileSync(join(dir, 'store', 'colleague-accounts.json'), '{}')
 }
 // The install is a main checkout (a .git directory), the worktree has a .git file, as git makes them.
 function gitScaffold(): void {
@@ -71,10 +72,10 @@ const ALLOW = { deny: false }
 describe('1. SQL writes on the security tables', () => {
   // APPROVALSLACK1030 (2): approval_slack_posts joins (the posted Slack request the owner's reaction is checked against).
   // SUPPORTKULCS1109 D5: the two support tables joined the list.
-  it('the table list is the decided twelve (approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119)', () => {
-    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state'])
+  it('the table list is the decided thirteen (approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119; colleague_sessions: #2929 B1)', () => {
+    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state'])
   })
-  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']) {
+  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']) {
     it.each([
       `UPDATE ${t} SET x=1`,
       `INSERT INTO ${t} VALUES (1)`,
@@ -145,6 +146,9 @@ describe('1. SQL writes on the security tables', () => {
   it.each([
     ['a SELECT', `sqlite3 ${DB} "SELECT * FROM approvals WHERE status='pending'"`],
     ['a read-only open', `sqlite3 -readonly ${DB} "SELECT count(*) FROM auth_sessions"`],
+    // #2929 B1: a colleague session row is read freely, only a write is denied (the loop in section 1 pins those)
+    ['a SELECT on colleague_sessions', `sqlite3 ${DB} "SELECT username, created_at FROM colleague_sessions"`],
+    ['a read-only open on colleague_sessions', `sqlite3 -readonly ${DB} "SELECT count(*) FROM colleague_sessions"`],
     ['UPDATE agent_messages (the global skills)', `sqlite3 ${DB} "UPDATE agent_messages SET status='done' WHERE id=5"`],
     ['the daily_logs date fix (CLAUDE.md)', `sqlite3 ${DB} "UPDATE daily_logs SET date='2026-10-29' WHERE id=12; SELECT changes();"`],
     ['a longer table name', `sqlite3 ${DB} "UPDATE approvals_archive SET x=1"`],
@@ -235,11 +239,13 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     // WDSANDBOXMARKER1119: the per-agent launch files every restart path reads (a file under each directory)
     'store/bash-sandbox/soma.settings.json', 'store/code-mode/soma.on',
     // PR #2912 review B1 (Dani): the scoped board's confinement, read on each request.
-    'store/board-access.json']
+    'store/board-access.json',
+    // PR #2929: the colleague logins of the scoped board, the same class as B1.
+    'store/colleague-accounts.json']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.dashboard-node', 'store/bash-sandbox', 'store/code-mode', 'store/board-access.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.dashboard-node', 'store/bash-sandbox', 'store/code-mode', 'store/board-access.json', 'store/colleague-accounts.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json',
       // SUPPORTKULCS1109 D5: the support state of this machine, one folder
@@ -532,6 +538,15 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['a temp file renamed onto it', `echo '{}' > /tmp/b.json && mv /tmp/b.json @ROOT@/store/board-access.json`],
     ['rm of it', `rm store/board-access.json`],
   ])('the board confinement: %s is denied in the install', (_, cmd) => {
+    expect(bash(cmd)).toEqual(DENY_FILE)
+  })
+  // PR #2929: the colleague logins. An agent that writes an account (a hash it knows) signs in as that colleague.
+  it.each([
+    ['a redirect', `echo '{"accounts":[]}' > store/colleague-accounts.json`],
+    ['sed -i', `sed -i 's/"generation":1/"generation":0/' store/colleague-accounts.json`],
+    ['python writing it', `python3 -c "open('store/colleague-accounts.json','w').write('{}')"`],
+    ['rm of it', `rm store/colleague-accounts.json`],
+  ])('the colleague logins: %s is denied in the install', (_, cmd) => {
     expect(bash(cmd)).toEqual(DENY_FILE)
   })
   it('the board confinement: a read passes in the install, a write passes in the worktree', () => {

@@ -1,6 +1,7 @@
 // The scoped board: /api/board/* (see src/web/board-access.ts, docs/board-access.md).
 //
-// Only a sub-agent token that board-access.json lists reaches these routes
+// Only a sub-agent token that board-access.json lists, or a colleague board
+// session (colleague-sessions.ts, acting as its account's person), reaches these routes
 // (the gate in web.ts refuses everyone else before any handler runs; the
 // check is repeated here so a route never trusts its position in the chain).
 // Every read is filtered to the cards the resolved person may see, and every
@@ -10,9 +11,10 @@
 // Writes go through the db helpers the kanban routes use (createKanbanCard,
 // moveKanbanCard, addKanbanComment) plus the move route's side effects
 // (dispatch on in_progress, dependents freed on done), so events and
-// notifications behave the same as on /api/kanban. The done-gate is kept too:
-// a move to done without evidence is held at testing, since the writer here is
-// always an agent.
+// notifications behave the same as on /api/kanban. The done-gate is kept for
+// agents: an agent's move to done without evidence is held at testing. A
+// colleague board session is a human writer, so, as a human on /api/kanban, it
+// is not held (maintainer decision on #2929, option a).
 
 import { randomUUID } from 'node:crypto'
 import {
@@ -49,10 +51,36 @@ function header(ctx: RouteContext, name: string): string | undefined {
   return Array.isArray(v) ? v[0] : v
 }
 
-interface Principal { agent: string; person: BoardPerson; visible: VisibleAssignees }
+interface Principal {
+  agent: string
+  person: BoardPerson
+  visible: VisibleAssignees
+  /**
+   * Set ONLY for a colleague session cookie (auth kind 'colleague'): the account name, the human writer. It exempts
+   * the move from the done-gate and is the actor on the status event. Every token path leaves it undefined.
+   */
+  humanAccount?: string
+}
 
-/** Resolves the caller to one person, or writes the refusal and returns null. */
+/**
+ * Resolves the caller to one person, or writes the refusal and returns null.
+ *
+ * A colleague board session acts as the person its ACCOUNT names (resolved by
+ * the gate from the server-side session); X-Board-Person / X-Board-Sender are
+ * ignored for it, so no request can pick another person. A sub-agent token
+ * resolves through board-access.json's agent mapping and those headers.
+ */
 function principal(ctx: RouteContext): Principal | null {
+  if (ctx.auth?.kind === 'colleague') {
+    const cfg = readBoardAccess()
+    const personId = ctx.auth.person
+    const person = personId ? cfg.people.get(personId) : undefined
+    if (cfg.broken || !cfg.enabled || !ctx.auth.colleague || !person) {
+      json(ctx.res, { error: 'the board is not available for this account', rule: 'board-scope' }, 403)
+      return null
+    }
+    return { agent: `colleague:${ctx.auth.colleague}`, person, visible: visibleAssignees(cfg, person.id), humanAccount: ctx.auth.colleague }
+  }
   const agent = ctx.auth?.kind === 'token' ? ctx.auth.tokenAgent : undefined
   const cfg = readBoardAccess()
   if (!agent || cfg.broken || !isScopedBoardAgent(cfg, agent)) {
@@ -371,10 +399,13 @@ export async function tryHandleBoard(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const evidence = typeof body.evidence === 'string' && body.evidence.trim() ? body.evidence : undefined
-    const actor = p.person.name
-    // The done-gate of /api/kanban/:id/move: the writer here is always a sub-agent (the person's
-    // name is only the actor on the record), so a close without evidence is held at testing.
-    const needsEvidence = status === 'done' && !evidence
+    // A colleague session is the human writer: the actor on the status event is colleague:<account> (the form
+    // principal() builds), so the card's history shows which colleague moved it, and a colleague account can never
+    // read as an agent or the owner there. An agent token keeps the person's name as the actor.
+    const actor = p.humanAccount !== undefined ? `colleague:${p.humanAccount}` : p.person.name
+    // The done-gate of /api/kanban/:id/move, for agents only: an agent's close without evidence is held at testing.
+    // A colleague session is a human, and a human on /api/kanban is not held (isAgentActor); neither is it here.
+    const needsEvidence = status === 'done' && !evidence && p.humanAccount === undefined
     const effectiveStatus: KanbanCard['status'] = needsEvidence ? 'testing' : status
     // Compare-and-set on the status this request saw: a concurrent change answers 409, never a blind overwrite.
     if (!moveKanbanCard(card.id, effectiveStatus, 0, actor, { expectedStatus: card.status, ...(evidence ? { evidence } : {}) })) {
