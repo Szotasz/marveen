@@ -9,7 +9,9 @@ import { logger } from '../logger.js'
 // consolidate when heartbeat itself migrates onto the worker). Returns null off
 // macOS or on any lookup failure (the worker then runs logged-out and its
 // requests fail closed to text=null).
-export function readClaudeCodeOauthJson(): string | null {
+// warnOnMiss=false (WORKERLOGOUTWARN1121): the caller has another auth source (the fleet setup-token, exported as
+// CLAUDE_CODE_OAUTH_TOKEN at launch), so a Keychain miss does NOT mean "logged-out" and the warning would mislead.
+export function readClaudeCodeOauthJson(opts: { warnOnMiss?: boolean } = {}): string | null {
   if (process.platform !== 'darwin') return null
   try {
     const out = execFileSync(
@@ -20,7 +22,9 @@ export function readClaudeCodeOauthJson(): string | null {
     return out || null
   } catch {
     // Not logging err: some macOS auth errors echo a fragment of the lookup key.
-    logger.warn('worker: failed to read Claude Code credentials from Keychain (worker will run logged-out)')
+    if (opts.warnOnMiss !== false) {
+      logger.warn('worker: failed to read Claude Code credentials from Keychain (worker will run logged-out)')
+    }
     return null
   }
 }
