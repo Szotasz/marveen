@@ -148,6 +148,7 @@
  "renderTimeline::url:src::agent.avatar": "SAFE-PRE [n=2]: agent from scheduleAgents (server-built encodeURIComponent URL, schedules.ts) or literal fallback",
  "renderTuModelDist::style::thStyle.replace('text-align:left','text-align:right')": "SAFE-CONST [n=3]: thStyle literal with literal replace",
  "renderTuModelDist>cb:let rows = data.map((d, i) => {::text::(d.count || 0).toLocaleString()": "SAFE-NUM [n=1]: d.count comes from SQL COUNT(*) (src/web/token-usage.ts getModelDistribution), integer; toLocaleString of a number",
+ "renderTuQuotaHistory::style-prop::width = cssW + 'px'": "SAFE-NUM [n=1]: cssW computed from the container width (number), same pattern as renderTuTimeline",
  "renderTuSummary>cb:el.innerHTML = summary.map(s => {::builder::s.totalSessions || 0": "SAFE-NUM [n=1]: COUNT(DISTINCT session_id) number (src/web/token-usage.ts)",
  "renderTuSummary>cb:el.innerHTML = summary.map(s => {::text::t('tokenUsage.calls_sub', { calls: (s.totalCalls || 0).toLocaleString(), out: tuFormatTokens(s.totalOutput) })": "SAFE-NUM [n=1]: totalCalls is COUNT(*) (src/web/token-usage.ts) -> toLocaleString; out via tuFormatTokens returns number-formatted text or \"0\"",
  "renderTuTimeline::style-prop::width = cssW + 'px'": "SAFE-NUM [n=1]: cssW computed from the container width (number)",
