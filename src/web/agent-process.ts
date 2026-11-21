@@ -1,5 +1,5 @@
 import { CHANNEL_TOKEN_UNSET, codexRelayDir } from './agent-engine.js'
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync, openSync, closeSync, constants } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync, openSync, fstatSync, readSync, closeSync, fchmodSync, constants, constants as fsConstants } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
@@ -61,7 +61,7 @@ import {
 import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
-import { atomicWriteFileSync } from './atomic-write.js'
+import { atomicWriteFileSync, writeMcpJsonFile, tightenMcpJsonMode } from './atomic-write.js'
 import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from './code-mode-caveats.js'
 import { paneTyped } from './pane-text.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
@@ -127,6 +127,13 @@ import { notifyChannel, alertIsRedirected } from '../notify.js'
 const tmuxBin = makeLazyBinResolver('tmux')
 const claudeBin = makeLazyBinResolver('claude')
 
+/** AGENT_DISALLOWED_TOOLS as a launch flag (leading space), or '' when none is set. */
+export function disallowedToolsFlag(): string {
+  let tools: string[] = []
+  try { tools = disallowedToolList(String(getEffectiveSettingValue('AGENT_DISALLOWED_TOOLS') ?? '')) } catch { return '' }
+  return tools.length > 0 ? ` --disallowedTools ${shSingleQuote(tools.join(','))}` : ''
+}
+
 // Shared async pacing helper. Replaces the blocking synchronous `/bin/sleep`
 // (execFileSync) pauses in the tmux-driving injection hot-path so a pacing wait
 // no longer parks the libuv event loop (the dashboard-accepts-TCP-but-never-
@@ -140,6 +147,7 @@ import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget, sessionOfTmuxTarget } from '../tmux-target.js'
 import { expandAndValidateConfigDir } from '../config-dir-path.js'
 import { isOpenRouterOneMillionModel } from '../context-guard.js'
+import { disallowedToolList } from '../config-registry.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -535,6 +543,74 @@ function maybeAlertSharedConfigCollision(name: string): void {
 // Consequence for a fresh agent: no `projects` entry is provisioned, and Claude Code
 // creates its own inside the isolated config dir. That is the intended end state.
 const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json', 'projects'])
+
+// The isolated dir must carry no Anthropic credential, but on Linux Claude Code
+// also keeps remote MCP servers' OAuth tokens in that same .credentials.json.
+// Only these keys survive a spawn (MCPOAUTHWIPE1119).
+const ISOLATED_CREDENTIALS_KEEP_KEYS = ['mcpOAuth', 'mcpOAuthClientConfig'] as const
+const ISOLATED_CREDENTIALS_MAX_BYTES = 1024 * 1024
+
+// Drop everything but the MCP OAuth keys from an isolated .credentials.json.
+// A symlink is unlinked, never followed (its target may be the shared
+// ~/.claude/.credentials.json). Anything unreadable, or holding no MCP key, is
+// removed as before. A failed rewrite removes the file too: a credential that
+// should have been dropped must never survive.
+function scrubIsolatedCredentialsFile(path: string, name: string): void {
+  // rmSync removes a symlink itself, never its target.
+  const remove = (): void => { try { rmSync(path, { force: true }) } catch { /* absent */ } }
+  // Opened ONCE without following a link, every check made on that descriptor,
+  // so the file cannot be swapped for a link between the check and the read.
+  let fd: number
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    remove() // ELOOP (a symlink) or unopenable
+    return
+  }
+  let raw: string | null = null
+  try {
+    const st = fstatSync(fd)
+    // A clean file is now kept across spawns (before, every spawn deleted it), and it holds refresh tokens:
+    // narrow a wider mode here, on the descriptor, which cannot follow a link swapped in at the path.
+    if (st.isFile() && (st.mode & 0o077)) fchmodSync(fd, 0o600)
+    if (st.isFile() && st.size <= ISOLATED_CREDENTIALS_MAX_BYTES) {
+      const buf = Buffer.alloc(ISOLATED_CREDENTIALS_MAX_BYTES + 1)
+      let n = 0
+      for (;;) {
+        const got = readSync(fd, buf, n, buf.length - n, null)
+        if (got === 0) break
+        n += got
+        if (n > ISOLATED_CREDENTIALS_MAX_BYTES) break
+      }
+      if (n <= ISOLATED_CREDENTIALS_MAX_BYTES) raw = buf.subarray(0, n).toString('utf-8')
+    }
+  } catch { raw = null } finally { closeSync(fd) }
+  if (raw === null) { remove(); return }
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) } catch { remove(); return }
+  if (!isPlainObject(parsed)) { remove(); return }
+  const kept: Record<string, unknown> = {}
+  for (const key of ISOLATED_CREDENTIALS_KEEP_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(parsed, key) && isPlainObject(parsed[key])) kept[key] = parsed[key]
+  }
+  const keptKeys = Object.keys(kept)
+  if (keptKeys.length === 0) { remove(); return }
+  if (Object.keys(parsed).length === keptKeys.length) return // already clean: no rewrite, mtime kept
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`
+  try {
+    // Created 0600 (the umask can only narrow it); no chmod after the rename,
+    // since chmod would follow a link swapped in at `path`.
+    writeFileSync(tmp, JSON.stringify(kept), { mode: 0o600, flag: 'wx' })
+    renameSync(tmp, path)
+  } catch {
+    try { unlinkSync(tmp) } catch { /* never created */ }
+    remove()
+    logger.warn({ name }, 'isolated-config: could not rewrite .credentials.json, removed it')
+    return
+  }
+  logger.info({ name, kept: keptKeys }, 'isolated-config: dropped the Anthropic credential from .credentials.json, kept MCP OAuth tokens')
+}
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
@@ -1221,19 +1297,31 @@ function provisionIsolatedConfigDir(
     // an otherwise correctly authenticated agent lands on the login picker
     // (measured on korall, 2026-08-19). It needs a REAL file of its own here.
     const perUserAgent = readAgentRunAsUser(name) != null
-    for (const entry of readdirSync(realClaude)) {
-      if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) {
-        // Defensively drop a real .credentials.json that an older build may have
-        // symlinked/copied here, so the env-var token is the only auth source.
-        // An own_team agent is the exception: its .credentials.json IS its own
-        // /login credential, written here by `claude auth login`, and deleting it
-        // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
-        const stale = join(cfg, entry)
-        if (entry === '.credentials.json' && readAgentAuthMode(name) !== 'own_team') {
-          try { rmSync(stale, { force: true }) } catch { /* absent */ }
-        }
-        continue
+    // Defensively drop the Anthropic credential from a .credentials.json that
+    // an older build may have symlinked/copied here, so the env-var token is
+    // the only auth source. Claude Code also keeps remote MCP servers' OAuth
+    // tokens (mcpOAuth) in this file, so only those keys survive: deleting
+    // the whole file logged an agent out of its OAuth MCP servers on every
+    // spawn (MCPOAUTHWIPE1119).
+    // An own_team agent is the exception: its .credentials.json IS its own
+    // /login credential, written here by `claude auth login`, and deleting it
+    // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
+    // This runs whether or not the shared dir holds a .credentials.json: the
+    // Linux credentials-guard renames that file, and a macOS host never has one
+    // (ISOCREDSCRUB1119).
+    if (readAgentAuthMode(name) !== 'own_team') {
+      const stale = join(cfg, '.credentials.json')
+      // A per-user agent runs as another OS user: a rewrite by the router
+      // would hand the file to the router's user at 0600 and lock the agent
+      // out of it (see writeJsonAtomic), so it keeps the whole-file removal.
+      if (perUserAgent) {
+        try { rmSync(stale, { force: true }) } catch { /* absent */ }
+      } else {
+        scrubIsolatedCredentialsFile(stale, name)
       }
+    }
+    for (const entry of readdirSync(realClaude)) {
+      if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) continue
       const link = join(cfg, entry)
       let needsLink = true
       try {
@@ -3106,12 +3194,20 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         // loads as project-scope MCP config. An empty .mcp.json already present would
         // override .claude/mcp.json, so write to the same file Claude Code reads.
         const mcpJsonPath = join(agentDir(name), '.mcp.json')
-        const mcpConfig = {
-          mcpServers: {
-            'plugin:telegram:telegram': buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir),
-          },
-        }
-        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        // JSONCLOBBER926B (same risk as the worksource block below): a rewrite from
+        // scratch here would destroy any OTHER MCP server the agent has configured in
+        // this file (e.g. gmail/google-calendar for a secretary-role agent) on every
+        // single respawn -- not a hypothetical, measured live on garagizike 2026-11-21:
+        // a restart wiped 4 Google MCP servers down to just the telegram entry. Read
+        // the existing file first and keep every entry that is not this one; an
+        // existing but corrupt .mcp.json is refused (readJsonObjectForWrite throws),
+        // same as the worksource block, so the agent starts without the tee wiring
+        // rather than silently destroying an unreadable file.
+        let mcpConfig: { mcpServers: Record<string, unknown> } = { mcpServers: {} }
+        const existingMcpConfig = readJsonObjectForWrite(mcpJsonPath)
+        if (isPlainObject(existingMcpConfig.mcpServers)) mcpConfig = { mcpServers: existingMcpConfig.mcpServers }
+        mcpConfig.mcpServers['plugin:telegram:telegram'] = buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir)
+        writeMcpJsonFile(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
         useMcpJsonForChannel = true
         logger.info({ name, pluginVersion, pluginDir }, 'Wrote per-agent mcp.json for telegram plugin')
       } catch (err) {
@@ -3183,7 +3279,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
           // string entirely, so there is nothing to quote and nothing to escape.
           env: { WORKSOURCE_AGENT_ID: name, WORKSOURCE_DIR: worksourceRootFor(name) },
         }
-        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        writeMcpJsonFile(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
         // The dev-channels flag takes a TAGGED LIST (`server:<name>` for a manually
         // configured MCP server, `plugin:<name>@<marketplace>` for a plugin one).
         // Measured by the reviewer on the PR head: without the value the CLI exits
@@ -3223,10 +3319,14 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
         if (existing?.mcpServers?.worksource) {
           delete existing.mcpServers.worksource
-          writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2))
+          writeMcpJsonFile(mcpJsonPath, JSON.stringify(existing, null, 2))
           logger.info({ name }, 'worksource channel unwired for agent (opted out)')
         }
       } catch { /* absent or unreadable -> nothing to unwire */ }
+    }
+    // MCPJSON0600-1121: a .mcp.json from before this fix (0644) is narrowed to 0600 at the next spawn.
+    if (name !== MAIN_AGENT_ID && tightenMcpJsonMode(join(agentDir(name), '.mcp.json'))) {
+      logger.info({ name }, '.mcp.json narrowed to 0600')
     }
 
     if (name !== MAIN_AGENT_ID) {
@@ -3701,7 +3801,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // FLEETVENV923: the fleet venv's bin/ goes FIRST so its python3 beats the
     // Homebrew one that carries no packages.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${helperTokenEnvPiece}${agentEgressEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}${codeModeEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${helperTokenEnvPiece}${agentEgressEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}${codeModeEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)}${disallowedToolsFlag()} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start

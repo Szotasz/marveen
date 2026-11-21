@@ -1,4 +1,4 @@
-import { writeFileSync, chmodSync, renameSync } from 'node:fs'
+import { writeFileSync, chmodSync, renameSync, openSync, fstatSync, fchmodSync, closeSync, constants as fsConstants } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 
 // Atomic write: write to a sibling tmp file and rename over the target, so a
@@ -23,4 +23,31 @@ export function atomicWriteFileSync(
     try { chmodSync(tmp, opts.mode) } catch { /* best-effort */ }
   }
   renameSync(tmp, path)
+}
+
+// MCPJSON0600-1121: a .mcp.json can carry MCP server env (keys, tokens), so it is written owner-only (0600), and
+// through the rename above, which replaces a symlink at the path instead of following it to another file.
+export const MCP_JSON_MODE = 0o600
+export function writeMcpJsonFile(path: string, data: string): void {
+  atomicWriteFileSync(path, data, { mode: MCP_JSON_MODE })
+}
+
+/** An existing .mcp.json written before MCPJSON0600-1121 is 0644: narrow a regular file (never a symlink) to 0600.
+ *  Returns whether it changed the mode; any error leaves the file as it is. */
+export function tightenMcpJsonMode(path: string): boolean {
+  // O_NOFOLLOW + fchmod on the opened descriptor: a path swapped for a symlink between a check and a chmod cannot
+  // redirect the chmod to another file (the open itself refuses a symlink). O_NONBLOCK: opening a FIFO with no
+  // writer for reading would block this synchronous call on Linux; the isFile check then rejects it.
+  let fd: number | null = null
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
+    const st = fstatSync(fd)
+    if (!st.isFile() || (st.mode & 0o077) === 0) return false
+    fchmodSync(fd, MCP_JSON_MODE)
+    return true
+  } catch {
+    return false
+  } finally {
+    if (fd !== null) { try { closeSync(fd) } catch { /* already closed */ } }
+  }
 }

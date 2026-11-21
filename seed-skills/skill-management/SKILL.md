@@ -1,6 +1,6 @@
 ---
 name: skill-management
-description: Skillek listázása, megtekintése, patchelése vagy törlése a ~/.claude/skills/ mappából. Akkor használd, ha a felhasználó az elérhető skillekről kérdez, egy meglévő skillt akar módosítani, vagy ha egy retrospektív skill-változtatást javasol. A "/skills" parancsra vagy skillhez kapcsolódó retrospektív lépésekre indul.
+description: Skillek listázása, megtekintése, létrehozása, patchelése vagy törlése. A sajátjaidat (a munkakönyvtárad .claude/skills mappája) közvetlenül módosítod; a globálisakat (~/.claude/skills/) itt olvasod, és csak javaslattal változtatod. Akkor használd, ha a felhasználó az elérhető skillekről kérdez, egy meglévő skillt akar módosítani, vagy ha egy retrospektív skill-változtatást javasol. A "/skills" parancsra vagy skillhez kapcsolódó retrospektív lépésekre indul.
 ---
 
 # Skill-kezelés: CRUD a skill-könyvtárhoz
@@ -19,7 +19,7 @@ description: Skillek listázása, megtekintése, patchelése vagy törlése a ~/
 |----------|----------|-------------|
 | `action` | IGEN | Ezek egyike: `list`, `show`, `create`, `patch`, `delete`, `audit` |
 | `name` | show/patch/delete esetén | A skill könyvtárneve (pl. `github-pr-rebase-merge`) |
-| `scope` | nem | `global` (alapértelmezés, ~/.claude/skills/) vagy `local` (./claude/skills/) |
+| `scope` | nem | `own` (alapértelmezés, ./.claude/skills/ a munkakönyvtáradban: ezeket közvetlenül módosítod) vagy `global` (~/.claude/skills/: itt olvasod, csak javaslatként változtatod) |
 
 Példák:
 - `/skills action=list`: az összes skill listázása leírással
@@ -34,26 +34,25 @@ Példák:
 ### action=list
 
 ```bash
-SKILL_DIR="${HOME}/.claude/skills"
-if [ "$SCOPE" = "local" ]; then SKILL_DIR="./.claude/skills"; fi
-
-echo "=== Skills in $SKILL_DIR ==="
-for dir in "$SKILL_DIR"/*/; do
-  skill_file="$dir/SKILL.md"
-  if [ -f "$skill_file" ]; then
-    name=$(basename "$dir")
-    # Extract description from frontmatter
-    desc=$(sed -n '/^description:/{ s/^description: *//; p; q; }' "$skill_file")
-    printf "  %-35s %s\n" "$name" "$desc"
-  fi
+for SKILL_DIR in "./.claude/skills" "${HOME}/.claude/skills"; do
+  echo "=== Skills in $SKILL_DIR ==="
+  for dir in "$SKILL_DIR"/*/; do
+    skill_file="$dir/SKILL.md"
+    if [ -f "$skill_file" ]; then
+      name=$(basename "$dir")
+      # Extract description from frontmatter
+      desc=$(sed -n '/^description:/{ s/^description: *//; p; q; }' "$skill_file")
+      printf "  %-35s %s\n" "$name" "$desc"
+    fi
+  done
 done
 ```
 
-Tömör táblázatként mutasd be. Ha globális és helyi is van, mindkettőt mutasd.
+Tömör táblázatként mutasd be, a sajátokat és a globálisakat külön. Egy azonos nevű saját skill eltakarja a globálisat.
 
 ### action=show
 
-1. Olvasd be a `~/.claude/skills/{name}/SKILL.md` fájlt
+1. Olvasd be a `./.claude/skills/{name}/SKILL.md` (saját) vagy a `~/.claude/skills/{name}/SKILL.md` (globális) fájlt
 2. Ha van `references/` alkönyvtára, azokat a fájlokat is listázd
 3. Mutasd be a teljes tartalmat
 
@@ -85,8 +84,9 @@ description: {one-line, specific about triggers}
 - {Known issues, if any}
 ```
 
-4. Írd ide: `~/.claude/skills/{name}/SKILL.md`
-5. Frissítsd a `.skill-index.md`-t, ha létezik
+4. Saját (az alapeset): írd ide a munkakönyvtáradban: `./.claude/skills/{name}/SKILL.md`.
+   Minden ágensnek (globális): a `~/.claude/skills/` alá NE írj; javaslatként küldd (lásd "Globális skill módosítása").
+5. Saját: frissítsd az indexedet (lásd "A skill-index újragenerálása")
 
 Szabályok:
 - A SKILL.md maradjon 500 sor alatt
@@ -98,7 +98,8 @@ Szabályok:
 
 Egy meglévő skill célzott módosítása:
 
-1. Olvasd be a jelenlegi SKILL.md-t
+1. Olvasd be a jelenlegi SKILL.md-t. Egy saját skillt helyben patchelsz; egy globálisat soha nem ott szerkesztesz, ahol
+   él: a TELJES javított szöveg javaslatként megy ugyanazon a néven (lásd "Globális skill módosítása")
 2. A felhasználó kérése vagy a retrospektív javaslata alapján azonosítsd a módosítandó szakaszt
 3. Célzott szerkesztést végezz (régi szöveg -> új szöveg), ne teljes újraírást
 4. Ha futás közbeni felfedezésből adsz hozzá buktatót, fűzd a Buktatók szakasz végére
@@ -113,11 +114,13 @@ Szabályok:
 
 1. Előbb mutasd meg a skill tartalmát
 2. Kérj megerősítést: "Törlöd a(z) '{name}' skillt? Ez a teljes könyvtárat eltávolítja."
-3. Megerősítés után:
+3. Megerősítés után, csak SAJÁT skillt:
 ```bash
-rm -rf "${HOME}/.claude/skills/${NAME}"
+rm -rf "./.claude/skills/${NAME}"
 ```
-4. Frissítsd a `.skill-index.md`-t, ha létezik
+   (Néhány ágensprofil tiltja az `rm`-et: ilyenkor kérd a fő ágenst.) Globális skillt ágens nem töröl: a flottából
+   való eltávolítása a tulajdonos döntése, a dashboard Skillek oldalán.
+4. Frissítsd az indexedet (lásd "A skill-index újragenerálása")
 
 Szabályok:
 - Soha ne törölj úgy, hogy előbb nem mutattad meg a tartalmat
@@ -197,27 +200,30 @@ Disk usage: {size}
 
 ## A skill-index újragenerálása
 
-Ha skillt hozol létre, patchelsz vagy törölsz, generáld újra az indexet:
+Ha saját skillt hozol létre, patchelsz vagy törölsz, generáld újra a SAJÁT indexedet: a telepítés
+`scripts/skill-index.sh` szkriptjét a munkakönyvtáraddal mint argumentummal (a pontos út a CLAUDE.md-dben áll). Ez a
+`./.claude/skills/.skill-index.md`-t írja, a globális skilleket a tieiddel összefésülve. A globális indexet
+(`~/.claude/skills/.skill-index.md`) nem te írod.
 
-```bash
-INDEX_FILE="${HOME}/.claude/skills/.skill-index.md"
-echo "# Skill Index" > "$INDEX_FILE"
-echo "" >> "$INDEX_FILE"
-echo "Auto-generated. Do not edit manually." >> "$INDEX_FILE"
-echo "" >> "$INDEX_FILE"
+## Globális skill módosítása
 
-for dir in ~/.claude/skills/*/; do
-  skill_file="$dir/SKILL.md"
-  if [ -f "$skill_file" ]; then
-    name=$(basename "$dir")
-    desc=$(sed -n '/^description:/{ s/^description: *//; p; q; }' "$skill_file")
-    echo "- **$name**: $desc" >> "$INDEX_FILE"
-  fi
-done
-```
+A `~/.claude/skills/`-t minden ágens betölti, ezért egy új globális skill vagy egy meglévő javítása csak javaslatként megy:
+
+1. Írd meg a teljes SKILL.md-t piszkozatként a munkakönyvtáradban (pl. `./.claude/skill-javaslat/SKILL.md`);
+   javításnál a jelenlegi szövegből indulj (`cat ~/.claude/skills/{name}/SKILL.md`), és a TELJES javított szöveget küldd
+2. Egy-két mondatban írd le az indoklást egy mellette álló indoklás-fájlba
+3. Küldd el a CLAUDE.md-dben megnevezett dashboard-segéddel (`marveen-api.sh`), a `skill-propose` igével:
+   `skill-propose {name} <piszkozat SKILL.md> --reason-file <indoklás-fájl>` (ez a `POST /api/skills/propose`-t hívja)
+
+Hogy azonnal élesedik, vagy a tulajdonos jóváhagyására vár, azt a telepítés skill-karantén kapcsolója dönti el; a
+válasz `live` mezője megmondja. Egy létező név cserének számít, a régi változatról mentés készül.
 
 ## Buktatók
 
+- NE írj a `~/.claude/skills/`, egy másik ágens `.claude/skills/` vagy a telepítés gyökerének `.claude/skills/` mappájába:
+  ezeket mind a tiédtől eltérő sessionök töltik be, és a sub-ágens írási kapuja tiltja őket. A saját mappád szabad.
+- A fő ágensnek nincs privát skill-mappája: a munkakönyvtára a telepítés gyökere, így a `./.claude/skills` mappáját
+  minden sub-ágens is betölti. A fő ágens ezért minden új vagy módosított skillt szintén javaslatként küld.
 - NE törölj skillt automatikusan a felhasználó megerősítése nélkül
 - NE hozz létre skillt egyszeri feladatra (nézd meg a 2+ előfordulás szabályát)
 - Az audit eredménye tanácsadó jellegű, nem hajtódik végre automatikusan

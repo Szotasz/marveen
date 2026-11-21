@@ -3,7 +3,7 @@
 `scripts/hooks/db-write-gate.mjs` is a PreToolUse gate for every agent, the main agent included. It denies:
 
 1. an SQL write on the dashboard database's security tables (`approvals`, `approval_events`, `approval_slack_posts`,
-   `approval_teams_cards`, `agent_create_specs`, `auth_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
+   `approval_teams_cards`, `agent_create_specs`, `auth_sessions`, `colleague_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
    `support_consents` and `support_password_state`), `PRAGMA writable_schema`, and any write on `sqlite_master` /
    `sqlite_schema`;
 2. a file-level write of `store/claudeclaw.db` (and its `-wal`, `-shm`, `-journal`);
@@ -38,6 +38,13 @@ argument of a python/node script file is data, its glob no pattern (GATESCRIPTAR
 `python3 scripts/supabase-logs.py <ref> "select count(*) ..."` passes, like `sqlite3 x.db "select count(*) ..."`.
 Inline code (`-c`, `-e`, `-m`, stdin), a heredoc a script reads, bun/deno and the shell family stay strict, and a
 protected path handed to a script is still denied.
+The same list holds the instruction surfaces a session loads at its start (INSTRSURFACE1118): the CLAUDE.md,
+CLAUDE.local.md and .claude/CLAUDE.md files and the .claude/{rules,skills,commands,agents,output-styles} trees of
+the install root and of each ancestor of it the user may write, ~/.claude/CLAUDE.md and
+~/.claude/{rules,commands,output-styles}, and every OTHER agent's, its .claude-config files included. The caller's
+own agent directory stays free: an agent writes its own skills, rules and CLAUDE.md, and proposes a shared skill
+through the skill proposal. The caller is read from CLAUDE_PROJECT_DIR; without it every agent directory counts as
+another's.
 
 **A file the command writes and then runs** (INSTRWRITEEXEC1105) is judged as the commands it holds. GATEOPENFORMS1118
 widened what counts as running it: a copy of it under another name (a copier, a link, a redirect or a pipe that takes

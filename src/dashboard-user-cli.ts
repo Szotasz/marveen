@@ -157,7 +157,7 @@ async function main(): Promise<void> {
       await takeSupportAccessDown('security_reset')
       await notifySecurityEvent(`🚨 Biztonsági reset futott a dashboard CLI-ből: ${r.deviceKeysRevoked} eszközkulcs visszavonva, ${r.sessionsCleared} böngésző-munkamenet törölve. A hozzáférési token és a jelszavak változatlanok.`)
       process.stdout.write(
-        `Security reset done: ${r.deviceKeysRevoked} device key(s) revoked, ${r.sessionsCleared} browser session(s) cleared.\n` +
+        `Security reset done: ${r.deviceKeysRevoked} device key(s) revoked, ${r.sessionsCleared} browser session(s) and ${r.colleagueSessionsCleared} colleague board session(s) cleared.\n` +
         'Passwords and the dashboard token are untouched. Devices must be re-enrolled with new keys.\n',
       )
       break

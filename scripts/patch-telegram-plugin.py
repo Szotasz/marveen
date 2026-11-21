@@ -32,8 +32,9 @@ must not rewrite the user-level cache other Claude Code sessions load
   -- /status and /help then fall back to the plugin's own answers, or a
   forwarded command is not refused; the channel itself is not touched;
 - always exits 0: a failed patch must never stop the channel from starting
-  (the one exception is a --topics or --buttons value other than on or off:
-  exit 2, nothing patched; channels.sh passes neither);
+  (the one exception is a --topics, --buttons or --reactions value other than
+  on or off, or a bad --buttons-max-age: exit 2, nothing patched; channels.sh
+  passes none of them);
 - the answer-buttons patch (c67f5f34: inline keyboard under the message, a
   tap comes back as an ordinary text message) inserts WHOLE LINES only, each
   carrying its marker, so taking it back is deleting the lines that carry
@@ -45,11 +46,12 @@ must not rewrite the user-level cache other Claude Code sessions load
   (src/web/system-status.ts) instead of the command silently falling back.
 
 Usage: patch-telegram-plugin.py [--state FILE] [--topics on|off] [--buttons on|off] [--buttons-max-age HOURS]
-                                [<plugins cache root>]
+                                [--reactions on|off] [<plugins cache root>]
 (default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache;
 without --topics the TELEGRAM_TOPICS_ENABLED setting of this install decides,
 without --buttons the TELEGRAM_REPLY_BUTTONS setting, default on,
-without --buttons-max-age the TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS setting, default 0 = never expire)
+without --buttons-max-age the TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS setting, default 0 = never expire,
+without --reactions the TELEGRAM_REACTIONS_ENABLED setting, default off)
 """
 import json
 import os
@@ -519,6 +521,60 @@ TOPICS_STEPS = [
 ]
 TOPICS_FALLBACK = "replies and the typing indicator land outside the topic the message came from"
 
+# TELEGRAM_REACTIONS_ENABLED (owner request, 2026-11-09): an emoji reaction the owner puts on a message never reached the
+# agent. The plugin polls without allowed_updates, which grammY sends as [] (Telegram's default set), and that set
+# leaves message_reaction out. With the switch on:
+# - the polling asks for grammY's own default set plus message_reaction. grammY's constant, not a copied list, so an
+#   update type a later grammY adds is not lost; with the switch off the line is gone and grammY sends [] again, which
+#   resets Telegram's stored setting to the default (nothing stays behind);
+# - a handler takes a reaction from the PAIRED owner in their PRIVATE chat only (the kbd tap's own rule: chat id = user
+#   id, in allowFrom), then the plugin's own gate (a disabled dmPolicy still drops it). Only an emoji ADDED by this
+#   update goes on (taking one away, or the same set again, says nothing); a custom emoji shows as "(custom emoji)";
+# - it reaches the agent as "(reaction 👍)", the plugin's own "(sticker 😀)" shape, with the message it is on:
+#   reply_to_message_id, and reply_to_text, a single-line excerpt (at most 300 code points) of that message when it is
+#   one the reply tool sent since the plugin started (a bounded map, 500 entries, oldest out first; lost on a restart,
+#   then the id only). ts is the reaction's own date (a missing one would say 1970).
+# A reaction has no message id of its own, so the meta has none: no inbound-evidence line is written (it can never be
+# evidence for an owner write command, which needs the same message id and text), the inbound replay never sees it,
+# and the conversation ledger, which keys inbound rows by message id, does not record it. Every reaction is one more
+# turn for the agent, hence the switch, off by default. Every added line ends with REACT_TAG; removing them gives the
+# file back byte for byte.
+REACT_TAG = "// MARVEEN-PATCH(tgreact1119)"
+REACT_SETTING = "TELEGRAM_REACTIONS_ENABLED"
+REACT_STEPS = [
+    ("polling start", "insert-before",
+     re.compile(r"^( *)onStart: info => \{\n", re.MULTILINE),
+     ["allowed_updates: [...(await import('grammy')).API_CONSTANTS.DEFAULT_UPDATE_TYPES, 'message_reaction'],"]),
+    ("reply files comment", "insert-before",
+     re.compile(r"^( *)// Files go as separate messages[^\n]*\n", re.MULTILINE),
+     ["for (let n = 0; n < sentIds.length; n++) { if (marveenReactSent.size >= 500) "
+      "marveenReactSent.delete(marveenReactSent.keys().next().value!); marveenReactSent.set(chat_id + ':' + sentIds[n], "
+      "Array.from(chunks[n].replace(/\\s+/g, ' ').trim()).slice(0, 300).join('')) }"]),
+    ("polling loop", "insert-before",
+     re.compile(r"^()void \(async \(\) => \{\n(?= *for \(let attempt = 1; ; attempt\+\+\) \{\n)", re.MULTILINE),
+     ["const marveenReactSent = new Map<string, string>()",
+      "bot.on('message_reaction', async ctx => {",
+      "  const r = ctx.messageReaction",
+      "  if (!r.user || r.chat.type !== 'private' || r.chat.id !== r.user.id "
+      "|| !loadAccess().allowFrom.includes(String(r.user.id))) return",
+      "  if (gate(ctx).action !== 'deliver') return",
+      "  const reactKey = (x: { type: string; emoji?: string; custom_emoji_id?: string }) => "
+      "x.type === 'emoji' ? 'e:' + x.emoji : x.type === 'custom_emoji' ? 'c:' + x.custom_emoji_id : x.type",
+      "  const was = new Set(r.old_reaction.map(reactKey))",
+      "  const added = r.new_reaction.filter(x => !was.has(reactKey(x))).map(x => "
+      "x.type === 'emoji' ? x.emoji : x.type === 'custom_emoji' ? '(custom emoji)' : '(paid)')",
+      "  if (!added.length) return",
+      "  const chat_id = String(r.chat.id)",
+      "  const excerpt = marveenReactSent.get(chat_id + ':' + r.message_id)",
+      "  void mcp.notification({ method: 'notifications/claude/channel', params: { content: '(reaction ' + added.join(' ') + ')', "
+      "meta: { chat_id, user: r.user.username ?? String(r.user.id), user_id: String(r.user.id), reaction: added.join(' '), "
+      "reply_to_message_id: String(r.message_id), ...(excerpt ? { reply_to_text: excerpt } : {}), "
+      "ts: new Date(r.date * 1000).toISOString() } } }).catch(err => { "
+      "process.stderr.write(`telegram channel: failed to deliver a reaction to Claude: ${err}\\n`) })",
+      "})"]),
+]
+REACT_FALLBACK = "reactions do not reach the agent"
+
 # TGPAIRTEXT1108 (the owner's ask, Samu 73716): the plugin tells a pairing user "run in Claude Code: /telegram:access
 # pair <code>", and its /start says the same, but on a Marveen install the code is approved in the dashboard. Two
 # insert-only lines answer first and return, so the plugin's own lines stay byte-exact under them (stripping ours gives
@@ -577,6 +633,98 @@ def apply_pairtext(text, lang):
 
 
 PAIRTEXT_PATCH = {"name": "pairtext", "fallback": PAIRTEXT_FALLBACK}
+
+
+# The invitetext patch (INVITEPAIRCODE1120, card 500495b9): an invitee is let in by the dashboard's invite monitor
+# (src/web/channel-invites.ts, every 3 s), which approves the oldest pending pairing while an invite is live. The plugin
+# knows nothing of invites: the invite link's /start answered "write me anything, you get a code", the next message got
+# a pairing code, the monitor approved it a few seconds later, and the user was left holding a code the dashboard no
+# longer knew ("lejárt a párosító kód", Prorab and Gyula 2026-11-20). With this patch, while an invite in invites.json
+# (next to access.json, the monitor's own sidecar) is live:
+#   - /start with an invite-... payload creates the pending entry itself (the plugin's gate) and answers "letting you in"
+#     instead of the pairing instructions, no code (an approved sender gets "you are already in");
+#   - the pair branch answers "letting you in" instead of the code;
+#   - the approval confirmation the plugin sends after the monitor's approved/ marker says "you are in, write" in the
+#     install's language instead of "Paired! Say hi to Claude." (for a dashboard code approval too).
+# Without a live invite /start and the pair branch are as before (the code and its text); only the confirmation text
+# changes unconditionally (Revizor on #2994). Whole lines only, each carrying the
+# marker, so taking it back is deleting those lines; the language is AGENT_TEXT_LANG, like the pairtext patch.
+# Token binding (INVITETOKENBIND1120, card 1fff5453): the monitor used to approve ANY pending sender while an invite was
+# live. Now /start invite-<token> acts only when <token> itself is a live invite in invites.json, and then leaves a claim,
+# invite-claims/<senderId> = sha256(token) (0600, in a 0700 dir); the monitor approves a pending entry only with a claim
+# that matches a live invite. The "letting you in" answer of the pair branch goes only to a sender with a claim; anyone
+# else gets the ordinary pairing code (which only the dashboard approves).
+INVITE_MARKER = "// MARVEEN-PATCH(invitetext): an invitee gets no pairing code"
+INVITE_TEXT = {
+    "hu": {"wait": "Meghívóval érkeztél, beengedlek. Pár másodperc, és szólok, hogy írhatsz.",
+           "welcome": "Bent vagy, írhatsz. Amit ide írsz, az ügynökhöz jut.",
+           "already": "Már bent vagy, írhatsz."},
+    "en": {"wait": "You came with an invite, letting you in. Give it a few seconds, I will tell you when you can write.",
+           "welcome": "You are in, go ahead and write. What you send here reaches the agent.",
+           "already": "You are already in, go ahead and write."},
+}
+INVITE_HELPERS = [
+    "const MARVEEN_INVITE_TEXT = {texts}",
+    "function marveenInviteToken(t: string): boolean {{ if (!/^[A-Za-z0-9_-]{{16,64}}$/.test(t)) return false; try {{ "
+    "const s = JSON.parse(readFileSync(join(STATE_DIR, 'invites.json'), 'utf8')); const i = s?.invites && Object.prototype.hasOwnProperty.call(s.invites, t) ? s.invites[t] : null; "
+    "return !!i && i.used !== true && typeof i.expiresAt === 'number' && i.expiresAt >= Date.now() }} catch {{ return false }} }}",
+    "function marveenInviteClaimed(id: string): boolean {{ if (!/^-?[0-9]{{1,20}}$/.test(id)) return false; "
+    "try {{ return Date.now() - statSync(join(STATE_DIR, 'invite-claims', id)).mtimeMs <= 3600000 }} catch {{ return false }} }}",
+    "async function marveenInviteStart(ctx: Context): Promise<boolean> {{ const p = typeof ctx.match === 'string' ? ctx.match.trim() : ''; const t = p.slice(7); "
+    "if (!p.startsWith('invite-') || !ctx.from || !marveenInviteToken(t)) return false; const r = gate(ctx); if (r.action === 'drop') return true; "
+    "if (r.action === 'pair') {{ try {{ const h = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t))), b => b.toString(16).padStart(2, '0')).join(''); "
+    "const d = join(STATE_DIR, 'invite-claims'); mkdirSync(d, {{ recursive: true, mode: 0o700 }}); writeFileSync(join(d, String(ctx.from.id)), h + '\\n', {{ mode: 0o600 }}) }} catch {{ return false }} }} "
+    "await ctx.reply(r.action === 'deliver' ? MARVEEN_INVITE_TEXT.already : MARVEEN_INVITE_TEXT.wait).catch(() => {{}}); return true }}",
+]
+INVITE_ANCHORS = [
+    # helpers: before checkApprovals (module level, after gate(), STATE_DIR and the fs/path imports)
+    ("approvals function", re.compile(r"^()function checkApprovals\(\): void \{\n", re.MULTILINE), "before", "helpers"),
+    # the confirmation: our send first, then continue (the plugin's send under it is not reached)
+    ("approval confirm", re.compile(r"^( *)void bot\.api\.sendMessage\(senderId, \"Paired! Say hi to Claude\.\"\)\.then\(\n", re.MULTILINE), "before",
+     "void bot.api.sendMessage(senderId, MARVEEN_INVITE_TEXT.welcome).then(() => rmSync(file, { force: true }), err => { "
+     "process.stderr.write(`telegram channel: failed to send approval confirm: ${err}\\n`); rmSync(file, { force: true }) }); continue"),
+    # /start: right after its DM gate, before the pairtext line (if any)
+    ("start gate", re.compile(r"^bot\.command\('start', async ctx => \{\n( *)if \(!dmCommandGate\(ctx\)\) return\n", re.MULTILINE), "after",
+     "if (await marveenInviteStart(ctx)) return"),
+    # the pair branch: first line inside it
+    ("pair branch", re.compile(r"^( *)if \(result\.action === 'pair'\) \{\n", re.MULTILINE), "after",
+     "  if (marveenInviteClaimed(String(ctx.from?.id ?? ''))) { await ctx.reply(MARVEEN_INVITE_TEXT.wait); return }"),
+]
+INVITE_FALLBACK = "an invite link lets nobody in (the monitor approves only a sender with a token claim); the dashboard pairing code still works"
+
+
+def strip_invitetext(text):
+    """The text without the lines the invitetext patch inserted (they all end with ' ' + INVITE_MARKER)."""
+    return "".join(line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(" " + INVITE_MARKER))
+
+
+def apply_invitetext(text, lang):
+    """Returns (new_text, status). All four places or none: a missing anchor leaves the file as it was.
+    'already' when the lines are there in this language; a language change rewrites them ('patched')."""
+    if INVITE_MARKER in text and strip_invitetext(text).count(INVITE_MARKER):
+        return text, "damaged:invitetext marker"
+    base = strip_invitetext(text)
+    lang = lang if lang in INVITE_TEXT else "hu"
+    texts = "{ " + ", ".join("%s: %s" % (k, json.dumps(v, ensure_ascii=False)) for k, v in INVITE_TEXT[lang].items()) + " }"
+    out = base
+    for name, rx, where, body in INVITE_ANCHORS:
+        found = list(rx.finditer(out))
+        if len(found) != 1:
+            return text, f"anchor-missing:{name}"
+        m = found[0]
+        indent = m.group(1)
+        if body == "helpers":
+            lines = "".join(h.format(texts=texts) + " " + INVITE_MARKER + "\n" for h in INVITE_HELPERS)
+        else:
+            lines = indent + body + " " + INVITE_MARKER + "\n"
+        pos = m.start() if where == "before" else m.end()
+        out = out[:pos] + lines + out[pos:]
+    if out == text:
+        return text, "already"
+    return out, "patched"
+
+
+INVITE_PATCH = {"name": "invitetext", "fallback": INVITE_FALLBACK}
 
 
 def log(msg):
@@ -672,8 +820,36 @@ def remove_topics(text):
 TOPICS_PATCH = {"name": "topics", "fallback": TOPICS_FALLBACK}
 
 
-def patch_text(text, topics=False, buttons=True, lang="hu", max_age_hours=0):
-    """Returns (new_text, [(patch, status), ...]). The topics entry is there
+def apply_react(text):
+    """Returns (new_text, status), all-or-nothing: 'already' when the tag is there, else every step found exactly
+    once or none applied ('anchor-missing:<name>')."""
+    if REACT_TAG in text:
+        return text, "already"
+    out = text
+    for name, mode, rx, lines in REACT_STEPS:
+        found = list(rx.finditer(out))
+        if len(found) != 1:
+            return text, f"anchor-missing:{name}"
+        m = found[0]
+        added = "".join(f"{m.group(1)}{line} {REACT_TAG}\n" for line in lines)
+        at = m.start() if mode == "insert-before" else m.end()
+        out = out[:at] + added + out[at:]
+    return out, "patched"
+
+
+def remove_react(text):
+    """Returns (new_text, 'removed'), or (text, None) when the patch is not there."""
+    if REACT_TAG not in text:
+        return text, None
+    return "".join(line for line in text.splitlines(keepends=True)
+                   if not line.rstrip("\n").endswith(REACT_TAG)), "removed"
+
+
+REACT_PATCH = {"name": "react", "fallback": REACT_FALLBACK}
+
+
+def patch_text(text, topics=False, buttons=True, lang="hu", max_age_hours=0, reactions=False):
+    """Returns (new_text, [(patch, status), ...]). The topics entry (and the `reactions` one, TELEGRAM_REACTIONS_ENABLED) is there
     when the switch is on, or when switching it off took the patch out.
     `buttons` picks the side of the kbd patch (TELEGRAM_REPLY_BUTTONS); `lang` the language of the pairtext lines and
     of the button toasts;
@@ -683,8 +859,13 @@ def patch_text(text, topics=False, buttons=True, lang="hu", max_age_hours=0):
         text, status = patch["apply"](text, buttons, max_age_hours, lang) if "apply" in patch else apply_patch(text, patch)
         results.append((patch, status))
     # pairtext last: independent of the others (its own marker and anchors), all-or-nothing on its own.
-    text, status = apply_pairtext(text, lang)
+    # invitetext's /start line sits right under the DM gate, ABOVE the pairtext line, where the pairtext anchor looks
+    # for the plugin's own reply: so its lines come out first, pairtext runs on the plugin's shape, and they go back in.
+    before = text
+    text, status = apply_pairtext(strip_invitetext(text), lang)
     results.append((PAIRTEXT_PATCH, status))
+    text, status = apply_invitetext(text, lang)
+    results.append((INVITE_PATCH, "already" if status == "patched" and text == before else status))
     if topics:
         text, status = apply_topics(text)
         results.append((TOPICS_PATCH, status))
@@ -692,6 +873,13 @@ def patch_text(text, topics=False, buttons=True, lang="hu", max_age_hours=0):
         text, status = remove_topics(text)
         if status:
             results.append((TOPICS_PATCH, status))
+    if reactions:
+        text, status = apply_react(text)
+        results.append((REACT_PATCH, status))
+    else:
+        text, status = remove_react(text)
+        if status:
+            results.append((REACT_PATCH, status))
     return text, results
 
 
@@ -706,7 +894,7 @@ def file_status(results):
     return next(st for st in statuses if st.startswith(("anchor-missing", "damaged")))
 
 
-def patch_file(path, topics=False, buttons=True, lang="hu", max_age_hours=0):
+def patch_file(path, topics=False, buttons=True, lang="hu", max_age_hours=0, reactions=False):
     """Returns (file status, {patch name: status})."""
     try:
         with open(path, encoding="utf-8") as f:
@@ -714,7 +902,7 @@ def patch_file(path, topics=False, buttons=True, lang="hu", max_age_hours=0):
     except Exception as e:
         log(f"cannot read {path}: {type(e).__name__}")
         return "unreadable", {}
-    new, results = patch_text(text, topics, buttons, lang, max_age_hours)
+    new, results = patch_text(text, topics, buttons, lang, max_age_hours, reactions)
     per_patch = {p["name"]: st for p, st in results}
     for patch, status in results:
         if status.startswith("anchor-missing"):
@@ -813,6 +1001,11 @@ def topics_setting(install_dir):
     return flag_setting(install_dir, TOPICS_SETTING, False)
 
 
+def reactions_setting(install_dir):
+    """TELEGRAM_REACTIONS_ENABLED, registry default off."""
+    return flag_setting(install_dir, REACT_SETTING, False)
+
+
 def buttons_setting(install_dir):
     """TELEGRAM_REPLY_BUTTONS, registry default on (the answer buttons as they are)."""
     return flag_setting(install_dir, BUTTONS_SETTING, True)
@@ -872,7 +1065,8 @@ def main(argv):
     topics = None
     buttons = None
     max_age_hours = None
-    while len(args) >= 2 and args[0] in ("--state", "--topics", "--buttons", "--buttons-max-age"):
+    reactions = None
+    while len(args) >= 2 and args[0] in ("--state", "--topics", "--buttons", "--buttons-max-age", "--reactions"):
         if args[0] == "--state":
             state_path = args[1]
         elif args[0] == "--buttons-max-age":
@@ -888,6 +1082,8 @@ def main(argv):
             return 2
         elif args[0] == "--topics":
             topics = args[1] == "on"
+        elif args[0] == "--reactions":
+            reactions = args[1] == "on"
         else:
             buttons = args[1] == "on"
         args = args[2:]
@@ -898,6 +1094,8 @@ def main(argv):
         buttons = buttons_setting(install_dir)
     if max_age_hours is None:
         max_age_hours = max_age_setting(install_dir)
+    if reactions is None:
+        reactions = reactions_setting(install_dir)
     lang = lang_setting(install_dir)
     root = args[0] if args else default_root()
     files = []
@@ -906,19 +1104,20 @@ def main(argv):
         for ver in sorted(os.listdir(base)):
             path = os.path.join(base, ver, "server.ts")
             if os.path.isfile(path):
-                status, patches = patch_file(path, topics, buttons, lang, max_age_hours)
+                status, patches = patch_file(path, topics, buttons, lang, max_age_hours, reactions)
                 files.append({"version": ver, "path": path, "status": status, "patches": patches})
     if state_path:
         write_state(state_path, {"at": int(time.time()), "root": root, "topics": "on" if topics else "off",
                                  "buttons": "on" if buttons else "off", "buttons_max_age_hours": max_age_hours,
-                                 "lang": lang, "files": files})
+                                 "reactions": "on" if reactions else "off", "lang": lang, "files": files})
     return 0
 
 
 if __name__ == "__main__":
     code = 0
     try:
-        # Non-zero only for a mistyped --topics, --buttons or --buttons-max-age, which channels.sh never passes.
+        # Non-zero only for a mistyped --topics, --buttons, --buttons-max-age or --reactions, which channels.sh never
+        # passes.
         code = main(sys.argv)
     except Exception as e:  # never stop the channel from starting
         log(f"unexpected {type(e).__name__}, nothing patched")

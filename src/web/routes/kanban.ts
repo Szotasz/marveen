@@ -272,7 +272,7 @@ export function buildKanbanDispatchContent(card: { id: string; priority?: string
 // dispatched_at is the once-only guard; errors never block the card move.
 // `actor` is the mover reported by the caller: an agent that moves its own card
 // to in_progress must not be woken with an assignment for work it just started.
-function fireKanbanDispatch(id: string, actor?: string | null): void {
+export function fireKanbanDispatch(id: string, actor?: string | null): void {
   try {
     const card = getKanbanCard(id)
     if (!card || card.dispatched_at) return
@@ -367,7 +367,7 @@ function reportUndeliveredDispatch(id: string, unreachable: string): void {
 // The /move and the PUT call this once per transition anyway; the dedupe is for
 // the second entry point, POST /api/kanban/:id/notify-unblocked, which the card
 // script calls after its own DB move and which a caller may repeat.
-function notifyUnblockedCards(blockerId: string, actor?: string | null): { freed: string[]; alreadyNotified: string[] } {
+export function notifyUnblockedCards(blockerId: string, actor?: string | null): { freed: string[]; alreadyNotified: string[] } {
   const result = { freed: [] as string[], alreadyNotified: [] as string[] }
   let freed: ReturnType<typeof getCardsUnblockedBy>
   try {

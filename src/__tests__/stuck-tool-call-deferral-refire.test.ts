@@ -180,3 +180,31 @@ describe('wiring: every deferring guard stores the spell through deferVerdict()'
     }
   })
 })
+
+describe('#2989: the recovery WARN names what the idle-prompt guard saw', () => {
+  const recoveryWarn = () => h.warn.mock.calls.find(c => String(c[1]).includes('recovering main channels session'))?.[0] as Record<string, unknown> | undefined
+
+  it('carries the guard\'s pane state and the bottom of the same capture', async () => {
+    await drive(30)
+    expect(h.times).toEqual([FIRST_VERDICT_MS])
+    const fields = recoveryWarn()
+    expect(fields?.paneState).toBe('unknown')   // FROZEN_PANE has no idle footer
+    expect(fields?.paneTail).toBe(FROZEN_PANE.trimEnd())
+  })
+
+  it('a pane drawn high logs its last 8 drawn lines, not the blank rows below them', async () => {
+    const scrollback = Array.from({ length: 12 }, (_, i) => `scrollback ${i}`).join('\n')
+    h.pane = `${scrollback}\n${FROZEN_PANE}${'\n'.repeat(20)}`
+    await drive(30)
+    const tail = String(recoveryWarn()?.paneTail).split('\n')
+    expect(tail).toHaveLength(8)
+    expect(tail[0]).toBe('scrollback 8')
+    expect(tail.pop()).toBe('✻ Baked for 20s')
+  })
+
+  it('a null capture at the verdict poll ends the spell instead of reaching the WARN', async () => {
+    await drive(10, i => { h.pane = (i === 7 ? null : FROZEN_PANE) as string })
+    expect(h.resume).not.toHaveBeenCalled()
+    expect(recoveryWarn()).toBeUndefined()
+  })
+})

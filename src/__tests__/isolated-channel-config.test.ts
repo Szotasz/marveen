@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   mkdtempSync, mkdirSync, writeFileSync, rmSync, lstatSync, readlinkSync, readFileSync, existsSync,
+  symlinkSync, statSync, utimesSync, readdirSync, chmodSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -10,9 +11,28 @@ import { tmpdir } from 'node:os'
 // sandbox built per test. tmpdir() stays real so we can create the sandbox.
 let SANDBOX = ''
 let AUTH_MODE: Record<string, string> = {}
+let RUN_AS: Record<string, string> = {}
+// Failure injection for the scrub's rewrite (MCPOAUTHWIPE1119 review): only the temp-file write or the rename of
+// a `.credentials.json.tmp-` path throws, and only while the flag is set; every other call is the real one.
+let FAIL_TMP: 'write' | 'rename' | null = null
 vi.mock('node:os', async (orig) => {
   const actual = await orig<typeof import('node:os')>()
   return { ...actual, homedir: () => join(SANDBOX, 'home') }
+})
+vi.mock('node:fs', async (orig) => {
+  const actual = await orig<typeof import('node:fs')>()
+  const isTmp = (p: unknown) => String(p).includes('.credentials.json.tmp-')
+  return {
+    ...actual,
+    writeFileSync: ((...args: Parameters<typeof actual.writeFileSync>) => {
+      if (FAIL_TMP === 'write' && isTmp(args[0])) throw Object.assign(new Error('injected write failure'), { code: 'EIO' })
+      return actual.writeFileSync(...args)
+    }) as typeof actual.writeFileSync,
+    renameSync: ((...args: Parameters<typeof actual.renameSync>) => {
+      if (FAIL_TMP === 'rename' && isTmp(args[0])) throw Object.assign(new Error('injected rename failure'), { code: 'EIO' })
+      return actual.renameSync(...args)
+    }) as typeof actual.renameSync,
+  }
 })
 vi.mock('../web/agent-config.js', async (orig) => {
   const actual = await orig<typeof import('../web/agent-config.js')>()
@@ -20,6 +40,9 @@ vi.mock('../web/agent-config.js', async (orig) => {
     ...actual,
     agentDir: (name: string) => join(SANDBOX, 'agents', name),
     readAgentAuthMode: (name: string) => AUTH_MODE[name] ?? 'shared',
+    // The real reader resolves agent-config.json through the module's own,
+    // unmocked agentDir, so it would never see the sandbox.
+    readAgentRunAsUser: (name: string) => RUN_AS[name] ?? null,
   }
 })
 
@@ -54,6 +77,8 @@ function seedSharedClaude(home: string) {
 beforeEach(() => {
   SANDBOX = mkdtempSync(join(tmpdir(), 'isocfg-'))
   AUTH_MODE = {}
+  RUN_AS = {}
+  FAIL_TMP = null
   seedSharedClaude(join(SANDBOX, 'home'))
   mkdirSync(join(SANDBOX, 'agents', 'testagent'), { recursive: true })
 })
@@ -103,6 +128,31 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
   })
 
+  it('removes a stale .credentials.json when the shared one is absent (ISOCREDSCRUB1119)', () => {
+    // The Linux credentials-guard renames the shared ~/.claude/.credentials.json, and
+    // a macOS host never has one (the login lives in the Keychain). The removal used
+    // to run only while iterating the shared dir, so on such a host a stale isolated
+    // credential was never dropped.
+    const shared = join(SANDBOX, 'home', '.claude')
+    rmSync(join(shared, '.credentials.json'))
+    writeFileSync(join(shared, '.credentials.json.bak'), '{"claudeAiOauth":{}}')
+    const cfg = join(SANDBOX, 'agents', 'testagent', '.claude-config')
+    mkdirSync(cfg, { recursive: true })
+    writeFileSync(join(cfg, '.credentials.json'), '{"stale":true}')
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
+  })
+
+  it('keeps an own_team agent\'s own .credentials.json when the shared one is absent (ISOCREDSCRUB1119)', () => {
+    AUTH_MODE.testagent = 'own_team'
+    rmSync(join(SANDBOX, 'home', '.claude', '.credentials.json'))
+    const cfg = join(SANDBOX, 'agents', 'testagent', '.claude-config')
+    mkdirSync(cfg, { recursive: true })
+    writeFileSync(join(cfg, '.credentials.json'), '{"own":true}')
+    ensureIsolatedChannelConfigDir('testagent', 'telegram')
+    expect(readFileSync(join(cfg, '.credentials.json'), 'utf-8')).toBe('{"own":true}')
+  })
+
   it('keeps an own_team agent\'s own .credentials.json (OWNTEAMCREDWIPE1008)', () => {
     // own_team: the file is the agent's own `claude auth login` credential, not a
     // stale copy -- deleting it on every spawn logged the agent out.
@@ -112,6 +162,164 @@ describe('ensureIsolatedChannelConfigDir', () => {
     writeFileSync(join(cfg, '.credentials.json'), '{"own":true}')
     ensureIsolatedChannelConfigDir('testagent', 'telegram')
     expect(readFileSync(join(cfg, '.credentials.json'), 'utf-8')).toBe('{"own":true}')
+  })
+
+  // MCPOAUTHWIPE1119: Claude Code keeps remote MCP servers' OAuth tokens in the
+  // same .credentials.json; deleting the whole file on every spawn logged an
+  // agent out of its OAuth MCP servers on each restart.
+  describe('MCP OAuth tokens in the isolated .credentials.json (MCPOAUTHWIPE1119)', () => {
+    const MCP = { 'dropbox|abc123': { serverName: 'dropbox', serverUrl: 'https://example.invalid/mcp',
+      accessToken: 'fake-access', refreshToken: 'fake-refresh', expiresAt: 1 } }
+    const ANTHROPIC = { accessToken: 'fake-anthropic', refreshToken: 'fake-anthropic-refresh', expiresAt: 1 }
+    const cfgDir = () => {
+      const cfg = join(SANDBOX, 'agents', 'testagent', '.claude-config')
+      mkdirSync(cfg, { recursive: true })
+      return cfg
+    }
+
+    it('keeps only the MCP OAuth tokens and drops the Anthropic credential', () => {
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: ANTHROPIC, mcpOAuth: MCP }), { mode: 0o644 })
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      const raw = readFileSync(file, 'utf-8')
+      expect(JSON.parse(raw)).toEqual({ mcpOAuth: MCP })
+      expect(raw).not.toContain('fake-anthropic')
+      expect(statSync(file).mode & 0o777).toBe(0o600)
+      expect(readdirSync(cfg).filter((e) => e.includes('.credentials.json.tmp-'))).toEqual([])
+    })
+
+    it('scrubs the same way when the shared .credentials.json is absent (ISOCREDSCRUB1119)', () => {
+      rmSync(join(SANDBOX, 'home', '.claude', '.credentials.json'))
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: ANTHROPIC, mcpOAuth: MCP }))
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ mcpOAuth: MCP })
+    })
+
+    it('also keeps mcpOAuthClientConfig', () => {
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      const clientCfg = { 'dropbox|abc123': { clientSecret: 'fake-secret' } }
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: ANTHROPIC, mcpOAuth: MCP, mcpOAuthClientConfig: clientCfg }))
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ mcpOAuth: MCP, mcpOAuthClientConfig: clientCfg })
+    })
+
+    it('removes a file that holds only the Anthropic credential', () => {
+      const cfg = cfgDir()
+      writeFileSync(join(cfg, '.credentials.json'), JSON.stringify({ claudeAiOauth: ANTHROPIC }))
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
+    })
+
+    it('removes the link, never the target, when .credentials.json is a symlink', () => {
+      const cfg = cfgDir()
+      const target = join(SANDBOX, 'elsewhere.json')
+      const original = JSON.stringify({ claudeAiOauth: ANTHROPIC, mcpOAuth: MCP })
+      writeFileSync(target, original)
+      symlinkSync(target, join(cfg, '.credentials.json'))
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
+      expect(() => lstatSync(join(cfg, '.credentials.json'))).toThrow()
+      expect(readFileSync(target, 'utf-8')).toBe(original)
+    })
+
+    it('removes an unparseable .credentials.json', () => {
+      const cfg = cfgDir()
+      writeFileSync(join(cfg, '.credentials.json'), '{not json')
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
+    })
+
+    it('removes an oversize .credentials.json instead of reading it', () => {
+      const cfg = cfgDir()
+      const big = { 'dropbox|abc123': { ...MCP['dropbox|abc123'], pad: 'x'.repeat(1024 * 1024) } }
+      writeFileSync(join(cfg, '.credentials.json'), JSON.stringify({ claudeAiOauth: ANTHROPIC, mcpOAuth: big }))
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
+    })
+
+    it('removes it when mcpOAuth is not an object', () => {
+      const cfg = cfgDir()
+      writeFileSync(join(cfg, '.credentials.json'), JSON.stringify({ mcpOAuth: 'oops', claudeAiOauth: ANTHROPIC }))
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
+    })
+
+    it('does not rewrite an already-clean file (idempotent)', () => {
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      const clean = JSON.stringify({ mcpOAuth: MCP })
+      writeFileSync(file, clean, { mode: 0o600 })
+      utimesSync(file, 1_600_000_000, 1_600_000_000)
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(readFileSync(file, 'utf-8')).toBe(clean)
+      expect(statSync(file).mtimeMs).toBe(1_600_000_000_000)
+    })
+
+    it('keeps only the allow-listed keys: an unknown account key and a case variant are dropped too', () => {
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      writeFileSync(file, JSON.stringify({
+        claudeAiOauth: ANTHROPIC,
+        mcpOAuth: MCP,
+        someOtherOauth: { accessToken: 'fake-other', refreshToken: 'fake-other-refresh' },
+        ClaudeAiOauth: { accessToken: 'fake-case-variant' },
+      }))
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      const raw = readFileSync(file, 'utf-8')
+      expect(JSON.parse(raw)).toEqual({ mcpOAuth: MCP })
+      expect(raw).not.toContain('fake-other')
+      expect(raw).not.toContain('fake-case-variant')
+      expect(raw).not.toContain('fake-anthropic')
+    })
+
+    it.each(['write', 'rename'] as const)('a failed rewrite (%s) removes the file and leaves no temp file', (where) => {
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      writeFileSync(file, JSON.stringify({ claudeAiOauth: ANTHROPIC, mcpOAuth: MCP }))
+      FAIL_TMP = where
+      try {
+        ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      } finally {
+        FAIL_TMP = null
+      }
+      expect(existsSync(file)).toBe(false)
+      expect(readdirSync(cfg).filter((e) => e.includes('.credentials.json.tmp-'))).toEqual([])
+    })
+
+    it('narrows an already-clean 0644 file to 0600 without rewriting it', () => {
+      const cfg = cfgDir()
+      const file = join(cfg, '.credentials.json')
+      const clean = JSON.stringify({ mcpOAuth: MCP })
+      writeFileSync(file, clean, { mode: 0o644 })
+      chmodSync(file, 0o644)
+      utimesSync(file, 1_600_000_000, 1_600_000_000)
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(statSync(file).mode & 0o777).toBe(0o600)
+      expect(readFileSync(file, 'utf-8')).toBe(clean)
+      expect(statSync(file).mtimeMs).toBe(1_600_000_000_000)
+    })
+
+    it('a per-user (runAsUser) agent keeps the whole-file removal: the router never rewrites it', () => {
+      const cfg = cfgDir()
+      RUN_AS.testagent = 'sandboxuser'
+      writeFileSync(join(cfg, '.credentials.json'), JSON.stringify({ claudeAiOauth: ANTHROPIC, mcpOAuth: MCP }))
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
+    })
+
+    it('own_team still keeps the whole file, Anthropic credential included', () => {
+      AUTH_MODE.testagent = 'own_team'
+      const cfg = cfgDir()
+      const original = JSON.stringify({ claudeAiOauth: ANTHROPIC, mcpOAuth: MCP })
+      writeFileSync(join(cfg, '.credentials.json'), original)
+      ensureIsolatedChannelConfigDir('testagent', 'telegram')
+      expect(readFileSync(join(cfg, '.credentials.json'), 'utf-8')).toBe(original)
+    })
   })
 
   it('OWNS settings.json (real file) with only the agent provider plugin enabled', () => {

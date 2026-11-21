@@ -106,6 +106,17 @@ describe('a written file given to a program as its code file', () => {
   ])('%s is denied', (_, c) => { expect(bash(c)).toEqual(DENY) })
 })
 
+describe("the first non-option word after an interpreter keeps develop's reading (fail-closed)", () => {
+  // The option-aware readings (optScript, runWords) are read in addition to develop's naive first non-option word,
+  // never instead. Where the option walk reads the written file as an option's value, only the naive reading names
+  // it, and the decision stays the deny develop gave: a narrower union would let a later rewrite drop it silently.
+  it.each([
+    ['bash -o', H('/tmp/f') + 'bash -o /tmp/f'],
+    ['bash -O', H('/tmp/f') + 'bash -O /tmp/f'],
+    ['python3 -W', H('/tmp/f') + 'python3 -W /tmp/f'],
+  ])('%s <written file> is denied', (_, c) => { expect(bash(c)).toEqual(DENY) })
+})
+
 describe("a written file's text used as code through a command substitution", () => {
   it.each([
     ['sh -c "$(cat f)"', H('/tmp/f') + 'sh -c "$(cat /tmp/f)"'],

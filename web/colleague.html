@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title data-i18n="colleague.title">Feladataim</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  /* The colleague board page (docs/board-access.md, "Colleague login"): one column on the dashboard tokens. */
+  body { display: block; background: var(--bg); color: var(--text); margin: 0; }
+  .cb { max-width: 1100px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
+  .cb-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .cb-head h1 { font-size: 1.25rem; margin: 0; }
+  .cb-head .spacer { flex: 1; }
+  .cb-muted { color: var(--text-muted); font-size: 0.85rem; }
+  .cb-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; box-shadow: var(--shadow-sm); }
+  .cb-card h2 { font-size: 1rem; margin: 0 0 10px; }
+  .cb-btn { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 10px; font: inherit; font-size: 0.85rem; cursor: pointer; }
+  .cb-btn:hover { background: var(--bg-card-hover); }
+  .cb-btn.primary { border-color: var(--border-focus); }
+  .cb-btn:disabled { opacity: 0.5; cursor: default; }
+  .cb-input { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 8px; font: inherit; max-width: 100%; box-sizing: border-box; }
+  .cb-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .cb-msg { margin: 8px 0 0; font-size: 0.85rem; }
+  .cb-msg.err { color: var(--danger); }
+  .cb-msg.ok { color: var(--success); }
+  .cb-login { max-width: 420px; margin: 12vh auto 0; }
+  .cb-login .cb-input { width: 100%; margin: 6px 0; }
+  .cb-group h2 .cb-count { color: var(--text-muted); font-weight: 400; }
+  .cb-task { border-top: 1px solid var(--border); padding: 8px 0; }
+  .cb-task:first-of-type { border-top: 0; }
+  .cb-task-title { font-weight: 500; overflow-wrap: anywhere; }
+  .cb-badge { display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 0.75rem; background: var(--bg-input); color: var(--text-muted); }
+  .cb-badge.high, .cb-badge.urgent { background: var(--danger-soft); color: var(--danger); }
+  .cb-detail { margin-top: 8px; padding: 8px 10px; background: var(--bg-input); border-radius: var(--radius-sm); }
+  .cb-desc { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 8px; font-size: 0.85rem; }
+  .cb-comment { font-size: 0.85rem; margin: 6px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .cb-comment .cb-muted { margin-right: 6px; }
+  .cb-new textarea { width: 100%; min-height: 60px; }
+  .cb-new .cb-title { flex: 1 1 260px; }
+</style>
+</head>
+<body>
+<div class="cb">
+
+  <section class="cb-card cb-login" id="cb-login" hidden>
+    <h1 data-i18n="colleague.login.title">Belépés a feladatokhoz</h1>
+    <p class="cb-muted" data-i18n="colleague.login.hint"></p>
+    <form id="cb-login-form">
+      <input class="cb-input" id="cb-login-user" autocomplete="username" required data-i18n-placeholder="colleague.login.username" data-i18n-aria="colleague.login.username">
+      <input class="cb-input" id="cb-login-pass" type="password" autocomplete="current-password" required data-i18n-placeholder="colleague.login.password" data-i18n-aria="colleague.login.password">
+      <button class="cb-btn primary" type="submit" data-i18n="colleague.login.submit">Belépés</button>
+    </form>
+    <p class="cb-msg err" id="cb-login-msg" hidden></p>
+  </section>
+
+  <div id="cb-app" hidden>
+    <div class="cb-head">
+      <h1 data-i18n="colleague.title">Feladataim</h1>
+      <span class="cb-muted" id="cb-who"></span>
+      <span class="spacer"></span>
+      <button class="cb-btn" id="cb-refresh" type="button" data-i18n="colleague.refresh">Frissítés</button>
+      <button class="cb-btn" id="cb-logout" type="button" data-i18n="colleague.logout">Kilépés</button>
+    </div>
+    <p class="cb-msg err" id="cb-fatal" hidden></p>
+
+    <section class="cb-card cb-new">
+      <h2 data-i18n="colleague.new.title">Új feladat</h2>
+      <form id="cb-new-form">
+        <div class="cb-row">
+          <input class="cb-input cb-title" id="cb-new-title" maxlength="500" required data-i18n-placeholder="colleague.new.title_label" data-i18n-aria="colleague.new.title_label">
+          <select class="cb-input" id="cb-new-priority" data-i18n-aria="colleague.new.priority"></select>
+          <input class="cb-input" id="cb-new-due" type="date" data-i18n-aria="colleague.new.due" data-i18n-title="colleague.new.due">
+          <button class="cb-btn primary" type="submit" data-i18n="colleague.new.submit">Létrehozás</button>
+        </div>
+        <textarea class="cb-input" id="cb-new-desc" maxlength="10000" style="margin-top:8px" data-i18n-placeholder="colleague.new.description" data-i18n-aria="colleague.new.description"></textarea>
+      </form>
+      <p class="cb-msg" id="cb-new-msg" hidden></p>
+    </section>
+
+    <div id="cb-groups"></div>
+  </div>
+</div>
+<script src="/lang/hu.js"></script>
+<script src="/lang/en.js"></script>
+<script src="/colleague.js"></script>
+</body>
+</html>

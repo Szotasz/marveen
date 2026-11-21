@@ -1,0 +1,8 @@
+  Heartbeat ágensm készen áll az ütemezett pulzusokra.
+
+✻ Baked for 10s · done 11:59 AM
+                                                              82% context used
+──────────────────────────────────────────────────────────────────── Heartbeat ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

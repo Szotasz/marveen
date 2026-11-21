@@ -177,6 +177,19 @@ export function paneLooksRecovered(pane: string | null): boolean {
   return pane != null && detectPaneState(pane) === 'idle'
 }
 
+// #2989: the bottom of the capture the idle-prompt guard judged, for the recovery WARN. Trailing blank
+// rows are dropped first, because a pane drawn high would otherwise log only empty lines. Capped so one
+// log entry stays small; the logger masks secret shapes in every string field.
+// A deliberate diagnostic exception to "no conversation content in the log" (channel-mcp-reconnect.ts
+// paneDiagSignature): on an idle session the tail holds the end of the last reply. It is written only
+// when this watcher respawns the session, it stays on the host (agent-process.ts lastScreen does the
+// same), and it goes once #2989 is explained.
+const RECOVERY_PANE_TAIL_LINES = 8
+const RECOVERY_PANE_TAIL_CHARS = 1500
+export function recoveryPaneTail(pane: string): string {
+  return pane.trimEnd().split('\n').slice(-RECOVERY_PANE_TAIL_LINES).join('\n').slice(-RECOVERY_PANE_TAIL_CHARS)
+}
+
 // Pure: close out the pending alert?
 export function shouldSendAllClear(
   pendingSince: number | null,
@@ -771,6 +784,9 @@ async function checkSession(label: string, session: string): Promise<void> {
     // Audit log requested by Marveen 2026-06-02: every respawn this watcher
     // decides on must record the input that led to it, so a regression
     // (spurious respawn during legitimate long work) is easy to spot.
+    // #2989: plus what the idle-prompt guard saw (its state and the bottom of the same capture), so a
+    // respawn of an idle session shows from the log alone why the guard did not skip it. The pane is
+    // never null here: a null capture has no signature, and without one there is no verdict.
     logger.warn(
       {
         label,
@@ -781,6 +797,8 @@ async function checkSession(label: string, session: string): Promise<void> {
         stagnantPolls: next.stagnantPolls,
         cpuPercent,
         thresholds: THRESHOLDS,
+        paneState: pane == null ? null : detectPaneState(pane),
+        paneTail: pane == null ? null : recoveryPaneTail(pane),
       },
       'stuck-tool-call-watcher: TUI counter stagnant past freeze threshold + idle wedge profile -- recovering main channels session (respawn-pane, no client-kick)',
     )

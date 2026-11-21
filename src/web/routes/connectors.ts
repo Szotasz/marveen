@@ -10,7 +10,7 @@ import {
   catalogMatchesConfigured,
   type McpListEntry,
 } from '../../mcp-list-parser.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
+import { atomicWriteFileSync, writeMcpJsonFile } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
@@ -206,7 +206,7 @@ export function writeConnectorIntoAgent(agentName: string, connectorName: string
   const mcpConfig = readJsonObjectForWrite(mcpPath) as any
   if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {}
   mcpConfig.mcpServers[connectorName] = connectorConfig
-  atomicWriteFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
+  writeMcpJsonFile(mcpPath, JSON.stringify(mcpConfig, null, 2))
 }
 
 export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
@@ -686,7 +686,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
           const mcpConfig = JSON.parse(readFileOr(mcpPath, '{}'))
           if (mcpConfig.mcpServers && mcpConfig.mcpServers[connectorName]) {
             delete mcpConfig.mcpServers[connectorName]
-            atomicWriteFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
+            writeMcpJsonFile(mcpPath, JSON.stringify(mcpConfig, null, 2))
           }
         } catch { /* skip */ }
       }

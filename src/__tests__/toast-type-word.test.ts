@@ -14,7 +14,7 @@ const SRC = slice('function showToast(') + slice('function toastDuration(')
 
 function delayFor(...args: unknown[]): number {
   const delays: number[] = []
-  const toast = { textContent: '', classList: { add() {}, remove() {} } }
+  const toast = { textContent: '', classList: { add() {}, remove() {}, toggle() {} } }
   const setTimeout = (_fn: () => void, ms: number) => { delays.push(ms) }
   new Function('toast', 'setTimeout', 'args', `${SRC}\nshowToast(...args)`)(toast, setTimeout, args)
   return delays[0]

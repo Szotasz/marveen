@@ -16,16 +16,20 @@
 import { logConfigChange } from '../db.js'
 import { revokeAllDeviceKeys } from './auth-device-keys.js'
 import { revokeAllSessions } from './auth-sessions.js'
+import { revokeAllColleagueSessions } from './colleague-sessions.js'
 
 export interface SecurityResetResult {
   deviceKeysRevoked: number
   sessionsCleared: number
+  /** Colleague board sessions (colleague-sessions.ts); the accounts themselves stay. */
+  colleagueSessionsCleared: number
 }
 
 export function securityReset(actor: string): SecurityResetResult {
   const deviceKeysRevoked = revokeAllDeviceKeys()
   const sessionsCleared = revokeAllSessions()
+  const colleagueSessionsCleared = revokeAllColleagueSessions()
   // Counts only -- never credential material -- into the audit trail.
-  logConfigChange('security.reset', null, `device_keys=${deviceKeysRevoked} sessions=${sessionsCleared}`, actor)
-  return { deviceKeysRevoked, sessionsCleared }
+  logConfigChange('security.reset', null, `device_keys=${deviceKeysRevoked} sessions=${sessionsCleared} colleague_sessions=${colleagueSessionsCleared}`, actor)
+  return { deviceKeysRevoked, sessionsCleared, colleagueSessionsCleared }
 }

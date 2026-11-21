@@ -1431,7 +1431,7 @@ const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into
 // support_consents and support_password_state (SUPPORTKULCS1109, D5): the owner's consent to support access, with
 // how and why it ended, and the support password bucket. An agent that could write them could forge or erase the
 // trail of an enabling, or lift the lock that stands in front of enabling.
-export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']
 // An SQL write on one of them. The table name is read wherever the statement
 // names its target: after a schema prefix (`main.approvals`, an ATTACHed
 // `x.approvals`), in [brackets], with SQL comments or line breaks between the
@@ -2173,8 +2173,10 @@ function isPipeSink(words, name) {
 // its -c/-e code; a script that only takes the file as data (the kanban tool's --comment-file) does not.
 const FILE_INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'node', 'nodejs', 'deno', 'bun', 'ruby',
   'perl', 'php', 'osascript', 'tsx'])
-// The rest run or hand on whatever file they name.
-const FILE_RUNNERS = new Set(['sqlite3', 'sqlite', 'source', '.', 'chmod', 'env', 'xargs', 'exec', 'eval', 'npx'])
+// The rest run or hand on whatever file they name. chmod is NOT here (47eeb016): it changes metadata, it does not run
+// the file; `chmod <protected>` itself is denied through the DIR_CHANGER rule. `env` runs a target only through the
+// command it starts (envRunsTarget below), never through an assignment value alone.
+const FILE_RUNNERS = new Set(['sqlite3', 'sqlite', 'source', '.', 'env', 'xargs', 'exec', 'eval', 'npx'])
 const isInterpreter = (name) => FILE_INTERPRETERS.has(name) || /^python[0-9.]*$/.test(name)
 const isFileRunner = (name) => FILE_RUNNERS.has(name) || isInterpreter(name)
 const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -2211,18 +2213,423 @@ export function shellRcFiles(name, args) {
   return out
 }
 
-export function laterRuns(segs, k, targets) {
+// 47eeb016 round 12: an empty quoted string ('' "" $'' $"") adds nothing to a shell word, so `< ''<f>` and
+// `< <f-head>''<f-tail>` read <f>. The text is matched both as written and with those dropped (fail-closed union).
+// A regex cannot follow every quoting; real tokenising is card fdc1ce07.
+const dropEmptyQuotes = (s) => s.replace(/\$?(?:''|"")/g, '')
+const stdinFromTarget = (own, targets) =>
+  [own, dropEmptyQuotes(own)].some((text) => targets.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}`).test(text)))
+// 47eeb016: `env [-opts] [NAME=VALUE ...] CMD`: true only when the target is the command word.
+const ENV_LONG_OPTS = ['split-string', 'unset', 'chdir', 'argv0', 'file']
+// One env option word at words[i] (starts with '-', not bare '--'): how many words it consumes, and the -S/--split-string
+// value when it has one (GNU re-parses that text as a command line).
+function envOption(words, i) {
+  const v = words[i].value
+  const next = words[i + 1]?.value
+  if (v.startsWith('--')) {
+    const eq = v.indexOf('=')
+    const name = eq < 0 ? v.slice(2) : v.slice(2, eq)
+    const opt = name ? ENV_LONG_OPTS.find((l) => l.startsWith(name)) : undefined
+    if (!opt) return { n: 1 }
+    const val = eq < 0 ? next : v.slice(eq + 1)
+    return { n: eq < 0 ? 2 : 1, split: opt === 'split-string' ? (val ?? '') : undefined }
+  }
+  for (let c = 1; c < v.length; c++) {
+    if (!'uCafS'.includes(v[c])) continue
+    const rest = v.slice(c + 1)
+    const val = rest || next
+    return { n: rest ? 1 : 2, split: v[c] === 'S' ? (val ?? '') : undefined }
+  }
+  return { n: 1 }
+}
+const SHELL_INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'fish'])
+// A command wrapper started by env runs whatever command follows it (47eeb016 round 9): it gets the same
+// conservative reading as an interpreter -- a BASH_ENV/ENV assignment that held a target, or ANY later word
+// that contains a target, makes it a run.
+const ENV_COMMAND_WRAPPERS = new Set(['nice', 'timeout', 'gtimeout', 'nohup', 'stdbuf', 'setsid', 'time', 'sudo',
+  'command', 'builtin', 'chrt', 'ionice', 'taskset', 'doas', 'parallel'])
+// An interpreter started by env runs a target when a shell startup file (BASH_ENV/ENV) holds it, its stdin reads it,
+// or ANY later word contains it (the base gate's conservative reading: no per-interpreter option table).
+function envRunsTarget(words, targets, own, depth = 0, inheritedStartupFile = false, inheritedTargetAssign = false) {
+  if (depth > 8) return true
+  let ws = words
+  let i = 1
+  let splices = 0
+  let ended = false // after a bare `--` no word is an option
+  let startupFile = inheritedStartupFile // BASH_ENV / ENV assignment whose value holds a target (also from an outer env)
+  let targetAssign = inheritedTargetAssign // ANY assignment whose value holds a target (NODE_OPTIONS, PERL5OPT ...; also from an outer env)
+  while (i < ws.length) {
+    const v = ws[i].value
+    if (!ended && v.startsWith('-') && v !== '--') {
+      const o = envOption(ws, i)
+      if (o.split !== undefined) {
+        if (targets.some((t) => o.split.includes(t))) return true
+        if (++splices > 8) return true
+        const toks = shellWords(o.split)
+        if (!toks) return true
+        ws = [...toks, ...ws.slice(i + o.n)]
+        i = 0
+        ended = false
+        continue
+      }
+      i += o.n
+      continue
+    }
+    if (v === '--' && !ended) { ended = true; i++; continue }
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(v)
+    if (m) {
+      if ((m[1] === 'BASH_ENV' || m[1] === 'ENV') && targets.some((t) => v.includes(t))) startupFile = true
+      if (targets.some((t) => v.includes(t))) targetAssign = true
+      i++
+      continue
+    }
+    break
+  }
+  const rest = ws.slice(i)
+  if (!rest.length) return false
+  const cmd = rest[0].value
+  if (targets.some((t) => cmd === t || cmd.includes(t))) return true
+  const name = baseName(cmd)
+  if (name === 'env') return envRunsTarget(rest, targets, own, depth + 1, startupFile, targetAssign)
+  if (FILE_RUNNERS.has(name)) return true
+  if (ENV_COMMAND_WRAPPERS.has(name)) {
+    // What the wrapper starts (47eeb016 round 11): a later word -- or the first word of an env -S value -- that is
+    // an interpreter, env, a runner or another wrapper can load a startup file / an assignment or read stdin.
+    const starts = rest.slice(1).some((w) => {
+      const b = baseName(w.value.trim().split(/\s+/)[0])
+      return isInterpreter(b) || b === 'env' || FILE_RUNNERS.has(b) || ENV_COMMAND_WRAPPERS.has(b)
+    })
+    if (starts && (startupFile || targetAssign)) return true
+    if (starts && own !== undefined && stdinFromTarget(own, targets)) return true
+    return rest.slice(1).some((w) => targets.some((t) => w.value.includes(t)))
+  }
+  if (isInterpreter(name)) {
+    if (startupFile && SHELL_INTERPRETERS.has(name)) return true
+    if (targetAssign) return true
+    if (own !== undefined && stdinFromTarget(own, targets)) return true
+    return rest.slice(1).some((w) => targets.some((t) => w.value.includes(t)))
+  }
+  return false
+}
+// PR #2883 review B1 (47eeb016 round 13): chmod is not a run, but a later command can run the written file without
+// spelling its path as the command word -- `cd <dir> && ./<base>`, `find <dir> ... -exec {} \;`, a command wrapper
+// (`timeout 5 <f>`, `nohup ./<base>`). runsByName looks at the RUN POSITIONS only (the command word after the
+// leading assignments, a wrapper's later words, find's -exec family), so a file named as data (`cat <base>`, an
+// assignment value, a find with no action) stays allowed.
+// 47eeb016 R2 B1/B2: the run positions are now read by an executable-position analysis, not a broad scan of every
+// word -- the round-13 wrapper branch denied `timeout 5 cat ./<base>` (cat's argument is data), and the find branch
+// denied `find -name <base> -exec echo \;` (-name's argument is data). The missed-run holes of the same round --
+// `bash ./<base>` after `cd`, `env X=1 timeout 5 ./<base>` -- run at positions the broad scan never modelled.
+// 47eeb016 R4: the wrapper branch no longer applies env's conservative any-word reading -- the wrapped command gets
+// the same executable-position analysis as a bare one, so its plain operands are data (upstream #2891's wrapped
+// reader/upload pins).
+const targetBase = (t) => t.slice(t.lastIndexOf('/') + 1)
+const targetDir = (t) => (t.lastIndexOf('/') > 0 ? t.slice(0, t.lastIndexOf('/')) : '')
+const FIND_RUN_ACTIONS = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+// 47eeb016 R2 B1: per command wrapper, the SHORT and LONG options that consume a SEPARATE value word. An option not
+// listed takes no argument; an unknown option consumes nothing extra. Some wrappers also take ONE leading operand
+// between their options and the executable (timeout's duration, chrt's priority, taskset's mask) -- see below.
+const WRAPPER_VALUE_OPTIONS = new Map([
+  ['timeout', new Set(['-s', '-k', '--signal', '--kill-after'])],
+  ['gtimeout', new Set(['-s', '-k', '--signal', '--kill-after'])],
+  ['nice', new Set(['-n', '--adjustment'])],
+  ['nohup', new Set()],
+  ['builtin', new Set()],
+  ['command', new Set()], // -p / -v / -V take no argument
+  ['stdbuf', new Set(['-o', '-e', '-i'])], // the value may also be attached: -o0
+  ['setsid', new Set()], // -c / -f / -w take no argument
+  ['time', new Set(['-f', '-o', '--format', '--output'])], // -p / -a / -v take no argument
+  ['sudo', new Set(['-u', '-g', '-p', '-r', '-t', '-C', '-D', '-a', '-R', '--user', '--group', '--prompt', '--role', '--type', '--chdir'])],
+  ['chrt', new Set()], // the policy flags -b -f -i -o -r -R -m -a take no argument
+  ['taskset', new Set(['-c', '--cpulist'])], // -a takes no argument
+  ['ionice', new Set(['-c', '-n', '--class', '--classdata'])], // -t takes no argument
+  ['doas', new Set(['-C', '-a', '-u'])], // -n / -s / -S take no argument
+  ['parallel', new Set(['-j', '--jobs', '-a', '--arg-file', '--results', '-S', '--sshlogin', '--ssh', '--tmpdir', '--workdir', '--tagstring', '--timeout', '--retries'])],
+])
+// The one leading operand a wrapper skips, only when the word matches its required shape.
+const TIMEOUT_OPERAND_RX = /^[0-9][0-9.]*[smhdSMHD]?$|^[0-9]+m[0-9]+s$/ // 5, 0.5, 5m, 90m30s
+const NUMERIC_OPERAND_RX = /^[0-9]+$/ // chrt's priority
+const MASK_OPERAND_RX = /^0x[0-9a-fA-F]+$|^[0-9]+$/ // taskset's affinity mask
+// 47eeb016 R2 B1: walk a wrapper's option zone and its one leading operand; the index of the word it EXECUTES,
+// or -1 when the words ran out -- or in a -p pid mode (chrt/taskset/ionice then have no executable at all).
+function wrapperExecIndex(name, ws) {
+  const valueOpts = WRAPPER_VALUE_OPTIONS.get(name) ?? new Set()
+  let i = 1
+  let ended = false // after a bare `--` no word is an option
+  while (i < ws.length) {
+    const v = ws[i].value
+    if (v === '--' && !ended) { ended = true; i++; continue }
+    if (!ended && v.startsWith('-') && v.length > 1) {
+      if (v.includes('=')) { i++; continue } // --signal=KILL: the value is attached
+      if (!v.startsWith('--') && v.length > 2 && valueOpts.has('-' + v[1])) { i++; continue } // -sKILL, -n5, -o0
+      if (valueOpts.has(v)) { i += 2; continue } // -s KILL, --signal KILL: the next word is the value
+      i++; continue // a no-arg or unknown option consumes nothing extra
+    }
+    break // the first word that is not an option ends the option zone
+  }
+  // chrt/taskset/ionice -p act on a running pid: nothing is executed
+  if ((name === 'chrt' || name === 'taskset' || name === 'ionice') && ws.slice(1, i).some((w) => w.value === '-p')) return -1
+  if (i < ws.length) {
+    const v = ws[i].value
+    if ((name === 'timeout' || name === 'gtimeout') && TIMEOUT_OPERAND_RX.test(v)) i++
+    else if (name === 'chrt' && NUMERIC_OPERAND_RX.test(v)) i++
+    else if (name === 'taskset' && MASK_OPERAND_RX.test(v)) i++
+  }
+  return i < ws.length ? i : -1
+}
+// 47eeb016 R2 B1o: env's executable word. env's options (envOption) and then its NAME=value assignments are
+// VALUES, not runs -- only the word they precede is the command env starts.
+function envExecIndex(ws) {
+  let i = 1
+  let ended = false
+  while (i < ws.length) {
+    const v = ws[i].value
+    if (v === '--' && !ended) { ended = true; i++; continue }
+    if (!ended && v.startsWith('-') && v.length > 1) { i += envOption(ws, i).n; continue }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(v)) { i++; continue }
+    break
+  }
+  return i < ws.length ? i : -1
+}
+// 47eeb016 R3: an interpreter's VALUE options, in three kinds. Which options exist per interpreter follows the
+// knowledge the code already has (FILE_INTERPRETERS / SHELL_INTERPRETERS / the python regex of isInterpreter);
+// an interpreter with no table here (deno, perl, php, osascript, tsx) keeps the old reading: every unknown
+// option consumes nothing, so its value word lands on the script position and is checked there.
+// CODE: the value IS the program (`node -e/-p/--eval/--print`, `python -c`, `ruby -e`, `bun -e`, `fish -c`;
+// the attached form `-c./x` too): the value word is a run, but the option no longer ENDS the walk -- node keeps
+// reading options after a code value (`node -e 0 -r ./x.js` loads and runs x.js too), so the walk goes on and
+// only the script POSITION is consumed: the first word after a CODE value that is no option is that program's
+// argv, data, and never a run.
+// DATA: the value only configures the interpreter (python's -W): exactly ONE word is skipped while searching
+// for the script operand and is NOT a run. Attached (`-Werror`): the remainder of the option word is the value,
+// no extra word is consumed.
+// LOAD: the value is loaded AND run (`node -r/--require`, `ruby -r`, python's `-m`: the module runs, attached
+// too): one word (or the attached remainder) is skipped and checked as a run.
+// python -m MOD: db-write-gate's writtenFileSpellings adds MOD as a spelling of a written MOD.py, so the LOAD value
+// is checked against it (develop #2934 (d)).
+// sh: the table of the SHELL family (bash, sh, zsh, dash, ksh, ash), which the real bash reads its own way:
+// -c is a FLAG that never takes a value (a `c` anywhere in a cluster is the flag: `-ce`, `-co`), and a short
+// cluster is read CHARACTER BY CHARACTER -- every o/O in it takes the NEXT word as its option name, and an
+// attached remainder is never one (`bash -oerrexit` names the option of the word AFTER it, so only later words
+// can be the script). The family has no CODE kind: the first word that is no option (and no o/O value) is the
+// run position -- the command string with -c, the script operand without -- and the walk stops right there.
+const SH_VALUE_OPTIONS = { sh: true, short: { c: 'flag', o: 'data', O: 'data' } }
+const NODE_VALUE_OPTIONS = { short: { e: 'code', p: 'code', r: 'load' }, long: { eval: 'code', print: 'code', require: 'load' } }
+const PY_VALUE_OPTIONS = { short: { c: 'code', m: 'load', W: 'data' } }
+const INTERPRETER_VALUE_OPTIONS = new Map([
+  ['bash', SH_VALUE_OPTIONS], ['sh', SH_VALUE_OPTIONS], ['zsh', SH_VALUE_OPTIONS], ['dash', SH_VALUE_OPTIONS],
+  ['ksh', SH_VALUE_OPTIONS], ['ash', SH_VALUE_OPTIONS],
+  ['fish', { short: { c: 'code' } }],
+  ['node', NODE_VALUE_OPTIONS], ['nodejs', NODE_VALUE_OPTIONS],
+  ['ruby', { short: { e: 'code', r: 'load' } }],
+  ['bun', { short: { e: 'code' } }],
+])
+const interpreterValueOptions = (name) =>
+  INTERPRETER_VALUE_OPTIONS.get(name) ?? (/^python[0-9.]*$/.test(name) ? PY_VALUE_OPTIONS : undefined)
+// 47eeb016 R3b: the run positions among an interpreter's words (ws[0] is the interpreter command word): the
+// script operand -- the first word that is no option, found with the option walk above -- plus every CODE and
+// LOAD value met before it. The shell family (a table with sh) walks its clusters character by character and
+// stops at the first operand, be it the -c command string or the script; every other table ends the run
+// positions at a CODE value even though the walk itself goes on -- the CODE value took the script position, so
+// the next word that is no option is that program's argv, and so are all words after the script operand.
+// Attached CODE/LOAD values are returned as the path part of the remainder (`-c./a.sh` -> `./a.sh`); DATA
+// values are consumed and returned nowhere.
+function interpreterRunWords(name, ws) {
+  const opts = interpreterValueOptions(name)
+  const runs = []
+  let codeSeen = false // a CODE value consumed the script position: the next operand is argv, not a run
+  let i = 1
+  while (i < ws.length) {
+    const v = ws[i].value
+    if (!v.startsWith('-')) {
+      if (codeSeen) return runs // argv of the code program: data
+      runs.push(ws[i]); return runs // the script operand
+    }
+    if (v.startsWith('--')) {
+      const eq = v.indexOf('=')
+      const kind = opts?.long?.[eq < 0 ? v.slice(2) : v.slice(2, eq)]
+      if (!kind) { i++; continue } // an unknown long option takes no value: the next word can still be the script
+      if (eq >= 0) { // --require=./x: the value is attached
+        if (kind !== 'data') runs.push({ value: v.slice(eq + 1) })
+        i++
+      } else {
+        if (i + 1 >= ws.length) return runs // the value word is missing: no script operand either
+        if (kind !== 'data') runs.push(ws[i + 1])
+        i += 2
+      }
+      if (kind === 'code') codeSeen = true // the walk goes on (node reads options past a code value)
+      continue
+    }
+    if (opts?.sh) { // the shell family: -c is a flag, and every o/O of the cluster takes the NEXT word
+      let next = i + 1 // the words after the cluster, one consumed per o/O, in order; c and unknown chars none
+      for (let c = 1; c < v.length; c++) if (opts.short[v[c]] === 'data' && next < ws.length) next++
+      i = next
+      continue
+    }
+    let kind // the first option char of the cluster the interpreter knows: the chars before it are no-argument
+    let rest = ''
+    for (let c = 1; c < v.length; c++) {
+      if (!opts?.short?.[v[c]]) continue
+      kind = opts.short[v[c]]
+      rest = v.slice(c + 1)
+      break
+    }
+    if (!kind) { i++; continue } // an unknown short option takes no value
+    if (kind === 'data') { i += rest ? 1 : 2; continue } // -Werror: the remainder is the value; -W error: one word
+    if (rest) { runs.push({ value: rest }); i++ } // -c./a.sh, -r./dep.js: the attached value
+    else {
+      if (i + 1 >= ws.length) return runs
+      runs.push(ws[i + 1])
+      i += 2
+    }
+    if (kind === 'code') codeSeen = true // the walk goes on: a later option is still read, not argv
+  }
+  return runs
+}
+// 47eeb016 R2 B2: find's -exec family, by POSITION. The run positions are the found file itself (the command word
+// `{}`), an interpreter command word that receives the found file as an operand (`-exec sh {} \;`), or a command
+// word that IS the written file; `-name <base>` and an action's data operands stayed denied in round 13 because
+// every word was matched. namesTarget is the SAME word-match the round-13 branch used.
+// 47eeb016 R3: an interpreter's words inside the action are read with the same option walk as everywhere else
+// (its script operand is the run position, every other clause word is data: `-exec sh /dev/null {} +` only
+// passes the found file as $1), and a command word that is env or a wrapper gets the full recursive analysis
+// with `{}` standing for the found file (`-exec timeout 5 {} \;`, `-exec env X=1 timeout 5 {} +`).
+function findRunsTarget(ws, targets, relRun) {
+  const namesTarget = (w) => targets.some((t) => w.value.includes(t)
+    || (targetBase(t) !== '' && w.value === targetBase(t))
+    || (targetDir(t) !== '' && w.value === targetDir(t)))
+  for (let j = 1; j < ws.length; j++) {
+    if (!FIND_RUN_ACTIONS.has(ws[j].value)) continue
+    const cw = ws[j + 1]
+    if (cw === undefined) { if (ws.some(namesTarget)) return true; continue } // action word last: malformed, fail closed
+    if (cw.value === '{}') { if (ws.some(namesTarget)) return true; continue } // find executes the found file itself
+    let end = ws.length // this -exec clause ends at the next `;` / `+` word after j
+    for (let k = j + 2; k < ws.length; k++) if (ws[k].value === ';' || ws[k].value === '+') { end = k; break }
+    // the wrapper's / env's operand that replaces `{}` is the found file: it IS a run position
+    const relRunFound = (v) => (v === '{}' ? ws.some(namesTarget) : relRun(v))
+    const head = baseName(cw.value)
+    if (head === 'env' || ENV_COMMAND_WRAPPERS.has(head)) {
+      if (execWordsRun(ws.slice(j + 1, end), targets, undefined, relRunFound, 1)) return true
+    }
+    if (isInterpreter(head) && interpreterRunWords(head, ws.slice(j + 1, end)).some((w) => relRunFound(w.value))) return true
+    if (relRun(cw.value)) return true // the -exec command word itself is the written file
+  }
+  return false
+}
+// 47eeb016 R2 B1: the executable-position analysis, shared by runsByName and its env / wrapper recursion. ws[0]
+// is a command word; the run positions are the command word itself, the command env or a wrapper STARTS, an
+// interpreter's / a file runner's operand. Everything else -- a plain command's arguments, an option's or an
+// assignment's value, a find action's data operand -- is DATA. Without a parseable executable the round-13 broad
+// relRun scan stays (fail closed), as it does past the depth bound.
+const RUN_ANALYSIS_MAX_DEPTH = 6
+function execWordsRun(ws, targets, own, relRun, depth) {
+  const broad = () => ws.slice(1).some((w) => relRun(w.value))
+  if (depth > RUN_ANALYSIS_MAX_DEPTH) return broad()
+  const name = commandName(ws) || baseName(ws[0].value)
+  if (name === 'env') {
+    if (envRunsTarget(ws, targets, own)) return true
+    const ei = envExecIndex(ws)
+    if (ei < 0) return broad()
+    if (relRun(ws[ei].value)) return true
+    return execWordsRun(ws.slice(ei), targets, own, relRun, depth + 1)
+  }
+  if (ENV_COMMAND_WRAPPERS.has(name)) {
+    const ei = wrapperExecIndex(name, ws)
+    if (ei < 0) return broad()
+    if (relRun(ws[ei].value)) return true
+    if (name === 'parallel') {
+      // ::: / :::: end the command template: from the first one on, every word is data, never a run position
+      const sep = ws.slice(ei).findIndex((w) => w.value === ':::' || w.value === '::::')
+      const template = ws.slice(ei, sep < 0 ? ws.length : ei + sep)
+      if (!template.length) return broad()
+      if (relRun(template[0].value)) return true
+      return execWordsRun(template, targets, own, relRun, depth + 1)
+    }
+    return execWordsRun(ws.slice(ei), targets, own, relRun, depth + 1)
+  }
+  // An interpreter's SCRIPT operand (the first word that is no option, found with the R3 option walk: an option
+  // with a value consumes it, a CODE option consumes the script position itself) is a run position -- `cd <dir>
+  // && bash ./<base>` (round 13's missed run), `bash -O extglob ./<base>` (R3: the -O value was taken for the
+  // script) deny --, but a DATA option's value or a later argument is DATA: the kanban tool's --comment-file, a
+  // prefixed script's argument (R2 gate-suite regression: db-write-gate.test.ts 3 red on 58ebb9ad, green on
+  // 9311a515; the named branch's script rule, mirrored here). A file runner's ANY operand stays a run position:
+  // source/xargs/eval read a file and do what it says.
+  if (isInterpreter(name)) return interpreterRunWords(name, ws).some((w) => relRun(w.value))
+  if (FILE_RUNNERS.has(name)) return ws.slice(1).some((w) => relRun(w.value))
+  if (name === 'find' && ws.some((w) => FIND_RUN_ACTIONS.has(w.value))) return findRunsTarget(ws, targets, relRun)
+  return false // a plain command: its arguments are data
+}
+function runsByName(words, targets, own, exact = false) {
+  let i = 0
+  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i].value)) i++
+  if (i >= words.length) return false
+  const ws = words.slice(i)
+  // exact: the caller passed every spelling of the file already resolved per directory (db-write-gate's
+  // writtenFileSpellings), so only those words are the file; otherwise a path with the file's last part is
+  // taken for it (fail closed: the directory it runs in is not followed here)
+  const relRun = exact
+    ? (v) => targets.includes(v)
+    : (v) => v.includes('/') && targets.some((t) => targetBase(t) !== '' && baseName(v) === targetBase(t))
+  if (relRun(ws[0].value)) return true
+  return execWordsRun(ws, targets, own, relRun, 0)
+}
+
+// 47eeb016 R2 (G6/G7): the two shapes shellWords refuses inside a find -exec clause are find's own syntax, not
+// shell structure -- the bare `{}` operand, and the `\` left at the end when the segment splitter consumed the `;`
+// of a `\;`. Re-split those for the near-branch fallback in laterRuns: `{}` becomes a plain token mapped back
+// after the split, the trailing `\` goes only when the separator really was the `;` it escaped. The re-split is
+// REFUSED (the caller keeps its deny) when anything else unsplittable or unresolved remains, and when a word from
+// an -exec action word on carries a `$`, a glob or a redirection character: an unresolved variable or an expanded
+// word could be the very command find executes, so only provably inert clauses reach the positional analysis.
+function findClauseWords(own, sep) {
+  let t = own
+  if (sep === ';' && /\\\s*$/.test(t)) t = t.replace(/\\\s*$/, '')
+  t = t.replace(/(^|\s)\{\}(?=\s|$)/g, '$147eeb016FOUND')
+  if (t.includes('\\') || /[{}]/.test(t)) return null
+  const ws = shellWords(t)
+  if (!ws || !ws.length) return null
+  let inClause = false
+  for (const w of ws) {
+    if (FIND_RUN_ACTIONS.has(w.value)) inClause = true
+    if (inClause && /[$*?<>()'"`]/.test(w.value)) return null
+  }
+  return ws.map((w) => (w.value.includes('47eeb016FOUND')
+    ? { ...w, value: w.value.replaceAll('47eeb016FOUND', '{}') }
+    : w))
+}
+
+export function laterRuns(segs, k, targets, opts = {}) {
   if (!targets.length) return false
+  const exact = opts.exactNames === true
   for (let j = k + 1; j < segs.length; j++) {
     const s = segs[j]
-    if (!targets.some((t) => [s.own, ...s.bodies].join('\n').includes(t))) continue
+    const text = [s.own, ...s.bodies].join('\n')
+    if (!targets.some((t) => text.includes(t) || dropEmptyQuotes(text).includes(t))) {
+      // Not named as spelled: it can still run through a relative path or find's -exec family (runsByName).
+      const near = targets.some((t) => (targetBase(t) !== '' && text.includes(targetBase(t)))
+        || (targetDir(t) !== '' && text.includes(targetDir(t))))
+      const w = near ? shellWords(s.own) : null
+      // A segment shellWords cannot split (find's `-exec {} \;` leaves a bare `{}`, a brace group) that names the
+      // file's base or directory is denied, as the named branch below denies an unsplittable one (fail closed) --
+      // EXCEPT the find-clause shapes findClauseWords can re-split cleanly (47eeb016 R2: `find <dir> -name <base>
+      // -exec echo \;` and `-exec cat {} +` only read the file); those get the same positional analysis as a
+      // splittable segment, and every shape the re-split refuses keeps the deny.
+      if (near && !w) {
+        const fw = findClauseWords(s.own, s.sep)
+        if (!fw || runsByName(fw, targets, s.own, exact)) return true
+        continue
+      }
+      if (w && w.length && runsByName(w, targets, s.own, exact)) return true
+      continue
+    }
     const words = shellWords(s.own)
     if (!words || !words.length) return true
     const first = words[0].value
     if (targets.includes(first)) return true
     const name = commandName(words) || first.slice(first.lastIndexOf('/') + 1)
+    if (runsByName(words, targets, s.own, exact)) return true
     if (isInterpreter(name)) {
-      const stdin = targets.some((t) => new RegExp(`(?:^|[^<])<\\s*['"]?${escapeRx(t)}`).test(s.own))
+      const stdin = stdinFromTarget(s.own, targets)
       const code = words.some((w, i) => /^-[A-Za-z]*[ceE]$/.test(w.value) && targets.some((t) => (words[i + 1]?.value ?? '').includes(t)))
       const script = words.slice(1).find((w) => !w.value.startsWith('-'))
       // GATEPATHNORM1118 F5: a shell option that takes an argument (-o NAME, +o NAME, -O NAME, +O NAME) is not the script
@@ -2230,10 +2637,14 @@ export function laterRuns(segs, k, targets) {
       const optScript = shellScriptWord(name, words.slice(1).map((w) => w.value))
       // F6: an rc file the shell is told to read runs too (an interactive shell runs it; judged fail-closed)
       const rc = shellRcFiles(name, words.slice(1).map((w) => w.value)).some((v) => targets.includes(v))
-      if (stdin || code || rc || (script && targets.includes(script.value)) || (optScript !== null && targets.includes(optScript))) return true
+      // R3 (rebased onto GATEPATHNORM1118 F5/F6: read in addition, never instead): the same option walk as the executable-position analysis -- `bash -O extglob <f>` names <f> as its
+      // script operand, an option's DATA value (`bash -o <f>`) does not name a run at all.
+      const runWords = interpreterRunWords(name, words)
+      if (stdin || code || rc || (script && targets.includes(script.value)) || (optScript !== null && targets.includes(optScript)) || runWords.some((w) => targets.includes(w.value))) return true
       continue
     }
-    if (FILE_RUNNERS.has(name)) return true
+    if (name === 'env') { if (envRunsTarget(words, targets, s.own)) return true }
+    else if (FILE_RUNNERS.has(name)) return true
     if ((s.sep === '|' || s.sep === '|&') && segs[j + 1]) {
       const nw = shellWords(segs[j + 1].own)
       if (!nw || isFileRunner(commandName(nw))) return true
@@ -4030,7 +4441,7 @@ function isInvokedDirectly() {
 // Stated exception: stdin that is not JSON still ALLOWS (unchanged). It comes
 // from the harness, not from the agent, and a gate that blocks every tool on a
 // harness glitch takes the whole fleet down (hook-exit-code-invariant pins it).
-const DECISION_DEADLINE_MS = Math.min(5000, Math.max(100, Number(process.env.SELF_PACE_GATE_DEADLINE_MS) || 5000))
+const DECISION_DEADLINE_MS = Math.min(30000, Math.max(100, Number(process.env.SELF_PACE_GATE_DEADLINE_MS) || 5000))
 
 const FAIL_CLOSED_MSG = (why) => 'Self-pace kapu: belso hiba vagy idotullepes a vizsgalat kozben ' +
   `(${String(why).slice(0, 200)}). Fail-closed: a hivas nem vizsgalhato, ezert TILTVA. ` + GATE_MSG

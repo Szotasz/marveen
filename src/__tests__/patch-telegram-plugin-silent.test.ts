@@ -1,14 +1,17 @@
 // `silent` on the Telegram reply tool (disable_notification), a separate patch in
 // scripts/patch-telegram-plugin.py. Run for real on a copy of the 0.0.7 plugin excerpt.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { tmpdir } from 'node:os'
+import { scratchPatcher, REPO_PATCHER } from './helpers/scratch-patcher.js'
 import ts from 'typescript'
 
-const ROOT = join(__dirname, '..', '..')
-const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
+// A copy in an empty scratch install (helpers/scratch-patcher.ts): the checkout's own .env never decides a test.
+const PATCHER = scratchPatcher()
+const SCRIPT = PATCHER.script
+afterAll(() => PATCHER.remove())
 const FIXTURE = join(__dirname, 'fixtures', 'telegram-plugin-0.0.7', 'server.ts.txt')
 const SIL = 'MARVEEN-PATCH(tgsilent)'
 const KBD = 'MARVEEN-PATCH(c67f5f34-kbd)'
@@ -85,6 +88,15 @@ function replyHandler(patched: string): { call: (args: Record<string, unknown>) 
 const hasKey = (s: Sent) => s.opts !== undefined && 'disable_notification' in s.opts
 
 describe('silent: reply without a notification sound', () => {
+  // The same guard as in patch-telegram-plugin.test.ts (Geri on #2964): without it, pointing this file back at the
+  // checkout's script would stay green in CI, where there is no .env.
+  it('runs from a copy in an empty scratch install, so the checkout\'s own .env never decides a test', () => {
+    expect(SCRIPT.startsWith(join(REPO_PATCHER, '..', '..'))).toBe(false)
+    expect(existsSync(join(PATCHER.install, '.env'))).toBe(false)
+    expect(existsSync(join(PATCHER.install, 'store'))).toBe(false)
+    expect(readFileSync(SCRIPT, 'utf-8')).toBe(readFileSync(REPO_PATCHER, 'utf-8'))
+  })
+
   it('six marked lines, the field inside the reply schema, parses, state patched then already', () => {
     const state = join(cache, 'state.json')
     expect(run(['--state', state]).status).toBe(0)
@@ -221,7 +233,7 @@ describe('silent: reply without a notification sound', () => {
     expect(r.stderr).toMatch(/LOUD: reply file branch not found exactly once.*the reply tool has no silent option/)
     expect(readFileSync(server, 'utf-8')).not.toContain(SIL)
     expect(readState(state).files[0].patches).toEqual({
-      d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched', pairtext: 'patched',
+      d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'patched',
     })
   })
 })

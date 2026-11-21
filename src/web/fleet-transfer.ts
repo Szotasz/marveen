@@ -17,7 +17,7 @@ import {
 } from 'node:crypto'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER, RESERVED_AGENT_IDS } from '../config.js'
 import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { atomicWriteFileSync } from './atomic-write.js'
+import { atomicWriteFileSync, MCP_JSON_MODE } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, agentDir, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
 import { isPackageAgentDir } from './agent-package/marker.js'
@@ -1073,7 +1073,7 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
   if (ma.soulMd) trackedWrite(join(PROJECT_ROOT, 'SOUL.md'), ma.soulMd, tracker)
   if (ma.config && Object.keys(ma.config).length)
     trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(ma.config, null, 2), tracker)
-  trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
+  trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker, { mode: MCP_JSON_MODE })
   trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(ma.settings, null, 2), tracker)
 
   // Main agent channel access: written into the #915-resolved state dir for
@@ -1101,7 +1101,7 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
   if (agent.soulMd) trackedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)
 
   // .mcp.json: de-placeholder vault refs (path denormalization happens at fleet level)
-  trackedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker)
+  trackedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker, { mode: MCP_JSON_MODE })
 
   trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(agent.settings, null, 2), tracker)
 

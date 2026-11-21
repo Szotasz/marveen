@@ -66,7 +66,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost, clearFeedbackModalAndRecheck } from './agent-process.js'
 import { sendAlert } from './channel-monitor.js'
 import { whileNotFrozen } from './fleet-freeze.js'
-import { voiceChannelSenderId } from '../delivery-order.js'
+import { voiceChannelSenderId, deliveryRank } from '../delivery-order.js'
 
 export const INBOX_NUDGE_INITIAL_DELAY_MS = 55_000 // free slot (taken: 5/10/20/25/30/35/40/45/50/90s)
 export const INBOX_NUDGE_INTERVAL_MS = 20_000
@@ -142,14 +142,25 @@ export function oldestPendingAgeMs(rows: ReadonlyArray<{ created_at: number }>, 
   return rows.length > 0 ? now - Math.min(...rows.map((m) => m.created_at)) * 1000 : 0
 }
 
+/** INBOX_NUDGE_BATCH_MINUTES: how long normal rows may wait to be drained together. 0 when the setting is off, the
+ *  inbox is empty, or any row ranks above normal (urgent, STOP, system, owner, peer high): those nudge at once. The
+ *  list is in delivery order, so its head carries the highest rank. */
+export function nudgeBatchMs(
+  pending: ReadonlyArray<Parameters<typeof deliveryRank>[0]>,
+  minutes: number = Number(getEffectiveSettingValue('INBOX_NUDGE_BATCH_MINUTES')),
+): number {
+  if (pending.length === 0 || !(minutes > 0) || pending.some((m) => deliveryRank(m) > 0)) return 0
+  return minutes * 60_000
+}
+
 /** Pure cheap-checks stage: everything decidable from the DB row + clock,
  *  BEFORE any tmux IO. Returns the next state; the shell only touches tmux
  *  when proceed is true. */
 export function decideNudgePreflight(
-  input: { now: number; oldestId: number | null; oldestAgeMs: number },
+  input: { now: number; oldestId: number | null; oldestAgeMs: number; batchMs?: number },
   state: NudgeState,
 ): NudgePreflight {
-  const { now, oldestId, oldestAgeMs } = input
+  const { now, oldestId, oldestAgeMs, batchMs = 0 } = input
   if (oldestId === null) {
     // Inbox empty: end the spell. lastNudgeAt and the budget window survive
     // (global debounce floor); spell-scoped fields reset.
@@ -162,7 +173,7 @@ export function decideNudgePreflight(
       state: { ...state, lastNudgeOldestId: null, staleNudges: 0, staleAlerted: false, lastBusyLogAt: 0, absenceLogged: false },
     }
   }
-  if (oldestAgeMs < MIN_PENDING_AGE_MS) return { proceed: false, state }
+  if (oldestAgeMs < Math.max(MIN_PENDING_AGE_MS, batchMs)) return { proceed: false, state }
   if (now - state.lastNudgeAt < NUDGE_DEBOUNCE_MS) return { proceed: false, state }
 
   // Stale spell: the previous nudge targeted this same oldest message and it
@@ -323,7 +334,7 @@ async function tick(): Promise<void> {
     // claims first but not necessarily the oldest; the age is still the oldest waiting row's, so a
     // fresh high row cannot make the inbox look young.
     const pre = decideNudgePreflight(
-      { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldestPendingAgeMs(pending, now) },
+      { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldestPendingAgeMs(pending, now), batchMs: nudgeBatchMs(pending) },
       state,
     )
     state = pre.state

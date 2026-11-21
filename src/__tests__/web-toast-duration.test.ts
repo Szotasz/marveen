@@ -1,6 +1,6 @@
 /**
  * showToast(msg, duration = 3000) takes MILLISECONDS as its 2nd argument. A
- * boolean there (meant as "error style", which showToast does not have) is
+ * boolean there (meant as "error style"; the kind is a word, 'error', or { kind, duration }) is
  * coerced by setTimeout: `true` -> 1 ms, `false` -> 0 ms, and the message
  * vanishes before anyone reads it. Found in the #1760 review (Samu) on the new
  * scope warning; the reconnect and smoke-test error toasts had carried the same
@@ -25,10 +25,10 @@ describe('showToast is never given a boolean as its duration', () => {
   it('the reconnect and smoke-test errors stay long enough to read', () => {
     const app = readFileSync(join(WEB, 'app.js'), 'utf8')
     for (const call of [
-      "showToast(data.message || t('channel.toast.reconnect_failed'), 8000)",
-      "showToast(t('channel.toast.reconnect_error'), 8000)",
-      "showToast(data.error || t('channel.smoke_test.failed'), 8000)",
-      "showToast(t('channel.smoke_test.error'), 8000)",
+      "showToast(data.message || t('channel.toast.reconnect_failed'), { kind: 'error', duration: 8000 })",
+      "showToast(t('channel.toast.reconnect_error'), { kind: 'error', duration: 8000 })",
+      "showToast(data.error || t('channel.smoke_test.failed'), { kind: 'error', duration: 8000 })",
+      "showToast(t('channel.smoke_test.error'), { kind: 'error', duration: 8000 })",
     ]) expect(app).toContain(call)
   })
 })

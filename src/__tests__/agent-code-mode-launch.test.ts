@@ -142,7 +142,8 @@ describe('the launch command (startAgentProcess)', () => {
 
   it('the launch line is today\'s plus exactly ${codeModeEnv}, after the unset and before cd/claude', () => {
     const line = lineAt('const buildLaunchCmd = ').trim()
-    expect(line.replace('${codeModeEnv}', '')).toBe(CMD_BEFORE)
+    // ${disallowedToolsFlag()} after --model has its own pin (agent-disallowed-tools.test.ts).
+    expect(line.replace('${codeModeEnv}', '').replace('${disallowedToolsFlag()}', '')).toBe(CMD_BEFORE)
     expect(line.split('${codeModeEnv}')).toHaveLength(2)
     expect(line.indexOf('${unsetTokens}')).toBeLessThan(line.indexOf('${codeModeEnv}'))
     expect(line.indexOf('${codeModeEnv}')).toBeLessThan(line.indexOf('cd "${launchCwd}"'))

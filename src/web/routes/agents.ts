@@ -20,7 +20,7 @@ import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
 import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
+import { atomicWriteFileSync, writeMcpJsonFile } from '../atomic-write.js'
 import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from '../code-mode-caveats.js'
 
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
@@ -2951,7 +2951,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (name === MAIN_AGENT_ID) ensureFederationClaudeMdSection()
     }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
-    if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
+    if (data.mcpJson !== undefined) writeMcpJsonFile(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) {
       // PICKERCLIKAPU923: same gate as the picker and the POST, fresh probe.
       const cliGate = await refuseIfCliCannotLaunch(String(data.model))

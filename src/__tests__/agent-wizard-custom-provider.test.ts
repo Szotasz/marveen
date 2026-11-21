@@ -51,7 +51,7 @@ describe('the wizard sends a custom provider apart from the model id', () => {
   })
 
   it('with a custom provider and no model id, the field gets the focus and a toast, before any request', () => {
-    expect(NEXT).toContain("if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }")
+    expect(NEXT).toContain("if (customProvider && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required'), 'warn'); return }")
     expect(NEXT).not.toMatch(/\bfetch\(/)
     for (const lang of [HU, EN]) expect(lang).toContain("'agents.model.custom_model_required':")
   })
