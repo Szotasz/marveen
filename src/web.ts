@@ -192,21 +192,6 @@ export function startWebServer(port = 3420): http.Server {
     }
     if (method === 'OPTIONS') { res.writeHead(204); res.end(); return }
 
-    // COLLANLOCK1120 (colleague-lan-lock.ts): while the lock is active, a non-loopback peer reaches only the colleague
-    // surface. Decided on the socket's own address, before authentication, so the owner login cannot be tried from the
-    // LAN and its global failure cap cannot be used up from there.
-    const lanDenied = lanLockDecision(req, path, method, () => lanLockActiveNow(WEB_HOST))
-    if (lanDenied) {
-      if (lanDenied.status === 302) {
-        res.writeHead(302, { Location: lanDenied.location, 'Cache-Control': 'no-store' })
-        res.end()
-        return
-      }
-      res.writeHead(403, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Forbidden from this network', rule: 'colleague-lan-lock', reason: lanDenied.reason }))
-      return
-    }
-
     // Block state-changing requests from browsers running on foreign origins.
     // Same-origin fetches (Origin absent, allowlisted, or matching the host the
     // server was actually reached on -- e.g. a Tailscale Serve / reverse-proxy
@@ -235,6 +220,24 @@ export function startWebServer(port = 3420): http.Server {
       publicListener: isPublicRequest(req),
     })
     if (auth === null) return
+    // COLLANLOCK1120 (colleague-lan-lock.ts): while the lock is active, a non-loopback peer on the plain listener passes
+    // only to the colleague surface or with a machine credential; the owner's password login and cookie session are
+    // refused here, before any handler (the login's password check included), so the owner login cannot be tried from
+    // the LAN and its global failure cap cannot be used up from there. Decided on the socket's own address.
+    const lanDenied = lanLockDecision(
+      { req, path, method, authKind: auth.kind, publicListener: isPublicRequest(req) },
+      () => lanLockActiveNow(WEB_HOST),
+    )
+    if (lanDenied) {
+      if (lanDenied.status === 302) {
+        res.writeHead(302, { Location: lanDenied.location, 'Cache-Control': 'no-store' })
+        res.end()
+        return
+      }
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Forbidden from this network', rule: 'colleague-lan-lock', reason: lanDenied.reason }))
+      return
+    }
     // Colleague board login (colleague-gate.ts): a colleague session reaches
     // /api/board, /api/colleague and its own page only. Decided here, for EVERY
     // path (public ones and pages too), before any handler runs.
@@ -478,7 +481,7 @@ export function startWebServer(port = 3420): http.Server {
     try {
       if (lanLockActiveNow(WEB_HOST)) {
         logger.warn({ webHost: WEB_HOST, cutOffFromNonLoopback: LAN_LOCK_CUT_OFF },
-          'colleague LAN lock active: a non-loopback peer reaches only the colleague board; the owner gets in from this machine, through Tailscale Serve or an SSH tunnel')
+          'colleague LAN lock active: from a non-loopback peer on the plain listener the owner login and owner session are refused; the colleague board and machine credentials pass; the owner gets in from this machine, through Tailscale Serve, an SSH tunnel or the HTTPS public listener')
       }
     } catch { /* a startup log line never stops the server */ }
     // Do NOT log the bearer token: launchd/journal/pipe captures of the
