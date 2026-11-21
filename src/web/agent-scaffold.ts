@@ -1885,6 +1885,10 @@ export const FLEET_BASELINE_DENY = [
   'Read(${HOME}/.gnupg/**)',
   'Read(${HOME}/.env)',
   'Read(**/.env)',
+  // READDENYROOT1119 (Geri, measured on Claude Code 2.1.326): 'Read(**/.env)' only matches BELOW the session's cwd.
+  // A sub-agent runs in agents/<name>, so the install root's .env (one level up) was readable with the Read tool.
+  // The '//' form is anchored at the filesystem root and matches a .env at any depth, the install root included.
+  'Read(//**/.env)',
   'Bash(sudo:*)',
   'Bash(*/sudo *)',
   'Bash(rm -rf ${HOME}:*)',
