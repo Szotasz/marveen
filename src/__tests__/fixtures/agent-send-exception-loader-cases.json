@@ -1,0 +1,244 @@
+{
+  "cases": [
+    {
+      "name": "no loads",
+      "source": "console.log(\"hello\");",
+      "allowed": true
+    },
+    {
+      "name": "require fs",
+      "source": "const fs = require('node:fs');",
+      "allowed": true
+    },
+    {
+      "name": "require crypto",
+      "source": "const crypto = require(\"node:crypto\");",
+      "allowed": true
+    },
+    {
+      "name": "static named import",
+      "source": "import { readFileSync } from 'node:fs';",
+      "allowed": true
+    },
+    {
+      "name": "multiline import",
+      "source": "import { a,\n b } from 'node:fs';",
+      "allowed": true
+    },
+    {
+      "name": "namespace import",
+      "source": "import * as p from \"node:path\";",
+      "allowed": true
+    },
+    {
+      "name": "side effect import",
+      "source": "import 'node:process';",
+      "allowed": true
+    },
+    {
+      "name": "dynamic import",
+      "source": "await import('node:fs');",
+      "allowed": true
+    },
+    {
+      "name": "whole word comment",
+      "source": "// required imports are fine\n",
+      "allowed": true
+    },
+    {
+      "name": "mixed builtins",
+      "source": "import { readFileSync } from 'node:fs';\nimport * as p from \"node:path\";\nimport 'node:process';\nconst c = require('node:crypto');\nawait import('node:fs');",
+      "allowed": true
+    },
+    {
+      "name": "builtin re-export",
+      "source": "export { readFileSync } from 'node:fs';",
+      "allowed": true
+    },
+    {
+      "name": "BOM preserved",
+      "source": "\ufeffconst x = 1;",
+      "allowed": true
+    },
+    {
+      "name": "identifier boundaries",
+      "source": "// $require require_ imported $eval constructor2\n",
+      "allowed": true
+    },
+    {
+      "name": "relative require",
+      "source": "require('./lib.js');",
+      "allowed": false
+    },
+    {
+      "name": "package require",
+      "source": "require('nodemailer');",
+      "allowed": false
+    },
+    {
+      "name": "relative static import",
+      "source": "import x from './x.mjs';",
+      "allowed": false
+    },
+    {
+      "name": "package side effect",
+      "source": "import 'some-package';",
+      "allowed": false
+    },
+    {
+      "name": "export star",
+      "source": "export * from './x.js';",
+      "allowed": false
+    },
+    {
+      "name": "export named",
+      "source": "export { a } from \"./a.js\";",
+      "allowed": false
+    },
+    {
+      "name": "template require",
+      "source": "require(`node:fs`);",
+      "allowed": false
+    },
+    {
+      "name": "variable require",
+      "source": "require(name);",
+      "allowed": false
+    },
+    {
+      "name": "variable import",
+      "source": "import(name);",
+      "allowed": false
+    },
+    {
+      "name": "import meta",
+      "source": "import.meta.url;",
+      "allowed": false
+    },
+    {
+      "name": "createRequire",
+      "source": "createRequire(import.meta.url);",
+      "allowed": false
+    },
+    {
+      "name": "module builtin",
+      "source": "import m from 'node:module';",
+      "allowed": false
+    },
+    {
+      "name": "vm builtin",
+      "source": "import 'node:vm';",
+      "allowed": false
+    },
+    {
+      "name": "child builtin",
+      "source": "require('node:child_process');",
+      "allowed": false
+    },
+    {
+      "name": "bare child process",
+      "source": "// child_process\n",
+      "allowed": false
+    },
+    {
+      "name": "worker builtin",
+      "source": "require('node:worker_threads');",
+      "allowed": false
+    },
+    {
+      "name": "eval",
+      "source": "eval('1');",
+      "allowed": false
+    },
+    {
+      "name": "Function",
+      "source": "new Function('return 1');",
+      "allowed": false
+    },
+    {
+      "name": "arguments",
+      "source": "arguments[1];",
+      "allowed": false
+    },
+    {
+      "name": "mainModule",
+      "source": "process.mainModule;",
+      "allowed": false
+    },
+    {
+      "name": "dlopen",
+      "source": "process.dlopen;",
+      "allowed": false
+    },
+    {
+      "name": "binding",
+      "source": "process.binding('fs');",
+      "allowed": false
+    },
+    {
+      "name": "WebAssembly",
+      "source": "WebAssembly.instantiate;",
+      "allowed": false
+    },
+    {
+      "name": "constructor",
+      "source": "({}).constructor;",
+      "allowed": false
+    },
+    {
+      "name": "escaped require",
+      "source": "requ\\u0069re('node:fs');",
+      "allowed": false
+    },
+    {
+      "name": "require option",
+      "source": "const x = \"--require\";",
+      "allowed": false
+    },
+    {
+      "name": "comment import",
+      "source": "// import later\n",
+      "allowed": false
+    },
+    {
+      "name": "one bad load",
+      "source": "require('node:fs') + require('./x');",
+      "allowed": false
+    },
+    {
+      "name": "inspector builtin",
+      "source": "import 'node:inspector';",
+      "allowed": false
+    },
+    {
+      "name": "wasi builtin",
+      "source": "import 'node:wasi';",
+      "allowed": false
+    },
+    {
+      "name": "repl builtin",
+      "source": "import 'node:repl';",
+      "allowed": false
+    },
+    {
+      "name": "loader option",
+      "source": "// --experimental-loader\n",
+      "allowed": false
+    },
+    {
+      "name": "non ASCII whitespace",
+      "source": "require\u00a0('node:fs');",
+      "allowed": false
+    },
+    {
+      "name": "from template",
+      "source": "export * from `node:fs`;",
+      "allowed": false
+    },
+    {
+      "name": "dollar boundary",
+      "source": "// $eval eval$\neval(\"1\");",
+      "allowed": false
+    }
+  ]
+}
