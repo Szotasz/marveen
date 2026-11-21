@@ -304,10 +304,9 @@ For colleagues on the company LAN, set `WEB_HOST` in `.env` to the machine's
 LAN address (for example `WEB_HOST=192.168.1.10`), or `0.0.0.0` for every
 interface, and restart the dashboard. Know what that means:
 
-- **The whole dashboard becomes reachable from the LAN**, not only the
-  colleague page: the owner login page, and the API for anyone holding the
-  access token. The colleague fence limits what a colleague LOGIN can do; it
-  does not hide the rest of the server from the network. Prefer the specific
+- **The colleague LAN lock hides the rest of the server from the network**
+  (see "LAN lock" below): while it is active, a connection from another
+  machine reaches only the colleague page and its APIs. Prefer the specific
   LAN address over `0.0.0.0`, restrict the port to the office subnet in the
   host firewall, and keep using `http://localhost:<port>` yourself on the
   machine.
@@ -316,6 +315,43 @@ interface, and restart the dashboard. Know what that means:
   colleague's session or password. Do not reuse a password that matters
   elsewhere, and put the dashboard behind HTTPS (a reverse proxy) if the
   segment is not trusted. Never sign in as the owner over plain LAN HTTP.
+
+### LAN lock
+
+`COLLEAGUE_LAN_LOCK` (Settings, default `auto`) decides whether a connection
+from another machine reaches the whole dashboard or only the colleague
+surface: the colleague login, `/api/colleague/*`, `/api/board*`, the
+`/colleague` page and its script, stylesheet and language files. Everything
+else, the owner login included, is refused before authentication (403 with
+`rule: "colleague-lan-lock"`, or a redirect to `/colleague` for a page). So
+the owner login cannot be tried from the LAN, and nobody there can use up its
+failure cap.
+
+- `auto`: active while the colleague login is in use, that is when `WEB_HOST`
+  is not a loopback address, at least one colleague account is enabled, and
+  the scoped board is on. Otherwise nothing changes: an install that opened
+  `WEB_HOST` for its own remote access (Docker, a VPS) keeps working as before
+  until it creates a colleague account.
+- `on`: always active. `off`: never.
+- `off`, and stepping `on` down to `auto`, loosen the lock: only a dashboard
+  login (the owner) can set them, and such a value in `.env` is ignored.
+
+"Another machine" is the socket's own peer address. A header such as
+`X-Forwarded-For` does not count, and `::ffff:127.0.0.1` is loopback.
+
+**While the lock is active, these are cut off from other machines too**, and
+the dashboard says so in a warning line at startup:
+- the owner dashboard and the owner login;
+- federation inbound (`/.well-known/fleetq` and the federation endpoints);
+- the Teams card webhook (`/api/approvals/teams-card-action`);
+- Bridge devices connecting over the LAN;
+- the `WEB_PUBLIC_PORT` public listener (the Docker Caddy proxy).
+
+The owner gets in from the machine itself (`http://localhost:<port>`), through
+Tailscale Serve (it proxies from `127.0.0.1`, so it counts as loopback), or
+through an SSH tunnel (`ssh -L <port>:127.0.0.1:<port> <host>`). Turning the
+colleague login on with an open bind is an owner decision, and this list is
+part of it.
 
 ### Threat model of the colleague login (honest)
 

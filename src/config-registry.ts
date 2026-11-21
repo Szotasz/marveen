@@ -904,6 +904,23 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== 'audit' && newValue.trim() === 'audit',
   },
   {
+    // COLLANLOCK1120 (Refs #2929, Samu 82467): the precondition of turning the colleague login on with an open bind.
+    // auto (default) locks only while the colleague login is actually in use; existing installs that open WEB_HOST
+    // for their own remote access (Docker, VPS) change nothing until a colleague account exists.
+    key: 'COLLEAGUE_LAN_LOCK',
+    type: 'string',
+    default: 'auto',
+    valueSet: ['auto', 'on', 'off'],
+    description: 'Kolléga-zár nyitott hálózati címnél. Ha aktív, egy nem-loopback kapcsolat (a LAN, egy konténer-hálózat) CSAK a kolléga-felületet éri el (kolléga-belépés, a hatókörös tábla, a kolléga-oldal); minden más, a gazda belépése is, csak a gépről (loopback), Tailscale Serve-en vagy SSH-tunnelen át érhető el. auto (alapértelmezés): akkor aktív, ha a WEB_HOST nem loopback, van legalább egy engedélyezett kolléga-fiók, és a hatókörös tábla be van kapcsolva; különben semmi nem változik. on: mindig aktív. off: soha. Aktív zárnál a LAN-ról elérhetetlen a föderáció, a Teams kártya-webhook, a LAN-on csatlakozó Bridge-eszköz és a WEB_PUBLIC_PORT nyilvános listener is. Az off és az on -> auto lazítás: csak dashboard-belépéssel állítható, a .env-ben álló lazító érték nem hat.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => {
+      const rank = (v: string) => ({ on: 2, auto: 1, off: 0 } as Record<string, number>)[v.trim().toLowerCase()] ?? 1
+      return rank(newValue) < rank(oldValue)
+    },
+  },
+  {
     // SKILLAPPROVALOFF1101 (owner, Slack 2026-11-01 22:35): switchable, OFF by default. The scan, the hash binding and
     // an audit line run in both positions; only the hold for the owner's approval is what the switch turns on.
     // SKILLQUARANTINEDEF1109 (owner, Slack 2026-11-18, "Vevőknél is KI"; overrides Rec0CGYNBMRL0 = A of 2026-11-16):

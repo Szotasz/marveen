@@ -15,6 +15,7 @@ import { readOperatorAccess } from './web/operator-access.js'
 import { boardGateDecision, readBoardAccess } from './web/board-access.js'
 import { tryHandleBoard } from './web/routes/board.js'
 import { colleagueGateDecision } from './web/colleague-gate.js'
+import { lanLockDecision, lanLockActiveNow, LAN_LOCK_CUT_OFF } from './web/colleague-lan-lock.js'
 import { tryHandleColleague } from './web/routes/colleague.js'
 import { sweepExpiredColleagueSessions } from './web/colleague-sessions.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
@@ -190,6 +191,21 @@ export function startWebServer(port = 3420): http.Server {
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
     }
     if (method === 'OPTIONS') { res.writeHead(204); res.end(); return }
+
+    // COLLANLOCK1120 (colleague-lan-lock.ts): while the lock is active, a non-loopback peer reaches only the colleague
+    // surface. Decided on the socket's own address, before authentication, so the owner login cannot be tried from the
+    // LAN and its global failure cap cannot be used up from there.
+    const lanDenied = lanLockDecision(req, path, method, () => lanLockActiveNow(WEB_HOST))
+    if (lanDenied) {
+      if (lanDenied.status === 302) {
+        res.writeHead(302, { Location: lanDenied.location, 'Cache-Control': 'no-store' })
+        res.end()
+        return
+      }
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Forbidden from this network', rule: 'colleague-lan-lock', reason: lanDenied.reason }))
+      return
+    }
 
     // Block state-changing requests from browsers running on foreign origins.
     // Same-origin fetches (Origin absent, allowlisted, or matching the host the
@@ -458,6 +474,13 @@ export function startWebServer(port = 3420): http.Server {
 
   server.listen(port, WEB_HOST, () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
+    // COLLANLOCK1120: name what an active colleague LAN lock cuts off, so the owner sees it in the log at once.
+    try {
+      if (lanLockActiveNow(WEB_HOST)) {
+        logger.warn({ webHost: WEB_HOST, cutOffFromNonLoopback: LAN_LOCK_CUT_OFF },
+          'colleague LAN lock active: a non-loopback peer reaches only the colleague board; the owner gets in from this machine, through Tailscale Serve or an SSH tunnel')
+      }
+    } catch { /* a startup log line never stops the server */ }
     // Do NOT log the bearer token: launchd/journal/pipe captures of the
     // structured log would otherwise carry a root-equivalent credential.
     // Printing to stderr keeps it out of the pino stream -- but under launchd
