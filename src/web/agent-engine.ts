@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { expandAndValidateConfigDir } from '../config-dir-path.js'
@@ -25,7 +26,8 @@ export type CodexIdentity = 'seat' | 'overrides'
 //    the file-relay MCP shim (scripts/codex-relay/mcp-shim.mjs), which holds no
 //    secret. Codex starts this MCP server outside the command sandbox (measured
 //    on Codex 0.163.0, Linux); the token stays with the relay daemon. The spool
-//    lives under store/, hidden along with the Codex home and mxd run dir.
+//    lives under store/, hidden with the Codex home, mxd run dir, install .env,
+//    agents/, ~/.claude/channels and ~/.gmail-mcp.
 //    web_search = "disabled" and features.apps = false; other MCP servers are dropped.
 //  - 'full-access': explicit, owner-only opt-in that REMOVES the sandbox
 //    (danger-full-access: the agent can write anywhere the dashboard user can
@@ -125,7 +127,8 @@ export interface CodexRenderOptions {
 // directory -- the token stays with the daemon outside the sandbox. Every
 // other server entry is dropped under 'relay'; under 'full-access' (or with
 // opts omitted) NOTHING is replaced.
-// Relay also hides store/, the Codex home and mxd run dir, and sets
+// Relay hides store/, the Codex home, mxd run dir, install .env, agents/,
+// ~/.claude/channels and ~/.gmail-mcp, and sets
 // web_search = "disabled" and features.apps = false.
 const DASHBOARD_MCP_SERVER = 'marveen-dashboard'
 export const CODEX_RELAY_PERMISSION_PROFILE = 'marveen-relay'
@@ -142,6 +145,15 @@ export function codexRelayDeniedReadRoots(): string[] {
   return roots
 }
 
+export function codexRelaySecretReadRoots(): string[] {
+  return [
+    join(PROJECT_ROOT, '.env'),
+    join(PROJECT_ROOT, 'agents'),
+    join(homedir(), '.claude', 'channels'),
+    join(homedir(), '.gmail-mcp'),
+  ]
+}
+
 /** The mxd run dir (agent.sock, dash.sock, per-agent token files); hidden from the relay sandbox. */
 export function codexRelayMxdRunDir(): string {
   return dirname(MXD_AGENT_SOCK_DEFAULT)
@@ -153,11 +165,12 @@ export function codexRelayFilesystemEntries(workspace: string, codexHome: string
   }
   const runDir = codexRelayMxdRunDir()
   const denied = [...codexRelayDeniedReadRoots(), resolve(codexHome), codexPhysicalPath(codexHome),
-    runDir, codexPhysicalPath(runDir)]
+    runDir, codexPhysicalPath(runDir),
+    ...codexRelaySecretReadRoots().flatMap(p => [resolve(p), codexPhysicalPath(p)])]
   const workspacePaths = [resolve(workspace), codexPhysicalPath(workspace)]
   const hidden = denied.find(path => workspacePaths.includes(path))
   if (hidden !== undefined) {
-    throw new Error(`relay sandbox profile refuses workspace ${workspace}: it is ${hidden}, which the relay hides from the sandbox (store/, the Codex home or the mxd run dir); the workspace grant would replace that denial`)
+    throw new Error(`relay sandbox profile refuses workspace ${workspace}: it is ${hidden}, which the relay hides from the sandbox (store/, the Codex home, the mxd run dir, the install dotenv file, agents/, ~/.claude/channels or ~/.gmail-mcp); the workspace grant would replace that denial`)
   }
   const entries: Array<[string, 'read' | 'write' | 'none']> = [
     ['/', 'read'], [workspace, 'write'],
@@ -213,8 +226,9 @@ export function renderCodexConfig(workspace: string, servers: Record<string, unk
   const rendered = relayServers(servers, opts)
   // workspace-write has no full-access warning to hide, so under 'relay' the
   // [notice] block is omitted entirely (and the sandbox is nailed to the
-  // workspace with the network off). Hide store/, the Codex home and mxd run
-  // dir; set web_search = "disabled" and features.apps = false.
+  // workspace with the network off). Hide store/, the Codex home, mxd run dir,
+  // install .env, agents/, ~/.claude/channels and ~/.gmail-mcp;
+  // set web_search = "disabled" and features.apps = false.
   const lines = opts.profile === 'relay'
     ? ['sandbox_mode = "workspace-write"', 'approval_policy = "on-request"',
       `default_permissions = ${JSON.stringify(CODEX_RELAY_PERMISSION_PROFILE)}`,
@@ -284,8 +298,9 @@ function withheldFromCodex(key: string): boolean {
 /**
  * codexIdentity='overrides': the SAME settings renderCodexConfig writes into the
  * seat's config.toml, expressed as `codex -c key=value` overrides (value side is
- * valid TOML, strings via JSON.stringify). Relay hides store/, the Codex home
- * and mxd run dir; sets web_search = "disabled" and features.apps = false.
+ * valid TOML, strings via JSON.stringify). Relay hides store/, the Codex home,
+ * mxd run dir, install .env, agents/, ~/.claude/channels and ~/.gmail-mcp;
+ * sets web_search = "disabled" and features.apps = false.
  * Neither renderer expands `${VAR}`; here the result also lands on argv
  * (visible in `ps`), so only env_vars forwarding is allowed for secrets.
  */
@@ -404,7 +419,8 @@ function relayWebAppsKey(line: string): boolean {
 
 /**
  * Relay refuses stale sandbox or MCP settings in the config.toml both renderers
- * preserve. It hides store/, the Codex home and mxd run dir, and requires
+ * preserve. It hides store/, the Codex home, mxd run dir, install .env, agents/,
+ * ~/.claude/channels and ~/.gmail-mcp, and requires
  * web_search = "disabled" and features.apps = false. No-op for full-access.
  */
 export function assertCodexSeatConfigCompatible(home: string, workspace: string, identity: CodexIdentity, opts: CodexRenderOptions = {}): void {

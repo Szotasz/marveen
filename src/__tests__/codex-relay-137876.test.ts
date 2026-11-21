@@ -24,9 +24,11 @@ let ws: string
 let home: string
 const opts = { profile: 'relay', agentName: 'relay-137876' } as const
 const servers = { 'marveen-dashboard': { command: 'node' } }
+const USER_HOME = '/marveen-137876-fixed/user-home'
 const noneLine = (path: string) => `${JSON.stringify(path)} = "none"\n`
 
 beforeEach(() => {
+  vi.stubEnv('HOME', USER_HOME)
   root = mkdtempSync(join(tmpdir(), 'codex-137876-'))
   mkdirSync(join(root, '.git')) // Keep the project-config walk independent of host /tmp state.
   projectRoot = join(root, 'project')
@@ -37,6 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   projectRoot = undefined
   rmSync(root, { recursive: true, force: true })
 })
@@ -64,6 +67,8 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
       ...codexRelayDeniedReadRoots().map(path => [path, 'none']),
       [resolve(home), 'none'], [join(realpathSync(parent), 'home'), 'none'],
       [runDir, 'none'],
+      [join(projectRoot!, '.env'), 'none'], [join(projectRoot!, 'agents'), 'none'],
+      [join(USER_HOME, '.claude', 'channels'), 'none'], [join(USER_HOME, '.gmail-mcp'), 'none'],
     ]
     expect(codexRelayFilesystemEntries(ws, home).slice(0, expected.length)).toEqual(expected)
   })

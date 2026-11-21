@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +9,7 @@ import {
   codexRelayDeniedReadRoots,
   codexRelayFilesystemEntries,
   codexRelayMxdRunDir,
+  codexRelaySecretReadRoots,
   omitDefaultCodexIdentity,
   relayShimPath,
   relayDroppedMcpServers,
@@ -29,6 +30,11 @@ vi.mock('../config.js', async original => {
 })
 
 const dirs: string[] = []
+const USER_HOME = '/marveen-cxdef-fixed/user-home'
+beforeEach(() => {
+  vi.stubEnv('HOME', USER_HOME)
+})
+
 function tmp(): string {
   let d = mkdtempSync(join(tmpdir(), 'cxdef-'))
   d = realpathSync(d) // macOS temp dirs live behind symlinks (/tmp, /var): use the physical path so lexical == physical
@@ -38,6 +44,7 @@ function tmp(): string {
 }
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   projectRoot = undefined
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
 })
@@ -121,14 +128,19 @@ describe('existing config.toml under relay', () => {
   for (const identity of ['seat', 'overrides'] as CodexIdentity[]) {
     describe(identity, () => {
       const fixture = (content: string) => identity === 'overrides' ? withoutPermissionsTable(content) : content
-      const withDash = fixture(renderCodexConfig(WS, { 'marveen-dashboard': dash }, RELAY))
-      const without = fixture(renderCodexConfig(WS, {}, RELAY))
+      let withDash: string
+      let without: string
+      let header: string
+      beforeEach(() => {
+        withDash = fixture(renderCodexConfig(WS, { 'marveen-dashboard': dash }, RELAY))
+        without = fixture(renderCodexConfig(WS, {}, RELAY))
+        header = without.slice(0, without.indexOf('[mcp_servers]'))
+      })
       const check = (content: string) => {
         const home = tmp()
         writeFileSync(join(home, 'config.toml'), content.replaceAll(JSON.stringify(RELAY.codexHome), JSON.stringify(home)))
         assertCodexSeatConfigCompatible(home, WS, identity, RELAY)
       }
-      const header = without.slice(0, without.indexOf('[mcp_servers]'))
 
       it('refuses other servers', () => {
         const cases = [
@@ -333,6 +345,10 @@ describe('B4 named relay permissions', () => {
       '"/marveen-b4-fixed-root/store" = "none"',
       `${JSON.stringify(RELAY.codexHome)} = "none"`,
       `${JSON.stringify(codexRelayMxdRunDir())} = "none"`,
+      '"/marveen-b4-fixed-root/.env" = "none"',
+      '"/marveen-b4-fixed-root/agents" = "none"',
+      '"/marveen-cxdef-fixed/user-home/.claude/channels" = "none"',
+      '"/marveen-cxdef-fixed/user-home/.gmail-mcp" = "none"',
       '', '[features]', 'apps = false',
       '', '[projects."/tmp/cxdef-ws"]',
       'trust_level = "trusted"', '', '[mcp_servers]', '',
@@ -345,7 +361,7 @@ describe('B4 named relay permissions', () => {
       'sandbox_workspace_write.network_access=false',
       'sandbox_workspace_write.exclude_slash_tmp=true',
       'sandbox_workspace_write.exclude_tmpdir_env_var=true',
-      `permissions.marveen-relay.filesystem={"/"="read","/tmp/cxdef-ws"="write","/marveen-b4-fixed-root/store"="none",${JSON.stringify(RELAY.codexHome)}="none",${JSON.stringify(codexRelayMxdRunDir())}="none"}`,
+      `permissions.marveen-relay.filesystem={"/"="read","/tmp/cxdef-ws"="write","/marveen-b4-fixed-root/store"="none",${JSON.stringify(RELAY.codexHome)}="none",${JSON.stringify(codexRelayMxdRunDir())}="none","/marveen-b4-fixed-root/.env"="none","/marveen-b4-fixed-root/agents"="none","/marveen-cxdef-fixed/user-home/.claude/channels"="none","/marveen-cxdef-fixed/user-home/.gmail-mcp"="none"}`,
       'features.apps=false',
       'projects./tmp/cxdef-ws.trust_level="trusted"',
     ])
@@ -364,6 +380,8 @@ describe('B4 named relay permissions', () => {
     expect(codexRelayFilesystemEntries(WS, RELAY.codexHome)).toEqual([
       ['/', 'read'], [WS, 'write'], [lexical, 'none'], [target, 'none'],
       [RELAY.codexHome, 'none'], [codexRelayMxdRunDir(), 'none'],
+      [join(projectRoot, '.env'), 'none'], [join(projectRoot, 'agents'), 'none'],
+      [join(USER_HOME, '.claude', 'channels'), 'none'], [join(USER_HOME, '.gmail-mcp'), 'none'],
     ])
     const out = fresh()
     expect(out).toContain(`${JSON.stringify(target)} = "none"`)
@@ -379,6 +397,16 @@ describe('B4 named relay permissions', () => {
     expect(() => codexRelayDeniedReadRoots()).toThrow(/ELOOP/)
     expect(() => fresh()).toThrow(/ELOOP/)
     expect(() => renderCodexOverrides(WS, {}, RELAY)).toThrow(/ELOOP/)
+  })
+
+  it.each(['gmail-mcp', 'agents'])('T4 refuses a rendered seat missing the %s denial', secret => {
+    projectRoot = tmp()
+    const content = fresh()
+    expect(() => check(content)).not.toThrow()
+    const path = secret === 'agents' ? join(projectRoot, 'agents') : join(USER_HOME, '.gmail-mcp')
+    const changed = content.replace(`${JSON.stringify(path)} = "none"\n`, '')
+    expect(changed).not.toBe(content)
+    expect(() => check(changed)).toThrow(/codexSandbox=relay refuses .*the relay filesystem table must contain exactly the rendered filesystem entries for this workspace/)
   })
 
   it.each(['\n', '\0'])('B4 refuses filesystem override paths containing %j', bad => {
@@ -427,6 +455,52 @@ describe('B4 named relay permissions', () => {
     expect(out).toContain('default_permissions = "marveen-relay"')
     expect(() => check(out.replace(storeLine(), storeLine() + ' # hidden store'))).not.toThrow()
     expect(() => check(out.replace('default_permissions = "marveen-relay"\n', '').replace('web_search = "disabled"\n', ''), 'overrides')).toThrow(/relay profile table would be merged/)
+  })
+})
+
+describe('relay secret read roots', () => {
+  it('T1 returns the four lexical paths, reading PROJECT_ROOT and HOME at call time', () => {
+    projectRoot = '/marveen-secret-project'
+    expect(codexRelaySecretReadRoots()).toEqual([
+      '/marveen-secret-project/.env', '/marveen-secret-project/agents',
+      '/marveen-cxdef-fixed/user-home/.claude/channels', '/marveen-cxdef-fixed/user-home/.gmail-mcp',
+    ])
+    projectRoot = '/marveen-secret-project-next'
+    vi.stubEnv('HOME', '/marveen-secret-home-next')
+    expect(codexRelaySecretReadRoots()).toEqual([
+      '/marveen-secret-project-next/.env', '/marveen-secret-project-next/agents',
+      '/marveen-secret-home-next/.claude/channels', '/marveen-secret-home-next/.gmail-mcp',
+    ])
+  })
+
+  it('T2 denies lexical and physical secret paths below a symlinked HOME, including missing leaves', () => {
+    projectRoot = tmp()
+    const physicalHome = tmp()
+    const linkedHome = join(tmp(), 'home-link')
+    symlinkSync(physicalHome, linkedHome)
+    vi.stubEnv('HOME', linkedHome)
+    const entries = codexRelayFilesystemEntries(WS, RELAY.codexHome)
+    for (const path of [
+      join(projectRoot, '.env'), join(projectRoot, 'agents'),
+      join(linkedHome, '.claude', 'channels'), join(linkedHome, '.gmail-mcp'),
+      join(physicalHome, '.claude', 'channels'), join(physicalHome, '.gmail-mcp'),
+    ]) {
+      expect(entries).toContainEqual([path, 'none'])
+    }
+    mkdirSync(join(linkedHome, '.claude', 'channels'), { recursive: true })
+    mkdirSync(join(linkedHome, '.gmail-mcp'))
+    expect(codexRelayFilesystemEntries(WS, RELAY.codexHome)).toEqual(entries)
+  })
+
+  it('T3 refuses the agents root but keeps a nested agent workspace writable', () => {
+    projectRoot = tmp()
+    const agents = join(projectRoot, 'agents')
+    const ws = join(agents, 'x')
+    mkdirSync(ws, { recursive: true })
+    expect(() => codexRelayFilesystemEntries(agents, RELAY.codexHome)).toThrow(`relay sandbox profile refuses workspace ${agents}: it is ${agents}, which the relay hides`)
+    const nested = codexRelayFilesystemEntries(ws, RELAY.codexHome)
+    expect(nested).toContainEqual([ws, 'write'])
+    expect(nested).toContainEqual([agents, 'none'])
   })
 })
 
