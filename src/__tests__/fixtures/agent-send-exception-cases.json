@@ -51,6 +51,11 @@
       "match": false
     },
     {
+      "name": "bcc flag",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --bcc hidden@example.invalid",
+      "match": false
+    },
+    {
       "name": "missing value",
       "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --subject",
       "match": false

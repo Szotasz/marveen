@@ -267,6 +267,16 @@ def main():
                     json.dumps({'agents': {CORPUS['agentName']: bad, 'clean': entry}}))
                 kept = gate.read_agent_send_exceptions()
                 assert kept == {'agents': {'clean': entry}}, (flag, repeatable)
+        # C1 (PR #2843 review): recipient channels outside --to and --cc are reserved.
+        for flag in ('--bcc', '--reply-to', '--from'):
+            for key in ('valueArgs', 'repeatableArgs', 'booleanArgs'):
+                bad = {**entry, key: entry[key] + [flag]}
+                assert gate.valid_agent_send_exception(bad) is False, (flag, key)
+                (store / 'agent-send-exceptions.json').write_text(
+                    json.dumps({'agents': {CORPUS['agentName']: bad, 'clean': entry}}))
+                kept = gate.read_agent_send_exceptions()
+                assert kept == {'agents': {'clean': entry}}, (flag, key)
+        print('PASS: gate-reserved recipient flags invalidate the entry in all three flag lists')
         clean = dict(entry)
         clean['repeatableArgs'] = list(entry['repeatableArgs'])
         assert gate.valid_agent_send_exception(clean) is True

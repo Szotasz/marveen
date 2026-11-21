@@ -35,8 +35,9 @@ objects: at least one entry, no duplicate paths, an absolute `path` and a
 `sha256` of exactly 64 lowercase hex characters. The other four keys are
 arrays of distinct nonempty strings; modes are `draft` and `send`. Flag names
 must be distinct across the three flag lists. Unknown entry keys invalidate
-only that entry. `--envelope-sha256` is gate-reserved: listing it in
-`valueArgs`, `repeatableArgs` or `booleanArgs` invalidates the entry.
+only that entry. `--envelope-sha256`, `--bcc`, `--reply-to` and `--from` are
+gate-reserved: listing any of them in `valueArgs`, `repeatableArgs` or
+`booleanArgs` invalidates the entry.
 Missing, unreadable or invalid JSON grants no exceptions.
 
 The grant binds the script content and path. On every invocation both gates
@@ -126,7 +127,11 @@ The exception continues to trust them as the agent's own process does; from
 
 ## Recipients and approval
 
-Both modes require ledger-verified `--to` and `--cc` recipients. A draft does
+Both modes require ledger-verified `--to` and `--cc` recipients. These two flags
+are the only recipient channel the gates verify and hash. The gates refuse an
+entry that names `--bcc`, `--reply-to` or `--from`; any other flag through which
+the granted script could name an address is outside the gates' view, so the
+owner must not grant one. A draft does
 not consume approval. For an enabled entry the scaffold also installs the
 separate email approval hook, using the project's existing matchers and
 fail-closed timeout wrapper.

@@ -341,6 +341,26 @@ describe('repeatable envelope flags invalidate the exception entry', () => {
   })
 })
 
+describe('gate-reserved flags invalidate the exception entry', () => {
+  for (const flag of ['--bcc', '--reply-to', '--from', '--envelope-sha256']) {
+    for (const list of ['valueArgs', 'repeatableArgs', 'booleanArgs'] as const) {
+      it(`${list} containing '${flag}' is invalid`, () => {
+        expect(validAgentSendException({ ...entry, [list]: [...entry[list], flag] })).toBe(false)
+      })
+    }
+  }
+  it('the clean entry still validates', () => {
+    expect(validAgentSendException(entry)).toBe(true)
+  })
+  it('the reader drops the invalid entry and keeps valid siblings', () => {
+    file.content = JSON.stringify({ agents: {
+      [agentName]: { ...entry, valueArgs: [...entry.valueArgs, '--bcc'] }, '<other-agent>': entry,
+    } })
+    expect(readAgentSendExceptions()).toEqual({ agents: { '<other-agent>': entry } })
+    expect(decide(command, agentName, readAgentSendExceptions())).toMatchObject({ deny: true, kind: 'script-send' })
+  })
+})
+
 // SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not only
 // its path. On every invocation the matcher reads the entry script's raw bytes and
 // compares the sha256 to the granted value; a missing or unreadable file, or any byte

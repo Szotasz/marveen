@@ -168,6 +168,19 @@ describe('send exception hook wiring', () => {
     configFile.content = JSON.stringify({ agents: { [agentName]: entry } })
     expect(readAgentSendExceptions(agentName)).toEqual(entry)
   })
+
+  it('rejects gate-reserved flags in every flag list, keeping clean entries', () => {
+    for (const flag of ['--envelope-sha256', '--bcc', '--reply-to', '--from']) {
+      for (const list of ['valueArgs', 'repeatableArgs', 'booleanArgs'] as const) {
+        configFile.content = JSON.stringify({ agents: {
+          [agentName]: { ...entry, [list]: [...entry[list], flag] },
+        } })
+        expect(readAgentSendExceptions(agentName), `${list} ${flag}`).toBeNull()
+      }
+    }
+    configFile.content = JSON.stringify({ agents: { [agentName]: entry } })
+    expect(readAgentSendExceptions(agentName)).toEqual(entry)
+  })
 })
 
 // EXACTAPPROVALREMOVE (card f2ccb0bb, round 2): removeEmailApprovalGate used to

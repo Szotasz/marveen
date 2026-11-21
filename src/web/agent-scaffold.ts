@@ -1680,6 +1680,12 @@ export interface AgentSendException {
 // here too -- the mjs parser returns only the FIRST value of a repeatable flag, so
 // recipient verification (and the py envelope hash) would see only the first recipient.
 const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'])
+// C1 (PR #2843 review): the gates verify and hash only --to and --cc as recipients,
+// so an entry naming --bcc, --reply-to or --from in ANY of valueArgs, repeatableArgs
+// or booleanArgs is invalid in ALL THREE validators: this one,
+// validAgentSendException in email-send-gate.mjs, and valid_agent_send_exception
+// in email-approval-gate.py. --envelope-sha256 is reserved for the gate itself.
+const RESERVED_FLAGS = new Set(['--envelope-sha256', '--bcc', '--reply-to', '--from'])
 const SCRIPT_SHA256_RX = /^[0-9a-f]{64}$/
 export function readAgentSendExceptions(name: string): AgentSendException | null {
   try {
@@ -1708,6 +1714,7 @@ export function readAgentSendExceptions(name: string): AgentSendException | null
     const flags = [...entry.valueArgs, ...entry.repeatableArgs, ...entry.booleanArgs]
     if (!entry.modes.length || !entry.modes.every((m: string) => ['draft', 'send'].includes(m))
       || entry.repeatableArgs.some((f: string) => NON_REPEATABLE_FLAGS.has(f))
+      || flags.some((f: string) => RESERVED_FLAGS.has(f))
       || !flags.every(f => /^--[a-z][a-z0-9-]*$/.test(f)) || new Set(flags).size !== flags.length) return null
     return entry
   } catch { return null }

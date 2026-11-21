@@ -141,6 +141,12 @@ _EXCEPTION_KEYS = ("scripts", "modes", "valueArgs", "repeatableArgs", "booleanAr
 # Such an entry is invalid in ALL THREE validators: this one, validAgentSendException in
 # email-send-gate.mjs, and readAgentSendExceptions in agent-scaffold.ts.
 _NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
+# C1 (PR #2843 review): the gates verify and hash only --to and --cc as recipients,
+# so an entry naming --bcc, --reply-to or --from in ANY of valueArgs, repeatableArgs
+# or booleanArgs is invalid in ALL THREE validators: this one,
+# validAgentSendException in email-send-gate.mjs, and readAgentSendExceptions
+# in agent-scaffold.ts. --envelope-sha256 is reserved for the gate itself.
+_RESERVED_FLAGS = frozenset({"--envelope-sha256", "--bcc", "--reply-to", "--from"})
 
 # SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not only its
 # path. "scripts" is an array of {"path", "sha256"} objects -- at least one entry, no
@@ -206,7 +212,7 @@ def valid_agent_send_exception(entry):
     return (_valid_exception_scripts(entry.get("scripts"))
             and bool(entry["modes"]) and all(m in ("draft", "send") for m in entry["modes"])
             and not any(f in _NON_REPEATABLE_FLAGS for f in entry["repeatableArgs"])
-            and "--envelope-sha256" not in flags
+            and not any(f in _RESERVED_FLAGS for f in flags)
             and all(re.fullmatch(r"--[a-z][a-z0-9-]*", f) for f in flags)
             and len(set(flags)) == len(flags))
 
