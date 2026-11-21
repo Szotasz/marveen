@@ -166,7 +166,7 @@ describe('workerStartAllowed (WORKERHOME1: WEB_ONLY must suppress every worker s
   it('the own setup-token wiring: both workers get their own setting, the launch uses the shell-checked export', () => {
     const __dirname = dirname(fileURLToPath(import.meta.url))
     const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
-    expect(src).toContain('WORKER_OAUTH_TOKEN_FILE_FAST,\n)')
+    expect(src).toContain("'WORKER_OAUTH_TOKEN_FILE_FAST',\n)")
     expect(src).toMatch(/const ctxSlow = makeWorkerCtx\([\s\S]*?null,\s*WORKER_OAUTH_TOKEN_FILE,\s*\)/)
     expect(src).toContain("const oauthExport = ownToken.kind === 'own'\n    ? workerOauthTokenExport(ownToken.path)")
     expect(src).toContain('const launch =\n    oauthExport +')
@@ -175,17 +175,15 @@ describe('workerStartAllowed (WORKERHOME1: WEB_ONLY must suppress every worker s
     expect(src).toContain("if (own.kind !== 'unset') {\n    removeWorkerCredentialsFile(ctx)\n    return false")
   })
 
-  it('an auth failure with an own setup-token never falls through to the SDK path (no authFailed)', () => {
+  it('both exits of a persistent auth failure in runViaWorker go through workerAuthFailureResult (behaviour: worker-own-oauth-token.test.ts)', () => {
     const __dirname = dirname(fileURLToPath(import.meta.url))
     const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
     const start = src.indexOf('export async function runViaWorker(')
     expect(start).toBeGreaterThan(-1)
     const body = src.slice(start)
-    const own = body.indexOf("if (workerOauthDecision(ctx).kind !== 'unset') {")
-    const fallback = body.indexOf('signalling SDK fallback (authFailed)')
-    expect(own).toBeGreaterThan(-1)
-    expect(fallback).toBeGreaterThan(own)
-    expect(body.slice(own, fallback)).not.toContain('authFailed: true')
+    expect(body).toContain('return workerAuthFailureResult(workerOauthDecision(ctx), true)')
+    expect(body).toContain('return workerAuthFailureResult(workerOauthDecision(ctx), false)')
+    expect(body).not.toContain('authFailed: true')
   })
 })
 

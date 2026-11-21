@@ -192,6 +192,8 @@ export interface WorkerCtx {
   /** The install setting naming this worker's OWN setup-token file, or null/'' =
    *  not set (the worker keeps the fleet token). See decideWorkerOauthToken. */
   readonly oauthTokenFile: string | null
+  /** The install setting's name for this worker, for the refusal alert. */
+  readonly oauthTokenSetting: string
   readonly configDir: string
   readonly scratchDir: string
   chain: Promise<unknown>
@@ -203,12 +205,14 @@ export function makeWorkerCtx(
   homeDir: string,
   modelOverride: string | null = null,
   oauthTokenFile: string | null = null,
+  oauthTokenSetting: string = 'WORKER_OAUTH_TOKEN_FILE',
 ): WorkerCtx {
   return {
     session,
     home: homeDir,
     modelOverride,
     oauthTokenFile,
+    oauthTokenSetting,
     configDir: join(homeDir, '.claude-config'),
     scratchDir: join(homeDir, 'scratch'),
     chain: Promise.resolve() as Promise<unknown>,
@@ -313,6 +317,7 @@ const ctxFast = makeWorkerCtx(
   process.env.MARVEEN_WORKER_DIR_FAST || workerHomeFor(MAIN_AGENT_ID, 'fast'),
   WORKER_MODEL_FAST_OVERRIDE,
   WORKER_OAUTH_TOKEN_FILE_FAST,
+  'WORKER_OAUTH_TOKEN_FILE_FAST',
 )
 
 // WORKEROAUTHFILE: the worker's own setup-token decision (pure logic and the
@@ -321,7 +326,7 @@ const ctxFast = makeWorkerCtx(
 function workerOauthDecision(ctx: WorkerCtx): WorkerOauthTokenDecision {
   return decideWorkerOauthToken({
     configured: ctx.oauthTokenFile,
-    usesCustomProvider: workerUsesCustomProvider(ctx),
+    usesCustomProvider: () => workerUsesCustomProvider(ctx),
     fleetTokenPath: FLEET_OAUTH_TOKEN_PATH,
     uid: typeof process.getuid === 'function' ? process.getuid() : null,
   })
@@ -350,7 +355,7 @@ function refuseWorkerOwnToken(ctx: WorkerCtx, own: Extract<WorkerOauthTokenDecis
   if (Date.now() - ctx.lastStuckAlert < WORKER_STUCK_ALERT_COOLDOWN_MS) return
   ctx.lastStuckAlert = Date.now()
   void notifyChannel(
-    `⚠️ Marveen worker [${ctx.session}]: a saját setup-token beállítás (WORKER_OAUTH_TOKEN_FILE) hibás, ezért a worker NEM indult el, és nem esik vissza a flotta-tokenre. Ok: ${own.reason}${own.path ? `, fájl: ${own.path}` : ''}. Javítsd a beállítást vagy a fájlt, vagy töröld a beállítást (akkor a flotta-token marad).`,
+    `⚠️ Marveen worker [${ctx.session}]: a saját setup-token beállítás (${ctx.oauthTokenSetting}) hibás, ezért a worker NEM indult el, és nem esik vissza a flotta-tokenre. Ok: ${own.reason}${own.path ? `, fájl: ${own.path}` : ''}. Javítsd a beállítást vagy a fájlt, vagy töröld a beállítást (akkor a flotta-token marad).`,
   ).catch(() => { /* notifyChannel logs internally */ })
 }
 
@@ -434,7 +439,7 @@ function clearWorkerKeychainEntry(ctx: WorkerCtx): void {
  * macOS readClaudeCodeOauthJson returns null and the worker runs logged-out.
  * Returns true if a credential file was written.
  */
-function seedWorkerCredentials(ctx: WorkerCtx, own: WorkerOauthTokenDecision = workerOauthDecision(ctx)): boolean {
+export function seedWorkerCredentials(ctx: WorkerCtx, own: WorkerOauthTokenDecision = workerOauthDecision(ctx)): boolean {
   if (process.platform === 'darwin') clearWorkerKeychainEntry(ctx)
   // WORKEROAUTHFILE: a worker with its own setup-token (or one whose own-token setting is refused) NEVER gets the host's
   // login copied in, and a plain .credentials.json left in its config dir is removed: the host's Keychain login
@@ -982,6 +987,12 @@ export function startWorkerSessionFor(ctx: WorkerCtx): void {
     try {
       const cpEnv = buildCustomProviderLaunchEnv(MAIN_AGENT_ID)
       if (cpEnv) {
+        // Defense in depth (the decision above already refuses 'custom-provider'), placed before the key-approval
+        // stamp below: never export an own token next to a custom-provider endpoint env.
+        if (ownToken.kind === 'own' && !ctx.modelOverride) {
+          refuseWorkerOwnToken(ctx, { kind: 'refused', path: ownToken.path, reason: 'custom-provider', detail: '' })
+          return
+        }
         customProviderModel = cpEnv.model
         customEnvPrefix = cpEnv.envPrefix
         if (cpEnv.customApiKeyForApproval) {
@@ -1020,12 +1031,6 @@ export function startWorkerSessionFor(ctx: WorkerCtx): void {
     notifyWorkerModelFallback(decision, Date.now())
   }
 
-  // Defense in depth (the decision above already refuses 'custom-provider'): never export an own token next to a
-  // custom-provider endpoint env.
-  if (ownToken.kind === 'own' && customEnvPrefix) {
-    refuseWorkerOwnToken(ctx, { kind: 'refused', path: ownToken.path, reason: 'custom-provider', detail: '' })
-    return
-  }
   const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
   const autoUpdaterEnv = workerAutoUpdaterEnv({
     role: ctx === ctxSlow ? 'slow' : 'fast',
@@ -1209,6 +1214,8 @@ function alertWorkerStuck(ctx: WorkerCtx, paneTail: string): void {
   ).catch(() => { /* notifyChannel logs internally */ })
 }
 
+const OWN_TOKEN_EXIT_GRACE_MS = 4000
+
 export async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
   // Fail fast in WEB_ONLY: without this the 90s readiness poll would spin on a
   // session that the gated start never created, then alertWorkerStuck would
@@ -1231,6 +1238,19 @@ export async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
   let healed = false
   while (Date.now() < deadline) {
     if (await isSessionReadyForPrompt(ctx.session)) return true
+    // WORKEROAUTHFILE: the launch shell re-checks the token file and exits when it is unreadable, empty or not a
+    // setup-token (the file changed after the JS check). The session is then gone within a moment: say so
+    // at once instead of waiting out the boot timeout and sending the generic stuck-dialog alert.
+    if (ownCheck.kind === 'own' && Date.now() - start > OWN_TOKEN_EXIT_GRACE_MS && !workerSessionExists(ctx)) {
+      logger.error({ session: ctx.session, path: ownCheck.path }, 'WORKEROAUTHFILE: the worker launch shell exited at once (the own token file changed or became unusable after the check); no fallback')
+      if (Date.now() - ctx.lastStuckAlert >= WORKER_STUCK_ALERT_COOLDOWN_MS) {
+        ctx.lastStuckAlert = Date.now()
+        void notifyChannel(
+          `⚠️ Marveen worker [${ctx.session}]: a worker azonnal kilépett az indításkor: a saját setup-token fájl (${ctx.oauthTokenSetting}: ${ownCheck.path}) az ellenőrzés után olvashatatlanná, üressé vagy hibássá vált. A worker nem indult el, és nem esik vissza a flotta-tokenre.`,
+        ).catch(() => { /* notifyChannel logs internally */ })
+      }
+      return false
+    }
     if (!healed && Date.now() - start > WORKER_SELF_HEAL_GRACE_MS) {
       healed = true
       try { selfHealWorkerOnce(ctx) } catch (err) { logger.warn({ err }, 'agent-worker: self-heal pass failed') }
@@ -1367,6 +1387,26 @@ async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: numb
 }
 
 /**
+ * What runViaWorker returns when the worker's auth failed for good. A worker with its own setup-token (or a
+ * refused own-token setting) must NOT fall through to the SDK path (API billing, the host's auth): no authFailed,
+ * so runAgent returns the error instead of silently using other credentials. Otherwise the old behaviour.
+ */
+export function workerAuthFailureResult(
+  own: WorkerOauthTokenDecision,
+  afterRecovery: boolean,
+): { text: null; error: string; authFailed?: boolean } {
+  if (own.kind !== 'unset') {
+    logger.error({ afterRecovery }, 'agent-worker: auth failure with the worker own setup-token -> NO SDK fallback (error returned)')
+    return { text: null, error: 'worker auth failed (401/login)' + (afterRecovery ? ' after recovery' : '') + '; own setup-token, no SDK fallback' }
+  }
+  if (afterRecovery) {
+    logger.error('agent-worker: auth failure persists after recovery -> signalling SDK fallback (authFailed)')
+    return { text: null, error: 'worker auth failed (401/login) after recovery', authFailed: true }
+  }
+  return { text: null, error: 'worker auth failed', authFailed: true }
+}
+
+/**
  * Run one prompt through the interactive worker and return its text output.
  * Routes to the fast or slow session based on message length + keyword heuristic
  * (overridable via the `priority` parameter). Serialized within each session via
@@ -1411,16 +1451,8 @@ export async function runViaWorker(
         restartWorkerSession(ctx)
         continue
       }
-      // WORKEROAUTHFILE: a worker with its own setup-token must not fall through to the SDK path (API billing,
-      // the host's auth): no authFailed, so runAgent returns the error instead of silently using other credentials.
-      if (workerOauthDecision(ctx).kind !== 'unset') {
-        logger.error({ session: ctx.session }, 'agent-worker: auth failure persists after recovery with the worker own setup-token -> NO SDK fallback (error returned)')
-        return { text: null, error: 'worker auth failed (401/login) after recovery; own setup-token, no SDK fallback' }
-      }
-      logger.error({ session: ctx.session }, 'agent-worker: auth failure persists after recovery -> signalling SDK fallback (authFailed)')
-      return { text: null, error: 'worker auth failed (401/login) after recovery', authFailed: true }
+      return workerAuthFailureResult(workerOauthDecision(ctx), true)
     }
-    if (workerOauthDecision(ctx).kind !== 'unset') return { text: null, error: 'worker auth failed; own setup-token, no SDK fallback' }
-    return { text: null, error: 'worker auth failed', authFailed: true }
+    return workerAuthFailureResult(workerOauthDecision(ctx), false)
   })
 }

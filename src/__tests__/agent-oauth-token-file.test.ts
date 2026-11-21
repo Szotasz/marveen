@@ -391,7 +391,7 @@ describe('launcher wiring (agent-process.ts)', () => {
 // empty setting is "unset" (= the fleet token, exactly as before).
 describe('decideWorkerOauthToken', () => {
   const decide = (configured: string | null | undefined, uid: number | null = UID) =>
-    decideWorkerOauthToken({ configured, usesCustomProvider: false, fleetTokenPath: fleet, uid })
+    decideWorkerOauthToken({ configured, usesCustomProvider: () => false, fleetTokenPath: fleet, uid })
 
   it('an absent or empty setting is unset: the worker keeps the fleet token', () => {
     expect(decide(undefined)).toEqual({ kind: 'unset' })
@@ -439,14 +439,25 @@ describe('decideWorkerOauthToken', () => {
 
   it('refuses next to a custom-provider endpoint: the token would go to the third party (as the per-agent field does)', () => {
     const p = tokenFile('cp.token', FAKE_TOKEN)
-    expect(decideWorkerOauthToken({ configured: p, usesCustomProvider: true, fleetTokenPath: fleet, uid: UID }))
+    expect(decideWorkerOauthToken({ configured: p, usesCustomProvider: () => true, fleetTokenPath: fleet, uid: UID }))
       .toMatchObject({ kind: 'refused', reason: 'custom-provider', path: p })
     // an unset setting is never refused for it: the custom-provider launch stays exactly as before
-    expect(decideWorkerOauthToken({ configured: '', usesCustomProvider: true, fleetTokenPath: fleet, uid: UID }))
+    expect(decideWorkerOauthToken({ configured: '', usesCustomProvider: () => true, fleetTokenPath: fleet, uid: UID }))
       .toEqual({ kind: 'unset' })
     // an invalid path is reported as itself
-    expect(decideWorkerOauthToken({ configured: 'rel.token', usesCustomProvider: true, fleetTokenPath: fleet, uid: UID }))
+    expect(decideWorkerOauthToken({ configured: 'rel.token', usesCustomProvider: () => true, fleetTokenPath: fleet, uid: UID }))
       .toMatchObject({ kind: 'refused', reason: 'not-absolute' })
+  })
+
+  it('the custom-provider check is LAZY: never evaluated for an unset or invalid setting (it reads the vault and writes a launch-secret file)', () => {
+    let calls = 0
+    const probe = () => { calls++; return false }
+    expect(decideWorkerOauthToken({ configured: undefined, usesCustomProvider: probe, fleetTokenPath: fleet, uid: UID })).toEqual({ kind: 'unset' })
+    expect(decideWorkerOauthToken({ configured: '', usesCustomProvider: probe, fleetTokenPath: fleet, uid: UID })).toEqual({ kind: 'unset' })
+    expect(decideWorkerOauthToken({ configured: 'rel.token', usesCustomProvider: probe, fleetTokenPath: fleet, uid: UID })).toMatchObject({ kind: 'refused' })
+    expect(calls).toBe(0)
+    decideWorkerOauthToken({ configured: tokenFile('lazy.token', FAKE_TOKEN), usesCustomProvider: probe, fleetTokenPath: fleet, uid: UID })
+    expect(calls).toBe(1)
   })
 
   it('a refusal never carries the token value', () => {
@@ -466,6 +477,15 @@ describe('workerOauthTokenExport', () => {
 
   // The JS check and the shell read are two moments: the shell must fail closed on what it actually reads.
   const runLine = (line: string) => spawnSync('bash', ['-c', `${line}printf "%s" "$CLAUDE_CODE_OAUTH_TOKEN"`], { encoding: 'utf-8', env: { PATH: process.env.PATH ?? '' } })
+
+  it('shell: an inherited ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / foreign OAuth token is stripped (they outrank the OAuth token)', () => {
+    const r = spawnSync('bash', ['-c', `${workerOauthTokenExport(tokenFile('sh-strip.token', FAKE_TOKEN))}printf "%s|%s|%s" "$ANTHROPIC_API_KEY" "$ANTHROPIC_AUTH_TOKEN" "$CLAUDE_CODE_OAUTH_TOKEN"`], {
+      encoding: 'utf-8',
+      env: { PATH: process.env.PATH ?? '', ANTHROPIC_API_KEY: 'inherited-key', ANTHROPIC_AUTH_TOKEN: 'inherited-auth', CLAUDE_CODE_OAUTH_TOKEN: 'inherited-oauth' },
+    })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe(`||${FAKE_TOKEN}`)
+  })
 
   it('shell: a good file exports the token; a missing, empty or foreign file ends the launch with exit 1 and no token', () => {
     const good = runLine(workerOauthTokenExport(tokenFile('sh-good.token', FAKE_TOKEN + '\n')))

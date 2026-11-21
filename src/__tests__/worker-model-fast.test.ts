@@ -48,7 +48,7 @@ describe('MARVEEN_WORKER_MODEL_FAST (WORKERMODELFAST1109)', () => {
 
   it('only the FAST session gets the override; its own model drops the custom provider env', () => {
     const src = readFileSync(join(__dirname, '..', 'web', 'agent-worker.ts'), 'utf-8')
-    expect(src).toMatch(/const ctxFast = makeWorkerCtx\([\s\S]*?WORKER_MODEL_FAST_OVERRIDE,\s*(?:WORKER_OAUTH_TOKEN_FILE_FAST,\s*)?\)/)
+    expect(src).toMatch(/const ctxFast = makeWorkerCtx\([\s\S]*?WORKER_MODEL_FAST_OVERRIDE,\s*(?:WORKER_OAUTH_TOKEN_FILE_FAST,\s*'WORKER_OAUTH_TOKEN_FILE_FAST',\s*)?\)/)
     expect(src).not.toMatch(/const ctxSlow = makeWorkerCtx\([^)]*WORKER_MODEL_FAST_OVERRIDE/)
     expect(src).toMatch(/if \(ctx\.modelOverride\) \{ customEnvPrefix = ''; customProviderModel = null \}/)
   })

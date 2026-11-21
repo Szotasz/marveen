@@ -209,8 +209,10 @@ export type WorkerOauthTokenDecision =
 export function decideWorkerOauthToken(input: {
   /** The raw install setting: undefined or '' means not set. */
   configured: string | null | undefined
-  /** True when this worker launch would carry the main agent's custom-provider env (ANTHROPIC_BASE_URL ...). */
-  usesCustomProvider: boolean
+  /** True when this worker launch would carry the main agent's custom-provider env (ANTHROPIC_BASE_URL ...).
+   *  A function, evaluated ONLY for a non-empty, valid setting: resolving the provider reads the vault and
+   *  writes a launch-secret file, which an unset setting (= today's behaviour) must not cause. */
+  usesCustomProvider: () => boolean
   fleetTokenPath: string
   uid: number | null
 }): WorkerOauthTokenDecision {
@@ -219,7 +221,7 @@ export function decideWorkerOauthToken(input: {
   if (setting.state === 'invalid') return { kind: 'refused', path: null, reason: setting.reason, detail: '' }
   // Same conflict the per-agent field refuses (oauthTokenFileConflict, 'custom-provider'): a setup-token is a
   // Claude OAuth credential, and next to a custom-provider endpoint the CLI would send it to that third party.
-  if (input.usesCustomProvider) return { kind: 'refused', path: setting.path, reason: 'custom-provider', detail: '' }
+  if (input.usesCustomProvider()) return { kind: 'refused', path: setting.path, reason: 'custom-provider', detail: '' }
   const check = checkOauthTokenFile(setting.path, { uid: input.uid, fleetTokenPath: input.fleetTokenPath })
   if (!check.ok) return { kind: 'refused', path: check.path, reason: check.reason, detail: check.detail }
   return { kind: 'own', path: check.path, fingerprint: check.fingerprint }
@@ -231,7 +233,11 @@ export function decideWorkerOauthToken(input: {
 // reads: an unreadable file, an empty one or one without the setup-token prefix ends the launch
 // (exit 1) instead of starting the worker with an empty or foreign token. The value never leaves the shell.
 export function workerOauthTokenExport(path: string): string {
-  return `_wt="$(cat '${path}')" || exit 1; ` +
+  // The tmux server's global env is inherited by every new session, and an inherited API key or auth token
+  // outranks the OAuth token: a worker meant to run on its own setup-token must not silently run on one of them
+  // (the same strip as the agent side, inherited-auth-unset.ts, 'own token file').
+  return `unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; ` +
+    `_wt="$(cat '${path}')" || exit 1; ` +
     `case "$_wt" in ${SETUP_TOKEN_PREFIX}*) export CLAUDE_CODE_OAUTH_TOKEN="$_wt"; unset _wt ;; *) exit 1 ;; esac; `
 }
 
