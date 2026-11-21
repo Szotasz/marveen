@@ -855,7 +855,7 @@ describe('the pending retry cancel and the background task stop use it', () => {
   })
 
   it('a failed cancel says so in a translated toast instead of only the console, and the list is reloaded', () => {
-    expect(PENDING).toContain("if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'))")
+    expect(PENDING).toContain("if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'), 'error')")
     expect(PENDING).toContain("catch {\n        showToast(t('tasks.toast.cancel_pending_error'), 'error')")
     expect(PENDING).not.toContain('console.error')
   })
@@ -1138,7 +1138,7 @@ describe('the custom provider delete uses it', () => {
   })
 
   it('a failed delete shows a translated toast, or the server\'s reason', () => {
-    expect(handler).toContain("showToast(err.error || t('providers.toast.delete_error'))")
+    expect(handler).toContain("showToast(err.error || t('providers.toast.delete_error'), 'error')")
     expect(handler).toContain('loadAvailableModels()')
   })
 

@@ -2801,7 +2801,7 @@ async function renderCardLabelsSection(card) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, color: selectedColor }),
       })
-      if (!r.ok) { showToast(t('kanban.toast.label_create_error')); return }
+      if (!r.ok) { showToast(t('kanban.toast.label_create_error'), 'error'); return }
       const newLabel = await r.json()
       kanbanAllLabels.push(newLabel)
       await fetch(`/api/kanban/${encodeURIComponent(card.id)}/labels`, {
@@ -2969,7 +2969,7 @@ async function renderCardBlockersSection(card) {
         // The server's message names the actual reason (cycle, missing card);
         // surfacing it beats a generic failure the operator has to guess at.
         const err = await r.json().catch(() => ({}))
-        showToast(err.error || t('kanban.toast.blocker_add_error'))
+        showToast(err.error || t('kanban.toast.blocker_add_error'), 'error')
         addSelect.value = ''
         return
       }
@@ -3219,7 +3219,7 @@ async function showCardDetail(card) {
       } else if (r.status === 409 && (await r.json().catch(() => ({}))).conflict === 'stale_version') {
         showToast(t('kanban.toast.stale_version'), 6000)
         loadKanban()
-      } else showToast(t('kanban.toast.save_error'))
+      } else showToast(t('kanban.toast.save_error'), 'error')
     }
     parentMetaItem.style.display = ''
   } else {
@@ -3272,7 +3272,7 @@ async function showCardDetail(card) {
       if (!res.ok) {
         let msg = `HTTP ${res.status}`
         try { msg = (await res.json()).error || msg } catch {}
-        showToast(t('kanban.toast.comment_failed', { msg }))
+        showToast(t('kanban.toast.comment_failed', { msg }), 'error')
         return
       }
       document.getElementById('commentContent').value = ''
@@ -3360,7 +3360,7 @@ async function showCardDetail(card) {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title, parent_id: card.id, status: card.status, priority: card.priority, project: card.project || null, assignee: null }),
           })
-          if (!r.ok) { showToast(t('kanban.toast.subtask_error')); return }
+          if (!r.ok) { showToast(t('kanban.toast.subtask_error'), 'error'); return }
           showToast(t('kanban.toast.subtask_created'))
           loadKanban()
           showCardDetail(card)
@@ -3402,7 +3402,7 @@ async function showCardDetail(card) {
             if (!confirmed) return
             try {
               const r = await fetch(`/api/kanban/${encodeURIComponent(ch.id)}`, { method: 'DELETE' })
-              if (!r.ok) { showToast(t('common.error_delete')); return }
+              if (!r.ok) { showToast(t('common.error_delete'), 'error'); return }
               showToast(t('kanban.toast.subtask_deleted'))
               loadKanban()
               showCardDetail(card)
@@ -3431,7 +3431,7 @@ async function showCardDetail(card) {
     try {
       const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed')); return }
+      if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed'), 'error'); return }
       breakdownMode = 'kanban'
       breakdownCardId = card.id
       breakdownSubtasks = data.subtasks
@@ -3455,7 +3455,7 @@ async function triggerBreakdown(card) {
   try {
     const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed')); return }
+    if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed'), 'error'); return }
     breakdownMode = 'kanban'
     breakdownCardId = card.id
     breakdownSubtasks = data.subtasks
@@ -3530,7 +3530,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
         body: JSON.stringify({ subtasks: accepted, success_criteria: successCriteria }),
       })
       const data = await res.json()
-      if (!res.ok) { showToast(data.error || t('common.error_save')); return }
+      if (!res.ok) { showToast(data.error || t('common.error_save'), 'error'); return }
       closeModal(breakdownOverlay)
       showToast(t('kanban.breakdown.promoted', { count: data.child_count }))
       loadIdeasPage()
@@ -3542,7 +3542,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
       body: JSON.stringify({ subtasks: accepted }),
     })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || t('common.error_save')); return }
+    if (!res.ok) { showToast(data.error || t('common.error_save'), 'error'); return }
     closeModal(breakdownOverlay)
     closeModal(cardDetailOverlay)
     showToast(t('kanban.breakdown.created_count', { count: data.created.length }))
@@ -4691,7 +4691,7 @@ function attachTmuxCopyButtons(card, agent) {
       btn.classList.add('copied')
       btn.innerHTML = '<span class="tmux-copy-ico">✓</span>' + t('agents.tmux_copied')
       setTimeout(() => { btn.innerHTML = orig; btn.classList.remove('copied') }, 1400)
-    }).catch(() => showToast(t('agents.tmux_copy_failed')))
+    }).catch(() => showToast(t('agents.tmux_copy_failed'), 'error'))
   })
   row.appendChild(btn)
   card.appendChild(row)
@@ -5147,7 +5147,7 @@ async function openAgentDetail(agentName) {
       const res = await fetch(url)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        showToast(data.error || t('agents.export.error'))
+        showToast(data.error || t('agents.export.error'), 'error')
         return
       }
       const blob = await res.blob()
@@ -6042,7 +6042,7 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
       stopModelRestartPolling()
       badge.hidden = true
       if (currentAgent) updateProcessControl(currentAgent)
-      showToast(t('agents.toast.restart_state_error'))
+      showToast(t('agents.toast.restart_state_error'), 'error')
       return
     }
     try {
@@ -6117,7 +6117,8 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
       if (currentAgent) updateProcessControl(currentAgent)
       // RESTARTSTOPPED1005: a deliberately stopped agent is not restarted; the
       // model is saved and applies at its next start -- not a failure.
-      showToast(t(restartRes.status === 409 ? 'agents.toast.model_saved_stopped' : 'agents.restart_failed'))
+      if (restartRes.status === 409) showToast(t('agents.toast.model_saved_stopped'))
+      else showToast(t('agents.restart_failed'), 'error')
       return
     }
     startModelRestartPolling(name, newModel, triggeredAt)
@@ -6243,7 +6244,7 @@ if (exportAllAgentsBtn) {
       const res = await fetch(url)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        showToast(data.error || t('agents.export.error'))
+        showToast(data.error || t('agents.export.error'), 'error')
         return
       }
       const blob = await res.blob()
@@ -6314,7 +6315,7 @@ if (importAgentBtn && importAgentFile) {
         }
         ;({ res, data } = await upload(true))
       }
-      if (!res.ok) { showToast(data.error || t('agents.import.error')); return }
+      if (!res.ok) { showToast(data.error || t('agents.import.error'), 'error'); return }
       const parts = []
       if (data.kind === 'fleet') {
         const skipped = (data.skipped || []).length
@@ -7009,7 +7010,7 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     const result = await res.json()
     // #1878 (6): on the main agent the save restarts the channels session; a failed
     // restart must not read as "connected".
-    if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), 12000)
+    if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), { kind: 'warn', duration: 12000 })
     // INSTTGPOLLWARN1119: another install polling the same bot cannot be checked; said with "connected", not blocked.
     else showToast(t('channel.toast.connected', { provider: getProviderLabel() }) + (result.pollerNote ? ' ' + t('channel.telegram.poller_unverifiable') : ''), result.pollerNote ? 10000 : undefined)
     // Refresh detail
@@ -7037,11 +7038,11 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
     // after a restart). Say so instead of "all right".
     const missing = Array.isArray(data.missingScopes) ? data.missingScopes : []
     if (missing.length > 0) {
-      // showToast's 2nd argument is the DURATION (ms). Long enough to read
-      // a sentence that names scopes and what to do.
+      // A warning, with a DURATION (ms) long enough to read a sentence that
+      // names scopes and what to do.
       const msg = t('channel.toast.missing_scopes', { scopes: missing.join(', ') })
         + (missing.includes('im:read') ? ' ' + t('channel.toast.missing_scopes_imread') : '')
-      showToast(msg, 12000)
+      showToast(msg, { kind: 'warn', duration: 12000 })
     } else {
       const exp = data.secretExpiry
       const suffix = !exp ? ''
@@ -7071,7 +7072,7 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
       showToast(t('channel.toast.reconnect_ok'))
       document.getElementById('chDisconnectedNotice').hidden = true
     } else {
-      showToast(data.message || t('channel.toast.reconnect_failed'), 8000)
+      showToast(data.message || t('channel.toast.reconnect_failed'), { kind: 'error', duration: 8000 })
     }
   } catch {
     showToast(t('channel.toast.reconnect_error'), { kind: 'error', duration: 8000 })
@@ -7091,7 +7092,7 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || t('channel.smoke_test.failed'), 8000)
+      showToast(data.error || t('channel.smoke_test.failed'), { kind: 'error', duration: 8000 })
       return
     }
     showSmokeTestResult(data.output || 'OK')
@@ -8050,7 +8051,7 @@ function renderPendingRetries(container, rows) {
         const res = await fetch(`/api/schedules/pending/${encodeURIComponent(id)}`, { method: 'DELETE' })
         // The server's reasons are English API texts ("Pending retry not found"): a translated toast instead,
         // and the list is reloaded, since a 404 means the retry is already gone.
-        if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'))
+        if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'), 'error')
         loadPendingRetries()
       } catch {
         showToast(t('tasks.toast.cancel_pending_error'), 'error')
@@ -8930,7 +8931,7 @@ async function loadMemStats() {
         const r = await fetch('/api/memories/backfill', { method: 'POST' })
         const data = await r.json()
         // ok:false = pending memories but the embedding backend answered none
-        if (data.ok === false) showToast(t('memories.toast.vector_error'))
+        if (data.ok === false) showToast(t('memories.toast.vector_error'), 'error')
         else showToast(t('memories.toast.vector_count', { count: data.embedded ?? data.count }))
         loadMemStats()
       } catch { showToast(t('memories.toast.vector_error'), 'error') }
@@ -9173,7 +9174,7 @@ function renderMemories(memories) {
         } else if (body.error === 'approval_required') {
           showToast(t('memories.toast.delete_pending'))
         } else {
-          showToast(`${t('common.error_delete')}: ${body.error || res.status}`)
+          showToast(`${t('common.error_delete')}: ${body.error || res.status}`, 'error')
         }
       } catch {
         showToast(t('common.error_delete'), 'error')
@@ -10055,7 +10056,7 @@ document.getElementById('connectorRefreshBtn').addEventListener('click', async (
     const res = await fetch('/api/connectors/refresh', { method: 'POST' })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || !data.ok) {
-      showToast(t('updates.error', {msg: data.error || 'HTTP ' + res.status}))
+      showToast(t('updates.error', {msg: data.error || 'HTTP ' + res.status}), 'error')
     } else {
       showToast(t('connectors.toast.mcp_refreshed', { n: data.count || 0 }))
     }
@@ -10605,7 +10606,7 @@ async function offerGitHubRepoScriptsOptIn(name, skipped) {
     body: JSON.stringify({ runScripts: true }),
   })
   const data = await res.json()
-  if (data.error) showToast(data.error)
+  if (data.error) showToast(data.error, 'error')
 }
 
 async function loadGitHubRepos() {
@@ -10628,7 +10629,7 @@ async function loadGitHubRepos() {
         try {
           const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
           const data = await res.json()
-          if (data.error) { showToast(data.error); return }
+          if (data.error) { showToast(data.error, 'error'); return }
           await offerGitHubRepoScriptsOptIn(r.name, data.scriptsSkipped)
           loadConnectors()
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
@@ -10914,7 +10915,7 @@ async function loadVault() {
         })
         if (!confirmed) return
         const res = await fetch(`/api/vault/${encodeURIComponent(s.id)}`, { method: 'DELETE' })
-        if (!res.ok) { showToast(t('vault.toast.delete_error')); return }
+        if (!res.ok) { showToast(t('vault.toast.delete_error'), 'error'); return }
         loadVault()
       })
       list.appendChild(item)
@@ -10945,7 +10946,7 @@ async function loadVault() {
     })
     if (!res.ok) {
       const e = await res.json().catch(() => ({}))
-      showToast(t('vault.toast.save_failed', { msg: e.error || res.status }))
+      showToast(t('vault.toast.save_failed', { msg: e.error || res.status }), 'error')
       return
     }
     idInput.value = ''
@@ -11084,7 +11085,7 @@ function renderSshKeys() {
       })
       if (!confirmed) return
       const res = await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
-      if (!res.ok) showToast(t('vault.toast.delete_error'))
+      if (!res.ok) showToast(t('vault.toast.delete_error'), 'error')
       await loadSshKeys()
       await loadSshServers()
     })
@@ -11319,7 +11320,7 @@ function openSshKeygenModal(callback) {
       })
       const data = await res.json()
       if (!res.ok) {
-        showToast(data.code === 'label_taken' ? t('vault.ssh.toast.label_taken', { name: label }) : (data.error || t('vault.ssh.keygen.failed')))
+        showToast(data.code === 'label_taken' ? t('vault.ssh.toast.label_taken', { name: label }) : (data.error || t('vault.ssh.keygen.failed')), 'error')
         resetKeygenForm()
         if (data.code === 'label_taken') document.getElementById('sshKeygenLabelInput').focus()
         return
@@ -11578,7 +11579,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
       )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        showToast(err.error || t('common.error_save')); return
+        showToast(err.error || t('common.error_save'), 'error'); return
       }
       resetSshAddForm()
       panel.hidden = true
@@ -11712,7 +11713,7 @@ function renderVaultGrid(secrets) {
           failure = err && err.message ? err.message : String(err)
         }
         if (failure !== null) {
-          showToast(t('vault.toast.update_error') + ': ' + failure)
+          showToast(t('vault.toast.update_error') + ': ' + failure, 'error')
           saveBtn.disabled = false
           saveBtn.textContent = t('vault.btn.save')
           return
@@ -11741,7 +11742,7 @@ function renderVaultGrid(secrets) {
       })
       if (!confirmed) return
       const res = await fetch(`/api/vault/${encodeURIComponent(id)}`, { method: 'DELETE' })
-      if (!res.ok) { showToast(t('vault.toast.delete_error')); return }
+      if (!res.ok) { showToast(t('vault.toast.delete_error'), 'error'); return }
       loadVaultPage()
       loadVault()
     })
@@ -11783,7 +11784,7 @@ function renderVaultGrid(secrets) {
     }
     if (failure !== null) {
       // keep the inputs so the pasted value is not lost
-      showToast(t('vault.toast.save_error') + ': ' + failure)
+      showToast(t('vault.toast.save_error') + ': ' + failure, 'error')
       addBtn.disabled = false
       return
     }
@@ -11949,7 +11950,7 @@ function renderVaultGrid(secrets) {
         showToast(t('vault.sync.nothing'))
       }
       if (data.errors?.length) {
-        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }))
+        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }), 'error')
       }
     } finally {
       syncBtn.disabled = false
@@ -12051,7 +12052,7 @@ function renderVaultGrid(secrets) {
         showToast(t('vault.scan.imported', { imported: data.imported, bound: data.bound }))
       }
       if (data.errors?.length) {
-        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }))
+        showToast(t('vault.toast.errors', { list: data.errors.join(', ') }), 'error')
       }
     } finally {
       importBtn.disabled = false
@@ -12110,7 +12111,7 @@ async function loadExternalPaths() {
       body: JSON.stringify({ path: val }),
     })
     const data = await res.json()
-    if (data.error) { showToast(data.error); return }
+    if (data.error) { showToast(data.error, 'error'); return }
     input.value = ''
     loadExternalPaths()
     loadConnectors()
@@ -13075,7 +13076,7 @@ memImportSaveBtn.addEventListener('click', async () => {
       loadMemories()
       loadMemStats()
     } else {
-      showToast(`${t('common.error')}: ${data.error || t('common.unknown')}`)
+      showToast(`${t('common.error')}: ${data.error || t('common.unknown')}`, 'error')
     }
   } catch (err) {
     memImportProgress.hidden = true
@@ -13276,7 +13277,7 @@ document.getElementById('fleetExportBtn').addEventListener('click', async () => 
     const res = await fetch('/api/fleet/export', { headers })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      showToast(data.error || t('fleet.export.error'))
+      showToast(data.error || t('fleet.export.error'), 'error')
       return
     }
 
@@ -15944,7 +15945,7 @@ async function applyCliUpdate(target) {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       if (btn) btn.disabled = false
-      showToast(t('updates.cli.failed', { msg: data.error || ('HTTP ' + res.status) }))
+      showToast(t('updates.cli.failed', { msg: data.error || ('HTTP ' + res.status) }), 'error')
       return
     }
     showToast(t('updates.cli.started', { v: target }))
@@ -15994,7 +15995,7 @@ async function runDiagnose() {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       if (btn) btn.disabled = false
-      showToast(t('updates.diagnose.failed', { msg: data.error || ('HTTP ' + res.status) }))
+      showToast(t('updates.diagnose.failed', { msg: data.error || ('HTTP ' + res.status) }), 'error')
       return
     }
     showToast(data.already ? t('updates.diagnose.already') : t('updates.diagnose.started'))
@@ -16024,7 +16025,7 @@ async function offerRebaseUpdate() {
     const r = await fetch('/api/updates/rebase-plan')
     plan = await r.json().catch(() => ({}))
     if (!r.ok || !plan || typeof plan.hash !== 'string') {
-      showToast(t('updates.rebase.plan_error', { msg: (plan && plan.error) || ('HTTP ' + r.status) }), 12000)
+      showToast(t('updates.rebase.plan_error', { msg: (plan && plan.error) || ('HTTP ' + r.status) }), { kind: 'error', duration: 12000 })
       return
     }
   } catch (err) {
@@ -16034,7 +16035,7 @@ async function offerRebaseUpdate() {
   if (plan.willFail) {
     showToast(plan.willFail === 'local-dependency-without-lock'
       ? t('updates.rebase.will_fail_lock')
-      : t('updates.rebase.will_fail', { reason: plan.willFail }), 20000)
+      : t('updates.rebase.will_fail', { reason: plan.willFail }), { kind: 'warn', duration: 20000 })
     return
   }
   const content = document.createElement('div')
@@ -16080,7 +16081,7 @@ async function offerRebaseUpdate() {
   })
   const approval = await a.json().catch(() => ({}))
   if (!a.ok || typeof approval.id !== 'string') {
-    showToast(t('updates.rebase.approve_failed', { msg: approval.error || ('HTTP ' + a.status) }), 12000)
+    showToast(t('updates.rebase.approve_failed', { msg: approval.error || ('HTTP ' + a.status) }), { kind: 'error', duration: 12000 })
     return
   }
   await runUpdate(false, approval.id)
@@ -16128,7 +16129,7 @@ async function runUpdate(autoStash, rebaseApproval) {
         await offerRebaseUpdate()
         return
       }
-      showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))
+      showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }), 'error')
       return
     }
     showToast(t('updates.toast.applying'))
@@ -16184,24 +16185,24 @@ async function pollUpdateOutcome(resetBtn) {
         // human (stash conflict, settings.json gate). No auto-reload: it
         // would wipe this message before anyone reads it.
         if (resetBtn) resetBtn()
-        showToast(t('updates.toast.warning', { old: result.old || '', new: result.new || '', msg: result.message || '' }), 30000)
+        showToast(t('updates.toast.warning', { old: result.old || '', new: result.new || '', msg: result.message || '' }), { kind: 'warn', duration: 30000 })
         return
       }
       if (st === 'rolled-back') {
         if (resetBtn) resetBtn()
-        showToast(t('updates.toast.rolled_back', { old: result.old || '', msg: result.message || '' }))
+        showToast(t('updates.toast.rolled_back', { old: result.old || '', msg: result.message || '' }), 'error')
         renderDiagnoseOffer()
         return
       }
       // failed
       if (resetBtn) resetBtn()
-      showToast(t('updates.toast.failed', { phase: result.phase || '?', msg: result.message || ('code ' + result.code) }))
+      showToast(t('updates.toast.failed', { phase: result.phase || '?', msg: result.message || ('code ' + result.code) }), 'error')
       renderDiagnoseOffer()
       return
     }
   }
   if (resetBtn) resetBtn()
-  showToast(t('updates.toast.status_timeout'))
+  showToast(t('updates.toast.status_timeout'), 'warn')
 }
 
 // update.sh stops and starts the dashboard and the channels unit (scripts/stop.sh, start.sh), and channels.sh
@@ -16960,7 +16961,7 @@ function fallbackCopyToClipboard(text, btn) {
       btn.textContent = t('common.copied')
       setTimeout(() => { btn.textContent = t('common.copy') }, 1500)
     } else {
-      showToast(t('common.toast.copy_failed'))
+      showToast(t('common.toast.copy_failed'), 'error')
     }
   } catch {
     showToast(t('common.toast.copy_failed'), 'error')
@@ -17254,7 +17255,7 @@ async function startBgTask() {
     })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || t('common.error'))
+      showToast(data.error || t('common.error'), 'error')
       return
     }
     document.getElementById('bgPrompt').value = ''
@@ -17316,7 +17317,7 @@ async function loadBgTasks() {
 async function viewBgTask(id) {
   try {
     const res = await fetch(`/api/background-tasks/${id}`)
-    if (!res.ok) { showToast(t('bgTasks.load_error')); return }
+    if (!res.ok) { showToast(t('bgTasks.load_error'), 'error'); return }
     const task = await res.json()
     const output = task.liveOutput || task.output || t('bgTasks.no_output')
     const modal = document.createElement('div')
@@ -17351,7 +17352,7 @@ async function cancelBgTask(id, agent) {
       showToast(t('bgTasks.toast.stopped'))
       loadBgTasks()
     } else {
-      showToast(t('bgTasks.toast.stop_error'))
+      showToast(t('bgTasks.toast.stop_error'), 'error')
     }
   } catch {
     showToast(t('bgTasks.toast.stop_error'), 'error')
@@ -17435,7 +17436,7 @@ async function setAutonomyLevel(key, level) {
     })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      showToast(data.error || t('common.error_save'))
+      showToast(data.error || t('common.error_save'), 'error')
       return
     }
     // Refresh the settings tab autonomy grid if it is visible
@@ -18706,7 +18707,7 @@ function wireFleetFreeze() {
         body: JSON.stringify({ reason, mode }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
+      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status), 'error'); return }
       renderFleetFreeze(data)
       showToast(t('fleet_freeze.toast.frozen'))
     } catch (err) { showToast(String(err.message || err), 'error') }
@@ -18717,7 +18718,7 @@ function wireFleetFreeze() {
       const res = await fetch('/api/fleet/unfreeze', { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (res.status === 403) { showToast(t('fleet_freeze.toast.owner_only'), 8000); return }
-      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
+      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status), 'error'); return }
       renderFleetFreeze({ frozen: false })
       showToast(t('fleet_freeze.toast.unfrozen'))
     } catch (err) { showToast(String(err.message || err), 'error') }
@@ -19622,8 +19623,8 @@ async function probeClaudePlan(id, btn) {
       // 422) is not recorded, so surface it here.
       // A 429 is the per-plan probe throttle: the reloaded row already shows
       // the last measurement, so just say why nothing new happened.
-      if (res.status === 429) showToast(t('settings.claude_plans.probe_throttled'))
-      else if (res.status !== 502) showToast((data && data.error) || t('settings.claude_plans.probe_failed'))
+      if (res.status === 429) showToast(t('settings.claude_plans.probe_throttled'), 'warn')
+      else if (res.status !== 502) showToast((data && data.error) || t('settings.claude_plans.probe_failed'), 'error')
     }
   } catch {
     showToast(t('settings.claude_plans.probe_failed'), 'error')
@@ -19838,7 +19839,7 @@ function buildProvidersUI(container, providers) {
           const r = await fetch(`/api/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
           if (!r.ok) {
             const err = await r.json().catch(() => ({}))
-            showToast(err.error || t('providers.toast.delete_error'))
+            showToast(err.error || t('providers.toast.delete_error'), 'error')
             return
           }
           renderProvidersContent(container)
@@ -19944,7 +19945,7 @@ function openAddProviderModal(container, editProvider = null) {
       })
       if (!r.ok) {
         const err = await r.json().catch(() => ({}))
-        showToast(err.error || t('providers.toast.save_error'))
+        showToast(err.error || t('providers.toast.save_error'), 'error')
         return
       }
       overlay.remove()
@@ -22132,7 +22133,7 @@ async function promoteIdea(phase) {
 async function setIdeaStatus(id, status) {
   try {
     const res = await fetch(`/api/ideas/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
-    if (!res.ok) { showToast(t('ideas.toast.status_error')); return }
+    if (!res.ok) { showToast(t('ideas.toast.status_error'), 'error'); return }
     loadIdeasPage()
   } catch { showToast(t('ideas.toast.status_error'), 'error') }
 }
@@ -22152,7 +22153,7 @@ async function openIdeaBreakdown(id) {
   try {
     const res = await fetch(`/api/ideas/${id}/breakdown`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
     const data = await res.json()
-    if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed')); return }
+    if (!res.ok) { showToast(data.error || t('kanban.breakdown.failed'), 'error'); return }
     if (!data.subtasks || !data.subtasks.length) { showToast(t('ideas.toast.no_subtasks')); return }
     breakdownMode = 'idea'
     breakdownIdeaId = id
@@ -22400,7 +22401,7 @@ document.getElementById('terminalInputToggle')?.addEventListener('change', (e) =
     .catch(() => {
       terminalInputEnabled = false
       syncTerminalInputToggleUI()
-      showToast(t('terminal.input_toggle_failed'))
+      showToast(t('terminal.input_toggle_failed'), 'error')
     })
 })
 
@@ -23794,7 +23795,7 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
         } else {
           restoreBtn.disabled = false
           restoreBtn.textContent = t('archived.btn.restore_to_board')
-          showToast(t('archived.restore_error'))
+          showToast(t('archived.restore_error'), 'error')
         }
       } catch {
         restoreBtn.disabled = false
@@ -23871,7 +23872,7 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
             } else {
               btn.disabled = false
               btn.textContent = t('archived.btn.restore')
-              showToast(t('archived.restore_error'))
+              showToast(t('archived.restore_error'), 'error')
             }
           } catch {
             btn.disabled = false
