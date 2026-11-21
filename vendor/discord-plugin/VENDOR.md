@@ -62,6 +62,19 @@
       (commands registered earlier stay, and are refused);
     - A6: the bot's own threads (A1 list) get a recovery cursor too; at start at most 20 of them are looked into,
       with the same 10-minute lock and per-channel caps.
+  - Hermes parity, PR5 (Zoli 2026-11-11):
+    - A9: another bot's message passes only when its TEXT names this bot (`<@id>`), in an allowed server channel that
+      lists that bot (allowFrom, or a `DISCORD_CHANNEL_POLICY` role; an empty allowFrom never lets a bot in), never in a
+      DM, never our own; marked `is_bot="1"`. Not @everyone/@here, a role, a pattern, or a reply to us. Loop guard per
+      channel (a thread counts with its parent): 30 s between two, at most 3 per 10 min, then one log line;
+    - G2: `pin_message` / `unpin_message`, listed only with `DISCORD_ADMIN_ACTIONS=pin`, only in allowed channels.
+      Deleting messages and changing roles are not built (an inventory test pins that);
+    - D4: the answered message gets ✅ once the reply has gone out to that chat (never for a failed reply), with or
+      without an ack reaction (Zoli 2026-11-15); an ack set in access.json stays as it was;
+    - D5: `edit_message` over 2000 characters: the first part is the edit, the rest new messages after it (reply's
+      chunking, max 8 parts, refused before anything changes). It cuts at `textChunkLimit` like `reply`, on purpose:
+      an edited answer splits where the same answer sent fresh would. A channel that cannot take new messages refuses
+      a multi-part edit before editing; a failed follow-up reports the edit and how many new messages went out.
 - **How it gets in**: `scripts/patch-discord-plugin.py`, at every channel start, puts the overlay
   over a cached `server.ts` ONLY when that file is this exact upstream version (or our own earlier
   output). Any other file -- a plugin update -- is left as shipped, with one loud log line.
