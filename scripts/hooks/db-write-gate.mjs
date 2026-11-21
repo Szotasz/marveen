@@ -45,9 +45,9 @@
 // escape/glob variants, message-data residue), run with `surface: 'security'`.
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { accessSync, constants as fsConstants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 import {
@@ -119,6 +119,68 @@ const WORKER_HOME_TARGETS = [{ sub: '.claude-config', dir: true }, { sub: '.clau
   { sub: 'CLAUDE.md', noBareGlob: true }, { sub: 'CLAUDE.local.md', noBareGlob: true }]
 function workerHomeTargets(homeRel) {
   return WORKER_HOME_TARGETS.map((t) => ({ home: `${homeRel}/${t.sub}`, ...(t.dir ? { dir: true } : {}), ...(t.noBareGlob ? { noBareGlob: true } : {}) }))
+}
+
+// INSTRSURFACE1118 (kanban 0d0809bf): the instruction surfaces a session loads at its start. Claude Code reads the
+// CLAUDE.md files of its cwd and of every ancestor directory (measured: a sub-agent's context carries the install
+// root's CLAUDE.md), the .claude/{rules,skills,commands,agents,output-styles} trees of its project (the main agent's is
+// the root; the root's skills reach the sub-agents too, per the scaffold's own text; the other trees from an ancestor
+// are not measured, and listed anyway), and the same at user level from its config dir. One write there plants a
+// lasting instruction in a session that is not the writer's, past the skill proposal, its quarantine and the
+// owner-only skill routes:
+//   the install root      -- every sub-agent's cwd is below it (agents/<name>), the main agent's cwd IS it
+//   every ancestor of it  -- same reason (rootAncestorInstructionEntries, added per root in installTargets)
+//   ~/.claude             -- the spawn links every top-level ~/.claude entry into each agent's isolated config dir
+//                            (agent-process.ts), so a new ~/.claude/CLAUDE.md or rules/ reaches the whole fleet at
+//                            its next start; skills/ and agents/ are listed above already (PLUGINCODEWRITE1104)
+//   another agent's       -- its CLAUDE.md files, its .claude trees and its config dir's own (real) ones
+// The caller's OWN agent directory stays free (`notCaller`): that is how an agent learns, writing its own skills,
+// rules and CLAUDE.md (Laci, 2026-11-18). The main agent is not on this list. The dashboard's writes (scaffold,
+// skill approval) are not tool calls.
+const INSTRUCTION_SURFACES = [{ sub: 'CLAUDE.md' }, { sub: 'CLAUDE.local.md' }, { sub: '.claude/CLAUDE.md' },
+  ...['rules', 'skills', 'commands', 'agents', 'output-styles'].map((d) => ({ sub: `.claude/${d}`, dir: true }))]
+const CONFIG_INSTRUCTION_SURFACES = [{ sub: '.claude-config/CLAUDE.md' },
+  ...['rules', 'commands', 'output-styles'].map((d) => ({ sub: `.claude-config/${d}`, dir: true }))]
+const HOME_INSTRUCTION_SURFACES = [{ sub: '.claude/CLAUDE.md' },
+  ...['rules', 'commands', 'output-styles'].map((d) => ({ sub: `.claude/${d}`, dir: true }))]
+// A file entry (no leading dot, so a bare `*` matches it) is free for a quoted bare glob (classifyWord)
+const withDir = (s) => (s.dir ? { dir: true } : { quotedGlobFree: true })
+function instructionSurfaceTargets() {
+  return [
+    ...INSTRUCTION_SURFACES.map((s) => ({ rel: s.sub, ...withDir(s) })),
+    ...HOME_INSTRUCTION_SURFACES.map((s) => ({ home: s.sub, ...withDir(s) })),
+    ...[...INSTRUCTION_SURFACES, ...CONFIG_INSTRUCTION_SURFACES].map((s) => ({ rel: `agents/*/${s.sub}`, pattern: true, notCaller: true, ...withDir(s) })),
+  ]
+}
+// The same surfaces under every ancestor of the install root that the agents' user can write: at or below $HOME, or
+// a directory it may write. `/` and `/home` are not (root-owned), and an entry there only cost false denials: a
+// docblock `/**` in a heredoc read as a glob matched /CLAUDE.md (the 2026-11-18 tool-log replay).
+export function rootAncestorInstructionEntries(root) {
+  const out = []
+  const home = resolve(homedir())
+  for (let dir = dirname(resolve(root)); ; dir = dirname(dir)) {
+    if (dir === home || dir.startsWith(home + '/') || userMayWrite(dir)) {
+      for (const s of INSTRUCTION_SURFACES) out.push({ rel: join(dir, s.sub), abs: join(dir, s.sub), ...withDir(s) })
+    }
+    if (dirname(dir) === dir) break
+  }
+  return out
+}
+function userMayWrite(dir) {
+  try { accessSync(dir, fsConstants.W_OK); return true } catch { return false }
+}
+// The caller's own agent directory (<root>/agents/<name>, by its real path), read from its project dir; null for a
+// caller outside agents/ (a background worker): every agent directory is then another agent's.
+export function callerAgentDirKey(root, projectDir) {
+  if (!projectDir) return null
+  const agents = pathKey(join(resolve(root), 'agents'))[0]
+  const rel = relative(agents, pathKey(resolve(String(projectDir)))[0])
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null
+  return pathKey(join(agents, rel.split('/')[0]))
+}
+// A `notCaller` entry never matches inside the caller's own agent directory.
+function ownedByCaller(t, key) {
+  return !!t.exceptKey && underKey(key, t.exceptKey)
 }
 
 // The install's own gate wiring and autonomy levels (Dani 56081 point 5, Samu 56090).
@@ -323,6 +385,8 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   // answer 200 for a launch that failed. Written by the dashboard and by the launched shell's resolve-plan-token-env.mjs
   // (neither is a tool call), never by a sub-agent: the whole directory, as a directory.
   { rel: 'store/plan-token-launch', dir: true },
+  // INSTRSURFACE1118: the instruction surfaces other sessions load (see instructionSurfaceTargets)
+  ...instructionSurfaceTargets(),
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -460,7 +524,8 @@ export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir
   const dyn = subAgent ? dynamicSources(k) : null
   const ck = `${subAgent ? 'sub' : 'all'}\u0000${k}\u0000${subAgent && projectDir ? resolve(String(projectDir)) : ''}\u0000${subAgent && configDir ? resolve(String(configDir)) : ''}\u0000${dyn ? dyn.sig : ''}\u0000${subAgent ? homedir() : ''}`
   if (!targetCache.has(ck)) {
-    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir), ...workerConfigEntries(k), ...dynamicPluginEntries(k, projectDir, dyn)] : PROTECTED_INSTALL_PATHS
+    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir), ...workerConfigEntries(k), ...dynamicPluginEntries(k, projectDir, dyn), ...rootAncestorInstructionEntries(k)] : PROTECTED_INSTALL_PATHS
+    const ownKey = subAgent ? callerAgentDirKey(k, projectDir) : null
     targetCache.set(ck, {
       rootKey: pathKey(k),
       list: entries.map((t) => {
@@ -469,7 +534,7 @@ export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir
         const key = pathKey(abs)
         // the lexical and the real spelling, segment by segment, for glob words
         const segs = [normalizePathSegments(abs), normalizePathSegments(key[0])]
-        return { ...t, abs, key, segs }
+        return { ...t, abs, key, segs, ...(t.notCaller && ownKey ? { exceptKey: ownKey } : {}) }
       }),
     })
   }
@@ -722,6 +787,7 @@ export function literalHeredocBody(body) {
 // when the key is a strict prefix of the pattern (a directory on the way to a match), else null. Every nameForms()
 // form of the key is read against the same form of the pattern (the real path, its case folds).
 export function patternRel(key, t) {
+  if (ownedByCaller(t, key)) return null
   let best = null
   for (let i = 0; i < key.length; i++) {
     const K = normalizePathSegments(key[i])
@@ -871,10 +937,14 @@ export function classifyWord(word, ctx) {
       // a named segment) skips a noBareGlob entry only when its segment's every bare glob was quoted (ctx.bareGlobQuoted,
       // set per segment; unset = not proven, no skip), no program in it re-runs text as shell code, and it is read from
       // the caller's OWN project dir; after a cd elsewhere (another sub-agent into a worker's home) it does not
-      const bareRel = ctx.bareGlobQuoted === true && e.split('/').every((seg) => seg === '' || seg === '.' || /^[*?]+$/.test(seg))
-        && !!ctx.cwd && !!ctx.projectDir && sameKey(pathKey(resolve(ctx.cwd)), pathKey(resolve(String(ctx.projectDir))))
+      const bareQuoted = ctx.bareGlobQuoted === true && e.split('/').every((seg) => seg === '' || seg === '.' || /^[*?]+$/.test(seg))
+      const bareRel = bareQuoted && !!ctx.cwd && !!ctx.projectDir && sameKey(pathKey(resolve(ctx.cwd)), pathKey(resolve(String(ctx.projectDir))))
       for (const t of list) {
         if (bareRel && t.noBareGlob) continue
+        // INSTRSURFACE1118: a quoted bare glob that no program re-shells is the literal name `*`, wherever it is read
+        // from: it names no CLAUDE.md (a cd to an ancestor of the root, `python3 -c ... '*'`, stayed free)
+        if (bareQuoted && t.quotedGlobFree) continue
+        if (t.exceptKey && ownedByCaller(t, nameForms(W.join('/')))) continue
         for (const T of t.segs) {
           const n = Math.min(W.length, T.length)
           let ok = true
@@ -2479,6 +2549,7 @@ function dirTargetDeny(raw, opts) {
   const { list } = installTargets(ctx.root, ctx.subAgent, ctx.projectDir, ctx.configDir)
   for (const t of list) {
     if (t.pattern) {
+      if (ownedByCaller(t, key)) continue
       // agents/*/x: the directory is the pattern's parent or above it (one `*` per segment)
       for (let i = 0; i < key.length; i++) {
         const K = normalizePathSegments(key[i])
