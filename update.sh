@@ -2280,7 +2280,37 @@ if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   #
   # setsid is NOT hoisted out of this branch on purpose: macOS has no setsid at
   # all (measured), and this branch only runs where systemd-run exists.
-  FINALIZE_STARTED="${FINALIZE_SCRIPT%.sh}.started"; rm -f "$FINALIZE_STARTED"
+  FINALIZE_STARTED="${FINALIZE_SCRIPT%.sh}.started"; rm -f "$FINALIZE_STARTED" 2>/dev/null
+  # FINMARKERCLEAR1120: an old marker that rm -f cannot clear (a folder, or a
+  # file in a folder that is not writable) made the fallback below believe the
+  # finalizer had started, so no finalizer ran at all. This run then uses a
+  # marker name of its own; plain shell only, the PATH here may be minimal.
+  # The replacement name is cleared first, because a recycled pid can find an
+  # earlier run's file there.
+  if [ -e "$FINALIZE_STARTED" ] || [ -L "$FINALIZE_STARTED" ]; then
+    FINALIZE_OWN="${FINALIZE_SCRIPT%.sh}.started.$$"; rm -f "$FINALIZE_OWN" 2>/dev/null
+    if [ ! -e "$FINALIZE_OWN" ] && [ ! -L "$FINALIZE_OWN" ]; then
+      echo "[update] the old finalizer start marker $FINALIZE_STARTED could not be removed; this run uses $FINALIZE_OWN" >> "$FINALIZE_LOG" 2>/dev/null
+      FINALIZE_STARTED="$FINALIZE_OWN"
+    elif [ -f "$FINALIZE_OWN" ] && [ ! -L "$FINALIZE_OWN" ] && { : > "$FINALIZE_OWN"; } 2>/dev/null; then
+      # The leftover replacement is a regular file this shell could truncate (a
+      # plain ': >', so noclobber and the append-only attribute make it fail, as
+      # they would in the wrapper), so the wrapper can write it and the run
+      # stays inside the scope. Known limit: if
+      # systemd-run then cannot start, the fallback sees the leftover file and
+      # does not run the finalizer (0 runs), as this case behaved before
+      # FINMARKERCLEAR1120 too.
+      FINALIZE_OLD="$FINALIZE_STARTED"
+      echo "[update] the old finalizer start marker $FINALIZE_OLD and $FINALIZE_OWN could not be removed; $FINALIZE_OWN could be truncated, so this run reuses it" >> "$FINALIZE_LOG" 2>/dev/null
+      FINALIZE_STARTED="$FINALIZE_OWN"
+    else
+      echo "[update] the old finalizer start marker $FINALIZE_STARTED and $FINALIZE_OWN could not be removed; the finalizer starts through the fallback only" >> "$FINALIZE_LOG" 2>/dev/null
+      # With an empty marker path the wrapper's `: > "$1"` fails, so the wrapper
+      # exits 1 before running the finalizer, and the fallback's `[ -e "" ]` is
+      # false, so the finalizer runs exactly once, through the fallback.
+      FINALIZE_STARTED=""
+    fi
+  fi
   # FINONCE1120: systemd-run --scope returns the command's exit code. A
   # rolled-back/failed finalizer used to run twice, and the second run wrote
   # a false success. The marker limits the fallback to the case where
