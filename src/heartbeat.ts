@@ -1,4 +1,5 @@
 import { statSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync, readdirSync, lstatSync, rmSync } from 'node:fs'
+import { writeMcpJsonFile } from './web/atomic-write.js'
 import { join } from 'node:path'
 import { homedir, userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -107,7 +108,7 @@ function ensureHeartbeatWorkerCwd(): void {
     // gates are the enabledPlugins override + CLAUDE_CONFIG_DIR).
     const mcpPath = join(HEARTBEAT_AGENT_CWD, '.mcp.json')
     if (!existsSync(mcpPath)) {
-      writeFileSync(mcpPath, '{"mcpServers":{}}\n')
+      writeMcpJsonFile(mcpPath, '{"mcpServers":{}}\n')
     }
 
     // Build the isolated CLAUDE_CONFIG_DIR. Symlink every top-level entry

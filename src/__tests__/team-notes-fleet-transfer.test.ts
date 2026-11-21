@@ -39,7 +39,7 @@ vi.mock('node:fs', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs')>()
   return { ...real, existsSync: () => false, mkdirSync: () => undefined, unlinkSync: () => undefined, rmSync: () => undefined, readdirSync: () => [] }
 })
-vi.mock('../web/atomic-write.js', () => ({ atomicWriteFileSync: vi.fn() }))
+vi.mock('../web/atomic-write.js', () => ({ atomicWriteFileSync: vi.fn(), MCP_JSON_MODE: 0o600 }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: '/mock/tasks' }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/mock/project', STORE_DIR: '/mock/store', MAIN_AGENT_ID: 'marveen', BOT_NAME: 'Marveen',
