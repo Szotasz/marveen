@@ -1223,6 +1223,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
+    key: 'USAGE_LIMIT_NOTICE_ROUTE',
+    type: 'string',
+    default: 'both',
+    valueSet: ['both', 'owner', 'main'],
+    description: 'Hová menjen az ütemező jelzése, ha egy ügynök sessionje kifogyott a keretből (usage-limit). both (alapértelmezés): a gazda privát chatje ÉS a fő ágens is megkapja; a fő ágens példányában nincs képernyő-szöveg, csak az ügynök neve és a tény. owner: csak a gazda chatje (a régi út). main: csak a fő ágens; ha az üzenet nem írható be, a gazda chatje kapja. Ha maga a fő ágens fogyott ki, mindig a gazda chatje kapja. Azonnal hat, újraindítás nélkül. A main értéket csak a gazda állíthatja be (felülírás-kulcs); a .env-ben álló main nem hat.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    // Moving to 'main' takes the notice away from the owner, so only the owner may do it and a .env line 'main'
+    // is ignored (overrides-only, ENVRELAXGATE1104).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'main' && newValue.trim().toLowerCase() === 'main',
+  },
+  {
     // ISSUE2556X (marveen#2556): with two paired DMs and the installer's ALLOWED_CHAT_ID=0 the alert resolver refuses
     // to guess, and every system alert was lost. This names the chat outright. Delivery only: it never makes anyone
     // the owner (the command gate and the ledger keep ALLOWED_CHAT_ID / the sole DM entry), and the memory key stays

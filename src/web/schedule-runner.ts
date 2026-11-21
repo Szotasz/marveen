@@ -16,6 +16,7 @@ import { isRepoShippedScript } from './precheck-trust.js'
 import { preCheckScriptPath } from './precheck-path.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
+import { agentTextLang } from './agent-text-lang.js'
 import { decideDesktopGate, readDesktopLock, recordDesktopSkip } from './desktop-lock.js'
 import {
   PROJECT_ROOT,
@@ -28,6 +29,7 @@ import {
 } from '../config.js'
 import { ownerAlertChatOverride, resolveOwnerChatId, configuredOwnerChatFor, normalizeChatId } from '../owner-chat.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { AGENT_NAME_RE } from '../config-registry.js'
 import {
   appendTaskRun,
   markTaskRunFireError,
@@ -1228,6 +1230,19 @@ export function readScheduledDeliveryDefault(
   return parsed
 }
 
+export type UsageLimitNoticeRoute = 'both' | 'owner' | 'main'
+
+/** Read fresh from the settings store only: override, else a tightening .env line, else the default.
+ * process.env is never read. Unknown or empty -> 'both'. */
+export function readUsageLimitNoticeRoute(
+  read: () => string | undefined = () => {
+    try { return String(getEffectiveSettingValue('USAGE_LIMIT_NOTICE_ROUTE') ?? '') } catch { return undefined }
+  },
+): UsageLimitNoticeRoute {
+  const value = (read() ?? '').trim().toLowerCase()
+  return value === 'owner' || value === 'main' ? value : 'both'
+}
+
 /** NOTIFY_TELEGRAM_FALLBACK=0: Telegram is never a fallback (read fresh, a read error keeps the default). */
 export function readTelegramFallbackOff(): boolean {
   try { return String(getEffectiveSettingValue('NOTIFY_TELEGRAM_FALLBACK') ?? '').trim() === '0' } catch { return false }
@@ -1935,22 +1950,68 @@ export function discordNoChannelNotice(taskName: string, agentName: string, sche
 // 30-minute skip window -- never a missed delivery. See usage-limit-gate.ts.
 const usageLimitEpisodes = new Map<string, UsageLimitEpisode>()
 
-// One owner notice per session per limit episode (the gate decides when). Same
-// sink and same fail-quiet rules as the other scheduler alerts: no token or no
-// owner chat is a WARN, never a throw into the fire path.
-function sendUsageLimitNotice(agentName: string, session: string, banner: string, skipUntilMs: number): void {
-  const token = resolveSchedulerAlertToken()
-  const ownerChat = token ? resolveSchedulerOwnerChat() : null
-  if (!token || !ownerChat) {
-    logger.warn({ agent: agentName, session, provider: CHANNEL_PROVIDER }, 'usage-limit notice suppressed: no channel bot token or owner chat')
-    return
+// The main agent's copy of the usage-limit notice. It is a `system`-authored
+// message, which the main agent treats as unforgeable, so it carries NO pane
+// text: the banner is a verbatim screen line whose tail is arbitrary. Only the
+// agent name, the fact, and scheduler-authored text (the probe time is computed
+// here, not read from the screen). The owner's copy keeps the banner.
+export function usageLimitMainAgentText(agentName: string, skipUntilMs: number, route: UsageLimitNoticeRoute): string {
+  const minutes = Math.round(USAGE_LIMIT_PROBE_INTERVAL_MS / 60_000)
+  if (agentTextLang() === 'hu') {
+    const safeAgentName = AGENT_NAME_RE.test(agentName) ? agentName : '[ismeretlen ügynöknév]'
+    const probeAt = new Date(skipUntilMs).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', timeZone: APP_TZ })
+    return [
+      `[USAGE-LIMIT] A(z) ${safeAgentName} session kifogyott a keretből (usage-limit).`,
+      'Az ütemezett feladatokat nem küldöm bele, mert úgysem tudná lefuttatni őket: a sűrűn futó (skipIfBusy) feladatok "skipped-usage-limit" státusszal kimaradnak, a többi "usage-limited" okkal a várakozó sorba kerül, és a próba vagy a keret visszatérése után lefut.',
+      `${minutes} percenként egy feladatot átengedek próbának (a következőt ${probeAt} után); amint a keret visszajön, a szokásos rend helyreáll.`,
+      route === 'main'
+        ? 'A gazda privát chatje ezt a jelzést nem kapja meg (USAGE_LIMIT_NOTICE_ROUTE=main). Döntsd el, kell-e beavatkozni (például az ágens átállítása másik keretre vagy a munkája átosztása), és ha a gazdának tudnia kell róla, te szólj neki.'
+        : 'A gazda ugyanezt a jelzést a privát chatjében is megkapja. Döntsd el, kell-e beavatkozni (például az ágens átállítása másik keretre vagy a munkája átosztása).',
+    ].join('\n')
   }
+  const safeAgentName = AGENT_NAME_RE.test(agentName) ? agentName : '[unrecognised agent name]'
+  const probeAt = new Date(skipUntilMs).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: APP_TZ })
+  return [
+    `[USAGE-LIMIT] The ${safeAgentName} session has run out of usage (usage-limited).`,
+    'Scheduled tasks are not typed into it, because it could not run them: frequent (skipIfBusy) tasks are recorded as "skipped-usage-limit", the others are queued with reason "usage-limited" and run after the probe or once the usage is back.',
+    `Every ${minutes} minutes one task is let through as a probe (the next one after ${probeAt}); once the usage is back, the normal order resumes.`,
+    route === 'main'
+      ? "The owner's private chat does not get this notice (USAGE_LIMIT_NOTICE_ROUTE=main). Decide whether to act (for example move the agent to another plan or reassign its work), and if the owner needs to know, tell them."
+      : 'The owner gets the same notice in their private chat. Decide whether to act (for example move the agent to another plan or reassign its work).',
+  ].join('\n')
+}
+
+// One notice per session per limit episode. USAGE_LIMIT_NOTICE_ROUTE decides
+// who gets it: both (default) = the owner chat with the banner AND the main
+// agent without it; owner = the owner chat only; main = the main agent only,
+// falling back to the owner chat when the inter-agent write fails. When the
+// main agent itself is limited, only the owner chat. Missing token/chat warns.
+function sendUsageLimitNotice(agentName: string, session: string, banner: string, skipUntilMs: number): void {
   const probeAt = new Date(skipUntilMs).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', timeZone: APP_TZ })
   const text = [
     `[${BOT_NAME} scheduler] A(z) ${agentName} session kifogyott a keretből, a képernyőjén ez áll: "${banner}"`,
     'Az ütemezett feladatokat nem küldöm bele, mert úgysem tudná lefuttatni őket: a sűrűn futó (skipIfBusy) feladatok "skipped-usage-limit" státusszal kimaradnak, a többi "usage-limited" okkal a várakozó sorba kerül, és a próba vagy a keret visszatérése után lefut.',
     `${Math.round(USAGE_LIMIT_PROBE_INTERVAL_MS / 60_000)} percenként egy feladatot átengedek próbának (a következőt ${probeAt} után); amint a keret visszajön, a szokásos rend helyreáll.`,
   ].join('\n')
+  const route = readUsageLimitNoticeRoute()
+  const mainAgentLimited = agentName === MAIN_AGENT_ID
+  let toOwner = route !== 'main' || mainAgentLimited
+  if (route !== 'owner' && !mainAgentLimited) {
+    try {
+      createAgentMessage('system', MAIN_AGENT_ID, usageLimitMainAgentText(agentName, skipUntilMs, route))
+      logger.info({ agent: agentName, session, to: MAIN_AGENT_ID, route }, 'usage-limit notice sent to the main agent')
+    } catch (err) {
+      logger.warn({ err, agent: agentName, session, route }, 'usage-limit notice to the main agent failed; the owner chat gets it')
+      toOwner = true
+    }
+  }
+  if (!toOwner) return
+  const token = resolveSchedulerAlertToken()
+  const ownerChat = token ? resolveSchedulerOwnerChat() : null
+  if (!token || !ownerChat) {
+    logger.warn({ agent: agentName, session, provider: CHANNEL_PROVIDER }, 'usage-limit notice suppressed: no channel bot token or owner chat')
+    return
+  }
   ;(async () => {
     try {
       await sendSchedulerAlertMessage(token, ownerChat, text)
