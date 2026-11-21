@@ -399,6 +399,7 @@ window._i18n.hu = {
   'agents.channel.tg_pairing_desc':     'Az ügynök ide tud üzenetet küldeni és innen fogad üzenetet. Egy ügynök tetszőleges számú emberhez (DM) és csoporthoz köthető.',
   'agents.channel.tg_no_chats':         'Még nincs bekötött chat. Lent add hozzá az elsőt.',
   'agents.channel.tg_invite_desc':      'Generálj egy egyedi linket. Aki rákattint, automatikusan elindítja a botot, és Te a UI-n láthatóan azonnal jóváhagyhatod. Egy link csak egyszer használható.',
+  'agents.channel.slack_invite_desc':   'Slacken a meghívó senkit nem enged be magától. Amíg aktív, aki üzenetet ír a botnak, párosítási kódot kap, és a kódot Neked kell jóváhagynod lent, a Párosítási kód mezőben.',
   'agents.channel.tg_no_links':         'Nincs aktív meghívó link.',
   'agents.channel.slack_pairing_desc':  'Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.',
   'agents.channel.slack_requests_desc': 'Slack csatornák, amelyekben megemlítették a botot, de még nincsenek engedélyezve.',

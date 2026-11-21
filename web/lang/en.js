@@ -399,6 +399,7 @@ window._i18n.en = {
   'agents.channel.tg_pairing_desc':     'The agent can send messages here and receive messages. One agent can be connected to any number of people (DM) and groups.',
   'agents.channel.tg_no_chats':         'No connected chats yet. Add the first one below.',
   'agents.channel.tg_invite_desc':      'Generate a unique link. Anyone who clicks it will automatically start the bot, and you can approve it visibly in the UI immediately. Each link is single-use.',
+  'agents.channel.slack_invite_desc':   'On Slack an invite lets nobody in by itself. While it is active, anyone who messages the bot gets a pairing code, and you approve that code below, in the Pairing code field.',
   'agents.channel.tg_no_links':         'No active invite links.',
   'agents.channel.slack_pairing_desc':  'When someone messages the bot, the plugin sends them a code. Enter the code here to approve.',
   'agents.channel.slack_requests_desc': 'Slack channels where the bot was mentioned but are not yet approved.',

@@ -6907,6 +6907,12 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.slack_pairing')
   }
   if (howto) howto.innerHTML = buildHowtoHtml()
+  // SLACKINVCOPY1121: a Slack invite approves nobody by itself (SLACKINVBIND1120), the owner approves the pairing code.
+  const inviteDesc = document.getElementById('chInviteDesc')
+  if (inviteDesc) {
+    inviteDesc.dataset.i18n = currentChannelProvider === 'slack' ? 'agents.channel.slack_invite_desc' : 'agents.channel.tg_invite_desc'
+    inviteDesc.textContent = t(inviteDesc.dataset.i18n)
+  }
   if (reconnectBtn) {
     reconnectBtn.hidden = !(currentAgent && currentAgent.running && agentIsConnected(currentAgent))
   }
