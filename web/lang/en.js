@@ -2911,5 +2911,6 @@ window._i18n.en = {
   'colleague.err.conflict': 'Someone changed this task in the meantime. The list was refreshed.',
   'colleague.err.session': 'Your session has ended. Please sign in again.',
   'colleague.err.generic': 'That did not work ({code}).',
+  'colleague.err.refused': 'The task was not moved. Its status is: {status}.',
   'colleague.who': 'Signed in as {name}',
 }

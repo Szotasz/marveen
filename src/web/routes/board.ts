@@ -399,9 +399,10 @@ export async function tryHandleBoard(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const evidence = typeof body.evidence === 'string' && body.evidence.trim() ? body.evidence : undefined
-    // A colleague session is the human writer: its account name is the actor on the status event, so the card's
-    // history shows which colleague moved it. An agent token keeps the person's name as the actor.
-    const actor = p.humanAccount ?? p.person.name
+    // A colleague session is the human writer: the actor on the status event is colleague:<account> (the form
+    // principal() builds), so the card's history shows which colleague moved it, and a colleague account can never
+    // read as an agent or the owner there. An agent token keeps the person's name as the actor.
+    const actor = p.humanAccount !== undefined ? `colleague:${p.humanAccount}` : p.person.name
     // The done-gate of /api/kanban/:id/move, for agents only: an agent's close without evidence is held at testing.
     // A colleague session is a human, and a human on /api/kanban is not held (isAgentActor); neither is it here.
     const needsEvidence = status === 'done' && !evidence && p.humanAccount === undefined

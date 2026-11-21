@@ -305,7 +305,8 @@ describe('colleague login end to end', () => {
   it('a colleague session closes its own card to done without evidence; the status event names the account', async () => {
     // Maintainer decision on #2929 (option a): a colleague session is a human writer, so the board's done-gate,
     // which holds an AGENT's close at testing (board-access.test.ts pins that side), does not hold it.
-    // The account is 'bob' and its person's display name is 'Bob', so the actor assertion tells the two apart.
+    // The account is 'bob' and its person's display name is 'Bob', so the actor assertion tells the two apart;
+    // the colleague: prefix keeps an account named like an agent or the owner from reading as them (#2929 review).
     const cookie = cookieFrom(await login('bob'))
     const mv = await http_('POST', '/api/board/cards/c-bob/move', { cookie, body: { status: 'done' } })
     expect(mv.status).toBe(200)
@@ -313,7 +314,25 @@ describe('colleague login end to end', () => {
     expect(mv.body.evidence_required).toBeUndefined()
     expect(getKanbanCard('c-bob')!.status).toBe('done')
     const last = getKanbanCardEvents('c-bob').at(-1)!
-    expect(last).toMatchObject({ from_status: 'planned', to_status: 'done', actor: 'bob' })
+    expect(last).toMatchObject({ from_status: 'planned', to_status: 'done', actor: 'colleague:bob' })
+  })
+
+  it('the colleague page treats a 200 with ok:false on a move as a refusal, not a success', () => {
+    // #2929 review: move() decided success by the HTTP status alone, so a soft refusal (200, ok:false) was a silent
+    // reload. The page now shows the answer and puts the select back, before the success path's load().
+    const src = readFileSync(join(__dirname, '..', '..', 'web', 'colleague.js'), 'utf-8')
+    const start = src.indexOf('async function move(')
+    expect(start).toBeGreaterThan(-1)
+    const body = src.slice(start, src.indexOf('\n  }\n', start))
+    const refusal = body.indexOf('r.data.ok === false')
+    expect(refusal).toBeGreaterThan(-1)
+    const branch = body.slice(refusal, body.indexOf('return', refusal))
+    expect(branch).toContain('sel.value = card.status')
+    expect(branch).not.toContain('load()')
+    expect(refusal).toBeLessThan(body.lastIndexOf('load()'))
+    for (const lang of ['en', 'hu']) {
+      expect(readFileSync(join(__dirname, '..', '..', 'web', 'lang', `${lang}.js`), 'utf-8')).toContain("'colleague.err.refused':")
+    }
   })
 
   it('me names the session\'s person; logout ends the session', async () => {

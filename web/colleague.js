@@ -211,6 +211,12 @@
     if (sessionLost(r)) return
     if (r.status === 409) { msg('cb-fatal', t('colleague.err.conflict'), 'err'); load(); return }
     if (!r.ok) { msg('cb-fatal', t('colleague.err.generic', { code: r.status }), 'err'); sel.value = card.status; return }
+    // A 200 can still be a soft refusal (ok: false): show the server's answer and keep the card where it was.
+    if (r.data && r.data.ok === false) {
+      msg('cb-fatal', r.data.note || t('colleague.err.refused', { status: r.data.status || card.status }), 'err')
+      sel.value = card.status
+      return
+    }
     msg('cb-fatal', '')
     load()
   }

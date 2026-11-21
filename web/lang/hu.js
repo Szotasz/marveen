@@ -2913,5 +2913,6 @@ window._i18n.hu = {
   'colleague.err.conflict': 'Valaki közben módosította ezt a feladatot. Frissítettem a listát.',
   'colleague.err.session': 'A munkamenet lejárt. Lépj be újra.',
   'colleague.err.generic': 'Nem sikerült ({code}).',
+  'colleague.err.refused': 'A feladat nem mozdult. Az állapota: {status}.',
   'colleague.who': 'Belépve: {name}',
 }

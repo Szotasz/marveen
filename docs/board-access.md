@@ -114,7 +114,7 @@ Runs in `web.ts` after authentication and before any route handler:
 | `GET /api/board/cards/:id` | | the card plus `comments`; 404 when missing, archived OR invisible (one answer for all three) |
 | `POST /api/board/cards` | `{ title, description?, assignee?, priority?, due_date?, project? }` | new `planned` card; `title` at most 300 characters (400 above that); `assignee` defaults to the person's first assignee and must be inside the visible set (403 otherwise) |
 | `POST /api/board/cards/:id/comments` | `{ content }` | comment authored by the person's `name`, set server-side; a `#hex8` card reference becomes `#seq` only for a card the person can see |
-| `POST /api/board/cards/:id/move` | `{ status, evidence? }` | moved with the person's `name` as audit actor (a colleague session: its account name); compare-and-set on the status read (409 on a concurrent change); an agent's `done` without `evidence` is held at `testing` |
+| `POST /api/board/cards/:id/move` | `{ status, evidence? }` | moved with the person's `name` as audit actor (a colleague session: `colleague:<account>`); compare-and-set on the status read (409 on a concurrent change); an agent's `done` without `evidence` is held at `testing` |
 | `GET /api/board/report` | `?date=YYYY-MM-DD` (optional, default today in `APP_TZ`) | `{ person, date, timezone, groups, text }` |
 
 Bodies are strict: an unknown field, a non-object body or an unknown query
@@ -134,8 +134,9 @@ way around the gate; the owner decided this when the route was reviewed.
 
 A colleague board session (see "Colleague login" below) is a human writer, so,
 like a human on `/api/kanban`, it is not held: its move to `done` closes the
-card (`ok: true`), and the status event's actor is the colleague's account
-name, so the card's history shows which colleague closed it. The exemption is
+card (`ok: true`), and the status event's actor is `colleague:<account>`, so
+the card's history shows which colleague closed it, and an account named like
+an agent or the owner never reads as them. The exemption is
 keyed on the colleague session cookie only; every token path, a scoped agent
 token included, still gets the hold.
 
