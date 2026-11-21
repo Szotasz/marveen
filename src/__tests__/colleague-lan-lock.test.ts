@@ -194,7 +194,7 @@ describe('wiring: web.ts decides the lock after the principal is resolved, befor
   it('lanLockDecision runs right after gateRequest, with the auth kind and the public-listener flag, before every route', () => {
     const src = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
     const gate = src.indexOf('await gateRequest(req, res, url, path, method')
-    const lock = src.indexOf('lanLockDecision(\n      { req, path, method, authKind: auth.kind, publicListener: isPublicRequest(req) },')
+    const lock = src.indexOf('    const lanDenied = lanLockDecision(\n      { req, path, method, authKind: auth.kind, publicListener: isPublicRequest(req) },\n      () => lanLockActiveNow(WEB_HOST),\n    )\n    if (lanDenied) {')
     const firstRoute = src.indexOf('if (await tryHandleAuth(routeCtx)) return')
     expect(gate).toBeGreaterThan(-1)
     expect(lock).toBeGreaterThan(gate)
