@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { tmpdir } from 'node:os'
-import { scratchPatcher } from './helpers/scratch-patcher.js'
+import { scratchPatcher, REPO_PATCHER } from './helpers/scratch-patcher.js'
 import ts from 'typescript'
 
 // A copy in an empty scratch install (helpers/scratch-patcher.ts): the checkout's own .env never decides a test.
@@ -49,6 +49,15 @@ function syntaxErrors(text: string): string[] {
 }
 
 describe('patch-telegram-plugin.py --topics', () => {
+  // The same guard as in patch-telegram-plugin.test.ts (Geri on #2964): without it, pointing this file back at the
+  // checkout's script would stay green in CI, where there is no .env.
+  it('runs from a copy in an empty scratch install, so the checkout\'s own .env never decides a test', () => {
+    expect(SCRIPT.startsWith(join(REPO_PATCHER, '..', '..'))).toBe(false)
+    expect(existsSync(join(PATCHER.install, '.env'))).toBe(false)
+    expect(existsSync(join(PATCHER.install, 'store'))).toBe(false)
+    expect(readFileSync(SCRIPT, 'utf-8')).toBe(readFileSync(REPO_PATCHER, 'utf-8'))
+  })
+
   it('off (the default): no topics line, and the state says so', () => {
     const state = join(cache, 'state.json')
     expect(run(['--state', state, '--topics', 'off']).status).toBe(0)

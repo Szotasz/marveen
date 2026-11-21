@@ -5,16 +5,21 @@
 //  - the patched plugin code itself, RUN with stubbed bot/mcp objects: the reaction handler (who may react, what is
 //    delivered, what is not), the reply tool keeping the excerpts, the polling asking for the reactions;
 //  - /status and the registry entry.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import ts from 'typescript'
 import { telegramPluginPatchStatus } from '../web/system-status.js'
+import { scratchPatcher, REPO_PATCHER } from './helpers/scratch-patcher.js'
 
 const ROOT = join(__dirname, '..', '..')
-const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
+// A copy in an empty scratch install (helpers/scratch-patcher.ts): the checkout's own .env never decides a test
+// (run from the checkout, a TELEGRAM_REACTIONS_ENABLED=1 there turned a case red).
+const PATCHER = scratchPatcher()
+const SCRIPT = PATCHER.script
+afterAll(() => PATCHER.remove())
 const FIXTURE = join(__dirname, 'fixtures', 'telegram-plugin-0.0.7', 'server.ts.txt')
 const TAG = 'MARVEEN-PATCH(tgreact1119)'
 
@@ -30,7 +35,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(cache, { recursive: true, force: true }))
 
-// Every switch given, so the repo's own .env never decides anything.
+// Every switch given; the language comes from the scratch install, which has no .env.
 function run(extra: string[], script = SCRIPT): { status: number | null; stderr: string } {
   const r = spawnSync('python3', [script, '--topics', 'off', '--buttons', 'on', '--buttons-max-age', '0', ...extra, cache],
     { encoding: 'utf-8', timeout: 30_000 })
@@ -49,6 +54,14 @@ function syntaxErrors(text: string): string[] {
 const transpile = (code: string) => ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 
 describe('patch-telegram-plugin.py --reactions', () => {
+  // The same guard as in patch-telegram-plugin.test.ts (#2964): the script is the copy, not the checkout's.
+  it('runs from a copy in an empty scratch install, so the checkout\'s own .env never decides a test', () => {
+    expect(SCRIPT.startsWith(ROOT)).toBe(false)
+    expect(existsSync(join(PATCHER.install, '.env'))).toBe(false)
+    expect(existsSync(join(PATCHER.install, 'store'))).toBe(false)
+    expect(readFileSync(SCRIPT, 'utf-8')).toBe(readFileSync(REPO_PATCHER, 'utf-8'))
+  })
+
   it('off (the default): no line of it, the file is what it was without the switch, the state says off', () => {
     const state = join(cache, 'state.json')
     expect(run(['--state', state]).status).toBe(0)
