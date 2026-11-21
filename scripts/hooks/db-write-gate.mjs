@@ -53,6 +53,7 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 import {
   commandName,
   cwdAfterSegment,
+  substituteDefiniteCommand,
   dataResidue,
   definiteAssignments,
   expandBraces,
@@ -2816,8 +2817,10 @@ function decide(toolName, toolInput, opts = {}, depth = 0) {
     if (subOnly() && claudePluginWrite(command)) return { deny: true, reason: 'subagent-file' }
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
     scriptDetail = null
-    const file = installFileDeny(command, opts)
-    if (file === true && subOnly() && !installFileDeny(command, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
+    // VARDEFDB1121: a variable that is definitely a literal here is read as that literal (W=/abs; git -C $W)
+    const paths = substituteDefiniteCommand(command)
+    const file = installFileDeny(paths, opts)
+    if (file === true && subOnly() && !installFileDeny(paths, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
     if (file) return { deny: true, reason: file === 'git' ? 'git' : 'install-file' }
     // Refs #2974, #2975: the code this command hands to a shell (sh/bash -c, eval, trap, a shell reading a heredoc or a
     // here-string, source) runs as a command of its own, so it is judged as one, with every rule above: the file-level
@@ -2917,7 +2920,8 @@ export const GIT_GATE_MSG =
   'url.*.insteadOf config-irasa (--global/--system is), es a GIT_CONFIG_*/GIT_DIR/GIT_WORK_TREE kornyezeti valtozo. ' +
   'Fejleszteni worktree-ben kell: egy SAJAT, a telepitesen KIVULI worktree-ben minden git mehet (checkout, fetch, teszt), ' +
   'de a celt LITERALIS abszolut uttal add meg: "git -C /Users/marvin/<worktree> ..." vagy "cd /Users/marvin/<worktree> && git ..." ' +
-  '(&&-vel). Valtozo ("-C $W") vagy $(...) eseten a kapu a celt nem ismeri, es a telepitesnek veszi; ugyanigy egy ' +
+  '(&&-vel). Valtozo ("-C $W") vagy $(...) eseten a kapu a celt nem ismeri, es a telepitesnek veszi, kiveve ha a valtozot ' +
+  'ugyanaz a parancs elotte egyszer, feltetel nelkul, literalis uttal adja meg (W=/abs/wt; git -C $W ..., VARDEFDB1121); ugyanigy egy ' +
   ';-vel lancolt cd utan, ha a mappa most nem letezik (bukott cd utan a git a telepitesben futna; APPROVALDBGATE1030, Dani 60251). ' +
   'Elrontott prod fa helyreallitasa: ' + RESCUE_DOC + ', "Vesz-helyreallitas" szakasz ' +
   '(a gazda sajat terminaljaban, vagy jovahagyas-keressel a pontos paranccsal).' + LIMIT_MSG

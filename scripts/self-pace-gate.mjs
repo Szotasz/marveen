@@ -665,6 +665,181 @@ export function definiteAssignments(split) {
   return out
 }
 
+// VARDEFDB1121: the command with every DEFINITE literal variable use (definiteAssignments) put in as its
+// value, for a gate that does not follow variables itself (db-write-gate: `W=/abs/wt; git -C $W ...`, `S=/abs; cd $S/x`).
+// Only a LIVE use is replaced (not one in single quotes or $'...'; a double-quoted one is live), only `$NAME` /
+// `${NAME}` (no `${NAME:-x}`), not one followed by `[` or `:` (zsh subscript / modifier: `$W[1]`, `$W:h`), and only an
+// ABSOLUTE value of plain path characters (`/...`: a relative one goes through CDPATH in a cd): no space, quote, glob,
+// `$`, backslash or `~`, so the value reads the same quoted or not; and nothing at all when the command names IFS.
+// Everything else keeps its unresolved reading. Unchanged when the quoting cannot be followed or nothing is definite.
+const DEFINITE_SAFE_VALUE_RX = /^\/[A-Za-z0-9_./@%+=,-]*$/
+// VARDEFDB1121: definiteAssignments proves a name is ASSIGNED once, not that nothing
+// else SETS it. A setter can hide behind a precommand word (`builtin read W`, `\builtin source f`, `time source f`, zsh
+// `repeat 1 source f`), run code later (`trap 'W=...' ERR`) or name the variable without `NAME=` (`W[0]=x`, `printf
+// -vW`, `print -v W`, `set -A W`, `builtin unset W`). Two fail-closed rules, the self-pace decision itself unchanged:
+//   (A) no replacement at all when a segment's first word (quotes and backslashes dropped) is a precommand or
+//       indirect-execution word below, a VAR_SETTERS word, or not a plain command name (`$B`, `>out`, `2>x`);
+//   (B) a name is not replaced when it occurs anywhere else than its one `NAME=` assignment and its `$NAME` /
+//       `${NAME}` uses: quoted, as an argument, subscripted, `+=`, in a `${NAME<op>...}` expansion, or glued to an
+//       option (`-vW`).
+const INDIRECT_FIRST_WORDS = new Set(['builtin', 'command', 'exec', 'noglob', 'nocorrect', '-', 'repeat', 'time', '!',
+  'trap', 'alias', 'enable', 'autoload', 'fc', 'emulate', 'zmodload'])
+const PLAIN_COMMAND_RX = /^(?:[A-Za-z0-9_./][A-Za-z0-9_./:+@%,-]*|\[)$/
+// a redirection in front of the command word (after the NAME=value prefix words): `2>/dev/null x`, `</tmp/p read W`
+// (every prefix word ends in \s+, so a run of `a=a=a=...` has ONE way to split: no backtracking blowup)
+const LEADING_REDIRECT_RX = /^\s*(?:[A-Za-z_]\w*\+?=(?:'[^']*'|"[^"]*"|\\.|[^\s'"\\])*\s+)*\d*[<>]/
+function firstWordBlocks(seg) {
+  if (LEADING_REDIRECT_RX.test(String(seg))) return true // the quote-aware reader drops redirections: keep this reading
+  // the quote-aware reader, not a split on blanks: `X='a b' source f` is ONE prefix word, then `source`
+  const w = shellWords(seg)
+  if (w === null) return true // the quoting cannot be followed: fail closed
+  let i = 0
+  while (i < w.length && /^[A-Za-z_]\w*\+?=/.test(w[i].value)) i++
+  if (i >= w.length) return false
+  const bare = w[i].value
+  if (bare === '') return true
+  return INDIRECT_FIRST_WORDS.has(bare) || VAR_SETTERS.has(bare) || !PLAIN_COMMAND_RX.test(bare)
+}
+// VARDEFDB1121: a NAME can be BUILT from pieces the raw-text rule (B) cannot see:
+// `W''T`, `"W"T`, `W\T`, `${n}T`, `$a$b`. So no name is replaced in a command where an identifier character or an
+// expansion touches another identifier character or expansion ACROSS a quoting boundary inside one word. A clean word
+// (`$W`, `"$W"`, `${W}/x`, `--format='%H'`, `NAME='a b'`) has no such joint; fail-closed otherwise (no replacement).
+function hasGluedPieces(src) {
+  const ID = /[A-Za-z0-9_]/
+  let lastId = false
+  let lastPiece = -1
+  let piece = 0
+  let q = null
+  const emit = (isId) => {
+    if (isId && lastId && lastPiece !== piece) return true
+    lastId = isId
+    lastPiece = piece
+    return false
+  }
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (q === "'") {
+      if (c === "'") { q = null; piece++; continue }
+      if (emit(ID.test(c))) return true
+      continue
+    }
+    if (c === '\\') {
+      piece++
+      const n = src[i + 1] ?? ''
+      i++
+      const bad = emit(ID.test(n) || n === '$')
+      piece++
+      if (bad) return true
+      continue
+    }
+    if (c === '"') { q = q === '"' ? null : '"'; piece++; continue }
+    if (c === "'" && q === null) { q = "'"; piece++; continue }
+    if (c === '$') {
+      let j = i + 1
+      if (src[j] === '{') { const e = src.indexOf('}', j); j = e < 0 ? src.length : e + 1 } else if (ID.test(src[j] ?? '')) { while (j < src.length && ID.test(src[j])) j++ } else j = Math.min(j + 1, src.length)
+      piece++
+      const bad = emit(true)
+      piece++
+      i = j - 1
+      if (bad) return true
+      continue
+    }
+    if (q === null && /[\s;&|<>()]/.test(c)) { lastId = false; continue }
+    if (emit(ID.test(c))) return true
+  }
+  return false
+}
+function nameSetIndirectly(src, name) {
+  let assigns = 0
+  for (const m of src.matchAll(new RegExp(`(?<![A-Za-z0-9_])(-[A-Za-z]*)?${name}(?![A-Za-z0-9_])`, 'g'))) {
+    if (m[1]) return true // glued to an option: -vW
+    const before = src.slice(0, m.index)
+    // a use is exactly `$NAME` or `${NAME}`; any other `${NAME<op>` (zsh `${W::=x}`, `${W:=x}`) may assign
+    if (before.endsWith('${')) { if (src[m.index + name.length] === '}') continue; return true }
+    if (before.endsWith('$')) continue // a use
+    if (src[m.index + name.length] === '=' && /(?:^|[\s;&|])$/.test(before)) { assigns++; continue }
+    return true
+  }
+  return assigns !== 1
+}
+export function substituteDefiniteCommand(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  // a command that names IFS may split the value: no replacement at all
+  if (/(?<![\w$])IFS(?!\w)/.test(src)) return String(command ?? '')
+  // a line continuation joins names (`"$W\<newline>X"` is $WX) and $'...' has its own escapes (`$'\'$W'`): no
+  // replacement in such a command at all
+  if (/\\\r?\n/.test(String(command ?? '')) || src.includes("$'")) return String(command ?? '')
+  const split = protectedSplit(src)
+  if (!split.quoteAware) return String(command ?? '')
+  if (split.segs.some(firstWordBlocks)) return String(command ?? '') // rule (A)
+  if (hasGluedPieces(src)) return String(command ?? '') // a name built from pieces, class level
+  const definite = definiteAssignments(split).map((m) => new Map([...m].filter(([n]) => !nameSetIndirectly(src, n))))
+  if (!definite.some((m) => m.size)) return String(command ?? '')
+  // The replacement is only for the SIMPLE form, by an ALLOWLIST (a blocklist of glob characters misses zsh
+  // extendedglob `W#T`, `^X`). Outside quotes only these characters may occur: [A-Za-z0-9_./@%+=,:-], blanks (space,
+  // tab, newline), the separators ; & |, a standalone `[` `[[` `]` `]]` word (a test), and a `$` that is a plain
+  // `$NAME` / `${NAME}` use of a name replaced here. Inside double quotes only that `$` use is allowed, and no
+  // backtick. No redirection `<` `>`: zsh runs an assignment that has only redirections as a prefix of NULLCMD, so in
+  // `W=/x &>/dev/null </dev/null; git -C "$W"` W is unset there. Anything else (`#`, `^`, `~`, `!`, `?`, `*`, a
+  // backslash, `(`, `$n:u`, `$(..)`, `${W:-x}`, `$1`, another name's use) could build or set the target name, which
+  // the text rules cannot see: no replacement at all, the denying behaviour of the unpatched gate.
+  const replaced = new Set(definite.flatMap((m) => [...m].filter(([, v]) => DEFINITE_SAFE_VALUE_RX.test(v)).map(([n]) => n)))
+  if (!replaced.size) return String(command ?? '')
+  const UNCHANGED = String(command ?? '')
+  for (let i = 0, q = null; i < src.length; i++) {
+    const c = src[i]
+    if (q === "'") { if (c === "'") q = null; continue }
+    if (c === '"') { q = q === '"' ? null : '"'; continue }
+    if (c === "'" && q === null) { q = "'"; continue }
+    if (c === '$') {
+      const u = /^\$\{([A-Za-z_]\w*)\}|^\$([A-Za-z_]\w*)(?![\w[:])/.exec(src.slice(i))
+      if (!u || !replaced.has(u[1] ?? u[2])) return UNCHANGED
+      i += u[0].length - 1
+      continue
+    }
+    if (q === '"') {
+      if (c === '`') return UNCHANGED
+      if (c === '\\') i++ // an escaped character inside double quotes cannot start a name or an expansion of its own here
+      continue
+    }
+    if (/[A-Za-z0-9_./@%+=,: \t\n;&|-]/.test(c)) continue
+    if (c === '[' || c === ']') {
+      const w = /^(?:\[\[?|\]\]?)(?=[ \t\n;&|]|$)/.exec(src.slice(i))
+      if (w && /(?:^|[ \t\n;&|])$/.test(src.slice(0, i))) { i += w[0].length - 1; continue }
+    }
+    return UNCHANGED
+  }
+  const bounds = []
+  let start = 0
+  for (const m of split.masked.matchAll(SEGMENT_SEP_RX)) { bounds.push([start, m.index]); start = m.index + m[0].length }
+  bounds.push([start, src.length])
+  if (bounds.length !== definite.length) return String(command ?? '')
+  let out = ''
+  let at = 0
+  bounds.forEach(([a, b], k) => {
+    const defs = definite[k]
+    if (!defs.size) return
+    // the quoting is followed here: a single-quoted (or $'...') `$W` is text, a double-quoted one expands
+    let q = null
+    for (let i = a; i < b; i++) {
+      const c = src[i]
+      if (q === "'") { if (c === "'") q = null; continue }
+      if (c === '\\') { i++; continue }
+      if (c === '"') { q = q === '"' ? null : '"'; continue }
+      if (c === "'" && q === null) { q = "'"; continue }
+      if (c !== '$') continue
+      const m = /^\$\{([A-Za-z_]\w*)\}|^\$([A-Za-z_]\w*)(?![\w[:])/.exec(src.slice(i, b))
+      if (!m) continue
+      const v = defs.get(m[1] ?? m[2])
+      if (v == null || !DEFINITE_SAFE_VALUE_RX.test(v)) continue
+      out += src.slice(at, i) + v
+      at = i + m[0].length
+      i = at - 1
+    }
+  })
+  return at === 0 ? String(command ?? '') : out + src.slice(at)
+}
+
 function substituteDefinite(text, definite) {
   if (!definite?.size) return text
   return text.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)(?!\w)/g, (m, a, b) => definite.has(a ?? b) ? definite.get(a ?? b) : m)
