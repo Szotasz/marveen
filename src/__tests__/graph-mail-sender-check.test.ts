@@ -79,7 +79,9 @@ beforeAll(() => {
     "export function loadCredentials() { return { mailbox: 'stub@example.com' } }\n")
   mkdirSync(join(dir, 'store', 'email-signature'))
   for (const [f, c] of [['signature.html', '<table>sig</table>'], ['bekezdes-sablon.html', '<div>{}</div>'],
-    ['logo.png', 'L'], ['fb.png', 'F'], ['li.png', 'I']]) writeFileSync(join(dir, 'store', 'email-signature', f), c)
+    ['logo.png', 'L'], ['fb.png', 'F'], ['li.png', 'I'],
+    ['images.json', JSON.stringify(['logo', 'fb', 'li'].map((n) => ({ cid: n, file: `${n}.png`, contentType: 'image/png' })))]])
+    writeFileSync(join(dir, 'store', 'email-signature', f), c)
   symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'))
   mkdirSync(join(dir, 'store', 'mail-attachments'))
   writeFileSync(join(dir, 'store', 'mail-attachments', 'offer.pdf'), 'PDF-BYTES')

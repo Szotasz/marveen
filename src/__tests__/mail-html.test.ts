@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { escapeHtml, renderLetterHtml } from '../mail-html.js'
+import { escapeHtml, parseSignatureImages, renderLetterHtml } from '../mail-html.js'
 import { buildMessage, MAX_TOTAL_ATTACHMENT_BASE64_BYTES } from '../graph-mail.js'
 
 const TPL = '<div style="x">{}</div>\n'
@@ -46,8 +46,24 @@ describe('renderLetterHtml', () => {
   })
 })
 
+describe('parseSignatureImages', () => {
+  it('no manifest means no inline images', () => {
+    expect(parseSignatureImages(null)).toEqual([])
+  })
+  it('reads cid, file and contentType', () => {
+    expect(parseSignatureImages('[{"cid":"logo","file":"logo.png","contentType":"image/png","x":1}]'))
+      .toEqual([{ cid: 'logo', file: 'logo.png', contentType: 'image/png' }])
+  })
+  it('refuses a broken manifest or an entry outside the folder', () => {
+    for (const bad of ['{', '{"cid":"a"}', '[{"cid":"a","file":"a.png"}]', '[{"cid":"a","file":"../x.png","contentType":"image/png"}]',
+      '[{"cid":"a","file":"..","contentType":"image/png"}]']) {
+      expect(() => parseSignatureImages(bad), bad).toThrowError(/images\.json/)
+    }
+  })
+})
+
 describe('buildMessage', () => {
-  const img = { cid: 'vtlogo', name: 'logo.png', contentType: 'image/png', contentBytes: 'AAAA' }
+  const img = { cid: 'logo', name: 'logo.png', contentType: 'image/png', contentBytes: 'AAAA' }
 
   it('sends inline images as inline file attachments with their content id', () => {
     const m = buildMessage({ to: 'a@b.hu', subject: 's', body: '<p>x</p>', contentType: 'HTML', inlineImages: [img] })
@@ -57,7 +73,7 @@ describe('buildMessage', () => {
         name: 'logo.png',
         contentType: 'image/png',
         contentBytes: 'AAAA',
-        contentId: 'vtlogo',
+        contentId: 'logo',
         isInline: true,
       },
     ])

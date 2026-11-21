@@ -74,19 +74,19 @@ describe('buildItemUrl', () => {
 
 describe('parseSiteAddress', () => {
   it('splits host and server-relative path', () => {
-    expect(parseSiteAddress('pecibt.sharepoint.com:/sites/Marveen')).toEqual({
-      hostname: 'pecibt.sharepoint.com',
+    expect(parseSiteAddress('contoso.sharepoint.com:/sites/Marveen')).toEqual({
+      hostname: 'contoso.sharepoint.com',
       sitePath: '/sites/Marveen',
     })
   })
 
   it('adds the missing leading slash to the site path', () => {
-    expect(parseSiteAddress('pecibt.sharepoint.com:sites/Marveen').sitePath).toBe('/sites/Marveen')
+    expect(parseSiteAddress('contoso.sharepoint.com:sites/Marveen').sitePath).toBe('/sites/Marveen')
   })
 
   it('accepts a bare host, which addresses the root site', () => {
-    expect(parseSiteAddress('pecibt.sharepoint.com')).toEqual({
-      hostname: 'pecibt.sharepoint.com',
+    expect(parseSiteAddress('contoso.sharepoint.com')).toEqual({
+      hostname: 'contoso.sharepoint.com',
       sitePath: '',
     })
   })

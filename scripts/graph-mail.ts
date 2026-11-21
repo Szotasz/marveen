@@ -9,7 +9,8 @@
 //                                  [--signature] [--reply-to <id>]
 //
 // --signature: --body is plain text; it is sent as the house HTML letter with
-// the graphic signature (store/email-signature) and its inline images.
+// the graphic signature (store/email-signature: signature.html,
+// bekezdes-sablon.html, and optionally images.json listing the inline images).
 // --reply-to: answer that message of this mailbox in its own conversation
 // (Graph /reply). The original is read first (src/mail-reply.ts): every --to
 // and --cc must be one of its participants, its Reply-To (else From) must be
@@ -53,7 +54,7 @@ const SIGNATURE_OLD_ADDRESS = process.env.MAIL_SIGNATURE_OLD_ADDRESS ?? ''
 
 /**
  * --signature: the plain-text --body becomes the house HTML letter with the
- * graphic signature and its three inline images. The text itself still comes
+ * graphic signature and the inline images its images.json lists. The text itself still comes
  * from the command line, so the outgoing gates read the same words that go out.
  *
  * The signature files are read ONCE, before the sender check, and the letter is
@@ -70,11 +71,21 @@ type SignatureParts = {
 }
 
 async function loadSignature(): Promise<SignatureParts> {
-  const { SIGNATURE_IMAGES } = await import('../src/mail-html.js')
+  const { parseSignatureImages } = await import('../src/mail-html.js')
   const read = (name: string) => readFileSync(resolve(SIGNATURE_DIR, name))
   const template = read('bekezdes-sablon.html')
   const signatureHtml = read('signature.html')
-  const images = SIGNATURE_IMAGES.map((img) => ({ ...img, bytes: read(img.file) }))
+  // The install's image list (cid -> file), optional; its bytes are bound too.
+  let manifest: Buffer | null = null
+  try {
+    manifest = read('images.json')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+  const images = parseSignatureImages(manifest ? manifest.toString('utf-8') : null).map((img) => ({
+    ...img,
+    bytes: read(img.file),
+  }))
   const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex')
   return {
     template: template.toString('utf-8'),
@@ -84,6 +95,7 @@ async function loadSignature(): Promise<SignatureParts> {
       files: [
         { name: 'bekezdes-sablon.html', sha256: sha(template) },
         { name: 'signature.html', sha256: sha(signatureHtml) },
+        ...(manifest ? [{ name: 'images.json', sha256: sha(manifest) }] : []),
         ...images.map((img) => ({ name: img.file, sha256: sha(img.bytes) })),
       ],
       old_address: SIGNATURE_OLD_ADDRESS,

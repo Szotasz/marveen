@@ -42,9 +42,39 @@ export function renderLetterHtml(
   return `${paragraphs.join('\n')}\n${signature}`
 }
 
-/** The cid names the signature references, mapped to their image files. */
-export const SIGNATURE_IMAGES: ReadonlyArray<{ cid: string; file: string; contentType: string }> = [
-  { cid: 'vtlogo', file: 'logo.png', contentType: 'image/png' },
-  { cid: 'vtfb', file: 'fb.png', contentType: 'image/png' },
-  { cid: 'vtli', file: 'li.png', contentType: 'image/png' },
-]
+/**
+ * The images the signature references as cid:<cid>, read from the install's
+ * signature folder (store/email-signature/images.json), so no install's own
+ * names live in the shared code:
+ *   [{"cid": "logo", "file": "logo.png", "contentType": "image/png"}]
+ * No manifest means no inline images. A manifest that does not parse, or an
+ * entry that is not a plain file name in that folder, is refused: a signed
+ * letter must not go out half-built. Pure, so the rules are tested.
+ */
+export interface SignatureImage {
+  cid: string
+  file: string
+  contentType: string
+}
+
+export function parseSignatureImages(json: string | null): SignatureImage[] {
+  if (json === null) return []
+  let list: unknown
+  try {
+    list = JSON.parse(json)
+  } catch {
+    throw new Error('mail-html: images.json is not valid JSON')
+  }
+  if (!Array.isArray(list)) throw new Error('mail-html: images.json must be an array')
+  return list.map((e, i) => {
+    const { cid, file, contentType } = (e ?? {}) as Record<string, unknown>
+    const ok = (v: unknown) => typeof v === 'string' && v.trim() !== ''
+    if (!ok(cid) || !ok(file) || !ok(contentType)) {
+      throw new Error(`mail-html: images.json entry ${i} needs cid, file and contentType`)
+    }
+    if (/[\\/]/.test(file as string) || file === '.' || file === '..') {
+      throw new Error(`mail-html: images.json entry ${i}: file must be a plain name in the signature folder`)
+    }
+    return { cid: cid as string, file: file as string, contentType: contentType as string }
+  })
+}
