@@ -303,7 +303,11 @@ export function applyFederationBlock(content: string, block: string | null): str
     const after = lines.slice(endIdx + 1)
     if (before.length && before[before.length - 1] === '') before.pop()
     if (after.length && after[0] === '') after.shift()
-    return [...before, ...after].join('\n')
+    const removed = [...before, ...after].join('\n')
+    // FEDBLOCKEOL1121: a block APPENDED at EOF ("<content>\n\n<block>\n") was the file's last line, so the
+    // shift above takes the final empty element too and the file lost its trailing newline on disable
+    // (measured on 16 sub-agent CLAUDE.md files, 2026-11-21). Keep the file's own final line ending.
+    return content.endsWith('\n') && removed !== '' && !removed.endsWith('\n') ? `${removed}\n` : removed
   }
 
   const blockLines = block.split('\n')
