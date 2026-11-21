@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_API_KEY, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID } from './config.js'
 import { isSearchStopword } from './memory-search-stopwords.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
@@ -6470,6 +6470,14 @@ export function clearPendingTaskRetryOwnerAlert(taskName: string, agentName: str
 // the same outage stay at debug so a machine without Ollama does not fill
 // the log; a success re-arms the warning for the next outage.
 let embeddingBackendWarned = false
+// The structured fields of the latest embedding failure, for the backfill warning (null after a success).
+let lastEmbedFailure: EmbedFailureFields | null = null
+
+// The error code of the latest failure. Read through a function: inside backfillEmbeddings TypeScript narrows the
+// module-level variable to null after its reset and would not see the assignments the embedding calls make.
+function lastEmbedErrCode(): string | undefined {
+  return lastEmbedFailure?.errCode
+}
 
 // Pure: which level the next embedding failure is logged at.
 export function decideEmbeddingFailureLevel(alreadyWarned: boolean): 'warn' | 'debug' {
@@ -6514,12 +6522,74 @@ function embedKeepAlive(): string | number | undefined {
   try { return parseEmbedKeepAlive(String(getEffectiveSettingValue('EMBED_KEEP_ALIVE') ?? '')) } catch { return undefined }
 }
 
+// The embedding key must never reach a log line, so an embedding failure is logged as STRUCTURED fields only: the
+// error name, its code (ECONNREFUSED, ENOTFOUND, ...) and the HTTP status. Neither the error text (fetch can quote
+// the request URL or a rejected header value) nor the EMBED_URL content is ever logged: the key belongs in
+// EMBED_API_KEY, and whatever else is in EMBED_URL does not appear in the error log. This removes the whole class of
+// spellings (raw, percent-encoded, double-encoded, in the host, port, userinfo, path or query) instead of chasing them.
+class EmbedHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`embedding backend answered HTTP ${status}`)
+    this.name = 'EmbedHttpError'
+  }
+}
+
+// The key is a bearer secret, so it only ever travels over TLS or to this very host. Pure: whether `url` may
+// carry the EMBED_API_KEY, i.e. it is https, or http to a loopback host (localhost, 127.0.0.0/8, ::1). Anything
+// else is refused, and so is a string that does not parse: nothing proves it is safe. `url` is the exact string
+// fetch is about to be given. WHATWG URL normalises the host (numeric IPv4 spellings, IPv6 zeros, case), and an
+// anchored test keeps look-alikes such as 127.0.0.1.example.com or localhost.example.com out.
+export function embedUrlMayCarryKey(url: string): boolean {
+  let parsed: URL
+  try { parsed = new URL(url) } catch { return false }
+  if (parsed.protocol === 'https:') return true
+  if (parsed.protocol !== 'http:') return false
+  const host = parsed.hostname
+  return host === 'localhost' || host === '[::1]' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+}
+
+// Thrown BEFORE any request when a key is set and the URL is not allowed to carry it: the call never leaves
+// the process, and the failure takes the same warn-once path as an unreachable backend.
+class EmbedInsecureUrlError extends Error {
+  readonly code = 'EMBED_INSECURE_URL'
+  constructor() {
+    super('EMBED_API_KEY is set but EMBED_URL is neither https nor loopback; the key is not sent')
+    this.name = 'EmbedInsecureUrlError'
+  }
+}
+
+type EmbedFailureFields = { errName?: string; errCode?: string; httpStatus?: number }
+
+// A name or code is only logged when it is a short plain token, so no free text can ride along in it.
+const SAFE_LOG_TOKEN = /^[A-Za-z0-9_.-]{1,64}$/
+
+function embedFailureFields(err: unknown): EmbedFailureFields {
+  const e = err as { name?: unknown; code?: unknown; cause?: { code?: unknown } } | null | undefined
+  const token = (v: unknown): string | undefined => (typeof v === 'string' && SAFE_LOG_TOKEN.test(v) ? v : undefined)
+  const out: EmbedFailureFields = {}
+  const errName = token(e?.name)
+  const errCode = token(e?.code) ?? token(e?.cause?.code)
+  if (errName) out.errName = errName
+  if (errCode) out.errCode = errCode
+  if (err instanceof EmbedHttpError) out.httpStatus = err.status
+  return out
+}
+
 export async function generateEmbedding(text: string, kind: 'query' | 'document' = 'document'): Promise<number[] | null> {
   try {
     const keepAlive = embedKeepAlive()
-    const resp = await fetch(`${EMBED_URL}/api/embeddings`, {
+    const embedEndpoint = `${EMBED_URL}/api/embeddings`
+    // No request, and no Authorization header, to a plain-http remote host: the key would cross the network in clear.
+    if (EMBED_API_KEY && !embedUrlMayCarryKey(embedEndpoint)) throw new EmbedInsecureUrlError()
+    const resp = await fetch(embedEndpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(EMBED_API_KEY ? { Authorization: `Bearer ${EMBED_API_KEY}` } : {}),
+      },
+      // With a key set, a redirect is an error: the Authorization header must never follow a 3xx to
+      // another host. An Ollama-compatible /api/embeddings endpoint has no reason to redirect.
+      ...(EMBED_API_KEY ? { redirect: 'error' as const } : {}),
       body: JSON.stringify({
         model: EMBED_MODEL,
         prompt: embedPrefix(kind) + text.slice(0, 2000),
@@ -6527,9 +6597,15 @@ export async function generateEmbedding(text: string, kind: 'query' | 'document'
       }),
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
     })
+    // An explicit HTTP error (401 from a wrong or missing EMBED_API_KEY, 404 for a missing model) must
+    // surface through the same warn-once path as an unreachable backend; before, its JSON body had no
+    // `embedding` and the call returned null without a trace. `=== false` keeps a bare stub without `ok`
+    // working.
+    if (resp.ok === false) throw new EmbedHttpError(Number(resp.status))
     const data = await resp.json() as { embedding?: number[] }
     if (!data.embedding || data.embedding.length === 0) return null
     embeddingBackendWarned = false
+    lastEmbedFailure = null
     // Matryoshka truncation. Only ever CUT, never pad: slicing a vector that is
     // already shorter than EMBED_DIMS would silently store a dimension that
     // does not match what the model produces.
@@ -6543,11 +6619,17 @@ export async function generateEmbedding(text: string, kind: 'query' | 'document'
     // diagnosable.
     const level = decideEmbeddingFailureLevel(embeddingBackendWarned)
     embeddingBackendWarned = true
+    // Structured fields only: no error text and no EMBED_URL content (see embedFailureFields).
+    lastEmbedFailure = embedFailureFields(err)
     logger[level](
-      { err: (err as Error)?.message ?? String(err), embedUrl: EMBED_URL, embedModel: EMBED_MODEL },
-      level === 'warn'
-        ? 'Embedding generation failed -- embedding backend unreachable or model missing (Ollama not installed/running at EMBED_URL?). Memory search runs FTS-only until it recovers; further failures are logged at debug.'
-        : 'Embedding generation failed (backend still unavailable)',
+      { ...lastEmbedFailure, embedModel: EMBED_MODEL },
+      err instanceof EmbedInsecureUrlError
+        ? (level === 'warn'
+            ? 'Embedding not sent -- EMBED_API_KEY is set but EMBED_URL is neither https nor a loopback address, so the key is never sent over plain http. Use an https EMBED_URL (or drop the key). Memory search runs FTS-only until then; further failures are logged at debug.'
+            : 'Embedding not sent (EMBED_API_KEY with a non-https, non-loopback EMBED_URL)')
+        : level === 'warn'
+          ? 'Embedding generation failed -- embedding backend unreachable or model missing (Ollama not installed/running at EMBED_URL?). Memory search runs FTS-only until it recovers; further failures are logged at debug.'
+          : 'Embedding generation failed (backend still unavailable)',
     )
     return null
   }
@@ -6868,6 +6950,9 @@ export interface BackfillResult {
 export async function backfillEmbeddings(): Promise<BackfillResult> {
   const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE (embedding IS NULL OR (embedding_model IS NOT NULL AND embedding_model != ?)) AND retracted_at IS NULL').all(embedIdentity()) as { id: number; content: string; keywords: string | null }[]
   let count = 0
+  // The failure fields of an EARLIER run must not decorate this run's warning: an empty 200 answer returns null
+  // without touching them, so without the reset a stale errName / httpStatus would be reported as the cause.
+  lastEmbedFailure = null
   for (const row of rows) {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
     const emb = await generateEmbedding(text)
@@ -6885,8 +6970,10 @@ export async function backfillEmbeddings(): Promise<BackfillResult> {
     // The 2026-09-24/25 signature: work pending, nothing embedded, no error
     // surfaced. One WARN per run names it.
     logger.warn(
-      { pending: rows.length, embedUrl: EMBED_URL, embedModel: EMBED_MODEL },
-      'Embedding backfill embedded 0 of the pending memories -- the embedding backend answered none of them (Ollama not installed/running, or EMBED_MODEL missing); the backlog stays until it does',
+      { pending: rows.length, ...(lastEmbedFailure ?? {}), embedModel: EMBED_MODEL },
+      lastEmbedErrCode() === 'EMBED_INSECURE_URL'
+        ? 'Embedding backfill embedded 0 of the pending memories -- no request was sent: EMBED_API_KEY is set but EMBED_URL is neither https nor loopback; the backlog stays until EMBED_URL is https (or the key is dropped)'
+        : 'Embedding backfill embedded 0 of the pending memories -- the embedding backend answered none of them (Ollama not installed/running, or EMBED_MODEL missing); the backlog stays until it does',
     )
   }
   return { attempted: rows.length, embedded: count, failed: rows.length - count }
