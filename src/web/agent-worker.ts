@@ -376,7 +376,10 @@ function clearWorkerKeychainEntry(ctx: WorkerCtx): void {
  */
 function seedWorkerCredentials(ctx: WorkerCtx): boolean {
   if (process.platform === 'darwin') clearWorkerKeychainEntry(ctx)
-  const credentialsJson = readClaudeCodeOauthJson()
+  // WORKERLOGOUTWARN1121: with a fleet setup-token the worker is launched with CLAUDE_CODE_OAUTH_TOKEN from it (see the
+  // launch line), so a Keychain miss is not a logged-out worker: no warning then (seen on a standard user started
+  // without a GUI session: the read failed and the warning fired although the worker had its token).
+  const credentialsJson = readClaudeCodeOauthJson({ warnOnMiss: !hasFleetOauthToken() })
   if (!credentialsJson) return false
   if (!existsSync(ctx.configDir)) mkdirSync(ctx.configDir, { recursive: true })
   writeFileSync(join(ctx.configDir, '.credentials.json'), credentialsJson, { mode: 0o600 })
