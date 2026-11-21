@@ -232,11 +232,13 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     // WDSANDBOXNODE1119 (Dani 81206 B1): the node the dashboard runs on, which the watchdog runs
     'store/.dashboard-node',
     // WDSANDBOXMARKER1119: the per-agent launch files every restart path reads (a file under each directory)
-    'store/bash-sandbox/soma.settings.json', 'store/code-mode/soma.on']
+    'store/bash-sandbox/soma.settings.json', 'store/code-mode/soma.on',
+    // PR #2983 (Dani B2/B4): the outgoing-mail signature (a file under the folder) and the calendar invite allowlist
+    'store/email-signature/signature.html', 'store/calendar-invite-allowlist.json']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.dashboard-node', 'store/bash-sandbox', 'store/code-mode', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.dashboard-node', 'store/bash-sandbox', 'store/code-mode', 'store/email-signature', 'store/calendar-invite-allowlist.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json',
       // SUPPORTKULCS1109 D5: the support state of this machine, one folder
@@ -330,6 +332,26 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     expect(asSub(`cat ${p}`)).toEqual(ALLOW)
     // a worktree's own copy is free
     expect(file('Write', join(wt, 'store', '.dashboard-node'), wt)).toEqual(ALLOW)
+  })
+  // PR #2983 (Dani B2/B4): the signature bytes are bound into the approval, the invite allowlist decides who an invite
+  // reaches; neither may change from a tool call, the main agent's included. Reading passes.
+  it('the signature folder and the invite allowlist: writes denied, reads pass, a worktree copy is free', () => {
+    mkdirSync(join(root, 'store', 'email-signature'), { recursive: true })
+    const sig = join(root, 'store', 'email-signature', 'signature.html')
+    const list = join(root, 'store', 'calendar-invite-allowlist.json')
+    writeFileSync(sig, '<table></table>')
+    writeFileSync(list, '{"addresses":[]}')
+    for (const tool of ['Write', 'Edit']) {
+      expect(file(tool, sig)).toEqual(DENY_FILE)
+      expect(file(tool, list)).toEqual(DENY_FILE)
+      expect(file(tool, join(root, 'store', 'email-signature', 'logo.png'))).toEqual(DENY_FILE)
+    }
+    expect(bash(`printf x > ${sig}`)).toEqual(DENY_FILE)
+    expect(bash(`cp /tmp/x.png store/email-signature/logo.png`)).toEqual(DENY_FILE)
+    expect(bash(`echo '{"addresses":[{"address":"x@y.hu"}]}' > store/calendar-invite-allowlist.json`)).toEqual(DENY_FILE)
+    expect(bash(`cd store && rm -r email-signature`)).toEqual(DENY_FILE)
+    expect(bash(`cat ${sig} ${list}`)).toEqual(ALLOW)
+    expect(file('Write', join(wt, 'store', 'calendar-invite-allowlist.json'), wt)).toEqual(ALLOW)
   })
   it('another file of the install is not protected', () => {
     expect(file('Write', join(root, 'scripts', 'other.py'))).toEqual(ALLOW)

@@ -24,11 +24,6 @@ import {
   listEvents,
   verifyCalendarAccess,
 } from '../src/graph-calendar.js'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-
-const INVITE_ALLOWLIST = join(import.meta.dirname, '..', 'store', 'calendar-invite-allowlist.json')
-
 function flag(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`)
   return i !== -1 ? process.argv[i + 1] : undefined
@@ -88,31 +83,25 @@ async function main(): Promise<void> {
         process.exit(2)
       }
       const attendees = flag('attendee')?.split(',').map((a) => a.trim()).filter(Boolean)
-      if (attendees?.length) {
-        // Invites leave the house, so they are gated by an owner-maintained
-        // allowlist. Missing or unreadable list means nobody: fail closed.
-        let allowed: string[] = []
-        try {
-          const list = JSON.parse(readFileSync(INVITE_ALLOWLIST, 'utf-8'))
-          allowed = (list.addresses ?? []).map((a: { address: string }) => a.address.toLowerCase())
-        } catch {
-          /* fall through with an empty list */
-        }
-        const denied = attendees.filter((a) => !allowed.includes(a.toLowerCase()))
-        if (denied.length) {
-          console.error(`create refused: not on the invite allowlist (${INVITE_ALLOWLIST}): ${denied.join(', ')}`)
-          process.exit(3)
-        }
+      // Invites leave the house: createEvent checks every attendee against the
+      // owner-maintained store/calendar-invite-allowlist.json and refuses (fail
+      // closed) before any request. Exit 3 on that refusal, as before.
+      let event
+      try {
+        event = await createEvent({
+          subject,
+          start,
+          end,
+          location: flag('location'),
+          body: flag('body'),
+          attendees,
+          isOnlineMeeting: has('online'),
+        })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(msg.replace(/^graph-calendar: /, 'create refused: '))
+        process.exit(/meghivo megtagadva/.test(msg) ? 3 : 1)
       }
-      const event = await createEvent({
-        subject,
-        start,
-        end,
-        location: flag('location'),
-        body: flag('body'),
-        attendees,
-        isOnlineMeeting: has('online'),
-      })
       console.log(`letrehozva: ${event.id}`)
       if (event.onlineMeeting?.joinUrl) console.log(`online link: ${event.onlineMeeting.joinUrl}`)
       break

@@ -43,6 +43,8 @@ export interface GraphMessage {
 /** One message read in full: the list fields plus the body and the threading ids. */
 export interface GraphFullMessage extends GraphMessage {
   ccRecipients?: Array<{ emailAddress?: { name?: string; address?: string } }>
+  /** The Reply-To header: set by the sender, so an outsider controls it. */
+  replyTo?: Array<{ emailAddress?: { name?: string; address?: string } }>
   internetMessageId?: string
   body?: { contentType?: string; content?: string }
 }
@@ -217,7 +219,7 @@ export async function sendMail(options: SendMailOptions): Promise<void> {
  */
 export async function getMessage(id: string, asText = false): Promise<GraphFullMessage> {
   const select =
-    'id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,bodyPreview,isRead,' +
+    'id,subject,from,toRecipients,ccRecipients,replyTo,receivedDateTime,body,bodyPreview,isRead,' +
     'webLink,conversationId,internetMessageId,hasAttachments'
   const res = await graphFetch(`${mailboxPath()}/messages/${encodeURIComponent(id)}?$select=${select}`, {
     prefix: PREFIX,

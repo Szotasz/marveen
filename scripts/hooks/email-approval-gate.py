@@ -799,7 +799,10 @@ def content_anchor(env: dict) -> str:
     # HARDERMAILGATES1019: a harder-mail send names its account (the From), a
     # non-plain body_format and, for a reply, the original message; they join
     # the canon only when present, so every other anchor stays byte-identical.
-    for key in ("account", "reply_to", "body_format"):
+    # PR #2983 (Dani B2): graph-mail.ts --signature reads the signature files
+    # at send time; their sha256 (and the address swap) joins the canon the
+    # same way, only when present.
+    for key in ("account", "reply_to", "body_format", "signature"):
         if env.get(key):
             fields[key] = env[key]
     canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

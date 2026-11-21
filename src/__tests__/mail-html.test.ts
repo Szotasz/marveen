@@ -24,6 +24,14 @@ describe('renderLetterHtml', () => {
     expect(renderLetterHtml('a < b & c', TPL, SIG)).toContain('a &lt; b &amp; c')
   })
 
+  it('keeps $&, $` and $\' in the letter text literal (no replacement patterns)', () => {
+    const html = renderLetterHtml("Ár: 5 $& kedvezmény\nmásik $` sor $' vége", TPL, SIG)
+    expect(html.split('\n').slice(0, 2)).toEqual([
+      '<div style="x">Ár: 5 $&amp; kedvezmény</div>',
+      "<div style=\"x\">másik $` sor $' vége</div>",
+    ])
+  })
+
   it('replaces the sending address in the signature only when both are given', () => {
     expect(renderLetterHtml('x', TPL, SIG, 'old@example.com', 'new@example.com')).toContain('new@example.com')
     expect(renderLetterHtml('x', TPL, SIG, 'old@example.com')).toContain('old@example.com')

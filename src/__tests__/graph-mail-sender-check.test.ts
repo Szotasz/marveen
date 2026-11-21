@@ -42,6 +42,8 @@ function send(args: string[], env: NodeJS.ProcessEnv = process.env) {
   return spawnSync(TSX, [join(dir, CLI), 'send', ...args], { encoding: 'utf-8', timeout: 60_000, env })
 }
 const LETTER = ['--to', 'a@example.com', '--subject', 'Tárgy', '--body', 'Kedves Ügyfél, ez a levél törzse.']
+// A reply to the stub original: its Reply-To in --to, its From in --cc, no --subject (Graph sets "RE: Tárgy").
+const REPLY = ['--to', 'r@example.com', '--cc', 'a@example.com', '--body', 'Kedves Ügyfél, ez a levél törzse.']
 const stubSent = (out: string) => {
   const line = out.split('\n').find((l) => l.startsWith('STUB-SENT '))
   return line ? JSON.parse(line.slice('STUB-SENT '.length)) as { to: string[]; cc?: string[] } : null
@@ -61,9 +63,23 @@ beforeAll(() => {
     "  console.log('STUB-SENT ' + JSON.stringify({ to: o.to, cc: o.cc }))",
     '}',
     'export async function listMessages() { return [] }',
+    // --reply-to reads the original first: a fixed one, from a@example.com, Reply-To r@example.com
+    'export async function getMessage(id: string) {',
+    "  return { id, subject: 'Tárgy', from: { emailAddress: { address: 'a@example.com' } },",
+    "    replyTo: [{ emailAddress: { address: 'r@example.com' } }],",
+    "    toRecipients: [{ emailAddress: { address: 'me@example.com' } }], ccRecipients: [{ emailAddress: { address: 'c@example.com' } }] }",
+    '}',
     "export async function verifyAccess() { return { mailbox: 'stub' } }",
     '',
   ].join('\n'))
+  // --signature: the real renderer, a stub credential reader, and a signature folder
+  cpSync(join(ROOT, 'src', 'mail-html.ts'), join(dir, 'src', 'mail-html.ts'))
+  cpSync(join(ROOT, 'src', 'mail-reply.ts'), join(dir, 'src', 'mail-reply.ts'))
+  writeFileSync(join(dir, 'src', 'graph-client.ts'),
+    "export function loadCredentials() { return { mailbox: 'stub@example.com' } }\n")
+  mkdirSync(join(dir, 'store', 'email-signature'))
+  for (const [f, c] of [['signature.html', '<table>sig</table>'], ['bekezdes-sablon.html', '<div>{}</div>'],
+    ['logo.png', 'L'], ['fb.png', 'F'], ['li.png', 'I']]) writeFileSync(join(dir, 'store', 'email-signature', f), c)
   symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'))
   mkdirSync(join(dir, 'store', 'mail-attachments'))
   writeFileSync(join(dir, 'store', 'mail-attachments', 'offer.pdf'), 'PDF-BYTES')
@@ -159,8 +175,8 @@ describe('graph-mail.ts enforces the email_send level itself', () => {
     const plain = anchorOf(send(LETTER).stderr)!
     approve(plain)
     const signed = send([...LETTER, '--signature'])
-    const reply = send([...LETTER, '--reply-to', 'AAMkAGI-orig'])
-    const replyOther = send([...LETTER, '--reply-to', 'AAMkAGI-other'])
+    const reply = send([...REPLY, '--reply-to', 'AAMkAGI-orig'])
+    const replyOther = send([...REPLY, '--reply-to', 'AAMkAGI-other'])
     for (const r of [signed, reply, replyOther]) {
       expect(r.status, r.stderr).toBe(3)
       expect(stubSent(r.stdout)).toBe(null)
@@ -170,9 +186,64 @@ describe('graph-mail.ts enforces the email_send level itself', () => {
     expect(new Set(anchors).size).toBe(4)
     expect(consumed()).toBe(false)
     approve(anchorOf(reply.stderr)!, 'ap-r')
-    const ok = send([...LETTER, '--reply-to', 'AAMkAGI-orig'])
+    const ok = send([...REPLY, '--reply-to', 'AAMkAGI-orig'])
     expect(ok.status, ok.stderr).toBe(0)
     expect(consumed('ap-r')).toBe(true)
+  })
+
+  // PR #2983 (Dani B2): the approval binds the signature BYTES, not only the
+  // --signature flag. A signature file changed after the approval is another
+  // envelope; the approval is not consumed and nothing goes out.
+  it('level 2: a signed letter is bound to the signature files it sends', () => {
+    writeLevel(2)
+    const sigFile = join(dir, 'store', 'email-signature', 'signature.html')
+    const imgFile = join(dir, 'store', 'email-signature', 'logo.png')
+    const first = anchorOf(send([...LETTER, '--signature']).stderr)!
+    expect(first).toBeTruthy()
+    writeFileSync(sigFile, '<table>sig <a href="https://evil.example">x</a></table>')
+    const changed = anchorOf(send([...LETTER, '--signature']).stderr)!
+    expect(changed).toBeTruthy()
+    expect(changed).not.toBe(first)
+    writeFileSync(sigFile, '<table>sig</table>')
+    writeFileSync(imgFile, 'L2')
+    const img = anchorOf(send([...LETTER, '--signature']).stderr)!
+    expect(new Set([first, changed, img]).size).toBe(3)
+    writeFileSync(imgFile, 'L')
+    // approved with the original files: goes out once
+    approve(first, 'ap-sig')
+    writeFileSync(sigFile, '<table>other</table>')
+    const refused = send([...LETTER, '--signature'])
+    expect(refused.status, refused.stderr).toBe(3)
+    expect(stubSent(refused.stdout)).toBe(null)
+    expect(consumed('ap-sig')).toBe(false)
+    writeFileSync(sigFile, '<table>sig</table>')
+    const ok = send([...LETTER, '--signature'])
+    expect(ok.status, ok.stderr).toBe(0)
+    expect(stubSent(ok.stdout)).not.toBe(null)
+    expect(consumed('ap-sig')).toBe(true)
+  })
+
+  // PR #2983 (Dani B1): a threaded reply is bounded by its original, before the
+  // check (so no approval is asked for, and none consumed) and before any send.
+  it('--reply-to: only the original\'s participants, its Reply-To included, and Graph\'s subject', () => {
+    writeLevel(3)
+    const cases: Array<[string[], RegExp]> = [
+      [['--to', 'stranger@example.com', '--body', 'x'], /nem resztvevo: stranger@example\.com/],
+      [['--to', 'r@example.com', '--cc', 'stranger@example.com', '--body', 'x'], /nem resztvevo/],
+      [['--to', 'a@example.com', '--body', 'x'], /ide is kuldheti.*r@example\.com/],
+      [['--to', 'r@example.com', '--subject', 'Mas targy', '--body', 'x'], /RE: Tárgy/],
+    ]
+    for (const [args, why] of cases) {
+      const r = send([...args, '--reply-to', 'AAMkAGI-orig'])
+      expect(r.status, r.stderr).toBe(3)
+      expect(r.stderr).toMatch(why)
+      expect(stubSent(r.stdout)).toBe(null)
+    }
+    for (const args of [REPLY, ['--to', 'R@example.com,c@example.com', '--subject', 'RE: Tárgy', '--body', 'x']]) {
+      const ok = send([...args, '--reply-to', 'AAMkAGI-orig'])
+      expect(ok.status, ok.stderr).toBe(0)
+      expect(stubSent(ok.stdout)).not.toBe(null)
+    }
   })
 
   it('level 2: the anchor carries the attachment digest', () => {

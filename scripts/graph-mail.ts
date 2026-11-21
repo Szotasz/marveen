@@ -11,8 +11,11 @@
 // --signature: --body is plain text; it is sent as the house HTML letter with
 // the graphic signature (store/email-signature) and its inline images.
 // --reply-to: answer that message of this mailbox in its own conversation
-// (Graph /reply). The subject is then set by Graph ("RE: ..."), --subject is
-// still required so the outgoing gates see a complete envelope.
+// (Graph /reply). The original is read first (src/mail-reply.ts): every --to
+// and --cc must be one of its participants, its Reply-To (else From) must be
+// among them, and the subject is the one Graph sets, "RE: <original subject>".
+// That is the subject the gates read and the approval binds; --subject may be
+// left out, and a different one is refused.
 //
 // --attach does NOT take an arbitrary path. The file must sit inside the
 // attachment drop directory (GRAPH_MAIL_ATTACH_DIR, default
@@ -24,7 +27,8 @@
 // email-send-gate hook still applies to any programmatic use elsewhere.
 //
 // `send` runs scripts/hooks/sender_check.py on the exact letter it delivers
-// (recipients, subject + body, render mode, the attachment's sha256) before
+// (recipients, subject + body, render mode, the attachment's sha256 and, with
+// --signature, the sha256 of every signature file it puts in the letter) before
 // any network call: the email_send level (level 1 refuses, level 2 needs the
 // approval of THIS envelope or a live standing recipient, level 3 sends) and,
 // when the install turned it on, the verified-recipient ledger. A refusal is
@@ -51,22 +55,57 @@ const SIGNATURE_OLD_ADDRESS = process.env.MAIL_SIGNATURE_OLD_ADDRESS ?? ''
  * --signature: the plain-text --body becomes the house HTML letter with the
  * graphic signature and its three inline images. The text itself still comes
  * from the command line, so the outgoing gates read the same words that go out.
+ *
+ * The signature files are read ONCE, before the sender check, and the letter is
+ * built from those same bytes: their sha256 goes into the checked envelope, so
+ * an approval binds the signature that was approved, and a file changed between
+ * the approval and the send (or between the check and the read) refuses.
  */
-async function signedLetter(text: string): Promise<{ html: string; inlineImages: InlineImage[] }> {
+type SignatureParts = {
+  template: string
+  signatureHtml: string
+  images: Array<{ cid: string; file: string; contentType: string; bytes: Buffer }>
+  /** What the sender check binds: each file's sha256, and the address swap. */
+  digest: { files: Array<{ name: string; sha256: string }>; old_address: string }
+}
+
+async function loadSignature(): Promise<SignatureParts> {
+  const { SIGNATURE_IMAGES } = await import('../src/mail-html.js')
+  const read = (name: string) => readFileSync(resolve(SIGNATURE_DIR, name))
+  const template = read('bekezdes-sablon.html')
+  const signatureHtml = read('signature.html')
+  const images = SIGNATURE_IMAGES.map((img) => ({ ...img, bytes: read(img.file) }))
+  const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex')
+  return {
+    template: template.toString('utf-8'),
+    signatureHtml: signatureHtml.toString('utf-8'),
+    images,
+    digest: {
+      files: [
+        { name: 'bekezdes-sablon.html', sha256: sha(template) },
+        { name: 'signature.html', sha256: sha(signatureHtml) },
+        ...images.map((img) => ({ name: img.file, sha256: sha(img.bytes) })),
+      ],
+      old_address: SIGNATURE_OLD_ADDRESS,
+    },
+  }
+}
+
+async function signedLetter(text: string, parts: SignatureParts): Promise<{ html: string; inlineImages: InlineImage[] }> {
   const { loadCredentials } = await import('../src/graph-client.js')
-  const { renderLetterHtml, SIGNATURE_IMAGES } = await import('../src/mail-html.js')
+  const { renderLetterHtml } = await import('../src/mail-html.js')
   const html = renderLetterHtml(
     text,
-    readFileSync(resolve(SIGNATURE_DIR, 'bekezdes-sablon.html'), 'utf-8'),
-    readFileSync(resolve(SIGNATURE_DIR, 'signature.html'), 'utf-8'),
+    parts.template,
+    parts.signatureHtml,
     SIGNATURE_OLD_ADDRESS,
     loadCredentials('graph-mail').mailbox,
   )
-  const inlineImages = SIGNATURE_IMAGES.map((img) => ({
+  const inlineImages = parts.images.map((img) => ({
     cid: img.cid,
     name: img.file,
     contentType: img.contentType,
-    contentBytes: readFileSync(resolve(SIGNATURE_DIR, img.file)).toString('base64'),
+    contentBytes: img.bytes.toString('base64'),
   }))
   return { html, inlineImages }
 }
@@ -225,20 +264,34 @@ async function main(): Promise<void> {
       const attachPath = flag('attach')
       const attachments = attachPath ? [readAttachment(attachPath)] : undefined
       const to = flag('to')
-      const subject = flag('subject')
+      const replyToId = flag('reply-to')
+      const typedSubject = flag('subject')
       const body = flag('body')
-      if (!to || !subject || body === undefined) {
-        console.error('send requires --to, --subject and --body')
+      if (!to || (!typedSubject && !replyToId) || body === undefined) {
+        console.error('send requires --to, --subject and --body (--subject may be left out with --reply-to)')
         process.exit(2)
       }
       if (has('signature') && has('html')) {
         console.error('--signature builds the HTML from a plain-text --body; do not combine it with --html')
         process.exit(2)
       }
-      const replyToId = flag('reply-to')
+      const signature = has('signature') ? await loadSignature() : undefined
       const toList = to.split(',').map((a) => a.trim()).filter(Boolean)
       const ccRaw = flag('cc')
       const ccList = ccRaw?.split(',').map((a) => a.trim()).filter(Boolean) ?? []
+      // A threaded reply: bounded by the original, before the check and the send.
+      let subject = typedSubject ?? ''
+      if (replyToId) {
+        const { getMessage } = await import('../src/graph-mail.js')
+        const { checkReply, replySubject } = await import('../src/mail-reply.js')
+        const orig = await getMessage(replyToId, true)
+        const why = checkReply(orig, toList, ccList, typedSubject)
+        if (why) {
+          console.error(`graph-mail: KULDES MEGTAGADVA -- ${why}`)
+          process.exit(3)
+        }
+        subject = replySubject(orig)
+      }
       // The check reads the plain words the caller typed (--body), as the
       // outgoing gates do; the render mode names how they go out, so an
       // approval of a plain letter does not cover the signed HTML one, and a
@@ -249,6 +302,7 @@ async function main(): Promise<void> {
         text: `${subject}\n${body}`,
         render: has('signature') ? '--signature' : has('html') ? '--html' : '',
         ...(replyToId ? { reply_to: ['graph', replyToId] } : {}),
+        ...(signature ? { signature: signature.digest } : {}),
         attachments: (attachments ?? []).map((a) => {
           const bytes = Buffer.from(a.contentBytes, 'base64')
           return { name: a.name, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length }
@@ -258,7 +312,7 @@ async function main(): Promise<void> {
         explicit_to: [to],
         explicit_cc: ccRaw ? [ccRaw] : [],
       })
-      const signed = has('signature') ? await signedLetter(body) : undefined
+      const signed = signature ? await signedLetter(body, signature) : undefined
       await sendMail({
         attachments,
         to: toList,

@@ -144,6 +144,8 @@ def check(letter):
              "render": "" | "--html" | "--html-wrap" | "--signature",
              "attachments": [{"name", "sha256", "size"}]   (optional),
              "reply_to": ["graph", <message id>]   (optional, graph-mail --reply-to),
+             "signature": {"files": [{"name", "sha256"}], "old_address": str}
+                (optional, graph-mail --signature: the signature bytes it sends),
              "raw_to": str, "raw_cc": str | None   the values as the sender got them,
              "explicit_to": [...], "explicit_cc": [...]   what the caller typed
                 (no configured default), for the standing list,
@@ -176,6 +178,19 @@ def check(letter):
     # for every other letter, so their anchors stay byte-identical.
     if letter.get("reply_to"):
         env["reply_to"] = [str(v) for v in letter["reply_to"]]
+    # graph-mail.ts --signature: the signature HTML, the paragraph template and
+    # the inline images are read from store/email-signature at send time, so the
+    # approval binds their bytes, not only the flag (PR #2983, Dani B2). A
+    # changed signature file is a different envelope and needs a new approval.
+    if letter.get("signature"):
+        sig = letter["signature"]
+        if letter.get("render") != "--signature" or not isinstance(sig, dict) or not isinstance(sig.get("files"), list) \
+                or not sig["files"]:
+            raise Refused("az alairas-lenyomat hianyos vagy nem --signature levelhez tartozik; fail-closed")
+        env["signature"] = {"files": [{"name": str(f["name"]), "sha256": str(f["sha256"])} for f in sig["files"]],
+                            "old_address": str(sig.get("old_address") or "")}
+    elif letter.get("render") == "--signature":
+        raise Refused("--signature level alairas-lenyomat nelkul: a jovahagyas nem kotne az alairast; fail-closed")
 
     # The standing list, exactly as the hook applies it: the view is what the
     # caller typed (the hook never saw a sender's configured default CC).

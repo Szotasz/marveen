@@ -35,7 +35,8 @@ import {
 //   SHAREPOINT_FOLDERS=Beszerzes:01AAAA;Projektek:01BBBB
 //   "Beszerzes/Cegmenedzser/a.md" -> /drives/b!xxxx/items/01AAAA:/Cegmenedzser/a.md:
 //
-// A path outside the configured folders is refused HERE, before any request:
+// A path outside the configured folders is refused HERE, before any request
+// (and so is any path with a ".", ".." or empty segment, see splitDrivePath):
 // the answer would be a 403 or 404 anyway, and a local refusal names the
 // allowed folders instead of a bare status. Listing the root returns the
 // configured folders themselves. The folders are kept as the user named them,
@@ -105,12 +106,27 @@ export function parseSiteAddress(raw: string): SiteAddress {
  * are full of.
  */
 export function encodeDrivePath(path: string): string {
-  return path
-    .split('/')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map(encodeURIComponent)
-    .join('/')
+  return splitDrivePath(path).map(encodeURIComponent).join('/')
+}
+
+/**
+ * Split a drive-relative path into its segments, refusing the ones a URL
+ * parser would reinterpret. encodeURIComponent leaves `.` and `..` as they are,
+ * and fetch resolves dot segments, so "Beszerzes/../01CCCC" would leave the
+ * folder the local check matched and address another item by id. An empty
+ * segment in the middle ("a//b") is refused for the same reason: the path the
+ * check sees has to be the path that is sent. One leading and one trailing
+ * slash are allowed ("/Beszerzes/" is the folder). Pure and tested.
+ */
+export function splitDrivePath(path: string): string[] {
+  const segs = path.replace(/^\s*\/+/, '').replace(/\/+\s*$/, '').split('/').map((s) => s.trim())
+  if (segs.length === 1 && segs[0] === '') return []
+  for (const s of segs) {
+    if (s === '' || s === '.' || s === '..') {
+      throw new Error(`${PREFIX}: "${path}" ures, "." vagy ".." utvonal-szegmenst tartalmaz, ezt nem kuldom el`)
+    }
+  }
+  return segs
 }
 
 /**
@@ -192,10 +208,7 @@ export function parseFolderMap(raw: string): FolderEntry[] {
  * "Beszerzes". Null when the path is outside every folder (or is the root).
  */
 export function matchFolder(folders: FolderEntry[], path: string): { folder: FolderEntry; rest: string } | null {
-  const segs = path
-    .split('/')
-    .map((x) => x.trim())
-    .filter(Boolean)
+  const segs = splitDrivePath(path)
   let best: { folder: FolderEntry; rest: string; len: number } | null = null
   for (const f of folders) {
     const fs = f.name.split('/')

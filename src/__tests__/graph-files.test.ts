@@ -24,8 +24,20 @@ describe('encodeDrivePath', () => {
     expect(encodeDrivePath('árajánlat/kész.docx')).toBe('%C3%A1raj%C3%A1nlat/k%C3%A9sz.docx')
   })
 
-  it('drops leading, trailing and doubled slashes', () => {
-    expect(encodeDrivePath('/a//b/')).toBe('a/b')
+  it('drops one leading and one trailing slash', () => {
+    expect(encodeDrivePath('/a/b/')).toBe('a/b')
+  })
+
+  // fetch resolves dot segments, and encodeURIComponent leaves them alone, so a
+  // ".." would send a different path than the one every local check read.
+  it('refuses ".", ".." and empty segments', () => {
+    for (const p of ['a/../b', '..', './a', 'a/.', 'a//b', 'a/ .. /b', 'Beszerzes/../../sites/x']) {
+      expect(() => encodeDrivePath(p), p).toThrowError(/"\.\."/)
+    }
+  })
+
+  it('keeps names that only contain dots', () => {
+    expect(encodeDrivePath('a/...txt/..b')).toBe('a/...txt/..b')
   })
 
   it('returns empty for the root, in every spelling of it', () => {
@@ -36,6 +48,10 @@ describe('encodeDrivePath', () => {
 })
 
 describe('buildItemUrl', () => {
+  it('refuses a dot segment before building the URL', () => {
+    expect(() => buildItemUrl('/me/drive', 'a/../b', '/content')).toThrowError(/"\.\."/)
+  })
+
   const seg = '/drives/b!abc'
 
   it('uses the plain root form for the root, not an empty colon pair', () => {

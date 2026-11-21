@@ -162,6 +162,13 @@ export const PROTECTED_INSTALL_PATHS = [
   // comes back. The whole directories, as directories.
   { rel: 'store/bash-sandbox', dir: true },
   { rel: 'store/code-mode', dir: true },
+  // The outgoing-mail signature and the calendar invite allowlist (PR #2983 review, Dani B2/B4). The signature folder
+  // (signature.html, bekezdes-sablon.html and the inline images) is what scripts/graph-mail.ts --signature puts under
+  // every signed letter; the sender check binds its bytes into the approval, and this keeps them from changing between
+  // the owner's approval and the next letter. The allowlist names who a calendar invite may go to: an invite is an
+  // outgoing mail that no email gate reads, so one written address would be an open channel. Owner-written only.
+  { rel: 'store/email-signature', dir: true },
+  { rel: 'store/calendar-invite-allowlist.json' },
   // The main checkout's git wiring (Samu 56299 2, Dani 56284): its remote, its remote-tracking refs and its hooks. A
   // worktree shares them, so a ref or a URL changed from a worktree is changed for the install's pull as well.
   { rel: '.git/config' },
@@ -479,6 +486,8 @@ export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.js
   '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe',
   // GATEFILES1110: an agent's agent-config.json, from its parent (`cd agents/samu && sed -i ... agent-config.json`)
   'agent-config.json',
+  // PR #2983 (Dani B2/B4): the signature folder and the invite allowlist, from their parent (`cd store && rm -r email-signature`)
+  'email-signature', 'calendar-invite-allowlist.json',
   // PLUGINCODEWRITE1104 (E3): a bare plugin-tree name from its parent (`cd ~/.claude && rm -rf plugins`)
   'plugins', 'marveen-local-plugins', 'gromzo',
   // CPDESTDIR1104 (Dani B2, Samu 69132): the same for the start-loaded trees a session reads (`cd ~/.claude && rm -rf
@@ -2544,6 +2553,7 @@ export const INSTALL_FILE_GATE_MSG =
   'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
   'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json, store/.owner-slack-target, store/.net-target-hosts.json, store/custom-providers.json, store/context-guard.json es store/.dashboard-totp.json fajljat (GATEFILES1110, DOCKERHTTPS1119: ezeket az owner-kapus API-ut irja), sem a store/.dashboard-node fajlt (WDSANDBOXNODE1119: csak a dashboard inditasa irja), ' +
   'sem a store/bash-sandbox/ es store/code-mode/ mappat (WDSANDBOXMARKER1119: ezeket csak a dashboard inditasa es a watchdog irja), ' +
+  'sem a store/email-signature/ mappat es a store/calendar-invite-allowlist.json fajlt (a levelalairas es a naptar-meghivo cimlistaja: ezeket a gazda irja), ' +
   'sem BARMELY agens agents/<nev>/.claude/settings.json, settings.local.json es .claude-config/settings.json fajljat (ezeket csak a dashboard irja; Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
   'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
   'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +

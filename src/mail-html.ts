@@ -31,8 +31,12 @@ export function renderLetterHtml(
     throw new Error(`mail-html: paragraph template has no ${PLACEHOLDER} placeholder`)
   }
   const lines = text.replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n')
-  const paragraphs = lines.map((line) => tpl.replace(PLACEHOLDER, line ? escapeHtml(line) : '<br>'))
-  paragraphs.push(tpl.replace(PLACEHOLDER, '<br>'))
+  // A function replacer, not a string: in a replacement string $&, $` and $'
+  // are patterns, so a letter containing them would go out different from the
+  // text the gates read and the approval binds.
+  const fill = (html: string) => tpl.replace(PLACEHOLDER, () => html)
+  const paragraphs = lines.map((line) => fill(line ? escapeHtml(line) : '<br>'))
+  paragraphs.push(fill('<br>'))
   let signature = signatureHtml
   if (fromOld && fromNew) signature = signature.split(fromOld).join(fromNew)
   return `${paragraphs.join('\n')}\n${signature}`

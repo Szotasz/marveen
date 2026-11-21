@@ -1,5 +1,7 @@
 import { logger } from './logger.js'
-import { APP_TZ } from './config.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { APP_TZ, STORE_DIR } from './config.js'
 import { graphError, graphFetch, loadCredentials, userPath } from './graph-client.js'
 
 // Microsoft Graph calendar for the agent's own M365 mailbox, app-only, on the
@@ -107,6 +109,54 @@ export function toAttendeeList(
 }
 
 /**
+ * INVITES: an attendee on an event gets an invitation mail from Exchange, and no
+ * email gate reads it. So every attendee the library sends (createEvent, and
+ * updateEvent, which can add guests to an existing event) must be on the
+ * owner-maintained store/calendar-invite-allowlist.json:
+ *   {"addresses": [{"address": "a@b.hu", "note": "..."}]}
+ * The check lives HERE, not in a CLI, so every caller hits it (PR #2983 review,
+ * Dani B4 / Geri note 1). A missing or unreadable list, a list of the wrong
+ * shape or one entry without an address means nobody: fail closed. The file is
+ * owner-written only (scripts/hooks/db-write-gate.mjs).
+ */
+export const INVITE_ALLOWLIST_PATH = join(STORE_DIR, 'calendar-invite-allowlist.json')
+
+/** The allowed addresses, lower-cased; empty on any problem with the file. Exported for tests. */
+export function readInviteAllowlist(path = INVITE_ALLOWLIST_PATH): Set<string> {
+  try {
+    const list = JSON.parse(readFileSync(path, 'utf-8')) as { addresses?: unknown }
+    if (!Array.isArray(list?.addresses)) return new Set()
+    const out = new Set<string>()
+    for (const e of list.addresses as unknown[]) {
+      const addr = (e as { address?: unknown })?.address
+      if (typeof addr !== 'string' || !addr.trim()) return new Set()
+      out.add(addr.trim().toLowerCase())
+    }
+    return out
+  } catch {
+    return new Set()
+  }
+}
+
+/** The attendees (as they would be SENT) that are not on the allowlist. Pure. */
+export function deniedInvitees(attendees: CreateEventOptions['attendees'], allowed: Set<string>): string[] {
+  return toAttendeeList(attendees)
+    .map((a) => a.emailAddress.address)
+    .filter((a) => !allowed.has(a.toLowerCase()))
+}
+
+function assertInvitesAllowed(attendees: CreateEventOptions['attendees']): void {
+  if (!attendees?.length) return
+  const denied = deniedInvitees(attendees, readInviteAllowlist())
+  if (denied.length) {
+    throw new Error(
+      `${PREFIX}: meghivo megtagadva, nincs a meghivo-listan (${INVITE_ALLOWLIST_PATH}): ${denied.join(', ')}. ` +
+        'A listat a gazda irja.',
+    )
+  }
+}
+
+/**
  * Build the Graph event body. Pure, so the payload contract can be pinned
  * without a tenant: this is where a missing timeZone or a dropped attendee
  * would otherwise only show up as a wrong entry in somebody's calendar.
@@ -173,6 +223,7 @@ export async function getEvent(eventId: string, timeZone?: string): Promise<Grap
 
 /** Create an event in the agent's own calendar. */
 export async function createEvent(options: CreateEventOptions): Promise<GraphEvent> {
+  assertInvitesAllowed(options.attendees)
   const res = await graphFetch(`${calendarPath()}/events`, {
     method: 'POST',
     prefix: PREFIX,
@@ -187,6 +238,7 @@ export async function createEvent(options: CreateEventOptions): Promise<GraphEve
 
 /** Patch an existing event. Only the fields present in `options` are sent. */
 export async function updateEvent(eventId: string, options: UpdateEventOptions): Promise<GraphEvent> {
+  assertInvitesAllowed(options.attendees)
   const payload = buildEventPayload(options)
   if (Object.keys(payload).length === 0) {
     throw new Error(`${PREFIX}: updateEvent called with nothing to change`)

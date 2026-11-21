@@ -101,6 +101,11 @@ describe('matchFolder', () => {
   it('matches whole segments only', () => {
     expect(m.matchFolder(folders, 'Projektek2/x')).toBeNull()
   })
+  it('refuses dot and empty segments instead of matching on the first one', () => {
+    for (const p of ['Projektek/../01CCCC', 'Projektek/../Titkos/b.md', 'Gyartas/Beszerzes/../../x', 'Projektek//x']) {
+      expect(() => m.matchFolder(folders, p), p).toThrowError(/"\.\."/)
+    }
+  })
   it('does not match the root or an unlisted folder', () => {
     expect(m.matchFolder(folders, '')).toBeNull()
     expect(m.matchFolder(folders, 'Penzugy/x')).toBeNull()
@@ -150,6 +155,17 @@ describe('folder mode over the network seam', () => {
   it('refuses a path outside the folders before any request', async () => {
     await expect(m.downloadFile('Penzugy/x.pdf', 'sharepoint')).rejects.toThrowError(/Beszerzes, Projektek/)
     await expect(m.uploadFile('x.txt', 'a', 'sharepoint')).rejects.toThrowError(/nincs a beallitott/)
+    expect(calls).toEqual([])
+  })
+  it('refuses a ".." path before any request, for every operation', async () => {
+    // Without the check these were sent as /drives/b!drive/items/01CCCC:/content
+    // and /drives/b!drive/items/Titkos/b.md:/content (fetch resolves the dots).
+    await expect(m.downloadFile('Beszerzes/../01CCCC', 'sharepoint')).rejects.toThrowError(/"\.\."/)
+    await expect(m.getItem('Beszerzes/../Titkos/b.md', 'sharepoint')).rejects.toThrowError(/"\.\."/)
+    await expect(m.listChildren('Beszerzes/sub/../../Projektek', 'sharepoint')).rejects.toThrowError(/"\.\."/)
+    await expect(m.uploadFile('Beszerzes/../x.txt', 'a', 'sharepoint')).rejects.toThrowError(/"\.\."/)
+    await expect(m.deleteItem('Beszerzes/../01CCCC', 'sharepoint')).rejects.toThrowError(/"\.\."/)
+    await expect(m.createFolder('Uj', 'Beszerzes/..', 'sharepoint')).rejects.toThrowError(/"\.\."/)
     expect(calls).toEqual([])
   })
   it('refuses to delete or overwrite a configured folder itself', async () => {
