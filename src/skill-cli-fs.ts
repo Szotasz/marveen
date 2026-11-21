@@ -10,7 +10,7 @@
  * ebben a korben szandekosan EGY hatter van, es a kod ezt KI IS MONDJA
  * ahelyett, hogy csendben visszaesne ra.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -105,14 +105,33 @@ export interface SkillFile {
  * valaszaban kulonben a cel-konyvtaron KIVULRE irna. A letoltott tartalom
  * nem megbizhato bemenet attol, hogy a sajat szerverunktol jon.
  */
-export function writeSkillFiles(targetDir: string, files: SkillFile[]): string[] {
+/**
+ * A HELYI MODOSITAS NEM VESZHET EL NEMAN. A cel-konyvtar egy KOZOS skill-fa
+ * lehet, amit a tag kezzel is kiegeszit; egy ujrahuzas (`update`) korabban
+ * minden ilyen kiegeszitest szo nelkul felulirt. Most: ha a fajl mar letezik ES
+ * a tartalma mas, a regi valtozat egy `.helyi-<idobelyeg>.bak` masolatba kerul
+ * a fajl melle, es az `onMegorizve` visszahivas megnevezi -- a csomag tovabbra
+ * is kiirodik, tehat a frissites nem all meg, csak nem nyel el semmit.
+ * Bajt-azonos tartalomnal nincs masolat (egy sima ujrahuzas nem szemetel).
+ */
+export function writeSkillFiles(
+  targetDir: string,
+  files: SkillFile[],
+  opts: { onMegorizve?: (eredeti: string, masolat: string) => void; most?: Date } = {},
+): string[] {
   const kiirt: string[] = []
+  const bely = (opts.most ?? new Date()).toISOString().replace(/[-:]/g, '').replace(/\..*$/, '')
   for (const f of files) {
     if (f.relPath.includes('..') || f.relPath.startsWith('/')) {
       throw new Error(`Elutasitott skill-utvonal (kilepne a cel-konyvtarbol): ${f.relPath}`)
     }
     const ut = join(targetDir, f.relPath)
     biztosKonyvtarNyilvanos(dirname(ut))
+    if (existsSync(ut) && readFileSync(ut, 'utf8') !== f.content) {
+      const masolat = `${ut}.helyi-${bely}.bak`
+      copyFileSync(ut, masolat)
+      opts.onMegorizve?.(ut, masolat)
+    }
     writeFileSync(ut, f.content)
     kiirt.push(ut)
   }

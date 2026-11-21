@@ -289,9 +289,11 @@ async function skillekLetoltese(args: Args, token: string): Promise<void> {
     files?: Array<{ path: string; content: string }>
   }
   const cel = skillTargetDir(args.scope)
+  const megorizve: string[] = []
   const kiirt = writeSkillFiles(
     cel,
     (body.files ?? []).map((f) => ({ relPath: f.path, content: f.content })),
+    { onMegorizve: (_eredeti, masolat) => megorizve.push(masolat) },
   )
   // A VERZIO KIIRASA: enelkul a tag latja, hogy "3 fajl kiirva", de nem tudja
   // MIT kapott -- egy ujrahuzas utan sem tudna megmondani, valtozott-e
@@ -299,6 +301,10 @@ async function skillekLetoltese(args: Args, token: string): Promise<void> {
   // az osszevetesre, es ez az, ami egy hibajelentesbe is bekerulhet.
   const verzio = body.version ? ` (csomag-verzio: ${body.version.slice(0, 8)})` : ''
   console.log(`${kiirt.length} skill-fajl kiirva ide: ${cel}${verzio}`)
+  if (megorizve.length > 0) {
+    console.log(`${megorizve.length} fajlban helyi modositas volt -- a regi valtozat megmaradt:`)
+    for (const m of megorizve) console.log(`  ${m}`)
+  }
 }
 
 async function upload(args: Args): Promise<void> {
