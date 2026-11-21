@@ -40,7 +40,7 @@ describe('the Slack invite description', () => {
   })
 
   it('has no em or en dash', () => {
-    expect(hu[SLACK_KEY] + en[SLACK_KEY]).not.toMatch(/[–—]/)
+    expect(hu[SLACK_KEY] + en[SLACK_KEY]).not.toMatch(/[\u2013\u2014]/)
   })
 })
 
