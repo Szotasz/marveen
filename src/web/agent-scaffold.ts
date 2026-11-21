@@ -6,7 +6,7 @@ import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR, mainAgentRecipientLedgerEnabled } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
-import { atomicWriteFileSync } from './atomic-write.js'
+import { atomicWriteFileSync, writeMcpJsonFile } from './atomic-write.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { isAbsoluteHttpUrl } from '../config-registry.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
@@ -3475,7 +3475,7 @@ export function scaffoldAgentDir(name: string) {
       }
     }
     // Valid empty shape when nothing is inherited -- `claude /doctor` rejects plain "{}"
-    atomicWriteFileSync(mcpJson, JSON.stringify(inherited, null, 2))
+    writeMcpJsonFile(mcpJson, JSON.stringify(inherited, null, 2))
   }
   // Seed settings.json from template so the agent gets the PreCompact
   // hook (memory save + skill reflection) out of the box. Only if the

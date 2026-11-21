@@ -1,6 +1,7 @@
 import { tmuxStderr } from './tmux-stderr.js'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, lstatSync, symlinkSync, realpathSync } from 'node:fs'
+import { writeMcpJsonFile } from './atomic-write.js'
 import { join } from 'node:path'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import { createHash } from 'node:crypto'
@@ -578,7 +579,7 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
   if (!existsSync(ctx.scratchDir)) mkdirSync(ctx.scratchDir, { recursive: true })
 
   const mcpPath = join(ctx.home, '.mcp.json')
-  if (!existsSync(mcpPath)) writeFileSync(mcpPath, '{"mcpServers":{}}\n')
+  if (!existsSync(mcpPath)) writeMcpJsonFile(mcpPath, '{"mcpServers":{}}\n')
 
   if (!existsSync(ctx.configDir)) mkdirSync(ctx.configDir, { recursive: true })
 

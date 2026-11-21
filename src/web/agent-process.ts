@@ -60,7 +60,7 @@ import {
 import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
-import { atomicWriteFileSync } from './atomic-write.js'
+import { atomicWriteFileSync, writeMcpJsonFile, tightenMcpJsonMode } from './atomic-write.js'
 import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from './code-mode-caveats.js'
 import { paneTyped } from './pane-text.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
@@ -2986,7 +2986,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         const existingMcpConfig = readJsonObjectForWrite(mcpJsonPath)
         if (isPlainObject(existingMcpConfig.mcpServers)) mcpConfig = { mcpServers: existingMcpConfig.mcpServers }
         mcpConfig.mcpServers['plugin:telegram:telegram'] = buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir)
-        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        writeMcpJsonFile(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
         useMcpJsonForChannel = true
         logger.info({ name, pluginVersion, pluginDir }, 'Wrote per-agent mcp.json for telegram plugin')
       } catch (err) {
@@ -3058,7 +3058,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
           // string entirely, so there is nothing to quote and nothing to escape.
           env: { WORKSOURCE_AGENT_ID: name, WORKSOURCE_DIR: worksourceRootFor(name) },
         }
-        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        writeMcpJsonFile(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
         // The dev-channels flag takes a TAGGED LIST (`server:<name>` for a manually
         // configured MCP server, `plugin:<name>@<marketplace>` for a plugin one).
         // Measured by the reviewer on the PR head: without the value the CLI exits
@@ -3098,10 +3098,14 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
         if (existing?.mcpServers?.worksource) {
           delete existing.mcpServers.worksource
-          writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2))
+          writeMcpJsonFile(mcpJsonPath, JSON.stringify(existing, null, 2))
           logger.info({ name }, 'worksource channel unwired for agent (opted out)')
         }
       } catch { /* absent or unreadable -> nothing to unwire */ }
+    }
+    // MCPJSON0600-1121: a .mcp.json from before this fix (0644) is narrowed to 0600 at the next spawn.
+    if (name !== MAIN_AGENT_ID && tightenMcpJsonMode(join(agentDir(name), '.mcp.json'))) {
+      logger.info({ name }, '.mcp.json narrowed to 0600')
     }
 
     if (name !== MAIN_AGENT_ID) {
