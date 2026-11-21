@@ -10,7 +10,8 @@ import { logger } from '../logger.js'
 import { launchableInstallDefaultSync, launchableDistributionDefaultSync } from './default-model-guard.js'
 import { measureClaudeCliVersionSync } from './claude-cli-version.js'
 import { CLAUDE_MODEL_MIN_CLI, baseModelId, isModelUnsupportedByCli } from '../claude-cli-support.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL, DEFAULT_AGENT_MODEL_IS_DISTRIBUTION, WORKER_AUTOUPDATE, WORKER_MODEL_FAST } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL, DEFAULT_AGENT_MODEL_IS_DISTRIBUTION, WORKER_AUTOUPDATE, WORKER_MODEL_FAST, WORKER_OAUTH_TOKEN_FILE, WORKER_OAUTH_TOKEN_FILE_FAST } from '../config.js'
+import { decideWorkerOauthToken, workerOauthTokenExport, type WorkerOauthTokenDecision } from './agent-oauth-token-file.js'
 import {
   capturePane,
   isSessionReadyForPrompt,
@@ -188,17 +189,30 @@ export interface WorkerCtx {
   /** An explicit model for this session (fast vs slow), or null: then the shared
    *  chain decides (MARVEEN_WORKER_MODEL > custom provider > default). */
   readonly modelOverride: string | null
+  /** The install setting naming this worker's OWN setup-token file, or null/'' =
+   *  not set (the worker keeps the fleet token). See decideWorkerOauthToken. */
+  readonly oauthTokenFile: string | null
+  /** The install setting's name for this worker, for the refusal alert. */
+  readonly oauthTokenSetting: string
   readonly configDir: string
   readonly scratchDir: string
   chain: Promise<unknown>
   lastStuckAlert: number
 }
 
-export function makeWorkerCtx(session: string, homeDir: string, modelOverride: string | null = null): WorkerCtx {
+export function makeWorkerCtx(
+  session: string,
+  homeDir: string,
+  modelOverride: string | null = null,
+  oauthTokenFile: string | null = null,
+  oauthTokenSetting: string = 'WORKER_OAUTH_TOKEN_FILE',
+): WorkerCtx {
   return {
     session,
     home: homeDir,
     modelOverride,
+    oauthTokenFile,
+    oauthTokenSetting,
     configDir: join(homeDir, '.claude-config'),
     scratchDir: join(homeDir, 'scratch'),
     chain: Promise.resolve() as Promise<unknown>,
@@ -293,6 +307,8 @@ export function isNativeClaudeBin(bin: string | null, home: string = homedir()):
 const ctxSlow = makeWorkerCtx(
   process.env.MARVEEN_WORKER_SESSION || `${MAIN_AGENT_ID}-worker`,
   process.env.MARVEEN_WORKER_DIR || workerHomeFor(MAIN_AGENT_ID, 'slow'),
+  null,
+  WORKER_OAUTH_TOKEN_FILE,
 )
 // Fast session: short, conversational tasks (< 300 chars, no analysis keywords).
 // Separate home + config dir eliminates any shared state with the slow session.
@@ -300,7 +316,55 @@ const ctxFast = makeWorkerCtx(
   process.env.MARVEEN_WORKER_SESSION_FAST || `${MAIN_AGENT_ID}-worker-fast`,
   process.env.MARVEEN_WORKER_DIR_FAST || workerHomeFor(MAIN_AGENT_ID, 'fast'),
   WORKER_MODEL_FAST_OVERRIDE,
+  WORKER_OAUTH_TOKEN_FILE_FAST,
+  'WORKER_OAUTH_TOKEN_FILE_FAST',
 )
+
+// WORKEROAUTHFILE: the worker's own setup-token decision (pure logic and the
+// fail-closed rules live in agent-oauth-token-file.ts). Only the path and a
+// fingerprint are ever logged, never the token value.
+function workerOauthDecision(ctx: WorkerCtx): WorkerOauthTokenDecision {
+  return decideWorkerOauthToken({
+    configured: ctx.oauthTokenFile,
+    usesCustomProvider: () => workerUsesCustomProvider(ctx),
+    fleetTokenPath: FLEET_OAUTH_TOKEN_PATH,
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
+  })
+}
+
+/** Mirrors the launch's own custom-provider resolution: the main agent's custom provider rides along
+ *  (ANTHROPIC_BASE_URL ...) unless an explicit worker model override is set. A resolution error means
+ *  no custom env, exactly as in the launch. */
+function workerUsesCustomProvider(ctx: WorkerCtx): boolean {
+  if (ctx.modelOverride || WORKER_MODEL_OVERRIDE) return false
+  try {
+    return !!buildCustomProviderLaunchEnv(MAIN_AGENT_ID)
+  } catch {
+    return false
+  }
+}
+
+/** One loud, specific refusal: log + a channel alert naming the reason and the path (never a token),
+ *  rate-limited with the same cooldown as the stuck alert. The generic "stuck dialog" alert would
+ *  hide the real cause. */
+function refuseWorkerOwnToken(ctx: WorkerCtx, own: Extract<WorkerOauthTokenDecision, { kind: 'refused' }>): void {
+  logger.error(
+    { session: ctx.session, path: own.path, reason: own.reason, detail: own.detail },
+    'WORKEROAUTHFILE: the worker setup-token setting is set but unusable; refusing to start the worker (it does NOT fall back to the fleet token)',
+  )
+  if (Date.now() - ctx.lastStuckAlert < WORKER_STUCK_ALERT_COOLDOWN_MS) return
+  ctx.lastStuckAlert = Date.now()
+  void notifyChannel(
+    `⚠️ Marveen worker [${ctx.session}]: a saját setup-token beállítás (${ctx.oauthTokenSetting}) hibás, ezért a worker NEM indult el, és nem esik vissza a flotta-tokenre. Ok: ${own.reason}${own.path ? `, fájl: ${own.path}` : ''}. Javítsd a beállítást vagy a fájlt, vagy töröld a beállítást (akkor a flotta-token marad).`,
+  ).catch(() => { /* notifyChannel logs internally */ })
+}
+
+/** The worker's file-based login must not coexist with its own setup-token: Claude Code prefers an
+ *  on-disk credential over CLAUDE_CODE_OAUTH_TOKEN, so any plain file or link left in the config dir
+ *  would silently win. */
+function removeWorkerCredentialsFile(ctx: WorkerCtx): void {
+  rmSync(join(ctx.configDir, '.credentials.json'), { force: true })
+}
 
 // --- Message priority routing -------------------------------------------------
 //
@@ -375,8 +439,15 @@ function clearWorkerKeychainEntry(ctx: WorkerCtx): void {
  * macOS readClaudeCodeOauthJson returns null and the worker runs logged-out.
  * Returns true if a credential file was written.
  */
-function seedWorkerCredentials(ctx: WorkerCtx): boolean {
+export function seedWorkerCredentials(ctx: WorkerCtx, own: WorkerOauthTokenDecision = workerOauthDecision(ctx)): boolean {
   if (process.platform === 'darwin') clearWorkerKeychainEntry(ctx)
+  // WORKEROAUTHFILE: a worker with its own setup-token (or one whose own-token setting is refused) NEVER gets the host's
+  // login copied in, and a plain .credentials.json left in its config dir is removed: the host's Keychain login
+  // would otherwise be the worker's real auth while the log says "own setup-token".
+  if (own.kind !== 'unset') {
+    removeWorkerCredentialsFile(ctx)
+    return false
+  }
   // WORKERLOGOUTWARN1121: with a fleet setup-token the worker is launched with CLAUDE_CODE_OAUTH_TOKEN from it (see the
   // launch line), so a Keychain miss is not a logged-out worker: no warning then (seen on a standard user started
   // without a GUI session: the read failed and the warning fired although the worker had its token).
@@ -577,7 +648,7 @@ export function withWorkerGates(settings: WorkerSettings): WorkerSettings {
  * No CLAUDE.md is written here: the cwd is outside PROJECT_ROOT, so the worker
  * boots with a neutral context.
  */
-export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
+export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow, own: WorkerOauthTokenDecision = workerOauthDecision(ctx)): void {
   if (!existsSync(ctx.home)) mkdirSync(ctx.home, { recursive: true })
   if (!existsSync(ctx.scratchDir)) mkdirSync(ctx.scratchDir, { recursive: true })
 
@@ -585,6 +656,9 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
   if (!existsSync(mcpPath)) writeMcpJsonFile(mcpPath, '{"mcpServers":{}}\n')
 
   if (!existsSync(ctx.configDir)) mkdirSync(ctx.configDir, { recursive: true })
+  // WORKEROAUTHFILE: the decision is made ONCE per start and handed in (not re-derived from the file three times).
+  // With an own token the config dir must hold no login file at all, whether or not ~/.claude exists.
+  if (own.kind !== 'unset') removeWorkerCredentialsFile(ctx)
 
   const realClaude = join(homedir(), '.claude')
   if (existsSync(realClaude)) {
@@ -595,7 +669,7 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
     // cross-process refresh race the fleet token exists to avoid (the Linux
     // #537 failure family; 2026-07-15 bootcamp). Without a fleet token the
     // symlink stays -- it is then the worker's only auth source.
-    const skipSharedCreds = hasFleetOauthToken()
+    const skipSharedCreds = hasFleetOauthToken() || own.kind === 'own'
     if (skipSharedCreds) {
       const credsLink = join(ctx.configDir, '.credentials.json')
       if (lstatSyncSafe(credsLink)?.isSymbolicLink()) rmSync(credsLink, { force: true })
@@ -646,7 +720,7 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
   // Subscription auth: materialise the host login JSON as .credentials.json AND
   // clear the stale path-hashed Keychain entry that would shadow it (see the
   // macOS auth-precedence note at the top of this file).
-  seedWorkerCredentials(ctx)
+  seedWorkerCredentials(ctx, own)
 
   // Inherit project-scoped MCP servers under the worker's own cwd key, AND
   // pre-accept the first-run dialogs so the headless interactive session never
@@ -865,7 +939,7 @@ function sleepMs(ms: number): Promise<void> {
  * login via the isolated CLAUDE_CONFIG_DIR; no --channels, bypassPermissions so
  * the Write-to-scratch capture works. Idempotent.
  */
-function startWorkerSessionFor(ctx: WorkerCtx): void {
+export function startWorkerSessionFor(ctx: WorkerCtx): void {
   // Gate BEFORE any side effect: in WEB_ONLY staging neither the tmux session
   // nor the ensureWorkerCwd config-dir writes may happen (WORKERHOME1).
   if (!workerStartAllowed()) {
@@ -873,7 +947,16 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     return
   }
   if (workerSessionExists(ctx)) return
-  ensureWorkerCwd(ctx)
+  // WORKEROAUTHFILE, fail-closed and BEFORE any side effect: a worker that was
+  // given its own token file but cannot use it must not start, and must never
+  // quietly run on the fleet token instead (that would spend the quota the
+  // setting exists to protect). No token value is ever in this log line.
+  const ownToken = workerOauthDecision(ctx)
+  if (ownToken.kind === 'refused') {
+    refuseWorkerOwnToken(ctx, ownToken)
+    return
+  }
+  ensureWorkerCwd(ctx, ownToken)
   // Detached session; launch claude via a login shell so PATH + the config-dir
   // env are set. The model suffix ([1m]) is single-quoted so it is not globbed.
   // Fleet setup-token (when present) via $(cat) at launch so the secret never
@@ -904,6 +987,12 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     try {
       const cpEnv = buildCustomProviderLaunchEnv(MAIN_AGENT_ID)
       if (cpEnv) {
+        // Defense in depth (the decision above already refuses 'custom-provider'), placed before the key-approval
+        // stamp below: never export an own token next to a custom-provider endpoint env.
+        if (ownToken.kind === 'own' && !ctx.modelOverride) {
+          refuseWorkerOwnToken(ctx, { kind: 'refused', path: ownToken.path, reason: 'custom-provider', detail: '' })
+          return
+        }
         customProviderModel = cpEnv.model
         customEnvPrefix = cpEnv.envPrefix
         if (cpEnv.customApiKeyForApproval) {
@@ -951,8 +1040,11 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   if (WORKER_AUTOUPDATE && ctx === ctxSlow && autoUpdaterEnv.startsWith('export')) {
     logger.warn({ session: ctx.session }, 'WORKERAUTOUPDATE1011: WORKER_AUTOUPDATE is on but claude is not a native install; the slow worker stays pinned')
   }
+  const oauthExport = ownToken.kind === 'own'
+    ? workerOauthTokenExport(ownToken.path)
+    : hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : ''
   const launch =
-    (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
+    oauthExport +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
     autoUpdaterEnv +
     `export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false; ` +
@@ -967,6 +1059,12 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     `--strict-mcp-config --mcp-config ${shArg(workerMcpConfigPath(ctx))}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
+  if (ownToken.kind === 'own') {
+    logger.info(
+      { session: ctx.session, path: ownToken.path, fingerprint: ownToken.fingerprint },
+      'WORKEROAUTHFILE: worker launched with its own setup-token file',
+    )
+  }
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
   // which config-chain element supplied the --model value.
   logger.info(
@@ -1116,12 +1214,22 @@ function alertWorkerStuck(ctx: WorkerCtx, paneTail: string): void {
   ).catch(() => { /* notifyChannel logs internally */ })
 }
 
-async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
+const OWN_TOKEN_EXIT_GRACE_MS = 4000
+
+export async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
   // Fail fast in WEB_ONLY: without this the 90s readiness poll would spin on a
   // session that the gated start never created, then alertWorkerStuck would
   // notifyChannel the LIVE channel from a staging instance.
   if (!workerStartAllowed()) {
     logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY or second instance -- worker disabled, failing the request fast')
+    return false
+  }
+  // WORKEROAUTHFILE: a refused own-token setting fails the request fast and loudly. Without this the 90 s
+  // readiness poll would spin on a session that was never created, run the self-heal, and then send the
+  // generic "stuck dialog" alert that hides the real cause.
+  const ownCheck = workerOauthDecision(ctx)
+  if (ownCheck.kind === 'refused') {
+    refuseWorkerOwnToken(ctx, ownCheck)
     return false
   }
   startWorkerSessionFor(ctx)
@@ -1130,6 +1238,19 @@ async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
   let healed = false
   while (Date.now() < deadline) {
     if (await isSessionReadyForPrompt(ctx.session)) return true
+    // WORKEROAUTHFILE: the launch shell re-checks the token file and exits when it is unreadable, empty or not a
+    // setup-token (the file changed after the JS check). The session is then gone within a moment: say so
+    // at once instead of waiting out the boot timeout and sending the generic stuck-dialog alert.
+    if (ownCheck.kind === 'own' && Date.now() - start > OWN_TOKEN_EXIT_GRACE_MS && !workerSessionExists(ctx)) {
+      logger.error({ session: ctx.session, path: ownCheck.path }, 'WORKEROAUTHFILE: the worker launch shell exited at once (the own token file changed or became unusable after the check); no fallback')
+      if (Date.now() - ctx.lastStuckAlert >= WORKER_STUCK_ALERT_COOLDOWN_MS) {
+        ctx.lastStuckAlert = Date.now()
+        void notifyChannel(
+          `⚠️ Marveen worker [${ctx.session}]: a worker azonnal kilépett az indításkor: a saját setup-token fájl (${ctx.oauthTokenSetting}: ${ownCheck.path}) az ellenőrzés után olvashatatlanná, üressé vagy hibássá vált. A worker nem indult el, és nem esik vissza a flotta-tokenre.`,
+        ).catch(() => { /* notifyChannel logs internally */ })
+      }
+      return false
+    }
     if (!healed && Date.now() - start > WORKER_SELF_HEAL_GRACE_MS) {
       healed = true
       try { selfHealWorkerOnce(ctx) } catch (err) { logger.warn({ err }, 'agent-worker: self-heal pass failed') }
@@ -1266,6 +1387,26 @@ async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: numb
 }
 
 /**
+ * What runViaWorker returns when the worker's auth failed for good. A worker with its own setup-token (or a
+ * refused own-token setting) must NOT fall through to the SDK path (API billing, the host's auth): no authFailed,
+ * so runAgent returns the error instead of silently using other credentials. Otherwise the old behaviour.
+ */
+export function workerAuthFailureResult(
+  own: WorkerOauthTokenDecision,
+  afterRecovery: boolean,
+): { text: null; error: string; authFailed?: boolean } {
+  if (own.kind !== 'unset') {
+    logger.error({ afterRecovery }, 'agent-worker: auth failure with the worker own setup-token -> NO SDK fallback (error returned)')
+    return { text: null, error: 'worker auth failed (401/login)' + (afterRecovery ? ' after recovery' : '') + '; own setup-token, no SDK fallback' }
+  }
+  if (afterRecovery) {
+    logger.error('agent-worker: auth failure persists after recovery -> signalling SDK fallback (authFailed)')
+    return { text: null, error: 'worker auth failed (401/login) after recovery', authFailed: true }
+  }
+  return { text: null, error: 'worker auth failed', authFailed: true }
+}
+
+/**
  * Run one prompt through the interactive worker and return its text output.
  * Routes to the fast or slow session based on message length + keyword heuristic
  * (overridable via the `priority` parameter). Serialized within each session via
@@ -1310,9 +1451,8 @@ export async function runViaWorker(
         restartWorkerSession(ctx)
         continue
       }
-      logger.error({ session: ctx.session }, 'agent-worker: auth failure persists after recovery -> signalling SDK fallback (authFailed)')
-      return { text: null, error: 'worker auth failed (401/login) after recovery', authFailed: true }
+      return workerAuthFailureResult(workerOauthDecision(ctx), true)
     }
-    return { text: null, error: 'worker auth failed', authFailed: true }
+    return workerAuthFailureResult(workerOauthDecision(ctx), false)
   })
 }
