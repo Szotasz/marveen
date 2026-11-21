@@ -99,7 +99,7 @@ describe('E5 schedule-runner wiring', () => {
     expect(branch).toContain('scheduleLastRun.set(task.name, now)')
     expect(branch).toContain('persistScheduleLastRun()')
     // The rest of the cron path fires only the agents that were not held.
-    expect(branch).toContain('const targetAgents = budget.run')
-    expect(src.slice(src.indexOf('const targetAgents = budget.run'), src.indexOf('const targetAgents = budget.run') + 4000)).not.toContain('resolvedAgents')
+    expect(branch).toContain('targetAgents = budget.run')
+    expect(src.slice(src.indexOf('targetAgents = budget.run'), src.indexOf('targetAgents = budget.run') + 4000)).not.toContain('resolvedAgents')
   })
 })
