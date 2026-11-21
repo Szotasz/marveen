@@ -1793,6 +1793,9 @@ window._i18n.hu = {
   'tokenUsage.period.7d':        '7 nap',
   'tokenUsage.period.30d':       '30 nap',
   'tokenUsage.timeline_title':        'Idővonal',
+  'tokenUsage.quota_history_title':    'Rate-limit kihasználtság',
+  'tokenUsage.quota_history_subtitle': 'Az 5 órás és a 7 napos Claude keret kihasználtsága időben (csak a tényleg mért pontok)',
+  'tokenUsage.quota_history_no_data':  'Nincs mért rate-limit adat a kiválasztott időszakra',
   'tokenUsage.biggest_calls_title':   'Legnagyobb hívások',
   'tokenUsage.changes_title':         'Változások',
 

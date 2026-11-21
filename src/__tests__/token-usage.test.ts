@@ -395,6 +395,14 @@ describe('tryHandleTokenUsage route handler', () => {
     expect(Array.isArray(body)).toBe(true)
   })
 
+  it('handles GET /api/token-usage/rate-limit-history', async () => {
+    const { ctx, getResponse } = makeCtx('/api/token-usage/rate-limit-history', 'GET', { from: '0' })
+    const handled = await tryHandleTokenUsage(ctx)
+    expect(handled).toBe(true)
+    const { body } = getResponse()
+    expect(Array.isArray(body)).toBe(true)
+  })
+
   it('returns false for unrelated paths', async () => {
     const { ctx } = makeCtx('/api/memories', 'GET')
     const handled = await tryHandleTokenUsage(ctx)

@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC } from '../web/quota.js'
+import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC, readQuotaHistory } from '../web/quota.js'
 
 const NOW = 1_788_700_000
 
@@ -204,5 +204,91 @@ describe('readFableSnapshot', () => {
   it('treats a missing generated_at as maximally old rather than brand new', () => {
     writeFable({ claude: { windows: { seven_day_opus: { used_percent: 10, resets_at: NOW + 60 } } } })
     expect(readFableSnapshot(fableFile, NOW).status).toBe('stale')
+  })
+})
+
+// usage-history.jsonl (scripts/usage-collect.py, one JSON line per run,
+// append-only). The dashboard's look-back trend reads this, not
+// usage-latest.json (that file only ever holds the newest snapshot).
+describe('readQuotaHistory', () => {
+  let historyFile: string
+  beforeEach(() => { historyFile = join(dir, 'usage-history.jsonl') })
+
+  function line(generatedAt: string, claude: unknown): string {
+    return JSON.stringify({ generated_at: generatedAt, claude })
+  }
+
+  it('reports a missing file as an empty trend, not an error', () => {
+    expect(readQuotaHistory(historyFile)).toEqual([])
+  })
+
+  it('reports a corrupt file as an empty trend', () => {
+    writeFileSync(historyFile, '{ not json\n')
+    expect(readQuotaHistory(historyFile)).toEqual([])
+  })
+
+  it('skips estimate-only lines (no windows block at all)', () => {
+    writeFileSync(historyFile, [
+      line('2026-11-20T10:00:00+00:00', { source: 'estimate', five_hour_est_tokens: 123 }),
+      line('2026-11-20T11:00:00+00:00', {
+        source: 'authoritative',
+        windows: { five_hour: { used_percent: 14, resets_at: 1 }, seven_day: { used_percent: 56, resets_at: 2 } },
+      }),
+    ].join('\n'))
+    const points = readQuotaHistory(historyFile)
+    expect(points).toHaveLength(1)
+    expect(points[0]).toEqual({ ts: Math.floor(Date.parse('2026-11-20T11:00:00+00:00') / 1000), fiveHourPct: 14, sevenDayPct: 56 })
+  })
+
+  it('keeps a line with only one of the two windows readable', () => {
+    writeFileSync(historyFile, line('2026-11-20T11:00:00+00:00', {
+      source: 'statusline',
+      windows: { five_hour: { used_percent: 30, resets_at: 1 } },
+    }))
+    const points = readQuotaHistory(historyFile)
+    expect(points).toEqual([{ ts: Math.floor(Date.parse('2026-11-20T11:00:00+00:00') / 1000), fiveHourPct: 30, sevenDayPct: null }])
+  })
+
+  it('skips a line whose generated_at will not parse', () => {
+    writeFileSync(historyFile, line('not-a-date', {
+      source: 'authoritative',
+      windows: { five_hour: { used_percent: 30, resets_at: 1 } },
+    }))
+    expect(readQuotaHistory(historyFile)).toEqual([])
+  })
+
+  it('filters to the requested [from, to] range, inclusive', () => {
+    const mk = (hour: number) => line(`2026-11-2${hour}T00:00:00+00:00`, {
+      source: 'authoritative',
+      windows: { five_hour: { used_percent: hour, resets_at: 1 } },
+    })
+    writeFileSync(historyFile, [mk(0), mk(1), mk(2)].join('\n'))
+    const fromSec = Math.floor(Date.parse('2026-11-21T00:00:00+00:00') / 1000)
+    const toSec = Math.floor(Date.parse('2026-11-21T00:00:00+00:00') / 1000)
+    const points = readQuotaHistory(historyFile, fromSec, toSec)
+    expect(points).toEqual([{ ts: fromSec, fiveHourPct: 1, sevenDayPct: null }])
+  })
+
+  it('keeps only the newest `limit` points out of a long append-only file', () => {
+    const lines: string[] = []
+    for (let i = 0; i < 5; i++) {
+      lines.push(line(`2026-11-2${i}T00:00:00+00:00`, {
+        source: 'authoritative',
+        windows: { five_hour: { used_percent: i, resets_at: 1 } },
+      }))
+    }
+    writeFileSync(historyFile, lines.join('\n'))
+    const points = readQuotaHistory(historyFile, undefined, undefined, 2)
+    expect(points.map((p) => p.fiveHourPct)).toEqual([3, 4])
+  })
+
+  it('tolerates a half-written trailing line without losing the earlier ones', () => {
+    const good = line('2026-11-20T11:00:00+00:00', {
+      source: 'authoritative',
+      windows: { five_hour: { used_percent: 14, resets_at: 1 } },
+    })
+    writeFileSync(historyFile, good + '\n{ "generated_at": "2026-11-20T12:00')
+    const points = readQuotaHistory(historyFile)
+    expect(points).toHaveLength(1)
   })
 })

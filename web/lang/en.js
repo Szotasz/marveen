@@ -1350,6 +1350,9 @@ window._i18n.en = {
   'tokenUsage.period.7d':        '7 days',
   'tokenUsage.period.30d':       '30 days',
   'tokenUsage.timeline_title':        'Timeline',
+  'tokenUsage.quota_history_title':    'Rate-limit usage',
+  'tokenUsage.quota_history_subtitle': 'The 5-hour and 7-day Claude quota usage over time (measured points only)',
+  'tokenUsage.quota_history_no_data':  'No measured rate-limit data for the selected period',
   'tokenUsage.biggest_calls_title':   'Biggest calls',
   'tokenUsage.changes_title':         'Changes',
 
