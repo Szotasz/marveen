@@ -160,7 +160,8 @@ _SCRIPT_SHA256_RX = re.compile(r"[0-9a-f]{64}")
 # path -- a writable fake "node" at an arbitrary path (/tmp/x/node), /usr/bin/nodejs,
 # /usr/local/bin/nodejs, ... -- leaves the command WITHOUT an exception, so the script
 # token cannot match a granted path. This narrows shapes, not the user trust boundary:
-# PATH, NODE_OPTIONS and shell start-up files are trusted as by the agent process.
+# NODE_OPTIONS and shell start-up files are trusted as by the agent process, while the
+# resolved interpreter must be unwritable and symlink-free.
 # Keep in sync with
 # agentScriptException in email-send-gate.mjs.
 _NODE_INTERPRETERS = frozenset({"node", "nodejs", "/usr/bin/node", "/usr/local/bin/node"})
@@ -332,24 +333,34 @@ def _read_grant_path_acceptable(path):
         return err.errno == errno.ENOENT
 
 
+def resolve_node_interpreter(interp):
+    """The interpreter the shell would run for a bare `node`/`nodejs` (or '/usr/bin/env
+    node'): the first executable regular file on PATH, or an absolute interp as is.
+    Plain string join -- the candidate is never resolved or normalized, so a symlinked
+    parent stays visible to the writability check in probe_node_version. A relative or
+    empty PATH entry aborts the walk (None): the gate never guesses a directory."""
+    if interp == "/usr/bin/env node":
+        interp = "node"
+    if os.path.isabs(interp):
+        return interp
+    for directory in os.environ.get("PATH", "").split(":"):
+        if not directory.startswith("/"):
+            return None
+        candidate = directory + "/" + interp
+        try:
+            if os.access(candidate, os.X_OK) and stat.S_ISREG(os.stat(candidate).st_mode):
+                return candidate
+        except OSError:
+            pass
+    return None
+
+
 def probe_node_version(interp):
     try:
-        if interp == "/usr/bin/env node":
-            interp = "node"
-        resolved = interp
-        if not os.path.isabs(interp):
-            resolved = None
-            for directory in os.environ.get("PATH", "").split(":"):
-                if not directory.startswith("/"):
-                    return None
-                candidate = directory + "/" + interp
-                try:
-                    if os.access(candidate, os.X_OK) and stat.S_ISREG(os.stat(candidate).st_mode):
-                        resolved = candidate
-                        break
-                except OSError:
-                    pass
-        if not resolved:
+        resolved = resolve_node_interpreter(interp)
+        # #2843 review B1: an untrusted interpreter (writable path component, symlink, root) is
+        # refused BEFORE it is ever executed -- the same rule as the script itself.
+        if not resolved or script_path_writable(resolved):
             return None
         result = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=2, check=False)
         return result.stdout.strip() if result.returncode == 0 else None
@@ -361,7 +372,9 @@ def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
     """Literal whole-word shell subset; interpreter, --permission, exact read list, script, mode, args.
     The script is hash-bound; the text scanner is an early refusal only.
     A belt against ACCIDENTAL loading: Node refuses reads outside the list, writes and child processes.
-    NOT a sandbox against malicious code: network is open; PATH / NODE_OPTIONS trust is unchanged.
+    NOT a sandbox against malicious code: network is open; NODE_OPTIONS trust is unchanged. The interpreter the
+    shell would run (PATH resolved at gate time) must pass the same rule as the script: no symlink, no writable
+    path component, not root -- or there is no exception, and it is never executed.
     macOS fails closed because the permission model was not measured there.
     Twin of agentScriptException in scripts/email-send-gate.mjs.
     check_paths=False is used only to DENY a recognized invocation with relative files;

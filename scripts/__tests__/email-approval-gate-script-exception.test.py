@@ -18,6 +18,8 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = json.loads((ROOT / 'src/__tests__/fixtures/agent-send-exception-cases.json').read_text())
 LOADER_CORPUS = json.loads((ROOT / 'src/__tests__/fixtures/agent-send-exception-loader-cases.json').read_text())
+# The send exception is disabled on macOS; positive cases are bound to the platform.
+SEND_EXCEPTION_PLATFORM = sys.platform != 'darwin'
 
 
 def load_gate(path):
@@ -52,6 +54,16 @@ def main():
             assert gate.script_source_loads_only_builtins(case['source'].encode('utf-8')) == case['allowed'], case['name']
         assert gate.script_source_loads_only_builtins(b'\xff\xfe') is False
         print('PASS: shared loader corpus and strict UTF-8')
+        if not SEND_EXCEPTION_PLATFORM:
+            darwin_gate_spec = importlib.util.spec_from_file_location('darwin_gate', gate_path)
+            darwin_gate = importlib.util.module_from_spec(darwin_gate_spec)
+            darwin_gate_spec.loader.exec_module(darwin_gate)
+            for case in CORPUS['cases']:
+                if case['match']:
+                    assert darwin_gate.agent_script_exception(case['command'], CORPUS['agentName'],
+                                                              {'agents': {CORPUS['agentName']: CORPUS['entry']}}) is None, case['name']
+            print('SKIP: positive send-exception cases need a non-darwin platform; every positive case is refused here')
+            return
         # A separate, unpatched module exercises actual filesystem permissions.
         spec = importlib.util.spec_from_file_location('real_gate', gate_path)
         real_gate = importlib.util.module_from_spec(spec)
@@ -111,10 +123,13 @@ def main():
                 ('v24.0.0', True), ('v21.9.9', False), ('v20.18.0', False), ('22.13.0', False),
                 ('v22.13', False), ('', False), ('v22.13.0\nextra', False)]:
             assert real_gate.node_permission_version_ok(version) is expected, version
-        if shutil.which('node'):
-            assert re.fullmatch(r'v\d+\.\d+\.\d+', real_gate.probe_node_version('node'))
-        else:
+        resolved_node = real_gate.resolve_node_interpreter('node')
+        if not resolved_node:
             print('SKIP: no node on PATH for real version probe')
+        elif real_gate.script_path_writable(resolved_node):
+            assert real_gate.probe_node_version('node') is None
+        else:
+            assert re.fullmatch(r'v\d+\.\d+\.\d+', real_gate.probe_node_version('node'))
         probe_dir = Path(os.path.realpath(tempfile.mkdtemp(prefix='script-node-path-')))
         try:
             (probe_dir / 'bin').mkdir()
@@ -122,20 +137,36 @@ def main():
             (probe_dir / 'real/sub').mkdir()
             for relative, version in (('bin/node', 'v22.22.2'), ('real/bin/node', 'v20.0.0')):
                 executable = probe_dir / relative
-                executable.write_text(f'#!/bin/sh\necho {version}\n')
+                executable.write_text(f"#!/bin/sh\ntouch '{probe_dir}/ran'\necho {version}\n")
                 executable.chmod(0o755)
             (probe_dir / 'link').symlink_to(probe_dir / 'real/sub', target_is_directory=True)
-            for path, expected in (
-                    (f'{probe_dir}/bin', 'v22.22.2'),
-                    (f'{probe_dir}/link/../bin', 'v20.0.0'),
+            for path, resolved in (
+                    (f'{probe_dir}/bin', f'{probe_dir}/bin/node'),
+                    (f'{probe_dir}/link/../bin', f'{probe_dir}/link/../bin/node'),
                     (f'relative-dir:{probe_dir}/bin', None),
                     (f':{probe_dir}/bin', None),
-                    (f'{probe_dir}/nonexistent:{probe_dir}/bin', 'v22.22.2')):
+                    (f'{probe_dir}/nonexistent:{probe_dir}/bin', f'{probe_dir}/bin/node')):
                 with patch.dict(os.environ, {'PATH': path}):
-                    assert real_gate.probe_node_version('node') == expected, path
+                    assert real_gate.resolve_node_interpreter('node') == resolved, path
+                    assert real_gate.probe_node_version('node') is None, path
+            assert real_gate.probe_node_version(f'{probe_dir}/bin/node') is None
+            # A planted node first on PATH: the REAL writability check runs for paths under probe_dir, and every other
+            # path (the granted temp script) counts as unwritable, so a refusal can only come from the interpreter.
+            real_writable = real_gate.script_path_writable
+            planted_only = lambda p: real_writable(p) if str(p).startswith(str(probe_dir) + '/') else False  # noqa: E731
+            planted_cmd = bind(CORPUS['cases'][0]['command'])
+            with patch.dict(os.environ, {'PATH': f"{probe_dir}/bin:{os.environ.get('PATH', '/usr/bin:/bin')}"}), \
+                    patch.object(real_gate, 'script_path_writable', side_effect=planted_only):
+                assert real_gate.resolve_node_interpreter('node') == f'{probe_dir}/bin/node'
+                assert real_writable(f'{probe_dir}/bin/node') is True
+                assert real_gate.agent_script_exception(planted_cmd, CORPUS['agentName'], config) is None
+                # Positive control: with a trusted runtime the same command still gets the exception.
+                with patch.object(real_gate, 'probe_node_version', return_value='v22.22.2'):
+                    assert real_gate.agent_script_exception(planted_cmd, CORPUS['agentName'], config)
+            assert not (probe_dir / 'ran').exists()
         finally:
             shutil.rmtree(probe_dir)
-        print('PASS: version probe follows shell PATH resolution and rejects relative or empty entries')
+        print('PASS: version probe follows shell PATH resolution, rejects relative or empty entries, and never runs an untrusted interpreter')
         positive = bind(CORPUS['cases'][0]['command'])
         with patch.object(real_gate, 'script_path_writable', return_value=False):
             for check_paths in (True, False):

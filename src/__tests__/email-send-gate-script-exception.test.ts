@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 // after node:os / node:path / node:url on purpose: importing node:fs runs the
 // vi.mock factory below, which closes over those -- an earlier position fails
 // with "Cannot access ... before initialization"
-import { accessSync, constants, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import corpus from './fixtures/agent-send-exception-cases.json' with { type: 'json' }
 
 import loaderCorpus from './fixtures/agent-send-exception-loader-cases.json' with { type: 'json' }
@@ -49,11 +49,16 @@ vi.mock('node:fs', async original => {
   } }
 })
 // @ts-expect-error -- plain .mjs hook script, no types
-import { scriptSourceLoadsOnlyBuiltins, scriptPathWritable, agentScriptException, gateDecision, readAgentSendExceptions, validAgentSendException, nodePermissionVersionOk, probeNodeVersion, setNodeVersionProbeOverride } from '../../scripts/email-send-gate.mjs'
+import { scriptSourceLoadsOnlyBuiltins, scriptPathWritable, agentScriptException, gateDecision, readAgentSendExceptions, validAgentSendException, nodePermissionVersionOk, probeNodeVersion, resolveNodeInterpreter, setNodeVersionProbeOverride } from '../../scripts/email-send-gate.mjs'
 // Namespace import: the unbound-binding deny builder arrives with the fix, and a
 // named import of a missing export would break the whole file at link time.
 // @ts-expect-error -- plain .mjs hook script, no types
 import * as sendGate from '../../scripts/email-send-gate.mjs'
+
+// The send exception is disabled on macOS (the Node permission model was not measured there), so every
+// positive expectation is bound to the platform; the darwin branch is asserted by stubbing the platform.
+const SEND_EXCEPTION_PLATFORM = process.platform !== 'darwin'
+const itPositive = SEND_EXCEPTION_PLATFORM ? it : it.skip
 
 const { EMAIL_APPROVAL_GATE_COMMAND } = sendGate
 const { agentName } = corpus
@@ -91,24 +96,24 @@ describe('named-script exception', () => {
   it('preserves the script-send denial without an agent identity', () => {
     expect(decide(command, null)).toMatchObject({ deny: true, kind: 'script-send' })
   })
-  it('allows the exact send with verified recipients', () => {
+  itPositive('allows the exact send with verified recipients', () => {
     expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
     expect(agentScriptException(command, agentName, config)).toEqual({
       script: entry.scripts[0].path, mode: 'send', envelopeSha256: 'a'.repeat(64), to: 'verified@example.invalid', cc: 'copy@example.invalid',
       subject: 'Example subject', bodyFile: '/absolute/path/to/body.txt', attach: ['/absolute/path/to/attachment.bin'],
     })
   })
-  it('allows a draft with verified recipients', () => {
+  itPositive('allows a draft with verified recipients', () => {
     expect(decide(draftCommand)).toEqual({ deny: false, kind: 'script-exception' })
   })
-  it('denies an unverified draft recipient', () => {
+  itPositive('denies an unverified draft recipient', () => {
     expect(decide(draftCommand.replace('verified@', 'unknown@')))
       .toMatchObject({ deny: true, kind: 'unverified-recipient' })
   })
-  it('checks cc as well as to', () => {
+  itPositive('checks cc as well as to', () => {
     expect(decide(command.replace('copy@', 'unknown@'))).toMatchObject({ deny: true, kind: 'unverified-recipient' })
   })
-  it('denies an unparseable recipient', () => {
+  itPositive('denies an unparseable recipient', () => {
     expect(decide(command.replace('verified@example.invalid', 'invalid@')))
       .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
   })
@@ -195,7 +200,7 @@ describe('parser conformance (also read by email-approval-gate-script-exception.
     }
   })
   for (const c of cases) it(c.name, () => {
-    expect(Boolean(agentScriptException(c.command, agentName, config))).toBe(c.match)
+    expect(Boolean(agentScriptException(c.command, agentName, config))).toBe(c.match && SEND_EXCEPTION_PLATFORM)
   })
 })
 
@@ -213,7 +218,7 @@ describe('send exception requires the bound approval gate (SEND mode only)', () 
     file.content = '{invalid json'
   })
 
-  it('denies the send while the gate hook is not bound: missing, unreadable, or hook-less settings', () => {
+  itPositive('denies the send while the gate hook is not bound: missing, unreadable, or hook-less settings', () => {
     agentSettings.content = null // no settings file at all (grant postdates the spawn)
     expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
     agentSettings.content = '{invalid json' // unreadable settings
@@ -233,21 +238,21 @@ describe('send exception requires the bound approval gate (SEND mode only)', () 
     expect(msg.toLowerCase()).toContain('respawn')
   })
 
-  it('allows the send again once the hook is bound', () => {
+  itPositive('allows the send again once the hook is bound', () => {
     agentSettings.content = null
     expect(decide().deny).toBe(true)
     agentSettings.content = boundSettings
     expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
   })
 
-  it('a hook elsewhere in the file does not satisfy the binding: only PreToolUse counts', () => {
+  itPositive('a hook elsewhere in the file does not satisfy the binding: only PreToolUse counts', () => {
     agentSettings.content = JSON.stringify({ hooks: { PostToolUse: [
       { matcher: '.*send_email.*', hooks: [{ type: 'command', command: EMAIL_APPROVAL_GATE_COMMAND }] },
     ] } })
     expect(decide()).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
   })
 
-  it('a command that only mentions the gate is not the binding', () => {
+  itPositive('a command that only mentions the gate is not the binding', () => {
     for (const command of [
       `${EMAIL_APPROVAL_GATE_COMMAND} --stale`,
       'echo email-approval-gate.py',
@@ -260,7 +265,7 @@ describe('send exception requires the bound approval gate (SEND mode only)', () 
     }
   })
 
-  it('the exact hook next to sibling hooks in the same entry is bound', () => {
+  itPositive('the exact hook next to sibling hooks in the same entry is bound', () => {
     agentSettings.content = JSON.stringify({ hooks: { PreToolUse: [
       { matcher: 'Bash', hooks: [
         { type: 'command', command: 'echo sibling' },
@@ -270,7 +275,7 @@ describe('send exception requires the bound approval gate (SEND mode only)', () 
     expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
   })
 
-  it('a lookalike entry does not hide an exact entry', () => {
+  itPositive('a lookalike entry does not hide an exact entry', () => {
     agentSettings.content = JSON.stringify({ hooks: { PreToolUse: [
       { matcher: 'Bash', hooks: [{ type: 'command', command: `${EMAIL_APPROVAL_GATE_COMMAND} --stale`, timeout: 10 }] },
       { matcher: 'Bash', hooks: [{ type: 'command', command: EMAIL_APPROVAL_GATE_COMMAND, timeout: 10 }] },
@@ -278,14 +283,14 @@ describe('send exception requires the bound approval gate (SEND mode only)', () 
     expect(decide()).toEqual({ deny: false, kind: 'script-exception' })
   })
 
-  it('drafts are untouched by the binding check', () => {
+  itPositive('drafts are untouched by the binding check', () => {
     for (const content of [null, '{invalid json', boundSettings]) {
       agentSettings.content = content
       expect(decide(draftCommand)).toEqual({ deny: false, kind: 'script-exception' })
     }
   })
 
-  it('an unbound gate still verifies recipients first on no other path: the deny is the binding one', () => {
+  itPositive('an unbound gate still verifies recipients first on no other path: the deny is the binding one', () => {
     agentSettings.content = null
     // The binding deny wins even for an unverified recipient: without the py
     // gate bound, no approval-level enforcement exists at all, so the call must
@@ -293,7 +298,7 @@ describe('send exception requires the bound approval gate (SEND mode only)', () 
     expect(decide(command.replace('verified@', 'unknown@'))).toMatchObject({ deny: true, kind: 'approval-gate-unbound' })
   })
 
-  it('MAIN_AGENT_ID resolves the home settings file, same fail-closed rule', () => {
+  itPositive('MAIN_AGENT_ID resolves the home settings file, same fail-closed rule', () => {
     envFile.content = `MAIN_AGENT_ID=${agentName}\n`
     agentSettings.content = boundSettings // the agents/<name> file is NOT consulted for the main id
     homeSettings.content = null
@@ -351,7 +356,7 @@ describe('the grant binds the script content (sha256, checked per invocation)', 
   // sanctioned shape, so only the content binding can fail it
   const commandAt = (granted: string) => corpus.cases[0].command.replaceAll('/absolute/path/to/runner.ext', granted)
 
-  it('(a) script content changed after the grant -> no exception', () => {
+  itPositive('(a) script content changed after the grant -> no exception', () => {
     expect(agentScriptException(command, agentName, config)).not.toBeNull()
     writeFileSync(scriptFile, '#!/usr/bin/env node\nconsole.log("tampered runner")\n')
     expect(agentScriptException(command, agentName, config)).toBeNull()
@@ -448,7 +453,7 @@ describe('script path writability', () => {
       expect(scriptPathWritable(scriptFile)).toBe(expected)
     }
   })
-  it('a root runner never gets the exception', () => {
+  itPositive('a root runner never gets the exception', () => {
     accessProbe.mode = 'stub'
     accessProbe.writablePath = null
     accessProbe.errorCode = 'EACCES'
@@ -463,7 +468,7 @@ describe('script path writability', () => {
       geteuid.mockRestore()
     }
   })
-  it('refuses a symlinked path even when nothing is writable', () => {
+  itPositive('refuses a symlinked path even when nothing is writable', () => {
     const targetParent = mkdtempSync(join(tmpdir(), 'agent-send-target-'))
     const target = join(targetParent, 'real')
     const linkDir = mkdtempSync(join(tmpdir(), 'agent-send-link-'))
@@ -512,14 +517,14 @@ describe('loader and reserved envelope digest enforcement', () => {
       expect(validAgentSendException({ ...entry, [list]: [...entry[list], '--envelope-sha256'] })).toBe(false)
     })
   }
-  it('returns the valid send digest and keeps drafts unbound', () => {
+  itPositive('returns the valid send digest and keeps drafts unbound', () => {
     expect(agentScriptException(command, agentName, config).envelopeSha256).toBe('a'.repeat(64))
     expect(agentScriptException(draftCommand, agentName, config)).not.toHaveProperty('envelopeSha256')
   })
 })
 
 describe('Node permission runtime and optional readFiles', () => {
-  it('accepts only regular or missing read grants', () => {
+  itPositive('accepts only regular or missing read grants', () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'agent-send-read-grants-')))
     try {
       const body = join(dir, 'body.txt')
@@ -564,19 +569,51 @@ describe('Node permission runtime and optional readFiles', () => {
       mkdirSync(join(dir, 'bin'))
       mkdirSync(join(dir, 'real', 'bin'), { recursive: true })
       mkdirSync(join(dir, 'real', 'sub'))
-      writeFileSync(join(dir, 'bin', 'node'), '#!/bin/sh\necho v22.22.2\n', { mode: 0o755 })
-      writeFileSync(join(dir, 'real', 'bin', 'node'), '#!/bin/sh\necho v20.0.0\n', { mode: 0o755 })
+      writeFileSync(join(dir, 'bin', 'node'), `#!/bin/sh\ntouch '${dir}/ran'\necho v22.22.2\n`, { mode: 0o755 })
+      writeFileSync(join(dir, 'real', 'bin', 'node'), `#!/bin/sh\ntouch '${dir}/ran'\necho v20.0.0\n`, { mode: 0o755 })
       symlinkSync(join(dir, 'real', 'sub'), join(dir, 'link'))
-      for (const [path, version] of [
-        [`${dir}/bin`, 'v22.22.2'],
-        [`${dir}/link/../bin`, 'v20.0.0'],
+      for (const [path, resolved] of [
+        [`${dir}/bin`, `${dir}/bin/node`],
+        [`${dir}/link/../bin`, `${dir}/link/../bin/node`],
         [`relative-dir:${dir}/bin`, null],
         [`:${dir}/bin`, null],
-        [`${dir}/nonexistent:${dir}/bin`, 'v22.22.2'],
+        [`${dir}/nonexistent:${dir}/bin`, `${dir}/bin/node`],
       ] as const) {
         process.env.PATH = path
-        expect(probeNodeVersion('node')).toBe(version)
+        expect(resolveNodeInterpreter('node'), path).toBe(resolved)
+        expect(probeNodeVersion('node'), path).toBeNull() // a writable temp interpreter is never trusted
       }
+      expect(probeNodeVersion(`${dir}/bin/node`)).toBeNull() // an absolute interpreter is held to the same rule
+      expect(existsSync(join(dir, 'ran'))).toBe(false) // and is never executed
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH
+      else process.env.PATH = previousPath
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+  it('a writable node earlier on PATH loses the exception and is never run', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'agent-send-node-planted-')))
+    const previousPath = process.env.PATH
+    try {
+      mkdirSync(join(dir, 'bin'))
+      writeFileSync(join(dir, 'bin', 'node'), `#!/bin/sh\ntouch '${dir}/ran'\necho v22.22.2\n`, { mode: 0o755 })
+      process.env.PATH = `${dir}/bin:${previousPath ?? '/usr/bin:/bin'}`
+      // Real file system first: the planted interpreter really is writable.
+      accessProbe.mode = 'real'
+      expect(resolveNodeInterpreter('node')).toBe(`${dir}/bin/node`)
+      expect(scriptPathWritable(`${dir}/bin/node`)).toBe(true)
+      // Then the stub: ONLY the planted node is writable, the granted script is not, so a refusal below
+      // can only come from the interpreter check (with the real file system the temp script itself is
+      // writable and would hide the result).
+      accessProbe.mode = 'stub'
+      accessProbe.writablePath = `${dir}/bin/node`
+      expect(resolveNodeInterpreter('node')).toBe(`${dir}/bin/node`)
+      setNodeVersionProbeOverride(null)
+      expect(agentScriptException(command, agentName, config)).toBeNull()
+      expect(existsSync(join(dir, 'ran'))).toBe(false)
+      // Positive control: the same command with a trusted runtime still gets the exception on Linux.
+      setNodeVersionProbeOverride(() => 'v22.22.2')
+      expect(Boolean(agentScriptException(command, agentName, config))).toBe(SEND_EXCEPTION_PLATFORM)
     } finally {
       if (previousPath === undefined) delete process.env.PATH
       else process.env.PATH = previousPath
@@ -594,7 +631,7 @@ describe('Node permission runtime and optional readFiles', () => {
     setNodeVersionProbeOverride(() => version)
     expect(agentScriptException(command, agentName, config)).toBeNull()
   })
-  it('probes only after every other check', () => {
+  itPositive('probes only after every other check', () => {
     const probe = vi.fn(() => 'v22.22.2')
     setNodeVersionProbeOverride(probe)
     expect(agentScriptException(command + ' --unknown value', agentName, config)).toBeNull()
@@ -607,18 +644,18 @@ describe('Node permission runtime and optional readFiles', () => {
     try {
       Object.defineProperty(process, 'platform', { value: 'darwin' })
       expect(agentScriptException(command, agentName, config)).toBeNull()
+      for (const c of cases.filter(c => c.match)) {
+        expect(agentScriptException(c.command, agentName, config), c.name).toBeNull()
+      }
     } finally { Object.defineProperty(process, 'platform', platform) }
   })
   it('real probe returns the Node version when node is on PATH', async ctx => {
     // accessSync is mocked for the script permission tests; use real fs for this control.
     accessProbe.mode = 'real'
-    const fs = await vi.importActual<typeof import('node:fs')>('node:fs')
-    const found = (process.env.PATH ?? '').split(':').some(dir => {
-      try { fs.accessSync(join(dir, 'node'), constants.X_OK); return fs.statSync(join(dir, 'node')).isFile() }
-      catch { return false }
-    })
-    if (!found) { ctx.skip(); return }
-    expect(probeNodeVersion('node')).toMatch(/^v\d+\.\d+\.\d+$/)
+    const resolved = resolveNodeInterpreter('node')
+    if (!resolved) { ctx.skip(); return }
+    if (scriptPathWritable(resolved)) expect(probeNodeVersion('node')).toBeNull()
+    else expect(probeNodeVersion('node')).toMatch(/^v\d+\.\d+\.\d+$/)
   })
   it('validates optional readFiles', () => {
     const { readFiles: _, ...absent } = entry

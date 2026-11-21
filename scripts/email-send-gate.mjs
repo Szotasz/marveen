@@ -90,7 +90,8 @@ const SCRIPT_SHA256_RX = /^[0-9a-f]{64}$/
 // fake 'node' at an arbitrary path (/tmp/x/node), /usr/bin/nodejs,
 // /usr/local/bin/nodejs, ... -- leaves the command WITHOUT an exception, so the script
 // token cannot match a granted path. This narrows shapes, not the user trust boundary:
-// PATH, NODE_OPTIONS and shell start-up files are trusted as by the agent process.
+// NODE_OPTIONS and shell start-up files are trusted as by the agent process, while the
+// resolved interpreter must be unwritable and symlink-free.
 // Keep in sync with
 // agent_script_exception in scripts/hooks/email-approval-gate.py.
 const NODE_INTERPRETERS = ['node', 'nodejs', '/usr/bin/node', '/usr/local/bin/node']
@@ -253,22 +254,31 @@ function readGrantPathAcceptable(path) {
   catch (err) { return err.code === 'ENOENT' }
 }
 
+// The interpreter the shell would run for a bare `node`/`nodejs` (or '/usr/bin/env
+// node'): the first executable regular file on PATH, or an absolute interp as is.
+// Plain string join -- the candidate is never resolved or normalized, so a symlinked
+// parent stays visible to the writability check in probeNodeVersion. A relative or
+// empty PATH entry aborts the walk (null): the gate never guesses a directory.
+export function resolveNodeInterpreter(interp) {
+  if (interp === '/usr/bin/env node') interp = 'node'
+  if (isAbsolute(interp)) return interp
+  for (const dir of (process.env.PATH ?? '').split(':')) {
+    if (!dir.startsWith('/')) return null
+    const candidate = dir + '/' + interp
+    try {
+      accessSync(candidate, constants.X_OK)
+      if (statSync(candidate).isFile()) return candidate
+    } catch { /* Continue to the next PATH entry. */ }
+  }
+  return null
+}
+
 export function probeNodeVersion(interp) {
   try {
-    if (interp === '/usr/bin/env node') interp = 'node'
-    let resolved = interp
-    if (!isAbsolute(interp)) {
-      resolved = null
-      for (const dir of (process.env.PATH ?? '').split(':')) {
-        if (!dir.startsWith('/')) return null
-        const candidate = dir + '/' + interp
-        try {
-          accessSync(candidate, constants.X_OK)
-          if (statSync(candidate).isFile()) { resolved = candidate; break }
-        } catch { /* Continue to the next PATH entry. */ }
-      }
-      if (!resolved) return null
-    }
+    const resolved = resolveNodeInterpreter(interp)
+    // #2843 review B1: an untrusted interpreter (writable path component, symlink, root) is
+    // refused BEFORE it is ever executed -- the same rule as the script itself.
+    if (!resolved || scriptPathWritable(resolved)) return null
     return execFileSync(resolved, ['--version'], {
       timeout: 2000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
@@ -282,7 +292,9 @@ export function setNodeVersionProbeOverride(fn) { nodeVersionProbeOverride = fn 
 // No expansion, escapes, quote concatenation, operators or comments, even in quotes.
 // The script is hash-bound; the text scanner is an early refusal only.
 // A belt against ACCIDENTAL loading: Node refuses reads outside the list, writes and child processes.
-// NOT a sandbox against malicious code: network is open; PATH / NODE_OPTIONS trust is unchanged.
+// NOT a sandbox against malicious code: network is open; NODE_OPTIONS trust is unchanged. The interpreter the
+// shell would run (PATH resolved at gate time) must pass the same rule as the script: no symlink, no writable
+// path component, not root -- or there is no exception, and it is never executed.
 // macOS fails closed because the permission model was not measured there.
 // Keep in sync with agent_script_exception in scripts/hooks/email-approval-gate.py.
 export function agentScriptException(cmd, agentName, config) {

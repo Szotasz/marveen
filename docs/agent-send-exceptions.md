@@ -103,6 +103,11 @@ A bare name is looked up the way the shell does it: every `PATH` entry up to
 the match must be absolute (an empty or relative entry gives no exception),
 and the candidate is `<entry>/<name>` as written, not normalized, so a `..`
 after a symlinked directory leads to the same file the shell runs.
+Before it is run, the resolved interpreter is held to the same rule as the
+script: if it is a symlink, has a writable path component, or the runner is
+root, there is no exception and the interpreter is never executed (so a
+`nodejs` that is a symlink, or a `node` in a user-writable directory such as a
+version manager's, receives no exception).
 A missing interpreter, failed probe or invalid version receives no exception.
 The minimum is **22.13.0 on Node 22, 23.5.0 on Node 23, or any Node 24+**;
 other versions receive no exception. The history tables of the Node docs
@@ -115,8 +120,9 @@ was measured locally.
 there. This is a belt against accidental loading, not a sandbox against
 malicious code: the script is hash-bound and Node refuses reads outside the
 list, writes and child processes. Network is open in the measured runtime;
-the trust boundary for `PATH` / `NODE_OPTIONS` is unchanged. The exception
-continues to trust them as the agent's own process does.
+the trust boundary for `NODE_OPTIONS` and shell start-up files is unchanged.
+The exception continues to trust them as the agent's own process does; from
+`PATH` it only takes an interpreter that passes the rule above.
 
 ## Recipients and approval
 
