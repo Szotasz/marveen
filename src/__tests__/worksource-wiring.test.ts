@@ -189,4 +189,22 @@ describe('wiring contracts (source-level)', () => {
     expect(processSrc).toContain('mcpConfig.mcpServers.worksource =')
     expect(processSrc).toContain('existing.mcpServers')
   })
+
+  it('the telegram tee block merges into .mcp.json instead of overwriting whatever else is there (JSONCLOBBER926B)', () => {
+    // Measured live on garagizike, 2026-11-21: the telegram block used to write
+    // `{ mcpServers: { 'plugin:telegram:telegram': ... } }` from scratch on
+    // every respawn, destroying any OTHER MCP server configured in the same
+    // file (gmail/google-calendar, for a secretary-role agent) -- the exact
+    // risk class the worksource block above already guards against (same
+    // JSONCLOBBER926B tag), just not applied here until this fix.
+    const block = processSrc.slice(
+      processSrc.indexOf("if (SUBAGENT_INBOX_TEE && hasChannel && agentProvider === 'telegram'"),
+      processSrc.indexOf('Wrote per-agent mcp.json for telegram plugin'),
+    )
+    expect(block).toContain('readJsonObjectForWrite(mcpJsonPath)')
+    expect(block).toContain("mcpConfig.mcpServers['plugin:telegram:telegram'] =")
+    // And it must read the EXISTING servers into the config it is about to
+    // write, not just call the reader and discard the result.
+    expect(block).toMatch(/mcpConfig\s*=\s*\{\s*mcpServers:\s*existingMcpConfig\.mcpServers\s*\}/)
+  })
 })

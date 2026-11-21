@@ -2973,11 +2973,19 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         // loads as project-scope MCP config. An empty .mcp.json already present would
         // override .claude/mcp.json, so write to the same file Claude Code reads.
         const mcpJsonPath = join(agentDir(name), '.mcp.json')
-        const mcpConfig = {
-          mcpServers: {
-            'plugin:telegram:telegram': buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir),
-          },
-        }
+        // JSONCLOBBER926B (same risk as the worksource block below): a rewrite from
+        // scratch here would destroy any OTHER MCP server the agent has configured in
+        // this file (e.g. gmail/google-calendar for a secretary-role agent) on every
+        // single respawn -- not a hypothetical, measured live on garagizike 2026-11-21:
+        // a restart wiped 4 Google MCP servers down to just the telegram entry. Read
+        // the existing file first and keep every entry that is not this one; an
+        // existing but corrupt .mcp.json is refused (readJsonObjectForWrite throws),
+        // same as the worksource block, so the agent starts without the tee wiring
+        // rather than silently destroying an unreadable file.
+        let mcpConfig: { mcpServers: Record<string, unknown> } = { mcpServers: {} }
+        const existingMcpConfig = readJsonObjectForWrite(mcpJsonPath)
+        if (isPlainObject(existingMcpConfig.mcpServers)) mcpConfig = { mcpServers: existingMcpConfig.mcpServers }
+        mcpConfig.mcpServers['plugin:telegram:telegram'] = buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir)
         writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
         useMcpJsonForChannel = true
         logger.info({ name, pluginVersion, pluginDir }, 'Wrote per-agent mcp.json for telegram plugin')
