@@ -22,6 +22,7 @@
       "Read(${HOME}/.gnupg/**)",
       "Read(${HOME}/.env)",
       "Read(**/.env)",
+      "Read(//**/.env)",
       "Bash(sudo:*)",
       "Bash(rm:*)",
       "Bash(curl -X POST:*)"

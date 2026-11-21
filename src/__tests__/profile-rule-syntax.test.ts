@@ -39,6 +39,13 @@ describe('resolveProfilePlaceholders rule normalization', () => {
     expect(resolveProfilePlaceholders('Read(**/.env)', ctx)).toBe('Read(**/.env)')
   })
 
+  it('passes a root-anchored glob rule through with exactly two slashes (ENVATLEAK1114)', () => {
+    // Neither turned into '///' nor collapsed to the project-relative single '/'.
+    expect(resolveProfilePlaceholders('Read(//**/.env)', ctx)).toBe('Read(//**/.env)')
+    expect(resolveProfilePlaceholders('Edit(//**/.env)', ctx)).toBe('Edit(//**/.env)')
+    expect(resolveProfilePlaceholders('Write(//**/.env)', ctx)).toBe('Write(//**/.env)')
+  })
+
   it('never touches Bash rules (command-prefix matching, not paths)', () => {
     expect(resolveProfilePlaceholders('Bash(sudo:*)', ctx)).toBe('Bash(sudo:*)')
     expect(resolveProfilePlaceholders('Bash(${PROJECT_ROOT}/scripts/notify.sh:*)', ctx))
