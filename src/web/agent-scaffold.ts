@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
-import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
+import { readRemovedDefaultTasks, markDefaultTaskRemoved } from './scheduled-tasks-io.js'
+import { getDb } from '../db.js'
 import { registerScheduledTask } from './schedule-registry.js'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -3367,12 +3368,54 @@ function copyTaskConfigWithAgentRewrite(srcPath: string, destPath: string): void
   }
 }
 
+// MEMCONSONCE1118: a shipped task may say WHEN it is seeded, in its task-config.json `seedWhen`. The one value,
+// 'existing-memories', is for a once task that only makes sense on an install that already had a memory store when it
+// took the version shipping the task (the memory / rule-file consistency pass: about 1.5 M tokens a run, measured
+// 2026-11-18, so it must neither run on a fresh install nor come back). The decision is taken ONCE, the first time the
+// seeder sees the task missing: no memories then is recorded like an owner's removal (.removed-defaults), so the fresh
+// install never gets it later either, and the way back is the same (re-create it in the dashboard). A store that cannot
+// be read decides nothing: the task is neither seeded nor recorded, and the next start asks again.
+export type DefaultTaskSeedWhen = 'existing-memories'
+
+export interface DefaultTaskSeedDeps {
+  /** True when the memory store already holds at least one row. Throws when the store cannot be read. */
+  hasPriorMemories: () => boolean
+}
+
+function storeHasMemories(): boolean {
+  const db = getDb()
+  if (!db) throw new Error('memory store not open')
+  return db.prepare('SELECT 1 FROM memories LIMIT 1').get() !== undefined
+}
+
+const DEFAULT_TASK_SEED_DEPS: DefaultTaskSeedDeps = { hasPriorMemories: storeHasMemories }
+
+function readSeedWhen(configPath: string): DefaultTaskSeedWhen | undefined {
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, 'utf-8')) as { seedWhen?: unknown }
+    return cfg.seedWhen === 'existing-memories' ? 'existing-memories' : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 'seed', 'decline' (recorded, never again) or 'defer' (nothing recorded, the next start asks again). */
+export function decideDefaultTaskSeed(seedWhen: DefaultTaskSeedWhen | undefined, deps: DefaultTaskSeedDeps): 'seed' | 'decline' | 'defer' {
+  if (seedWhen !== 'existing-memories') return 'seed'
+  try {
+    return deps.hasPriorMemories() ? 'seed' : 'decline'
+  } catch {
+    return 'defer'
+  }
+}
+
 /**
  * Seeds the repo's top-level scheduled tasks into ~/.claude. `lang` (PERSONAESC1107 seed A): the install's agent-text
  * language, read only; on en a Markdown file comes from i18n/en/<its repo path> when that exists (src/web/seed-lang.ts,
  * the same rule as the shell seeders). A parameter so a test does not depend on the checkout's .env and CLAUDE.md.
+ * `deps` answers a task's `seedWhen` condition (MEMCONSONCE1118, above); a parameter for the same reason.
  */
-export function ensureDefaultScheduledTasks(lang: AgentTextLang = agentTextLang()): void {
+export function ensureDefaultScheduledTasks(lang: AgentTextLang = agentTextLang(), deps: DefaultTaskSeedDeps = DEFAULT_TASK_SEED_DEPS): void {
   const repoTasks = join(PROJECT_ROOT, 'scheduled-tasks')
   if (!existsSync(repoTasks)) return
   const destRoot = join(homedir(), '.claude', 'scheduled-tasks')
@@ -3389,6 +3432,16 @@ export function ensureDefaultScheduledTasks(lang: AgentTextLang = agentTextLang(
     if (!statSync(src).isDirectory()) continue
     if (removed.has(taskName)) continue
     if (existsSync(dest)) continue
+    const seedDecision = decideDefaultTaskSeed(readSeedWhen(join(src, 'task-config.json')), deps)
+    if (seedDecision === 'defer') {
+      logger.warn({ taskName }, 'Default task not seeded this start: its seed condition could not be read (asked again next start)')
+      continue
+    }
+    if (seedDecision === 'decline') {
+      markDefaultTaskRemoved(taskName)
+      logger.info({ taskName }, 'Default task not seeded: it is for an install with an existing memory store, this one has none (recorded, never seeded later)')
+      continue
+    }
     mkdirSync(dest, { recursive: true })
     for (const file of readdirSync(src)) {
       const srcFile = join(src, file)

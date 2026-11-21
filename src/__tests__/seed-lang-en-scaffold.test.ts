@@ -33,7 +33,8 @@ const tasksWithEnglish = () => readdirSync(join(ROOT, 'i18n', 'en', 'scheduled-t
 describe('ensureDefaultScheduledTasks(lang) (seed A)', () => {
   it('en: every top-level task with an English version is seeded from it', () => {
     clear()
-    scaffold.ensureDefaultScheduledTasks('en')
+    // every shipped task, the seedWhen-gated one too (MEMCONSONCE1118): an install with a memory store
+    scaffold.ensureDefaultScheduledTasks('en', { hasPriorMemories: () => true })
     expect(tasksWithEnglish().length).toBeGreaterThanOrEqual(4)
     for (const task of tasksWithEnglish()) {
       const seeded = readFileSync(join(io.SCHEDULED_TASKS_DIR, task, 'SKILL.md'), 'utf-8')
@@ -49,7 +50,7 @@ describe('ensureDefaultScheduledTasks(lang) (seed A)', () => {
 
   it('hu: the Hungarian sources, as before', () => {
     clear()
-    scaffold.ensureDefaultScheduledTasks('hu')
+    scaffold.ensureDefaultScheduledTasks('hu', { hasPriorMemories: () => true })
     for (const task of tasksWithEnglish()) {
       const seeded = readFileSync(join(io.SCHEDULED_TASKS_DIR, task, 'SKILL.md'), 'utf-8')
       const en = readFileSync(join(ROOT, 'i18n', 'en', 'scheduled-tasks', task, 'SKILL.md'), 'utf-8')
