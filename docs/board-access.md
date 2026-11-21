@@ -308,7 +308,7 @@ interface, and restart the dashboard. Know what that means:
   (see "LAN lock" below): while it is active, a connection from another
   machine reaches the colleague page and its APIs, and calls with a header or
   query credential, but not the owner login, and no browser cookie counts
-  there outside the colleague board. Prefer the specific
+  there except the colleague one. Prefer the specific
   LAN address over `0.0.0.0`, restrict the port to the office subnet in the
   host firewall, and keep using `http://localhost:<port>` yourself on the
   machine.
@@ -324,9 +324,11 @@ interface, and restart the dashboard. Know what that means:
 dashboard listens on the LAN. While it is active, a request from another
 machine on the plain HTTP listener is decided before authentication:
 
-- **The colleague surface passes as it is**: the colleague login,
-  `/api/colleague/*`, `/api/board*`, the `/colleague` page and its script,
-  stylesheet and language files.
+- **The colleague surface passes with its own cookie only**: the colleague
+  login, `/api/colleague/*`, `/api/board*`, the `/colleague` page and its
+  script, stylesheet and language files. The `mv_colleague` cookie stays,
+  every other cookie is dropped, so an owner session held on the LAN does not
+  act as the owner on the board there.
 - **The browser login routes are refused** (403 with
   `rule: "colleague-lan-lock"`): the owner's password login, its TOTP step,
   the setup code, and the operator key login. So the owner login cannot be

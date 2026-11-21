@@ -15,7 +15,7 @@ import { readOperatorAccess } from './web/operator-access.js'
 import { boardGateDecision, readBoardAccess } from './web/board-access.js'
 import { tryHandleBoard } from './web/routes/board.js'
 import { colleagueGateDecision } from './web/colleague-gate.js'
-import { lanLockPreAuth, lanLockActiveNow, LAN_LOCK_CUT_OFF } from './web/colleague-lan-lock.js'
+import { lanLockPreAuth, lanLockActiveNow, keepOnlyColleagueCookie, LAN_LOCK_CUT_OFF } from './web/colleague-lan-lock.js'
 import { tryHandleColleague } from './web/routes/colleague.js'
 import { sweepExpiredColleagueSessions } from './web/colleague-sessions.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
@@ -204,9 +204,10 @@ export function startWebServer(port = 3420): http.Server {
     }
 
     // COLLANLOCK1120 (colleague-lan-lock.ts): while the colleague LAN lock is active, a non-loopback peer on the plain
-    // listener is decided here, on the socket's own address, BEFORE authentication: the colleague surface passes, the
-    // browser login routes (owner password, TOTP, setup code, operator key) are refused, and every other request goes on
-    // to the gate below with all its cookies dropped, so only a header or query credential can authenticate it.
+    // listener is decided here, on the socket's own address, BEFORE authentication: the colleague surface keeps only its
+    // own mv_colleague cookie (COLLCOOKIE1121), the browser login routes (owner password, TOTP, setup code, operator key)
+    // are refused, and every other request goes on to the gate below with all its cookies dropped, so only a header or
+    // query credential can authenticate it.
     const lan = lanLockPreAuth({ req, path, method, publicListener: isPublicRequest(req) }, () => lanLockActiveNow(WEB_HOST))
     if (lan.action === 'deny') {
       res.writeHead(403, { 'Content-Type': 'application/json' })
@@ -214,6 +215,7 @@ export function startWebServer(port = 3420): http.Server {
       return
     }
     if (lan.action === 'strip-cookies') delete req.headers.cookie
+    if (lan.action === 'colleague-cookie-only') keepOnlyColleagueCookie(req.headers)
 
     // Auth gate: resolve the request's principal once via the extracted gate
     // (bearer -> SSE ?token= -> endpoint-scoped federation token -> mv_session

@@ -1,6 +1,6 @@
 // COLLANLOCK1120 (Refs #2929): while the colleague LAN lock is active, a non-loopback peer on the plain listener is
-// decided before authentication (Samu 82477, Dani 82480): the colleague surface passes, the browser login routes are
-// refused, and every other request reaches the gate with all its cookies dropped, so only a header or query credential
+// decided before authentication (Samu 82477, Dani 82480): the colleague surface passes with only its mv_colleague
+// cookie (COLLCOOKIE1121), the browser login routes are refused, and every other request reaches the gate with all its cookies dropped, so only a header or query credential
 // can authenticate it. auto locks only while the colleague login is in use (WEB_HOST
 // not loopback, an enabled colleague account, the board on), so an install that opened WEB_HOST for its own remote
 // access (Docker, a VPS) changes nothing. The peer is the socket's address, never a header.
@@ -18,6 +18,7 @@ vi.mock('../config.js', async (orig) => ({ ...(await orig<typeof import('../conf
 
 const L = await import('../web/colleague-lan-lock.js')
 const { createColleagueAccount, setColleagueDisabled, _clearColleagueAccountsCacheForTest } = await import('../web/colleague-accounts.js')
+const { createColleagueSession, COLLEAGUE_COOKIE_NAME } = await import('../web/colleague-sessions.js')
 const { SETTINGS_REGISTRY, isOverridesOnly, envValueTightens } = await import('../config-registry.js')
 const { initDatabase, createDashboardUser } = await import('../db.js')
 const { createSession } = await import('../web/auth-sessions.js')
@@ -84,8 +85,23 @@ describe('the decision before authentication, with the lock active (plain listen
     ['POST', '/api/colleague/login'], ['GET', '/api/colleague/me'], ['POST', '/api/colleague/logout'],
     ['GET', '/api/board/cards'], ['POST', '/api/board/cards/abc/move'], ['GET', '/api/board/report'],
     ['GET', '/colleague'], ['GET', '/colleague.html'], ['GET', '/colleague.js'], ['GET', '/style.css'], ['GET', '/lang/hu.js'], ['GET', '/lang/en.js'],
-  ])('LAN %s %s: the colleague surface passes untouched (its cookie is needed)', (m, p) => {
-    expect(at(lan, m, p)).toEqual({ action: 'pass' })
+  ])('LAN %s %s: the colleague surface passes with only its own cookie (COLLCOOKIE1121)', (m, p) => {
+    expect(at(lan, m, p)).toEqual({ action: 'colleague-cookie-only' })
+  })
+
+  it('keepOnlyColleagueCookie: the mv_colleague pair alone stays (the first, as the gate reads it); none -> no header', () => {
+    const h: any = { cookie: 'mv_session=own; mv_colleague=col1; mv_operator=op; mv_colleague=col2; mv_setup=s' }
+    L.keepOnlyColleagueCookie(h)
+    expect(h.cookie).toBe('mv_colleague=col1')
+    const none: any = { cookie: 'mv_session=own; mv_operator=op' }
+    L.keepOnlyColleagueCookie(none)
+    expect('cookie' in none).toBe(false)
+    const empty: any = { cookie: 'mv_colleague=' }
+    L.keepOnlyColleagueCookie(empty)
+    expect('cookie' in empty).toBe(false)
+    const absent: any = {}
+    L.keepOnlyColleagueCookie(absent)
+    expect('cookie' in absent).toBe(false)
   })
 
   it.each([['POST', '/api/auth/login'], ['POST', '/api/auth/login/totp'], ['POST', '/api/auth/setup-code'], ['POST', '/api/operator/login']])(
@@ -133,14 +149,18 @@ describe('end to end with the real gate: the order web.ts runs (lock, drop cooki
   let ownerCookie = ''
   let operatorCookie = ''
   let deviceKey = ''
+  let colleagueCookie = ''
 
-  beforeAll(() => {
+  beforeAll(async () => {
     initDatabase(':memory:')
     const owner = createDashboardUser('owner', 'x'.repeat(60))
     ownerCookie = `${SESSION_COOKIE_NAME}=${createSession({ userId: owner.id, username: 'owner' })}`
     const op = createDeviceKey('ops-laptop', { scope: 'operator', expiresInDays: 1 })
     operatorCookie = `${OPERATOR_COOKIE_NAME}=${createOperatorSession(op.id, null).token}`
     deviceKey = createDeviceKey('bridge', {}).key
+    await createColleagueAccount({ username: 'bob', person: 'alice', password: 'correct horse battery' }, () => true)
+    _clearColleagueAccountsCacheForTest()
+    colleagueCookie = `${COLLEAGUE_COOKIE_NAME}=${createColleagueSession('bob', 1)}`
   })
 
   /** What the handler would see: the 403 of the lock, the 401 of the gate, or the principal's kind. */
@@ -149,6 +169,7 @@ describe('end to end with the real gate: the order web.ts runs (lock, drop cooki
     const lan = L.lanLockPreAuth({ req: r, path, method, publicListener: false }, () => true)
     if (lan.action === 'deny') return 403
     if (lan.action === 'strip-cookies') delete r.headers.cookie
+    if (lan.action === 'colleague-cookie-only') L.keepOnlyColleagueCookie(r.headers)
     let status = 0
     const res: any = { writeHead(c: number) { status = c; return res }, setHeader() {}, end() {} }
     const url = new URL(`http://localhost${path}`)
@@ -176,6 +197,21 @@ describe('end to end with the real gate: the order web.ts runs (lock, drop cooki
 
   it('LAN + only the operator page cookie: not authenticated (401), though it is a device principal on loopback', async () => {
     expect(await lanRequest('192.168.1.20', 'GET', '/api/kanban', { cookie: operatorCookie })).toBe(401)
+  })
+
+  it('colleague surface, positive control: on loopback the owner cookie DOES resolve as the owner there', async () => {
+    expect(await lanRequest('127.0.0.1', 'GET', '/api/board/cards', { cookie: ownerCookie })).toBe('session')
+    expect(await lanRequest('127.0.0.1', 'GET', '/api/board/cards', { cookie: `${ownerCookie}; ${colleagueCookie}` })).toBe('session')
+  })
+
+  it('colleague surface, LAN + only the owner cookie (or the operator cookie): not authenticated (401) (COLLCOOKIE1121)', async () => {
+    expect(await lanRequest('192.168.1.20', 'GET', '/api/board/cards', { cookie: ownerCookie })).toBe(401)
+    expect(await lanRequest('192.168.1.20', 'GET', '/api/board/cards', { cookie: operatorCookie })).toBe(401)
+  })
+
+  it('colleague surface, LAN + the colleague cookie: the colleague, also next to an owner and an operator cookie', async () => {
+    expect(await lanRequest('192.168.1.20', 'GET', '/api/board/cards', { cookie: colleagueCookie })).toBe('colleague')
+    expect(await lanRequest('192.168.1.20', 'GET', '/api/board/cards', { cookie: `${ownerCookie}; ${operatorCookie}; ${colleagueCookie}` })).toBe('colleague')
   })
 
   it('LAN owner login: refused by the lock (403) before the password is ever checked', async () => {
@@ -245,5 +281,6 @@ describe('wiring: web.ts decides the lock before the gate and drops the cookies'
     expect(between).toContain("if (lan.action === 'deny') {")
     expect(between).toContain("rule: 'colleague-lan-lock'")
     expect(between).toContain("    if (lan.action === 'strip-cookies') delete req.headers.cookie\n")
+    expect(between).toContain("    if (lan.action === 'colleague-cookie-only') keepOnlyColleagueCookie(req.headers)\n")
   })
 })
