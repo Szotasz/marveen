@@ -46,7 +46,7 @@ beforeAll(async () => {
   mkdirSync(join(ROOT, 'scripts'), { recursive: true })
   mkdirSync(join(ROOT, 'home'), { recursive: true })
   mkdirSync(STORE, { recursive: true })   // the dashboard always has store/; the vault module does not create it
-  for (const f of ['vault-headers-helper.mjs', 'vault-resolve.mjs', 'vault-dashboard-client.mjs']) copyFileSync(join(REPO, 'scripts', f), join(ROOT, 'scripts', f))
+  for (const f of ['vault-headers-helper.mjs', 'vault-resolve.mjs', 'vault-dashboard-client.mjs', 'resolve-plan-token-env.mjs']) copyFileSync(join(REPO, 'scripts', f), join(ROOT, 'scripts', f))
   writeFileSync(join(ROOT, 'package.json'), '{ "type": "module" }\n')
   symlinkSync(join(REPO, 'node_modules'), join(ROOT, 'node_modules'))
   // the preload: platform = $PRELOAD_PLATFORM, and /usr/bin/security never runs (recorded, then it fails like on a Mac without a GUI)
@@ -114,6 +114,23 @@ describe('the real chain, macOS-like (platform darwin, `security` always fails):
     expect(r.stderr).toBe('')
     expect(secCalls()).toEqual([])
     expect(existsSync(join(STORE, '.vault-key'))).toBe(true)
+  })
+
+  // RESOLVERSTDOUT1120: resolve-plan-token-env.mjs's stdout is assigned verbatim to CLAUDE_CODE_OAUTH_TOKEN. A pino WARN
+  // ("Keychain migration failed") after the token gave the variable a line break and the session "Invalid auth token".
+  it('plan-token resolver: stdout is ONLY the token (one line, no log line), stderr empty, the Keychain is never called', async () => {
+    const fleet = join(STORE, '.claude-oauth-token-absent')
+    const failures = join(ROOT, 'plan-token-failures.log')
+    const r = await run([join(ROOT, 'scripts', 'resolve-plan-token-env.mjs'), 'KNOWN', fleet, failures])
+    expect(r.code, r.stderr).toBe(0)
+    expect(r.stdout).toBe(VALUE)
+    expect(r.stdout.split('\n')).toHaveLength(1)
+    expect(r.stdout).not.toMatch(/WARN|Keychain|"level"/)
+    expect(r.stderr).toBe('')
+    expect(secCalls()).toEqual([])
+    expect(existsSync(failures)).toBe(false)
+    expect(existsSync(join(STORE, '.vault-key'))).toBe(true)
+    expect(existsSync(join(STORE, '.vault-key.migrated'))).toBe(false)
   })
 
   it('CONTROL (the old behaviour, same chain, no fix): the migration IS attempted and the logger warning reaches stdout in front of the value', async () => {
