@@ -1,4 +1,4 @@
-import { writeFileSync, chmodSync, renameSync, lstatSync } from 'node:fs'
+import { writeFileSync, chmodSync, renameSync, openSync, fstatSync, fchmodSync, closeSync, constants as fsConstants } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 
 // Atomic write: write to a sibling tmp file and rename over the target, so a
@@ -35,12 +35,18 @@ export function writeMcpJsonFile(path: string, data: string): void {
 /** An existing .mcp.json written before MCPJSON0600-1121 is 0644: narrow a regular file (never a symlink) to 0600.
  *  Returns whether it changed the mode; any error leaves the file as it is. */
 export function tightenMcpJsonMode(path: string): boolean {
+  // O_NOFOLLOW + fchmod on the opened descriptor: a path swapped for a symlink between a check and a chmod cannot
+  // redirect the chmod to another file (the open itself refuses a symlink).
+  let fd: number | null = null
   try {
-    const st = lstatSync(path)
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    const st = fstatSync(fd)
     if (!st.isFile() || (st.mode & 0o077) === 0) return false
-    chmodSync(path, MCP_JSON_MODE)
+    fchmodSync(fd, MCP_JSON_MODE)
     return true
   } catch {
     return false
+  } finally {
+    if (fd !== null) { try { closeSync(fd) } catch { /* already closed */ } }
   }
 }
