@@ -24,6 +24,11 @@
  *   - an unreadable transcript (remote host, missing directory, no transcript
  *     file, permission error) is 'unknown': a debug line, NEVER an alert. The
  *     check must not cry wolf on an install where it cannot see.
+ *   - CODEXEVID d72ba2bd: for an agent whose tmux pane runs OpenAI Codex, the
+ *     Codex rollout JSONL is read as a SECOND evidence source (measured
+ *     2026-11-15: 239 false WARNs across the 8 codex-motor agents whose
+ *     Claude transcript never moves). Only 'seen' from codex can change an
+ *     outcome; no codex evidence leaves every verdict exactly as before.
  *   - alerts are rate-limited per recipient and name the msg id, the
  *     recipient and the reason -- never the message content.
  */
@@ -36,6 +41,7 @@ import { createAgentMessage } from '../db.js'
 import { agentDir } from './agent-config.js'
 import { configDirFor } from './main-transcript-root.js'
 import { projectsDirFor } from './active-model.js'
+import { codexSessionDirsFor, codexRolloutFiles } from './codex-transcript-root.js'
 
 export type TurnEvidence = 'seen' | 'blocked-by-hook' | 'absent'
 
@@ -120,6 +126,54 @@ export function classifyTranscriptLines(lines: Iterable<string>, msgId: number, 
   return blocked ? 'blocked-by-hook' : 'absent'
 }
 
+/**
+ * CODEXEVID d72ba2bd: PURE. What the CODEX rollout lines say about one
+ * delivered message -- the same question classifyTranscriptLines asks the
+ * Claude transcript, asked of the Codex rollout JSONL of an agent whose tmux
+ * pane runs OpenAI Codex. Measured 2026-11-15 on this install: 239 false
+ * "delivered without transcript evidence" WARNs across the 8 codex-motor
+ * agents, because their Claude transcript never moves; the rollout row
+ * (top-level timestamp, payload.type 'message', payload.role 'user', the
+ * envelope tag inside an input_text part) is the evidence that was missing.
+ * Same CLOCK_SLACK_MS floor, same anchored msg_id tag, 'seen' or 'absent'
+ * only: a hook block is a Claude-Code concept with no codex counterpart.
+ */
+export function classifyCodexRolloutLines(lines: Iterable<string>, msgId: number, sinceMs: number): TurnEvidence {
+  const rx = tagRx(msgId)
+  const needle = `msg_id:${msgId}`
+  const floor = sinceMs - CLOCK_SLACK_MS
+  for (const line of lines) {
+    if (!line.includes(needle)) continue
+    let row: { timestamp?: unknown; payload?: { type?: unknown; role?: unknown; content?: unknown } }
+    try { row = JSON.parse(line) } catch { continue }
+    const ts = typeof row.timestamp === 'string' ? Date.parse(row.timestamp) : NaN
+    if (!Number.isFinite(ts) || ts < floor) continue
+    const payload = row.payload
+    if (payload == null || typeof payload !== 'object') continue
+    if (payload.type !== 'message' || payload.role !== 'user') continue
+    const t = codexTextOf(payload.content)
+    if (t != null && rx.test(t)) return 'seen'
+  }
+  return 'absent'
+}
+
+// Codex content parts: an array of typed parts whose text fields join into
+// the delivered prompt ('input_text' is the measured shape; plain string
+// content is accepted defensively -- the prefilter above already matched the
+// tag inside the line, so this only decides whether it sat in real prompt
+// text rather than an assistant echo).
+function codexTextOf(content: unknown): string | null {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return null
+  const parts: string[] = []
+  for (const p of content) {
+    if (p == null || typeof p !== 'object') continue
+    const part = p as { type?: unknown; text?: unknown }
+    if ((part.type === 'input_text' || part.type === 'text') && typeof part.text === 'string') parts.push(part.text)
+  }
+  return parts.length > 0 ? parts.join('\n') : null
+}
+
 async function readTail(path: string, maxBytes: number): Promise<string> {
   const fh = await open(path, 'r')
   try {
@@ -201,6 +255,77 @@ export async function readTurnEvidence(
   return out
 }
 
+/**
+ * CODEXEVID d72ba2bd: the same evidence, from the Codex rollout JSONL under
+ * the recipient's CODEX_HOME (sessions/YYYY/MM/DD layout, walked by
+ * codexRolloutFiles). Only rollout files modified since the send are opened,
+ * and each is read with the same growing-tail discipline as the Claude
+ * transcript. Null (unknown) when nothing readable was a candidate, so an
+ * unreadable or empty sessions tree stays silent exactly like an unreadable
+ * Claude transcript dir -- the check must not cry wolf where it cannot see.
+ */
+export async function readCodexTurnEvidence(
+  dirs: readonly string[],
+  msgIds: readonly number[],
+  sinceMs: number,
+  passes: readonly number[] = TAIL_PASSES,
+): Promise<Map<number, TurnEvidence> | null> {
+  const floorMtime = sinceMs - CLOCK_SLACK_MS
+  let files: Array<{ path: string; mtimeMs: number }>
+  try {
+    files = await codexRolloutFiles(dirs)
+  } catch {
+    return null
+  }
+  const candidates = files.filter((f) => f.mtimeMs > floorMtime)
+  if (candidates.length === 0) return null
+  const lines: string[] = []
+  let read = 0
+  for (const f of candidates) {
+    try {
+      for (const l of (await readTailSince(f.path, floorMtime, passes)).split('\n')) lines.push(l)
+      read++
+    } catch {
+      // One unreadable rollout does not blind the rest; if ALL were
+      // unreadable, read stays 0 and the caller gets null (unknown).
+    }
+  }
+  if (read === 0) return null
+  const out = new Map<number, TurnEvidence>()
+  for (const id of msgIds) out.set(id, classifyCodexRolloutLines(lines, id, sinceMs))
+  return out
+}
+
+/**
+ * PURE. A 'seen' from either source wins; otherwise the Claude verdict (if
+ * any) is kept verbatim, and an id NEITHER side could see is left unset.
+ * R1-D72B-1451 blocker fix (A7): a readable rollout that lacks the tag must
+ * not turn an unknown into an 'absent' -- that would alert where today's
+ * check stays silent. The codex scan is rescue-only: it can confirm, never
+ * accuse. Unset ids are read as unknown by the caller (no alert, no confirm).
+ */
+function mergeTurnEvidence(
+  claude: Map<number, TurnEvidence> | null,
+  codex: Map<number, TurnEvidence>,
+  msgIds: readonly number[],
+): Map<number, TurnEvidence> {
+  const out = new Map<number, TurnEvidence>()
+  for (const id of msgIds) {
+    const c = claude?.get(id)
+    // R2-D72B-1530 blocker fix: a hook block is final PER ID. In a mixed
+    // request (one id hook-blocked, another absent) the scan legitimately
+    // runs for the absent id -- a rollout 'seen' must still not mask the
+    // blocked id's verdict.
+    if (c === 'blocked-by-hook') {
+      out.set(id, c)
+      continue
+    }
+    if (codex.get(id) === 'seen' || c === 'seen') out.set(id, 'seen')
+    else if (c !== undefined) out.set(id, c)
+  }
+  return out
+}
+
 /** PURE. One alert per recipient per window. */
 export function alertAllowed(lastAlertAtMs: number | undefined, nowMs: number, windowMs: number): boolean {
   return lastAlertAtMs === undefined || nowMs - lastAlertAtMs >= windowMs
@@ -258,6 +383,13 @@ export interface TurnCheckDeps {
   readEvidence: typeof readTurnEvidence
   notify: (text: string) => void
   now: () => number
+  /**
+   * CODEXEVID d72ba2bd: codex rollout roots for the recipient ([] when the
+   * pane runs Claude Code or nothing resolves). Optional so pre-existing
+   * callers/tests that pass today's deps keep today's behaviour verbatim.
+   */
+  codexSessionDirs?: (agent: string) => Promise<string[]>
+  readCodexEvidence?: typeof readCodexTurnEvidence
 }
 
 const defaultDeps: TurnCheckDeps = {
@@ -265,6 +397,8 @@ const defaultDeps: TurnCheckDeps = {
   readEvidence: readTurnEvidence,
   notify: (text) => { createAgentMessage('system', MAIN_AGENT_ID, text) },
   now: () => Date.now(),
+  codexSessionDirs: (agent) => codexSessionDirsFor(agent),
+  readCodexEvidence: readCodexTurnEvidence,
 }
 
 const lastAlertAt = new Map<string, number>()
@@ -288,17 +422,58 @@ export async function runDeliveryTurnCheck(
     return 'unknown'
   }
   const dir = deps.transcriptDir(req.toAgent)
-  const evidence = await deps.readEvidence(dir, req.msgIds, req.sentAtMs)
+  let evidence = await deps.readEvidence(dir, req.msgIds, req.sentAtMs)
+  // CODEXEVID d72ba2bd: a codex-motor agent's Claude transcript never moves
+  // (measured 2026-11-15: 239 false WARNs across the 8 codex agents), so an
+  // 'absent' (or an unknown dir) ALSO asks the recipient's Codex rollouts.
+  // Only a 'seen' from codex can rescue a miss; nothing weakens a verdict:
+  // no resolvable dirs, or nothing readable there, leaves `evidence` exactly
+  // as the Claude scan produced it.
+  // R1-D72B-1451 blocker fix (A5): the scan runs ONLY for an 'absent' verdict
+  // or an unknown transcript dir. 'blocked-by-hook' is a definitive verdict
+  // (a hook blocked THIS prompt); codex evidence must not be able to mask it.
+  const claudeAbsent = evidence == null || req.msgIds.some((id) => evidence?.get(id) === 'absent')
+  if (claudeAbsent && deps.codexSessionDirs != null && deps.readCodexEvidence != null) {
+    let dirs: string[] = []
+    try {
+      dirs = await deps.codexSessionDirs(req.toAgent)
+    } catch {
+      dirs = [] // a failed lookup is no evidence, same as an unresolved one
+    }
+    if (dirs.length > 0) {
+      let codex: Map<number, TurnEvidence> | null = null
+      try {
+        codex = await deps.readCodexEvidence(dirs, req.msgIds, req.sentAtMs)
+      } catch {
+        codex = null
+      }
+      if (codex != null) {
+        logger.debug({ to: req.toAgent, ids: req.msgIds, dirs }, 'delivery-turn-check: codex rollout evidence merged')
+        evidence = mergeTurnEvidence(evidence, codex, req.msgIds)
+      }
+    }
+  }
   if (evidence == null) {
     logger.debug({ to: req.toAgent, ids: req.msgIds, dir }, 'delivery-turn-check: transcript not readable (unknown), no alert')
     return 'unknown'
   }
   const misses: Array<{ id: number; evidence: Exclude<TurnEvidence, 'seen'> }> = []
+  let blindIds = 0
   for (const id of req.msgIds) {
-    const e = evidence.get(id) ?? 'absent'
+    const e = evidence.get(id)
+    if (e === undefined) {
+      // Neither source could see this id (unknown transcript dir, no codex
+      // 'seen'): today's unknown semantics -- contributes no alert (A7).
+      blindIds++
+      continue
+    }
     if (e !== 'seen') misses.push({ id, evidence: e })
   }
   if (misses.length === 0) {
+    if (blindIds > 0) {
+      logger.debug({ to: req.toAgent, ids: req.msgIds }, 'delivery-turn-check: no verdict for some ids (unknown), no alert')
+      return 'unknown'
+    }
     logger.debug({ to: req.toAgent, ids: req.msgIds }, 'delivery-turn-check: prompt seen in transcript')
     return 'confirmed'
   }
