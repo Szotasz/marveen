@@ -59,7 +59,7 @@ export function resolveOauthTokenFileSetting(rawConfigJson: string): OauthTokenF
 
 // Pure: one raw path value -> set (trimmed) or invalid. Shared by the agent
 // field above and the worker settings below, so both take the same path shape.
-function validateTokenFilePath(value: string): OauthTokenFileSetting {
+function validateTokenFilePath(value: string): Exclude<OauthTokenFileSetting, { state: 'unset' }> {
   const path = value.trim()
   if (!path) return { state: 'invalid', reason: 'blank' }
   if (!path.startsWith('/')) return { state: 'invalid', reason: 'not-absolute' }
@@ -209,13 +209,17 @@ export type WorkerOauthTokenDecision =
 export function decideWorkerOauthToken(input: {
   /** The raw install setting: undefined or '' means not set. */
   configured: string | null | undefined
+  /** True when this worker launch would carry the main agent's custom-provider env (ANTHROPIC_BASE_URL ...). */
+  usesCustomProvider: boolean
   fleetTokenPath: string
   uid: number | null
 }): WorkerOauthTokenDecision {
   if (input.configured === undefined || input.configured === null || input.configured === '') return { kind: 'unset' }
   const setting = validateTokenFilePath(input.configured)
   if (setting.state === 'invalid') return { kind: 'refused', path: null, reason: setting.reason, detail: '' }
-  if (setting.state === 'unset') return { kind: 'unset' }
+  // Same conflict the per-agent field refuses (oauthTokenFileConflict, 'custom-provider'): a setup-token is a
+  // Claude OAuth credential, and next to a custom-provider endpoint the CLI would send it to that third party.
+  if (input.usesCustomProvider) return { kind: 'refused', path: setting.path, reason: 'custom-provider', detail: '' }
   const check = checkOauthTokenFile(setting.path, { uid: input.uid, fleetTokenPath: input.fleetTokenPath })
   if (!check.ok) return { kind: 'refused', path: check.path, reason: check.reason, detail: check.detail }
   return { kind: 'own', path: check.path, fingerprint: check.fingerprint }
@@ -223,8 +227,12 @@ export function decideWorkerOauthToken(input: {
 
 // The worker launch-line fragment (the worker launch chains with ';', not '&&').
 // The path passed the whitelist above, so the single quotes cannot be escaped.
+// The check above ran in JS a moment before this shell reads the file, so the shell re-checks what it
+// reads: an unreadable file, an empty one or one without the setup-token prefix ends the launch
+// (exit 1) instead of starting the worker with an empty or foreign token. The value never leaves the shell.
 export function workerOauthTokenExport(path: string): string {
-  return `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${path}')"; `
+  return `_wt="$(cat '${path}')" || exit 1; ` +
+    `case "$_wt" in ${SETUP_TOKEN_PREFIX}*) export CLAUDE_CODE_OAUTH_TOKEN="$_wt"; unset _wt ;; *) exit 1 ;; esac; `
 }
 
 // Pure: does the launch env actually carry the decided own token? The launcher

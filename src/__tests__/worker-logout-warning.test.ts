@@ -37,8 +37,6 @@ describe('readClaudeCodeOauthJson: the logged-out warning', () => {
 describe('seedWorkerCredentials passes the fleet-token state', () => {
   it('asks for the warning only when there is no fleet token', () => {
     const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf8')
-    // WORKEROAUTHFILE: "has a setup token" is the fleet token OR the worker's own token file.
-    expect(src).toMatch(/readClaudeCodeOauthJson\(\{ warnOnMiss: !workerHasSetupToken\(ctx\) \}\)/)
-    expect(src).toMatch(/function workerHasSetupToken\(ctx: WorkerCtx\): boolean \{\s*return hasFleetOauthToken\(\) \|\|/)
+    expect(src).toMatch(/readClaudeCodeOauthJson\(\{ warnOnMiss: !hasFleetOauthToken\(\) \}\)/)
   })
 })

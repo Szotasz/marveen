@@ -161,30 +161,31 @@ describe('workerStartAllowed (WORKERHOME1: WEB_ONLY must suppress every worker s
     expect(src).not.toMatch(/`claude --dangerously-skip-permissions/)
   })
 
-  // WORKEROAUTHFILE string-contract guard: the refusal must come BEFORE any side
-  // effect (ensureWorkerCwd) and BEFORE the tmux session, the own-token export
-  // must be the one in the launch line, and the shared credentials file must be
-  // skipped for a worker that has its own token.
-  it('the own setup-token decision is wired fail-closed into the worker start', () => {
+  // WORKEROAUTHFILE string-contract guards. What the start does and does not do is covered by behaviour
+  // tests (worker-own-oauth-token.test.ts); these pin the wiring a behaviour test cannot reach cheaply.
+  it('the own setup-token wiring: both workers get their own setting, the launch uses the shell-checked export', () => {
     const __dirname = dirname(fileURLToPath(import.meta.url))
     const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
-    const start = src.indexOf('function startWorkerSessionFor(')
+    expect(src).toContain('WORKER_OAUTH_TOKEN_FILE_FAST,\n)')
+    expect(src).toMatch(/const ctxSlow = makeWorkerCtx\([\s\S]*?null,\s*WORKER_OAUTH_TOKEN_FILE,\s*\)/)
+    expect(src).toContain("const oauthExport = ownToken.kind === 'own'\n    ? workerOauthTokenExport(ownToken.path)")
+    expect(src).toContain('const launch =\n    oauthExport +')
+    // the shared rotating login is skipped for an own token, and never seeded for it
+    expect(src).toContain("const skipSharedCreds = hasFleetOauthToken() || own.kind === 'own'")
+    expect(src).toContain("if (own.kind !== 'unset') {\n    removeWorkerCredentialsFile(ctx)\n    return false")
+  })
+
+  it('an auth failure with an own setup-token never falls through to the SDK path (no authFailed)', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    const start = src.indexOf('export async function runViaWorker(')
     expect(start).toBeGreaterThan(-1)
     const body = src.slice(start)
-    const decision = body.indexOf('workerOauthDecision(ctx)')
-    const refusal = body.indexOf("ownToken.kind === 'refused'")
-    const cwd = body.indexOf('ensureWorkerCwd(ctx)')
-    const tmux = body.indexOf("'new-session'")
-    expect(decision).toBeGreaterThan(-1)
-    expect(refusal).toBeGreaterThan(decision)
-    expect(cwd).toBeGreaterThan(refusal)
-    expect(tmux).toBeGreaterThan(cwd)
-    expect(body.slice(refusal, cwd)).toContain('return')
-    expect(body.slice(refusal, cwd)).not.toContain('FLEET_OAUTH_TOKEN_PATH')
-    expect(body).toContain("const oauthExport = ownToken.kind === 'own'\n    ? workerOauthTokenExport(ownToken.path)")
-    expect(body).toContain('const launch =\n    oauthExport +')
-    expect(src).toContain('const skipSharedCreds = workerHasSetupToken(ctx)')
-    expect(src).toContain('WORKER_OAUTH_TOKEN_FILE_FAST,\n)')
+    const own = body.indexOf("if (workerOauthDecision(ctx).kind !== 'unset') {")
+    const fallback = body.indexOf('signalling SDK fallback (authFailed)')
+    expect(own).toBeGreaterThan(-1)
+    expect(fallback).toBeGreaterThan(own)
+    expect(body.slice(own, fallback)).not.toContain('authFailed: true')
   })
 })
 

@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync, linkSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -390,7 +391,7 @@ describe('launcher wiring (agent-process.ts)', () => {
 // empty setting is "unset" (= the fleet token, exactly as before).
 describe('decideWorkerOauthToken', () => {
   const decide = (configured: string | null | undefined, uid: number | null = UID) =>
-    decideWorkerOauthToken({ configured, fleetTokenPath: fleet, uid })
+    decideWorkerOauthToken({ configured, usesCustomProvider: false, fleetTokenPath: fleet, uid })
 
   it('an absent or empty setting is unset: the worker keeps the fleet token', () => {
     expect(decide(undefined)).toEqual({ kind: 'unset' })
@@ -436,6 +437,18 @@ describe('decideWorkerOauthToken', () => {
     expect(decide(tokenFile('own.token', FAKE_TOKEN), null)).toMatchObject({ kind: 'refused', reason: 'unsupported-platform' })
   })
 
+  it('refuses next to a custom-provider endpoint: the token would go to the third party (as the per-agent field does)', () => {
+    const p = tokenFile('cp.token', FAKE_TOKEN)
+    expect(decideWorkerOauthToken({ configured: p, usesCustomProvider: true, fleetTokenPath: fleet, uid: UID }))
+      .toMatchObject({ kind: 'refused', reason: 'custom-provider', path: p })
+    // an unset setting is never refused for it: the custom-provider launch stays exactly as before
+    expect(decideWorkerOauthToken({ configured: '', usesCustomProvider: true, fleetTokenPath: fleet, uid: UID }))
+      .toEqual({ kind: 'unset' })
+    // an invalid path is reported as itself
+    expect(decideWorkerOauthToken({ configured: 'rel.token', usesCustomProvider: true, fleetTokenPath: fleet, uid: UID }))
+      .toMatchObject({ kind: 'refused', reason: 'not-absolute' })
+  })
+
   it('a refusal never carries the token value', () => {
     const d = decide(tokenFile('copy2.token', FAKE_FLEET))
     expect(JSON.stringify(d)).not.toContain(FAKE_FLEET)
@@ -445,7 +458,23 @@ describe('decideWorkerOauthToken', () => {
 describe('workerOauthTokenExport', () => {
   it('reads the file in the shell at launch: the token value is never in the command string', () => {
     const line = workerOauthTokenExport('/var/t/slow.token')
-    expect(line).toBe('export CLAUDE_CODE_OAUTH_TOKEN="$(cat \'/var/t/slow.token\')"; ')
-    expect(line).not.toContain(SETUP_TOKEN_PREFIX)
+    expect(line).toContain("$(cat '/var/t/slow.token')")
+    expect(line).toContain('export CLAUDE_CODE_OAUTH_TOKEN="$_wt"')
+    // the prefix is the pattern the shell re-checks, not a token value
+    expect(line).not.toMatch(/sk-ant-oat[A-Za-z0-9_-]{4,}/)
+  })
+
+  // The JS check and the shell read are two moments: the shell must fail closed on what it actually reads.
+  const runLine = (line: string) => spawnSync('bash', ['-c', `${line}printf "%s" "$CLAUDE_CODE_OAUTH_TOKEN"`], { encoding: 'utf-8', env: { PATH: process.env.PATH ?? '' } })
+
+  it('shell: a good file exports the token; a missing, empty or foreign file ends the launch with exit 1 and no token', () => {
+    const good = runLine(workerOauthTokenExport(tokenFile('sh-good.token', FAKE_TOKEN + '\n')))
+    expect(good.status).toBe(0)
+    expect(good.stdout).toBe(FAKE_TOKEN)
+    for (const bad of [join(tmp, 'sh-gone.token'), tokenFile('sh-empty.token', '\n'), tokenFile('sh-key.token', FAKE_API_KEY)]) {
+      const r = runLine(workerOauthTokenExport(bad))
+      expect(r.status, bad).toBe(1)
+      expect(r.stdout, bad).toBe('')
+    }
   })
 })
