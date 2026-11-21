@@ -14,6 +14,8 @@ import {
   ownOauthExportMissing,
   ownOauthLaunchVerdict,
   decideOwnOauthToken,
+  decideWorkerOauthToken,
+  workerOauthTokenExport,
   SETUP_TOKEN_PREFIX,
 } from '../web/agent-oauth-token-file.js'
 
@@ -380,5 +382,70 @@ describe('launcher wiring (agent-process.ts)', () => {
   it('the API cannot write the field (write path: manual agent-config edit only)', () => {
     const routes = readFileSync(join(__dirname, '../web/routes/agents.ts'), 'utf-8')
     expect(routes).not.toContain('oauthTokenFile')
+  })
+})
+
+// WORKEROAUTHFILE: the two background workers take their own setup-token file from an
+// install setting. Same fail-closed rules as the per-agent field; only an absent or
+// empty setting is "unset" (= the fleet token, exactly as before).
+describe('decideWorkerOauthToken', () => {
+  const decide = (configured: string | null | undefined, uid: number | null = UID) =>
+    decideWorkerOauthToken({ configured, fleetTokenPath: fleet, uid })
+
+  it('an absent or empty setting is unset: the worker keeps the fleet token', () => {
+    expect(decide(undefined)).toEqual({ kind: 'unset' })
+    expect(decide(null)).toEqual({ kind: 'unset' })
+    expect(decide('')).toEqual({ kind: 'unset' })
+  })
+
+  it('a valid own token file -> own, with a fingerprint and without the token value', () => {
+    const p = tokenFile('slow.token', FAKE_TOKEN + '\n')
+    const d = decide(p)
+    expect(d).toEqual({
+      kind: 'own',
+      path: p,
+      fingerprint: createHash('sha256').update(FAKE_TOKEN, 'utf8').digest('hex').slice(0, 8),
+    })
+    expect(JSON.stringify(d)).not.toContain(FAKE_TOKEN)
+  })
+
+  it('a present but unusable path is refused, never unset', () => {
+    const cases: [string, string][] = [
+      ['   ', 'blank'],
+      ['relative/path.token', 'not-absolute'],
+      ['~/slow.token', 'not-absolute'],
+      ["/tmp/a'b.token", 'path-bad-characters'],
+      ['/tmp/a b.token', 'path-bad-characters'],
+      ['/tmp/../etc/x.token', 'path-parent-traversal'],
+    ]
+    for (const [value, reason] of cases) {
+      expect(decide(value), value).toMatchObject({ kind: 'refused', reason })
+    }
+  })
+
+  it('refuses a file that cannot be this worker\'s own: missing, open mode, fleet file, fleet copy, bad content', () => {
+    expect(decide(join(tmp, 'nope.token'))).toMatchObject({ kind: 'refused', reason: 'missing' })
+    expect(decide(tokenFile('open.token', FAKE_TOKEN, 0o644))).toMatchObject({ kind: 'refused', reason: 'mode-too-open' })
+    expect(decide(fleet)).toMatchObject({ kind: 'refused', reason: 'is-fleet-file' })
+    expect(decide(tokenFile('copy.token', FAKE_FLEET))).toMatchObject({ kind: 'refused', reason: 'same-as-fleet-token' })
+    expect(decide(tokenFile('empty.token', '\n'))).toMatchObject({ kind: 'refused', reason: 'empty' })
+    expect(decide(tokenFile('key.token', FAKE_API_KEY))).toMatchObject({ kind: 'refused', reason: 'bad-prefix' })
+  })
+
+  it('refuses on a platform without POSIX ownership (the owner check cannot be made)', () => {
+    expect(decide(tokenFile('own.token', FAKE_TOKEN), null)).toMatchObject({ kind: 'refused', reason: 'unsupported-platform' })
+  })
+
+  it('a refusal never carries the token value', () => {
+    const d = decide(tokenFile('copy2.token', FAKE_FLEET))
+    expect(JSON.stringify(d)).not.toContain(FAKE_FLEET)
+  })
+})
+
+describe('workerOauthTokenExport', () => {
+  it('reads the file in the shell at launch: the token value is never in the command string', () => {
+    const line = workerOauthTokenExport('/var/t/slow.token')
+    expect(line).toBe('export CLAUDE_CODE_OAUTH_TOKEN="$(cat \'/var/t/slow.token\')"; ')
+    expect(line).not.toContain(SETUP_TOKEN_PREFIX)
   })
 })
