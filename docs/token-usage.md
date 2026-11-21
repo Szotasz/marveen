@@ -50,6 +50,7 @@ Segít megérteni:
 | `/api/token-usage/collect` | POST | Begyűjti az új token adatokat a JSONL fájlokból |
 | `/api/token-usage/summary` | GET | Ágensenként aggregált összefoglaló |
 | `/api/token-usage/timeline` | GET | Idővonalas bucketek (charthoz) |
+| `/api/token-usage/rate-limit-history` | GET | 5h/7d Claude rate-limit kihasználtság időben, `store/usage-history.jsonl`-ből (lásd lent) |
 | `/api/token-usage` | GET | Részletes rekordok (táblázathoz) |
 
 ### Query paraméterek
@@ -61,6 +62,10 @@ Segít megérteni:
 - `bucket`: Bucket méret percben (default: 60)
 - `from` / `to`: Unix timestamp
 - `agent`: Szűrés egy ágensre
+
+**Rate-limit history** (`/api/token-usage/rate-limit-history`):
+- `from` / `to`: Unix timestamp (epoch seconds)
+- Forrás: `store/usage-history.jsonl` (`scripts/usage-collect.py`, kb. 15 percenkénti append). Ez EGY MÁSIK adatforrás, mint a fenti három végpont (nem a `token_usage` SQLite táblából jön, hanem a flotta-szintű kvóta-collectorból) -- a `src/web/quota.ts`-beli `readQuotaHistory()` olvassa, ugyanazt a `claude.windows.{five_hour,seven_day}.used_percent` mezőt, amit a `readFableSnapshot`/`readQuotaSnapshot` is a friss (egy-pontos) kvóta-csíkhoz. A sorok TÖBBSÉGE nem tartalmaz használható adatot (`source: "estimate"`, nincs `windows` blokk -- a collector futásakor nem volt elérhető OAuth token), ezeket a reader kihagyja, nem nulláz vagy ismétel: a visszaadott pontok listája szándékosan szórt (sparse), a chart ennek megfelelően szakítja meg a vonalat ott, ahol nincs mérés.
 
 **Details** (`/api/token-usage`):
 - `agent`: Ágens szűrő
@@ -113,6 +118,7 @@ CREATE TABLE token_usage_cursors (
 ## Dashboard UI (`web/app.js` + `web/index.html`)
 
 - **Summary cards**: Ágensenként teljes fogyasztás (input/output/cache), hívásszám, utolsó aktivitás
+- **Rate-limit kihasználtság chart**: Canvas-alapú vonaldiagram (`tuQuotaHistoryCanvas`, `renderTuQuotaHistory()`), két vonal (5h, heti), 0-100% skálán, mérési hiány helyén megszakítva
 - **Timeline chart**: Canvas-alapú oszlopdiagram, dinamikus bucket mérettel (1h period = 5 perces bucketek, egyébként 1 órás)
 - **Detail table**: Egyedi API-hívások listája, idő, ágens, tool, token breakdown, content preview
 - **Szűrők**: Időszak (1h/24h/7d/30d), ágens kártya kattintás
@@ -127,3 +133,4 @@ Minden felhasználó-eredetű adat (agent név, tool név, preview) `escapeHtml(
 - A JSONL fájlok az adott gépen élnek; ha a Claude Code máshol fut, azok a transcriptek nem látszanak.
 - A cursor tracking fájlméret-alapú: ha egy fájl rövidebb lesz (truncate), a cursor nullázódik és újraindul a feldolgozás -- a dedup megakadályozza a duplikálást.
 - A kanban korreláció heurisztikus: a feladat időablaka alapján rendel, nem egzakt session-feladat összerendelés.
+- A rate-limit kihasználtság trend ritka pontú: a `usage-collect.py` legtöbb futása `estimate` forrású (nincs OAuth token a gyűjtéskor), azokhoz nincs `used_percent`, így nincs megjeleníthető pont -- egy hosszabb, OAuth nélküli időszakra a chart nagyrészt üres marad, ez nem hiba a rendertben, hanem a mögöttes adat tényleges hiánya.

@@ -126,8 +126,13 @@ export interface FableSnapshot {
   window: QuotaWindow | null
 }
 
-/** usage-collect.py's window shape: `used_percent`, not the statusLine's `used_percentage`. */
-function readOpusWindow(raw: unknown, nowSec: number): QuotaWindow | null {
+/**
+ * usage-collect.py's window shape: `used_percent`, not the statusLine's
+ * `used_percentage`. Shared by the Fable/Opus reading below and by
+ * readQuotaHistory's five_hour/seven_day points -- same writer, same shape,
+ * different window keys.
+ */
+function readPercentWindow(raw: unknown, nowSec: number): QuotaWindow | null {
   if (!raw || typeof raw !== 'object') return null
   const w = raw as { used_percent?: unknown; resets_at?: unknown }
   if (typeof w.used_percent !== 'number' || !Number.isFinite(w.used_percent)) return null
@@ -160,7 +165,7 @@ export function readFableSnapshot(
   // "nothing to show", not a freshness problem, so it stays 'missing'.
   // NOTE: usage-collect.py's field is `used_percent`, not the statusLine's
   // `used_percentage` -- readWindow() above is the wrong shape for this source.
-  const window = windows ? readOpusWindow(windows.seven_day_opus, nowSec) : null
+  const window = windows ? readPercentWindow(windows.seven_day_opus, nowSec) : null
   if (!window) return { status: 'missing', ageSec: null, window: null }
 
   // A missing generated_at counts as maximally old, matching how
@@ -293,4 +298,75 @@ export function chooseQuotaSnapshot(statusLine: QuotaSnapshot, mod: QuotaSnapsho
   }
   if (rank(mod) !== rank(tagged)) return rank(mod) > rank(tagged) ? mod : tagged
   return (mod.ageSec ?? Infinity) < (tagged.ageSec ?? Infinity) ? mod : tagged
+}
+
+export interface QuotaHistoryPoint {
+  /** Unix seconds, from the collector run's ISO generated_at. */
+  ts: number
+  fiveHourPct: number | null
+  sevenDayPct: number | null
+}
+
+/**
+ * A look-back trend for the 5h/7d Claude rate-limit windows, from
+ * store/usage-history.jsonl (scripts/usage-collect.py appends one JSON
+ * snapshot line per run, default every 15 minutes).
+ *
+ * Most lines carry no usable reading: the collector falls back to a
+ * token-count ESTIMATE (`claude.windows` absent entirely) whenever it has no
+ * OAuth token at collection time, which is the common case for a background
+ * cron run with no session open. Those lines are SKIPPED, not shown as a
+ * zero or carried forward as a flat repeat of the last known value -- a
+ * false flat line would read as "no usage" when the truth is "we could not
+ * measure it then". A line is kept only when at least one of the two windows
+ * parsed to a real number (source 'authoritative', 'authoritative_cached' or
+ * 'statusline' all qualify; only 'estimate' never does, because it has no
+ * `windows` block at all).
+ *
+ * Never throws: a missing or corrupt file returns an empty trend, same rule
+ * as readQuotaSnapshot/readFableSnapshot -- the chart then shows "no data in
+ * this period" instead of an error.
+ */
+export function readQuotaHistory(
+  file: string,
+  fromSec?: number,
+  toSec?: number,
+  limit = 3000,
+): QuotaHistoryPoint[] {
+  let raw: string
+  try {
+    raw = readFileSync(file, 'utf-8')
+  } catch {
+    return []
+  }
+  const points: QuotaHistoryPoint[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let rec: unknown
+    try {
+      rec = JSON.parse(trimmed)
+    } catch {
+      continue // a half-written last line (process killed mid-append)
+    }
+    if (!rec || typeof rec !== 'object') continue
+    const d = rec as { generated_at?: unknown; claude?: unknown }
+    if (typeof d.generated_at !== 'string') continue
+    const ms = Date.parse(d.generated_at)
+    if (Number.isNaN(ms)) continue
+    const ts = Math.floor(ms / 1000)
+    if (fromSec !== undefined && ts < fromSec) continue
+    if (toSec !== undefined && ts > toSec) continue
+
+    const claude = d.claude && typeof d.claude === 'object' ? (d.claude as Record<string, unknown>) : null
+    const windows = claude?.windows && typeof claude.windows === 'object' ? (claude.windows as Record<string, unknown>) : null
+    const fiveHour = windows ? readPercentWindow(windows.five_hour, ts) : null
+    const sevenDay = windows ? readPercentWindow(windows.seven_day, ts) : null
+    if (!fiveHour && !sevenDay) continue
+    points.push({ ts, fiveHourPct: fiveHour?.usedPercentage ?? null, sevenDayPct: sevenDay?.usedPercentage ?? null })
+  }
+  // The file only grows (append-only, never rewritten); keep the newest
+  // `limit` points rather than the oldest, same bias as getTokenDetails's
+  // limit cap, so a long, unbounded history cannot blow up the response.
+  return points.length > limit ? points.slice(points.length - limit) : points
 }

@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import {
   collectTokenUsage,
   getTokenSummary,
@@ -9,6 +10,8 @@ import {
 } from '../token-usage.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
 import { logger } from '../../logger.js'
+import { readQuotaHistory } from '../quota.js'
+import { PROJECT_ROOT } from '../../config.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
@@ -88,6 +91,18 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
       to ? parseInt(to) : undefined,
       agent,
     ))
+    return true
+  }
+
+  if (path === '/api/token-usage/rate-limit-history' && method === 'GET') {
+    const from = url.searchParams.get('from')
+    const to = url.searchParams.get('to')
+    const history = readQuotaHistory(
+      join(PROJECT_ROOT, 'store', 'usage-history.jsonl'),
+      from ? parseInt(from) : undefined,
+      to ? parseInt(to) : undefined,
+    )
+    json(res, history)
     return true
   }
 

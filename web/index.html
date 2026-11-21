@@ -2096,6 +2096,14 @@
 
       <div class="overview-stats" id="tuBudgetCards" style="margin-bottom:8px"></div>
 
+      <div class="overview-card" id="tuQuotaHistorySection" style="margin-bottom:16px">
+        <h3 data-i18n="tokenUsage.quota_history_title">Rate-limit kihasználtság</h3>
+        <p class="subtitle" style="margin:0 0 8px" data-i18n="tokenUsage.quota_history_subtitle">Az 5 órás és a 7 napos Claude keret kihasználtsága időben (csak a tényleg mért pontok)</p>
+        <div style="height:220px;position:relative;overflow:hidden">
+          <canvas id="tuQuotaHistoryCanvas"></canvas>
+        </div>
+      </div>
+
       <div class="overview-card" style="margin-bottom:16px">
         <h3 data-i18n="tokenUsage.timeline_title">Idővonal</h3>
         <div style="height:370px;position:relative;overflow:hidden">
