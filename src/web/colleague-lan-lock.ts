@@ -2,13 +2,15 @@
 //
 // The colleague board login (#2929) is meant to be reached from the LAN. With WEB_HOST opened for it, the owner's
 // login and cookie session would cross the LAN over plain HTTP too, and anyone there could use up the owner login's
-// global failure cap. While this lock is ACTIVE, a request from a non-loopback peer on the plain listener passes only
-// when it goes to the colleague surface (the set the colleague gate allows a colleague session: /api/colleague/*,
-// /api/board*, the colleague page and its static files) OR it carries a machine credential (Bearer / agent token,
-// device key, federation token; the Teams card webhook checks its Bot Framework token itself). The owner's password
-// login and cookie session are refused, before any handler runs, so the owner login cannot even be tried from the LAN.
-// Federation, the Teams webhook and Bridge devices keep working. The WEB_PUBLIC_PORT listener (HTTPS behind Caddy,
-// cookies only) has its own protection and is not locked.
+// global failure cap. While this lock is ACTIVE, a request from a non-loopback peer on the plain listener is decided
+// before authentication: the colleague surface (the set the colleague gate allows a colleague session: /api/colleague/*,
+// /api/board*, the colleague page and its static files) passes as it is; the browser login routes (owner password,
+// TOTP, setup code, operator key) are refused, so the owner login cannot even be tried from the LAN; every other request
+// goes on to the normal gate with ALL its cookies dropped, so only a credential in a header or the query (Bearer /
+// agent token, device key, federation token, the Teams bot token) can authenticate it. Federation, the Teams webhook
+// and Bridge devices keep working; the owner's browser does not get in from the LAN. Machine tokens still cross plain
+// HTTP unencrypted: that is the TLS question, an owner decision outside this lock. The WEB_PUBLIC_PORT listener (HTTPS
+// behind Caddy, cookies only) has its own protection and is not locked.
 //
 // Active (COLLEAGUE_LAN_LOCK):
 //   on   always
@@ -88,47 +90,54 @@ export function lanLockActiveNow(webHost: string): boolean {
   return lanLockActive({ mode, webHost, colleagueInUse, boardOn: board.enabled && !board.broken })
 }
 
-/** Principals that authenticate as a machine (Bearer / agent token, device key, federation token): not a password or a
- *  browser cookie crossing the LAN, so the lock lets them through (Dani on COLLANLOCK1120). */
-const MACHINE_AUTH_KINDS: ReadonlySet<string> = new Set(['token', 'device', 'federation'])
-
-/** The Teams card webhook: public at the gate, the handler verifies the Bot Framework token itself. */
-const TEAMS_WEBHOOK = '/api/approvals/teams-card-action'
+/** The browser login routes: they take a password, a TOTP code, a setup code or an operator key in the body and mint a
+ *  browser cookie. Refused outright from the LAN while the lock is active (the cookie would be ignored there anyway). */
+export const LAN_LOCK_LOGIN_ROUTES: ReadonlySet<string> = new Set([
+  '/api/auth/login',
+  '/api/auth/login/totp',
+  '/api/auth/setup-code',
+  '/api/operator/login',
+])
 
 export interface LanLockRequest {
   req: Pick<http.IncomingMessage, 'socket'>
   path: string
   method: string
-  /** The resolved principal's kind (auth-gate.ts AuthResult.kind). */
-  authKind: string
   /** The request came in on the WEB_PUBLIC_PORT listener (public-access.ts): its own protection, not locked. */
   publicListener: boolean
 }
 
+export type LanLockAction =
+  | { action: 'pass' }
+  | { action: 'deny'; result: Exclude<ColleagueGateResult, null> }
+  | { action: 'strip-cookies' }
+
 /**
- * null = let it through; otherwise the refusal (403) or the redirect to the colleague page (302).
- * Runs after the principal is resolved and before any handler, the owner login's password check included.
- * `active` is asked only when the answer could be a refusal, so a loopback request costs no file read.
+ * Decided BEFORE authentication (Samu 82477, Dani 82480), on the socket's own peer:
+ *   pass           loopback, the public listener, the lock not active, or the colleague surface (its cookie is needed)
+ *   deny           a browser login route (password, TOTP, setup code, operator key), refused with 403
+ *   strip-cookies  everything else: the request goes on to the normal gate WITHOUT any cookie, so only a credential in a
+ *                  header or the query (Bearer / agent token, a device key, the ?token= SSE key, a federation token, the
+ *                  Teams bot token) can authenticate it. The lock validates nothing itself; the gate does.
+ * `active` is asked only when the answer could be other than pass, so a loopback request costs no file read.
  */
-export function lanLockDecision(r: LanLockRequest, active: () => boolean): ColleagueGateResult {
-  if (r.publicListener) return null
-  if (isLoopbackPeer(r.req.socket?.remoteAddress)) return null
-  if (MACHINE_AUTH_KINDS.has(r.authKind)) return null
-  // A colleague session: the colleague gate (colleague-gate.ts) fences it right after this.
-  if (r.authKind === 'colleague') return null
-  if (r.path === TEAMS_WEBHOOK && r.method.toUpperCase() === 'POST') return null
-  if (!active()) return null
-  // What is left: no principal (the owner login, the public probes, the pages) or the owner's cookie session.
-  const d = colleagueGateDecision({ kind: 'colleague' }, r.path, r.method)
-  if (d && d.status === 403) {
-    return { status: 403, reason: 'the colleague LAN lock is active: from this network the owner login and the owner session are refused; only the colleague board and machine credentials pass' }
+export function lanLockPreAuth(r: LanLockRequest, active: () => boolean): LanLockAction {
+  if (r.publicListener) return { action: 'pass' }
+  if (isLoopbackPeer(r.req.socket?.remoteAddress)) return { action: 'pass' }
+  if (!active()) return { action: 'pass' }
+  if (colleagueGateDecision({ kind: 'colleague' }, r.path, r.method) === null) return { action: 'pass' }
+  if (LAN_LOCK_LOGIN_ROUTES.has(r.path)) {
+    return {
+      action: 'deny',
+      result: { status: 403, reason: 'the colleague LAN lock is active: the owner login is not available from this network' },
+    }
   }
-  return d
+  return { action: 'strip-cookies' }
 }
 
-/** What an active lock refuses from a non-loopback peer on the plain listener, for the startup warning and the doc. */
+/** What an active lock takes away from a non-loopback peer on the plain listener, for the startup warning and the doc. */
 export const LAN_LOCK_CUT_OFF = [
-  'the owner login (password and TOTP) and the owner cookie session',
-  'the owner dashboard pages (redirected to /colleague)',
-  'the unauthenticated public probes (auth status, avatars, the video-review ticket stream)',
+  'the owner login (password, TOTP, setup code) and the operator login',
+  'every browser cookie outside the colleague board: the owner session, the operator page session, the setup cookie',
+  'so the owner\'s browser access to the dashboard from the LAN',
 ] as const

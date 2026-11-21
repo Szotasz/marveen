@@ -15,7 +15,7 @@ import { readOperatorAccess } from './web/operator-access.js'
 import { boardGateDecision, readBoardAccess } from './web/board-access.js'
 import { tryHandleBoard } from './web/routes/board.js'
 import { colleagueGateDecision } from './web/colleague-gate.js'
-import { lanLockDecision, lanLockActiveNow, LAN_LOCK_CUT_OFF } from './web/colleague-lan-lock.js'
+import { lanLockPreAuth, lanLockActiveNow, LAN_LOCK_CUT_OFF } from './web/colleague-lan-lock.js'
 import { tryHandleColleague } from './web/routes/colleague.js'
 import { sweepExpiredColleagueSessions } from './web/colleague-sessions.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
@@ -203,6 +203,18 @@ export function startWebServer(port = 3420): http.Server {
       return
     }
 
+    // COLLANLOCK1120 (colleague-lan-lock.ts): while the colleague LAN lock is active, a non-loopback peer on the plain
+    // listener is decided here, on the socket's own address, BEFORE authentication: the colleague surface passes, the
+    // browser login routes (owner password, TOTP, setup code, operator key) are refused, and every other request goes on
+    // to the gate below with all its cookies dropped, so only a header or query credential can authenticate it.
+    const lan = lanLockPreAuth({ req, path, method, publicListener: isPublicRequest(req) }, () => lanLockActiveNow(WEB_HOST))
+    if (lan.action === 'deny') {
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Forbidden from this network', rule: 'colleague-lan-lock', reason: lan.result.status === 403 ? lan.result.reason : undefined }))
+      return
+    }
+    if (lan.action === 'strip-cookies') delete req.headers.cookie
+
     // Auth gate: resolve the request's principal once via the extracted gate
     // (bearer -> SSE ?token= -> endpoint-scoped federation token -> mv_session
     // cookie). Bearer stays highest precedence and byte-identical, so every
@@ -220,24 +232,6 @@ export function startWebServer(port = 3420): http.Server {
       publicListener: isPublicRequest(req),
     })
     if (auth === null) return
-    // COLLANLOCK1120 (colleague-lan-lock.ts): while the lock is active, a non-loopback peer on the plain listener passes
-    // only to the colleague surface or with a machine credential; the owner's password login and cookie session are
-    // refused here, before any handler (the login's password check included), so the owner login cannot be tried from
-    // the LAN and its global failure cap cannot be used up from there. Decided on the socket's own address.
-    const lanDenied = lanLockDecision(
-      { req, path, method, authKind: auth.kind, publicListener: isPublicRequest(req) },
-      () => lanLockActiveNow(WEB_HOST),
-    )
-    if (lanDenied) {
-      if (lanDenied.status === 302) {
-        res.writeHead(302, { Location: lanDenied.location, 'Cache-Control': 'no-store' })
-        res.end()
-        return
-      }
-      res.writeHead(403, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Forbidden from this network', rule: 'colleague-lan-lock', reason: lanDenied.reason }))
-      return
-    }
     // Colleague board login (colleague-gate.ts): a colleague session reaches
     // /api/board, /api/colleague and its own page only. Decided here, for EVERY
     // path (public ones and pages too), before any handler runs.
@@ -481,7 +475,7 @@ export function startWebServer(port = 3420): http.Server {
     try {
       if (lanLockActiveNow(WEB_HOST)) {
         logger.warn({ webHost: WEB_HOST, cutOffFromNonLoopback: LAN_LOCK_CUT_OFF },
-          'colleague LAN lock active: from a non-loopback peer on the plain listener the owner login and owner session are refused; the colleague board and machine credentials pass; the owner gets in from this machine, through Tailscale Serve, an SSH tunnel or the HTTPS public listener')
+          'colleague LAN lock active: from the LAN the owner cannot sign in to the dashboard (the login is refused and every browser cookie outside the colleague board is ignored); the colleague board and header/query credentials pass; the owner gets in from this machine, through Tailscale Serve, an SSH tunnel or the HTTPS public listener. Machine tokens still cross plain HTTP unencrypted.')
       }
     } catch { /* a startup log line never stops the server */ }
     // Do NOT log the bearer token: launchd/journal/pipe captures of the

@@ -1,9 +1,10 @@
-// COLLANLOCK1120 (Refs #2929): while the colleague LAN lock is active, a non-loopback peer on the plain listener
-// passes only to the colleague surface or with a machine credential (Dani); the owner's password login and cookie
-// session are refused, so the owner login cannot be tried from the LAN. auto locks only while the colleague login is in use (WEB_HOST
+// COLLANLOCK1120 (Refs #2929): while the colleague LAN lock is active, a non-loopback peer on the plain listener is
+// decided before authentication (Samu 82477, Dani 82480): the colleague surface passes, the browser login routes are
+// refused, and every other request reaches the gate with all its cookies dropped, so only a header or query credential
+// can authenticate it. auto locks only while the colleague login is in use (WEB_HOST
 // not loopback, an enabled colleague account, the board on), so an install that opened WEB_HOST for its own remote
 // access (Docker, a VPS) changes nothing. The peer is the socket's address, never a header.
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest'
 import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -18,6 +19,11 @@ vi.mock('../config.js', async (orig) => ({ ...(await orig<typeof import('../conf
 const L = await import('../web/colleague-lan-lock.js')
 const { createColleagueAccount, setColleagueDisabled, _clearColleagueAccountsCacheForTest } = await import('../web/colleague-accounts.js')
 const { SETTINGS_REGISTRY, isOverridesOnly, envValueTightens } = await import('../config-registry.js')
+const { initDatabase, createDashboardUser } = await import('../db.js')
+const { createSession } = await import('../web/auth-sessions.js')
+const { gateRequest, SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
+const { createDeviceKey } = await import('../web/auth-device-keys.js')
+const { createOperatorSession, OPERATOR_COOKIE_NAME } = await import('../web/operator-sessions.js')
 
 const BOARD_FILE = join(H.store, 'board-access.json')
 const ACCOUNTS_FILE = join(H.store, 'colleague-accounts.json')
@@ -69,73 +75,111 @@ describe('when the lock is active', () => {
   })
 })
 
-describe('route by route, with the lock active (plain listener)', () => {
+describe('the decision before authentication, with the lock active (plain listener)', () => {
   const lan = req('192.168.1.20')
   const active = () => true
-  const at = (r: any, m: string, p: string, authKind = 'none', publicListener = false) =>
-    L.lanLockDecision({ req: r, path: p, method: m, authKind, publicListener }, active)
+  const at = (r: any, m: string, p: string, publicListener = false) => L.lanLockPreAuth({ req: r, path: p, method: m, publicListener }, active)
 
   it.each([
     ['POST', '/api/colleague/login'], ['GET', '/api/colleague/me'], ['POST', '/api/colleague/logout'],
     ['GET', '/api/board/cards'], ['POST', '/api/board/cards/abc/move'], ['GET', '/api/board/report'],
     ['GET', '/colleague'], ['GET', '/colleague.html'], ['GET', '/colleague.js'], ['GET', '/style.css'], ['GET', '/lang/hu.js'], ['GET', '/lang/en.js'],
-  ])('LAN, no principal, %s %s: the colleague surface passes', (m, p) => {
-    expect(at(lan, m, p)).toBeNull()
+  ])('LAN %s %s: the colleague surface passes untouched (its cookie is needed)', (m, p) => {
+    expect(at(lan, m, p)).toEqual({ action: 'pass' })
   })
+
+  it.each([['POST', '/api/auth/login'], ['POST', '/api/auth/login/totp'], ['POST', '/api/auth/setup-code'], ['POST', '/api/operator/login']])(
+    'LAN %s %s: a browser login route is refused with 403', (m, p) => {
+      const d = at(lan, m, p)
+      expect(d.action).toBe('deny')
+      expect(d.action === 'deny' && d.result.status).toBe(403)
+    })
 
   it.each([
-    ['POST', '/api/auth/login'], ['POST', '/api/auth/login/totp'], ['GET', '/api/auth/status'], ['POST', '/api/auth/setup-code'],
-    ['POST', '/api/operator/login'], ['GET', '/api/marveen/avatar'], ['GET', '/api/video-review/file'],
-    ['GET', '/api//board/cards'], ['GET', '/API/BOARD/cards'], ['GET', '/api/%62oard/cards'], ['POST', '/'],
-  ])('LAN, no principal, %s %s: refused with 403 (the owner login is never tried)', (m, p) => {
-    expect(at(lan, m, p)?.status).toBe(403)
-  })
-
-  it.each([['GET', '/'], ['GET', '/index.html'], ['HEAD', '/app.js']])('LAN, no principal, %s %s (an owner page): redirected to /colleague', (m, p) => {
-    expect(at(lan, m, p)).toEqual({ status: 302, location: '/colleague' })
-  })
-
-  it.each([['GET', '/api/kanban'], ['POST', '/api/settings'], ['GET', '/api/memories'], ['GET', '/']])('LAN, the owner cookie session, %s %s: refused', (m, p) => {
-    expect(at(lan, m, p, 'session')).not.toBeNull()
-  })
-
-  it.each([
-    ['token', 'GET', '/api/kanban'], ['token', 'POST', '/api/messages'], ['device', 'GET', '/api/agents'],
-    ['federation', 'GET', '/.well-known/fleetq'], ['federation', 'POST', '/api/federation/inbound'],
-  ])('LAN, a machine credential (%s) %s %s: passes', (kind, m, p) => {
-    expect(at(lan, m, p, kind)).toBeNull()
-  })
-
-  it('LAN, the Teams card webhook (no principal at the gate, the handler checks its Bot Framework token): passes', () => {
-    expect(at(lan, 'POST', '/api/approvals/teams-card-action')).toBeNull()
-  })
-
-  it('LAN, a colleague session: passes here (the colleague gate fences it right after)', () => {
-    expect(at(lan, 'GET', '/api/kanban', 'colleague')).toBeNull()
+    ['GET', '/api/kanban'], ['POST', '/api/messages'], ['GET', '/.well-known/fleetq'], ['POST', '/api/approvals/teams-card-action'],
+    ['GET', '/api/auth/status'], ['GET', '/'], ['GET', '/api/colleague-accounts'], ['GET', '/api//board/cards'], ['GET', '/API/BOARD/cards'],
+  ])('LAN %s %s: goes on to the gate with every cookie dropped', (m, p) => {
+    expect(at(lan, m, p)).toEqual({ action: 'strip-cookies' })
   })
 
   it('the WEB_PUBLIC_PORT listener (HTTPS, its own protection) is not locked, the owner login included', () => {
-    expect(at(lan, 'POST', '/api/auth/login', 'none', true)).toBeNull()
-    expect(at(lan, 'GET', '/', 'session', true)).toBeNull()
+    expect(at(lan, 'POST', '/api/auth/login', true)).toEqual({ action: 'pass' })
+    expect(at(lan, 'GET', '/api/kanban', true)).toEqual({ action: 'pass' })
   })
 
   it.each(['127.0.0.1', '::1', '::ffff:127.0.0.1'])('loopback %s: everything as today, and the lock state is not even read', (addr) => {
     const spy = vi.fn(() => true)
-    for (const [m, p, k] of [['POST', '/api/auth/login', 'none'], ['GET', '/', 'session'], ['GET', '/api/kanban', 'session'], ['GET', '/api/auth/status', 'none']]) {
-      expect(L.lanLockDecision({ req: req(addr), path: p, method: m, authKind: k, publicListener: false }, spy)).toBeNull()
+    for (const [m, p] of [['POST', '/api/auth/login'], ['GET', '/'], ['GET', '/api/kanban'], ['POST', '/api/operator/login']]) {
+      expect(L.lanLockPreAuth({ req: req(addr), path: p, method: m, publicListener: false }, spy)).toEqual({ action: 'pass' })
     }
     expect(spy).not.toHaveBeenCalled()
   })
 
   it('a LAN request that claims loopback in X-Forwarded-For (or X-Real-IP, Forwarded) is still a LAN request', () => {
     const forged = req('192.168.1.20', { 'x-forwarded-for': '127.0.0.1', 'x-real-ip': '127.0.0.1', forwarded: 'for=127.0.0.1' })
-    expect(at(forged, 'POST', '/api/auth/login')?.status).toBe(403)
+    expect(at(forged, 'POST', '/api/auth/login').action).toBe('deny')
+    expect(at(forged, 'GET', '/api/kanban').action).toBe('strip-cookies')
   })
 
   it('lock not active: a LAN request is untouched', () => {
-    const off = (m: string, p: string, k: string) => L.lanLockDecision({ req: lan, path: p, method: m, authKind: k, publicListener: false }, () => false)
-    expect(off('POST', '/api/auth/login', 'none')).toBeNull()
-    expect(off('GET', '/', 'session')).toBeNull()
+    for (const [m, p] of [['POST', '/api/auth/login'], ['GET', '/api/kanban']]) {
+      expect(L.lanLockPreAuth({ req: lan, path: p, method: m, publicListener: false }, () => false)).toEqual({ action: 'pass' })
+    }
+  })
+})
+
+describe('end to end with the real gate: the order web.ts runs (lock, drop cookies, gateRequest)', () => {
+  const MAIN = 'main-dashboard-token-' + 'x'.repeat(24)
+  let ownerCookie = ''
+  let operatorCookie = ''
+  let deviceKey = ''
+
+  beforeAll(() => {
+    initDatabase(':memory:')
+    const owner = createDashboardUser('owner', 'x'.repeat(60))
+    ownerCookie = `${SESSION_COOKIE_NAME}=${createSession({ userId: owner.id, username: 'owner' })}`
+    const op = createDeviceKey('ops-laptop', { scope: 'operator', expiresInDays: 1 })
+    operatorCookie = `${OPERATOR_COOKIE_NAME}=${createOperatorSession(op.id, null).token}`
+    deviceKey = createDeviceKey('bridge', {}).key
+  })
+
+  /** What the handler would see: the 403 of the lock, the 401 of the gate, or the principal's kind. */
+  async function lanRequest(peer: string, method: string, path: string, headers: Record<string, string>): Promise<number | string> {
+    const r: any = { socket: { remoteAddress: peer }, headers: { ...headers }, method, url: path }
+    const lan = L.lanLockPreAuth({ req: r, path, method, publicListener: false }, () => true)
+    if (lan.action === 'deny') return 403
+    if (lan.action === 'strip-cookies') delete r.headers.cookie
+    let status = 0
+    const res: any = { writeHead(c: number) { status = c; return res }, setHeader() {}, end() {} }
+    const url = new URL(`http://localhost${path}`)
+    const auth = await gateRequest(r, res, url, path, method, { dashboardToken: MAIN, mainAgentId: 'main' })
+    return auth === null ? status : auth.kind
+  }
+
+  it('positive control: on loopback the owner cookie and the operator cookie DO authenticate', async () => {
+    expect(await lanRequest('127.0.0.1', 'GET', '/api/kanban', { cookie: ownerCookie })).toBe('session')
+    expect(await lanRequest('127.0.0.1', 'GET', '/api/kanban', { cookie: operatorCookie })).toBe('device')
+  })
+
+  it('LAN + a valid machine credential: passes (the dashboard Bearer, a device key)', async () => {
+    expect(await lanRequest('192.168.1.20', 'GET', '/api/kanban', { authorization: `Bearer ${MAIN}` })).toBe('token')
+    expect(await lanRequest('192.168.1.20', 'GET', '/api/kanban', { authorization: `Bearer ${deviceKey}` })).toBe('device')
+  })
+
+  it('LAN + the owner cookie and an invalid Bearer: not authenticated (401)', async () => {
+    expect(await lanRequest('192.168.1.20', 'GET', '/api/kanban', { cookie: ownerCookie, authorization: 'Bearer not-a-real-token-at-all' })).toBe(401)
+  })
+
+  it('LAN + only the owner cookie: not authenticated (401)', async () => {
+    expect(await lanRequest('192.168.1.20', 'GET', '/api/kanban', { cookie: ownerCookie })).toBe(401)
+  })
+
+  it('LAN + only the operator page cookie: not authenticated (401), though it is a device principal on loopback', async () => {
+    expect(await lanRequest('192.168.1.20', 'GET', '/api/kanban', { cookie: operatorCookie })).toBe(401)
+  })
+
+  it('LAN owner login: refused by the lock (403) before the password is ever checked', async () => {
+    expect(await lanRequest('192.168.1.20', 'POST', '/api/auth/login', { cookie: ownerCookie })).toBe(403)
   })
 })
 
@@ -190,15 +234,16 @@ describe('the setting: off loosens, so only the owner sets it and a .env line ca
   })
 })
 
-describe('wiring: web.ts decides the lock after the principal is resolved, before any handler', () => {
-  it('lanLockDecision runs right after gateRequest, with the auth kind and the public-listener flag, before every route', () => {
+describe('wiring: web.ts decides the lock before the gate and drops the cookies', () => {
+  it('lanLockPreAuth runs before gateRequest; deny answers 403 with its rule; strip-cookies deletes the cookie header', () => {
     const src = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
+    const lock = src.indexOf('    const lan = lanLockPreAuth({ req, path, method, publicListener: isPublicRequest(req) }, () => lanLockActiveNow(WEB_HOST))')
     const gate = src.indexOf('await gateRequest(req, res, url, path, method')
-    const lock = src.indexOf('    const lanDenied = lanLockDecision(\n      { req, path, method, authKind: auth.kind, publicListener: isPublicRequest(req) },\n      () => lanLockActiveNow(WEB_HOST),\n    )\n    if (lanDenied) {')
-    const firstRoute = src.indexOf('if (await tryHandleAuth(routeCtx)) return')
-    expect(gate).toBeGreaterThan(-1)
-    expect(lock).toBeGreaterThan(gate)
-    expect(firstRoute).toBeGreaterThan(lock)
-    expect(src.slice(lock, firstRoute)).toContain("rule: 'colleague-lan-lock'")
+    expect(lock).toBeGreaterThan(-1)
+    expect(gate).toBeGreaterThan(lock)
+    const between = src.slice(lock, gate)
+    expect(between).toContain("if (lan.action === 'deny') {")
+    expect(between).toContain("rule: 'colleague-lan-lock'")
+    expect(between).toContain("    if (lan.action === 'strip-cookies') delete req.headers.cookie\n")
   })
 })
