@@ -36,10 +36,11 @@ export function writeMcpJsonFile(path: string, data: string): void {
  *  Returns whether it changed the mode; any error leaves the file as it is. */
 export function tightenMcpJsonMode(path: string): boolean {
   // O_NOFOLLOW + fchmod on the opened descriptor: a path swapped for a symlink between a check and a chmod cannot
-  // redirect the chmod to another file (the open itself refuses a symlink).
+  // redirect the chmod to another file (the open itself refuses a symlink). O_NONBLOCK: opening a FIFO with no
+  // writer for reading would block this synchronous call on Linux; the isFile check then rejects it.
   let fd: number | null = null
   try {
-    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
     const st = fstatSync(fd)
     if (!st.isFile() || (st.mode & 0o077) === 0) return false
     fchmodSync(fd, MCP_JSON_MODE)
