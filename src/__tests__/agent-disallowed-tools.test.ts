@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DISABLEABLE_TOOLS, disallowedToolList, SETTINGS_REGISTRY } from '../config-registry.js'
+import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
 
 const SH = join(__dirname, '../../scripts/main-extra-plugins-settings.sh')
 
@@ -42,11 +43,23 @@ describe('AGENT_DISALLOWED_TOOLS', () => {
     expect(src).toMatch(/--model \$\{shSingleQuote\(model\)\}\$\{disallowedToolsFlag\(\)\} \$\{channelFlag\}/)
   })
 
-  it('both main-agent launchers append it', () => {
+  it('every main-agent shell launcher appends it', () => {
     for (const f of ['channels.sh', 'channel-watchdog.sh']) {
       const src = readFileSync(join(__dirname, '../../scripts', f), 'utf8')
       expect(src).toContain('EXTRA_SETTINGS_FLAG="${EXTRA_SETTINGS_FLAG}$(main_disallowed_tools_flag "$INSTALL_DIR")"')
     }
+    const smg = readFileSync(join(__dirname, '../../scripts/stuck-modal-guard.sh'), 'utf8')
+    expect(smg).toContain('SETTINGS_FLAG="${SETTINGS_FLAG}$(main_disallowed_tools_flag "$INSTALL_DIR")"')
+  })
+
+  it('the in-process main respawn (context-guard, hard restart, resume) carries it too', () => {
+    const base = {
+      claudePath: 'claude', pluginId: 'telegram@claude-plugins-official', model: 'm', continueSession: false,
+      config: { isolatedConfigDir: null }, channelStateEnv: { name: 'TELEGRAM_STATE_DIR', dir: '/x' },
+    }
+    expect(buildMainSessionRespawnCmd({ ...base, disallowedTools: " --disallowedTools 'Artifact,Workflow'" } as never))
+      .toMatch(/--model 'm' --disallowedTools 'Artifact,Workflow' --channels /)
+    expect(buildMainSessionRespawnCmd({ ...base, disallowedTools: '' } as never)).not.toContain('--disallowedTools')
   })
 
   it('the main-agent flag carries the filtered list, or nothing', () => {

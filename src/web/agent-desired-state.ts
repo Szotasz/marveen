@@ -5,12 +5,12 @@ import { logger } from '../logger.js'
 
 // Desired run-state for sub-agents.
 //
-// The agents run on a tmux server shared with the main channels session, which
-// gets `systemctl restart`ed several times a day (bun-watchdog, stuck-tool-call
-// watchdog, hard-restart). Because that unit is KillMode=control-group, every
-// such restart kills the whole tmux server and takes ALL sub-agents down with
-// it -- and the channel monitor only auto-restarts agents whose *session still
-// exists* with a dead plugin, not agents whose session vanished entirely.
+// The agents run on a tmux server shared with the main channels session. When
+// that server goes (a reboot, or a channels-unit restart under the old
+// KillMode=control-group unit; the shipped unit runs KillMode=process), ALL
+// sub-agent sessions go with it -- and the channel monitor only auto-restarts
+// agents whose *session still exists* with a dead plugin, not agents whose
+// session vanished entirely.
 //
 // This file records which agents the operator wants running, so the monitor can
 // reconcile reality back to that desired state (after a nuke, a dashboard
