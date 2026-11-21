@@ -54,6 +54,78 @@ def main():
             assert gate.script_source_loads_only_builtins(case['source'].encode('utf-8')) == case['allowed'], case['name']
         assert gate.script_source_loads_only_builtins(b'\xff\xfe') is False
         print('PASS: shared loader corpus and strict UTF-8')
+        # SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT.
+        # The corpus entry carries the SHAPE only (a placeholder path and sha256);
+        # it is bound here to a real temp script, the expected sha256 computed from
+        # the exact bytes written at setup -- never a hardcoded digest.
+        script = install / 'runner.ext'
+        script_body = b'#!/usr/bin/env node\nconsole.log("sanctioned runner")\n'
+        script.write_bytes(script_body)
+        script_sha = hashlib.sha256(script_body).hexdigest()
+        entry = json.loads(json.dumps(CORPUS['entry']))
+        entry['readFiles'] = ['/absolute/path/to/extra.json']
+        entry['scripts'] = [{'path': str(script), 'sha256': script_sha}]
+        config = {'agents': {CORPUS['agentName']: entry}}
+        bind = lambda cmd: cmd.replace('/absolute/path/to/runner.ext', str(script))  # noqa: E731
+        assert gate.valid_agent_send_exception({k: v for k, v in entry.items() if k != 'readFiles'})
+        for reads in ([], ['/a', '/b']):
+            assert gate.valid_agent_send_exception(dict(entry, readFiles=reads))
+        for reads in (['relative'], ['/a', '/a'], [1], '/a', [''], '/'):
+            assert not gate.valid_agent_send_exception(dict(entry, readFiles=reads)), reads
+        print('PASS: readFiles schema')
+
+        # REPEATENVELOPE (card f2ccb0bb, round 2): the mjs argument parser
+        # returns only the FIRST value of a repeatable flag, so an entry that
+        # makes an envelope flag (--to/--cc/--subject/--body-file) repeatable
+        # would let recipient verification and the envelope hash see only the
+        # first recipient. Such an entry is invalid in ALL THREE validators
+        # (mjs, py, TS) and drops exactly like any other shape-invalid entry.
+        for flag in ('--to', '--cc', '--subject', '--body-file'):
+            # The dangerous shape MOVES the envelope flag from valueArgs to
+            # repeatableArgs (no duplicate): without the fix the entry
+            # validates and the mjs parser then returns only the first value.
+            for repeatable in ([flag], list(CORPUS['entry']['repeatableArgs']) + [flag]):
+                bad = dict(entry)
+                bad['valueArgs'] = [f for f in bad['valueArgs'] if f != flag]
+                bad['repeatableArgs'] = repeatable
+                assert gate.valid_agent_send_exception(bad) is False, (flag, repeatable)
+                (store / 'agent-send-exceptions.json').write_text(
+                    json.dumps({'agents': {CORPUS['agentName']: bad, 'clean': entry}}))
+                kept = gate.read_agent_send_exceptions()
+                assert kept == {'agents': {'clean': entry}}, (flag, repeatable)
+        # C1 (PR #2843 review): recipient channels outside --to and --cc are reserved.
+        for flag in ('--bcc', '--reply-to', '--from', '--sender', '--return-path'):
+            for key in ('valueArgs', 'repeatableArgs', 'booleanArgs'):
+                bad = {**entry, key: entry[key] + [flag]}
+                assert gate.valid_agent_send_exception(bad) is False, (flag, key)
+                (store / 'agent-send-exceptions.json').write_text(
+                    json.dumps({'agents': {CORPUS['agentName']: bad, 'clean': entry}}))
+                kept = gate.read_agent_send_exceptions()
+                assert kept == {'agents': {'clean': entry}}, (flag, key)
+        print('PASS: gate-reserved recipient flags invalidate the entry in all three flag lists')
+        clean = dict(entry)
+        clean['repeatableArgs'] = list(entry['repeatableArgs'])
+        assert gate.valid_agent_send_exception(clean) is True
+        assert gate.valid_agent_send_exception({**clean, 'repeatableArgs': []}) is True
+        (store / 'agent-send-exceptions.json').unlink()
+        assert gate.read_agent_send_exceptions() == {}
+        print('PASS: repeatable envelope flags invalidate the entry in the py validator')
+
+        # B1 (card f2ccb0bb R4): an entry whose other four keys are valid but which
+        # has NO "scripts" key raised KeyError in the py validator, and
+        # read_agent_send_exceptions catches only (OSError, ValueError) -- so the
+        # hook crashed on every gated command while such an entry sat in the store.
+        # The mjs twin and the TS reader return false/null for the same shape; the
+        # fixed py validator must return False, and the invalid sibling must
+        # neither revoke the valid entry next to it nor crash the reader.
+        no_scripts = {k: v for k, v in entry.items() if k != 'scripts'}
+        assert gate.valid_agent_send_exception(no_scripts) is False
+        (store / 'agent-send-exceptions.json').write_text(
+            json.dumps({'agents': {'a': no_scripts, 'b': entry}}))
+        assert gate.read_agent_send_exceptions() == {'agents': {'b': entry}}
+        print('PASS: a missing scripts key invalidates only that entry, without a KeyError')
+        (store / 'agent-send-exceptions.json').unlink()
+
         if not SEND_EXCEPTION_PLATFORM:
             darwin_gate_spec = importlib.util.spec_from_file_location('darwin_gate', gate_path)
             darwin_gate = importlib.util.module_from_spec(darwin_gate_spec)
@@ -105,19 +177,6 @@ def main():
             with patch.object(real_gate.os, 'geteuid', return_value=0):
                 assert real_gate.script_path_writable(str(target / 'runner.ext')) is True
         print('PASS: errno parity with the JS gate (EACCES/EPERM/EROFS unwritable, other errors fail closed); root never grants')
-        # SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT.
-        # The corpus entry carries the SHAPE only (a placeholder path and sha256);
-        # it is bound here to a real temp script, the expected sha256 computed from
-        # the exact bytes written at setup -- never a hardcoded digest.
-        script = install / 'runner.ext'
-        script_body = b'#!/usr/bin/env node\nconsole.log("sanctioned runner")\n'
-        script.write_bytes(script_body)
-        script_sha = hashlib.sha256(script_body).hexdigest()
-        entry = json.loads(json.dumps(CORPUS['entry']))
-        entry['readFiles'] = ['/absolute/path/to/extra.json']
-        entry['scripts'] = [{'path': str(script), 'sha256': script_sha}]
-        config = {'agents': {CORPUS['agentName']: entry}}
-        bind = lambda cmd: cmd.replace('/absolute/path/to/runner.ext', str(script))  # noqa: E731
         for version, expected in [
                 ('v22.13.0', True), ('v22.12.9', False), ('v23.5.0', True), ('v23.4.0', False),
                 ('v24.0.0', True), ('v21.9.9', False), ('v20.18.0', False), ('22.13.0', False),
@@ -180,12 +239,7 @@ def main():
             with patch.object(real_gate, 'probe_node_version', return_value='v22.22.2') as probe:
                 assert real_gate.agent_script_exception(positive + ' --unknown x', CORPUS['agentName'], config) is None
                 probe.assert_not_called()
-        assert gate.valid_agent_send_exception({k: v for k, v in entry.items() if k != 'readFiles'})
-        for reads in ([], ['/a', '/b']):
-            assert gate.valid_agent_send_exception(dict(entry, readFiles=reads))
-        for reads in (['relative'], ['/a', '/a'], [1], '/a', [''], '/'):
-            assert not gate.valid_agent_send_exception(dict(entry, readFiles=reads)), reads
-        print('PASS: runtime versions, macOS refusal, last probe and readFiles schema')
+        print('PASS: runtime versions, macOS refusal and last probe')
         for case in CORPUS['cases']:
             actual = gate.agent_script_exception(bind(case['command']), CORPUS['agentName'], config)
             assert bool(actual) == case['match'], case['name']
@@ -247,57 +301,6 @@ def main():
         draft = bind(next(c['command'] for c in CORPUS['cases'] if c['name'] == 'draft'))
         assert 'envelopeSha256' not in gate.agent_script_exception(draft, CORPUS['agentName'], config)
         print('PASS: script content binding (sha256 verified per invocation, fail-closed)')
-
-        # REPEATENVELOPE (card f2ccb0bb, round 2): the mjs argument parser
-        # returns only the FIRST value of a repeatable flag, so an entry that
-        # makes an envelope flag (--to/--cc/--subject/--body-file) repeatable
-        # would let recipient verification and the envelope hash see only the
-        # first recipient. Such an entry is invalid in ALL THREE validators
-        # (mjs, py, TS) and drops exactly like any other shape-invalid entry.
-        for flag in ('--to', '--cc', '--subject', '--body-file'):
-            # The dangerous shape MOVES the envelope flag from valueArgs to
-            # repeatableArgs (no duplicate): without the fix the entry
-            # validates and the mjs parser then returns only the first value.
-            for repeatable in ([flag], list(CORPUS['entry']['repeatableArgs']) + [flag]):
-                bad = dict(entry)
-                bad['valueArgs'] = [f for f in bad['valueArgs'] if f != flag]
-                bad['repeatableArgs'] = repeatable
-                assert gate.valid_agent_send_exception(bad) is False, (flag, repeatable)
-                (store / 'agent-send-exceptions.json').write_text(
-                    json.dumps({'agents': {CORPUS['agentName']: bad, 'clean': entry}}))
-                kept = gate.read_agent_send_exceptions()
-                assert kept == {'agents': {'clean': entry}}, (flag, repeatable)
-        # C1 (PR #2843 review): recipient channels outside --to and --cc are reserved.
-        for flag in ('--bcc', '--reply-to', '--from'):
-            for key in ('valueArgs', 'repeatableArgs', 'booleanArgs'):
-                bad = {**entry, key: entry[key] + [flag]}
-                assert gate.valid_agent_send_exception(bad) is False, (flag, key)
-                (store / 'agent-send-exceptions.json').write_text(
-                    json.dumps({'agents': {CORPUS['agentName']: bad, 'clean': entry}}))
-                kept = gate.read_agent_send_exceptions()
-                assert kept == {'agents': {'clean': entry}}, (flag, key)
-        print('PASS: gate-reserved recipient flags invalidate the entry in all three flag lists')
-        clean = dict(entry)
-        clean['repeatableArgs'] = list(entry['repeatableArgs'])
-        assert gate.valid_agent_send_exception(clean) is True
-        assert gate.valid_agent_send_exception({**clean, 'repeatableArgs': []}) is True
-        (store / 'agent-send-exceptions.json').unlink()
-        assert gate.read_agent_send_exceptions() == {}
-        print('PASS: repeatable envelope flags invalidate the entry in the py validator')
-
-        # B1 (card f2ccb0bb R4): an entry whose other four keys are valid but which
-        # has NO "scripts" key raised KeyError in the py validator, and
-        # read_agent_send_exceptions catches only (OSError, ValueError) -- so the
-        # hook crashed on every gated command while such an entry sat in the store.
-        # The mjs twin and the TS reader return false/null for the same shape; the
-        # fixed py validator must return False, and the invalid sibling must
-        # neither revoke the valid entry next to it nor crash the reader.
-        no_scripts = {k: v for k, v in entry.items() if k != 'scripts'}
-        assert gate.valid_agent_send_exception(no_scripts) is False
-        (store / 'agent-send-exceptions.json').write_text(
-            json.dumps({'agents': {'a': no_scripts, 'b': entry}}))
-        assert gate.read_agent_send_exceptions() == {'agents': {'b': entry}}
-        print('PASS: a missing scripts key invalidates only that entry, without a KeyError')
 
         read_dir = Path(os.path.realpath(tempfile.mkdtemp(prefix='script-read-grants-')))
         try:

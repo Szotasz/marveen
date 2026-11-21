@@ -342,7 +342,7 @@ describe('repeatable envelope flags invalidate the exception entry', () => {
 })
 
 describe('gate-reserved flags invalidate the exception entry', () => {
-  for (const flag of ['--bcc', '--reply-to', '--from', '--envelope-sha256']) {
+  for (const flag of ['--bcc', '--reply-to', '--from', '--sender', '--return-path', '--envelope-sha256']) {
     for (const list of ['valueArgs', 'repeatableArgs', 'booleanArgs'] as const) {
       it(`${list} containing '${flag}' is invalid`, () => {
         expect(validAgentSendException({ ...entry, [list]: [...entry[list], flag] })).toBe(false)

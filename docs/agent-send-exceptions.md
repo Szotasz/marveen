@@ -8,6 +8,12 @@ hash, modes and flags come from install-local operator config in
 `store/agent-send-exceptions.json`. The framework ships no grants. No
 environment variable redirects this file.
 
+The gate resolves bare interpreter names (`node`, `nodejs`, or the `node` in
+`/usr/bin/env node`) using the hook's own PATH. The Bash tool runs the command
+after loading the session's shell snapshot (aliases, functions and PATH) from
+the agent's startup files. The gate cannot see that snapshot, so those startup
+files must stay owner-controlled.
+
 ## Config
 
 ```json
@@ -35,9 +41,9 @@ objects: at least one entry, no duplicate paths, an absolute `path` and a
 `sha256` of exactly 64 lowercase hex characters. The other four keys are
 arrays of distinct nonempty strings; modes are `draft` and `send`. Flag names
 must be distinct across the three flag lists. Unknown entry keys invalidate
-only that entry. `--envelope-sha256`, `--bcc`, `--reply-to` and `--from` are
-gate-reserved: listing any of them in `valueArgs`, `repeatableArgs` or
-`booleanArgs` invalidates the entry.
+only that entry. `--envelope-sha256`, `--bcc`, `--reply-to`, `--from`,
+`--sender` and `--return-path` are gate-reserved: listing any of them in
+`valueArgs`, `repeatableArgs` or `booleanArgs` invalidates the entry.
 Missing, unreadable or invalid JSON grants no exceptions.
 
 The grant binds the script content and path. On every invocation both gates
@@ -129,9 +135,9 @@ The exception continues to trust them as the agent's own process does; from
 
 Both modes require ledger-verified `--to` and `--cc` recipients. These two flags
 are the only recipient channel the gates verify and hash. The gates refuse an
-entry that names `--bcc`, `--reply-to` or `--from`; any other flag through which
-the granted script could name an address is outside the gates' view, so the
-owner must not grant one. A draft does
+entry that names `--bcc`, `--reply-to`, `--from`, `--sender` or `--return-path`;
+any other flag through which the granted script could name an address is
+outside the gates' view, so the owner must not grant one. A draft does
 not consume approval. For an enabled entry the scaffold also installs the
 separate email approval hook, using the project's existing matchers and
 fail-closed timeout wrapper.

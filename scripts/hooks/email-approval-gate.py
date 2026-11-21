@@ -142,11 +142,12 @@ _EXCEPTION_KEYS = ("scripts", "modes", "valueArgs", "repeatableArgs", "booleanAr
 # email-send-gate.mjs, and readAgentSendExceptions in agent-scaffold.ts.
 _NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
 # C1 (PR #2843 review): the gates verify and hash only --to and --cc as recipients,
-# so an entry naming --bcc, --reply-to or --from in ANY of valueArgs, repeatableArgs
-# or booleanArgs is invalid in ALL THREE validators: this one,
+# so an entry naming --bcc, --reply-to, --from, --sender or --return-path in ANY
+# of valueArgs, repeatableArgs or booleanArgs is invalid in ALL THREE validators:
+# this one,
 # validAgentSendException in email-send-gate.mjs, and readAgentSendExceptions
 # in agent-scaffold.ts. --envelope-sha256 is reserved for the gate itself.
-_RESERVED_FLAGS = frozenset({"--envelope-sha256", "--bcc", "--reply-to", "--from"})
+_RESERVED_FLAGS = frozenset({"--envelope-sha256", "--bcc", "--reply-to", "--from", "--sender", "--return-path"})
 
 # SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not only its
 # path. "scripts" is an array of {"path", "sha256"} objects -- at least one entry, no

@@ -70,11 +70,12 @@ const EXCEPTION_KEYS = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'bool
 // readAgentSendExceptions in agent-scaffold.ts.
 const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'])
 // C1 (PR #2843 review): the gates verify and hash only --to and --cc as recipients,
-// so an entry naming --bcc, --reply-to or --from in ANY of valueArgs, repeatableArgs
-// or booleanArgs is invalid in ALL THREE validators: this one,
+// so an entry naming --bcc, --reply-to, --from, --sender or --return-path in ANY
+// of valueArgs, repeatableArgs or booleanArgs is invalid in ALL THREE validators:
+// this one,
 // valid_agent_send_exception in email-approval-gate.py, and readAgentSendExceptions
 // in agent-scaffold.ts. --envelope-sha256 is reserved for the gate itself.
-const RESERVED_FLAGS = new Set(['--envelope-sha256', '--bcc', '--reply-to', '--from'])
+const RESERVED_FLAGS = new Set(['--envelope-sha256', '--bcc', '--reply-to', '--from', '--sender', '--return-path'])
 
 // SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not
 // only its path. "scripts" is an array of {"path", "sha256"} objects -- at least

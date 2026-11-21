@@ -170,7 +170,7 @@ describe('send exception hook wiring', () => {
   })
 
   it('rejects gate-reserved flags in every flag list, keeping clean entries', () => {
-    for (const flag of ['--envelope-sha256', '--bcc', '--reply-to', '--from']) {
+    for (const flag of ['--envelope-sha256', '--bcc', '--reply-to', '--from', '--sender', '--return-path']) {
       for (const list of ['valueArgs', 'repeatableArgs', 'booleanArgs'] as const) {
         configFile.content = JSON.stringify({ agents: {
           [agentName]: { ...entry, [list]: [...entry[list], flag] },
