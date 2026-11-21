@@ -212,7 +212,7 @@ describe('the handlers speak the dashboard language', () => {
 
   it('the terminal keystroke with the input off says so through its key', () => {
     const i = APP.indexOf('if (!terminalInputEnabled) {')
-    expect(APP.slice(i, i + 400)).toContain("showToast(t('terminal.input_off'))")
+    expect(APP.slice(i, i + 400)).toContain("showToast(t('terminal.input_off'), 'warn')")
   })
 
   it('the auth URL copy, the .mcp.json save and the voice install error use their keys', () => {

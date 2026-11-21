@@ -37,7 +37,7 @@ describe('the provider form says which field is missing', () => {
       last = at
     }
     expect(SAVE).toContain("(authHeader !== 'none' && !vaultKey) ? ['#cpVaultKey'")
-    const stop = SAVE.indexOf('if (missing) { overlay.querySelector(missing[0]).focus(); showToast(t(missing[1])); return }')
+    const stop = SAVE.indexOf('if (missing) { overlay.querySelector(missing[0]).focus(); showToast(t(missing[1]), \'warn\'); return }')
     expect(stop).toBeGreaterThan(last)
     expect(SAVE.slice(0, stop)).not.toMatch(/\bfetch\(/)
   })

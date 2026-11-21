@@ -111,7 +111,7 @@ describe('the keygen modal says why', () => {
 
   it('the missing-field toast is translated, no unaccented "Cimke" left', () => {
     expect(APP).not.toContain('Cimke és felhasználónév')
-    expect(APP).toContain("showToast(t('vault.ssh.toast.label_user_required'))")
+    expect(APP).toContain("showToast(t('vault.ssh.toast.label_user_required'), 'warn')")
   })
 
   it.each(['vault.ssh.toast.label_taken', 'vault.ssh.toast.label_user_required'])('%s is in both languages', (key) => {

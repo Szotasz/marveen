@@ -293,3 +293,56 @@ describe('the failures outside a catch', () => {
     }
   })
 })
+
+// Block 4: what the owner has to fix, or what the dashboard does not allow, is a warning: nothing broke, the step just
+// cannot go on like this. An empty required field, a wrong file, a card someone else changed meanwhile, a step only the
+// owner may take, a team move that would make a loop. What only informs, or follows the owner's own choice, stays
+// neutral.
+describe('the warnings: something to fix, or a step that is not allowed', () => {
+  const WARN_KEYS = [
+    'kanban.toast.blocker_not_on_board', 'kanban.toast.stale_version_form', 'kanban.toast.stale_version',
+    'kanban.toast.comment_no_author', 'kanban.breakdown.select_one', 'common.owner_session_required',
+    'agents.model.custom_model_required', 'agents.settings.ctx_guard_pct_hint', 'agents.toast.avatar_format',
+    'agents.toast.avatar_size', 'agents.main_auth.unverified', 'skills.toast.name_required', 'skills.toast.desc_required',
+    'skills.toast.select_file', 'tasks.expand.need_answer', 'tasks.toast.select_schedule', 'connectors.toast.required_field',
+    'vault.ssh.toast.label_user_required', 'vault.scan.none_selected', 'memories.toast.select_files',
+    'memories.toast.no_content', 'fleet.import.no_file', 'team.drop.cycle', 'bgTasks.select_agent', 'bgTasks.enter_task',
+    'fleet_freeze.toast.owner_only', 'ideas.toast.no_subtasks', 'terminal.input_off',
+    // An error until this block; an empty title is something to fix like the other required fields.
+    'ideas.form.title_required',
+  ]
+  const withKey = (k: string) => TOASTS.filter(c => c.msg.includes(`'${k}'`))
+
+  it('every listed toast is there, and each is a warning', () => {
+    const bad: string[] = []
+    let n = 0
+    for (const k of WARN_KEYS) {
+      const hits = withKey(k)
+      if (!hits.length) bad.push(`${k}: not found`)
+      for (const c of hits) { n++; if (c.kind !== 'warn') bad.push(`${c.line}: ${c.text}`) }
+    }
+    expect(bad).toEqual([])
+    expect(n).toBeGreaterThanOrEqual(35)
+  })
+
+  it('a required field or a missing choice is a warning wherever it is said, a new one too', () => {
+    const shaped = TOASTS.filter(c => /'[\w.]*(_required|\.select_\w+|_no_\w+|\.no_\w+)'|t\(missing\[1\]\)/.test(c.msg))
+    expect(shaped.length).toBeGreaterThanOrEqual(15)
+    expect(shaped.filter(c => c.kind !== 'warn').map(c => `${c.line}: ${c.text}`)).toEqual([])
+  })
+
+  it('a settings reset that partly failed is an error, with its duration', () => {
+    expect(withKey('settings.toast.reset_tab_partial').map(c => c.text)).toEqual([
+      "showToast(t('settings.toast.reset_tab_partial'), { kind: 'error', duration: 6000 })",
+    ])
+  })
+
+  it('what only informs, or follows the owner\'s choice, stays neutral', () => {
+    for (const k of ['agents.wizard.already_created', 'agents.toast.restart_not_forced', 'agents.import.fleet_kept',
+      'memories.toast.delete_pending']) {
+      const hits = withKey(k)
+      expect(hits.length).toBeGreaterThanOrEqual(1)
+      expect(hits.every(c => c.kind === null)).toBe(true)
+    }
+  })
+})
