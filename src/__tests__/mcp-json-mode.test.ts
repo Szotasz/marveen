@@ -82,7 +82,8 @@ describe('wiring: no .mcp.json writer bypasses the helper', () => {
       .filter((l) => !l.includes('mode: statSync(mcpPath).mode'))
     const direct = lines.filter((l) =>
       /(?:writeFileSync|atomicWriteFileSync)\((?:mcpJsonPath|mcpPath|mcpJson)\b/.test(l)
-      || /(?:writeFileSync|atomicWriteFileSync)\(join\([^)]*'\.mcp\.json'\)/.test(l))
+      // One level of nested parentheses, so join(agentDir(name), '.mcp.json') is caught too (Geri on #3011).
+      || /(?:writeFileSync|atomicWriteFileSync)\(join\((?:[^()]|\([^()]*\))*'\.mcp\.json'\)/.test(l))
     expect(direct).toEqual([])
   })
   it('fleet-transfer writes both .mcp.json files at MCP_JSON_MODE', () => {
