@@ -4,7 +4,8 @@
 // login and cookie session would cross the LAN over plain HTTP too, and anyone there could use up the owner login's
 // global failure cap. While this lock is ACTIVE, a request from a non-loopback peer on the plain listener is decided
 // before authentication: the colleague surface (the set the colleague gate allows a colleague session: /api/colleague/*,
-// /api/board*, the colleague page and its static files) passes as it is; the browser login routes (owner password,
+// /api/board*, the colleague page and its static files) passes with only its own mv_colleague cookie (COLLCOOKIE1121: an
+// owner mv_session held on the LAN would otherwise resolve as the owner on /api/board*); the browser login routes (owner password,
 // TOTP, setup code, operator key) are refused, so the owner login cannot even be tried from the LAN; every other request
 // goes on to the normal gate with ALL its cookies dropped, so only a credential in a header or the query (Bearer /
 // agent token, device key, federation token, the Teams bot token) can authenticate it. Federation, the Teams webhook
@@ -30,6 +31,8 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { readBoardAccess } from './board-access.js'
 import { readColleagueAccounts } from './colleague-accounts.js'
 import { colleagueGateDecision, type ColleagueGateResult } from './colleague-gate.js'
+import { parseCookies } from './auth-gate.js'
+import { COLLEAGUE_COOKIE_NAME } from './colleague-sessions.js'
 
 export type LanLockMode = 'auto' | 'on' | 'off'
 
@@ -111,10 +114,13 @@ export type LanLockAction =
   | { action: 'pass' }
   | { action: 'deny'; result: Exclude<ColleagueGateResult, null> }
   | { action: 'strip-cookies' }
+  | { action: 'colleague-cookie-only' }
 
 /**
  * Decided BEFORE authentication (Samu 82477, Dani 82480), on the socket's own peer:
- *   pass           loopback, the public listener, the lock not active, or the colleague surface (its cookie is needed)
+ *   pass           loopback, the public listener, or the lock not active
+ *   colleague-cookie-only  the colleague surface: it goes on with the mv_colleague cookie alone (COLLCOOKIE1121), so an
+ *                  owner, operator or setup cookie held on the LAN cannot resolve there ahead of it
  *   deny           a browser login route (password, TOTP, setup code, operator key), refused with 403
  *   strip-cookies  everything else: the request goes on to the normal gate WITHOUT any cookie, so only a credential in a
  *                  header or the query (Bearer / agent token, a device key, the ?token= SSE key, a federation token, the
@@ -125,7 +131,7 @@ export function lanLockPreAuth(r: LanLockRequest, active: () => boolean): LanLoc
   if (r.publicListener) return { action: 'pass' }
   if (isLoopbackPeer(r.req.socket?.remoteAddress)) return { action: 'pass' }
   if (!active()) return { action: 'pass' }
-  if (colleagueGateDecision({ kind: 'colleague' }, r.path, r.method) === null) return { action: 'pass' }
+  if (colleagueGateDecision({ kind: 'colleague' }, r.path, r.method) === null) return { action: 'colleague-cookie-only' }
   if (LAN_LOCK_LOGIN_ROUTES.has(r.path)) {
     return {
       action: 'deny',
@@ -135,9 +141,17 @@ export function lanLockPreAuth(r: LanLockRequest, active: () => boolean): LanLoc
   return { action: 'strip-cookies' }
 }
 
+/** colleague-cookie-only: the Cookie header keeps the mv_colleague pair alone (the first one, as the gate reads it), or is
+ *  removed when there is none. */
+export function keepOnlyColleagueCookie(headers: http.IncomingHttpHeaders): void {
+  const v = parseCookies(headers.cookie)[COLLEAGUE_COOKIE_NAME]
+  if (v) headers.cookie = `${COLLEAGUE_COOKIE_NAME}=${v}`
+  else delete headers.cookie
+}
+
 /** What an active lock takes away from a non-loopback peer on the plain listener, for the startup warning and the doc. */
 export const LAN_LOCK_CUT_OFF = [
   'the owner login (password, TOTP, setup code) and the operator login',
-  'every browser cookie outside the colleague board: the owner session, the operator page session, the setup cookie',
+  'every browser cookie but the colleague one: the owner session, the operator page session, the setup cookie',
   'so the owner\'s browser access to the dashboard from the LAN',
 ] as const
