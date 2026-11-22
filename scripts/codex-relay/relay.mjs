@@ -11,7 +11,7 @@
 // file under the relay dir. The spool lives under store/, which the relay
 // profile hides from the sandbox. Plain node, no npm dependencies.
 
-import { appendFileSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, constants, fstatSync, lstatSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 const USAGE = 'usage: relay.mjs --agent <name> --relay-dir <dir> --token-file <path> --dashboard-url <url> --audit-log <path>'
@@ -460,12 +460,24 @@ async function handleRequestFile(fileName) {
     }
   }
   // An entry the relay cannot remove keeps resting at its requests/ name: the claimed copy is moved BACK.
-  // The restore never forwards anything, so it cannot reintroduce the stale-read race. If a writer
-  // re-created requests/<fileName> in the window, the copy stays in the claimed directory (one stderr
-  // line, gated by stuckDirs) and the writer's entry keeps the name.
+  // The restore never forwards anything, so it cannot reintroduce the stale-read race, and it is
+  // NON-DESTRUCTIVE by construction (dual review R2 blocker): a plain renameSync would silently REPLACE
+  // a request a writer re-created at the freed requests/<fileName> name in the window (renaming a file
+  // onto a file overwrites the destination). A regular file therefore goes back by hard link:
+  // linkSync refuses (EEXIST) when the name is already taken -- the writer's entry keeps the name and
+  // the copy stays in the claimed directory (one stderr line, gated by stuckDirs). A directory cannot
+  // be hard-linked, but renaming one cannot destroy data either: onto a re-created FILE the rename
+  // fails with ENOTDIR, onto a non-empty directory with ENOTEMPTY.
   const restoreClaimed = () => {
     try {
-      renameSync(claimedPath, requestPath)
+      let isDir = false
+      try { isDir = lstatSync(claimedPath).isDirectory() } catch { return /* the copy is gone: nothing to restore */ }
+      if (isDir) {
+        renameSync(claimedPath, requestPath)
+      } else {
+        linkSync(claimedPath, requestPath)
+        unlinkSync(claimedPath)
+      }
     } catch (err) {
       if (!stuckDirs.has(fileName)) process.stderr.write(`relay: cannot restore request ${fileName}: ${err instanceof Error ? err.message : String(err)}\n`)
     }
