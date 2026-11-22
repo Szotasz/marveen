@@ -128,7 +128,8 @@ describe('orphaned i18n keys removed from lang files', () => {
     'activity.no_output',
     'activity.session_stopped',
     'autonomy.btn.refresh',
-    'autonomy.level.1',
+    // autonomy.level.1 is NOT dead: the autonomy legend (#627, same day as this list) reads it; without it the legend
+    // showed the raw key (HOSTINGERI18N1122).
     'updates.page_subtitle',
   ]
 
