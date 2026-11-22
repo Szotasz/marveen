@@ -199,7 +199,10 @@ Comment on the card (the result goes here, this is what shows on the dashboard; 
 bash scripts/marveen-api.sh kanban-comment KARTYA_ID {{MAIN_AGENT_ID}} komment.txt
 ```
 
-Archiving: `POST /api/kanban/KARTYA_ID/archive`, with an empty body.
+Archiving:
+```bash
+bash scripts/marveen-api.sh kanban-archive KARTYA_ID
+```
 
 Statuses: planned, in_progress, waiting, done
 Priorities: low, normal, high, urgent
@@ -212,8 +215,7 @@ Scheduled tasks live in the `~/.claude/scheduled-tasks/` folder and are file-bas
 ### Creating a task via the API
 
 The helper intentionally has no schedule verb, so creating a schedule (and the
-`PUT /api/schedules/<name>` change mentioned below) goes through curl, with the token on the command line. Archiving
-has no helper verb either.
+`PUT /api/schedules/<name>` change mentioned below) goes through curl, with the token on the command line.
 
 ```bash
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \

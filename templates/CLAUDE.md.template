@@ -199,7 +199,10 @@ Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik; a `kom
 bash scripts/marveen-api.sh kanban-comment KARTYA_ID {{MAIN_AGENT_ID}} komment.txt
 ```
 
-Archiválás: `POST /api/kanban/KARTYA_ID/archive`, üres törzzsel.
+Archiválás:
+```bash
+bash scripts/marveen-api.sh kanban-archive KARTYA_ID
+```
 
 Státuszok: planned, in_progress, waiting, done
 Prioritások: low, normal, high, urgent
@@ -212,8 +215,7 @@ Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-a
 ### Feladat létrehozása API-n keresztül
 
 A segédnek szándékosan nincs ütemezés-igéje, ezért az ütemezés létrehozása (és a lent említett
-`PUT /api/schedules/<név>` módosítás) curl-lal megy, a token a parancssorban van. Az archiválásnak
-sincs segéd-igéje.
+`PUT /api/schedules/<név>` módosítás) curl-lal megy, a token a parancssorban van.
 
 ```bash
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
