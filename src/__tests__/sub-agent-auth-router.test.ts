@@ -11,6 +11,7 @@ const base = {
   isMainAgent: false,
   needsClaudeLogin: true,
   tokenExported: false,
+  hostKeyLaunch: false,
   configuredConfigDir: false,
   sharedLoginPresent: false,
 }
@@ -25,6 +26,7 @@ describe('subAgentClaudeAuthMissing', () => {
     ['the main agent (its own auth step owns it)', { isMainAgent: true }],
     ['an agent that does not use the Claude login', { needsClaudeLogin: false }],
     ['a token is exported (fleet, own file or plan)', { tokenExported: true }],
+    ['a key-only install runs it on the host key (Geri #3045 B1)', { hostKeyLaunch: true }],
     ['an operator-set config dir carries its own login', { configuredConfigDir: true }],
     ['the shared ~/.claude has a login', { sharedLoginPresent: true }],
   ])('is false when %s', (_label, patch) => {
@@ -52,6 +54,9 @@ describe('the launcher wiring (source)', () => {
     expect(block).toContain("tokenExported: oauthTokenEnv !== ''")
     expect(block).toContain('isMainAgent: name === MAIN_AGENT_ID')
     expect(block).toContain('configuredConfigDir,')
+    // B1: the host-key input mirrors the branch that exports ANTHROPIC_API_KEY for a key-only install.
+    expect(block).toContain("hostKeyLaunch: keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile && !planToken")
+    expect(body).toContain("if (!stampKey && keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile && !planToken) {")
   })
 
   it('refuses with an error that names the way out', () => {

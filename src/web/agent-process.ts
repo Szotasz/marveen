@@ -348,6 +348,13 @@ export function hasFleetOauthToken(): boolean {
   }
 }
 
+// HOSTINGERSUBAGENTAUTH1122 (Geri #3045 B1): a key-only install (no fleet token, a non-empty ANTHROPIC_API_KEY in
+// .env). The launcher runs a shared-mode Claude sub-agent on that host key, so the agent does have auth.
+function hostKeyOnlyInstall(): boolean {
+  const env = join(PROJECT_ROOT, '.env')
+  return currentAuthKeyMode(env, FLEET_OAUTH_TOKEN_PATH) === 'keyonly' && hostApiKey(env).trim() !== ''
+}
+
 // HOSTINGERSUBAGENTAUTH1122: the shared ~/.claude holds a Claude login of its own (explicitConfigDirLacksOwnLogin's
 // rules: answers true on macOS, where the login is in the Keychain and a file check proves nothing).
 function sharedClaudeLoginPresent(): boolean {
@@ -365,6 +372,7 @@ export function readSubAgentAuthAdvice(): { claudeAuthMissing: boolean; routerSu
     isMainAgent: false,
     needsClaudeLogin: true,
     tokenExported: hasFleetOauthToken(),
+    hostKeyLaunch: hostKeyOnlyInstall(),
     configuredConfigDir: false,
     sharedLoginPresent: sharedClaudeLoginPresent(),
   })
@@ -3430,6 +3438,9 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
       isMainAgent: name === MAIN_AGENT_ID,
       needsClaudeLogin: isClaude && authMode !== 'api' && authMode !== 'own_team',
       tokenExported: oauthTokenEnv !== '',
+      // The same condition the host-key branch below uses to export ANTHROPIC_API_KEY (keep the two in step).
+      hostKeyLaunch: keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile && !planToken
+        && hostApiKey(join(PROJECT_ROOT, '.env')).trim() !== '',
       configuredConfigDir,
       sharedLoginPresent: sharedClaudeLoginPresent(),
     })) {
