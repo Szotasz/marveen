@@ -189,6 +189,16 @@ async function getToken(): Promise<string> {
   return json.access_token
 }
 
+/**
+ * Mint (or reuse) the access token without any Graph call. The send CLI runs
+ * this before it uses a level-2 approval (APPROVALPRECHECK1122): a credential
+ * or token failure then leaves the approval unused, and sendMail reuses the
+ * cached token.
+ */
+export async function ensureToken(): Promise<void> {
+  await getToken()
+}
+
 async function graphFetch(path: string, init?: RequestInit): Promise<Response> {
   const token = await getToken()
   return withTimeout((signal) =>

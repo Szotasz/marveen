@@ -1200,10 +1200,15 @@ def content_anchor(env: dict) -> str:
 NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
 
 
-def find_and_consume(anchor: str):
+def find_and_consume(anchor: str, consume: bool = True):
     """Return (verdict, detail). verdict: 'allowed' (consumed approval id),
     'pending', 'consumed', 'expired', 'none', 'race'. Raises on any DB problem
-    -- the caller turns that into a fail-closed deny."""
+    -- the caller turns that into a fail-closed deny.
+
+    consume=False only LOOKS (APPROVALPRECHECK1122): 'allowed' then means a
+    live, unused approval exists and was left unused. A sender runs this before
+    its own fallible steps (vault, SMTP login, Graph token), so a missing
+    approval is refused early, and consumes only once delivery can follow."""
     if not os.path.exists(DB_PATH):
         raise OSError(f"approvals DB hianyzik ({DB_PATH})")
     con = sqlite3.connect(DB_PATH, timeout=5)
@@ -1213,6 +1218,8 @@ def find_and_consume(anchor: str):
             "SELECT id FROM approvals WHERE category='email_send' AND status='approved'"
             f" AND content_hash=? AND consumed_at IS NULL AND resolved_at >= {NOW_S}-?"
             " ORDER BY resolved_at DESC LIMIT 1", (anchor, WINDOW_S)).fetchone()
+        if row and not consume:
+            return ("allowed", row[0])
         if row:
             # Atomic one-shot: only the UPDATE that flips NULL->now wins.
             cur = con.execute(
@@ -1644,6 +1651,46 @@ def _load_collect_email_envelope():
     return _load_email_extract().collect_email_envelope
 
 
+def copy_audit(tool: str, tool_input: dict, env: dict):
+    """APPROVALPRECHECK1122: the outgoing-copy audit of THIS letter, run here
+    BEFORE an approval is consumed. Return a warning line or None; deny (exit 2,
+    nothing consumed) when the copy gate would refuse the letter.
+
+    Why here and not only in outgoing-copy-gate.py: Claude Code starts every
+    matching PreToolUse hook in parallel, and one hook's deny does not stop the
+    other's side effect (measured 2026-11-22). A letter the copy gate refused
+    had already used up its approval in this gate, so the owner had to approve
+    the corrected letter AND pay for the refused one. The copy hook stays as
+    is: it also audits drafts and level 3.
+
+    The check is the senders' own (sender_check._copy_check: the copy gate's
+    audit(), loaded by path, its rules file, the email-path policy: a problem,
+    an empty letter or an INVALID rules file refuses, a missing or empty rules
+    file passes with a warning). The text is the one the copy gate audits: the
+    envelope text, except a formatted harder-mail letter, which the copy gate
+    audits on its rendered text."""
+    try:
+        sys.path.insert(0, _HERE)
+        import sender_check
+        text, unreadable = env["text"], None
+        if (tool != "Bash" and tool_input.get("body_format") not in (None, "")
+                and _load_email_extract().is_harder_mail_tool(tool)):
+            text, unreadable = _load_email_extract().collect_harder_mail_text(tool_input)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- SyntaxError, ImportError, anything: fail-closed
+        deny(f"A kapu fuggosege (scripts/hooks/sender_check.py) nem toltheto be ({exc!r}) "
+             "-- fail-closed: a level szovege nem ellenorizheto, a jovahagyas NEM lett felhasznalva.")
+    if unreadable:
+        deny(f"KIMENO-SZOVEG ELLENORZES: a level szovege nem vizsgalhato ({unreadable}). "
+             "A jovahagyas NEM lett felhasznalva.")
+    try:
+        return sender_check._copy_check(text)
+    except sender_check.Refused as exc:
+        deny(f"{exc}\nA jovahagyas NEM lett felhasznalva: a javitott level uj horgonyt kap, "
+             "arra kell jovahagyas.")
+
+
 def classify_tool(tool: str):
     """The tool's mail kind (email_extract.classify_mail_tool), or
     "unclassified" when the extractor does not load. Levels 1 and 3 never read
@@ -1814,6 +1861,12 @@ def main():
              "A hivasbol nem nyerheto ki cimzett (a horgony a cimzettet is fedi).\n"
              "Hasznalj explicit --to flaget vagy MCP to-mezot, aztan kuldd ujra.")
 
+    # APPROVALPRECHECK1122: the copy audit before anything is consumed or
+    # recorded (the standing trace included): a letter the copy gate refuses
+    # must leave its approval unused.
+    copy_warning = copy_audit(tool, tool_input, env)
+    copy_warning = f" {copy_warning}" if copy_warning else ""
+
     # The standing list is checked BEFORE the anchor, and only here -- i.e.
     # only at level 2. Level 1 stays a hard deny: "signal only" must not have a
     # back door, and the owner's plan is to sit at 2. Level 3 never reaches
@@ -1871,7 +1924,7 @@ def main():
                 "szolj neki a csatornan.")
         print(pass_with_warning(
             f"email-approval-gate: {hit} allando cimzett, a kuldes jovahagyas nelkul "
-            f"mehet. Minden mas cimzett tovabbra is jovahagyas-koteles. {note}"))
+            f"mehet. Minden mas cimzett tovabbra is jovahagyas-koteles. {note}" + copy_warning))
         sys.exit(0)
 
     anchor = content_anchor(env)
@@ -1890,7 +1943,7 @@ def main():
     if verdict == "allowed":
         print(pass_with_warning(
             f"email-approval-gate: jovahagyas {detail} felhasznalva (egyszer-hasznalatos), a kuldes mehet."
-            + copy_note))
+            + copy_note + copy_warning))
         sys.exit(0)
 
     reasons = {

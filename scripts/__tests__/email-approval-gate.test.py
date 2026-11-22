@@ -209,6 +209,18 @@ def anchor_from_stderr(err):
     return m.group(1) if m else None
 
 
+def gate_anchor_of(payload):
+    """The anchor the gate computes for a call, from the gate's own functions.
+    A letter the copy audit refuses is denied before the gate prints its
+    anchor (APPROVALPRECHECK1122), so its approval is built from this."""
+    spec = importlib.util.spec_from_file_location("email_approval_gate_anchor", GATE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    env = mod._load_collect_email_envelope()(payload["tool_name"], payload["tool_input"])
+    assert not env["unreadable_reason"], env
+    return mod.content_anchor(env)
+
+
 with tempfile.TemporaryDirectory() as td:
     # --- scope: what the gate must NOT touch --------------------------------
     store = make_store(os.path.join(td, "s0"), level=1)
@@ -723,7 +735,7 @@ with tempfile.TemporaryDirectory() as td:
           reaches_model(out, code), f"out={out[:300]!r}")
 
     # A ket kuldes ket sor: a naplo append-only, nem felulir.
-    run_gate(store4, mcp_send(to="dani@pelda.hu", subject="Masodik"))
+    run_gate(store4, mcp_send(to="dani@pelda.hu", subject="Második"))
     after = open(log_path, encoding="utf-8").read() if os.path.exists(log_path) else ""
     check("keres2: a naplo append-only (ket kuldes = ket sor)",
           len([l for l in after.splitlines() if l.strip()]) == 2, f"log={after!r}")
@@ -796,7 +808,7 @@ with tempfile.TemporaryDirectory() as td:
 
     # Az elesites NEM egyszer-hasznalatos es NEM jar le -- kulonben csak egy
     # level-enkenti jovahagyas lenne mas neven.
-    code2, _, _ = run_gate(store7, mcp_send(to="dani@pelda.hu", subject="Masodik level"))
+    code2, _, _ = run_gate(store7, mcp_send(to="dani@pelda.hu", subject="Második levél"))
     check("keres3: az elesites NEM fogy el (masodik kuldes is atmegy)",
           code2 == 0, f"exit={code2}")
     store8 = make_store(os.path.join(td, "sl9"), level=2)
@@ -1012,9 +1024,24 @@ with tempfile.TemporaryDirectory() as td:
     check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> Bash DENIED, exit 2, naming the file",
           code == 2 and "outgoing-copy-gate.py" in err and "nem toltheto be" in err,
           f"exit={code} err={err[:200]!r}")
-    real, copy = run_gate(store, mcp_send()), run_gate(store, mcp_send(), gate=broken)
-    check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> an MCP send is decided as before (no classifier needed)",
-          (copy[0], copy[2]) == (real[0], real[2]), f"real={real[0]} copy={copy[0]} err={copy[2][:200]!r}")
+    # APPROVALPRECHECK1122: at level 2 the copy audit runs before the consume,
+    # so a broken copy gate is a fail-closed deny that names it, and a live
+    # approval of the letter stays UNCONSUMED (it used to be decided without it).
+    real = run_gate(store, mcp_send())
+    approve(store, anchor_from_stderr(real[2]))
+    copy = run_gate(store, mcp_send(), gate=broken)
+    con = sqlite3.connect(os.path.join(store, "claudeclaw.db"))
+    left = con.execute("SELECT COUNT(*) FROM approvals WHERE consumed_at IS NULL").fetchone()[0]
+    con.close()
+    check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> a level-2 MCP send is DENIED, naming the file, "
+          "and its approval is NOT consumed",
+          copy[0] == 2 and "outgoing-copy-gate.py" in copy[2] and left == 1,
+          f"copy={copy[0]} unconsumed={left} err={copy[2][:200]!r}")
+    for level, want in ((1, 2), (3, 0)):
+        code, _, err = run_gate(make_store(os.path.join(td, f"dep-cg-l{level}"), level=level),
+                                mcp_send(), gate=broken)
+        check(f"HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> level {level} MCP send decided as before (exit {want})",
+              code == want, f"exit={code} err={err[:200]!r}")
 
     # ENVRELAXGATE1104: the window is fixed. An environment value neither breaks the gate nor stretches it.
     code, _, err = run_gate(store, LS, extra_env={"EMAIL_APPROVAL_WINDOW_S": "abc"})
@@ -1371,6 +1398,19 @@ with tempfile.TemporaryDirectory() as td:
     check("harder-mail send with an unknown field -> DENIED as unanchorable",
           code == 2 and "nem horgonyozhato" in err and "attachments" in err, f"exit={code} err={err[:200]!r}")
 
+    # APPROVALPRECHECK1122: a formatted letter is copy-audited on its RENDERED
+    # text before the consume, so these cases need the server's render; a
+    # stand-in like the copy gate's own tests use (tags stripped, entities decoded).
+    render_stub = os.path.join(td, "fake-python")
+    with open(render_stub, "w", encoding="utf-8") as fh:
+        fh.write("#!" + sys.executable + "\n"
+                 "import html, json, re, sys\n"
+                 "assert sys.argv[1:5] == ['-I', '-m', 'harder_mail_mcp.render', '--format'], sys.argv\n"
+                 "body = sys.stdin.read()\n"
+                 "print(json.dumps({'text': html.unescape(re.sub(r'<[^>]+>|[*_]', '', body)), 'html': ''}))\n")
+    os.chmod(render_stub, 0o755)
+    os.environ["HARDER_MAIL_PYTHON"] = render_stub
+
     # Design 6.3b: body_format joins the anchor (only when not plain).
     fresh = hm("send_mail", to=["a@b.hu"], body="Harmadik level.")
     _, _, err = run_gate(store, fresh)
@@ -1392,6 +1432,21 @@ with tempfile.TemporaryDirectory() as td:
           f"exit={code} err={err[:200]!r}")
     _, _, err = run_gate(store, hm("send_mail", to=["a@b.hu"], body="Harmadik level.", body_format="markdown"))
     check("harder-mail: markdown and html anchors differ", anchor_from_stderr(err) not in (None, html_anchor))
+    # The rendered text, not the raw markup, decides: a tag splits "kuldom" so
+    # the RAW text passes the audit, the rendered one does not; it is refused
+    # before the consume, and its approval stays unused.
+    dash_html = hm("send_mail", to=["a@b.hu"], body_format="html",
+                   body="<p>Köszönöm szépen a megkeresést, holnap k<b>uldom</b> a számlát és a részleteket is.</p>")
+    dstore = make_store(os.path.join(td, "hm-dash"), level=2)
+    approve(dstore, gate_anchor_of(dash_html))
+    code, _, err = run_gate(dstore, dash_html)
+    con = sqlite3.connect(os.path.join(dstore, "claudeclaw.db"))
+    left = con.execute("SELECT COUNT(*) FROM approvals WHERE consumed_at IS NULL").fetchone()[0]
+    con.close()
+    check("APPROVALPRECHECK1122: harder-mail html whose RENDERED text the copy audit refuses -> DENIED, "
+          "approval UNCONSUMED", code == 2 and "KIMENO-SZOVEG" in err and left == 1,
+          f"exit={code} unconsumed={left} err={err[:200]!r}")
+    del os.environ["HARDER_MAIL_PYTHON"]
     # The reply anchor is structured: a ':' in the folder cannot collide with another uid.
     _, _, e1 = run_gate(store, hm("send_mail", reply_to_uid="b:7", reply_folder="a"))
     _, _, e2 = run_gate(store, hm("send_mail", reply_to_uid="7", reply_folder="a:b"))
@@ -1606,6 +1661,77 @@ with tempfile.TemporaryDirectory() as td:
     check("a chat server's messages tool is NOT gated as mail (mcp__slack__messages)",
           code == 0, f"exit={code}")
 
+
+# --- APPROVALPRECHECK1122: the copy audit runs BEFORE the consume -----------
+# Claude Code starts the copy gate and this gate in parallel, and a deny by one
+# does not stop the other's side effect: a letter the copy gate refused had
+# already used up its approval here. Negative control (asked for by the owner's
+# operator): a letter the copy audit refuses, at level 2, with a LIVE matching
+# approval, is DENIED and the approval is still UNCONSUMED afterwards.
+def unconsumed_rows(store):
+    con = sqlite3.connect(os.path.join(store, "claudeclaw.db"))
+    n = con.execute("SELECT COUNT(*) FROM approvals WHERE category='email_send' AND consumed_at IS NULL").fetchone()[0]
+    con.close()
+    return n
+
+
+def write_copy_rules(store, value):
+    with open(os.path.join(store, "outgoing-copy-gate-rules.json"), "w", encoding="utf-8") as fh:
+        fh.write(value if isinstance(value, str) else json.dumps(value))
+
+
+with tempfile.TemporaryDirectory() as td:
+    cases = (
+        ("an em dash", mcp_send(body="Kedves Ügyfelünk! Törzs — vége."), {"no_name_rule": True}),
+        ("missing Hungarian accents", mcp_send(subject="Koszonjuk",
+                                               body="Koszonom a levelet, udvozlettel es tehat holnap kuldom."),
+         {"no_name_rule": True}),
+        ("a forbidden name (store rules)", mcp_send(body="Kedves Rossz Nev! Törzs."),
+         {"bad_name_patterns": ["Rossz Nev"], "correction": "Jó Név"}),
+        ("an INVALID rules file", mcp_send(), "{not json"),
+        ("an em dash on the Bash path", {"tool_name": "Bash", "tool_input": {
+            "command": 'sendmail --to a@b.hu --subject "Bash tárgy" --body "Bash törzs — vége."'}},
+         {"no_name_rule": True}),
+    )
+    for i, (label, payload, rules) in enumerate(cases):
+        store = make_store(os.path.join(td, f"pre{i}"), level=2)
+        write_copy_rules(store, rules)
+        approve(store, gate_anchor_of(payload))
+        code, out, err = run_gate(store, payload)
+        check(f"APPROVALPRECHECK1122: {label} + a live approval at level 2 -> DENIED by the approval gate",
+              code == 2 and "KIMENO-SZOVEG" in err, f"exit={code} err={err[:200]!r}")
+        check(f"APPROVALPRECHECK1122: {label} -> the approval is still UNCONSUMED",
+              unconsumed_rows(store) == 1, f"unconsumed={unconsumed_rows(store)}")
+        check(f"APPROVALPRECHECK1122: {label} -> the deny says the approval was not used",
+              "NEM lett felhasznalva" in err, f"err={err[-200:]!r}")
+
+    # Positive case: a clean letter with its approval still consumes exactly once.
+    store = make_store(os.path.join(td, "pre-clean"), level=2)
+    write_copy_rules(store, {"no_name_rule": True})
+    approve(store, gate_anchor_of(mcp_send()))
+    code, out, err = run_gate(store, mcp_send())
+    check("APPROVALPRECHECK1122: a clean letter with its approval -> ALLOWED and consumed",
+          code == 0 and "felhasznalva" in out and unconsumed_rows(store) == 0, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, mcp_send())
+    check("APPROVALPRECHECK1122: ... exactly once (the replay is denied as used)",
+          code == 2 and "FEL LETT HASZNALVA" in err, f"exit={code}")
+
+    # A MISSING rules file passes, with the loud warning on the allow.
+    store = make_store(os.path.join(td, "pre-norules"), level=2)
+    approve(store, gate_anchor_of(mcp_send()))
+    code, out, err = run_gate(store, mcp_send())
+    check("APPROVALPRECHECK1122: a MISSING rules file -> allowed with the HIANYZIK warning, consumed",
+          code == 0 and "HIANYZIK" in out and unconsumed_rows(store) == 0, f"exit={code} out={out[:200]!r}")
+
+    # The standing path: a refused letter leaves no trace and sends nothing.
+    store = make_store(os.path.join(td, "pre-standing"), level=2)
+    write_copy_rules(store, {"no_name_rule": True})
+    write_standing(store, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store, "dani@pelda.hu")
+    code, _, err = run_gate(store, mcp_send(to="dani@pelda.hu", body="Kedves Dani! Törzs — vége."))
+    check("APPROVALPRECHECK1122: a refused letter to a live standing recipient -> DENIED, no trace written",
+          code == 2 and "KIMENO-SZOVEG" in err
+          and not os.path.exists(os.path.join(store, "email-standing-sends.log")), f"exit={code} err={err[:200]!r}")
 
 print()
 if failed:
