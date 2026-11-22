@@ -19,9 +19,10 @@ vi.mock('../settings-store.js', async (orig) => {
 
 import {
   initDatabase, getDb, saveMemory, saveAgentMemory, hybridSearch, generateEmbedding, clearMemoryCache,
-  backfillEmbeddings, parseEmbedKeepAlive,
+  backfillEmbeddings, parseEmbedKeepAlive, embedMaxChars, embedTimeoutMs, DEFAULT_EMBED_MAX_CHARS,
 } from '../db.js'
 import { getSettingDefinition, validateSettingValue } from '../config-registry.js'
+import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 
 let queryVector: number[] = [1, 0, 0]
 let bodies: Array<Record<string, unknown>> = []
@@ -173,5 +174,47 @@ describe('hybrid search fusion weights', () => {
     for (const key of ['EMBED_QUERY_PREFIX', 'EMBED_DOCUMENT_PREFIX', 'EMBED_KEEP_ALIVE']) {
       expect(getSettingDefinition(key)?.default, key).toBe('')
     }
+  })
+})
+
+// #3023: the chunk limit and the deadline of an embedding call are settings, with the previous fixed values as defaults.
+describe('EMBED_MAX_CHARS and EMBED_TIMEOUT_SECONDS', () => {
+  const long = 'x'.repeat(2500)
+
+  it('with nothing set: 2000 characters and 90 s, exactly as before', async () => {
+    await generateEmbedding(long)
+    expect(bodies[0].prompt).toBe('x'.repeat(2000))
+    expect(embedMaxChars()).toBe(DEFAULT_EMBED_MAX_CHARS)
+    expect(embedTimeoutMs()).toBe(TOOL_TIMEOUTS['ollama-embedding'])
+    expect(getSettingDefinition('EMBED_MAX_CHARS')?.default).toBe(DEFAULT_EMBED_MAX_CHARS)
+    expect(getSettingDefinition('EMBED_TIMEOUT_SECONDS')?.default).toBe(TOOL_TIMEOUTS['ollama-embedding'] / 1000)
+  })
+
+  it('EMBED_MAX_CHARS cuts the text after the prefix; EMBED_TIMEOUT_SECONDS sets the deadline', async () => {
+    settingValues.EMBED_MAX_CHARS = '500'
+    settingValues.EMBED_DOCUMENT_PREFIX = 'search_document: '
+    settingValues.EMBED_TIMEOUT_SECONDS = '30'
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+    await generateEmbedding(long, 'document')
+    expect(bodies[0].prompt).toBe('search_document: ' + 'x'.repeat(500))
+    expect(embedTimeoutMs()).toBe(30_000)
+    expect(timeout).toHaveBeenCalledWith(30_000)
+    timeout.mockRestore()
+  })
+
+  it('a value that is not a positive integer falls back to the default', () => {
+    for (const bad of ['', '0', '-5', '1.5', 'abc']) {
+      settingValues.EMBED_MAX_CHARS = bad
+      settingValues.EMBED_TIMEOUT_SECONDS = bad
+      expect(embedMaxChars(), bad).toBe(DEFAULT_EMBED_MAX_CHARS)
+      expect(embedTimeoutMs(), bad).toBe(TOOL_TIMEOUTS['ollama-embedding'])
+    }
+  })
+
+  it('the settings page refuses values outside the range', () => {
+    expect(validateSettingValue(getSettingDefinition('EMBED_MAX_CHARS')!, '50').ok).toBe(false)
+    expect(validateSettingValue(getSettingDefinition('EMBED_MAX_CHARS')!, '500').ok).toBe(true)
+    expect(validateSettingValue(getSettingDefinition('EMBED_TIMEOUT_SECONDS')!, '0').ok).toBe(false)
+    expect(validateSettingValue(getSettingDefinition('EMBED_TIMEOUT_SECONDS')!, '180').ok).toBe(true)
   })
 })
