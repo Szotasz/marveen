@@ -61,11 +61,31 @@ echo ""
 read -rp "$(_t migrate.prompt_choose)" SOURCE_TYPE
 echo ""
 
-read -rp "$(_t migrate.prompt_path)" SOURCE_PATH
-if [ ! -e "$SOURCE_PATH" ]; then
-  echo -e "${ORANGE}Error: $SOURCE_PATH not found${NC}"
-  exit 1
-fi
+# MIGRATEPATHNORM1122: `read` expands nothing, so "~/old-bot" was never found, and a folder dragged onto
+# Terminal arrives as /path/My\ Bot with a trailing space. Normalize those shapes, and ask again (3 tries)
+# instead of ending the run on the first typo.
+normalize_path() {
+  local p="$1"
+  p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"   # trim surrounding whitespace
+  case "$p" in
+    \"*\") p="${p#\"}"; p="${p%\"}" ;;
+    \'*\') p="${p#\'}"; p="${p%\'}" ;;
+    *) p="$(printf '%s' "$p" | sed 's/\\\(.\)/\1/g')" ;;            # drag-and-drop escapes: My\ Bot -> My Bot
+  esac
+  case "$p" in
+    "~") p="$HOME" ;;
+    "~/"*) p="$HOME/${p#\~/}" ;;
+  esac
+  printf '%s' "$p"
+}
+SOURCE_PATH=""
+for _try in 1 2 3; do
+  read -rp "$(_t migrate.prompt_path)" SOURCE_PATH || { echo ""; exit 1; }
+  SOURCE_PATH="$(normalize_path "$SOURCE_PATH")"
+  [ -n "$SOURCE_PATH" ] && [ -e "$SOURCE_PATH" ] && break
+  echo -e "${ORANGE}Error: '${SOURCE_PATH}' not found${NC}"
+  [ "$_try" = 3 ] && exit 1
+done
 
 read -rp "$(_t migrate.prompt_agent)" AGENT_ID
 AGENT_ID=${AGENT_ID:-marveen}

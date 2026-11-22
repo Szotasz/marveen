@@ -3244,16 +3244,22 @@ fi
 echo ""
 echo -e "${BOLD}Korabbi rendszer koltoztetese${NC}"
 echo -e "${DIM}  Ha volt korabbi AI asszisztensed (OpenClaw, egyeni bot), atmigralhato a memoriai.${NC}"
+# MIGRATENONFATAL1122: the migration is optional and runs after every service is up, so its failure
+# (a mistyped source path exits 1) must not report the whole install as failed. Its own step name keeps
+# the error report from blaming the step before it. The English prompt asks (y/n): "y" is accepted too.
+INSTALL_STEP="migration"
 ni_answer DO_MIGRATE fixed "" n ||
 read -rp "$(_t prompt_migrate)" DO_MIGRATE
 DO_MIGRATE=${DO_MIGRATE:-n}
-if [ "$DO_MIGRATE" = "i" ]; then
-  if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
-    "$INSTALL_DIR/scripts/migrate.sh"
-  else
-    warn "A migrate.sh nem talalhato. Hasznald a dashboardot: http://localhost:${WEB_PORT:-3420} -> Koltoztes"
-  fi
-fi
+case "$DO_MIGRATE" in
+  i|I|y|Y)
+    if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
+      "$INSTALL_DIR/scripts/migrate.sh" || warn "$(_t macos.migrate_failed | sed 's/^ *//')"
+    else
+      warn "A migrate.sh nem talalhato. Hasznald a dashboardot: http://localhost:${WEB_PORT:-3420} -> Koltoztes"
+    fi
+    ;;
+esac
 
 # Warn if Telegram pairing was skipped
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
