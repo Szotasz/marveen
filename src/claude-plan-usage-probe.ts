@@ -125,7 +125,7 @@ export function parseRetryAfter(raw: string | null, nowMs: number): number | nul
 }
 
 export const PROBE_URL = 'https://api.anthropic.com/v1/messages'
-export const PROBE_MODEL = 'claude-haiku-4-5-20251001'
+export const PROBE_MODEL = 'claude-haiku-4-5'
 export const PROBE_TIMEOUT_MS = 15_000
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>
