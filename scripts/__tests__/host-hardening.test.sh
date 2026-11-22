@@ -40,7 +40,9 @@ case "$1" in
     echo "permitrootlogin ${STUB_PERMITROOT:-without-password}"
     echo "authorizedkeysfile ${STUB_AKF:-.ssh/authorized_keys .ssh/authorized_keys2}"
     echo "strictmodes ${STUB_STRICT:-yes}"
-    for u in ${STUB_ALLOWUSERS:-}; do echo "allowusers $u"; done ;;
+    set -f
+    for u in ${STUB_ALLOWUSERS:-}; do echo "allowusers $u"; done
+    for u in ${STUB_DENYUSERS:-}; do echo "denyusers $u"; done ;;
 esac
 EOF
 cat > "$BIN/ufw" <<'EOF'
@@ -150,6 +152,13 @@ check "AuthorizedKeysFile elsewhere, key there: exit 0" '[ "$(rc)" = 0 ]'
 # A Match block that keeps passwords open for a user: the drop-in is taken back.
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_MATCH_PW_USER=root run
 check "Match keeps password open for root: exit 1, drop-in gone, named" '[ "$(rc)" = 1 ] && [ ! -e "$DROPIN" ] && grep -q "password login stays open for: root:passwordauthentication=yes" "$T/case/out"'
+
+# Samu (#3031): "DenyUsers *" run from a directory with files must not glob into file names and let root through.
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; mkdir -p "$T/globdir"; touch "$T/globdir/alpha" "$T/globdir/beta"
+(cd "$T/globdir" && STUB_DENYUSERS='*' run)
+check "DenyUsers * from a directory with files: exit 2, root named" '[ "$(rc)" = 2 ] && grep -q "root is in DenyUsers" "$T/case/out" && [ ! -e "$DROPIN" ]'
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_ALLOWUSERS='!bob root' run
+check "a negated pattern: exit 2, said" '[ "$(rc)" = 2 ] && grep -q "negated (!) pattern" "$T/case/out"'
 
 # Dani B3: StrictModes ignores a group-writable key file; with StrictModes off it is used.
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; chmod 664 "$R/root/.ssh/authorized_keys"; run

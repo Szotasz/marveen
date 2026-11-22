@@ -20,6 +20,9 @@
 # confirmed (nothing changed). --yes confirms the listed keys without a prompt.
 # HH_ROOT is a path prefix for the tests (scripts/__tests__/host-hardening.test.sh); empty on a real host.
 set -euo pipefail
+# No pathname expansion anywhere (Samu, #3031): sshd patterns such as "DenyUsers *" go through unquoted expansions and
+# would turn into the names of the files in the current directory.
+set -f
 
 R="${HH_ROOT:-}"
 SSHD_DROPIN="$R/etc/ssh/sshd_config.d/00-marveen-hardening.conf"
@@ -79,6 +82,8 @@ usable_keyfile() { # $1 user, $2 home
   local allow deny ag dg gs
   allow=($(printf '%s\n' "$c" | vals allowusers)); deny=($(printf '%s\n' "$c" | vals denyusers))
   ag=($(printf '%s\n' "$c" | vals allowgroups)); dg=($(printf '%s\n' "$c" | vals denygroups))
+  # A negated pattern (!name) is not evaluated here: refuse the candidate rather than guess.
+  case " ${allow[*]:-} ${deny[*]:-} ${ag[*]:-} ${dg[*]:-} " in *" !"*) why="an Allow/Deny Users/Groups line has a negated (!) pattern, which this check does not evaluate"; return 1 ;; esac
   if [ "${#allow[@]}" -gt 0 ] && ! matches_any "$u" "${allow[@]}"; then why="$u is not in AllowUsers"; return 1; fi
   if [ "${#deny[@]}" -gt 0 ] && matches_any "$u" "${deny[@]}"; then why="$u is in DenyUsers"; return 1; fi
   gs="$(groups_of "$u")"
