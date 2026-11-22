@@ -9,12 +9,14 @@ import { syncBuiltinESMExports } from 'node:module'
 import { basename } from 'node:path'
 
 const AGENT = 'relay-agent' // keep in sync with AGENT in src/__tests__/codex-relay-enforcement.test.ts
-const RACE_NAME = /^race\d+\.json$/
+// Only an entry of requests/ is re-created: the same file name also passes through the daemon's claimed
+// directory (the claim moves it there and removes it again), and nothing must be injected there.
+const RACE_NAME = /[/\\]requests[/\\]race\d+\.json$/
 const injected = new Set()
 const realWriteFileSync = fs.writeFileSync
 
 function maybeInject(path) {
-  if (typeof path !== 'string' || !RACE_NAME.test(basename(path)) || injected.has(path)) return
+  if (typeof path !== 'string' || !RACE_NAME.test(path) || injected.has(path)) return
   injected.add(path)
   const id = basename(path).replace(/\.json$/, '')
   realWriteFileSync(path, JSON.stringify({

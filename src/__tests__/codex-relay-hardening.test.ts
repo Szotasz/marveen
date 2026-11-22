@@ -297,6 +297,59 @@ describe('relay spool dirs must be real directories', () => {
       rmSync(work, { recursive: true, force: true })
     }
   }, 30_000)
+
+  // The claim directory gets the same two gates: a claimed request is MOVED into it, so a symlinked
+  // claimed/ or claimed/<pid>/ would carry the request outside the spool.
+
+  it('refuses to start when claimed/ is pre-created as a symlink, and writes nothing through it', async () => {
+    const work = mkdtempSync(join(tmpdir(), 'marveen-relay-startdir-'))
+    const relayDir = join(work, 'relay')
+    mkdirSync(relayDir, { recursive: true })
+    const victimDir = join(work, 'victim-claimed')
+    mkdirSync(victimDir)
+    symlinkSync(victimDir, join(relayDir, 'claimed'))
+    const daemon = await startDaemon(work, 'http://127.0.0.1:9/')
+    try {
+      const code = await exited(daemon.child)
+      expect(code).not.toBe(0)
+      await waitFor(() => (daemon.stderr().includes('claimed root is not a real directory (symlink)') ? true : null))
+      expect(existsSync(join(relayDir, 'relay.ready'))).toBe(false)
+      expect(readdirSync(victimDir)).toEqual([])
+    } finally {
+      daemon.child.kill('SIGKILL')
+      rmSync(work, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  it('exits mid-run when its own claimed directory is swapped for a symlink between ticks, leaving the victim empty', async () => {
+    const work = mkdtempSync(join(tmpdir(), 'marveen-relay-swapdir-'))
+    const dashboard = await mockDashboard()
+    const daemon = await startDaemon(work, dashboard.url)
+    try {
+      await waitFor(() => {
+        try { return readFileSync(join(daemon.relayDir, 'relay.ready'), 'utf-8').trim() === String(daemon.child.pid) }
+        catch { return null }
+      })
+      const claimedDir = join(daemon.relayDir, 'claimed', String(daemon.child.pid))
+      expect(existsSync(claimedDir)).toBe(true)
+      // One valid request arrives right after the swap: the per-tick re-check must fire before the claim
+      // of the tick that would move it through the symlink.
+      const victimDir = join(work, 'victim-swap')
+      mkdirSync(victimDir)
+      rmSync(claimedDir, { recursive: true, force: true })
+      symlinkSync(victimDir, claimedDir)
+      writeFileSync(join(daemon.requestsDir, 'swap-2.json'), JSON.stringify({ id: 'swap-2', method: 'GET', path: '/api/kanban' }))
+      const code = await exited(daemon.child)
+      expect(code).not.toBe(0)
+      await waitFor(() => (daemon.stderr().includes('claimed dir is not a real directory (symlink)') ? true : null))
+      expect(readdirSync(victimDir)).toEqual([])
+      expect(existsSync(join(daemon.responsesDir, 'swap-2.json'))).toBe(false)
+    } finally {
+      daemon.child.kill('SIGKILL')
+      dashboard.server.close()
+      rmSync(work, { recursive: true, force: true })
+    }
+  }, 30_000)
 })
 
 // ---- mcp-shim.mjs: the Telegram tool is gone ---------------------------------------

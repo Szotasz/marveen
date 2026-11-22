@@ -43,6 +43,7 @@ async function withRelay(
     token: string
     stderr: () => string
     hold: { ms: number }
+    child: ChildProcess
   }) => Promise<void>,
   opts?: { preload?: string },
 ) {
@@ -103,7 +104,7 @@ async function withRelay(
       ids.forEach((id, i) => writeFileSync(join(requestsDir, `${id}.json`), JSON.stringify({ id, ...reqs[i] })))
       return Promise.all(ids.map(collect))
     }
-    await fn({ send, sendMany, seen, cards, listBody, auditPath, relayDir, token, stderr: () => stderrText, hold })
+    await fn({ send, sendMany, seen, cards, listBody, auditPath, relayDir, token, stderr: () => stderrText, hold, child })
   } finally {
     child.kill('SIGTERM')
     await exited(child)
@@ -591,5 +592,101 @@ describe('relay request-file hardening', () => {
       await waitFor(() => seen.some(s => s.body.includes('INJECTED-race1')))
       expect(seen.filter(s => s.body.includes('INJECTED-race1')).length).toBe(1)
     }, { preload: fileURLToPath(new URL('./fixtures/relay-race-preload.mjs', import.meta.url)) })
+  }, T)
+
+  it('H16 two daemons on one spool forward every request exactly once (exclusive claim)', async () => {
+    const work = mkdtempSync(join(tmpdir(), 'marveen-relay-two-'))
+    const relayDir = join(work, 'relay')
+    const requestsDir = join(relayDir, 'requests')
+    const responsesDir = join(relayDir, 'responses')
+    const tokenFile = join(work, 'agent.token')
+    const auditPath = join(work, 'audit.log')
+    const token = `tok-${randomBytes(16).toString('hex')}`
+    writeFileSync(tokenFile, `${token}\n`)
+    const seen: Seen[] = []
+    const server: Server = createServer((req, res) => {
+      let body = ''
+      req.on('data', c => { body += c })
+      req.on('end', () => {
+        seen.push({ method: req.method, url: req.url, body, authorization: req.headers.authorization })
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({ ok: true }))
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    const dashboardUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const args = ['--agent', AGENT, '--relay-dir', relayDir, '--token-file', tokenFile, '--dashboard-url', dashboardUrl, '--audit-log', auditPath]
+    const spawnRelay = () => {
+      const child = spawn(process.execPath, [RELAY_MJS, ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+      child.stdout.on('data', () => {})
+      child.stderr.on('data', () => {})
+      return child
+    }
+    const a = spawnRelay()
+    const b = spawnRelay()
+    try {
+      await waitFor(() => (existsSync(join(relayDir, 'relay.ready')) ? true : null))
+      const N = 20
+      const ids = Array.from({ length: N }, (_, i) => `two-${String(i).padStart(3, '0')}`)
+      ids.forEach(id => writeFileSync(join(requestsDir, `${id}.json`), JSON.stringify({ id, method: 'POST', path: '/api/daily-log', body: { agent_id: AGENT, content: id } })))
+      await Promise.all(ids.map(id => waitFor(() => (existsSync(join(responsesDir, `${id}.json`)) ? id : null))))
+      // One extra pass of the losing daemon's tick: a duplicate forward of an
+      // already-answered request must land on the dashboard before we assert.
+      await new Promise(resolve => setTimeout(resolve, 600))
+      expect(a.exitCode).toBe(null)
+      expect(b.exitCode).toBe(null)
+      const forwards = seen.filter(s => (s.url ?? '').startsWith('/api/daily-log'))
+      expect(forwards).toHaveLength(N)
+      const counts = new Map<string, number>()
+      for (const s of forwards) {
+        const id = JSON.parse(s.body).content
+        counts.set(id, (counts.get(id) ?? 0) + 1)
+      }
+      for (const id of ids) expect(counts.get(id)).toBe(1)
+    } finally {
+      a.kill('SIGTERM')
+      b.kill('SIGTERM')
+      await exited(a)
+      await exited(b)
+      await new Promise(resolve => server.close(resolve))
+      rmSync(work, { recursive: true, force: true })
+    }
+  }, T)
+
+  // The claimed directory is only the turnstile of the claim: the request entry is moved into it and
+  // removed again at once, so no request content rests there, in flight or after the answer.
+  const claimedDirOf = (relayDir: string, pid: number) => join(relayDir, 'claimed', String(pid))
+
+  it('H17 nothing rests in the claimed directory, in flight or after the answer', async () => {
+    await withRelay(async ({ send, seen, relayDir, hold, child }) => {
+      const claimedDir = claimedDirOf(relayDir, child.pid)
+      const requestsDir = join(relayDir, 'requests')
+      hold.ms = 1500
+      const pending = send('POST', '/api/daily-log', { agent_id: AGENT, content: 'claimed-rest' }, 'rest1')
+      await waitFor(() => (seen.some(s => s.body.includes('claimed-rest')) ? true : null))
+      // The forward is in flight here (the dashboard holds its answer): the request is claimed already.
+      expect(existsSync(join(requestsDir, 'rest1.json'))).toBe(false)
+      expect(readdirSync(claimedDir)).toEqual([])
+      expect((await pending).status).toBe(200)
+      const denied = await send('POST', '/api/no-such-route', {}, 'rest2')
+      expect([denied.status, denied.error]).toEqual([403, 'endpoint not allowed'])
+      await sleep(500)
+      expect(existsSync(join(requestsDir, 'rest2.json'))).toBe(false)
+      expect(readdirSync(claimedDir)).toEqual([])
+    })
+  }, T)
+
+  it('H18 the claimed directory of a daemon is removed when the daemon stops', async () => {
+    await withRelay(async ({ relayDir, child }) => {
+      const claimedDir = claimedDirOf(relayDir, child.pid)
+      expect(existsSync(claimedDir)).toBe(true)
+      const stopped = exited(child)
+      child.kill('SIGTERM')
+      expect(await stopped).toBe(0)
+      expect(existsSync(claimedDir)).toBe(false)
+    })
   }, T)
 })
