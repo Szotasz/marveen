@@ -1549,6 +1549,7 @@ window._i18n.en = {
   'agents.online_tip':             'Online: a channel token is configured (own bot). Note: this is not a live connection check, only confirms the token exists.',
   'agents.offline_tip':            'Offline: no channel configured (channel-less, inter-agent only).',
   'agents.context_tip':            'Context window used: {pct}%. Same measurement the context-guard handoff/restart decision is based on.',
+  'agents.context_assumed_tip':    'Assumed window (unknown model): measured against the 200k default. If the real window is smaller, pin it in the context-guard settings, Token limit field.',
   'agents.guard_phase_tip_handoff':    'The context-guard asked this agent for a handoff (its context filled up) and is waiting for HANDOFF.md to be written.',
   'agents.guard_phase_tip_restarting': 'The context-guard restarted this agent and is waiting for the fresh session to come up.',
   'agents.guard_phase_tip_cooldown':   'The context-guard intervened on this agent recently and will not act again until the shown time passes. The number is the time remaining.',

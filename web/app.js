@@ -3586,6 +3586,8 @@ let agents = []
 // the underlying measurement reads each agent's transcript from disk, so it is
 // only worth paying for when the Agents page is actually being (re)drawn.
 let contextGuardPct = {}
+// CTXUNKNOWNMODEL1122: agents whose pct is measured against an ASSUMED window (unknown model, no limitTokens pinned).
+let contextGuardAssumed = {}
 let currentAgent = null
 // API-safe agent id for the currently open detail modal. Sub-agents key off
 // their name; the main agent's detail object carries name:'marveen' for legacy
@@ -4176,9 +4178,11 @@ async function loadAgents() {
     agents = await agentsRes.json()
     if (fedStatus && Array.isArray(fedStatus.peers)) federatedPeerStatus = fedStatus.peers
     contextGuardPct = {}
+    contextGuardAssumed = {}
     if (ctxGuard && Array.isArray(ctxGuard.agents)) {
       for (const g of ctxGuard.agents) {
         if (typeof g.pct === 'number' && isFinite(g.pct)) contextGuardPct[g.agent] = g.pct
+        if (g.assumedWindow === true) contextGuardAssumed[g.agent] = true
       }
     }
     if (marveenRes.ok) {
@@ -4222,7 +4226,10 @@ function contextPctBadgeHtml(agentName) {
   // Mirrors context-guard's own default tiers (actPct 0.90, hardPct 0.97):
   // green under act, amber from act to hard, red at/over hard.
   const tier = pct >= 0.97 ? 'danger' : pct >= 0.90 ? 'warning' : 'ok'
-  return `<span class="agent-ctx-badge ${tier}" title="${escapeHtml(t('agents.context_tip', { pct: pctRound }))}">${pctRound}%</span>`
+  // An assumed window (unknown model) is marked with ~ and says so in the tooltip.
+  const assumed = contextGuardAssumed[agentName] === true
+  const tip = t('agents.context_tip', { pct: pctRound }) + (assumed ? ' ' + t('agents.context_assumed_tip') : '')
+  return `<span class="agent-ctx-badge ${tier}" title="${escapeHtml(tip)}">${assumed ? '~' : ''}${pctRound}%</span>`
 }
 
 // Populate the auto-restart controls + context display from an agent payload.
