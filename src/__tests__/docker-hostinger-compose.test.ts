@@ -90,8 +90,40 @@ describe('docker/hostinger-compose.yml', () => {
   })
 
   it('the marveen service gets the main file\'s environment (MARVEEN_DOMAIN included, DOCKERHTTPS1119)', () => {
-    expect(marveenEnvKeys(HOSTINGER)).toEqual(marveenEnvKeys(MAIN))
+    // HOSTINGERROUTER1122: the one extra key is the platform marker, which the main compose never carries.
+    expect(marveenEnvKeys(HOSTINGER).filter((k) => k !== 'MARVEEN_PLATFORM')).toEqual(marveenEnvKeys(MAIN))
     expect(marveenEnvKeys(HOSTINGER)).toContain('MARVEEN_DOMAIN')
     expect(marveenEnvKeys(HOSTINGER).length).toBeGreaterThan(4)
+  })
+})
+
+// HOSTINGERROUTER1122 (Samu 83036): the Hostinger AI Router is offered only on a Hostinger install. The marker that says
+// so comes from this file alone: the main compose and the native installers must never set it.
+describe('MARVEEN_PLATFORM: only in the Hostinger compose file', () => {
+  it('the Hostinger compose sets it to hostinger by default', () => {
+    expect(marveenEnvKeys(HOSTINGER)).toContain('MARVEEN_PLATFORM')
+    expect(code(HOSTINGER)).toContain('MARVEEN_PLATFORM: ${MARVEEN_PLATFORM:-hostinger}')
+  })
+  it('the main compose and the native installers do not', () => {
+    expect(marveenEnvKeys(MAIN)).not.toContain('MARVEEN_PLATFORM')
+    expect(MAIN).not.toContain('MARVEEN_PLATFORM')
+    for (const f of ['install.sh', 'install-linux.sh', 'install-macos.sh', 'install-lang.sh']) {
+      expect(readFileSync(join(ROOT, f), 'utf-8'), f).not.toContain('MARVEEN_PLATFORM')
+    }
+  })
+})
+
+// HOSTINGERLOCKDOWN1122: the main compose file too. Outside 127.0.0.1 only the caddy service's 80 and 443 may be
+// published (docker/host-hardening.sh lets only these through the DOCKER-USER chain); a second ports: block or a
+// port on 0.0.0.0 would be reachable from the internet before any firewall.
+describe('docker-compose.yml', () => {
+  it('publishes the dashboard only on 127.0.0.1; 80 and 443 only for the caddy service', () => {
+    const c = code(MAIN)
+    const published = [...c.matchAll(/^\s*- "([^"]*:\d+)"$/gm)].map((m) => m[1])
+    expect(published).toEqual(['127.0.0.1:3420:3420', '80:80', '443:443'])
+    const caddy = c.slice(c.indexOf('\n  caddy:\n'))
+    expect(caddy).toContain('- "80:80"')
+    expect(caddy).toContain('- "443:443"')
+    expect(c.match(/^\s*ports:/gm)).toHaveLength(2)
   })
 })

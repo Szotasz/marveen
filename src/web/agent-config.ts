@@ -1073,6 +1073,19 @@ export function readAgentCustomProvider(name: string): string | null {
   return null
 }
 
+/**
+ * HOSTINGERROUTER1122: the context window Claude Code is told for the custom provider's model
+ * (CLAUDE_CODE_MAX_CONTEXT_TOKENS), set only for a model Claude Code does not know. A positive integer, or null.
+ */
+export function readAgentCustomProviderContextTokens(name: string): number | null {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const value = JSON.parse(readFileOr(configPath, '{}')).customProviderContextTokens
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value
+  } catch { /* fall through */ }
+  return null
+}
+
 export function writeAgentCustomProvider(name: string, id: string | null): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}

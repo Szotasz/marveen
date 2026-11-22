@@ -26,6 +26,12 @@ import { teamsAllowlistIds, TEAMS_ALLOWLIST_FILE } from '../../owner-chat.js'
 import type { RouteContext } from './types.js'
 import { deployment } from '../deployment.js'
 import { installLang, switchInstallLanguage, type RunResult } from '../install-lang-switch.js'
+import {
+  applyMainRouter, checkRouterKey, HOSTINGER_ROUTER_DEFAULT_MODEL, HOSTINGER_ROUTER_MODELS, resolveRouterModel, routerAuthPresent,
+  routerAvailable,
+} from '../hostinger-router.js'
+import { writeAgentAuthMode } from '../agent-config.js'
+import { deleteSecret } from '../vault.js'
 
 // DOCKERUX1118: one language switch at a time.
 let langSwitchBusy = false
@@ -173,6 +179,9 @@ async function claudeAuthPresent(): Promise<boolean> {
     if (d?.apiKey) return true
   } catch { /* no / unreadable credentials.json */ }
   if (fleetTokenPresent()) return true
+  // HOSTINGERROUTER1122 (Geri 82904): a router install has no Claude credential, but the main agent can run: its
+  // customProvider is the router, the record exists and the key is in the vault. Otherwise the wizard sticks here.
+  if (routerAuthPresent(MAIN_AGENT_ID)) return true
   if (await keychainHasClaudeCredentials()) return true
   return runningSessionAuthenticated()
 }
@@ -374,6 +383,10 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       // DOCKERUX1118: the wizard shows its language switch in the container only, and compares with the install's.
       deployment: deployment(),
       installLang: installLang(readEnvValue),
+      // HOSTINGERROUTER1122: the router choice in the Claude step, only on a Hostinger install (never preselected).
+      router: routerAvailable(PROJECT_ROOT)
+        ? { available: true, models: [...HOSTINGER_ROUTER_MODELS], defaultModel: HOSTINGER_ROUTER_DEFAULT_MODEL }
+        : { available: false },
     })
     return true
   }
@@ -610,10 +623,50 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       refuseOwner(res, OWNER_SESSION_REQUIRED.error)
       return true
     }
-    let body: { token?: string; apiKey?: string } = {}
+    let body: { token?: string; apiKey?: string; routerKey?: string; routerModel?: string } = {}
     const raw = await readBodyOrRefuse(req, res)
     if (!raw) return true
     try { body = JSON.parse(raw.toString()) as typeof body } catch { /* empty */ }
+
+    // HOSTINGERROUTER1122 (Samu 83036): the Hostinger AI Router, this step's second choice, offered on a Hostinger
+    // install only and never preselected. Same gate as the subscription token above; the same rules and the same write
+    // as the main agent card's switch (hostinger-router.ts). No live probe: every router call is billed in the owner's
+    // credits, so the key is stored unverified and the next launch tells.
+    if (body.routerKey !== undefined) {
+      if (body.token || body.apiKey) { json(res, { error: 'Either the Claude token or the Hostinger AI Router key, not both.', reason: 'mixed' }, 400); return true }
+      if (!routerAvailable(PROJECT_ROOT)) { json(res, { error: 'The Hostinger AI Router is offered only on a Hostinger install.', reason: 'router-unavailable' }, 409); return true }
+      const routerKey = String(body.routerKey ?? '').trim()
+      const bad = checkRouterKey(routerKey)
+      if (bad) { json(res, { error: bad, reason: 'bad-key' }, 400); return true }
+      const model = resolveRouterModel(body.routerModel)
+      if (!model) { json(res, { error: 'Unknown Hostinger AI Router model.', reason: 'bad-model' }, 400); return true }
+      const hadAuthBeforeRouter = await claudeAuthPresent()
+      try {
+        applyMainRouter(MAIN_AGENT_ID, routerKey, model)
+        // an "api" left next to a custom provider is a launch conflict (main-auth.ts)
+        writeAgentAuthMode(MAIN_AGENT_ID, 'shared')
+        // as the main agent card's router switch does (agents.ts): an API key stored earlier leaves the vault
+        // (HOSTINGERROUTERFU1122, Geri N1)
+        deleteSecret(`agent-${MAIN_AGENT_ID}-api-key`)
+      } catch (err) {
+        logger.error({ err: err instanceof Error ? err.message : String(err) }, 'onboarding: failed to save the Hostinger AI Router')
+        json(res, { error: 'Could not save the Hostinger AI Router setting.', reason: 'write-failed' }, 500)
+        return true
+      }
+      // The same restart rule as below: only when the install had no auth, so the running session is a fresh setup one.
+      let routerRestarted = false
+      let routerRestartError: string | null = null
+      if (!hadAuthBeforeRouter && agentsRunning()) {
+        const r = hardRestartMarveenChannels()
+        routerRestarted = r.ok
+        if (!r.ok) routerRestartError = r.error || 'restart failed'
+      }
+      logger.info({ model, restarted: routerRestarted }, 'onboarding: Hostinger AI Router stored for the main agent')
+      json(res, routerRestartError
+        ? { ok: true, router: true, model, verified: false, restarted: false, restartError: routerRestartError, restartCommand: channelsRestartCommand() }
+        : { ok: true, router: true, model, verified: false, restarted: routerRestarted })
+      return true
+    }
     const token = (body.token ?? '').trim()
     const apiKey = (body.apiKey ?? '').trim()
     if (!token && !apiKey) { json(res, { error: 'token vagy apiKey szukseges.', reason: 'missing' }, 400); return true }

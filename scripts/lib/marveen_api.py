@@ -76,6 +76,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-claim <card-id> <agent> [--ttl <seconds>]
   kanban-release <card-id> <agent>
   kanban-comment <card-id> <author> <content-file>
+  kanban-archive <card-id>
   kanban-assign <card-id> <assignee> [--actor <name>]
   agents-list
   agent-restart <agent> [--fresh]
@@ -560,6 +561,12 @@ def build_request(verb, args):
         if not content.strip():
             fail_usage('kanban-comment: the content is empty')
         return 'POST', f'/api/kanban/{card}/comments', {'author': author, 'content': content}, headers, {}
+    if verb == 'kanban-archive':
+        # KANBANARCHIVEVERB1122: the audit's archive step (POST /api/kanban/<id>/archive, empty body).
+        # Without a verb the level-3 archive could only go through a raw token curl, so it did not run.
+        (card,) = positional(args, 1, verb)
+        check(card, CARD_ID_RE, 'card id')
+        return 'POST', f'/api/kanban/{card}/archive', {}, headers, {}
     fail_usage(f'unknown verb: {verb!r}')
 
 

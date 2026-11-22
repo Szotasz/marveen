@@ -83,6 +83,24 @@ describe('channelsRestartCommand: this install\'s unit, per platform', () => {
   })
 })
 
+// HOSTINGERLANGFU1122: in the container there is no systemd/launchd; the tip names supervisor's channels program, run
+// on the host against this container (its hostname is the container id).
+describe('channelsRestartCommand in the Docker container', () => {
+  it('names supervisorctl with the image config, through docker exec on this container', () => {
+    expect(channelsRestartCommand('linux', 'marveen', 'docker', '3f2a9c1b7d4e'))
+      .toBe('docker exec 3f2a9c1b7d4e supervisorctl -c /opt/marveen-docker/supervisord.conf restart channels')
+  })
+  it('a native install keeps its unit (the Docker branch only with deployment docker)', () => {
+    expect(channelsRestartCommand('linux', 'jarvis', 'native', 'h')).toBe('systemctl --user restart jarvis-channels')
+  })
+  it('the supervisor program and the config path it names exist in the image', () => {
+    const conf = readFileSync(new URL('../../docker/supervisord.conf', import.meta.url), 'utf-8')
+    expect(conf).toMatch(/^\[program:channels\]$/m)
+    const dockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf-8')
+    expect(dockerfile).toMatch(/COPY[^\n]*docker\/ \/opt\/marveen-docker\//)
+  })
+})
+
 describe('every restart-failed response carries the command, every message uses it', () => {
   it('the onboarding identity and auth responses add restartCommand next to restartError', () => {
     expect(onboardingSource.match(/restartError, restartCommand: channelsRestartCommand\(\)/g)?.length).toBe(2)

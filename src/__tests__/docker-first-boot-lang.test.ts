@@ -16,7 +16,7 @@ afterEach(() => {
   base = null
 })
 
-function firstBoot(opts: { lang?: string; env?: string; dotLang?: string }) {
+function firstBoot(opts: { lang?: string; env?: string; dotLang?: string; platform?: string; dotPlatform?: string }) {
   base = mkdtempSync(join(tmpdir(), 'dfb-lang-'))
   const install = join(base, 'opt-marveen')
   const home = join(base, 'home')
@@ -24,8 +24,10 @@ function firstBoot(opts: { lang?: string; env?: string; dotLang?: string }) {
   mkdirSync(home, { recursive: true })
   if (opts.env !== undefined) writeFileSync(join(install, '.env'), opts.env, { mode: 0o600 })
   if (opts.dotLang !== undefined) writeFileSync(join(install, '.lang'), opts.dotLang)
+  if (opts.dotPlatform !== undefined) { mkdirSync(join(install, 'store'), { recursive: true }); writeFileSync(join(install, 'store', '.platform'), opts.dotPlatform) }
   const env: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, MARVEEN_INSTALL_DIR: install }
   if (opts.lang !== undefined) env.MARVEEN_LANG = opts.lang
+  if (opts.platform !== undefined) env.MARVEEN_PLATFORM = opts.platform
   const r = spawnSync('bash', [FIRSTBOOT], { env, encoding: 'utf-8' })
   const dotEnv = readFileSync(join(install, '.env'), 'utf-8')
   return {
@@ -34,6 +36,7 @@ function firstBoot(opts: { lang?: string; env?: string; dotLang?: string }) {
     dotEnv,
     langLines: dotEnv.split('\n').filter((l) => l.startsWith('DASHBOARD_LANG=')),
     envMode: statSync(join(install, '.env')).mode & 0o777,
+    platform: (() => { try { return readFileSync(join(install, 'store', '.platform'), 'utf-8') } catch { return null } })(),
   }
 }
 
@@ -69,5 +72,18 @@ describe('docker/first-boot.sh: DASHBOARD_LANG from the install language', () =>
   it.each(['de', '', 'en hu', 'EN'])('a .lang that is not en or hu (%j) writes no line', (dotLang) => {
     const r = firstBoot({ lang: 'en', env: 'MAIN_AGENT_ID=marveen\n', dotLang: dotLang + '\n' })
     expect(r.langLines).toEqual([])
+  })
+})
+
+// HOSTINGERROUTER1122: the platform marker, written once and only when the compose file sets MARVEEN_PLATFORM.
+describe('docker/first-boot.sh: store/.platform', () => {
+  it('MARVEEN_PLATFORM=hostinger writes it', () => {
+    expect(firstBoot({ platform: 'hostinger' }).platform).toBe('hostinger\n')
+  })
+  it('no MARVEEN_PLATFORM (the main compose): no marker', () => {
+    expect(firstBoot({}).platform).toBeNull()
+  })
+  it('an existing marker is kept', () => {
+    expect(firstBoot({ platform: 'hostinger', dotPlatform: 'other\n' }).platform).toBe('other\n')
   })
 })

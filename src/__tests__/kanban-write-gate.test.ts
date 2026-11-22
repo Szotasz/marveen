@@ -109,6 +109,7 @@ describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080
       'bash scripts/marveen-api.sh kanban-claim abcd1234 heartbeat',
       'bash scripts/marveen-api.sh kanban-release abcd1234 heartbeat',
       'bash scripts/marveen-api.sh kanban-comment abcd1234 heartbeat /tmp/c.txt',
+      'bash scripts/marveen-api.sh kanban-archive abcd1234',
     ]) denied(command)
   })
   it('denies the other spellings of the same call', () => {

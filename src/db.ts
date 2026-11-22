@@ -6522,6 +6522,24 @@ function embedKeepAlive(): string | number | undefined {
   try { return parseEmbedKeepAlive(String(getEffectiveSettingValue('EMBED_KEEP_ALIVE') ?? '')) } catch { return undefined }
 }
 
+// #3023: a CPU-only host embeds about 40 ms per character, so a 2000-character chunk can overrun the deadline, and the
+// abandoned calls pile up behind Ollama's single slot. Both limits are settings, read per call; the defaults are the
+// previous fixed values. A value that is not a positive integer (set outside the settings UI) falls back to the default.
+export const DEFAULT_EMBED_MAX_CHARS = 2000
+function positiveIntSetting(key: string): number | undefined {
+  try {
+    const n = Number(getEffectiveSettingValue(key))
+    return Number.isSafeInteger(n) && n > 0 ? n : undefined
+  } catch { return undefined }
+}
+export function embedMaxChars(): number {
+  return positiveIntSetting('EMBED_MAX_CHARS') ?? DEFAULT_EMBED_MAX_CHARS
+}
+export function embedTimeoutMs(): number {
+  const s = positiveIntSetting('EMBED_TIMEOUT_SECONDS')
+  return s !== undefined ? s * 1000 : TOOL_TIMEOUTS['ollama-embedding']
+}
+
 // The embedding key must never reach a log line, so an embedding failure is logged as STRUCTURED fields only: the
 // error name, its code (ECONNREFUSED, ENOTFOUND, ...) and the HTTP status. Neither the error text (fetch can quote
 // the request URL or a rejected header value) nor the EMBED_URL content is ever logged: the key belongs in
@@ -6592,10 +6610,10 @@ export async function generateEmbedding(text: string, kind: 'query' | 'document'
       ...(EMBED_API_KEY ? { redirect: 'error' as const } : {}),
       body: JSON.stringify({
         model: EMBED_MODEL,
-        prompt: embedPrefix(kind) + text.slice(0, 2000),
+        prompt: embedPrefix(kind) + text.slice(0, embedMaxChars()),
         ...(keepAlive !== undefined ? { keep_alive: keepAlive } : {}),
       }),
-      signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
+      signal: AbortSignal.timeout(embedTimeoutMs()),
     })
     // An explicit HTTP error (401 from a wrong or missing EMBED_API_KEY, 404 for a missing model) must
     // surface through the same warn-once path as an unreachable backend; before, its JSON body had no

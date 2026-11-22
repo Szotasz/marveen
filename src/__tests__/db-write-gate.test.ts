@@ -236,6 +236,8 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     'store/.dashboard-totp.json',
     // WDSANDBOXNODE1119 (Dani 81206 B1): the node the dashboard runs on, which the watchdog runs
     'store/.dashboard-node',
+    // HOSTINGERROUTER1122: the platform marker that offers the billed Hostinger AI Router
+    'store/.platform',
     // WDSANDBOXMARKER1119: the per-agent launch files every restart path reads (a file under each directory)
     'store/bash-sandbox/soma.settings.json', 'store/code-mode/soma.on',
     // PR #2912 review B1 (Dani): the scoped board's confinement, read on each request.
@@ -245,7 +247,7 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.dashboard-node', 'store/bash-sandbox', 'store/code-mode', 'store/board-access.json', 'store/colleague-accounts.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.dashboard-node', 'store/.platform', 'store/bash-sandbox', 'store/code-mode', 'store/board-access.json', 'store/colleague-accounts.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json',
       // SUPPORTKULCS1109 D5: the support state of this machine, one folder
