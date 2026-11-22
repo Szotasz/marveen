@@ -75,10 +75,13 @@ return openTerminalModal`,
   ) as (name: string) => void
   const closeModal = () => { classes.delete('active') }
   const flush = () => { while (timers.length) timers.shift()!() }
+  // Run only the oldest pending timer (e.g. the open-time fit, leaving the 150 ms size report pending).
+  const step = () => { timers.shift()?.() }
+  const pending = () => timers.length
   const sizePosts = () => fetches
     .filter((f) => f.url.endsWith('/pane/size'))
     .map((f) => ({ url: f.url, method: f.init?.method, body: JSON.parse(f.init?.body ?? 'null') }))
-  return { run, flush, fitTo, observers, sizePosts, closeModal }
+  return { run, flush, step, pending, fitTo, observers, sizePosts, closeModal }
 }
 
 describe('the agent terminal modal reports its size to the server', () => {
@@ -108,6 +111,17 @@ describe('the agent terminal modal reports its size to the server', () => {
     const posts = s.sizePosts()
     expect(posts.length).toBeGreaterThan(before)
     expect(posts[posts.length - 1].body).toEqual({ cols: 220, rows: 60 })
+  })
+
+  it('a modal closed inside the 150 ms report window posts nothing', () => {
+    const s = setup()
+    s.fitTo.cols = 180; s.fitTo.rows = 48
+    s.run('alpha')
+    s.step() // the open-time fit: schedules the size report
+    expect(s.pending()).toBe(1) // the debounced report is waiting
+    s.closeModal() // Escape / click-outside: closeModal keeps the xterm instance
+    s.flush() // the report fires now, with the overlay hidden
+    expect(s.sizePosts()).toEqual([])
   })
 
   it('a modal closed with Escape (closeModal) before the report fires posts nothing', () => {

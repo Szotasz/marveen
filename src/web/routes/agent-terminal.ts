@@ -67,6 +67,24 @@ function tmux(args: string[]): Promise<void> {
   })
 }
 
+// Same as tmux(), but resolves with the command's stdout (display-message -p).
+function tmuxOutput(args: string[]): Promise<string> {
+  const inv = tmuxInvocationFor(args)
+  return new Promise((resolve, reject) => {
+    execFile(inv.file, inv.args, { timeout: 5000, encoding: 'utf-8' }, (err, stdout) => {
+      if (err) reject(err)
+      else resolve(String(stdout ?? ''))
+    })
+  })
+}
+
+/** Parse a `#{window_width}x#{window_height}` read-back; null when it does not match. */
+export function parseWindowSize(out: string): { cols: number; rows: number } | null {
+  const m = /^(\d+)x(\d+)$/.exec(out.trim())
+  if (!m) return null
+  return { cols: Number(m[1]), rows: Number(m[2]) }
+}
+
 // Sanitize a literal keys payload before it hits send-keys. Motivation
 // (v1.19.0, Szabi UX): on a VPS the operator pastes a token-login link / auth
 // code into the terminal input, and copy-paste often drags along leading/trailing
@@ -267,8 +285,14 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
   //
   // resize-window pins the window's `window-size` option to manual. It is unset
   // right after, back to the inherited value: with no client attached the window
-  // keeps the size just set (measured on tmux 3.7b), and an operator who later
-  // runs `tmux attach` still gets the window sized to their own terminal.
+  // keeps the size just set (measured on tmux 3.6a and 3.7b), and an operator who
+  // later runs `tmux attach` still gets the window sized to their own terminal.
+  //
+  // The main agent's channel session is left out: the route answers
+  // {ok:false, skipped:'main-channels'} without any tmux call, and the modal keeps
+  // the old view. Nothing restores the size when the modal closes, the channel
+  // pane's classifiers have not been measured at a larger size, and a silenced
+  // main session is the most expensive failure.
   //
   // Owner-gated like /keys and /login: it changes the agent's tmux window. It is
   // NOT behind the terminal-input toggle, since it types nothing into the pane.
@@ -289,27 +313,64 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       }, 400)
       return true
     }
+    // The main agent's channel session is never resized (see the comment above):
+    // no tmux call at all, not even the liveness probe of resolveTarget.
+    if (isMainChannelsAgent(name)) {
+      json(res, { ok: false, skipped: 'main-channels' })
+      return true
+    }
     const target = await resolveTarget(name)
     if (!target.exists) { json(res, { error: 'Agent not found' }, 404); return true }
     if (!target.running) { json(res, { error: 'Agent is not running' }, 400); return true }
     // Never below 80x24 (see TERMINAL_COLS_FLOOR): the pane readers need it.
     const applied = appliedTerminalSize(size)
+
+    // The unset of window-size names NO scope flag: tmux takes the scope from the
+    // option's own table entry. window-size is a window option from tmux 3.1 and a
+    // session option in 2.9/3.0, where a `-w` unset would fail right after the
+    // resize was applied and leave the window pinned to manual. Measured on 3.7b
+    // only: without the flag the window option is unset. The 2.9/3.0 behaviour
+    // comes from tmux's option table, not from a run.
+    const unsetWindowSize = ['set-option', '-u', '-t', exactTmuxTarget(target.session), 'window-size']
     try {
       // ONE tmux invocation (`;` is tmux's own command separator, a separate argv
       // element, not a shell token): there is no second process launch that could
-      // fail after the resize and leave window-size pinned to manual.
+      // fail between the resize and the unset.
       await tmux([
         'resize-window', '-t', exactTmuxTarget(target.session), '-x', String(applied.cols), '-y', String(applied.rows),
-        ';', 'set-option', '-w', '-u', '-t', exactTmuxTarget(target.session), 'window-size',
+        ';', ...unsetWindowSize,
       ])
-      // Audit the accepted resize like the sibling routes: the validated numbers
-      // only, never the raw body.
-      logger.info({ name, cols: applied.cols, rows: applied.rows }, 'agent-terminal: pane resized')
-      json(res, { ok: true, cols: applied.cols, rows: applied.rows })
     } catch (err) {
+      // tmux stops a chain at the first failing command, so the resize may have
+      // been applied while the unset was not: retry the unset on its own, best
+      // effort, so the window is not left pinned to manual.
+      await tmux(unsetWindowSize).catch(() => {})
       logger.warn({ err, name, ...applied }, 'agent-terminal: resize-window failed')
       json(res, { error: 'resize failed' }, 500)
+      return true
     }
+
+    // Report the size the window really has. A client attached to it (an
+    // operator's `tmux attach`, a control-mode client, a session that links the
+    // window) keeps its own size once window-size is back to `latest`, so the
+    // requested size may not be what tmux shows. The read-back is a SEPARATE
+    // invocation: on tmux 3.7b a display-message chained after the unset still
+    // printed the requested size, and the next invocation the attached client's.
+    // If the read-back fails, the applied size is reported and a warning logged.
+    let actual = applied
+    try {
+      const out = await tmuxOutput(['display-message', '-p', '-t', exactTmuxTarget(target.session), '#{window_width}x#{window_height}'])
+      const read = parseWindowSize(out)
+      if (read) actual = read
+      else logger.warn({ name }, 'agent-terminal: window size read-back unreadable')
+    } catch (err) {
+      logger.warn({ err, name }, 'agent-terminal: window size read-back failed')
+    }
+    const snappedBack = actual.cols !== applied.cols || actual.rows !== applied.rows
+    // Audit the accepted resize like the sibling routes: the validated numbers
+    // only, never the raw body.
+    logger.info({ name, cols: actual.cols, rows: actual.rows, ...(snappedBack ? { requested: applied, snappedBack } : {}) }, 'agent-terminal: pane resized')
+    json(res, { ok: true, cols: actual.cols, rows: actual.rows, ...(snappedBack ? { snappedBack: true } : {}) })
     return true
   }
 

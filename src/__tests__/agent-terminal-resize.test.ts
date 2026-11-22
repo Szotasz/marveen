@@ -20,10 +20,19 @@ vi.mock('../web/agent-process.js', async (orig) => ({
   isAgentRunning: () => agentRunning,
 }))
 let failTmux = false
+// The read-back's answer (display-message). null: the window has the size of the last resize-window (no client
+// attached); a string: what tmux prints, e.g. an attached client's size.
+let readBackOut: string | null = null
+let lastResize = ''
+// Fail only the tmux invocations this predicate picks.
+let failWhen: ((argv: string[]) => boolean) | null = null
 const execFileMock = vi.fn((...args: unknown[]) => {
+  const argv = args[1] as string[]
   const cb = args.find((a) => typeof a === 'function') as ((e: Error | null, out?: string, err?: string) => void) | undefined
-  if (failTmux) cb?.(new Error('tmux failed (mock)'))
-  else cb?.(null, '', '')
+  if (failTmux || failWhen?.(argv)) { cb?.(new Error('tmux failed (mock)')); return { stdin: { end() {} } } }
+  const r = argv.indexOf('resize-window')
+  if (r >= 0) lastResize = `${argv[r + 4]}x${argv[r + 6]}`
+  cb?.(null, argv.includes('display-message') ? (readBackOut ?? `${lastResize}\n`) : '', '')
   return { stdin: { end() {} } }
 })
 const spawnMock = vi.fn(() => {
@@ -37,6 +46,8 @@ vi.mock('node:child_process', async (orig) => ({
 }))
 
 const { initDatabase } = await import('../db.js')
+const { logger } = await import('../logger.js')
+const infoSpy = vi.spyOn(logger, 'info')
 const { tryHandleAgentTerminal, parseTerminalSize, appliedTerminalSize } = await import('../web/routes/agent-terminal.js')
 const { agentDir } = await import('../web/agent-config.js')
 const { agentSessionName } = await import('../web/agent-process.js')
@@ -79,6 +90,10 @@ beforeAll(() => {
 beforeEach(() => {
   agentRunning = true
   failTmux = false
+  readBackOut = null
+  lastResize = ''
+  failWhen = null
+  infoSpy.mockClear()
   execFileMock.mockClear()
   spawnMock.mockClear()
 })
@@ -109,13 +124,52 @@ describe('POST /api/agents/:name/pane/size', () => {
     expect(r.status).toBe(200)
     expect(r.body).toEqual({ ok: true, cols: 180, rows: 48 })
     const calls = tmuxCalls()
-    // One tmux process: the resize and the unset of window-size, joined by tmux's own `;` separator.
-    expect(calls).toHaveLength(1)
+    // ONE tmux process for the resize and the unset of window-size (tmux's own `;` separator), then the read-back.
+    expect(calls).toHaveLength(2)
     const target = `=${agentSessionName(AGENT)}:`
-    expect(tail(calls[0], 14)).toEqual([
+    // No scope flag on the unset: tmux takes it from the option (window in 3.1+, session in 2.9/3.0).
+    expect(tail(calls[0], 13)).toEqual([
       'resize-window', '-t', target, '-x', '180', '-y', '48',
-      ';', 'set-option', '-w', '-u', '-t', target, 'window-size',
+      ';', 'set-option', '-u', '-t', target, 'window-size',
     ])
+    expect(calls[0]).not.toContain('-w')
+    expect(tail(calls[1], 5)).toEqual(['display-message', '-p', '-t', target, '#{window_width}x#{window_height}'])
+    expect(infoSpy).toHaveBeenCalledWith({ name: AGENT, cols: 180, rows: 48 }, 'agent-terminal: pane resized')
+  })
+
+  it('reports and logs the size read back when an attached client keeps the window at its own size', async () => {
+    readBackOut = '100x30\n'
+    const r = await post(AGENT, { cols: 160, rows: 48 }, OWNER)
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ ok: true, cols: 100, rows: 30, snappedBack: true })
+    expect(infoSpy).toHaveBeenCalledWith(
+      { name: AGENT, cols: 100, rows: 30, requested: { cols: 160, rows: 48 }, snappedBack: true },
+      'agent-terminal: pane resized',
+    )
+  })
+
+  it('a read-back it cannot use reports the applied size (the resize itself went through)', async () => {
+    for (const setup of [() => { readBackOut = 'garbage' }, () => { failWhen = (argv) => argv.includes('display-message') }]) {
+      readBackOut = null; failWhen = null; execFileMock.mockClear()
+      setup()
+      const r = await post(AGENT, { cols: 180, rows: 48 }, OWNER)
+      expect(r.status).toBe(200)
+      expect(r.body).toEqual({ ok: true, cols: 180, rows: 48 })
+    }
+  })
+
+  it('a failed resize chain retries the window-size unset on its own, so the window is not left pinned', async () => {
+    // e.g. tmux 2.9/3.0 refusing a window-scope unset after the resize was applied: the chain fails, the retry runs.
+    failWhen = (argv) => argv.includes('resize-window')
+    const r = await post(AGENT, { cols: 180, rows: 48 }, OWNER)
+    expect(r.status).toBe(500)
+    expect(r.body.error).toBe('resize failed')
+    const calls = tmuxCalls()
+    expect(calls).toHaveLength(2)
+    const target = `=${agentSessionName(AGENT)}:`
+    expect(tail(calls[1], 5)).toEqual(['set-option', '-u', '-t', target, 'window-size'])
+    expect(calls[1]).not.toContain('resize-window')
+    expect(calls.flat()).not.toContain('display-message')
   })
 
   it('never shrinks the window below the tmux default 80x24 (the pane readers need it)', async () => {
@@ -129,7 +183,7 @@ describe('POST /api/agents/:name/pane/size', () => {
       const r = await post(AGENT, req, OWNER)
       expect(r.status, JSON.stringify(req)).toBe(200)
       expect(r.body).toEqual({ ok: true, ...want })
-      expect(tail(tmuxCalls()[0], 14).slice(3, 7)).toEqual(['-x', String(want.cols), '-y', String(want.rows)])
+      expect(tail(tmuxCalls()[0], 13).slice(3, 7)).toEqual(['-x', String(want.cols), '-y', String(want.rows)])
     }
   })
 
@@ -139,10 +193,13 @@ describe('POST /api/agents/:name/pane/size', () => {
     expect(appliedTerminalSize({ cols: 500, rows: 200 })).toEqual({ cols: 500, rows: 200 })
   })
 
-  it('resizes the main agent session too', async () => {
+  it('leaves the main agent channel session out: no tmux call at all', async () => {
     const r = await post(MAIN_AGENT_ID, { cols: 120, rows: 30 }, OWNER)
     expect(r.status).toBe(200)
-    expect(tail(tmuxCalls()[0], 14).slice(0, 7)).toEqual(['resize-window', '-t', `=${MAIN_CHANNELS_SESSION}:`, '-x', '120', '-y', '30'])
+    expect(r.body).toEqual({ ok: false, skipped: 'main-channels' })
+    expect(execFileMock).not.toHaveBeenCalled()
+    expect(spawnMock).not.toHaveBeenCalled() // not even resolveTarget's has-session probe
+    expect(JSON.stringify(execFileMock.mock.calls)).not.toContain(MAIN_CHANNELS_SESSION)
   })
 
   it('refuses an invalid size without calling tmux', async () => {
