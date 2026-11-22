@@ -183,7 +183,7 @@ describe('the router model list (Marveen 83042)', () => {
 
 // Samu 83054: an experimental (non-Claude) model gets min(context_length, 200k) as Claude Code's window; the measured
 // Claude models get nothing (Claude Code's own table); no window known -> not selectable.
-const { routerContextTokens, routerModelSelectable, EXPERIMENTAL_CONTEXT_CAP } = await import('../web/hostinger-router.js')
+const { routerContextTokens, routerModelSelectable, EXPERIMENTAL_CONTEXT_CAP, EXPERIMENTAL_CONTEXT_MIN } = await import('../web/hostinger-router.js')
 describe('the context window of a router model', () => {
   it('caps an experimental model at 200k, leaves the Claude models alone, refuses an unknown window', () => {
     expect(EXPERIMENTAL_CONTEXT_CAP).toBe(200_000)
@@ -194,6 +194,15 @@ describe('the context window of a router model', () => {
     expect(routerContextTokens({ id: 'claude-sonnet-5-5', experimental: false, contextTokens: 1_000_000 })).toBeNull()
     const noWindow = { id: 'x', claude: false, measured: false, experimental: true, contextTokens: null }
     expect([routerContextTokens(noWindow), routerModelSelectable(noWindow)]).toEqual([null, false])
+  })
+  it('an experimental window under the 32k minimum is not offered (Geri N2); the minimum itself is', () => {
+    expect(EXPERIMENTAL_CONTEXT_MIN).toBe(32_000)
+    const tiny = { id: 'tiny', claude: false, measured: false, experimental: true, contextTokens: 1000 }
+    expect([routerContextTokens(tiny), routerModelSelectable(tiny)]).toEqual([null, false])
+    const under = { ...tiny, contextTokens: 31_999 }
+    expect([routerContextTokens(under), routerModelSelectable(under)]).toEqual([null, false])
+    const atMin = { ...tiny, contextTokens: 32_000 }
+    expect([routerContextTokens(atMin), routerModelSelectable(atMin)]).toEqual([32_000, true])
   })
   it('apply writes the window for an experimental model and removes it otherwise; clear removes it', () => {
     applyMainRouter(MAIN, KEY, 'kimi-k3', 200_000)
