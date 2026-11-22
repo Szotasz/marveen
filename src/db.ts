@@ -3470,11 +3470,27 @@ export interface KanbanComment {
 export function sweepArchivedKanbanCards(): number {
   const archiveDays = Number(getEffectiveSettingValue('KANBAN_ARCHIVE_DONE_DAYS'))
   const archiveCutoff = Math.floor(Date.now() / 1000) - archiveDays * 86400
-  const res = db.prepare(
-    "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
-  ).run(Math.floor(Date.now() / 1000), archiveCutoff)
-  return res.changes
+  const now = Math.floor(Date.now() / 1000)
+  // KANBANARCHIVEACTOR1122: one field row per swept card, actor KANBAN_SWEEP_ACTOR, so a card that left
+  // the board on its own is told apart from one an agent or a person archived.
+  return db.transaction(() => {
+    const ids = (db.prepare(
+      "SELECT id FROM kanban_cards WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
+    ).all(archiveCutoff) as { id: string }[]).map(r => r.id)
+    const update = db.prepare('UPDATE kanban_cards SET archived_at = ? WHERE id = ? AND archived_at IS NULL')
+    let n = 0
+    for (const id of ids) {
+      if (update.run(now, id).changes > 0) {
+        recordArchivedAtChange(id, null, now, KANBAN_SWEEP_ACTOR, now)
+        n++
+      }
+    }
+    return n
+  })()
 }
+
+/** The actor of the done-card sweep's archive rows (KANBANARCHIVEACTOR1122). */
+export const KANBAN_SWEEP_ACTOR = 'system:auto-archive'
 
 // last_status_at: when the card LAST CHANGED COLUMN, not when its row was
 // last touched. These are not the same thing, and the difference is a real
@@ -3815,7 +3831,10 @@ export const KANBAN_WRITABLE_FIELDS = [
 // (card f6fba9ec). An audit asking "when did the deadline move, and who moved
 // it" could not be answered: kanban_card_events holds status transitions only,
 // and updated_at moves on any write. Status keeps its own table.
-export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority'] as const
+// KANBANARCHIVEACTOR1122: archived_at joins the set, so an archive or unarchive through a PUT is a row too, with
+// the actor, like the dedicated archive / unarchive functions and the done-card sweep below (#3036 review note 2:
+// "an archive leaves no trace of who did it").
+export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority', 'archived_at'] as const
 
 // dispatched_at guards ONE in_progress spell (one activation -> one wake-up
 // message), it is not a permanent tombstone. The rule every status path shares
@@ -4036,14 +4055,40 @@ export function markKanbanCardDispatched(id: string): boolean {
   return db.prepare('UPDATE kanban_cards SET dispatched_at=? WHERE id=?').run(now, id).changes > 0
 }
 
-export function archiveKanbanCard(id: string): boolean {
-  const now = Math.floor(Date.now() / 1000)
-  return db.prepare('UPDATE kanban_cards SET archived_at=?, updated_at=? WHERE id=?').run(now, now, id).changes > 0
+// KANBANARCHIVEACTOR1122: an archive, an unarchive and the done-card sweep each write one
+// kanban_card_field_events row (field 'archived_at', old and new value as text, the actor), in the same
+// transaction as the update. Before this the row only got a timestamp: who took a card off the board was
+// not recorded anywhere (#3036 review note 2). Same table and shape as the PUT's field rows, so the
+// /field-events route and every reader of it see archive history with no change on their side.
+function recordArchivedAtChange(id: string, before: number | null, after: number | null, actor: string | null, now: number): void {
+  const b = before == null ? null : String(before)
+  const a = after == null ? null : String(after)
+  if (b === a) return
+  db.prepare(
+    'INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(id, 'archived_at', b, a, actor, now)
 }
 
-export function unarchiveKanbanCard(id: string): boolean {
+export function archiveKanbanCard(id: string, actor?: string | null): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare('UPDATE kanban_cards SET archived_at=NULL, updated_at=? WHERE id=? AND archived_at IS NOT NULL').run(now, id).changes > 0
+  return db.transaction(() => {
+    const row = db.prepare('SELECT archived_at FROM kanban_cards WHERE id=?').get(id) as { archived_at: number | null } | undefined
+    if (!row) return false
+    const ok = db.prepare('UPDATE kanban_cards SET archived_at=?, updated_at=? WHERE id=?').run(now, now, id).changes > 0
+    if (ok) recordArchivedAtChange(id, row.archived_at, now, actor ?? null, now)
+    return ok
+  })()
+}
+
+export function unarchiveKanbanCard(id: string, actor?: string | null): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.transaction(() => {
+    const row = db.prepare('SELECT archived_at FROM kanban_cards WHERE id=?').get(id) as { archived_at: number | null } | undefined
+    if (!row) return false
+    const ok = db.prepare('UPDATE kanban_cards SET archived_at=NULL, updated_at=? WHERE id=? AND archived_at IS NOT NULL').run(now, id).changes > 0
+    if (ok) recordArchivedAtChange(id, row.archived_at, null, actor ?? null, now)
+    return ok
+  })()
 }
 
 export interface ArchivedKanbanCard {

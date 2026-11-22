@@ -199,9 +199,9 @@ Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik; a `kom
 bash scripts/marveen-api.sh kanban-comment KARTYA_ID {{MAIN_AGENT_ID}} komment.txt
 ```
 
-Archiválás:
+Archiválás (csak `done` kártyát; az `--actor` a kártya eseménynaplójába írja, ki archiválta):
 ```bash
-bash scripts/marveen-api.sh kanban-archive KARTYA_ID
+bash scripts/marveen-api.sh kanban-archive KARTYA_ID --actor {{MAIN_AGENT_ID}}
 ```
 
 Státuszok: planned, in_progress, waiting, done

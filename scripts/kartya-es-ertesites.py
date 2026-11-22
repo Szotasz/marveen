@@ -238,7 +238,7 @@ def _komment_insert(db, card_id, author, content, now, automated):
 # valaszolni (a #1863 in-progress ideje nalunk emiatt minden kartyara "nincs mervet" irna).
 # A mezo-lista a db.ts KANBAN_AUDITED_FIELDS tukre; a kartya-esemenysor teszt a ketto
 # egyezeset meri, tehat ha a szerver bovul, a teszt szol, nem a hianyzo sor.
-AUDITALT_MEZOK = ('due_date', 'assignee', 'priority')
+AUDITALT_MEZOK = ('due_date', 'assignee', 'priority', 'archived_at')
 
 
 def _tabla_van(db, nev):

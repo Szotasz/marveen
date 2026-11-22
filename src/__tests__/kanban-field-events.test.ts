@@ -45,8 +45,8 @@ beforeEach(() => {
 })
 
 describe('updateKanbanCard: one kanban_card_field_events row per REAL change of due_date, assignee, priority', () => {
-  it('the audited set is exactly due_date, assignee, priority', () => {
-    expect([...KANBAN_AUDITED_FIELDS]).toEqual(['due_date', 'assignee', 'priority'])
+  it('the audited set is exactly due_date, assignee, priority, archived_at (KANBANARCHIVEACTOR1122)', () => {
+    expect([...KANBAN_AUDITED_FIELDS]).toEqual(['due_date', 'assignee', 'priority', 'archived_at'])
   })
 
   it('a due-only change: one row with old, new and actor, NO status event; updated_at still moves (#1257, a control)', () => {
