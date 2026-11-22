@@ -5898,6 +5898,7 @@ async function loadAvailableModels() {
       }
     }
     updateCustomModelIdRow(document.getElementById('editAgentModel'))
+    applySubAgentAuthAdvice(data.subAgentAuth)
     updateCustomModelIdRow(document.getElementById('agentModel'))
   } catch { /* dashboard not available */ }
 }
@@ -5927,6 +5928,26 @@ async function markMissingCustomProvider(sel, providerId, brokenModel = null) {
   const opt = Array.from(sel.options).find(o => o.value === `custom:${providerId}`)
   if (opt) { opt.textContent = '🔧 ' + t('agents.model.provider_deleted', { id: providerId }); opt.dataset.deleted = '1' }
   warn.hidden = sel.selectedOptions[0]?.dataset.deleted !== '1'
+}
+
+// HOSTINGERSUBAGENTAUTH1122: on a router install without a Claude login, the create form says so, and when the main
+// agent runs on the router it preselects the router. Only while the form is still on its default ('inherit'), so a
+// choice the user made is never overwritten. Off a router install the advice is all false and nothing changes.
+function applySubAgentAuthAdvice(advice) {
+  const warn = document.getElementById('agentModelAuthWarn')
+  const sel = document.getElementById('agentModel')
+  if (!warn || !sel) return
+  if (!advice || !advice.claudeAuthMissing) { warn.style.display = 'none'; warn.textContent = ''; return }
+  const routerValue = `custom:${advice.routerProviderId}`
+  const routerOption = [...sel.options].some((o) => o.value === routerValue)
+  if (advice.routerSuggested && routerOption && sel.value === 'inherit') {
+    sel.value = routerValue
+    const idInput = document.getElementById('agentModelCustomModelId')
+    if (idInput && !idInput.value.trim()) idInput.value = advice.routerModel
+    updateCustomModelIdRow(sel)
+  }
+  warn.textContent = t(advice.routerSuggested && routerOption ? 'agents.model.no_claude_auth_router' : 'agents.model.no_claude_auth')
+  warn.style.display = ''
 }
 
 function updateCustomModelIdRow(selectEl) {

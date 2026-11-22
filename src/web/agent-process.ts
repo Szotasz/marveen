@@ -49,6 +49,7 @@ import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, resolveOauthTokenFileSetting } from './agent-oauth-token-file.js'
+import { routerAvailable, routerAuthPresent, subAgentClaudeAuthMissing, HOSTINGER_ROUTER_PROVIDER_ID, HOSTINGER_ROUTER_DEFAULT_MODEL } from './hostinger-router.js'
 import { inheritedAuthUnset } from './inherited-auth-unset.js'
 import { copyProjectsOnce, currentAuthKeyMode, hostApiKey, isolatedDirReady, stampAllowed } from './auth-key-mode.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -344,6 +345,34 @@ export function hasFleetOauthToken(): boolean {
     return existsSync(FLEET_OAUTH_TOKEN_PATH) && readFileSync(FLEET_OAUTH_TOKEN_PATH, 'utf-8').trim().length > 0
   } catch {
     return false
+  }
+}
+
+// HOSTINGERSUBAGENTAUTH1122: the shared ~/.claude holds a Claude login of its own (explicitConfigDirLacksOwnLogin's
+// rules: answers true on macOS, where the login is in the Keychain and a file check proves nothing).
+function sharedClaudeLoginPresent(): boolean {
+  return !explicitConfigDirLacksOwnLogin(join(homedir(), '.claude'))
+}
+
+/**
+ * HOSTINGERSUBAGENTAUTH1122: what the create form needs to know before a new sub-agent is made. On a router install
+ * with no Claude login, a new Claude agent could not sign in: the form warns, and when the main agent already runs on
+ * the router it preselects the router (the user can still change it). Elsewhere both are false and nothing changes.
+ */
+export function readSubAgentAuthAdvice(): { claudeAuthMissing: boolean; routerSuggested: boolean; routerProviderId: string; routerModel: string } {
+  const claudeAuthMissing = subAgentClaudeAuthMissing({
+    routerInstall: routerAvailable(PROJECT_ROOT),
+    isMainAgent: false,
+    needsClaudeLogin: true,
+    tokenExported: hasFleetOauthToken(),
+    configuredConfigDir: false,
+    sharedLoginPresent: sharedClaudeLoginPresent(),
+  })
+  return {
+    claudeAuthMissing,
+    routerSuggested: claudeAuthMissing && routerAuthPresent(MAIN_AGENT_ID),
+    routerProviderId: HOSTINGER_ROUTER_PROVIDER_ID,
+    routerModel: HOSTINGER_ROUTER_DEFAULT_MODEL,
   }
 }
 
@@ -3393,6 +3422,19 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // SUBPLANTOKEN1110: the claim is checked against the launch env itself, like the own-token one above.
     if (planToken && !oauthTokenEnv.includes(`--strict --status ${shSingleQuote(planToken.statusPath)}`)) {
       return refusePlanTokenLaunch(name, planToken.secretId, readAgentClaudePlan(name) ?? undefined, 'plan-token-not-in-launch-env')
+    }
+    // HOSTINGERSUBAGENTAUTH1122: a Claude agent with no way to sign in on a router install is refused, loudly, instead
+    // of starting on the login screen of a shared ~/.claude that holds no login.
+    if (subAgentClaudeAuthMissing({
+      routerInstall: routerAvailable(PROJECT_ROOT),
+      isMainAgent: name === MAIN_AGENT_ID,
+      needsClaudeLogin: isClaude && authMode !== 'api' && authMode !== 'own_team',
+      tokenExported: oauthTokenEnv !== '',
+      configuredConfigDir,
+      sharedLoginPresent: sharedClaudeLoginPresent(),
+    })) {
+      logger.error({ name, model }, 'no-claude-auth: router install without a Claude login -- agent NOT started; switch it to the Hostinger AI Router or add a Claude login')
+      return { ok: false, error: 'no-claude-auth: this install has no Claude subscription login. Switch the agent to the Hostinger AI Router (agent settings, Model), or add a Claude login.' }
     }
     if (ownLaunch.kind === 'own') {
       logger.info(

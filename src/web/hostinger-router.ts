@@ -49,6 +49,25 @@ export function resolveRouterModel(raw: unknown, allowed: readonly string[] = []
   return (HOSTINGER_ROUTER_MODELS as readonly string[]).includes(raw) || allowed.includes(raw) ? raw : null
 }
 
+/**
+ * HOSTINGERSUBAGENTAUTH1122: a Claude sub-agent on a router install that has no way to sign in. A router install
+ * usually has no Claude subscription at all: no fleet setup-token and no login in the shared ~/.claude. Such an
+ * agent would start and sit on the login screen in silence, so the launcher refuses it and the create form warns.
+ * Only on a router install (owner's rule: elsewhere nothing changes), and only for an agent that would use the
+ * Claude login (not authMode 'api', not 'own_team', not a custom provider, not an operator-set config dir).
+ */
+export function subAgentClaudeAuthMissing(f: {
+  routerInstall: boolean
+  isMainAgent: boolean
+  needsClaudeLogin: boolean
+  tokenExported: boolean
+  configuredConfigDir: boolean
+  sharedLoginPresent: boolean
+}): boolean {
+  return f.routerInstall && !f.isMainAgent && f.needsClaudeLogin && !f.tokenExported && !f.configuredConfigDir
+    && !f.sharedLoginPresent
+}
+
 export function routerActive(mainAgentId: string): boolean {
   return readAgentCustomProvider(mainAgentId) === HOSTINGER_ROUTER_PROVIDER_ID
 }
