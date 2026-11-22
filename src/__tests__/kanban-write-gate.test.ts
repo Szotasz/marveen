@@ -110,6 +110,7 @@ describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080
       'bash scripts/marveen-api.sh kanban-release abcd1234 heartbeat',
       'bash scripts/marveen-api.sh kanban-comment abcd1234 heartbeat /tmp/c.txt',
       'bash scripts/marveen-api.sh kanban-archive abcd1234',
+      'bash scripts/marveen-api.sh kanban-assign abcd1234 elvis --actor heartbeat',
     ]) denied(command)
   })
   it('denies the other spellings of the same call', () => {
@@ -132,6 +133,12 @@ describe('kanban-write-gate gateDecision: the marveen-api.sh kanban verbs (#2080
       'P=scripts/lib/marveen_api.py; python3.11 "$P" kanban-create heartbeat high /tmp/t.txt',
       // a backslash-newline is joined by the shell before it splits words
       'bash scripts/marveen-api.sh kanban-mo\\\nve abcd1234 done',
+      // KANBANASSIGNGATE1122: the assign verb in the spellings the #3036 review tried for archive
+      'bash /home/marveen/marveen/scripts/marveen-api.sh kanban-assign abcd1234 elvis',
+      'python3 scripts/lib/marveen_api.py kanban-assign abcd1234 elvis',
+      'H=scripts/marveen-api.sh; bash "$H" kanban-assign abcd1234 elvis',
+      'cd /x && bash scripts/marveen-api.sh kanban-assign abcd1234 elvis | tail -1',
+      'bash scripts/marveen-api.sh kanban-ass\\\nign abcd1234 elvis',
     ]) denied(command)
   })
   it('allows the read verbs, the help and the report message', () => {
