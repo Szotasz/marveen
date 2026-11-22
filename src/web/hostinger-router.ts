@@ -149,6 +149,11 @@ let modelsCache: { at: number; list: RouterModelList } | null = null
  * the context guard's own default for an unknown model, until a measurement (credits, owner GO) raises it here.
  */
 export const EXPERIMENTAL_CONTEXT_CAP = 200_000
+/**
+ * The smallest window an experimental model may have (HOSTINGERROUTERFU1122, Geri N2). Claude Code's own prompt is
+ * about 20k tokens, so a smaller reported window would compact on every turn; such a model is not offered.
+ */
+export const EXPERIMENTAL_CONTEXT_MIN = 32_000
 /** Measured windows, model id -> tokens. Starts empty: a value here only after a measured trial. */
 export const MEASURED_ROUTER_CONTEXT: Readonly<Record<string, number>> = {}
 
@@ -157,10 +162,11 @@ export function routerContextTokens(o: Pick<RouterModelOption, 'id' | 'experimen
   if (!o.experimental) return null
   const measured = MEASURED_ROUTER_CONTEXT[o.id]
   if (measured) return measured
-  return o.contextTokens ? Math.min(o.contextTokens, EXPERIMENTAL_CONTEXT_CAP) : null
+  if (!o.contextTokens || o.contextTokens < EXPERIMENTAL_CONTEXT_MIN) return null
+  return Math.min(o.contextTokens, EXPERIMENTAL_CONTEXT_CAP)
 }
 
-/** An option can be chosen: a Claude model, or an experimental one whose window is known. */
+/** An option can be chosen: a Claude model, or an experimental one whose window is known and at least the minimum. */
 export function routerModelSelectable(o: RouterModelOption): boolean {
   return !o.experimental || routerContextTokens(o) !== null
 }
