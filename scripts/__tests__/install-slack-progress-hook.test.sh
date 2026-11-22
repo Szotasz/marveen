@@ -305,9 +305,10 @@ for h in slack_progress.py slack_progress_clear.py slack_progress_reply_clear.py
 done
 # The PostToolUse matcher is fixed now that it lives in the tracked file; it
 # must stay the loose regex that matches mcp__plugin_slack-channel_slack__reply
-# whatever the plugin id is.
-if grep -q '"matcher": "slack\.\*reply"' "$REPO_SETTINGS"; then
-  pass "repo-shipped: PostToolUse matcher is the loose slack.*reply regex"
+# whatever the plugin id is, and also the react tool: a reaction on the inbound
+# message answers an acknowledgement (D-218 #7).
+if grep -q '"matcher": "slack\.\*(reply|react|edit_message)"' "$REPO_SETTINGS"; then
+  pass "repo-shipped: PostToolUse matcher is the loose slack.*(reply|react|edit_message) regex"
 else
   fail "repo-shipped: PostToolUse matcher missing or too strict"
 fi

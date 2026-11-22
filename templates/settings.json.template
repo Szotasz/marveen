@@ -91,7 +91,7 @@
         ]
       },
       {
-        "matcher": "slack.*reply",
+        "matcher": "slack.*(reply|react|edit_message)",
         "hooks": [
           {
             "type": "command",

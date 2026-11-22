@@ -51,7 +51,7 @@ So each piece stays correct per-agent.
 | Piece | Trigger | Job |
 |-------|---------|-----|
 | `slack_progress.py` | `UserPromptSubmit` hook | If the prompt contains a Slack `<channel … source="plugin:slack-channel:slack" chat_id … >` block, post the placeholder (in-thread via `thread_ts` if present) and record its `ts` in a per-session state file. |
-| `slack_progress_reply_clear.py` | `PostToolUse` hook (matcher `slack.*reply`) | Delete the placeholder(s) for the replied `(chat_id, thread_ts)` the instant a reply is sent. **Primary clear path.** A `chat.delete` that fails retryably keeps the entry, marked `replied` (see below). |
+| `slack_progress_reply_clear.py` | `PostToolUse` hook (matcher `slack.*(reply|react|edit_message)`) | Delete the placeholder(s) for the replied `(chat_id, thread_ts)` the instant a reply is sent. A reaction on the inbound message, or an edit of the thread root the inbound was written in (the D-218 question-status edit), also counts as the answer. **Primary clear path.** A `chat.delete` that fails retryably keeps the entry, marked `replied` (see below). |
 | `slack_progress_clear.py` | `Stop` hook | Delete any placeholder still recorded at turn end, **and enforce delivery** (same one-nudge-then-fallback contract as the Telegram Stop hook). `replied` entries are outside the enforcement; their delete is only retried. |
 | `slack_progress_watchdog.py` | launchd / systemd, ~60s | Scan every agent's per-agent state dir; for an orphan (agent down + placeholder old, OR a hung reply-tool call, OR a generic wedged backstop) either deliver the recovered answer for real, or rewrite the placeholder into the error text via `chat.update`. For a `replied` entry: retry the delete on every tick, deliver nothing. |
 

@@ -58,7 +58,8 @@ delivers anything for it, and here it never takes part in the tier matching
 (it must not shadow a later turn's live placeholder), its delete is just
 retried whenever the chat is replied to again.
 
-Fires after the Slack `reply` tool. Silent on stdout. Honors SLACK_STATE_DIR
+Fires after the Slack `reply` tool, and after `react` / `edit_message` in
+their narrow forms (see split_reacted and split_edited). Silent on stdout. Honors SLACK_STATE_DIR
 (per-agent token) like the others.
 """
 import sys, os, json, http.client, urllib.error, urllib.request
@@ -178,13 +179,58 @@ def split_pending(pend, chat_id, thread_ts):
     return keep, drop
 
 
+def split_reacted(pend, chat_id, reacted_ts):
+    """Return (keep, drop) for a reaction on message reacted_ts in chat_id.
+
+    A reaction on the inbound message itself answers it: a pure acknowledgement
+    is owed no text reply (Bud work rule D-218 #7, CL 2026-10-16), and before
+    this the Stop hook blocked such a turn and then posted the agent's
+    transcript text into the channel as the "fallback answer" (Bud Parker,
+    2026-10-20). Only the entry whose src_ts IS the reacted message counts: a
+    reaction on any other message answers nothing. The chat's `replied`
+    leftovers ride along, as with a reply."""
+    in_chat = [p for p in pend if str(p.get("chat_id")) == chat_id]
+    hit = [p for p in in_chat
+           if not p.get("replied") and norm_ts(p.get("src_ts")) == reacted_ts]
+    if not hit:
+        return pend, []
+    drop = hit + [p for p in in_chat if p.get("replied")]
+    id_set = {id(p) for p in drop}
+    return [p for p in pend if id(p) not in id_set], drop
+
+
+def split_edited(pend, chat_id, edited_ts):
+    """Return (keep, drop) for an edit of message edited_ts in chat_id.
+
+    The question flow of D-218 #5: the Bud asks "Kérdés N" in a DM, CL answers
+    in that question's thread, and the Bud only edits the question's status
+    emoji to ✅. Rule #7 says that edit is the whole answer; before this the
+    Stop hook still demanded a text reply and provoked an acknowledgement-only
+    message (CL, 2026-10-22). Only an entry whose inbound message was written
+    INSIDE the thread rooted at the edited message counts (its thread_ts is
+    the edited ts, its src_ts is not): editing any other message answers
+    nothing. The chat's `replied` leftovers ride along, as with a reply."""
+    in_chat = [p for p in pend if str(p.get("chat_id")) == chat_id]
+    hit = [p for p in in_chat
+           if not p.get("replied")
+           and norm_ts(p.get("thread_ts")) == edited_ts
+           and norm_ts(p.get("src_ts")) != edited_ts]
+    if not hit:
+        return pend, []
+    drop = hit + [p for p in in_chat if p.get("replied")]
+    id_set = {id(p) for p in drop}
+    return [p for p in pend if id(p) not in id_set], drop
+
+
 def main():
     try:
         ev = json.loads(sys.stdin.read())
     except Exception:
         return
     tool = (ev.get("tool_name") or ev.get("toolName") or "").lower()
-    if "slack" not in tool or "reply" not in tool:
+    is_react = "slack" in tool and tool.endswith("__react")
+    is_edit = "slack" in tool and tool.endswith("__edit_message")
+    if not (is_react or is_edit) and ("slack" not in tool or "reply" not in tool):
         return
     ti = ev.get("tool_input") or ev.get("toolInput") or {}
     chat_id = ti.get("chat_id")
@@ -192,6 +238,12 @@ def main():
         return
     chat_id = str(chat_id)
     thread_ts = norm_ts(ti.get("thread_ts"))
+    reacted_ts = norm_ts(ti.get("message_id")) if is_react else None
+    if is_react and reacted_ts is None:
+        return
+    edited_ts = norm_ts(ti.get("message_id")) if is_edit else None
+    if is_edit and edited_ts is None:
+        return
     sid = ev.get("session_id") or "default"
     sd = state_dir()
     path = os.path.join(sd, "progress", f"{sid}.json")
@@ -201,7 +253,12 @@ def main():
         return
     if not isinstance(pend, list):
         return
-    keep, drop = split_pending(pend, chat_id, thread_ts)
+    if is_react:
+        keep, drop = split_reacted(pend, chat_id, reacted_ts)
+    elif is_edit:
+        keep, drop = split_edited(pend, chat_id, edited_ts)
+    else:
+        keep, drop = split_pending(pend, chat_id, thread_ts)
     if not drop:
         return
     tok = token(sd)

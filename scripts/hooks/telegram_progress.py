@@ -111,6 +111,13 @@ def main():
 
     pending = []
     for b in blocks:
+        # Telegram Business events (a partner chat of the connected account, or a
+        # draft outcome) are not addressed to the bot: no placeholder, no reply
+        # enforcement. Otherwise a partner who once started the bot gets a
+        # "Dolgozom rajta" from the bot, and the Stop fallback could deliver the
+        # agent's answer there (Bud Parker test, 2026-10-20).
+        if re.search(r'\bbusiness="1"', b):
+            continue
         cid = re.search(r'\bchat_id="([^"]+)"', b)
         mid = re.search(r'\bmessage_id="([^"]+)"', b)
         # A topic message (TELEGRAM_TOPICS_ENABLED): the placeholder goes into
