@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, existsSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { scratchPatcher } from './helpers/scratch-patcher.js'
+import { copyPatcher, scratchPatcher } from './helpers/scratch-patcher.js'
 import ts from 'typescript'
 import { checkWriteEvidence, findEvidence, readEvidenceLines } from '../web/write-evidence.js'
 import { telegramPluginPatchStatus } from '../web/system-status.js'
@@ -72,13 +72,13 @@ describe('patch-telegram-plugin.py', () => {
   it('2nd run is a no-op: returns `already`, byte-identical, silent', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'patched' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', biz: 'patched', pairtext: 'patched', invitetext: 'patched' } }])
     const once = readFileSync(server, 'utf-8')
     const r = run(['--state', state])
     expect(r.status).toBe(0)
     expect(r.stderr).toBe('')
     expect(readFileSync(server, 'utf-8')).toBe(once)
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', silent: 'already', kbd: 'already', invis: 'already', pairtext: 'already', invitetext: 'already' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', silent: 'already', kbd: 'already', invis: 'already', biz: 'already', pairtext: 'already', invitetext: 'already' } }])
   })
 
   it('a changed anchor (plugin update): loud line, THAT patch left out, the other still applied, exit 0', () => {
@@ -93,7 +93,7 @@ describe('patch-telegram-plugin.py', () => {
     expect(text).toContain("bot.command('help', async ctx => {")
     expect(text).toContain('elsokor922-fwd')
     expect(syntaxErrors(text)).toEqual([])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', biz: 'patched', pairtext: 'patched', invitetext: 'patched' })
   })
 
   // #1530 review: owner write commands need evidence the owner's chat sent
@@ -215,7 +215,7 @@ function patchedWithoutKbd(text: string, topics = false): string {
     "spec = importlib.util.spec_from_file_location('ptp', sys.argv[1])",
     'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
     "m.PATCHES = [p for p in m.PATCHES if p['name'] != 'kbd']",
-    "sys.stdout.write(m.patch_text(sys.stdin.read(), sys.argv[2] == 'on')[0])",
+    "sys.stdout.write(m.patch_text(sys.stdin.read(), sys.argv[2] == 'on', modules_ok={'marveen-business.ts': True})[0])",
   ].join('\n')
   const r = spawnSync('python3', ['-c', code, SCRIPT, topics ? 'on' : 'off'], { input: text, encoding: 'utf-8' })
   expect(r.status).toBe(0)
@@ -426,7 +426,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(r.stderr).toMatch(/LOUD: reply send options not found exactly once.*the kbd patch left out, the reply tool has no buttons/)
     expect(readFileSync(server, 'utf-8')).not.toContain(KBD)
     // silent anchors on the same send-options line, so it is left out with kbd
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched', pairtext: 'patched', invitetext: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched', biz: 'patched', pairtext: 'patched', invitetext: 'patched' })
   })
 
   it('each of the three new anchors, when moved, leaves every kbd line out on a fresh file', () => {
@@ -1456,7 +1456,7 @@ describe('invis: invisible characters (invis1024)', () => {
     expect(text).toContain('MARVEEN-PATCH(cmd920-evid)')
     expect(text).toContain('MARVEEN-PATCH(c67f5f34-kbd)')
     expect(syntaxErrors(text)).toEqual([])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'anchor-missing:channel content', pairtext: 'patched', invitetext: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'anchor-missing:channel content', biz: 'patched', pairtext: 'patched', invitetext: 'patched' })
     const once = readFileSync(server, 'utf-8')
     expect(run(['--state', state]).status).toBe(0)
     expect(readFileSync(server, 'utf-8')).toBe(once)
@@ -1465,7 +1465,7 @@ describe('invis: invisible characters (invis1024)', () => {
   it('the --state JSON names the invis patch like the others', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', biz: 'patched', pairtext: 'patched', invitetext: 'patched' })
   })
 
   it('system-status measures the invis patch on its own, with this marker', () => {
@@ -1473,10 +1473,10 @@ describe('invis: invisible characters (invis1024)', () => {
     try {
       const d = join(dir, 'cache', 'claude-plugins-official', 'telegram', '0.0.7')
       mkdirSync(d, { recursive: true })
-      writeFileSync(join(d, 'server.ts'), ['elsokor922-d4', 'elsokor922-fwd', 'cmd920-evid', 'quote1101', 'tgsilent', 'c67f5f34-kbd', 'pairtext', 'invitetext'].map(m => `// MARVEEN-PATCH(${m}): x`).join('\n'))
+      writeFileSync(join(d, 'server.ts'), ['elsokor922-d4', 'elsokor922-fwd', 'cmd920-evid', 'quote1101', 'tgsilent', 'c67f5f34-kbd', 'pairtext', 'invitetext', 'biz'].map(m => `// MARVEEN-PATCH(${m}): x`).join('\n'))
       const state = join(dir, 'state.json')
       writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-        { version: '0.0.7', status: 'patched', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', kbd: 'already', invis: 'anchor-missing:channel content', pairtext: 'already', invitetext: 'already' } },
+        { version: '0.0.7', status: 'patched', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', kbd: 'already', invis: 'anchor-missing:channel content', biz: 'already', pairtext: 'already', invitetext: 'already' } },
       ] }))
       expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (láthatatlan karakterek): 0.0.7 (anchor-missing:channel content) · a bejövő szövegben maradnak a láthatatlan karakterek, a modell látja őket')
     } finally { rmSync(dir, { recursive: true, force: true }) }
@@ -1815,7 +1815,7 @@ describe("the install's own settings reach the patch (no switch, as channels.sh 
     install = mkdtempSync(join(tmpdir(), 'tg-install-'))
     mkdirSync(join(install, 'scripts'))
     mkdirSync(join(install, 'store'))
-    copyFileSync(SCRIPT, join(install, 'scripts', 'patch-telegram-plugin.py'))
+    copyPatcher(join(install, 'scripts', 'patch-telegram-plugin.py'))
   })
   afterEach(() => rmSync(install, { recursive: true, force: true }))
 
@@ -1891,7 +1891,7 @@ describe('kbd: the button toasts follow AGENT_TEXT_LANG', () => {
       "spec = importlib.util.spec_from_file_location('ptp', sys.argv[1])",
       'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
       "kw = {} if sys.argv[2] == '-' else {'lang': sys.argv[2]}",
-      "sys.stdout.write(m.patch_text(sys.stdin.read(), False, sys.argv[4] == 'on', max_age_hours=int(sys.argv[3]), **kw)[0])",
+      "sys.stdout.write(m.patch_text(sys.stdin.read(), False, sys.argv[4] == 'on', max_age_hours=int(sys.argv[3]), modules_ok={'marveen-business.ts': True}, **kw)[0])",
     ].join('\n')
     const r = spawnSync('python3', ['-c', code, SCRIPT, lang ?? '-', String(maxAge), buttons ? 'on' : 'off'],
       { input: text, encoding: 'utf-8', timeout: 30_000 })
@@ -1975,7 +1975,7 @@ describe('kbd: the button toasts follow AGENT_TEXT_LANG', () => {
     try {
       mkdirSync(join(install, 'scripts'))
       mkdirSync(join(install, 'store'))
-      copyFileSync(SCRIPT, join(install, 'scripts', 'patch-telegram-plugin.py'))
+      copyPatcher(join(install, 'scripts', 'patch-telegram-plugin.py'))
       writeFileSync(join(install, '.env'), 'AGENT_TEXT_LANG=en\n')
       const state = join(install, 'store', 'telegram-plugin-patch.json')
       const r = spawnSync('python3', [join(install, 'scripts', 'patch-telegram-plugin.py'), '--state', state, cache],
@@ -1986,5 +1986,58 @@ describe('kbd: the button toasts follow AGENT_TEXT_LANG', () => {
     } finally {
       rmSync(install, { recursive: true, force: true })
     }
+  })
+})
+
+const BIZ = 'MARVEEN-PATCH(biz)'
+const BIZ_SRC = join(ROOT, 'scripts', 'telegram-plugin', 'marveen-business.ts')
+
+describe('biz: Telegram Business messages and approved drafts (Bud Parker)', () => {
+  it('four marked lines in the right places, the module copied next to server.ts, the file still parses', () => {
+    expect(run().status).toBe(0)
+    const text = readFileSync(server, 'utf-8')
+    const lines = text.split('\n')
+    const marked = lines.filter(l => l.includes(BIZ))
+    expect(marked).toHaveLength(4)
+    expect(lines[lines.findIndex(l => l.startsWith("import { join, extname, sep } from 'path'")) + 1])
+      .toMatch(/^import \{ registerBusiness \} from '\.\/marveen-business\.ts' /)
+    expect(lines[lines.findIndex(l => l.startsWith('await mcp.connect(')) - 1])
+      .toMatch(/^const marveenBiz = registerBusiness\(\{ bot, mcp, loadAccess, stateDir: STATE_DIR \}\) /)
+    expect(lines[lines.findIndex(l => /^ *name: 'edit_message',$/.test(l)) - 2]).toMatch(/^ *\.\.\.marveenBiz\.tools, /)
+    expect(lines[lines.findIndex(l => /^ *case 'react': \{$/.test(l)) - 1]).toMatch(/^ *case 'business_draft': return await marveenBiz\.callTool\(req\.params\.name, args\) /)
+    // no allowed_updates line: the module merges the business types in at bot.start (tgreact1119 sets one too)
+    expect(lines.filter(l => l.includes('allowed_updates'))).toEqual([])
+    expect(syntaxErrors(text)).toEqual([])
+    expect(readFileSync(join(server, '..', 'marveen-business.ts'), 'utf-8')).toBe(readFileSync(BIZ_SRC, 'utf-8'))
+  })
+
+  it('a module that cannot be installed leaves the whole patch out (no import of a missing file), loudly', () => {
+    mkdirSync(join(server, '..', 'marveen-business.ts'))  // a directory where the file should go: the copy fails
+    const state = join(cache, 'state.json')
+    const r = run(['--state', state])
+    expect(r.status).toBe(0)
+    expect(r.stderr).toMatch(/cannot write module/)
+    expect(r.stderr).toMatch(/LOUD: marveen-business\.ts not installed .*the biz patch left out/)
+    expect(readFileSync(server, 'utf-8')).not.toContain(BIZ)
+    expect(readState(state).files[0].patches.biz).toBe('anchor-missing:marveen-business.ts not installed')
+  })
+
+  it('all or nothing: one moved biz anchor leaves all four lines out; the other patches still applied', () => {
+    writeFileSync(server, readFileSync(FIXTURE, 'utf-8').replace('await mcp.connect(new StdioServerTransport())', 'await mcp.connect(new StdioServerTransport(), )'))
+    const state = join(cache, 'state.json')
+    run(['--state', state])
+    expect(readFileSync(server, 'utf-8')).not.toContain(BIZ)
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', biz: 'anchor-missing:mcp connect', pairtext: 'patched', invitetext: 'patched' })
+  })
+
+  it('a changed module source is re-copied on the next run, server.ts untouched', () => {
+    run()
+    const dst = join(server, '..', 'marveen-business.ts')
+    writeFileSync(dst, '// stale\n')
+    const before = readFileSync(server, 'utf-8')
+    const r = run()
+    expect(r.stderr).toMatch(/installed .*marveen-business\.ts/)
+    expect(readFileSync(dst, 'utf-8')).toBe(readFileSync(BIZ_SRC, 'utf-8'))
+    expect(readFileSync(server, 'utf-8')).toBe(before)
   })
 })

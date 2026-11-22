@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { copyPatcher } from './helpers/scratch-patcher.js'
 import ts from 'typescript'
 import { createHash } from 'node:crypto'
 
@@ -34,7 +35,7 @@ beforeEach(() => {
   mkdirSync(join(install, 'scripts'))
   mkdirSync(join(install, 'store'))
   script = join(install, 'scripts', 'patch-telegram-plugin.py')
-  copyFileSync(SCRIPT, script)
+  copyPatcher(script)
   cache = join(install, 'cache')
   const dir = join(cache, 'claude-plugins-official', 'telegram', '0.0.7')
   mkdirSync(dir, { recursive: true })
