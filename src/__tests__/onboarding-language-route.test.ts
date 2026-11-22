@@ -191,6 +191,16 @@ describe('POST /api/onboarding/language (DOCKERUX1118)', () => {
     expect([again.status, again.json.restarted]).toEqual([200, true])
   })
 
+  it('the channel is paired during the switch (Dani 82930): switched, 409 paired_during_switch, no restart', async () => {
+    writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
+    // The seeds' step runs inside the switch, after the persona writes: it pairs the channel there.
+    writeFileSync(SEEDS, `#!/bin/bash\nprintf '{"allowFrom":["12345"]}' > '${join(TG, 'access.json')}'\necho "seed updated .claude/skills/alpha/SKILL.md"\n`)
+    const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([r.status, r.json.ok, r.json.reason, r.json.restarted]).toEqual([409, false, 'paired_during_switch', false])
+    expect(readFileSync(join(tmpRoot, '.lang'), 'utf-8')).toBe('hu\n')
+    expect(H.restart.calls).toBe(0)
+  })
+
   it('the switch itself fails over the setup session: no restart; the retry finds it switched and pays the owed restart once', async () => {
     writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
     writeFileSync(SEEDS, '#!/bin/bash\nexit 3\n')

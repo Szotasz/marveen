@@ -470,6 +470,12 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
           langRestartOwed = true
           logger.error({ lang, langFile }, 'onboarding: the switched language did not read back; the session is not restarted')
           json(res, { ...result, ok: false, restarted: false, error: 'The install language did not read back after the switch, so the main agent was not restarted.', reason: 'readback-failed' }, 500)
+        } else if (paired()) {
+          // Dani 82930: the channel was paired during the switch (it takes seconds), so the session may act on messages
+          // now: not restarted. The files are switched; the restart stays owed.
+          langRestartOwed = true
+          logger.warn('onboarding: the channel was paired during the language switch; the main agent is not restarted')
+          json(res, { ...result, ok: false, restarted: false, error: 'The install language was switched, but the channel was paired meanwhile, so the main agent was not restarted. Restart it to load the new language.', reason: 'paired_during_switch' }, 409)
         } else {
           const r = hardRestartMarveenChannels()
           if (r.ok) {
