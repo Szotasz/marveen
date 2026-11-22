@@ -19,6 +19,25 @@
 # `awk -v`, because -v would rewrite backslash escapes in it. Plain POSIX awk,
 # so it behaves the same under mawk, gawk and the BSD awk of macOS.
 
+# nfc_lines: stdin -> stdout, every line in Unicode NFC. Both sides of the
+# archive check go through it, because the two sides do not agree on the form
+# of an accented name: measured 2026-11-22, the macOS bsdtar listing carried
+# `hmke-ugyintezés` decomposed (NFD, e + U+0301) while the manifest, built from
+# the file system, carried it composed (NFC). A literal comparison then missed
+# all 25 files under that directory although every one was in the archive.
+# Bytes that are not valid UTF-8 pass through unchanged (surrogateescape).
+# Without python3 the lines pass through as they are: the check is then as
+# strict as before, never looser.
+nfc_lines() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -I -c 'import sys, unicodedata
+for line in sys.stdin.buffer:
+    sys.stdout.buffer.write(unicodedata.normalize("NFC", line.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape"))'
+  else
+    cat
+  fi
+}
+
 archive_list_has() {
   W="$2" awk 'BEGIN { w = ENVIRON["W"]; n = length(w) }
     n > 0 && substr($0, 1, n) == w && (length($0) == n || substr($0, n + 1, 1) == "/") { found = 1; exit }
