@@ -3,7 +3,7 @@
 //   GET    /api/agent-packages/credential  -> {connected:false} | {connected:true, label, deviceTokenId, connectedAt}
 //   POST   /api/agent-packages/credential  {code:"PPPP-SSSSSSSS"} -> the GET shape + replaced, replacedDeviceTokenId
 //   DELETE /api/agent-packages/credential  -> {ok:true, connected:false, remoteRevoked:false}
-//   GET    /api/agent-packages/catalog     -> {catalog: <the publishing side's body>}
+//   GET    /api/agent-packages/catalog     -> {catalog: <the publishing side's body>, knownKids: [<kid>]}
 //   POST   /api/agents/install-package     {slug} -> {ok, name, version, modelHintApplied, skillReport} (PR-I3, plan 6.1)
 //
 // Every route takes the owner (mayActAsOwner) BEFORE it reads a body: the
@@ -140,6 +140,16 @@ function nameStateRefusal(slug: string): Answer | null {
 
 const UNSUPPORTED_LAYOUT_MESSAGE = 'Package install is not available on this layout: the agents folder and the store folder are on different volumes. Put both on one volume, then install again.'
 
+/** The catalog row of `slug`, or null (the catalog body is the publishing side's, so every field is checked). */
+function catalogEntry(catalog: Record<string, unknown>, slug: string): Record<string, unknown> | null {
+  const list = catalog.packages
+  if (!Array.isArray(list)) return null
+  for (const p of list) {
+    if (p !== null && typeof p === 'object' && !Array.isArray(p) && (p as Record<string, unknown>).slug === slug) return p as Record<string, unknown>
+  }
+  return null
+}
+
 /**
  * POST /api/agents/install-package (plan 6.1). Steps 1-5 are local and download nothing: on a trial account the
  * first successful download fixes the one pick, so every local refusal comes first.
@@ -172,6 +182,14 @@ async function installPackage(ctx: RouteContext, deps: PackageDeps): Promise<voi
     json(res, { error: 'download_failed', reason: 'not_configured' }, 502)
     return
   }
+  // 5b. the signing key, BEFORE the download (MIOAGENTB4-1122, Samu D2): on a trial account the download fixes the
+  // one pick, so a package this build's keys would refuse must be refused here. The publishing side cannot know our
+  // keys; the catalog names each package's kid. Fail-closed: no catalog row or no kid means no download.
+  const cat = await deps.remote.catalog({ fetchImpl: deps.fetchImpl, now: deps.now })
+  if (!cat.ok) { json(res, cat.refusal.body, cat.refusal.status); return }
+  const entry = catalogEntry(cat.catalog, slug)
+  if (entry === null) { json(res, { error: 'package_not_found' }, 404); return }
+  if (typeof entry.kid !== 'string' || !deps.keys.some((k) => k.kid === entry.kid)) { json(res, { error: 'unknown_kid' }, 409); return }
   // 6. the download.
   const dl = await deps.remote.download(slug, ownVersion, { fetchImpl: deps.fetchImpl, now: deps.now })
   if (!dl.ok) { json(res, dl.refusal.body, dl.refusal.status); return }
@@ -265,7 +283,9 @@ export async function tryHandleAgentPackages(ctx: RouteContext, deps: PackageDep
     if (!mayActAsOwner(ctx.auth, req)) { refuseOwner(res); return true }
     const r = await deps.remote.catalog({ fetchImpl: deps.fetchImpl, now: deps.now })
     if (!r.ok) { json(res, r.refusal.body, r.refusal.status); return true }
-    json(res, { catalog: r.catalog })
+    // MIOAGENTB4-1122 (Samu D2): the kids this build accepts, BESIDE the unchanged body, so the dashboard can lock a
+    // card before a download. Public key ids, not secrets; the server still refuses on its own (5b).
+    json(res, { catalog: r.catalog, knownKids: deps.keys.map((k) => k.kid) })
     return true
   }
 
