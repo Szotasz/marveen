@@ -625,11 +625,20 @@ describe('relay request-file hardening', () => {
       child.stderr.on('data', () => {})
       return child
     }
+    // The orphan case, not a simultaneous start: `b` starts only once the ready marker names `a`,
+    // and then takes the marker over. Two daemons started at the same moment race on the marker's
+    // exclusive create and the loser exits -- a start-order artefact, not the claim under test.
+    const readyPid = () => { try { return readFileSync(join(relayDir, 'relay.ready'), 'utf8').trim() } catch { return null } }
     const a = spawnRelay()
-    const b = spawnRelay()
+    const started: ChildProcess[] = [a]
     try {
-      await waitFor(() => (existsSync(join(relayDir, 'relay.ready')) ? true : null))
-      const N = 20
+      await waitFor(() => readyPid() === String(a.pid))
+      const b = spawnRelay()
+      started.push(b)
+      await waitFor(() => readyPid() === String(b.pid))
+      // At most the relay's per-daemon write limit (WRITE_LIMIT, 30 per minute): one daemon may claim
+      // every file, and past the limit it answers 429 without forwarding.
+      const N = 30
       const ids = Array.from({ length: N }, (_, i) => `two-${String(i).padStart(3, '0')}`)
       ids.forEach(id => writeFileSync(join(requestsDir, `${id}.json`), JSON.stringify({ id, method: 'POST', path: '/api/daily-log', body: { agent_id: AGENT, content: id } })))
       await Promise.all(ids.map(id => waitFor(() => (existsSync(join(responsesDir, `${id}.json`)) ? id : null))))
@@ -647,10 +656,8 @@ describe('relay request-file hardening', () => {
       }
       for (const id of ids) expect(counts.get(id)).toBe(1)
     } finally {
-      a.kill('SIGTERM')
-      b.kill('SIGTERM')
-      await exited(a)
-      await exited(b)
+      for (const child of started) child.kill('SIGTERM')
+      for (const child of started) await exited(child)
       await new Promise(resolve => server.close(resolve))
       rmSync(work, { recursive: true, force: true })
     }
