@@ -29,6 +29,8 @@ const htmlKeys = (): Set<string> => {
   return keys
 }
 const HUNGARIAN_LETTERS = /[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/
+// HOSTINGERLANGFU1122 (Samu 82940): the unaccented Hungarian "pl." (for example) slipped past the letter check.
+const looksHungarian = (v: string) => HUNGARIAN_LETTERS.test(v) || /(^|[\s(])pl\.\s/.test(v)
 
 describe('HOSTINGERI18N1122: index.html i18n keys', () => {
   const keys = htmlKeys()
@@ -76,9 +78,9 @@ const rawHungarian = (): string[] => {
     if (n.nodeName === 'script' || n.nodeName === 'style') return
     const cov = covered || has(n, 'data-i18n') || has(n, 'data-i18n-html')
     for (const a of n.attrs ?? []) {
-      if (['placeholder', 'title', 'aria-label'].includes(a.name) && HUNGARIAN_LETTERS.test(a.value) && !has(n, `data-i18n-${a.name}`)) out.push(`${a.name}="${a.value}"`)
+      if (['placeholder', 'title', 'aria-label'].includes(a.name) && looksHungarian(a.value) && !has(n, `data-i18n-${a.name}`)) out.push(`${a.name}="${a.value}"`)
     }
-    if (n.nodeName === '#text' && !cov && HUNGARIAN_LETTERS.test(n.value ?? '')) {
+    if (n.nodeName === '#text' && !cov && looksHungarian(n.value ?? '')) {
       const text = (n.value ?? '').trim().replace(/\s+/g, ' ')
       if (!TRANSLATED_BY_JS.has(text) && !(text.startsWith('A szerep és a beosztott'))) out.push(text)
     }
