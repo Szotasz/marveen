@@ -2,8 +2,9 @@
 # HOSTINGERLOCKDOWN1122: machine-level lock-down of a Docker host that runs Marveen (Ubuntu/Debian, run on the HOST,
 # not in the container). Run as root. Idempotent: a second run changes nothing and says so.
 #
-#   1. Key guard: if neither root nor any sudo user has a key in authorized_keys, it stops before changing anything:
-#      turning off password SSH would lock out a customer who signs in with a password.
+#   1. Key guard: unless root or a sudo user can really sign in with a key (sshd -T -C), it stops before changing
+#      anything: turning off password SSH would lock out a customer who signs in with a password. The usable keys are
+#      listed (fingerprint and comment) and need an explicit yes (or --yes): a provider's key is not the customer's.
 #   2. Firewall (ufw): incoming only the SSH port(s) sshd listens on, 80 and 443. Docker-published ports bypass ufw, so
 #      the DOCKER-USER chain (kept in /etc/ufw/after.rules, so it survives a reboot) drops everything that comes in on
 #      the external interface to a container except 80/443 and replies.
@@ -15,7 +16,8 @@
 # One line, pinned to a release (docs/docker.md, "Lock down the server"):
 #   curl -fsSLo host-hardening.sh https://raw.githubusercontent.com/Szotasz/marveen/v<version>/docker/host-hardening.sh && sudo bash host-hardening.sh
 #
-# Exit: 0 done (or nothing to do), 1 a step failed (said which), 2 the key guard stopped it (nothing changed).
+# Exit: 0 done (or nothing to do), 1 a step failed (said which), 2 the key guard stopped it or the keys were not
+# confirmed (nothing changed). --yes confirms the listed keys without a prompt.
 # HH_ROOT is a path prefix for the tests (scripts/__tests__/host-hardening.test.sh); empty on a real host.
 set -euo pipefail
 
@@ -36,7 +38,12 @@ if [ -z "$R" ] && [ "$(id -u)" != 0 ]; then
 fi
 
 # --- 1. key guard -----------------------------------------------------------------------------------------------
-# root, every member of the sudo/admin/wheel groups, and the user who ran sudo.
+# Who can really sign in with a key, as sshd itself sees it (sshd -T -C per user, Dani's B1): pubkey auth on, root
+# login allowed for root, not shut out by Allow/Deny Users/Groups, and a key line in the EFFECTIVE AuthorizedKeysFile.
+# A key on the machine is not proof that whoever runs this holds it (a provider or image key, B2): the keys are listed
+# and an explicit "yes" (or --yes) is needed.
+YES=0
+for a in "$@"; do [ "$a" = --yes ] && YES=1; done
 key_users() {
   printf 'root\n'
   awk -F: '$1=="sudo"||$1=="admin"||$1=="wheel" { n=split($4,u,","); for (i=1;i<=n;i++) if (u[i]!="") print u[i] }' "$R/etc/group" 2>/dev/null || true
@@ -44,33 +51,84 @@ key_users() {
   return 0
 }
 home_of() { awk -F: -v u="$1" '$1==u { print $6; exit }' "$R/etc/passwd" 2>/dev/null; }
-has_key() {
-  local f
-  for f in "$1/.ssh/authorized_keys" "$1/.ssh/authorized_keys2"; do
-    # A key line (options allowed before it), not a comment.
-    [ -f "$R$f" ] && grep -v '^[[:space:]]*#' "$R$f" \
-      | grep -Eq '(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp[0-9]+|sk-[a-z0-9-]+@openssh\.com)[[:space:]]+AAAA' && return 0
-  done
+groups_of() {
+  local gid
+  gid="$(awk -F: -v u="$1" '$1==u { print $4; exit }' "$R/etc/passwd" 2>/dev/null)"
+  awk -F: -v u="$1" -v g="$gid" '$3==g { print $1 } { n=split($4,m,","); for (i=1;i<=n;i++) if (m[i]==u) print $1 }' "$R/etc/group" 2>/dev/null
+}
+# The effective sshd settings for a login as $1, one "key value..." per line.
+eff() { sshd -T -C "user=$1,host=localhost,addr=127.0.0.1" 2>/dev/null; }
+vals() { awk -v k="$1" '$1==k { for (i=2;i<=NF;i++) print $i }'; }
+matches_any() { # $1 a name, then patterns (user@host: the user part)
+  local n="$1" p; shift
+  for p in "$@"; do p="${p%%@*}"; [[ "$n" == $p ]] && return 0; done
   return 1
 }
-key_owner=""
+key_lines() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -E '(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp[0-9]+|sk-[a-z0-9-]+@openssh\.com)[[:space:]]+AAAA'; }
+why=""; kf=""
+# Not in a $( ) subshell: it sets $kf (the key file sshd would read for this user) or $why, for the caller.
+usable_keyfile() { # $1 user, $2 home
+  local u="$1" h="$2" c f p
+  c="$(eff "$u")"
+  [ "$(printf '%s\n' "$c" | vals pubkeyauthentication)" = yes ] || { why="pubkeyauthentication is off for $u"; return 1; }
+  if [ "$u" = root ]; then
+    p="$(printf '%s\n' "$c" | vals permitrootlogin)"
+    case "$p" in yes|prohibit-password|without-password) ;; *) why="permitrootlogin is ${p:-unset}"; return 1 ;; esac
+  fi
+  local allow deny ag dg gs
+  allow=($(printf '%s\n' "$c" | vals allowusers)); deny=($(printf '%s\n' "$c" | vals denyusers))
+  ag=($(printf '%s\n' "$c" | vals allowgroups)); dg=($(printf '%s\n' "$c" | vals denygroups))
+  if [ "${#allow[@]}" -gt 0 ] && ! matches_any "$u" "${allow[@]}"; then why="$u is not in AllowUsers"; return 1; fi
+  if [ "${#deny[@]}" -gt 0 ] && matches_any "$u" "${deny[@]}"; then why="$u is in DenyUsers"; return 1; fi
+  gs="$(groups_of "$u")"
+  if [ "${#ag[@]}" -gt 0 ]; then
+    local ok=0 g; for g in $gs; do matches_any "$g" "${ag[@]}" && ok=1; done
+    [ "$ok" = 1 ] || { why="$u is in no AllowGroups group"; return 1; }
+  fi
+  if [ "${#dg[@]}" -gt 0 ]; then
+    local g; for g in $gs; do matches_any "$g" "${dg[@]}" && { why="$u is in a DenyGroups group"; return 1; }; done
+  fi
+  for f in $(printf '%s\n' "$c" | vals authorizedkeysfile); do
+    f="${f//%h/$h}"; f="${f//%u/$u}"; f="${f//%%/%}"
+    case "$f" in /*) ;; *) f="$h/$f" ;; esac
+    if key_lines "$R$f" >/dev/null; then kf="$f"; return 0; fi
+  done
+  why="no key line in $u's authorized keys file"
+  return 1
+}
+owners=(); listing=""; reasons=""
 while read -r u; do
   [ -n "$u" ] || continue
   h="$(home_of "$u")"
   [ -n "$h" ] || continue
-  if has_key "$h"; then key_owner="$u"; break; fi
+  if usable_keyfile "$u" "$h"; then
+    owners+=("$u")
+    listing+="  $u ($kf):"$'\n'"$(key_lines "$R$kf" | ssh-keygen -lf - 2>/dev/null | sed 's/^/    /')"$'\n'
+  else
+    reasons+="  $u: $why"$'\n'
+  fi
 done < <(key_users | sort -u)
-if [ -z "$key_owner" ]; then
+if [ "${#owners[@]}" -eq 0 ]; then
+  printf '\n  STOPPED: nobody can sign in with an SSH key (root or a sudo user, as sshd sees it):\n%s' "$reasons" >&2
   cat >&2 <<'EOF'
-
-  STOPPED: no SSH key found for root or any sudo user (authorized_keys is empty or missing).
   Turning off password SSH now would lock you out. Nothing was changed.
   Add your public key first (on your computer: ssh-copy-id root@<server>), then run this again.
 
 EOF
   exit 2
 fi
-already+=("SSH key present ($key_owner)")
+printf 'These keys can sign in after password SSH is off:\n%s' "$listing"
+if [ "$YES" != 1 ]; then
+  if [ -t 0 ]; then
+    printf 'Is one of them yours (you hold its private key)? Type yes to continue: '
+    read -r ans
+    [ "$ans" = yes ] || { printf 'host-hardening: not confirmed; nothing was changed.\n' >&2; exit 2; }
+  else
+    printf 'host-hardening: check the keys above, then run again with --yes. Nothing was changed.\n' >&2
+    exit 2
+  fi
+fi
+already+=("SSH key login possible (${owners[*]})")
 
 # --- 2. firewall ------------------------------------------------------------------------------------------------
 apt_install() {
@@ -177,10 +235,19 @@ else
   mkdir -p "$(dirname "$SSHD_DROPIN")"
   printf '%s\n' "$dropin_text" > "$SSHD_DROPIN"
   if ! sshd -t; then restore; fail "sshd -t rejected the config; the drop-in was taken back, password SSH is unchanged"; fi
-  eff="$(sshd -T 2>/dev/null | awk '$1=="passwordauthentication" { print $2 }')"
-  if [ "$eff" != no ]; then
+  # Checked per login (-C), so a Match block that opens passwords again is seen too (Dani's B1).
+  pw_open=""
+  while read -r u; do
+    [ -n "$u" ] || continue
+    c="$(sshd -T -C "user=$u,host=outside,addr=198.51.100.7" 2>/dev/null)"
+    for k in passwordauthentication kbdinteractiveauthentication; do
+      v="$(printf '%s\n' "$c" | vals "$k")"
+      [ "$v" = no ] || pw_open+=" $u:$k=${v:-unset}"
+    done
+  done < <(key_users | sort -u)
+  if [ -n "$pw_open" ]; then
     restore
-    fail "an earlier sshd_config.d file still sets PasswordAuthentication ($eff); the drop-in was taken back. See: grep -ri passwordauthentication /etc/ssh/sshd_config.d/"
+    fail "password login stays open for:$pw_open (an earlier sshd_config.d file or a Match block); the drop-in was taken back. See: sshd -T -C user=root,host=x,addr=198.51.100.7"
   fi
   systemctl reload ssh 2>/dev/null || systemctl reload sshd || fail "sshd reload failed (the new config is valid; reload it by hand)"
   changed+=("password SSH off")

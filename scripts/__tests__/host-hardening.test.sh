@@ -16,18 +16,30 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi }
 BIN="$T/bin"; mkdir -p "$BIN"
 cat > "$BIN/sshd" <<'EOF'
 #!/usr/bin/env bash
+# -t: STUB rc; -T [-C user=..]: the effective config computed from the drop-ins, plus knobs a test sets:
+# STUB_PUBKEY, STUB_PERMITROOT, STUB_AKF, STUB_ALLOWUSERS, STUB_MATCH_PW_USER (password stays yes for that -C user).
 echo "sshd $*" >> "$HH_ROOT/../calls.log"
+first() { # first value of $1 across the drop-ins (sorted), then the main file
+  local v="" f
+  for f in $(ls "$HH_ROOT/etc/ssh/sshd_config.d/"*.conf 2>/dev/null | sort) "$HH_ROOT/etc/ssh/sshd_config"; do
+    [ -n "$v" ] && break
+    v="$(awk -v k="$1" 'tolower($1)==k { print tolower($2); exit }' "$f")"
+  done
+  printf '%s' "$v"
+}
 case "$1" in
   -t) exit "${SSHD_T_RC:-0}" ;;
   -T)
+    cu=""; [ "${2:-}" = -C ] && cu="$(printf '%s' "$3" | sed -n 's/.*user=\([^,]*\).*/\1/p')"
     ports="$(awk '$1=="Port" { print $2 }' "$HH_ROOT/etc/ssh/sshd_config")"; [ -n "$ports" ] || ports=22
     for p in $ports; do echo "port $p"; done
-    v=""
-    for f in $(ls "$HH_ROOT/etc/ssh/sshd_config.d/"*.conf 2>/dev/null | sort) "$HH_ROOT/etc/ssh/sshd_config"; do
-      [ -n "$v" ] && break
-      v="$(awk 'tolower($1)=="passwordauthentication" { print tolower($2); exit }' "$f")"
-    done
-    echo "passwordauthentication ${v:-yes}" ;;
+    pw="$(first passwordauthentication)"; [ -n "$cu" ] && [ "$cu" = "${STUB_MATCH_PW_USER:-}" ] && pw=yes
+    echo "passwordauthentication ${pw:-yes}"
+    kb="$(first kbdinteractiveauthentication)"; echo "kbdinteractiveauthentication ${kb:-yes}"
+    echo "pubkeyauthentication ${STUB_PUBKEY:-yes}"
+    echo "permitrootlogin ${STUB_PERMITROOT:-without-password}"
+    echo "authorizedkeysfile ${STUB_AKF:-.ssh/authorized_keys .ssh/authorized_keys2}"
+    for u in ${STUB_ALLOWUSERS:-}; do echo "allowusers $u"; done ;;
 esac
 EOF
 cat > "$BIN/ufw" <<'EOF'
@@ -49,7 +61,10 @@ for c in systemctl apt-get fail2ban-client; do
 done
 chmod +x "$BIN"/*
 
-ED_KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl test@example'
+# A real key: the script lists fingerprints (ssh-keygen -lf), which needs a valid key line.
+ssh-keygen -q -t ed25519 -N '' -C test@example -f "$T/k" >/dev/null
+ED_KEY="$(cat "$T/k.pub")"
+
 fresh() {
   rm -rf "$T/case"; mkdir -p "$T/case/root"; : > "$T/case/calls.log"
   local r="$T/case/root"
@@ -62,7 +77,8 @@ fresh() {
   printf 'IPV6=yes\nDEFAULT_INPUT_POLICY="ACCEPT"\n' > "$r/etc/default/ufw"
   : > "$r/var/log/auth.log"
 }
-run() { HH_ROOT="$T/case/root" PATH="$BIN:$PATH" bash "$SCRIPT" > "$T/case/out" 2>&1; echo $? > "$T/case/rc"; }
+# --yes by default (the keys are the test's own); stdin is never a terminal here.
+run() { HH_ROOT="$T/case/root" PATH="$BIN:$PATH" bash "$SCRIPT" "${@:---yes}" < /dev/null > "$T/case/out" 2>&1; echo $? > "$T/case/rc"; }
 R="$T/case/root"
 DROPIN="$R/etc/ssh/sshd_config.d/00-marveen-hardening.conf"
 JAIL="$R/etc/fail2ban/jail.d/marveen-sshd.local"
@@ -72,7 +88,7 @@ calls() { grep -c "$1" "$T/case/calls.log" || true; }
 # 1. no key anywhere: stop with 2, nothing changed, nothing called but the read-only probes.
 fresh; run
 check "no key: exit 2" '[ "$(rc)" = 2 ]'
-check "no key: says STOPPED" 'grep -q "STOPPED: no SSH key" "$T/case/out"'
+check "no key: says STOPPED" 'grep -q "STOPPED: nobody can sign in with an SSH key" "$T/case/out"'
 check "no key: no drop-in, no jail, after.rules untouched" '[ ! -e "$DROPIN" ] && [ ! -e "$JAIL" ] && ! grep -q MARVEEN "$R/etc/ufw/after.rules"'
 check "no key: no ufw/apt/systemctl call" '[ "$(calls "^ufw\|^apt-get\|^systemctl")" = 0 ]'
 
@@ -101,7 +117,7 @@ check "second run: no ufw write, no reload, no sshd -t, no fail2ban restart" '[ 
 
 # 4. only a sudo user has a key (options before the key type): passes the guard.
 fresh; printf 'no-agent-forwarding,from="10.0.0.0/8" %s\n' "$ED_KEY" > "$R/home/alice/.ssh/authorized_keys"; run
-check "sudo user key with options: exit 0" '[ "$(rc)" = 0 ] && grep -q "SSH key present (alice)" "$T/case/out"'
+check "sudo user key with options: exit 0" '[ "$(rc)" = 0 ] && grep -q "SSH key login possible (alice)" "$T/case/out"'
 
 # 5. sshd -t rejects: the drop-in is taken back, exit 1.
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; SSHD_T_RC=1 run
@@ -118,6 +134,26 @@ check "port 2222: allowed in ufw, in the jail, 22 not added" '[ "$(rc)" = 0 ] &&
 # 8. no /var/log/auth.log (journal-only image): the jail reads the journal.
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; rm -f "$R/var/log/auth.log"; run
 check "no auth.log: backend = systemd" '[ "$(rc)" = 0 ] && grep -qx "backend = systemd" "$JAIL"'
+
+# 9. Dani B1: sshd itself must let the key owner in.
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_PERMITROOT=no run
+check "root key but PermitRootLogin no: exit 2, named, nothing changed" '[ "$(rc)" = 2 ] && grep -q "permitrootlogin is no" "$T/case/out" && [ ! -e "$DROPIN" ] && [ "$(calls "^ufw allow")" = 0 ]'
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_PUBKEY=no run
+check "PubkeyAuthentication no: exit 2" '[ "$(rc)" = 2 ] && grep -q "pubkeyauthentication is off" "$T/case/out"'
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_ALLOWUSERS="alice" run
+check "AllowUsers shuts root out, alice has no key: exit 2" '[ "$(rc)" = 2 ] && grep -q "root is not in AllowUsers" "$T/case/out"'
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_AKF="/etc/ssh/keys/%u" run
+check "AuthorizedKeysFile elsewhere, key only in ~/.ssh: exit 2" '[ "$(rc)" = 2 ]'
+fresh; mkdir -p "$R/etc/ssh/keys"; printf '%s\n' "$ED_KEY" > "$R/etc/ssh/keys/root"; STUB_AKF="/etc/ssh/keys/%u" run
+check "AuthorizedKeysFile elsewhere, key there: exit 0" '[ "$(rc)" = 0 ]'
+# A Match block that keeps passwords open for a user: the drop-in is taken back.
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_MATCH_PW_USER=root run
+check "Match keeps password open for root: exit 1, drop-in gone, named" '[ "$(rc)" = 1 ] && [ ! -e "$DROPIN" ] && grep -q "password login stays open for: root:passwordauthentication=yes" "$T/case/out"'
+
+# 10. Dani B2: the keys are listed, and without --yes (no terminal) nothing changes.
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; run --no-such-flag
+check "no --yes, no terminal: exit 2, nothing changed" '[ "$(rc)" = 2 ] && grep -q "run again with --yes" "$T/case/out" && [ ! -e "$DROPIN" ] && [ "$(calls "^ufw allow\|^systemctl")" = 0 ]'
+check "the key is listed with its fingerprint and comment" 'grep -q "SHA256:.*test@example" "$T/case/out"'
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
 [ "$failn" = 0 ]

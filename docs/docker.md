@@ -79,7 +79,7 @@ curl -fsSLo host-hardening.sh https://raw.githubusercontent.com/Szotasz/marveen/
 
 Use the version you run (the image tag), so the script is the one that was tested with it. It:
 
-- turns off password SSH (keys only), but **only if root or a sudo user already has a key** in `authorized_keys`; without one it stops and changes nothing, so you are not locked out. Add your key first: `ssh-copy-id root@<your VPS's IP>`;
+- turns off password SSH (keys only), but **only if root or a sudo user can already sign in with a key** (as the SSH server's own settings say); without one it stops and changes nothing, so you are not locked out. Add your key first: `ssh-copy-id root@<your VPS's IP>`. It then lists the keys that will still work (fingerprint and comment) and asks you to type `yes` if one of them is yours: a key your provider or the image put there is not yours. `--yes` answers it without the question;
 - starts fail2ban on SSH;
 - sets the firewall (ufw): incoming only your SSH port, 80 and 443. Docker-published ports skip ufw, so it also adds a rule to Docker's `DOCKER-USER` chain (in `/etc/ufw/after.rules`, kept across reboots) that lets only 80 and 443 reach a container from outside;
 - prints what it changed and what was already in place. Running it again changes nothing.
