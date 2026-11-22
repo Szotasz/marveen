@@ -119,8 +119,9 @@ export function clearMainRouter(mainAgentId: string): boolean {
 // --- The router's own model list (owner decision Marveen 83042, Samu 83044) -------------------------------------
 // GET {base}/v1/models, server side with the vault key (the key never reaches the browser), cached for 10 minutes
 // (the endpoint is free, but the key has a daily limit). Kept: models that serve /v1/messages AND support tools.
-// Order: the three measured Claude models first (written dashed, the ids our tables and the context guard know),
-// then the other Claude models, then the rest, labelled experimental until a tool-call trial (credits, owner GO).
+// Order: the three measured Claude models first (written dashed, the ids our tables and the context guard know), then
+// the non-Claude models, labelled experimental until a tool-call trial (credits, owner GO). Other Claude ids stay out
+// until measured (Samu 83056).
 // When the list cannot be fetched (no key, network, 4xx/5xx), the three measured Claude models, and the UI says so.
 
 export interface RouterModelOption {
@@ -190,10 +191,13 @@ export function parseRouterModels(body: unknown): RouterModelOption[] {
     if (!endpoints.some((e) => e === '/v1/messages' || e.endsWith('/v1/messages'))) continue
     if (!params.includes('tools')) continue
     const dashed = measuredDashed(id)
+    const claude = /^claude-/i.test(id)
+    // Samu 83056: a Claude id that is not one of the measured three stays out until it is measured. Claude Code's
+    // window override does not apply on its own to an unknown claude- id, so our 200k cap would not protect it.
+    if (claude && dashed === null) continue
     const finalId = dashed ?? id
     if (seen.has(finalId)) continue
     seen.add(finalId)
-    const claude = /^claude-/i.test(id)
     out.push({ id: finalId, claude, measured: dashed !== null, experimental: !claude, contextTokens: positiveInt(m.context_length) })
   }
   const rank = (o: RouterModelOption) => (o.measured ? 0 : o.claude ? 1 : 2)

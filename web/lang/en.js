@@ -1504,6 +1504,7 @@ window._i18n.en = {
   'agents.main_auth.router_model': 'Model',
   'agents.main_auth.router_experimental': 'experimental, at most {cap}k context until measured',
   'agents.main_auth.router_fallback': 'The router\'s model list cannot be read right now: the three tested Claude models are shown.',
+  'agents.main_auth.router_more_claude': 'Further Claude models after they are measured.',
   'agents.main_auth.router_key_stored': 'A router key is stored.',
   'agents.main_auth.router_key_missing': 'No router key is stored yet.',
   'agents.main_auth.key_placeholder': 'API key (leave empty to keep the stored one)',

@@ -142,9 +142,10 @@ describe('the router model list (Marveen 83042)', () => {
   ] }
   it('keeps /v1/messages + tools, writes the measured three dashed, Claude first, the rest experimental', () => {
     const list = parseRouterModels(BODY)
-    expect(list.map((m) => m.id)).toEqual(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-opus-4.6', 'kimi-k3'])
+    expect(list.map((m) => m.id)).toEqual(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'kimi-k3'])
     expect(list.find((m) => m.id === 'kimi-k3')).toMatchObject({ claude: false, experimental: true, measured: false })
-    expect(list.find((m) => m.id === 'claude-opus-4.6')).toMatchObject({ claude: true, experimental: false, measured: false })
+    // Samu 83056: a dotted, not measured claude- id stays out until it is measured
+    expect(list.some((m) => m.id === 'claude-opus-4.6' || m.id === 'claude-opus-4-6')).toBe(false)
   })
   it('garbage in: an empty list', () => {
     for (const b of [null, 42, 'x', { data: 'x' }, { data: [null, { id: 'bad id with spaces' }] }]) expect(parseRouterModels(b)).toEqual([])

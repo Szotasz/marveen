@@ -452,6 +452,7 @@ window._i18n.hu = {
   'agents.main_auth.router_model': 'Modell',
   'agents.main_auth.router_experimental': 'kísérleti, legfeljebb {cap}k kontextus, amíg nincs mérve',
   'agents.main_auth.router_fallback': 'A router modell-listája most nem olvasható: a három kipróbált Claude-modell látható.',
+  'agents.main_auth.router_more_claude': 'További Claude-modellek mérés után.',
   'agents.main_auth.router_key_stored': 'Van tárolt router-kulcs.',
   'agents.main_auth.router_key_missing': 'Még nincs tárolt router-kulcs.',
   'agents.main_auth.key_placeholder': 'API-kulcs (üresen hagyva a tárolt marad)',

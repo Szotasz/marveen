@@ -5457,7 +5457,7 @@ async function loadMainRouterModels(selected) {
     const res = await fetch('/api/hostinger-router/models')
     if (!res.ok) return
     const d = await res.json()
-    fillMainRouterModels(d.models || [], selected, d.source === 'fallback' ? t('agents.main_auth.router_fallback') : null)
+    fillMainRouterModels(d.models || [], selected, d.source === 'fallback' ? t('agents.main_auth.router_fallback') : t('agents.main_auth.router_more_claude'))
   } catch { /* keeps the measured three */ }
 }
 async function loadMainAuthPanel() {
