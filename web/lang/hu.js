@@ -127,6 +127,7 @@ window._i18n.hu = {
   'agentCatalog.install': "Telepítés",
   'agentCatalog.cancel': "Mégse",
   'agentCatalog.installed': "Telepítve: v{version} · {run}",
+  'agentCatalog.installed_now': "Telepítve",
   'agentCatalog.running': "fut",
   'agentCatalog.stopped': "áll",
   'agentCatalog.update_available': "Frissítés elérhető: v{version}",

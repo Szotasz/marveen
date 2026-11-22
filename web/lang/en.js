@@ -127,6 +127,7 @@ window._i18n.en = {
   'agentCatalog.install': "Install",
   'agentCatalog.cancel': "Cancel",
   'agentCatalog.installed': "Installed: v{version} · {run}",
+  'agentCatalog.installed_now': "Installed",
   'agentCatalog.running': "running",
   'agentCatalog.stopped': "stopped",
   'agentCatalog.update_available': "Update available: v{version}",

@@ -6084,7 +6084,7 @@ async function loadAgentCatalogPage() {
   if (!cred.connected) { root.replaceChildren(agentCatalogConnectForm()); return }
   const head = acEl('div', 'ac-connected')
   head.append(acEl('span', null, t('agentCatalog.connected_as', { label: cred.label })))
-  head.append(acBtn('btn btn-sm', t('agentCatalog.disconnect'), agentCatalogDisconnect))
+  head.append(acBtn('btn-secondary btn-compact', t('agentCatalog.disconnect'), agentCatalogDisconnect))
   const list = acEl('div', 'ac-list')
   root.replaceChildren(head, list)
   list.append(acEl('p', 'ac-muted', t('agentCatalog.loading')))
@@ -6125,7 +6125,7 @@ function agentCatalogConnectForm() {
   input.placeholder = 'XXXX-XXXXXXXX'
   label.htmlFor = input.id
   const msg = acEl('p', 'ac-msg')
-  const go = acBtn('btn btn-primary', t('agentCatalog.connect.btn'), async () => {
+  const go = acBtn('btn-primary', t('agentCatalog.connect.btn'), async () => {
     const code = input.value.trim()
     if (!code) { msg.className = 'ac-msg ac-error'; msg.textContent = t('agentCatalog.connect.empty'); return }
     go.disabled = true
@@ -6211,7 +6211,7 @@ function agentCatalogCard(pkg, view, installed) {
   } else if (state.kind === 'locked_old') {
     foot.append(acEl('span', 'ac-state ac-locked', t('agentCatalog.locked_old')))
   } else {
-    foot.append(acBtn('btn btn-primary', t('agentCatalog.install'), () => agentCatalogConfirm(pkg, state, panel)))
+    foot.append(acBtn('btn-primary', t('agentCatalog.install'), () => agentCatalogConfirm(pkg, state, panel)))
   }
   return card
 }
@@ -6222,7 +6222,7 @@ function agentCatalogConfirm(pkg, state, panel) {
   const ul = acEl('ul', 'ac-files')
   for (const [path, what] of agentPkgFileRows(pkg)) ul.append(acEl('li', null, `${path} · ${what}`))
   box.append(ul)
-  const go = acBtn('btn btn-primary', t('agentCatalog.install'), () => agentCatalogInstall(pkg, panel, go))
+  const go = acBtn('btn-primary', t('agentCatalog.install'), () => agentCatalogInstall(pkg, panel, go))
   if (state.trialPick) {
     box.append(acEl('p', 'ac-warn', t('agentCatalog.confirm.trial')))
     const lab = acEl('label', 'ac-check')
@@ -6235,7 +6235,7 @@ function agentCatalogConfirm(pkg, state, panel) {
     box.append(lab)
   }
   const row = acEl('div', 'ac-actions')
-  row.append(acBtn('btn', t('agentCatalog.cancel'), () => panel.replaceChildren()), go)
+  row.append(acBtn('btn-secondary', t('agentCatalog.cancel'), () => panel.replaceChildren()), go)
   box.append(row)
   panel.replaceChildren(box)
 }
@@ -6292,6 +6292,8 @@ async function agentCatalogInstall(pkg, panel, btn) {
     }
     if (r) name = r.body.name
     for (let i = 0; i < 4; i++) mark(i, 'ac-done')
+    // Installed: the card's Install button goes (a failed install keeps it, to try again).
+    panel.closest('.ac-card')?.querySelector('.ac-foot')?.replaceChildren(acEl('span', 'ac-state', t('agentCatalog.installed_now')))
     if (r && r.body.skillReport && r.body.skillReport.findings && Object.keys(r.body.skillReport.findings).length) {
       box.append(acEl('p', 'ac-warn', t('agentCatalog.skill_findings')))
     }
@@ -6321,7 +6323,7 @@ async function agentCatalogStart(name, item, status, box) {
   item.classList.add('ac-failed')
   status.className = 'ac-error'
   status.textContent = t('agentCatalog.start_failed', { reason: ownerSessionText(r.body) || r.body.error || r.body.message || t('agentCatalog.err.generic') })
-  const again = acBtn('btn btn-sm', t('agentCatalog.start_btn'), async () => {
+  const again = acBtn('btn-secondary btn-compact', t('agentCatalog.start_btn'), async () => {
     again.remove()
     await agentCatalogStart(name, item, status, box)
   })
