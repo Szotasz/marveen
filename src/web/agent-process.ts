@@ -356,9 +356,16 @@ function hostKeyOnlyInstall(): boolean {
 }
 
 // HOSTINGERSUBAGENTAUTH1122: the shared ~/.claude holds a Claude login of its own (explicitConfigDirLacksOwnLogin's
-// rules: answers true on macOS, where the login is in the Keychain and a file check proves nothing).
-function sharedClaudeLoginPresent(): boolean {
-  return !explicitConfigDirLacksOwnLogin(join(homedir(), '.claude'))
+// rules: answers true on macOS, where the login is in the Keychain and a file check proves nothing). Without a
+// CLAUDE_CONFIG_DIR, Claude Code keeps its user state in <home>/.claude.json, not in ~/.claude/.claude.json, so a
+// Console login's primaryApiKey is read from there too (Dani #3045 F1).
+export function sharedClaudeLoginPresent(home: string = homedir(), platform: NodeJS.Platform = process.platform): boolean {
+  if (!explicitConfigDirLacksOwnLogin(join(home, '.claude'), platform)) return true
+  try {
+    const state: unknown = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))
+    const key = state && typeof state === 'object' ? (state as Record<string, unknown>).primaryApiKey : undefined
+    return typeof key === 'string' && key.trim() !== ''
+  } catch { return false }
 }
 
 /**
@@ -3445,7 +3452,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
       sharedLoginPresent: sharedClaudeLoginPresent(),
     })) {
       logger.error({ name, model }, 'no-claude-auth: router install without a Claude login -- agent NOT started; switch it to the Hostinger AI Router or add a Claude login')
-      return { ok: false, error: 'no-claude-auth: this install has no Claude subscription login. Switch the agent to the Hostinger AI Router (agent settings, Model), or add a Claude login.' }
+      return { ok: false, error: 'no-claude-auth: this install has no Claude subscription login. Switch the agent to the Hostinger AI Router (agent settings, Model), add a Claude login, or give the agent its own auth.' }
     }
     if (ownLaunch.kind === 'own') {
       logger.info(

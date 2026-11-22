@@ -2,9 +2,11 @@
 // (instead of sitting on the login screen in silence), and the create form warns and preselects the router.
 // Off a router install nothing changes.
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { subAgentClaudeAuthMissing } from '../web/hostinger-router.js'
+import { sharedClaudeLoginPresent } from '../web/agent-process.js'
 
 const base = {
   routerInstall: true,
@@ -85,5 +87,28 @@ describe('the create form (source)', () => {
       expect(s).toContain("'agents.model.no_claude_auth':")
       expect(s).toContain("'agents.model.no_claude_auth_router':")
     }
+  })
+})
+
+describe('sharedClaudeLoginPresent (Linux file rules)', () => {
+  const home = () => { const h = mkdtempSync(join(tmpdir(), 'subauth-home-')); mkdirSync(join(h, '.claude')); return h }
+
+  it('is false for an empty home', () => {
+    expect(sharedClaudeLoginPresent(home(), 'linux')).toBe(false)
+  })
+
+  it('sees a /login credential in ~/.claude', () => {
+    const h = home(); writeFileSync(join(h, '.claude', '.credentials.json'), '{}')
+    expect(sharedClaudeLoginPresent(h, 'linux')).toBe(true)
+  })
+
+  it('sees a Console login in <home>/.claude.json, where the shared mode keeps it (Dani #3045 F1)', () => {
+    const h = home(); writeFileSync(join(h, '.claude.json'), JSON.stringify({ primaryApiKey: 'sk-ant-test' }))
+    expect(sharedClaudeLoginPresent(h, 'linux')).toBe(true)
+  })
+
+  it('an empty primaryApiKey is not a login', () => {
+    const h = home(); writeFileSync(join(h, '.claude.json'), JSON.stringify({ primaryApiKey: ' ' }))
+    expect(sharedClaudeLoginPresent(h, 'linux')).toBe(false)
   })
 })
