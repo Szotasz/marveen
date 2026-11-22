@@ -1498,6 +1498,10 @@ EOF_MA
     fi
     if [ -n "$_cp_env" ]; then
       CUSTOM_PROVIDER_ENV="$_cp_env"
+      # HOSTINGERROUTER1122: the provider's model comes as ANTHROPIC_MODEL in the env above. A --model flag (from
+      # MAIN_AGENT_MODEL, .claude/settings.json or the shipped default) would override it and send the provider a model
+      # it may not serve, so with a custom provider the flag is dropped.
+      MODEL_FLAG=""
       echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent custom-provider env injected" >> "$INSTALL_DIR/store/channels-failures.log"
     fi
     unset _cp_env _cp_rc _cp_cfg_dir

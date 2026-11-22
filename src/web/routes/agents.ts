@@ -143,7 +143,11 @@ import {
   explicitConfigDirLacksOwnLogin,
   FLEET_OAUTH_TOKEN_PATH,
 } from '../agent-process.js'
-import { checkMainAuthSwitch } from '../main-auth-switch.js'
+import { checkMainAuthSwitch, MAIN_AUTH_SWITCH_FIELDS } from '../main-auth-switch.js'
+import {
+  applyMainRouter, clearMainRouter, HOSTINGER_ROUTER_DEFAULT_MODEL, HOSTINGER_ROUTER_MODELS, routerActive, routerAvailable,
+  routerKeyStored, routerModel,
+} from '../hostinger-router.js'
 import { readMainAuthLaunched } from '../main-auth.js'
 import { hostApiKey } from '../auth-key-mode.js'
 import { liveProbeAuth } from '../claude-credentials-guard.js'
@@ -770,6 +774,17 @@ function getAgentDetail(name: string): AgentDetail {
     hasApiKey: getSecret(`agent-${name}-api-key`) !== null,
     // MAINAUTHSWITCH1107: what the main pane's last launch ran on (configured, effective, conflict); no value in it
     ...(isMainChannelsAgent(name) ? { mainAuthLaunched: readMainAuthLaunched() } : {}),
+    // HOSTINGERROUTER1122: the router choice, for the main agent card (offered only on a Hostinger install); no key value
+    ...(isMainChannelsAgent(name) ? {
+      router: {
+        available: routerAvailable(PROJECT_ROOT),
+        active: routerActive(name),
+        model: routerModel(name),
+        models: [...HOSTINGER_ROUTER_MODELS],
+        defaultModel: HOSTINGER_ROUTER_DEFAULT_MODEL,
+        keyStored: routerKeyStored(),
+      },
+    } : {}),
   }
 }
 
@@ -2745,9 +2760,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       let mdata: unknown
       try { mdata = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Main agent PUT: invalid JSON body' }, 400); return true }
       const onlySwitchFields = mdata !== null && typeof mdata === 'object' && !Array.isArray(mdata)
-        && Object.keys(mdata as Record<string, unknown>).every((k) => k === 'authMode' || k === 'apiKey')
+        && Object.keys(mdata as Record<string, unknown>).every((k) => (MAIN_AUTH_SWITCH_FIELDS as readonly string[]).includes(k))
       if (!onlySwitchFields) {
-        json(res, { error: 'Main agent configuration is read-only through the dashboard API, except authMode and apiKey' }, 400)
+        json(res, { error: 'Main agent configuration is read-only through the dashboard API, except authMode, apiKey and model' }, 400)
         return true
       }
       if (!mayActAsOwner(ctx.auth, req)) {
@@ -2766,10 +2781,31 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         explicitConfigDir: explicit !== null && !(explicitConfigDirLacksOwnLogin(explicit) && fleetTokenUsable),
         rotatedConfigDir: explicit === null && resolveMainAgentRotatedConfigDir() !== null,
         rotatedTokenPlan: explicit === null && resolveMainAgentRotatedTokenSecretId() !== null,
-        customProvider: !!readAgentCustomProvider(name),
+        // HOSTINGERROUTER1122: the router is switched by this switch, so only ANOTHER custom provider conflicts.
+        customProvider: !!readAgentCustomProvider(name) && !routerActive(name),
         keyAvailable: !!vaultKey || hostApiKey(join(PROJECT_ROOT, '.env')).trim() !== '',
+        routerAvailable: routerAvailable(PROJECT_ROOT),
+        routerKeyAvailable: routerKeyStored(),
       })
       if (!verdict.ok) { json(res, { error: verdict.error, code: verdict.code }, verdict.status); return true }
+      // HOSTINGERROUTER1122: no live probe for the router key (every router call is billed in the owner's credits,
+      // about 20k tokens of Claude Code prompt per message); it is stored unverified, the next launch tells.
+      if (verdict.mode === 'router') {
+        try {
+          mkdirSync(agentDir(name), { recursive: true })
+          applyMainRouter(name, verdict.newKey, verdict.model ?? HOSTINGER_ROUTER_DEFAULT_MODEL)
+          // authMode back to shared: an "api" left next to a custom provider is a launch conflict (main-auth.ts)
+          writeAgentAuthMode(name, 'shared')
+          deleteSecret(`agent-${name}-api-key`)
+        } catch (err) {
+          logger.error({ err: err instanceof Error ? err.message : String(err) }, 'main auth switch: could not save the router')
+          json(res, { error: 'Could not save the main agent authentication', code: 'write-failed' }, 500)
+          return true
+        }
+        logger.warn({ mode: 'router', model: verdict.model, newKey: !!verdict.newKey }, 'main auth switch: Hostinger AI Router saved by the owner; takes effect at the next main launch')
+        json(res, { ok: true, authMode: 'router', model: verdict.model, verified: null, restartRequired: true })
+        return true
+      }
       // A new key is checked with one tiny live call before anything is stored (as the onboarding does): only a
       // key the API REJECTS is refused; an inconclusive probe (no binary, network) stores it, marked unverified.
       let probe: 'ok' | 'auth-rejected' | 'inconclusive' | null = null
@@ -2783,7 +2819,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       try {
         mkdirSync(agentDir(name), { recursive: true })
         if (verdict.newKey) setSecret(`agent-${name}-api-key`, `API key for the main agent (${name})`, verdict.newKey)
-        writeAgentAuthMode(name, verdict.mode)
+        // HOSTINGERROUTER1122: leaving the router for the subscription or an API key takes the router off the main agent.
+        clearMainRouter(name)
+        writeAgentAuthMode(name, verdict.mode as 'shared' | 'api')
         // as for sub-agents (below): leaving api takes the key out of the vault
         if (verdict.mode !== 'api') deleteSecret(`agent-${name}-api-key`)
       } catch (err) {
