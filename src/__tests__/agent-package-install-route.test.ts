@@ -290,6 +290,16 @@ describe('after the download (plan 6.1 steps 6-9)', () => {
     expect(existsSync(join(STORE, 'agent-package-installing', 'invoice-helper.json'))).toBe(false)
   })
 
+  it('MIOAGENTB4-1122 (Samu 83364): the catalog names a known kid, the delivery comes with another one: verifyDelivery still refuses it after the download', async () => {
+    // The catalog check before the download is the first line; between the two calls the publishing side may change.
+    expect((catalog.body as { packages: Array<{ kid: string }> }).packages[0].kid).toBe(KEY.kid)
+    fake.answer({ status: 200, body: Buffer.from(makeSignedDelivery({ kid: OTHER.kid, privateKey: OTHER.privateKey, slug: 'invoice-helper' })) })
+    expect(await install({ slug: 'invoice-helper' })).toMatchObject({ status: 422, body: { error: 'package_rejected', step: 1, reason: 'unknown_kid' } })
+    expect(catalog.calls).toBe(1)
+    expect(fake.requests).toHaveLength(1)
+    expect(readdirSync(AGENTS)).toEqual([])
+  })
+
   it('(55) a manifest text the rules refuse: rejected before anything reaches a config', async () => {
     fake.answer({ status: 200, body: delivery({ displayName: '@evil name' }) })
     expect((await install({ slug: 'invoice-helper' })).status).toBe(422)

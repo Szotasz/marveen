@@ -6159,6 +6159,10 @@ async function agentCatalogDisconnect() {
   loadAgentCatalogPage()
 }
 
+function agentCatalogInitial(pkg) {
+  return acEl('div', 'ac-avatar ac-avatar-initial', (String(pkg.title || pkg.slug).trim()[0] || '?').toUpperCase())
+}
+
 function agentCatalogCard(pkg, view, installed) {
   const state = agentPkgCardState(pkg, view, installed)
   const card = acEl('div', 'ac-card')
@@ -6170,10 +6174,12 @@ function agentCatalogCard(pkg, view, installed) {
     const img = acEl('img', 'ac-avatar')
     img.alt = ''
     img.referrerPolicy = 'no-referrer'
+    // A signed picture URL expires (Samu 83364): a picture that does not load falls back to the initial.
+    img.addEventListener('error', () => img.replaceWith(agentCatalogInitial(pkg)), { once: true })
     img.src = src
     top.append(img)
   } else {
-    top.append(acEl('div', 'ac-avatar ac-avatar-initial', (String(pkg.title || pkg.slug).trim()[0] || '?').toUpperCase()))
+    top.append(agentCatalogInitial(pkg))
   }
   const head = acEl('div', 'ac-card-head')
   head.append(acEl('div', 'ac-title', pkg.title || pkg.slug))
