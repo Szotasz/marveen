@@ -5,7 +5,7 @@
 // the main-agent auth switch (main-auth-switch.ts) and the onboarding's claude-auth step both call applyMainRouter.
 //
 // Only the main agent: a sub-agent keeps running on the Claude subscription (or its own setup), and the wizard says so.
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getSecret, setSecret } from './vault.js'
 import { loadCustomProvider, saveCustomProvider } from './custom-providers.js'
@@ -95,6 +95,10 @@ export function routerModel(mainAgentId: string): string | null {
  * main agent's customProvider + model. The caller has checked the key, the model and who may do it.
  */
 export function applyMainRouter(mainAgentId: string, newKey: string | null, model: string, contextTokens: number | null = null): void {
+  // A fresh Docker install has no agents/<main>/ folder yet, so the config write failed with ENOENT after the key and
+  // the provider record were already stored: the wizard answered 500 and left a half-made setting (Geri 83274, v1.51.1).
+  // Created first, before anything is written.
+  mkdirSync(agentDir(mainAgentId), { recursive: true })
   if (newKey) {
     setSecret(HOSTINGER_ROUTER_VAULT_KEY, 'Hostinger AI Router key (main agent)', newKey.trim())
     clearRouterModelCache()

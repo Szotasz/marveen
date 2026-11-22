@@ -141,6 +141,15 @@ describe('onboarding: the Hostinger AI Router choice', () => {
     nothingWritten()
   })
 
+  it('a fresh Docker install with no agents/<main>/ folder yet: saved, not a 500 (Geri 83274, v1.51.1)', async () => {
+    writeFileSync(PLATFORM, 'hostinger\n')
+    rmSync(join(tmpRoot, 'agents'), { recursive: true, force: true })
+    const r = await call('POST', '/api/onboarding/claude-auth', OWNER, { routerKey: KEY })
+    expect([r.status, r.json.ok, r.json.router]).toEqual([200, true, true])
+    expect(JSON.parse(readFileSync(MAIN_CFG, 'utf-8')).customProvider).toBe('hostinger-router')
+    expect(H.vault.get('hostinger-router-api-key')).toBe(KEY)
+  })
+
   it('saved: the key in the vault, the main agent on the router, no live call, and the wizard sees auth', async () => {
     writeFileSync(PLATFORM, 'hostinger\n')
     expect((await call('GET', '/api/onboarding/status')).json.claudeAuthPresent).toBe(false)
