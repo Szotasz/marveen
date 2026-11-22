@@ -178,9 +178,15 @@ check "fail2ban jail never up: exit 1 after the wait, said" '[ "$(rc)" = 1 ] && 
 
 # Samu 83011 (A): an expiry-time key (the provider's web terminal) is listed but never counted.
 fresh; printf '%s\n' "$EXP_KEY" > "$R/root/.ssh/authorized_keys"; run
-check "only an expiring key: exit 2, said, nothing changed" '[ "$(rc)" = 2 ] && grep -q "only expiring keys (expiry-time" "$T/case/out" && [ ! -e "$DROPIN" ]'
+check "only an expiring key: exit 2, said, nothing changed" '[ "$(rc)" = 2 ] && grep -q "only keys that do not count" "$T/case/out" && [ ! -e "$DROPIN" ]'
 fresh; printf '%s\n%s\n' "$EXP_KEY" "$ED_KEY" > "$R/root/.ssh/authorized_keys"; run
 check "expiring + own key: exit 0, both listed, the expiring one marked" '[ "$(rc)" = 0 ] && grep -q "SHA256:.*webterminal@provider.*(expires, not counted)" "$T/case/out" && grep "test@example" "$T/case/out" | grep -vq "not counted"'
+
+# Dani 83014: a forced-command key gives no shell; it is listed, not counted. A from= key counts, its limit shown.
+fresh; printf 'command="/usr/bin/true" %s\n' "$(cat "$T/k2.pub")" > "$R/root/.ssh/authorized_keys"; run
+check "only a command= key: exit 2, nothing changed" '[ "$(rc)" = 2 ] && grep -q "only keys that do not count" "$T/case/out" && [ ! -e "$DROPIN" ]'
+fresh; printf 'command="/usr/bin/true" %s\nfrom="10.0.0.0/8" %s\n' "$(cat "$T/k2.pub")" "$ED_KEY" > "$R/root/.ssh/authorized_keys"; run
+check "command= + from= key: exit 0, forced command marked, from limit shown" '[ "$(rc)" = 0 ] && grep -q "webterminal@provider.*(forced command, not counted)" "$T/case/out" && grep -q "test@example.*(only from=\"10.0.0.0/8\")" "$T/case/out"'
 
 # Dani B3: StrictModes ignores a group-writable key file; with StrictModes off it is used.
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; chmod 664 "$R/root/.ssh/authorized_keys"; run

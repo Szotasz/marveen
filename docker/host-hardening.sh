@@ -68,10 +68,15 @@ matches_any() { # $1 a name, then patterns (user@host: the user part)
   return 1
 }
 key_lines() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -E '(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp[0-9]+|sk-[a-z0-9-]+@openssh\.com)[[:space:]]+AAAA'; }
-# A key with an expiry-time option is not a lasting way in (Samu 83011): the Hostinger Web Terminal injects one such
-# short-lived key (measured on the QA VPS). Listed, never counted.
-expiring() { grep -qiE '(^|,)[[:space:]]*expiry-time=' <<<"$1"; }
-durable_key_lines() { key_lines "$1" | grep -viE '(^|,)[[:space:]]*expiry-time=' ; }
+# Keys listed but never counted: an expiry-time key is not a lasting way in (Samu 83011; the Hostinger Web Terminal
+# injects one, measured on the QA VPS), and a command="..." key gives no shell (Dani 83014). A from="..." key counts,
+# its limit is shown.
+not_counted() { # prints why a key line does not count, nothing when it does
+  if grep -qiE '(^|,)[[:space:]]*expiry-time=' <<<"$1"; then printf 'expires, not counted'
+  elif grep -qiE '(^|,)[[:space:]]*command=' <<<"$1"; then printf 'forced command, not counted'
+  fi
+}
+durable_key_lines() { key_lines "$1" | grep -viE '(^|,)[[:space:]]*(expiry-time|command)=' ; }
 why=""; kf=""
 # Not in a $( ) subshell: it sets $kf (the key file sshd would read for this user) or $why, for the caller.
 usable_keyfile() { # $1 user, $2 home
@@ -103,7 +108,7 @@ usable_keyfile() { # $1 user, $2 home
     f="${f//%h/$h}"; f="${f//%u/$u}"; f="${f//%%/%}"
     case "$f" in /*) ;; *) f="$h/$f" ;; esac
     if ! durable_key_lines "$R$f" >/dev/null; then
-      key_lines "$R$f" >/dev/null && why="only expiring keys (expiry-time, e.g. a provider's web terminal) in $f; they are not counted"
+      key_lines "$R$f" >/dev/null && why="only keys that do not count in $f (expiry-time, e.g. a provider's web terminal, or command=, no shell)"
       continue
     fi
     # Dani B3: with StrictModes (the default) sshd ignores a key file when it, or a directory above it up to the home,
@@ -142,7 +147,10 @@ while read -r u; do
     listing+="  $u ($kf):"$'\n'
     while IFS= read -r line; do
       fp="$(printf '%s\n' "$line" | ssh-keygen -lf - 2>/dev/null)"
-      if expiring "$line"; then fp="$fp (expires, not counted)"; fi
+      nc="$(not_counted "$line")"
+      if [ -n "$nc" ]; then fp="$fp ($nc)"
+      elif from="$(grep -oiE '(^|,)[[:space:]]*from="[^"]*"' <<<"$line")"; then fp="$fp (only ${from#*,})"
+      fi
       listing+="    $fp"$'\n'
     done < <(key_lines "$R$kf")
   else
