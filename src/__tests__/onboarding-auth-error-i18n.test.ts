@@ -62,6 +62,9 @@ describe('onboarding Claude step: errors in the UI language (HOSTINGERWIZERRI18N
   it('the same reason reads differently per branch (bad-key: Claude API key vs router key)', () => {
     expect(en({ reason: 'bad-key' }, false)).toContain('sk-ant-')
     expect(en({ reason: 'bad-key' }, true)).toContain('sk-hstgr-')
+    // Geri's nit on #3051: the length rule is named too (checkRouterKey: 20 to 512 characters)
+    expect(en({ reason: 'bad-key' }, true)).toContain('20 to 512')
+    expect(hu({ reason: 'bad-key' }, true)).toContain('20-512')
   })
 
   it('an unknown reason keeps the server text, and nothing falls back to the generic error', () => {

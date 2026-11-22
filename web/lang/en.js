@@ -2365,7 +2365,7 @@ window._i18n.en = {
   'onboarding.auth_err.write_failed': 'Could not save the setting. Try again; if it keeps failing, check the install folder.',
   'onboarding.auth_err.router_mixed': 'Either the Claude token or the Hostinger AI Router key, not both.',
   'onboarding.auth_err.router_unavailable': 'The Hostinger AI Router is offered only on a Hostinger install.',
-  'onboarding.auth_err.router_bad_key': 'This does not look like a Hostinger AI Router key: it starts with sk-hstgr- and has no spaces.',
+  'onboarding.auth_err.router_bad_key': 'This does not look like a Hostinger AI Router key: it starts with sk-hstgr-, has no spaces and is 20 to 512 characters long.',
   'onboarding.auth_err.router_bad_model': 'Unknown Hostinger AI Router model.',
   'onboarding.auth_err.router_write_failed': 'Could not save the Hostinger AI Router setting.',
   'onboarding.step1.owner_login_required':'To change the Claude login, sign in to the dashboard with the owner account, then try again.',

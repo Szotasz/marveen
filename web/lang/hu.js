@@ -2368,7 +2368,7 @@ window._i18n.hu = {
   'onboarding.auth_err.write_failed': 'Nem sikerült elmenteni a beállítást. Próbáld újra; ha újra hibát ad, nézd meg a telepítési mappát.',
   'onboarding.auth_err.router_mixed': 'Vagy a Claude-tokent, vagy a Hostinger AI Router kulcsát add meg, a kettőt együtt nem.',
   'onboarding.auth_err.router_unavailable': 'A Hostinger AI Router csak Hostinger-telepítésen választható.',
-  'onboarding.auth_err.router_bad_key': 'Ez nem Hostinger AI Router kulcsnak látszik: sk-hstgr- kezdetű, szóköz nélkül.',
+  'onboarding.auth_err.router_bad_key': 'Ez nem Hostinger AI Router kulcsnak látszik: sk-hstgr- kezdetű, szóköz nélküli, és 20-512 karakter hosszú.',
   'onboarding.auth_err.router_bad_model': 'Ismeretlen Hostinger AI Router modell.',
   'onboarding.auth_err.router_write_failed': 'Nem sikerült elmenteni a Hostinger AI Router beállítását.',
   'onboarding.step1.owner_login_required':'A Claude-belépés cseréjéhez jelentkezz be a dashboardra a tulajdonosi fiókkal, utána próbáld újra.',
