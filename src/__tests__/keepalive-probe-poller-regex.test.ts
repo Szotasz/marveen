@@ -49,6 +49,13 @@ describe('the probe matches the CONFIGURED provider, not a hardcoded telegram', 
     expect(pollerScan).toContain('"/${PROBE_PLUGIN_SEG}/"')
     expect(pollerScan).not.toContain("'/telegram/'")
   })
+
+  it('maps the slack provider to the slack-channel plugin dir, not /slack/', () => {
+    // The slack provider's plugin cache dir is slack-channel: filtering on /slack/
+    // never matched, so the probe read a healthy Slack plugin as dead and the main
+    // session was keepalive-respawned 6 times on 2026-10-23, each losing the conversation.
+    expect(src).toMatch(/^\s*slack\) PROBE_PLUGIN_SEG="slack-channel" ;;$/m)
+  })
 })
 
 function shellAccepts(cmd: string): boolean {
