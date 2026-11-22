@@ -182,9 +182,12 @@ describe('relay restoreClaimed never links back a symlink', () => {
     child.stderr.on('data', () => {})
     const lineOf = (id: string): AuditLine | null => readAuditLines(auditPath).find(l => l.id === id) ?? null
     // A park is proven by its audit line: forwarded, and answered 200 (a timed-out call is no park).
-    const parkedAndAnswered = async (id: string): Promise<void> => {
-      // 35 s: the daemon's own dashboard timeout is 30 s, so even a timed-out park lands its line by then.
-      const line = await waitFor(() => lineOf(id), 35_000)
+    // `calls` is how many dashboard calls the daemon may make before this line lands. Each call has
+    // the daemon's own 30 s timeout, so the wait covers all of them plus 5 s: a fixed daemon whose
+    // every call stays within its timeout lands the line in time, and a timed-out park still lands
+    // its line, so the test reports the real cause.
+    const parkedAndAnswered = async (id: string, calls: number): Promise<void> => {
+      const line = await waitFor(() => lineOf(id), calls * 30_000 + 5_000)
       if (line.decision !== 'forwarded' || line.status !== 200) throw new Error(`marker ${id} was not forwarded with a 200: ${JSON.stringify(line)}`)
     }
     try {
@@ -212,13 +215,14 @@ describe('relay restoreClaimed never links back a symlink', () => {
       publish(`${PARK_BEFORE.id}.json`, marker(PARK_BEFORE))
       publish(`${PARK_AFTER.id}.json`, marker(PARK_AFTER))
 
-      // Step 3: the verdict was taken at the second park, while the daemon stood still.
-      await parkedAndAnswered(PARK_AFTER.id)
+      // Step 3: the verdict was taken at the second park, while the daemon stood still. Both markers
+      // were published together, so two dashboard calls come before this line.
+      await parkedAndAnswered(PARK_AFTER.id, 2)
 
       // Step 4: a LATER tick brings nothing back. This marker is written only now, so a tick that
       // STARTS after the one that decided the swapped entry lists and handles it.
       publish(`${LATER.id}.json`, marker(LATER))
-      await parkedAndAnswered(LATER.id)
+      await parkedAndAnswered(LATER.id, 1)
 
       if (parkError) throw new Error(`the park hook failed: ${parkError}`)
       // The cast is for the type checker only: the assignment happens inside the server callback,
@@ -250,5 +254,6 @@ describe('relay restoreClaimed never links back a symlink', () => {
       await new Promise(resolve => server.close(resolve))
       rmSync(work, { recursive: true, force: true })
     }
-  }, 120_000)
+  // The ceiling exceeds the sum of every wait above (3 x 20 s, 65 s, 35 s).
+  }, 180_000)
 })
