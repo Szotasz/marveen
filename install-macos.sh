@@ -2281,15 +2281,21 @@ fi
 echo ""
 echo -e "${BOLD}$(_t macos.migration_title)${NC}"
 echo -e "${DIM}$(_t macos.migration_hint)${NC}"
+# MIGRATENONFATAL1122: the migration is optional and runs after every service is up, so its failure
+# (a mistyped source path exits 1) must not report the whole install as failed. Its own step name keeps
+# the error report from blaming the step before it. The English prompt asks (y/n): "y" is accepted too.
+INSTALL_STEP="migration"
 read -rp "$(_t prompt_migrate)" DO_MIGRATE
 DO_MIGRATE=${DO_MIGRATE:-n}
-if [ "$DO_MIGRATE" = "i" ]; then
-  if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
-    "$INSTALL_DIR/scripts/migrate.sh"
-  else
-    echo -e "  ${ORANGE}$(_t macos.migrate_missing)${NC}"
-  fi
-fi
+case "$DO_MIGRATE" in
+  i|I|y|Y)
+    if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
+      "$INSTALL_DIR/scripts/migrate.sh" || warn "$(_t macos.migrate_failed | sed 's/^ *//')"
+    else
+      echo -e "  ${ORANGE}$(_t macos.migrate_missing)${NC}"
+    fi
+    ;;
+esac
 
 # Warn if Telegram pairing was skipped
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
