@@ -519,6 +519,8 @@ window._i18n.hu = {
   'agents.wizard.desc_label':    'Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök',
   'agents.wizard.profile_label': 'Biztonsági profil',
   'agents.model.custom_model_required': 'Egyéni szolgáltatóhoz add meg a modell azonosítóját is.',
+  'agents.model.no_claude_auth': 'Ezen a telepítésen nincs Claude-előfizetéses bejelentkezés, ezért egy Claude-modellen futó ügynök nem tud belépni, és nem indul el.',
+  'agents.model.no_claude_auth_router': 'Ezen a telepítésen nincs Claude-előfizetéses bejelentkezés, ezért a Hostinger AI Router van kiválasztva. Ugyanazt a router-kulcsot és kreditet használja, mint a fő ügynök. Átállíthatod.',
   'agents.model.custom_model_id_ph': 'Model ID (pl. claude-sonnet-4-6)',
   'agents.model.provider_deleted': '{id} (törölve)',
   'agents.model.provider_missing': 'Ez a szolgáltató már nem létezik, ezért az ügynök nem indul el. Válassz másik modellt.',

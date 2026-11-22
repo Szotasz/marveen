@@ -142,6 +142,7 @@ import {
   resolveMainAgentRotatedTokenSecretId,
   explicitConfigDirLacksOwnLogin,
   FLEET_OAUTH_TOKEN_PATH,
+  readSubAgentAuthAdvice,
 } from '../agent-process.js'
 import { checkMainAuthSwitch, MAIN_AUTH_SWITCH_FIELDS } from '../main-auth-switch.js'
 import {
@@ -1188,6 +1189,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       openrouterConfigured: hasOpenRouter,
       // Custom Anthropic-compatible providers defined in store/custom-providers.json.
       customProviders: listCustomProviders(),
+      // HOSTINGERSUBAGENTAUTH1122: the create form's warning and router preselection.
+      subAgentAuth: readSubAgentAuthAdvice(),
     })
     return true
   }
