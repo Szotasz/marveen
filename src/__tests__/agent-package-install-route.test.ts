@@ -65,6 +65,15 @@ const storeCredential = () => { writeFileSync(CRED, JSON.stringify({ schema: 1, 
 const delivery = (over: Record<string, unknown> = {}) => Buffer.from(makeSignedDelivery({ kid: KEY.kid, privateKey: KEY.privateKey, slug: 'invoice-helper', version: '1.2.0', minMarveenVersion: '1.0.0', ...over }))
 const messagesTo = (to: string) => (getDb().prepare('SELECT content FROM agent_messages WHERE to_agent = ?').all(to) as Array<{ content: string }>).map((r) => r.content)
 
+// MIOAGENTB4-1122 (5b): the route reads the catalog before the download. Its answer comes from here, so `fake`
+// keeps recording the download alone and the request counts below stay what they were.
+const catalog: { body: unknown; calls: number } = { body: null, calls: 0 }
+const withCatalog = (download: typeof fetch): typeof fetch => (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+  if (url === `${TEST_ORIGIN}/functions/v1/agent-packages`) { catalog.calls++; return new Response(JSON.stringify(catalog.body), { status: 200 }) }
+  return download(input, init)
+}) as typeof fetch
+
 beforeAll(() => { initDatabase(':memory:') })
 beforeEach(() => {
   getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users; DELETE FROM agent_messages')
@@ -77,7 +86,9 @@ beforeEach(() => {
   h.layoutSplit = false
   notified.length = 0
   fake = makeFakeServer()
-  deps = { keys: [KEY.jwk], fetchImpl: fake.fetchImpl, now: () => NOW, remote: makeRemote(TEST_ORIGIN), notify: async (t) => { notified.push(t); return true } }
+  catalog.body = { access: 'full', trial_pick: null, packages: [{ slug: 'invoice-helper', version: '1.2.0', kid: KEY.kid }] }
+  catalog.calls = 0
+  deps = { keys: [KEY.jwk], fetchImpl: withCatalog(fake.fetchImpl), now: () => NOW, remote: makeRemote(TEST_ORIGIN), notify: async (t) => { notified.push(t); return true } }
   storeCredential()
 })
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }))
@@ -213,6 +224,54 @@ describe('local refusals come before any download (plan 6.1 steps 1-5)', () => {
   })
 })
 
+describe('the signing key is checked against the catalog BEFORE the download (MIOAGENTB4-1122, 5b; Samu D2)', () => {
+  // On a trial account the download fixes the one pick: a package this build would refuse must not be downloaded.
+  it('a kid this build does not know: 409 unknown_kid, no download, nothing on disk', async () => {
+    catalog.body = { access: 'trial', trial_pick: null, packages: [{ slug: 'invoice-helper', kid: OTHER.kid }] }
+    fake.answer({ status: 200, body: delivery() })
+    expect(await install({ slug: 'invoice-helper' })).toMatchObject({ status: 409, body: { error: 'unknown_kid' } })
+    expect(catalog.calls).toBe(1)
+    expect(fake.requests).toHaveLength(0)
+    expect(existsSync(join(AGENTS, 'invoice-helper'))).toBe(false)
+  })
+
+  it.each([
+    ['no kid on the row', { slug: 'invoice-helper' }],
+    ['a kid that is not a string', { slug: 'invoice-helper', kid: 7 }],
+  ])('fail-closed, %s: 409 unknown_kid, no download', async (_l, row) => {
+    catalog.body = { access: 'full', trial_pick: null, packages: [row] }
+    fake.answer({ status: 200, body: delivery() })
+    expect(await install({ slug: 'invoice-helper' })).toMatchObject({ status: 409, body: { error: 'unknown_kid' } })
+    expect(fake.requests).toHaveLength(0)
+  })
+
+  it.each([
+    ['another slug only', { access: 'full', trial_pick: null, packages: [{ slug: 'other-one', kid: 'x' }] }],
+    ['no packages list', { access: 'full', trial_pick: null }],
+    ['a list of non-objects', { access: 'full', trial_pick: null, packages: ['invoice-helper', null] }],
+  ])('no catalog row for the slug (%s): 404 package_not_found, no download', async (_l, body) => {
+    catalog.body = body
+    fake.answer({ status: 200, body: delivery() })
+    expect(await install({ slug: 'invoice-helper' })).toMatchObject({ status: 404, body: { error: 'package_not_found' } })
+    expect(fake.requests).toHaveLength(0)
+  })
+
+  it('a catalog refusal passes through as the shared table says, no download', async () => {
+    const d: PackageDeps = { ...deps, fetchImpl: fake.fetchImpl }
+    fake.answer((r) => (r.url.endsWith('/agent-packages') ? { status: 401, body: JSON.stringify({ error: 'token_expired' }) } : { status: 200, body: delivery() }))
+    expect(await install({ slug: 'invoice-helper' }, SESSION, d)).toMatchObject({ status: 409, body: { error: 'credential_rejected', reason: 'token_expired' } })
+    expect(fake.requests.map((r) => r.url)).toEqual([`${TEST_ORIGIN}/functions/v1/agent-packages`])
+  })
+
+  it('local refusals still come first: an installed package is refused without reading the catalog', async () => {
+    fake.answer({ status: 200, body: delivery() })
+    expect((await install({ slug: 'invoice-helper' })).status).toBe(200)
+    expect(catalog.calls).toBe(1)
+    expect((await install({ slug: 'invoice-helper' })).status).toBe(409)
+    expect(catalog.calls).toBe(1)
+  })
+})
+
 describe('after the download (plan 6.1 steps 6-9)', () => {
   it('the publishing side refuses: the closed table answers', async () => {
     fake.answer({ status: 403, body: JSON.stringify({ error: 'not_entitled', reason: 'trial_limit', trial_pick: 'other-one' }) })
@@ -229,6 +288,16 @@ describe('after the download (plan 6.1 steps 6-9)', () => {
     expect(await install({ slug: 'invoice-helper' })).toMatchObject({ status: 422, body: { error: 'package_rejected', step: 1, reason: 'bad_signature' } })
     expect(readdirSync(AGENTS)).toEqual([])
     expect(existsSync(join(STORE, 'agent-package-installing', 'invoice-helper.json'))).toBe(false)
+  })
+
+  it('MIOAGENTB4-1122 (Samu 83364): the catalog names a known kid, the delivery comes with another one: verifyDelivery still refuses it after the download', async () => {
+    // The catalog check before the download is the first line; between the two calls the publishing side may change.
+    expect((catalog.body as { packages: Array<{ kid: string }> }).packages[0].kid).toBe(KEY.kid)
+    fake.answer({ status: 200, body: Buffer.from(makeSignedDelivery({ kid: OTHER.kid, privateKey: OTHER.privateKey, slug: 'invoice-helper' })) })
+    expect(await install({ slug: 'invoice-helper' })).toMatchObject({ status: 422, body: { error: 'package_rejected', step: 1, reason: 'unknown_kid' } })
+    expect(catalog.calls).toBe(1)
+    expect(fake.requests).toHaveLength(1)
+    expect(readdirSync(AGENTS)).toEqual([])
   })
 
   it('(55) a manifest text the rules refuse: rejected before anything reaches a config', async () => {

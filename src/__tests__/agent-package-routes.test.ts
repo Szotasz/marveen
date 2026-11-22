@@ -313,12 +313,23 @@ describe('GET /api/agent-packages/catalog', () => {
     expect(fake.requests).toHaveLength(0)
   })
 
+  it('MIOAGENTB4-1122: knownKids lists the kids of the build\'s keys, in order, and nothing else of them', async () => {
+    storeCredential()
+    fake.answer({ status: 200, body: JSON.stringify(CATALOG) })
+    const keys = [{ kty: 'OKP', crv: 'Ed25519', x: 'PUBLIC-X-ONE', kid: 'k-one' }, { kty: 'OKP', crv: 'Ed25519', x: 'PUBLIC-X-TWO', kid: 'k-two' }] as const
+    const out = await call('GET', '/api/agent-packages/catalog', SESSION, undefined, { ...deps, keys })
+    expect(out.body).toEqual({ catalog: CATALOG, knownKids: ['k-one', 'k-two'], origin: TEST_ORIGIN, marveenVersion: expect.any(String) })
+    expect(JSON.stringify(out.body)).not.toContain('PUBLIC-X')
+  })
+
   it('passes the A-side object on unchanged; the token rides in Authorization, to the fixed origin only', async () => {
     storeCredential()
     fake.answer({ status: 200, body: JSON.stringify(CATALOG) })
     const spy = vi.spyOn(AbortSignal, 'timeout')
     const out = await call('GET', '/api/agent-packages/catalog')
     expect(out).toMatchObject({ status: 200, body: { catalog: CATALOG } })
+    // MIOAGENTB4-1122 (Samu D2): the kids beside the body, the body itself unchanged.
+    expect(out.body).toEqual({ catalog: CATALOG, knownKids: [], origin: TEST_ORIGIN, marveenVersion: expect.any(String) })
     expect(fake.requests).toHaveLength(1)
     const r = fake.requests[0]
     expect(r.url).toBe(`${TEST_ORIGIN}/functions/v1/agent-packages`)

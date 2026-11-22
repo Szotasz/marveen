@@ -9,6 +9,7 @@
  "_renderApprovalsTable>cb:tbody.innerHTML = page.map(a => {::attr:data-timeout::a.timeout_at": "SAFE-NUM [n=1]: integer from computeTimeoutAt (src/web/routes/approvals.ts)",
  "_renderApprovalsTable>cb:tbody.innerHTML = page.map(a => {::attr:id::a.id": "SAFE-CONST [n=1]: id = randomUUID() (approvals.ts), TEXT PK db.ts",
  "_sshKeyBadge::text::icons[status] || ''": "SAFE-CONST [n=1]: literal / fixed map / t() string",
+ "agentCatalogCard::.src=::src": "SAFE-CONST [n=1]: src comes only from agentPkgAvatarUrl: an https URL whose origin equals the publishing origin the server names (catalog answer), else null and no img (MIOAGENTB4-1122; pinned in agent-catalog-ui.test.ts)",
  "agentActivityBodyHtml::attr:class::metaRaw.cls": "SAFE-CONST [n=2]: metaRaw.cls from fixed ACTIVITY_STATE_META map, lookup falls back to .unknown",
  "attachTmuxCopyButtons>cb:btn.addEventListener('click', (e) => {>cb:navigator.clipboard.writeText(cmd).then(() => {::builder::btn.innerHTML": "SAFE-PRE [n=1]: orig = btn.innerHTML captured just before: the button's own fixed markup restored",
  "buildBubbleHtml::attr:class::statusMeta.cls": "SAFE-CONST [n=3]: cls from fixed MSG_STATUS_META map or literal \"badge\"",
