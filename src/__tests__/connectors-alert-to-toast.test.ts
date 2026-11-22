@@ -150,7 +150,7 @@ describe('a failed npm install stays in the install status line', () => {
     const r = await install({ ...warned, requiredEnvVars: ['API_KEY'] }, { API_KEY: 'x' }, false)
     expect(r.status.className).toBe('github-repo-status error')
     expect(r.status.textContent.startsWith(warning + '\n\n')).toBe(true)
-    expect(r.status.textContent).toContain('kulcs mentése sikertelen')
+    expect(r.status.textContent).toContain('connectors.env_modal.partial_save')
   })
 
   it('without a warning the install reports success, offers the opt-in and hides the line later, as before', async () => {
