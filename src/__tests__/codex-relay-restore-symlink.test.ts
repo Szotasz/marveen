@@ -26,6 +26,9 @@
 // claimed copy, whatever the scheduling: no settle window, no sample count, no dependence on how
 // fast the test process runs. A third marker, written only afterwards, shows that a LATER tick
 // brings nothing back.
+// The run must also end with exactly ONE decision line for the entry (an unfixed restore's link is
+// denied and unlinked by the daemon's own next tick), and nothing may appear half-made under the
+// relay's eyes: the fixture directory and every marker are staged outside the spool and renamed in.
 import { describe, it, expect } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
@@ -124,6 +127,12 @@ describe('relay restoreClaimed never links back a symlink', () => {
     const secret = `secret-${randomBytes(16).toString('hex')}`
     writeFileSync(tokenFile, `tok-${randomBytes(16).toString('hex')}\n`)
     writeFileSync(outsideTarget, secret)
+    const outbox = join(work, 'outbox') // staging area OUTSIDE the relay dir, invisible to the daemon
+    mkdirSync(outbox)
+    const publish = (name: string, text: string): void => {
+      writeFileSync(join(outbox, name), text)
+      renameSync(join(outbox, name), join(requestsDir, name))
+    }
 
     const seen: Seen[] = []
     let swapped = false
@@ -174,7 +183,8 @@ describe('relay restoreClaimed never links back a symlink', () => {
     const lineOf = (id: string): AuditLine | null => readAuditLines(auditPath).find(l => l.id === id) ?? null
     // A park is proven by its audit line: forwarded, and answered 200 (a timed-out call is no park).
     const parkedAndAnswered = async (id: string): Promise<void> => {
-      const line = await waitFor(() => lineOf(id))
+      // 35 s: the daemon's own dashboard timeout is 30 s, so even a timed-out park lands its line by then.
+      const line = await waitFor(() => lineOf(id), 35_000)
       if (line.decision !== 'forwarded' || line.status !== 200) throw new Error(`marker ${id} was not forwarded with a 200: ${JSON.stringify(line)}`)
     }
     try {
@@ -183,9 +193,11 @@ describe('relay restoreClaimed never links back a symlink', () => {
       // Step 1: a NON-EMPTY directory at requests/<name>.json. The relay claims it, cannot remove it
       // (rmdir fails on non-empty), denies it once -- the audit line is the durable proof a tick ran
       // and decided this entry -- and RESTORES it: the directory rests at its requests/ name again
-      // between ticks, and the name is on the relay's list of stuck entries.
-      mkdirSync(requestFile)
-      writeFileSync(join(requestFile, 'keep.txt'), 'kept')
+      // between ticks, and the name is on the relay's list of stuck entries (staged and renamed in).
+      const stagedDir = join(outbox, 'staged-dir')
+      mkdirSync(stagedDir)
+      writeFileSync(join(stagedDir, 'keep.txt'), 'kept')
+      renameSync(stagedDir, requestFile)
       await waitFor(() => (readAuditLines(auditPath).some(l => l.decision === 'denied' && l.reason === 'invalid') ? true : null))
       await waitFor(() => {
         try { return lstatSync(requestFile).isDirectory() ? true : null } catch { return null }
@@ -197,15 +209,15 @@ describe('relay restoreClaimed never links back a symlink', () => {
       const marker = (m: { id: string; marker: string }) => JSON.stringify({
         id: m.id, method: 'POST', path: '/api/daily-log', body: { agent_id: AGENT, content: m.marker },
       })
-      writeFileSync(join(requestsDir, `${PARK_BEFORE.id}.json`), marker(PARK_BEFORE))
-      writeFileSync(join(requestsDir, `${PARK_AFTER.id}.json`), marker(PARK_AFTER))
+      publish(`${PARK_BEFORE.id}.json`, marker(PARK_BEFORE))
+      publish(`${PARK_AFTER.id}.json`, marker(PARK_AFTER))
 
       // Step 3: the verdict was taken at the second park, while the daemon stood still.
       await parkedAndAnswered(PARK_AFTER.id)
 
       // Step 4: a LATER tick brings nothing back. This marker is written only now, so a tick that
       // STARTS after the one that decided the swapped entry lists and handles it.
-      writeFileSync(join(requestsDir, `${LATER.id}.json`), marker(LATER))
+      publish(`${LATER.id}.json`, marker(LATER))
       await parkedAndAnswered(LATER.id)
 
       if (parkError) throw new Error(`the park hook failed: ${parkError}`)
@@ -225,6 +237,10 @@ describe('relay restoreClaimed never links back a symlink', () => {
       expect(claimedCopies(claimedRoot, NAME)).toEqual([])
       expect(statSync(outsideTarget).nlink).toBe(1)
       expect(readFileSync(outsideTarget, 'utf8')).toBe(secret) // ... and its content is unchanged
+      // Exactly one decision for the entry, the step-1 denial: an unfixed restore that links the
+      // target back has its own next tick deny and unlink that link (a second line), so this count
+      // fails the unfixed daemon however the ticks split the two markers.
+      expect(readAuditLines(auditPath).filter(l => l.id === NAME.replace(/\.json$/, ''))).toHaveLength(1)
       // Nothing was forwarded for the entry: the dashboard saw exactly the three markers, in name order.
       const which = (s: Seen): string => [PARK_BEFORE, PARK_AFTER, LATER].find(m => s.body.includes(m.marker))?.id ?? `other: ${s.method} ${s.url}`
       expect(seen.map(which)).toEqual([PARK_BEFORE.id, PARK_AFTER.id, LATER.id])
@@ -234,5 +250,5 @@ describe('relay restoreClaimed never links back a symlink', () => {
       await new Promise(resolve => server.close(resolve))
       rmSync(work, { recursive: true, force: true })
     }
-  }, 60_000)
+  }, 120_000)
 })
