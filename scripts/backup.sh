@@ -365,8 +365,16 @@ echo "backup: wrote ${ARCHIVE} ($(wc -c < "${ARCHIVE}" | awk '{print $1}') bytes
 #     small and useless -- the 09-04 shape -- shows up here even if the
 #     manifest itself was built wrong).
 ARCHIVE_LIST="$(mktemp -t claudeclaw-verify.XXXXXX)"
-trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}" "${ARCHIVE_LIST}"; [[ -n "${BUNDLE}" ]] && rm -f "${BUNDLE}"; rm -rf "${STAGE}"' EXIT
-tar -tzf "${ARCHIVE}" > "${ARCHIVE_LIST}"
+trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}" "${ARCHIVE_LIST}" "${ARCHIVE_LIST}.raw"; [[ -n "${BUNDLE}" ]] && rm -f "${BUNDLE}"; rm -rf "${STAGE}"' EXIT
+# The listing is taken under a UTF-8 locale and normalized to NFC (2026-11-22):
+# under launchd the locale is C, and bsdtar then prints every non-ASCII byte as
+# an octal escape (`e\314\201s`), so no accented path could ever match the raw
+# UTF-8 manifest; and even in UTF-8 the macOS listing is NFD while the manifest
+# is NFC (see nfc_lines). The raw listing goes to a file first, so a tar failure
+# still stops the script under `set -e` instead of vanishing inside a pipe.
+LC_ALL=C.UTF-8 tar -tzf "${ARCHIVE}" > "${ARCHIVE_LIST}.raw"
+nfc_lines < "${ARCHIVE_LIST}.raw" > "${ARCHIVE_LIST}"
+rm -f "${ARCHIVE_LIST}.raw"
 
 missing=0
 while IFS= read -r want; do
@@ -381,7 +389,7 @@ while IFS= read -r want; do
     echo "backup: MISSING from the archive: ${want}" >&2
     missing=$((missing + 1))
   fi
-done < <(sed -e 's/  *(.*)$//' "${MANIFEST}")
+done < <(sed -e 's/  *(.*)$//' "${MANIFEST}" | nfc_lines)
 
 # Load-bearing by name. Each one has already been lost or nearly lost once:
 # the memory directories and the local-commit bundle on 2026-09-04, the
