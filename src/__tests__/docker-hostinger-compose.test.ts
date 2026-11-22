@@ -112,3 +112,18 @@ describe('MARVEEN_PLATFORM: only in the Hostinger compose file', () => {
     }
   })
 })
+
+// HOSTINGERLOCKDOWN1122: the main compose file too. Outside 127.0.0.1 only the caddy service's 80 and 443 may be
+// published (docker/host-hardening.sh lets only these through the DOCKER-USER chain); a second ports: block or a
+// port on 0.0.0.0 would be reachable from the internet before any firewall.
+describe('docker-compose.yml', () => {
+  it('publishes the dashboard only on 127.0.0.1; 80 and 443 only for the caddy service', () => {
+    const c = code(MAIN)
+    const published = [...c.matchAll(/^\s*- "([^"]*:\d+)"$/gm)].map((m) => m[1])
+    expect(published).toEqual(['127.0.0.1:3420:3420', '80:80', '443:443'])
+    const caddy = c.slice(c.indexOf('\n  caddy:\n'))
+    expect(caddy).toContain('- "80:80"')
+    expect(caddy).toContain('- "443:443"')
+    expect(c.match(/^\s*ports:/gm)).toHaveLength(2)
+  })
+})
