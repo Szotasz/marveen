@@ -31,7 +31,9 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
+import { accessSync, constants, closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -55,6 +57,320 @@ try {
   const unavailable = () => { throw new Error(`recipient-ledger.mjs did not load: ${err?.message ?? err}`) }
   loadLedger = isVerifiedIn = splitAddresses = parseAddresses = unavailable
   SOURCE_HELP = '(a ledger modul nem toltheto be)'
+}
+
+// Install-local operator grants; never redirected by the checked agent's environment.
+export const AGENT_SEND_EXCEPTIONS_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'agent-send-exceptions.json')
+const EXCEPTION_KEYS = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'booleanArgs', 'readFiles']
+// REPEATENVELOPE (card f2ccb0bb, round 2): the parser below returns only the FIRST
+// value of a repeatable flag (values.get(flag)?.[0]), so an entry that makes an
+// envelope flag repeatable would let the recipient verification here (and the py
+// envelope hash) see only the first recipient. Such an entry is invalid in ALL THREE
+// validators: this one, valid_agent_send_exception in email-approval-gate.py, and
+// readAgentSendExceptions in agent-scaffold.ts.
+const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'])
+// C1 (PR #2843 review): the gates verify and hash only --to and --cc as recipients,
+// so an entry naming --bcc, --reply-to, --from, --sender or --return-path in ANY
+// of valueArgs, repeatableArgs or booleanArgs is invalid in ALL THREE validators:
+// this one,
+// valid_agent_send_exception in email-approval-gate.py, and readAgentSendExceptions
+// in agent-scaffold.ts. --envelope-sha256 is reserved for the gate itself.
+const RESERVED_FLAGS = new Set(['--envelope-sha256', '--bcc', '--reply-to', '--from', '--sender', '--return-path'])
+
+// SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not
+// only its path. "scripts" is an array of {"path", "sha256"} objects -- at least
+// one entry, no duplicate paths, an absolute path and a sha256 of exactly 64
+// lowercase hex characters. On EVERY invocation the matcher hashes and scans
+// one read, and refuses a writable file or ancestor directory; the path must be
+// its own real path (no symlink anywhere in it), and a path that cannot be resolved
+// fails closed. A read-only file system (EROFS) counts as unwritable, as
+// EACCES/EPERM do; any other probe error fails closed. A gate running as effective uid 0 never grants.
+// Keep in sync with valid_agent_send_exception in
+// scripts/hooks/email-approval-gate.py and readAgentSendExceptions in
+// agent-scaffold.ts.
+const SCRIPT_SHA256_RX = /^[0-9a-f]{64}$/
+
+// B2 (card f2ccb0bb R4, maintainer decision): the interpreter prefix is an
+// EXACT allowlist, not a path shape. Only the bare node/nodejs (on PATH), /usr/bin/node
+// and /usr/local/bin/node strip the interpreter (plus the two-token '/usr/bin/env' +
+// 'node' handled in the matcher); every other absolute interpreter path -- a writable
+// fake 'node' at an arbitrary path (/tmp/x/node), /usr/bin/nodejs,
+// /usr/local/bin/nodejs, ... -- leaves the command WITHOUT an exception, so the script
+// token cannot match a granted path. This narrows shapes, not the user trust boundary:
+// NODE_OPTIONS and shell start-up files are trusted as by the agent process, while the
+// resolved interpreter must be unwritable and symlink-free.
+// Keep in sync with
+// agent_script_exception in scripts/hooks/email-approval-gate.py.
+const NODE_INTERPRETERS = ['node', 'nodejs', '/usr/bin/node', '/usr/local/bin/node']
+
+function validExceptionScripts(scripts) {
+  if (!Array.isArray(scripts) || scripts.length === 0) return false
+  const paths = new Set()
+  for (const s of scripts) {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return false
+    const keys = Object.keys(s)
+    if (keys.length !== 2 || !keys.includes('path') || !keys.includes('sha256')) return false
+    if (typeof s.path !== 'string' || !isAbsolute(s.path)) return false
+    if (typeof s.sha256 !== 'string' || !SCRIPT_SHA256_RX.test(s.sha256)) return false
+    if (paths.has(s.path)) return false
+    paths.add(s.path)
+  }
+  return true
+}
+
+export function validAgentSendException(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+    || Object.keys(entry).some(k => !EXCEPTION_KEYS.includes(k))) return false
+  if (!['modes', 'valueArgs', 'repeatableArgs', 'booleanArgs'].every(k => Array.isArray(entry[k])
+    && entry[k].every(v => typeof v === 'string' && v.length > 0)
+    && new Set(entry[k]).size === entry[k].length)) return false
+  if (Object.hasOwn(entry, 'readFiles') && (!Array.isArray(entry.readFiles)
+    || !entry.readFiles.every(v => typeof v === 'string' && v.length > 0 && isAbsolute(v))
+    || new Set(entry.readFiles).size !== entry.readFiles.length)) return false
+  const flags = [...entry.valueArgs, ...entry.repeatableArgs, ...entry.booleanArgs]
+  return validExceptionScripts(entry.scripts)
+    && entry.modes.length > 0 && entry.modes.every(m => ['draft', 'send'].includes(m))
+    && !entry.repeatableArgs.some(f => NON_REPEATABLE_FLAGS.has(f))
+    && !flags.some(f => RESERVED_FLAGS.has(f))
+    && flags.every(f => /^--[a-z][a-z0-9-]*$/.test(f)) && new Set(flags).size === flags.length
+}
+
+export function readAgentSendExceptions() {
+  try {
+    const config = JSON.parse(readFileSync(AGENT_SEND_EXCEPTIONS_PATH, 'utf8'))
+    if (!config?.agents || typeof config.agents !== 'object' || Array.isArray(config.agents)) return {}
+    return { agents: Object.fromEntries(Object.entries(config.agents).filter(([, e]) => validAgentSendException(e))) }
+  } catch { return {} }
+}
+
+// EXACTAPPROVALBIND (card 90a639ef): the approval hook command exactly as the
+// scaffold writes it. Keep this byte-identical to EMAIL_APPROVAL_COMMAND in
+// src/web/agent-scaffold.ts; the approval command drift test pins the equality.
+export const EMAIL_APPROVAL_GATE_COMMAND = 'if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"; else python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"; fi; rc=$?; [ "$rc" = 0 ] || [ "$rc" = 2 ] || { echo "governance-kapu (fail-closed): email-approval-gate.py: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent." >&2; exit 2; }; exit "$rc"'
+
+// SENDAPPROVALBIND (card f2ccb0bb, round 2): is the py approval gate actually
+// BOUND for this agent? The exception config above is read live, but the
+// scaffold (writeAgentSettingsFromProfile in agent-scaffold.ts) binds the
+// enabling email-approval-gate.py PreToolUse hook into the agent's settings
+// file only at spawn time, and only if a grant existed THEN. A grant added
+// AFTER spawn is seen by this gate while the py approval gate is still
+// unbound -- approval-level enforcement would be bypassed until respawn.
+// The settings path mirrors agentSettingsPath exactly: the main agent
+// (MAIN_AGENT_ID in <root>/.env) -> ~/.claude/settings.json, otherwise
+// <root>/agents/<name>/.claude/settings.json (<root> = one level above
+// scripts/, as in knownAgents). Any read error, a missing file, or no PreToolUse
+// hook whose command is EXACTLY the scaffold's approval command means NOT bound
+// (fail-closed). A command that merely mentions the gate does not count: the
+// binding check uses the same exact match as removeEmailApprovalGate
+// (EXACTAPPROVALREMOVE in agent-scaffold.ts).
+export function agentApprovalGateBound(agentName) {
+  if (!agentName || typeof agentName !== 'string') return false
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  let mainId = null
+  try {
+    const m = readFileSync(join(root, '.env'), 'utf-8').match(/^\s*MAIN_AGENT_ID\s*=\s*['"]?([^'"\s#]+)/m)
+    if (m) mainId = m[1]
+  } catch { /* no .env: the agent cannot be the main agent (fail-closed) */ }
+  const settingsPath = agentName === mainId
+    ? join(homedir(), '.claude', 'settings.json')
+    : join(root, 'agents', agentName, '.claude', 'settings.json')
+  try {
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+    const ptu = settings?.hooks?.PreToolUse
+    if (!Array.isArray(ptu)) return false
+    return ptu.some(e => Array.isArray(e?.hooks)
+      && e.hooks.some(h => typeof h?.command === 'string' && h.command === EMAIL_APPROVAL_GATE_COMMAND))
+  } catch { return false }
+}
+
+// Conservative text scan; comments and strings count too. Keep the Python twin in sync.
+export function scriptSourceLoadsOnlyBuiltins(buf) {
+  let text
+  try {
+    // ignoreBOM preserves a leading BOM as a character, like Python's utf-8 decoder.
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buf)
+  } catch { return false }
+  if (text.includes('\\u')) return false
+  if (['node:module', 'node:vm', 'node:worker_threads', 'node:child_process', 'node:inspector',
+    'node:wasi', 'node:repl', 'child_process', 'worker_threads', '--require', '--import',
+    '--loader', '--experimental-loader'].some(s => text.includes(s))) return false
+  const wordStart = '(?<![A-Za-z0-9_$])'
+  const wordEnd = '(?![A-Za-z0-9_$])'
+  if (new RegExp(`${wordStart}(?:createRequire|dlopen|eval|Function|arguments|mainModule|binding|WebAssembly|constructor)${wordEnd}`).test(text)) return false
+  const ws = '[ \\t\\r\\n]'
+  const spec = `(?:'node:[a-z0-9_/]+'|"node:[a-z0-9_/]+")`
+  const call = `${ws}*\\(${ws}*${spec}${ws}*\\)`
+  const forms = {
+    require: new RegExp(`require${call}`, 'y'),
+    import: new RegExp(`import(?:${call}|${ws}*${spec}|${ws}+[^'"\x60;()]+?${wordStart}from${wordEnd}${ws}*${spec})`, 'y'),
+    from: new RegExp(`from${ws}*${spec}`, 'y'),
+  }
+  const occurrences = new RegExp(`${wordStart}(require|import|from)${wordEnd}`, 'g')
+  for (const m of text.matchAll(occurrences)) {
+    if (m[1] === 'from' && !/^[ \t\r\n]*['"`]/.test(text.slice(m.index + 4))) continue
+    const form = forms[m[1]]
+    form.lastIndex = m.index
+    if (!form.test(text)) return false
+  }
+  return true
+}
+
+function anyPathComponentWritable(p) {
+  for (; ; p = dirname(p)) {
+    try {
+      accessSync(p, constants.W_OK)
+      return true
+    } catch (err) {
+      if (!['EACCES', 'EPERM', 'EROFS'].includes(err?.code)) return true
+    }
+    if (dirname(p) === p) return false
+  }
+}
+
+export function scriptPathWritable(path) {
+  if (process.geteuid?.() === 0) return true
+  try {
+    if (realpathSync(path) !== path) return true
+    return anyPathComponentWritable(path)
+  } catch {
+    return true
+  }
+}
+
+// SCRIPTBIND: read ONCE; hash and scan the same bytes on every invocation.
+// Unknown/unreadable content fails closed; path writability is checked separately.
+function scriptContentMatches(path, sha256) {
+  try {
+    const data = readFileSync(path)
+    return createHash('sha256').update(data).digest('hex') === sha256
+      && scriptSourceLoadsOnlyBuiltins(data)
+  } catch { return false }
+}
+
+export function nodePermissionVersionOk(versionText) {
+  if (typeof versionText !== 'string') return false
+  const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(versionText.trim())
+  if (!m) return false
+  const major = Number(m[1]), minor = Number(m[2])
+  return major >= 24 || (major === 23 && minor >= 5) || (major === 22 && minor >= 13)
+}
+
+function readGrantPathAcceptable(path) {
+  if (path.split('/').slice(1).some(s => s === '' || s === '.' || s === '..')) return false
+  try { return lstatSync(path).isFile() }
+  catch (err) { return err.code === 'ENOENT' }
+}
+
+// The interpreter the shell would run for a bare `node`/`nodejs` (or '/usr/bin/env
+// node'): the first executable regular file on PATH, or an absolute interp as is.
+// Plain string join -- the candidate is never resolved or normalized, so a symlinked
+// parent stays visible to the writability check in probeNodeVersion. A relative or
+// empty PATH entry aborts the walk (null): the gate never guesses a directory.
+export function resolveNodeInterpreter(interp) {
+  if (interp === '/usr/bin/env node') interp = 'node'
+  if (isAbsolute(interp)) return interp
+  for (const dir of (process.env.PATH ?? '').split(':')) {
+    if (!dir.startsWith('/')) return null
+    const candidate = dir + '/' + interp
+    try {
+      accessSync(candidate, constants.X_OK)
+      if (statSync(candidate).isFile()) return candidate
+    } catch { /* Continue to the next PATH entry. */ }
+  }
+  return null
+}
+
+export function probeNodeVersion(interp) {
+  try {
+    const resolved = resolveNodeInterpreter(interp)
+    // #2843 review B1: an untrusted interpreter (writable path component, symlink, root) is
+    // refused BEFORE it is ever executed -- the same rule as the script itself.
+    if (!resolved || scriptPathWritable(resolved)) return null
+    return execFileSync(resolved, ['--version'], {
+      timeout: 2000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch { return null }
+}
+
+let nodeVersionProbeOverride = null
+export function setNodeVersionProbeOverride(fn) { nodeVersionProbeOverride = fn }
+
+// Literal whole-word shell subset; interpreter, --permission, exact read list, script, mode, args.
+// No expansion, escapes, quote concatenation, operators or comments, even in quotes.
+// The script is hash-bound; the text scanner is an early refusal only.
+// A belt against ACCIDENTAL loading: Node refuses reads outside the list, writes and child processes.
+// NOT a sandbox against malicious code: network is open; NODE_OPTIONS trust is unchanged. The interpreter the
+// shell would run (PATH resolved at gate time) must pass the same rule as the script: no symlink, no writable
+// path component, not root -- or there is no exception, and it is never executed.
+// macOS fails closed because the permission model was not measured there.
+// Keep in sync with agent_script_exception in scripts/hooks/email-approval-gate.py.
+export function agentScriptException(cmd, agentName, config) {
+  if (process.platform === 'darwin') return null
+  if (!agentName || !Object.hasOwn(config?.agents ?? {}, agentName)) return null
+  const entry = config.agents[agentName]
+  if (!validAgentSendException(entry) || typeof cmd !== 'string'
+    || /[;&|<>$()`\\\n\r\0#*?{}\[\]~]/.test(cmd)) return null
+  const tokens = []
+  const word = /(?:^|[ \t]+)(?:'([^']*)'|"([^"]*)"|([^ \t'"\n\r]+))(?=[ \t]|$)/gy
+  let offset = 0
+  while (offset < cmd.length) {
+    if (/^[ \t]*$/.test(cmd.slice(offset))) break
+    word.lastIndex = offset
+    const m = word.exec(cmd)
+    if (!m) return null
+    tokens.push(m[1] ?? m[2] ?? m[3])
+    offset = word.lastIndex
+  }
+  let interp
+  if (tokens[0] === '/usr/bin/env' && tokens[1] === 'node') { interp = 'node'; tokens.splice(0, 2) }
+  else if (NODE_INTERPRETERS.includes(tokens[0] ?? '')) interp = tokens.shift()
+  else return null
+  if (tokens.shift() !== '--permission') return null
+  const reads = new Set()
+  while (tokens[0]?.startsWith('--allow-fs-read=')) {
+    const path = tokens.shift().slice('--allow-fs-read='.length)
+    if (!path || !isAbsolute(path) || reads.has(path)) return null
+    reads.add(path)
+  }
+  if (!reads.size) return null
+  const [script, mode, ...args] = tokens
+  const grant = entry.scripts.find(s => s.path === script)
+  // SCRIPTBIND: the path alone is not the grant -- the file's content must still
+  // hash to the grant, pass the loader scan, and have no writable path component.
+  if (!grant || !entry.modes.includes(mode) || !scriptContentMatches(grant.path, grant.sha256)
+    || scriptPathWritable(grant.path)) return null
+  let envelopeSha256
+  const values = new Map()
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i]
+    if (flag === '--envelope-sha256') {
+      const value = args[++i]
+      if (mode !== 'send' || envelopeSha256 !== undefined || !value || !SCRIPT_SHA256_RX.test(value)) return null
+      envelopeSha256 = value
+      continue
+    }
+    if (entry.booleanArgs.includes(flag)) {
+      values.set(flag, true)
+      continue
+    }
+    const repeat = entry.repeatableArgs.includes(flag)
+    if (!repeat && !entry.valueArgs.includes(flag)) return null
+    if (!repeat && values.has(flag)) return null
+    const value = args[++i]
+    if (!value || value.startsWith('-')) return null
+    if (['--body-file', '--attach'].includes(flag) && !isAbsolute(value)) return null
+    values.set(flag, [...(values.get(flag) ?? []), value])
+  }
+  if (mode === 'send' && envelopeSha256 === undefined) return null
+  const required = new Set([script, ...(values.get('--body-file') ?? []), ...(values.get('--attach') ?? [])])
+  const allowed = new Set([...required, ...(entry.readFiles ?? [])])
+  if ([...required].some(p => !reads.has(p)) || [...reads].some(p => !allowed.has(p))) return null
+  // A directory, symlink or non-canonical grant (Node resolves it lexically) opens more than itself; checked at gate time only (a concurrent swap is out of scope).
+  if ([...reads].some(p => !readGrantPathAcceptable(p))) return null
+  // Probe last: all shape, content and path checks must pass before spawning a process.
+  if (!nodePermissionVersionOk((nodeVersionProbeOverride ?? probeNodeVersion)(interp))) return null
+  return { script, mode, ...(mode === 'send' ? { envelopeSha256 } : {}), to: values.get('--to')?.[0] ?? '', cc: values.get('--cc')?.[0] ?? '',
+    subject: values.get('--subject')?.[0] ?? '', bodyFile: values.get('--body-file')?.[0] ?? '', attach: values.get('--attach') ?? [] }
 }
 
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
@@ -135,7 +451,13 @@ const SENDPY = /^send\.py$/i
 // the free-threaded python3.13t) is the same python; the old /^python3?$/ let it
 // through as "not an interpreter".
 const PYTHON = /^python(3(\.\d+t?)?)?$/i
-const NODEISH = /^(node|tsx|ts-node|deno|bun|npx)$/i
+// F2CCB0BB R5 (maintainer decision): 'nodejs' is node-ish. The ordinary Bash
+// analysis must recognize a nodejs-basename interpreter -- the bare `nodejs` on PATH,
+// /usr/bin/nodejs, /usr/local/bin/nodejs, any absolute path -- so a script send run that
+// way gets the script-send deny instead of passing ungated (measured R4 gap). This is the
+// ORDINARY analysis only; the exception matcher's exact interpreter allowlist
+// (NODE_INTERPRETERS, maintainer decision) is unchanged on purpose.
+const NODEISH = /^(node|nodejs|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
 const CURLISH = /^(curl|wget|http)$/i
@@ -2264,8 +2586,9 @@ function headRunsSenderScript(toks, cwd, readScript, depth, cmdWords = []) {
   if (UNDECIDABLE_PATH.test(script)) return true
   if (addressed && relativeUnderUndecidableCd(script, cwd, cmdWords)) return true
   let paths = resolveScriptPaths(script, cwd, cmdWords)
-  if (prog === 'node' && !/\.[^/]*$/.test(basename(script))) {
+  if ((prog === 'node' || prog === 'nodejs') && !/\.[^/]*$/.test(basename(script))) {
     // Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+    // nodejs is the same runtime as node, so the extensionless-load rule applies to it too.
     if (addressed && paths.some((p) => readScript(p + '.node', SHEBANG_READ_LIMIT) !== null)) return true
     paths = paths.flatMap((p) => [p, p + '.js', p + '.json'])
   }
@@ -3242,7 +3565,7 @@ function ledgerLookup() {
 // (the only path the thread-reply capability below can narrow),
 // 'unverified-recipient' is a draft/manage_email address with no recorded
 // source, and everything else is the sub-agent governance block.
-export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd()) {
+export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd(), agentName = null, readExceptionConfig = readAgentSendExceptions) {
   const name = String(toolName ?? '')
   // Lazy: only build the ledger lookup when a call actually carries addresses,
   // so a read-shaped tool call never pays a file read.
@@ -3330,6 +3653,22 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
+    const ex = agentScriptException(cmd, agentName, readExceptionConfig())
+    if (ex) {
+      // SENDAPPROVALBIND: a SEND-mode pass requires the py approval gate to be
+      // bound in this agent's settings file, verified FIRST (before the
+      // recipient checks): an unbound gate means no approval-level enforcement
+      // exists at all. Drafts are deliberately untouched -- they put nothing on
+      // the wire and never reach the approval gate.
+      if (ex.mode === 'send' && !agentApprovalGateBound(agentName)) {
+        return { deny: true, kind: 'approval-gate-unbound' }
+      }
+      const unparseable = unparseableRecipients({ to: ex.to, cc: ex.cc })
+      if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
+      const bad = unverifiedRecipients({ to: ex.to, cc: ex.cc }, verify)
+      if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
+      return { deny: false, kind: 'script-exception' }
+    }
     if (unverifiableSendConstruction(cmd, cwd)) return { deny: true, kind: 'unverifiable-construction' }
     if (isSendInvocation(cmd, 0, cwd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
     if (scriptRunSends(cmd, cwd)) return { deny: true, kind: 'script-send' }
@@ -3380,6 +3719,23 @@ export function buildUnparseableRecipientMsg(pieces) {
     'Ket cim egy elemben, cim a megjelenitett nevben vagy tobb <...> ' +
     'nem ellenorizheto a cimzett-ledgerrel, ezert a kapu tilt (fail-closed). ' +
     'Ird at a mezot tiszta cimekre, aztan kuldd ujra.'
+  )
+}
+
+// Wording for a SEND-mode script-exception pass whose enabling approval gate is
+// not bound in the agent's settings file (SENDAPPROVALBIND). The remedy is not a
+// rewrite of the call: the agent must be restarted so the scaffold binds the
+// email-approval-gate.py PreToolUse hook (it re-evaluates the grant on every
+// spawn); until then every send under the exception stays denied (fail-closed).
+export function buildApprovalGateUnboundMsg() {
+  return (
+    'EMAIL-KAPU: TILTVA. A script-kivetel engedelyezne a KULDEST, de az ugynok ' +
+    'settings fajljaban nincs bekotve az email-approval-gate.py PreToolUse hook: ' +
+    'a scaffold csak inditaskor koti be, es csak akkor, ha a kivetel mar akkor megvolt. ' +
+    'Egy inditas utan adott kivetel mellett a jovahagyas (approval) nem is futna le, ' +
+    'ezert a kapu fail-closed: a kuldes tiltva. Javitas: az ugynokot ujra kell inditani ' +
+    '(respawn), hogy a scaffold bekotse az email-approval-gate.py hookot; a draft-mode ' +
+    'hivasokat ez nem erinti.'
   )
 }
 
@@ -3617,7 +3973,9 @@ if (isInvokedDirectly()) {
   }
   let decision
   try {
-    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, payload?.cwd || process.cwd())
+    const agentFlag = process.argv.indexOf('--agent')
+    const agentName = agentFlag >= 0 ? process.argv[agentFlag + 1] : null
+    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, payload?.cwd || process.cwd(), agentName)
   } catch (err) {
     // HOOKDEPLOAD1008: the call needed the ledger, and the ledger module did
     // not load. Anything else that throws here is not this branch's to judge.
@@ -3637,6 +3995,7 @@ if (isInvokedDirectly()) {
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
     if (kind === 'unverifiable-construction') deny(buildUnverifiableConstructionMsg(botName, ownerName))
     if (kind === 'script-send') deny(buildScriptSendMsg(botName, ownerName))
+    if (kind === 'approval-gate-unbound') deny(buildApprovalGateUnboundMsg())
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
     // and only for the direct send_email tool. Bash send routes and

@@ -29,6 +29,10 @@ import { installLang, switchInstallLanguage, type RunResult } from '../install-l
 
 // DOCKERUX1118: one language switch at a time.
 let langSwitchBusy = false
+// HOSTINGERI18N1122: a switch over the running setup session that failed after its first write (env, .lang, persona
+// already in the new language), did not read back, or whose restart failed, owes the session its restart: the retry finds the language
+// already switched (nothing to render) and pays it then.
+let langRestartOwed = false
 /** A program without a shell, with exactly the given environment; never rejects (a failure is a code). */
 function runNoShell(file: string, args: readonly string[], env: Record<string, string>): Promise<RunResult> {
   return new Promise((resolve) => {
@@ -401,8 +405,8 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
 
   // DOCKERUX1118 (owner 33327/33329, Samu 80886/80891): the wizard's language switch. Docker only (a native install's
   // language is the installer's question); the owner session only, never the bare first-run token; only while the
-  // setup is unfinished and the main agent does not run (its CLAUDE.md is in use then). What it rewrites, and the
-  // untouched-only rule: src/web/install-lang-switch.ts.
+  // setup is unfinished. A main agent already running is restarted after the switch (HOSTINGERI18N1122, below). What it
+  // rewrites, and the untouched-only rule: src/web/install-lang-switch.ts.
   if (path === '/api/onboarding/language' && method === 'POST') {
     if (!mayActAsOwner(ctx.auth, req)) {
       json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing the install language needs the dashboard login (an owner session).' }, 403)
@@ -417,17 +421,29 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'The install language is switched here only in the Docker container. This install chose its language when it was installed.', reason: 'not_docker' }, 409)
       return true
     }
-    if (agentsRunning()) {
-      json(res, { error: 'The main agent is already running, so its files are in use: the install language can only be switched before it starts.', reason: 'agent_running' }, 409)
-      return true
-    }
     if (channelConfigured() && paired() && (await claudeAuthPresent())) {
       json(res, { error: 'The setup is finished: the install language can only be switched during the setup.', reason: 'onboarding_done' }, 409)
+      return true
+    }
+    // HOSTINGERI18N1122 (measured on the develop image): in the container supervisor starts channels.sh at boot, so the
+    // main agent runs from the first second, logged out, and refusing a running agent failed the wizard's switch on
+    // every Docker install. A running session whose channel is not paired yet cannot act on anyone's message (the
+    // claude-auth step's rule: fresh setup state, a bounce loses nothing), so for it the switch writes, reads back, then
+    // restarts it. A stop before the switch does not work: supervisor and the keep-alive bring the session back in ~5 s,
+    // before the renders end. Any other running agent (a paired channel, e.g. a router install whose Claude check
+    // never passes) keeps the refusal, and is never restarted by this switch.
+    const running = agentsRunning()
+    const setupSession = running && !paired()
+    if (running && !setupSession) {
+      json(res, { error: 'The main agent is already running, so its files are in use: the install language can only be switched before it starts.', reason: 'agent_running' }, 409)
       return true
     }
     if (langSwitchBusy) { json(res, { error: 'A language switch is already running.', reason: 'busy' }, 409); return true }
     langSwitchBusy = true
     try {
+      // The n2 re-check (an agent that starts during the switch) is skipped ONLY for the unpaired setup session, which
+      // runs already and is restarted below; said in the log.
+      if (setupSession) logger.info('onboarding: language switch over the running, unpaired setup session: the n2 re-check is skipped, the session is restarted after the switch')
       const result = await switchInstallLanguage(lang, {
         root: PROJECT_ROOT,
         dockerDir: process.env.MARVEEN_DOCKER_DIR || '/opt/marveen-docker',
@@ -438,11 +454,40 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
         writeFile: (p, text) => atomicWriteFileSync(p, text),
         exists: (p) => existsSync(p),
         run: runNoShell,
-        agentRunning: agentsRunning,
+        agentRunning: setupSession ? () => false : agentsRunning,
       })
       logger.info({ lang, ok: result.ok, files: result.files.length }, 'onboarding: install language switched')
       if (!result.ok && result.error === 'agent_running') {
         json(res, { error: 'The main agent started while the language was being switched: nothing was changed. The install language can only be switched before it starts.', reason: 'agent_running' }, 409)
+      } else if (!result.ok && setupSession) {
+        langRestartOwed = true
+        json(res, result, 500)
+      } else if (result.ok && setupSession && (result.lang !== result.previous || langRestartOwed)) {
+        // Read back what the agent loads its language from before the restart.
+        let langFile: string | null = null
+        try { langFile = readFileSync(join(PROJECT_ROOT, '.lang'), 'utf-8').trim() } catch { /* checked below */ }
+        if (langFile !== lang || readEnvValue('AGENT_TEXT_LANG') !== lang) {
+          langRestartOwed = true
+          logger.error({ lang, langFile }, 'onboarding: the switched language did not read back; the session is not restarted')
+          json(res, { ...result, ok: false, restarted: false, error: 'The install language did not read back after the switch, so the main agent was not restarted.', reason: 'readback-failed' }, 500)
+        } else if (paired()) {
+          // Dani 82930: the channel was paired during the switch (it takes seconds), so the session may act on messages
+          // now: not restarted. The files are switched; the restart stays owed.
+          langRestartOwed = true
+          logger.warn('onboarding: the channel was paired during the language switch; the main agent is not restarted')
+          json(res, { ...result, ok: false, restarted: false, error: 'The install language was switched, but the channel was paired meanwhile, so the main agent was not restarted. Restart it to load the new language.', reason: 'paired_during_switch' }, 409)
+        } else {
+          const r = hardRestartMarveenChannels()
+          if (r.ok) {
+            langRestartOwed = false
+            logger.info('onboarding: channels restarted so the main agent loads the switched language')
+            json(res, { ...result, restarted: true })
+          } else {
+            langRestartOwed = true
+            logger.error({ error: r.error }, 'onboarding: channels restart after the language switch FAILED')
+            json(res, { ...result, ok: false, restarted: false, error: `The install language was switched, but the main agent could not be restarted (${r.error || 'restart failed'}). Restart it with: ${channelsRestartCommand()}`, reason: 'restart-failed', restartCommand: channelsRestartCommand() }, 500)
+          }
+        }
       } else {
         json(res, result, result.ok ? 200 : 500)
       }

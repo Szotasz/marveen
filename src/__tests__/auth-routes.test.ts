@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, getDashboardUser } from '../db.js'
-import { tryHandleAuth } from '../web/routes/auth.js'
+import { tryHandleAuth, dashboardLang } from '../web/routes/auth.js'
 import { requiresAuth, parseCookies, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import { resolveSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 import { _resetThrottleForTest } from '../web/login-throttle.js'
@@ -124,6 +124,20 @@ describe('GET /api/auth/status', () => {
     await seedUser('alice')
     const { json } = await call('GET', '/api/auth/status', { auth: { kind: 'session', user: 'alice' } })
     expect(json()).toMatchObject({ authenticated: true, method: 'session', user: 'alice' })
+  })
+
+  // HOSTINGERI18N1122: the sign-in page reads its language here, before any login (/api/settings is 401 then).
+  it('carries the dashboard language to an unauthenticated caller', async () => {
+    const { json } = await call('GET', '/api/auth/status', { auth: undefined })
+    expect(['hu', 'en']).toContain(json().lang)
+  })
+
+  it('dashboardLang: en only for en, hu for anything else or a failing read', () => {
+    expect(dashboardLang(() => 'en')).toBe('en')
+    expect(dashboardLang(() => 'hu')).toBe('hu')
+    expect(dashboardLang(() => 'de')).toBe('hu')
+    expect(dashboardLang(() => undefined)).toBe('hu')
+    expect(dashboardLang(() => { throw new Error('store unreadable') })).toBe('hu')
   })
 })
 

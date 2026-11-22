@@ -4,6 +4,7 @@ import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFile, execFileSync, spawn } from 'node:child_process'
+import { brokerExecFile, brokerExecFileSync, isReadOnlyTmuxChain, spawnBrokerActive } from './spawn-broker.js'
 import { randomBytes } from 'node:crypto'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
@@ -2174,7 +2175,11 @@ function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: {
   // makes tmux emit `can't find session: agent-X` / `no server running`; without
   // this those leaked as ~450 bare (non-pino) lines into store/dashboard.log.
   // Callers that care read err.stderr via logger.warn({ err }).
+  if (!spawnBrokerActive()) {
   execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] })
+  } else {
+    brokerExecFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] }, { readOnly: isReadOnlyTmuxChain(tmuxArgs) })
+  }
 }
 
 let tmuxBatch: Map<string, { out?: string; err?: unknown }> | null = null
@@ -2230,10 +2235,17 @@ export function prefetchPaneCaptures(sessions: string[]): void {
     let positionalFailure = false
     let error: unknown
     try {
+      if (!spawnBrokerActive()) {
       out = execFileSync(inv.file, inv.args, {
         timeout: 3000 + 200 * eligible.length,
         encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
       })
+      } else {
+        out = brokerExecFileSync(inv.file, inv.args, {
+          timeout: 3000 + 200 * eligible.length,
+          encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+        }, { readOnly: isReadOnlyTmuxChain(args) })
+      }
     } catch (err) {
       failed = true
       error = err
@@ -2291,9 +2303,15 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
       return hit.out as string
     }
     try {
+      if (!spawnBrokerActive()) {
       const out = execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
       tmuxBatch.set(key, { out })
       return out
+      } else {
+        const out = brokerExecFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }, { readOnly: isReadOnlyTmuxChain(tmuxArgs) })
+        tmuxBatch.set(key, { out })
+        return out
+      }
     } catch (err) {
       tmuxBatch.set(key, { err })
       if (host == null && runAsUser == null) batchListSessionsFailed = true
@@ -2302,7 +2320,11 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
   }
   // stdout piped (we return it); stderr piped too so tmux's `can't find session`
   // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
+  if (!spawnBrokerActive()) {
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } else {
+    return brokerExecFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }, { readOnly: isReadOnlyTmuxChain(tmuxArgs) })
+  }
 }
 
 // Extra time after the execFile timeout before the fallback timer gives up on the child.
@@ -2314,6 +2336,7 @@ function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[]
   const { host } = resolveTarget(target, tmuxArgs)
   const inv = tmuxInvocationFor(tmuxArgs, target)
   const timeout = opts.timeout ?? (host ? 8000 : 3000)
+  if (!spawnBrokerActive()) {
   return new Promise<string>((resolve, reject) => {
     let settled = false
     let fallback: ReturnType<typeof setTimeout> | undefined
@@ -2338,6 +2361,14 @@ function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[]
     // The sync twin runs with stdin 'ignore'; close ours so an ssh-routed call never waits on it.
     child?.stdin?.end()
   })
+  } else {
+    return brokerExecFile(inv.file, inv.args, { timeout, killSignal: 'SIGKILL', encoding: 'utf-8' }, { readOnly: isReadOnlyTmuxChain(tmuxArgs) })
+      .then(({ stdout }) => stdout)
+      .catch(err => {
+        if (err.timedOut) err.code = 'ETIMEDOUT'
+        throw Object.assign(err, { stdout: err.stdout ?? '', stderr: err.stderr ?? '' })
+      })
+  }
 }
 
 // Tri-state run state. For a remote agent a failed list-sessions query is
@@ -2390,10 +2421,22 @@ export function sessionExistsOnHost(host: string | null, session: string): boole
 export function getAgentRunningSince(name: string, session: string = agentSessionName(name)): number | null {
   try {
     const target = agentTmuxTarget(name)
-    const host = target.host
-    const out = captureTmux(target, ['display-message', '-p', '-t', exactTmuxTarget(session), '#{session_created}']).trim()
-    const ts = parseInt(out, 10)
-    return Number.isFinite(ts) ? ts : null
+    // Never `display-message -t <session> '#{session_created}'` here. On tmux
+    // 3.2a (the Ubuntu 22.04 package) a time-key format (session_created,
+    // session_activity, window_activity, ...) expanded for a -t target that does
+    // not exist dereferences a NULL session and the tmux SERVER segfaults --
+    // every agent session on the host dies with it (fixed in tmux 3.3). The
+    // session can vanish between the caller's running-check and this read (the
+    // roster's run state is cached), and that race took a whole fleet down
+    // twice. `list-sessions` takes no target, so read it and match the name here.
+    const out = captureTmux(target, ['list-sessions', '-F', '#{session_created} #{session_name}'])
+    for (const line of out.split('\n')) {
+      const sp = line.indexOf(' ')
+      if (sp <= 0 || line.slice(sp + 1) !== session) continue
+      const ts = parseInt(line.slice(0, sp), 10)
+      return Number.isFinite(ts) ? ts : null
+    }
+    return null
   } catch {
     return null
   }

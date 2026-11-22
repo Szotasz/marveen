@@ -37,7 +37,7 @@ const BAK_CREDENTIALS = HOME_CREDENTIALS + '.bak'
 // token skip the (network) re-test on subsequent launches.
 const VERIFIED_STAMP = join(STORE_DIR, '.claude-oauth-token.verified')
 const OAUTH_TOKEN_RX = /^sk-ant-oat01-[A-Za-z0-9_-]{40,}$/
-const LIVE_TEST_MODEL = 'claude-haiku-4-5-20251001'
+const LIVE_TEST_MODEL = 'claude-haiku-4-5'
 
 /** Opt-in, default OFF. Env flag so a pilot host enables it in isolation. */
 export function credentialsGuardEnabled(): boolean {

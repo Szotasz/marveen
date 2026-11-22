@@ -1,0 +1,314 @@
+{
+  "agentName": "<agent-name>",
+  "entry": {
+    "scripts": [
+      {
+        "path": "/absolute/path/to/runner.ext",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "modes": [
+      "draft",
+      "send"
+    ],
+    "valueArgs": [
+      "--to",
+      "--cc",
+      "--subject",
+      "--body-file"
+    ],
+    "repeatableArgs": [
+      "--attach"
+    ],
+    "booleanArgs": [
+      "--confirm-send"
+    ]
+  },
+  "cases": [
+    {
+      "name": "sanctioned",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": true
+    },
+    {
+      "name": "draft",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext draft --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": true
+    },
+    {
+      "name": "different script",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/other.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/other.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "extra html",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --html /absolute/path/to/body.html",
+      "match": false
+    },
+    {
+      "name": "unknown flag",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --unknown value",
+      "match": false
+    },
+    {
+      "name": "bcc flag",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --bcc hidden@example.invalid",
+      "match": false
+    },
+    {
+      "name": "missing value",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --subject",
+      "match": false
+    },
+    {
+      "name": "positional",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa unexpected",
+      "match": false
+    },
+    {
+      "name": "cd prefix",
+      "command": "cd /absolute/path && node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "pipe",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | cat",
+      "match": false
+    },
+    {
+      "name": "substitution",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject $(echo subject) --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "relative body",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "relative attachment",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "other mode",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext read --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "duplicate value",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --to other@example.invalid",
+      "match": false
+    },
+    {
+      "name": "assignment",
+      "command": "EXAMPLE=1 node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "quote concatenation",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/run'ner'.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "redirection",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > /absolute/path/to/output",
+      "match": false
+    },
+    {
+      "name": "newline",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\necho done",
+      "match": false
+    },
+    {
+      "name": "semicolon",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; echo done",
+      "match": false
+    },
+    {
+      "name": "backtick",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject `echo subject` --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "innocent",
+      "command": "echo --permission --allow-fs-read=/absolute/path/to/runner.ext /absolute/path/to/runner.ext hello",
+      "match": false
+    },
+    {
+      "name": "innocent read",
+      "command": "cat --permission --allow-fs-read=/absolute/path/to/body.txt /absolute/path/to/body.txt",
+      "match": false
+    },
+    {
+      "name": "interpreter nodejs",
+      "command": "nodejs --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": true
+    },
+    {
+      "name": "interpreter /usr/bin/node",
+      "command": "/usr/bin/node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": true
+    },
+    {
+      "name": "interpreter /usr/bin/nodejs",
+      "command": "/usr/bin/nodejs --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "interpreter /usr/local/bin/nodejs",
+      "command": "/usr/local/bin/nodejs --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "interpreter /usr/bin/env node",
+      "command": "/usr/bin/env node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": true
+    },
+    {
+      "name": "interpreter /absolute/path/to/node",
+      "command": "/absolute/path/to/node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "interpreter /absolute/path/to/nodejs",
+      "command": "/absolute/path/to/nodejs --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "interpreter /tmp/x/node",
+      "command": "/tmp/x/node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "interpreter /usr/local/bin/node",
+      "command": "/usr/local/bin/node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": true
+    },
+    {
+      "name": "shape-negative missing interpreter",
+      "command": "--permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "repeat attachment",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin --allow-fs-read=/absolute/path/to/second.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --attach /absolute/path/to/second.bin --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": true
+    },
+    {
+      "name": "send missing envelope digest",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send",
+      "match": false
+    },
+    {
+      "name": "send malformed envelope digest",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "send uppercase envelope digest",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "match": false
+    },
+    {
+      "name": "send duplicate envelope digest",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "draft with envelope digest",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext draft --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative old shape without --permission",
+      "command": "node /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative --experimental-permission",
+      "command": "node --experimental-permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative read flags without --permission",
+      "command": "node --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative comma-joined allow list",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext,/absolute/path/to/body.txt,/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative attachment missing from allow list",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative body file missing from allow list",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative extra path outside required and readFiles",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin --allow-fs-read=/extra /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative duplicated allow value",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin --allow-fs-read=/absolute/path/to/runner.ext /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative wildcard allow path",
+      "command": "node --permission --allow-fs-read=* /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative --allow-fs-write among flags",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin --allow-fs-write=/tmp /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative --allow-child-process among flags",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin --allow-child-process /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative --require among flags",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin --require /x.js /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative two-token --allow-fs-read",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin --allow-fs-read /x /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative --permission after script",
+      "command": "node --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext --permission send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "shape-negative relative allow path",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": false
+    },
+    {
+      "name": "allow flags in different order",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/attachment.bin --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": true
+    },
+    {
+      "name": "readFiles path included",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin --allow-fs-read=/absolute/path/to/extra.json /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": true
+    },
+    {
+      "name": "readFiles path omitted",
+      "command": "node --permission --allow-fs-read=/absolute/path/to/runner.ext --allow-fs-read=/absolute/path/to/body.txt --allow-fs-read=/absolute/path/to/attachment.bin /absolute/path/to/runner.ext send --to verified@example.invalid --cc copy@example.invalid --subject 'Example subject' --body-file /absolute/path/to/body.txt --attach /absolute/path/to/attachment.bin --confirm-send --envelope-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "match": true
+    }
+  ]
+}

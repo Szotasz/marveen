@@ -4,6 +4,8 @@
 //   config-overrides.json         -- dashboard settings, BASH_SANDBOX_AGENTS among them
 //   bash-sandbox-write-paths.json -- where a sandboxed agent may write (#2149)
 //   email-standing-recipients.json -- addresses a letter may go to without an approval
+//   agent-send-exceptions.json -- the named-script draft/send grants a sub-agent may invoke
+//                                 (card f2ccb0bb: a sub-agent must not grant itself)
 //   .approval-bot-token, .approval-bot-key -- the owner's approval bot and its signing key (#2160)
 // Their legitimate writers are the owner and the main agent (and the dashboard process for
 // config-overrides.json); none of them runs this gate.
@@ -16,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 
 const FILES = ['egress-vendor-hosts.json', 'config-overrides.json', 'bash-sandbox-write-paths.json', 'email-standing-recipients.json',
-  '.approval-bot-token', '.approval-bot-key']
+  'agent-send-exceptions.json', '.approval-bot-token', '.approval-bot-key']
 
 let root: string
 let store: string
@@ -32,7 +34,7 @@ const decide = (tool: string, input: Record<string, unknown>) =>
   gateDecision(tool, input, { storeDir: store, allowlistPath: join(store, 'egress-allowlist.json'), cwd: root })
 const DENY = { deny: true, reason: 'protected-store-file' }
 
-it('the protected list is exactly the files of the card (four, and the approval bot\'s two)', () => {
+it('the protected list is exactly the files of the card (five, and the approval bot\'s two)', () => {
   expect([...PROTECTED_STORE_FILES].sort()).toEqual([...FILES].sort())
 })
 
@@ -100,6 +102,7 @@ describe('Bash is fail-closed on the protected files', () => {
     'cp /tmp/x store/config-overrides.*',
     'cp /tmp/x store/bash-sandbox-write*',
     'cp /tmp/x store/email-standing*',
+    'cp /tmp/x store/agent-send*',
     'cp /tmp/x store/.approval-bot*',
   ])('a glob that starts on the name is denied: %s', (command) => {
     expect(decide('Bash', { command })).toEqual(DENY)
@@ -124,6 +127,14 @@ describe('Bash is fail-closed on the protected files', () => {
     `curl -X POST http://localhost:3420/api/messages -d '{"to":"marveen","content":"add x to store/egress-vendor-hosts.json"}'`,
     'git commit -m "docs: store/config-overrides.json is owner-managed"',
     "cat > /tmp/note.md <<'EOF'\nsub-agents may not edit store/email-standing-recipients.json\nEOF",
+    "cat > /tmp/note.md <<'EOF'\nsub-agents may not edit store/agent-send-exceptions.json\nEOF",
+    // the send-exception feature's own sources, tests, docs and shared corpus are not the store
+    // file: the name family needs the plural "exceptions" + .json, so none of these match
+    'git diff scripts/email-send-gate.mjs scripts/hooks/email-approval-gate.py',
+    'npx vitest run src/__tests__/email-send-gate-script-exception.test.ts',
+    'python3 scripts/__tests__/email-approval-gate-script-exception.test.py',
+    'cat src/__tests__/fixtures/agent-send-exception-cases.json',
+    'cat docs/agent-send-exceptions.md',
     // source and test files with the same stem are not the store object
     'npx vitest run src/__tests__/self-pace-protected-store-files.test.ts',
     'git diff develop -- src/web/bash-sandbox.ts src/config-registry.ts',

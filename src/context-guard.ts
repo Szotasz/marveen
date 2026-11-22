@@ -284,9 +284,24 @@ export const CONTEXT_LIMIT_TIERS = [200_000, 500_000, 1_000_000] as const
 const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/, /sonnet-5-[5-9]/]
 
 export function contextLimitForModel(model: string | null | undefined): number {
-  if (typeof model !== 'string') return 200_000
+  return contextWindowForModel(model).limit
+}
+
+/** CTXUNKNOWNMODEL1122: false when the window below is only the 200k fallback, not a decision for this model id. */
+export function isKnownContextModel(model: string | null | undefined): boolean {
+  return contextWindowForModel(model).known
+}
+
+// Anthropic families whose window Claude Code itself knows; the ones not listed above stay at 200k by evidence or spec
+// (see the doc comment of contextLimitForModel).
+const KNOWN_200K_FAMILIES = [/sonnet/, /haiku/, /opus/, /fable/, /mythos/]
+
+/** The base window and whether it was decided for this id (known) or is the 200k fallback. One source for both. */
+export function contextWindowForModel(model: string | null | undefined): { limit: number; known: boolean } {
+  const known = (limit: number) => ({ limit, known: true })
+  if (typeof model !== 'string') return { limit: 200_000, known: false }
   const m = model.toLowerCase()
-  if (m.includes('[1m]')) return 1_000_000
+  if (m.includes('[1m]')) return known(1_000_000)
   // Fable 5.2 (FABLE52SELECTOR1109, measured 2026-11-09): the model has a 1M
   // window (official models overview), but Claude Code 2.1.319, the fleet's
   // CLI, does not know the id yet: `claude -p --model claude-fable-5-2` warns
@@ -297,8 +312,8 @@ export function contextLimitForModel(model: string | null | undefined): number {
   // a cap), and reading it against 1M would blind the proactive tiers (the
   // 2026-07-26 failure mode above) if the CLI acts on what it reports. Drop
   // this line once the CLI reports 1M for the id.
-  if (/fable-5-2\b/.test(m)) return 200_000
-  if (ONE_MILLION_FAMILIES.some(rx => rx.test(m))) return 1_000_000
+  if (/fable-5-2\b/.test(m)) return known(200_000)
+  if (ONE_MILLION_FAMILIES.some(rx => rx.test(m))) return known(1_000_000)
   // minimax-m3 is a special case, NOT a general "trust the vendor" precedent
   // (see deepseek-v4-pro below, which stays 200_000 on live measurement).
   // MiniMax's own /anthropic compat endpoint misreports 200K in its model
@@ -309,7 +324,7 @@ export function contextLimitForModel(model: string | null | undefined): number {
   // "999k left"). This 1M and that env var override are a pair: dropping the
   // override without reverting this would under-restart against a window the
   // CLI no longer has.
-  if (m.startsWith('minimax-')) return 1_000_000
+  if (m.startsWith('minimax-')) return known(1_000_000)
   // Same pairing for OpenRouter's DeepSeek V4 family: OpenRouter lists a
   // 1,048,576-token context for deepseek/deepseek-v4* (models API, 2026-10-12),
   // but Claude Code does not know these ids and caps the session at 200k
@@ -317,8 +332,9 @@ export function contextLimitForModel(model: string | null | undefined): number {
   // agent-process.ts exports CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 for exactly
   // the ids this predicate accepts. The direct-API deepseek-v4-pro (no
   // "deepseek/" prefix) is untouched and stays 200k.
-  if (isOpenRouterOneMillionModel(m)) return 1_000_000
-  return 200_000
+  if (isOpenRouterOneMillionModel(m)) return known(1_000_000)
+  if (/^deepseek-v4/.test(m) || KNOWN_200K_FAMILIES.some(rx => rx.test(m))) return known(200_000)
+  return { limit: 200_000, known: false }
 }
 
 /** OpenRouter model ids that run a 1M window once Claude Code is told so via

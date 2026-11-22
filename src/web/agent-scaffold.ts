@@ -2,7 +2,7 @@ import { scaffoldCodexHome } from './agent-engine.js'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR, mainAgentRecipientLedgerEnabled } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -1347,7 +1347,9 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) {
-    injectEmailSendGate(existing, hasThreadReplyCapability(name, readAgentCapabilities(name)))
+    injectEmailSendGate(existing, hasThreadReplyCapability(name, readAgentCapabilities(name)), name)
+    if (readAgentSendExceptions(name)) injectEmailApprovalGate(existing)
+    else removeEmailApprovalGate(existing)
   }
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   // (e) the dashboard DB's security surface and this install's gate wiring
@@ -1549,6 +1551,7 @@ export function agentGetsEmailGate(name: string): boolean {
 // for every agent without the capability the gate is byte-identical to before.
 export const EMAIL_THREAD_REPLY_CAPABILITY = 'email:thread-reply'
 export const EMAIL_THREAD_REPLY_FLAG = '--allow-thread-reply'
+export const EMAIL_AGENT_FLAG = '--agent'
 
 // Pure predicate (capabilities passed in, so the rule is unit-testable without
 // touching the filesystem): the main agent is exempt from the gate entirely,
@@ -1660,7 +1663,7 @@ export function emailGateCommandStale(preToolUse: unknown, expected: string): bo
 // 2026-09-10 -- but the hook stays primary: future CLI behavior is not a
 // contract.) Name-agnostic so a customer install
 // gates its own sub-agents (the caller's MAIN_AGENT_ID guard exempts the owner).
-export function injectEmailSendGate(existing: Record<string, unknown>, threadReply = false): void {
+export function injectEmailSendGate(existing: Record<string, unknown>, threadReply = false, agentName?: string): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
@@ -1671,7 +1674,10 @@ export function injectEmailSendGate(existing: Record<string, unknown>, threadRep
   // in the same regenerated-on-every-spawn settings.json as the gate itself:
   // revoking the capability removes the flag at the next spawn, and a manual
   // settings edit can neither grant nor keep it.
-  const command = threadReply ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG]) : base
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [
+    ...(threadReply ? [EMAIL_THREAD_REPLY_FLAG] : []),
+    ...(agentName ? [EMAIL_AGENT_FLAG, agentName] : []),
+  ])
   const entry = {
     matcher: EMAIL_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
@@ -1683,6 +1689,104 @@ export function injectEmailSendGate(existing: Record<string, unknown>, threadRep
     ...prev.filter((e) => !JSON.stringify(e).includes('email-send-gate.mjs')),
     entry,
   ]
+}
+
+export interface AgentSendException {
+  readFiles?: string[]
+  scripts: { path: string; sha256: string }[]
+  modes: string[]
+  valueArgs: string[]
+  repeatableArgs: string[]
+  booleanArgs: string[]
+}
+
+// Same entry validation as scripts/email-send-gate.mjs; invalid siblings do not revoke valid entries.
+// CONTENTBIND (card f2ccb0bb, round 3): a grant binds the script CONTENT, not just its
+// path -- "scripts" holds {path, sha256} objects; the gates hash-check the file on every
+// invocation and fail closed, so the shape here demands 64 lowercase hex and unique paths.
+// REPEATENVELOPE (card f2ccb0bb, round 2): an envelope flag made repeatable is invalid
+// here too -- the mjs parser returns only the FIRST value of a repeatable flag, so
+// recipient verification (and the py envelope hash) would see only the first recipient.
+const NON_REPEATABLE_FLAGS = new Set(['--to', '--cc', '--subject', '--body-file'])
+// C1 (PR #2843 review): the gates verify and hash only --to and --cc as recipients,
+// so an entry naming --bcc, --reply-to, --from, --sender or --return-path in ANY
+// of valueArgs, repeatableArgs or booleanArgs is invalid in ALL THREE validators:
+// this one,
+// validAgentSendException in email-send-gate.mjs, and valid_agent_send_exception
+// in email-approval-gate.py. --envelope-sha256 is reserved for the gate itself.
+const RESERVED_FLAGS = new Set(['--envelope-sha256', '--bcc', '--reply-to', '--from', '--sender', '--return-path'])
+const SCRIPT_SHA256_RX = /^[0-9a-f]{64}$/
+export function readAgentSendExceptions(name: string): AgentSendException | null {
+  try {
+    const config = JSON.parse(readFileSync(join(STORE_DIR, 'agent-send-exceptions.json'), 'utf8'))
+    if (!config?.agents || typeof config.agents !== 'object' || Array.isArray(config.agents)
+      || !Object.hasOwn(config.agents, name)) return null
+    const entry = config.agents[name]
+    const keys = ['scripts', 'modes', 'valueArgs', 'repeatableArgs', 'booleanArgs', 'readFiles']
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+      || Object.keys(entry).some(k => !keys.includes(k))) return null
+    if (!['modes', 'valueArgs', 'repeatableArgs', 'booleanArgs'].every(k => Array.isArray(entry[k])
+      && entry[k].every((v: unknown) => typeof v === 'string' && v.length > 0)
+      && new Set(entry[k]).size === entry[k].length)) return null
+    if (Object.hasOwn(entry, 'readFiles') && (!Array.isArray(entry.readFiles)
+      || !entry.readFiles.every((v: unknown) => typeof v === 'string' && v.length > 0 && isAbsolute(v))
+      || new Set(entry.readFiles).size !== entry.readFiles.length)) return null
+    const validScript = (s: unknown): s is { path: string; sha256: string } =>
+      !!s && typeof s === 'object' && !Array.isArray(s)
+      && Object.keys(s).length === 2
+      && typeof (s as { path?: unknown }).path === 'string' && (s as { path: string }).path.length > 0
+      && isAbsolute((s as { path: string }).path)
+      && typeof (s as { sha256?: unknown }).sha256 === 'string'
+      && SCRIPT_SHA256_RX.test((s as { sha256: string }).sha256)
+    if (!Array.isArray(entry.scripts) || !entry.scripts.length || !entry.scripts.every(validScript)
+      || new Set(entry.scripts.map((s: { path: string }) => s.path)).size !== entry.scripts.length) return null
+    const flags = [...entry.valueArgs, ...entry.repeatableArgs, ...entry.booleanArgs]
+    if (!entry.modes.length || !entry.modes.every((m: string) => ['draft', 'send'].includes(m))
+      || entry.repeatableArgs.some((f: string) => NON_REPEATABLE_FLAGS.has(f))
+      || flags.some((f: string) => RESERVED_FLAGS.has(f))
+      || !flags.every(f => /^--[a-z][a-z0-9-]*$/.test(f)) || new Set(flags).size !== flags.length) return null
+    return entry
+  } catch { return null }
+}
+
+// Mirror the tracked project settings, including their timeout and rc guard.
+const EMAIL_APPROVAL_MATCHERS = [
+  ...EMAIL_GATE_MATCHER.split('|').slice(0, 6),
+  EMAIL_GATE_MATCHER.split('|').slice(6).join('|'),
+]
+export const EMAIL_APPROVAL_COMMAND = failClosedGateRun(
+  'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/email-approval-gate.py"', 'email-approval-gate.py', 10,
+)
+
+// EXACTAPPROVALREMOVE (card f2ccb0bb, round 2): remove ONLY the hook objects whose
+// command is EXACTLY EMAIL_APPROVAL_COMMAND. The old substring filter dropped the
+// WHOLE PreToolUse entry, so sibling hooks living in the same matcher entry -- and
+// innocent mentions of the gate anywhere else in an entry -- were lost with it.
+// A matcher whose hooks array becomes empty drops out; everything else survives.
+export function removeEmailApprovalGate(existing: Record<string, unknown>): void {
+  const hooks = existing.hooks as Record<string, unknown> | undefined
+  if (hooks && Array.isArray(hooks.PreToolUse)) {
+    const keptEntries: unknown[] = []
+    for (const e of hooks.PreToolUse as unknown[]) {
+      const entry = e as { hooks?: unknown }
+      if (!Array.isArray(entry.hooks)) { keptEntries.push(e); continue }
+      const keptHooks = entry.hooks.filter((h) => (h as { command?: unknown })?.command !== EMAIL_APPROVAL_COMMAND)
+      if (keptHooks.length === entry.hooks.length) { keptEntries.push(e); continue } // nothing removed: untouched
+      if (keptHooks.length > 0) keptEntries.push({ ...entry, hooks: keptHooks }) // siblings survive in place
+      // else: every hook was the approval hook, so the matcher entry drops out
+    }
+    hooks.PreToolUse = keptEntries
+  }
+}
+
+export function injectEmailApprovalGate(existing: Record<string, unknown>): void {
+  removeEmailApprovalGate(existing)
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks : (existing.hooks = {})) as Record<string, unknown>
+  const prev = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []
+  hooks.PreToolUse = [...prev, ...EMAIL_APPROVAL_MATCHERS.map(matcher => ({
+    matcher, hooks: [{ type: 'command', command: EMAIL_APPROVAL_COMMAND, timeout: 10 }],
+  }))]
 }
 
 // Claude Code runtime self-scheduling tool names denied for sub-agents (fail-
@@ -3160,13 +3264,12 @@ function renderPostureBlock(text: string, posture: QuarantineReaderPosture): str
 // production passes nothing (the profile is read from the agent's config) and
 // only tests supply one, so the opt-in gate can be exercised without writing a
 // fixture into templates/profiles/ where every other suite would see it.
-export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemplate): boolean {
+export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemplate, readExceptionConfig = readAgentSendExceptions): boolean {
   if (name === MAIN_AGENT_ID) return false
   const settingsPath = agentSettingsPath(name)
   if (!existsSync(settingsPath)) return false
   let settings: Record<string, unknown> = {}
   try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
-  const emailCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
   const paceCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs'))
   const destructiveCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'destructive-gate.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
@@ -3180,8 +3283,21 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   // alone is not enough -- it would report the gate healthy forever.
   const threadReply = hasThreadReplyCapability(name, readAgentCapabilities(name))
   const emailCmdExpected = threadReply
-    ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG])
-    : emailCmd
+    ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG, EMAIL_AGENT_FLAG, name])
+    : hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_AGENT_FLAG, name])
+  const approvalExpected: Record<string, unknown> = {}
+  if (readExceptionConfig(name)) injectEmailApprovalGate(approvalExpected)
+  const expectedApprovals = ((approvalExpected.hooks as Record<string, unknown> | undefined)?.PreToolUse ?? []) as unknown[]
+  // EXACTAPPROVALREMOVE: count on the SAME exact-command match removeEmailApprovalGate
+  // uses, not a substring -- an entry carrying the exact approval hook plus sibling
+  // hooks is healthy wiring (not stale), and a command that merely mentions the gate
+  // is not wiring at all. Comparing the exact hook objects keeps the repair
+  // idempotent: after one pass they are the pristine injector-written set.
+  const exactApprovalHooksOf = (entries: unknown[]) => (entries as { hooks?: unknown }[])
+    .flatMap((e) => (Array.isArray(e.hooks) ? e.hooks : []))
+    .filter((h) => (h as { command?: unknown })?.command === EMAIL_APPROVAL_COMMAND)
+  const needApproval = JSON.stringify(exactApprovalHooksOf(ptu))
+    !== JSON.stringify(exactApprovalHooksOf(expectedApprovals))
   const needEmail = agentGetsEmailGate(name)
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)
@@ -3222,10 +3338,14 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (!hookCommandWired(ptuJson, reviewerCmd) || reviewerStale)
   // Off with an entry still wired: the entry goes (see removeSecondReviewerGate).
   const dropReviewer = !agentGetsSecondReviewer(name, profile) && hasSecondReviewerHook(ptu)
-  if (!needEmail && !needPace && !needDbGate && !needMxdGate && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
+  if (!needApproval && !needEmail && !needPace && !needDbGate && !needMxdGate && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
-  if (needEmail) injectEmailSendGate(settings, threadReply)
+  if (needApproval) {
+    removeEmailApprovalGate(settings)
+    if ((expectedApprovals as unknown[]).length) injectEmailApprovalGate(settings)
+  }
+  if (needEmail) injectEmailSendGate(settings, threadReply, name)
   if (needPace) injectSelfPaceGate(settings)
   if (needDbGate) injectDbWriteGate(settings)
   if (needMxdGate) injectMxdPathGate(settings)

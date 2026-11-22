@@ -55,7 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Pinned agent runtime: the claude CLI (npm-global, /usr/local/bin/claude) and bun (the Telegram/Discord channel
 # plugins run on it). A new version is a new image.
-ARG CLAUDE_CODE_VERSION=2.1.311
+ARG CLAUDE_CODE_VERSION=2.1.323
 ARG BUN_VERSION=1.4.4
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "bun@${BUN_VERSION}" \
     && claude --version && bun --version
