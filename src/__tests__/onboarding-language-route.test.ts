@@ -8,7 +8,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
-const H = vi.hoisted(() => ({ root: '', restart: { calls: 0, result: { ok: true } as { ok: boolean; error?: string } } }))
+const H = vi.hoisted(() => ({ root: '', dropLangWrite: false, restart: { calls: 0, result: { ok: true } as { ok: boolean; error?: string } } }))
+// A test can make the .lang write a silent no-op, so the read-back before the restart sees the old language.
+vi.mock('../web/atomic-write.js', async (orig) => {
+  const a = await orig<typeof import('../web/atomic-write.js')>()
+  return { ...a, atomicWriteFileSync: (...args: Parameters<typeof a.atomicWriteFileSync>) => (H.dropLangWrite && String(args[0]).endsWith('/.lang') ? undefined : a.atomicWriteFileSync(...args)) }
+})
 vi.mock('../web/channel-monitor.js', async (orig) => {
   const a = await orig<typeof import('../web/channel-monitor.js')>()
   return { ...a, hardRestartMarveenChannels: () => { H.restart.calls++; return H.restart.result } }
@@ -93,6 +98,7 @@ beforeEach(() => {
   rmSync(LATE, { force: true })
   rmSync(COUNT, { force: true })
   H.restart = { calls: 0, result: { ok: true } }
+  H.dropLangWrite = false
   rmSync(join(TG, 'access.json'), { force: true })
   rmSync(join(TG, '.env'), { force: true })
   writeFileSync(SEEDS, SEEDS_OK)
@@ -172,6 +178,19 @@ describe('POST /api/onboarding/language (DOCKERUX1118)', () => {
     expect(H.restart.calls).toBe(2)
   })
 
+  it('the language does not read back after the switch: 500 readback-failed, no restart; owed to the retry', async () => {
+    writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
+    H.dropLangWrite = true
+    const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([r.status, r.json.ok, r.json.reason, r.json.restarted]).toEqual([500, false, 'readback-failed', false])
+    expect(H.restart.calls).toBe(0)
+    // Once .lang holds the language, the retry reads it back and pays the owed restart.
+    H.dropLangWrite = false
+    writeFileSync(join(tmpRoot, '.lang'), 'hu\n')
+    const again = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([again.status, again.json.restarted]).toEqual([200, true])
+  })
+
   it('the switch itself fails over the setup session: no restart; the retry finds it switched and pays the owed restart once', async () => {
     writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
     writeFileSync(SEEDS, '#!/bin/bash\nexit 3\n')
@@ -195,6 +214,7 @@ describe('POST /api/onboarding/language (DOCKERUX1118)', () => {
     pairChannel()
     const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
     expect([r.status, r.json.reason]).toEqual([409, 'agent_running'])
+    expect(r.json.error).toContain('is already running')
     expect(H.restart.calls).toBe(0)
     untouched()
   })

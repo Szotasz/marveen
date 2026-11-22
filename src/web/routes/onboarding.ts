@@ -30,7 +30,7 @@ import { installLang, switchInstallLanguage, type RunResult } from '../install-l
 // DOCKERUX1118: one language switch at a time.
 let langSwitchBusy = false
 // HOSTINGERI18N1122: a switch over the running setup session that failed after its first write (env, .lang, persona
-// already in the new language), or whose restart failed, owes the session its restart: the retry finds the language
+// already in the new language), did not read back, or whose restart failed, owes the session its restart: the retry finds the language
 // already switched (nothing to render) and pays it then.
 let langRestartOwed = false
 /** A program without a shell, with exactly the given environment; never rejects (a failure is a code). */
@@ -467,8 +467,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
         let langFile: string | null = null
         try { langFile = readFileSync(join(PROJECT_ROOT, '.lang'), 'utf-8').trim() } catch { /* checked below */ }
         if (langFile !== lang || readEnvValue('AGENT_TEXT_LANG') !== lang) {
+          langRestartOwed = true
           logger.error({ lang, langFile }, 'onboarding: the switched language did not read back; the session is not restarted')
-          json(res, { ...result, ok: false, restarted: false, error: 'The install language did not read back after the switch; the main agent was not restarted. Try the switch again.', reason: 'readback-failed' }, 500)
+          json(res, { ...result, ok: false, restarted: false, error: 'The install language did not read back after the switch, so the main agent was not restarted.', reason: 'readback-failed' }, 500)
         } else {
           const r = hardRestartMarveenChannels()
           if (r.ok) {
