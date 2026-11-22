@@ -39,6 +39,7 @@ case "$1" in
     echo "pubkeyauthentication ${STUB_PUBKEY:-yes}"
     echo "permitrootlogin ${STUB_PERMITROOT:-without-password}"
     echo "authorizedkeysfile ${STUB_AKF:-.ssh/authorized_keys .ssh/authorized_keys2}"
+    echo "strictmodes ${STUB_STRICT:-yes}"
     for u in ${STUB_ALLOWUSERS:-}; do echo "allowusers $u"; done ;;
 esac
 EOF
@@ -149,6 +150,14 @@ check "AuthorizedKeysFile elsewhere, key there: exit 0" '[ "$(rc)" = 0 ]'
 # A Match block that keeps passwords open for a user: the drop-in is taken back.
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_MATCH_PW_USER=root run
 check "Match keeps password open for root: exit 1, drop-in gone, named" '[ "$(rc)" = 1 ] && [ ! -e "$DROPIN" ] && grep -q "password login stays open for: root:passwordauthentication=yes" "$T/case/out"'
+
+# Dani B3: StrictModes ignores a group-writable key file; with StrictModes off it is used.
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; chmod 664 "$R/root/.ssh/authorized_keys"; run
+check "group-writable authorized_keys under StrictModes: exit 2, named" '[ "$(rc)" = 2 ] && grep -q "authorized_keys is group/world-writable" "$T/case/out" && [ ! -e "$DROPIN" ]'
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; chmod 777 "$R/root/.ssh"; run
+check "world-writable .ssh under StrictModes: exit 2" '[ "$(rc)" = 2 ] && grep -q "/root/.ssh is group/world-writable" "$T/case/out"'
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; chmod 664 "$R/root/.ssh/authorized_keys"; STUB_STRICT=no run
+check "group-writable but StrictModes no: exit 0" '[ "$(rc)" = 0 ]'
 
 # 10. Dani B2: the keys are listed, and without --yes (no terminal) nothing changes.
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; run --no-such-flag

@@ -69,6 +69,7 @@ why=""; kf=""
 # Not in a $( ) subshell: it sets $kf (the key file sshd would read for this user) or $why, for the caller.
 usable_keyfile() { # $1 user, $2 home
   local u="$1" h="$2" c f p
+  why=""; kf=""
   c="$(eff "$u")"
   [ "$(printf '%s\n' "$c" | vals pubkeyauthentication)" = yes ] || { why="pubkeyauthentication is off for $u"; return 1; }
   if [ "$u" = root ]; then
@@ -88,13 +89,36 @@ usable_keyfile() { # $1 user, $2 home
   if [ "${#dg[@]}" -gt 0 ]; then
     local g; for g in $gs; do matches_any "$g" "${dg[@]}" && { why="$u is in a DenyGroups group"; return 1; }; done
   fi
+  local strict; strict="$(printf '%s\n' "$c" | vals strictmodes)"
   for f in $(printf '%s\n' "$c" | vals authorizedkeysfile); do
     f="${f//%h/$h}"; f="${f//%u/$u}"; f="${f//%%/%}"
     case "$f" in /*) ;; *) f="$h/$f" ;; esac
-    if key_lines "$R$f" >/dev/null; then kf="$f"; return 0; fi
+    key_lines "$R$f" >/dev/null || continue
+    # Dani B3: with StrictModes (the default) sshd ignores a key file when it, or a directory above it up to the home,
+    # is group/world-writable or owned by someone else than the user or root.
+    if [ "$strict" != no ] && ! strict_ok "$u" "$f" "$h"; then return 1; fi
+    kf="$f"; return 0
   done
-  why="no key line in $u's authorized keys file"
+  [ -n "$why" ] || why="no key line in $u's authorized keys file"
   return 1
+}
+# owner and octal mode of a path (GNU stat, then BSD stat for the macOS test run)
+owner_mode() { stat -c '%U %a' "$1" 2>/dev/null || stat -f '%Su %Lp' "$1" 2>/dev/null; }
+strict_ok() { # $1 user, $2 key file, $3 home; sets $why on failure
+  local u="$1" p="$2" h="$3" om o m
+  while :; do
+    om="$(owner_mode "$R$p")" || { why="cannot stat $p"; return 1; }
+    o="${om% *}"; m="${om#* }"
+    # HH_ROOT (tests only): the files belong to whoever runs the test.
+    if [ "$o" != "$u" ] && [ "$o" != root ] && { [ -z "$R" ] || [ "$o" != "$(id -un)" ]; }; then
+      why="$p is owned by $o (sshd StrictModes ignores the key)"; return 1
+    fi
+    if [ $(( 8#$m & 8#022 )) -ne 0 ]; then why="$p is group/world-writable ($m; sshd StrictModes ignores the key)"; return 1; fi
+    # up to the home (a file inside it) or to / (a file outside it)
+    if [ "$p" = "$h" ] || [ "$p" = / ]; then break; fi
+    p="$(dirname "$p")"
+  done
+  return 0
 }
 owners=(); listing=""; reasons=""
 while read -r u; do
