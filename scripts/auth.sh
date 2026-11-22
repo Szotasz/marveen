@@ -26,17 +26,21 @@ echo -e "  Install: $INSTALL_DIR"
 echo ""
 
 # --- 1. Auth method + value ---
+# AUTHSHHIDDEN1122: the key and the token are typed without echo (read -s): the screen and a recording do not show
+# them. The menu choice stays visible.
 echo -e "  ${BOLD}1.${NC} OAuth token  ${DIM}(Pro/Max elofizetes -- egy bongeszos gepen: claude setup-token)${NC}"
 echo -e "  ${BOLD}2.${NC} API key      ${DIM}(Anthropic Console, pay-as-you-go)${NC}"
 read -rp "  Valasztas [1]: " MODE
 MODE="${MODE:-1}"
 if [ "$MODE" = "2" ]; then
   AUTH_KEY="ANTHROPIC_API_KEY"; OTHER_KEY="CLAUDE_CODE_OAUTH_TOKEN"
-  read -rp "  ANTHROPIC_API_KEY (sk-ant-...): " AUTH_VAL
+  read -rsp "  ANTHROPIC_API_KEY (sk-ant-...): " AUTH_VAL
+  echo ""
 else
   AUTH_KEY="CLAUDE_CODE_OAUTH_TOKEN"; OTHER_KEY="ANTHROPIC_API_KEY"
   echo -e "  ${DIM}Egy bongeszos gepen: claude setup-token -> masold ide a tokent.${NC}"
-  read -rp "  OAuth token (sk-ant-oat01-...): " AUTH_VAL
+  read -rsp "  OAuth token (sk-ant-oat01-...): " AUTH_VAL
+  echo ""
 fi
 AUTH_VAL="$(printf '%s' "$AUTH_VAL" | tr -d '[:space:]')"
 if [ -z "$AUTH_VAL" ]; then err "Ures ertek -- kilepes, .env valtozatlan."; exit 1; fi

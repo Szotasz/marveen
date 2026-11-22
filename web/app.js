@@ -6336,6 +6336,18 @@ async function agentCatalogStart(name, item, status, box) {
   box.append(again)
 }
 
+// HOSTINGERWIZERRI18N1122: the Claude step's errors come from the server in one fixed language (the Claude branch
+// Hungarian, the router branch English). The wizard shows them in the UI language, by the response's reason, per
+// branch (bad-key and write-failed occur in both). An unknown reason keeps the server's own text.
+const ONB_AUTH_ERR_KEYS = {
+  claude: { missing: 'missing', 'bad-token': 'bad_token', 'bad-key': 'bad_key', 'verify-failed': 'verify_failed', 'write-failed': 'write_failed' },
+  router: { mixed: 'router_mixed', 'router-unavailable': 'router_unavailable', 'bad-key': 'router_bad_key', 'bad-model': 'router_bad_model', 'write-failed': 'router_write_failed' },
+}
+function onbAuthErrorText(d, router) {
+  const key = ONB_AUTH_ERR_KEYS[router ? 'router' : 'claude'][d && d.reason]
+  return key ? t(`onboarding.auth_err.${key}`) : ((d && d.error) || t('onboarding.error'))
+}
+
 function updateCustomModelIdRow(selectEl) {
   if (!selectEl) return
   const isEdit = selectEl.id === 'editAgentModel'
@@ -17238,7 +17250,7 @@ function wireOnboarding(step) {
         const payload = router ? { routerKey, routerModel } : { token }
         const res = await fetch('/api/onboarding/claude-auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
         const d = await res.json().catch(() => ({}))
-        if (!res.ok) { authBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : (d.error || t('onboarding.error')), true); return }
+        if (!res.ok) { authBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : onbAuthErrorText(d, router), true); return }
         // Fresh-install path: the server restarts the (previously
         // unauthenticated) channels session right after the first auth save --
         // surface that, and on failure show the manual restart step instead of
