@@ -2821,7 +2821,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         if (verdict.newKey) setSecret(`agent-${name}-api-key`, `API key for the main agent (${name})`, verdict.newKey)
         // HOSTINGERROUTER1122: leaving the router for the subscription or an API key takes the router off the main agent.
         clearMainRouter(name)
-        writeAgentAuthMode(name, verdict.mode as 'shared' | 'api')
+        writeAgentAuthMode(name, verdict.mode)
         // as for sub-agents (below): leaving api takes the key out of the vault
         if (verdict.mode !== 'api') deleteSecret(`agent-${name}-api-key`)
       } catch (err) {
