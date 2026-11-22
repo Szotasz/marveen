@@ -26,6 +26,8 @@ export type MainAuthSwitchFacts = {
   routerAvailable?: boolean
   /** A router key is already in the vault. */
   routerKeyAvailable?: boolean
+  /** The selectable ids of the router's own model list (cached); the three measured ones are always allowed. */
+  routerModels?: readonly string[]
 }
 
 export type MainAuthSwitchVerdict =
@@ -71,7 +73,7 @@ export function checkMainAuthSwitch(body: unknown, f: MainAuthSwitchFacts): Main
     } else if (!f.routerKeyAvailable) {
       return { ok: false, status: 400, code: 'no-key', error: 'No Hostinger AI Router key is stored: paste one.' }
     }
-    const model = resolveRouterModel(b.model)
+    const model = resolveRouterModel(b.model, f.routerModels ?? [])
     if (!model) return { ok: false, status: 400, code: 'bad-model', error: 'model must be one of the Hostinger AI Router models offered.' }
     return { ok: true, mode, newKey: hasKey ? k : null, model }
   }

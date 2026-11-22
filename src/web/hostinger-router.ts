@@ -43,9 +43,10 @@ export function checkRouterKey(raw: string): string | null {
 }
 
 /** A model the router path accepts: one of the fixed list. Empty means the default. */
-export function resolveRouterModel(raw: unknown): string | null {
+export function resolveRouterModel(raw: unknown, allowed: readonly string[] = []): string | null {
   if (raw === undefined || raw === null || raw === '') return HOSTINGER_ROUTER_DEFAULT_MODEL
-  return typeof raw === 'string' && (HOSTINGER_ROUTER_MODELS as readonly string[]).includes(raw) ? raw : null
+  if (typeof raw !== 'string') return null
+  return (HOSTINGER_ROUTER_MODELS as readonly string[]).includes(raw) || allowed.includes(raw) ? raw : null
 }
 
 export function routerActive(mainAgentId: string): boolean {
@@ -64,15 +65,14 @@ export function routerAuthPresent(mainAgentId: string): boolean {
 /** The router model the main agent is set to, when it runs on the router. */
 export function routerModel(mainAgentId: string): string | null {
   if (!routerActive(mainAgentId)) return null
-  const m = readAgentModel(mainAgentId)
-  return resolveRouterModel(m) ? m : null
+  return readAgentModel(mainAgentId) || null
 }
 
 /**
  * Point the main agent at the router: the key (when a new one is given) into the vault, the provider record, and the
  * main agent's customProvider + model. The caller has checked the key, the model and who may do it.
  */
-export function applyMainRouter(mainAgentId: string, newKey: string | null, model: string): void {
+export function applyMainRouter(mainAgentId: string, newKey: string | null, model: string, contextTokens: number | null = null): void {
   if (newKey) {
     setSecret(HOSTINGER_ROUTER_VAULT_KEY, 'Hostinger AI Router key (main agent)', newKey.trim())
     clearRouterModelCache()
@@ -85,7 +85,18 @@ export function applyMainRouter(mainAgentId: string, newKey: string | null, mode
     vaultKey: HOSTINGER_ROUTER_VAULT_KEY,
   })
   writeAgentModel(mainAgentId, model)
+  writeProviderContextTokens(mainAgentId, contextTokens)
   writeAgentCustomProvider(mainAgentId, HOSTINGER_ROUTER_PROVIDER_ID)
+}
+
+/** The main agent's customProviderContextTokens: set for an experimental router model, removed otherwise. */
+function writeProviderContextTokens(mainAgentId: string, tokens: number | null): void {
+  const configPath = join(agentDir(mainAgentId), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  if (tokens !== null && Number.isSafeInteger(tokens) && tokens > 0) config.customProviderContextTokens = tokens
+  else if ('customProviderContextTokens' in config) delete config.customProviderContextTokens
+  else return
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
 /**
@@ -98,10 +109,10 @@ export function clearMainRouter(mainAgentId: string): boolean {
   writeAgentCustomProvider(mainAgentId, null)
   const configPath = join(agentDir(mainAgentId), 'agent-config.json')
   const config = readJsonObjectForWrite(configPath)
-  if (typeof config.model === 'string' && (HOSTINGER_ROUTER_MODELS as readonly string[]).includes(config.model)) {
-    delete config.model
-    atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-  }
+  // the model was the router's (any router model, the list included): it goes with the router
+  delete config.model
+  delete config.customProviderContextTokens
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
   return true
 }
 
@@ -128,6 +139,30 @@ export interface RouterModelList { source: 'router' | 'fallback'; models: Router
 const ROUTER_MODELS_TTL_MS = 10 * 60_000
 const ROUTER_MODELS_TIMEOUT_MS = 8_000
 let modelsCache: { at: number; list: RouterModelList } | null = null
+
+/**
+ * The context window Claude Code is told for a router model (CLAUDE_CODE_MAX_CONTEXT_TOKENS), Samu 83054. Claude Code
+ * assumes 1M tokens for an id it does not know (measured, CC 2.1.330), and every non-Claude router model reports the
+ * same 1048576, which is a default, not its real window. Saying too much makes the model fail BEFORE compaction, a
+ * silent failure; saying too little only compacts earlier. So an experimental model gets min(context_length, 200k),
+ * the context guard's own default for an unknown model, until a measurement (credits, owner GO) raises it here.
+ */
+export const EXPERIMENTAL_CONTEXT_CAP = 200_000
+/** Measured windows, model id -> tokens. Starts empty: a value here only after a measured trial. */
+export const MEASURED_ROUTER_CONTEXT: Readonly<Record<string, number>> = {}
+
+/** The window to pass for a model option; null when Claude Code's own table applies (a Claude model). */
+export function routerContextTokens(o: Pick<RouterModelOption, 'id' | 'experimental' | 'contextTokens'>): number | null {
+  if (!o.experimental) return null
+  const measured = MEASURED_ROUTER_CONTEXT[o.id]
+  if (measured) return measured
+  return o.contextTokens ? Math.min(o.contextTokens, EXPERIMENTAL_CONTEXT_CAP) : null
+}
+
+/** An option can be chosen: a Claude model, or an experimental one whose window is known. */
+export function routerModelSelectable(o: RouterModelOption): boolean {
+  return !o.experimental || routerContextTokens(o) !== null
+}
 
 /** The dashed form of a router id when it is one of the measured three (claude-sonnet-5.5 -> claude-sonnet-5-5). */
 function measuredDashed(id: string): string | null {
@@ -159,7 +194,7 @@ export function parseRouterModels(body: unknown): RouterModelOption[] {
     if (seen.has(finalId)) continue
     seen.add(finalId)
     const claude = /^claude-/i.test(id)
-    out.push({ id: finalId, claude, measured: dashed !== null, experimental: !claude, contextTokens: null })
+    out.push({ id: finalId, claude, measured: dashed !== null, experimental: !claude, contextTokens: positiveInt(m.context_length) })
   }
   const rank = (o: RouterModelOption) => (o.measured ? 0 : o.claude ? 1 : 2)
   const measuredOrder = (o: RouterModelOption) => (HOSTINGER_ROUTER_MODELS as readonly string[]).indexOf(o.id)

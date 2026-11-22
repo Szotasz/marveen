@@ -179,3 +179,29 @@ describe('the router model list (Marveen 83042)', () => {
     expect(after).toBe(1)
   })
 })
+
+// Samu 83054: an experimental (non-Claude) model gets min(context_length, 200k) as Claude Code's window; the measured
+// Claude models get nothing (Claude Code's own table); no window known -> not selectable.
+const { routerContextTokens, routerModelSelectable, EXPERIMENTAL_CONTEXT_CAP } = await import('../web/hostinger-router.js')
+describe('the context window of a router model', () => {
+  it('caps an experimental model at 200k, leaves the Claude models alone, refuses an unknown window', () => {
+    expect(EXPERIMENTAL_CONTEXT_CAP).toBe(200_000)
+    const kimi = parseRouterModels({ data: [{ id: 'kimi-k3', supported_endpoints: ['/v1/messages'], supported_parameters: ['tools'], context_length: 1048576 }] })[0]
+    expect(kimi).toMatchObject({ id: 'kimi-k3', experimental: true, contextTokens: 1048576 })
+    expect(routerContextTokens(kimi)).toBe(200_000)
+    expect(routerContextTokens({ id: 'small', experimental: true, contextTokens: 128_000 })).toBe(128_000)
+    expect(routerContextTokens({ id: 'claude-sonnet-5-5', experimental: false, contextTokens: 1_000_000 })).toBeNull()
+    const noWindow = { id: 'x', claude: false, measured: false, experimental: true, contextTokens: null }
+    expect([routerContextTokens(noWindow), routerModelSelectable(noWindow)]).toEqual([null, false])
+  })
+  it('apply writes the window for an experimental model and removes it otherwise; clear removes it', () => {
+    applyMainRouter(MAIN, KEY, 'kimi-k3', 200_000)
+    expect(JSON.parse(readFileSync(cfgPath(), 'utf-8')).customProviderContextTokens).toBe(200_000)
+    applyMainRouter(MAIN, null, 'claude-opus-5-5', null)
+    expect('customProviderContextTokens' in JSON.parse(readFileSync(cfgPath(), 'utf-8'))).toBe(false)
+    applyMainRouter(MAIN, null, 'kimi-k3', 200_000)
+    clearMainRouter(MAIN)
+    const cfg = JSON.parse(readFileSync(cfgPath(), 'utf-8'))
+    expect(['customProviderContextTokens' in cfg, 'model' in cfg, 'customProvider' in cfg]).toEqual([false, false, false])
+  })
+})

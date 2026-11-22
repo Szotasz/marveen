@@ -5433,6 +5433,33 @@ function mainAuthRunningText(d) {
   }
   return base
 }
+// HOSTINGERROUTER1122: the router model select. Experimental (non-Claude) models carry their context cap; a model
+// the main agent already runs on stays selectable even when the list no longer has it.
+function fillMainRouterModels(models, selected, note) {
+  const sel = document.getElementById('mainAuthRouterModel')
+  sel.innerHTML = ''
+  const list = models.slice()
+  if (selected && !list.some((m) => m.id === selected)) list.unshift({ id: selected, experimental: false })
+  for (const m of list) {
+    const o = document.createElement('option')
+    o.value = m.id
+    o.textContent = m.experimental && m.contextTokens
+      ? `${m.id} (${t('agents.main_auth.router_experimental', { cap: Math.round(m.contextTokens / 1000) })})`
+      : m.id
+    o.selected = m.id === selected
+    sel.appendChild(o)
+  }
+  const n = document.getElementById('mainAuthRouterListNote')
+  if (n) n.textContent = note || ''
+}
+async function loadMainRouterModels(selected) {
+  try {
+    const res = await fetch('/api/hostinger-router/models')
+    if (!res.ok) return
+    const d = await res.json()
+    fillMainRouterModels(d.models || [], selected, d.source === 'fallback' ? t('agents.main_auth.router_fallback') : null)
+  } catch { /* keeps the measured three */ }
+}
 async function loadMainAuthPanel() {
   const group = document.getElementById('mainAuthGroup')
   if (!group) return
@@ -5452,15 +5479,9 @@ async function loadMainAuthPanel() {
   const rStatus = document.getElementById('mainAuthRouterKeyStatus')
   rStatus.textContent = router.keyStored ? t('agents.main_auth.router_key_stored') : t('agents.main_auth.router_key_missing')
   rStatus.style.color = router.keyStored ? 'var(--success)' : 'var(--warning)'
-  const sel = document.getElementById('mainAuthRouterModel')
-  sel.innerHTML = ''
-  for (const m of router.models || []) {
-    const o = document.createElement('option')
-    o.value = m
-    o.textContent = m
-    o.selected = m === (router.model || router.defaultModel)
-    sel.appendChild(o)
-  }
+  fillMainRouterModels((router.models || []).map((id) => ({ id, experimental: false })), router.model || router.defaultModel, null)
+  // HOSTINGERROUTER1122 (Marveen 83042): the router's own list, fetched by the server with the stored key
+  if (router.available || router.active) loadMainRouterModels(router.model || router.defaultModel)
   const status = document.getElementById('mainAuthKeyStatus')
   status.textContent = d && d.hasApiKey ? t('agents.main_auth.key_stored') : t('agents.main_auth.key_missing')
   status.style.color = d && d.hasApiKey ? 'var(--success)' : 'var(--warning)'
@@ -16702,6 +16723,7 @@ function onbRouterChoiceHtml(s) {
     + `<label class="form-label-sm">${escapeHtml(t('onboarding.router.model_label'))}</label>`
     + `<select id="onbRouterModel" class="onb-input">${opts}</select>`
     + `<div class="onb-hint">${escapeHtml(t('onboarding.router.notice'))}</div>`
+    + `<div class="onb-hint">${escapeHtml(t('onboarding.router.more_models'))}</div>`
     + `</div>`
 }
 function onbStep1Html(s) {

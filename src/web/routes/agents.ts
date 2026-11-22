@@ -145,8 +145,8 @@ import {
 } from '../agent-process.js'
 import { checkMainAuthSwitch, MAIN_AUTH_SWITCH_FIELDS } from '../main-auth-switch.js'
 import {
-  applyMainRouter, clearMainRouter, HOSTINGER_ROUTER_DEFAULT_MODEL, HOSTINGER_ROUTER_MODELS, routerActive, routerAvailable,
-  routerKeyStored, routerModel,
+  applyMainRouter, clearMainRouter, EXPERIMENTAL_CONTEXT_CAP, HOSTINGER_ROUTER_DEFAULT_MODEL, HOSTINGER_ROUTER_MODELS,
+  routerActive, routerAvailable, routerContextTokens, routerKeyStored, routerModel, routerModelList, routerModelSelectable,
 } from '../hostinger-router.js'
 import { readMainAuthLaunched } from '../main-auth.js'
 import { hostApiKey } from '../auth-key-mode.js'
@@ -2742,6 +2742,22 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // HOSTINGERROUTER1122 (Marveen 83042, Samu 83048): the router's own model list for the main agent card, fetched
+  // server side with the stored key (never returned) and cached; the three measured Claude models when it cannot be.
+  // Owner only: every fetch counts against the key's daily limit.
+  if (path === '/api/hostinger-router/models' && method === 'GET') {
+    if (!mayActAsOwner(ctx.auth, req)) { refuseOwner(res, 'The Hostinger AI Router model list needs the dashboard login (an owner session).'); return true }
+    if (!routerAvailable(PROJECT_ROOT)) { json(res, { error: 'The Hostinger AI Router is offered only on a Hostinger install.', code: 'router-unavailable' }, 409); return true }
+    const list = await routerModelList()
+    json(res, {
+      source: list.source,
+      defaultModel: HOSTINGER_ROUTER_DEFAULT_MODEL,
+      experimentalContextCap: EXPERIMENTAL_CONTEXT_CAP,
+      models: list.models.filter(routerModelSelectable).map((m) => ({ id: m.id, claude: m.claude, measured: m.measured, experimental: m.experimental, contextTokens: routerContextTokens(m) })),
+    })
+    return true
+  }
+
   const agentMatch = path.match(/^\/api\/agents\/([^/]+)$/)
   if (agentMatch && method === 'GET') {
     const name = decodeURIComponent(agentMatch[1])
@@ -2774,6 +2790,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         json(res, { error: 'The vault cannot be read right now, so the stored key is unknown; nothing was changed', code: 'vault-unreadable' }, 503)
         return true
       }
+      // HOSTINGERROUTER1122: a router save checks the model against the router's own (cached) list
+      const routerList = (mdata as Record<string, unknown>).authMode === 'router' && routerAvailable(PROJECT_ROOT) ? await routerModelList() : null
       const explicit = resolveMainAgentConfigDir()
       const fleetTokenUsable = (() => { try { return statSync(FLEET_OAUTH_TOKEN_PATH).size > 0 } catch { return false } })()
       const verdict = checkMainAuthSwitch(mdata, {
@@ -2786,6 +2804,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         keyAvailable: !!vaultKey || hostApiKey(join(PROJECT_ROOT, '.env')).trim() !== '',
         routerAvailable: routerAvailable(PROJECT_ROOT),
         routerKeyAvailable: routerKeyStored(),
+        routerModels: routerList ? routerList.models.filter(routerModelSelectable).map((m) => m.id) : [],
       })
       if (!verdict.ok) { json(res, { error: verdict.error, code: verdict.code }, verdict.status); return true }
       // HOSTINGERROUTER1122: no live probe for the router key (every router call is billed in the owner's credits,
@@ -2793,7 +2812,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (verdict.mode === 'router') {
         try {
           mkdirSync(agentDir(name), { recursive: true })
-          applyMainRouter(name, verdict.newKey, verdict.model ?? HOSTINGER_ROUTER_DEFAULT_MODEL)
+          const chosen = verdict.model ?? HOSTINGER_ROUTER_DEFAULT_MODEL
+          const option = routerList?.models.find((m) => m.id === chosen)
+          applyMainRouter(name, verdict.newKey, chosen, option ? routerContextTokens(option) : null)
           // authMode back to shared: an "api" left next to a custom provider is a launch conflict (main-auth.ts)
           writeAgentAuthMode(name, 'shared')
           deleteSecret(`agent-${name}-api-key`)

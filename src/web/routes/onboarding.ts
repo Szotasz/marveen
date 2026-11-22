@@ -646,7 +646,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
         writeAgentAuthMode(MAIN_AGENT_ID, 'shared')
       } catch (err) {
         logger.error({ err: err instanceof Error ? err.message : String(err) }, 'onboarding: failed to save the Hostinger AI Router')
-        json(res, { error: 'Nem sikerult elmenteni a Hostinger AI Router beallitast.', reason: 'write-failed' }, 500)
+        json(res, { error: 'Could not save the Hostinger AI Router setting.', reason: 'write-failed' }, 500)
         return true
       }
       // The same restart rule as below: only when the install had no auth, so the running session is a fresh setup one.

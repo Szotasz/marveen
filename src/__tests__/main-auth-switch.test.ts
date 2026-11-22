@@ -113,3 +113,15 @@ describe('checkMainAuthSwitch: the Hostinger AI Router', () => {
     expect(checkMainAuthSwitch({ authMode: 'shared', model: 'claude-sonnet-5-5' }, hostinger)).toMatchObject({ ok: false, code: 'model-without-router' })
   })
 })
+
+describe('checkMainAuthSwitch: the router list (Samu 83048 c)', () => {
+  const RKEY = ['sk', 'hstgr', '0123456789abcdefghij'].join('-')
+  const hostinger: MainAuthSwitchFacts = { ...clean, routerAvailable: true, routerKeyAvailable: true }
+  it('a model of the router list is accepted; one outside it and outside the measured three is not', () => {
+    expect(checkMainAuthSwitch({ authMode: 'router', model: 'kimi-k3' }, { ...hostinger, routerModels: ['kimi-k3', 'claude-opus-4.6'] }))
+      .toEqual({ ok: true, mode: 'router', newKey: null, model: 'kimi-k3' })
+    expect(checkMainAuthSwitch({ authMode: 'router', model: 'kimi-k3' }, hostinger)).toMatchObject({ ok: false, code: 'bad-model' })
+    expect(checkMainAuthSwitch({ authMode: 'router', apiKey: RKEY, model: 'claude-haiku-5-5' }, { ...hostinger, routerModels: [] }))
+      .toMatchObject({ ok: true, model: 'claude-haiku-5-5' })
+  })
+})
