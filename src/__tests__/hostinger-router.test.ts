@@ -131,3 +131,51 @@ describe('channels.sh: no --model next to a custom provider', () => {
     expect(launch).toBeGreaterThan(cleared)
   })
 })
+
+const { parseRouterModels, routerModelList, clearRouterModelCache } = await import('../web/hostinger-router.js')
+describe('the router model list (Marveen 83042)', () => {
+  const row = (id: string, endpoints = ['/v1/messages', '/v1/chat/completions'], params = ['tools', 'temperature']) =>
+    ({ id, supported_endpoints: endpoints, supported_parameters: params })
+  const BODY = { data: [
+    row('kimi-k3'), row('claude-opus-4.6'), row('claude-haiku-5.5'), row('claude-sonnet-5.5'), row('claude-opus-5.5'),
+    row('gpt-chat-only', ['/v1/chat/completions']), row('claude-no-tools', ['/v1/messages'], ['temperature']), row('claude-sonnet-5.5'),
+  ] }
+  it('keeps /v1/messages + tools, writes the measured three dashed, Claude first, the rest experimental', () => {
+    const list = parseRouterModels(BODY)
+    expect(list.map((m) => m.id)).toEqual(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-opus-4.6', 'kimi-k3'])
+    expect(list.find((m) => m.id === 'kimi-k3')).toMatchObject({ claude: false, experimental: true, measured: false })
+    expect(list.find((m) => m.id === 'claude-opus-4.6')).toMatchObject({ claude: true, experimental: false, measured: false })
+  })
+  it('garbage in: an empty list', () => {
+    for (const b of [null, 42, 'x', { data: 'x' }, { data: [null, { id: 'bad id with spaces' }] }]) expect(parseRouterModels(b)).toEqual([])
+  })
+  it('no key: the measured three, no request', async () => {
+    clearRouterModelCache()
+    let calls = 0
+    const list = await routerModelList((async () => { calls++; return new Response('{}') }) as typeof fetch)
+    expect([list.source, list.models.map((m) => m.id), calls]).toEqual(['fallback', ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'], 0])
+  })
+  it('with a key: one request with x-api-key, cached for 10 minutes; an error falls back and is not cached', async () => {
+    clearRouterModelCache()
+    vault.set(HOSTINGER_ROUTER_VAULT_KEY, KEY)
+    const seen: Array<{ url: string; key: string | null }> = []
+    const ok = (async (url: string, init: RequestInit) => {
+      seen.push({ url, key: new Headers(init.headers).get('x-api-key') })
+      return new Response(JSON.stringify(BODY), { status: 200 })
+    }) as unknown as typeof fetch
+    const a = await routerModelList(ok, 1_000_000)
+    const b = await routerModelList(ok, 1_000_000 + 9 * 60_000)
+    expect([a.source, b.source, seen.length]).toEqual(['router', 'router', 1])
+    expect(seen[0]).toEqual({ url: 'https://router.hostinger.com/v1/models', key: KEY })
+    await routerModelList(ok, 1_000_000 + 11 * 60_000)
+    expect(seen.length).toBe(2)
+    clearRouterModelCache()
+    const bad = (async () => new Response('nope', { status: 401 })) as unknown as typeof fetch
+    expect((await routerModelList(bad)).source).toBe('fallback')
+    const thrown = (async () => { throw new Error('network') }) as unknown as typeof fetch
+    expect((await routerModelList(thrown)).source).toBe('fallback')
+    let after = 0
+    await routerModelList((async () => { after++; return new Response(JSON.stringify(BODY)) }) as unknown as typeof fetch)
+    expect(after).toBe(1)
+  })
+})

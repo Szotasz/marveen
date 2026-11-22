@@ -73,7 +73,10 @@ export function routerModel(mainAgentId: string): string | null {
  * main agent's customProvider + model. The caller has checked the key, the model and who may do it.
  */
 export function applyMainRouter(mainAgentId: string, newKey: string | null, model: string): void {
-  if (newKey) setSecret(HOSTINGER_ROUTER_VAULT_KEY, 'Hostinger AI Router key (main agent)', newKey.trim())
+  if (newKey) {
+    setSecret(HOSTINGER_ROUTER_VAULT_KEY, 'Hostinger AI Router key (main agent)', newKey.trim())
+    clearRouterModelCache()
+  }
   saveCustomProvider({
     id: HOSTINGER_ROUTER_PROVIDER_ID,
     label: 'Hostinger AI Router',
@@ -101,3 +104,101 @@ export function clearMainRouter(mainAgentId: string): boolean {
   }
   return true
 }
+
+// --- The router's own model list (owner decision Marveen 83042, Samu 83044) -------------------------------------
+// GET {base}/v1/models, server side with the vault key (the key never reaches the browser), cached for 10 minutes
+// (the endpoint is free, but the key has a daily limit). Kept: models that serve /v1/messages AND support tools.
+// Order: the three measured Claude models first (written dashed, the ids our tables and the context guard know),
+// then the other Claude models, then the rest, labelled experimental until a tool-call trial (credits, owner GO).
+// When the list cannot be fetched (no key, network, 4xx/5xx), the three measured Claude models, and the UI says so.
+
+export interface RouterModelOption {
+  /** The id written into the main agent's config. */
+  id: string
+  claude: boolean
+  /** One of the three measured, dashed Claude ids. */
+  measured: boolean
+  /** Not a Claude model: no tool-call trial yet. */
+  experimental: boolean
+  /** The model's context window in tokens, when the router names it. */
+  contextTokens: number | null
+}
+export interface RouterModelList { source: 'router' | 'fallback'; models: RouterModelOption[] }
+
+const ROUTER_MODELS_TTL_MS = 10 * 60_000
+const ROUTER_MODELS_TIMEOUT_MS = 8_000
+let modelsCache: { at: number; list: RouterModelList } | null = null
+
+/** The dashed form of a router id when it is one of the measured three (claude-sonnet-5.5 -> claude-sonnet-5-5). */
+function measuredDashed(id: string): string | null {
+  const dashed = id.replace(/(\d)\.(\d)/g, '$1-$2')
+  return (HOSTINGER_ROUTER_MODELS as readonly string[]).includes(dashed) ? dashed : null
+}
+
+function positiveInt(v: unknown): number | null {
+  const n = typeof v === 'string' ? Number(v) : v
+  return typeof n === 'number' && Number.isSafeInteger(n) && n > 0 ? n : null
+}
+
+/** Pure: the /v1/models response body -> the ordered options. Unparsable input gives an empty list. */
+export function parseRouterModels(body: unknown): RouterModelOption[] {
+  const rows = Array.isArray(body) ? body : body && typeof body === 'object' && Array.isArray((body as { data?: unknown }).data) ? (body as { data: unknown[] }).data : []
+  const seen = new Set<string>()
+  const out: RouterModelOption[] = []
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue
+    const m = r as Record<string, unknown>
+    const id = typeof m.id === 'string' ? m.id.trim() : ''
+    if (!id || !/^[A-Za-z0-9._:/+-]{1,128}$/.test(id)) continue
+    const endpoints = Array.isArray(m.supported_endpoints) ? m.supported_endpoints.map(String) : []
+    const params = Array.isArray(m.supported_parameters) ? m.supported_parameters.map(String) : []
+    if (!endpoints.some((e) => e === '/v1/messages' || e.endsWith('/v1/messages'))) continue
+    if (!params.includes('tools')) continue
+    const dashed = measuredDashed(id)
+    const finalId = dashed ?? id
+    if (seen.has(finalId)) continue
+    seen.add(finalId)
+    const claude = /^claude-/i.test(id)
+    out.push({ id: finalId, claude, measured: dashed !== null, experimental: !claude, contextTokens: null })
+  }
+  const rank = (o: RouterModelOption) => (o.measured ? 0 : o.claude ? 1 : 2)
+  const measuredOrder = (o: RouterModelOption) => (HOSTINGER_ROUTER_MODELS as readonly string[]).indexOf(o.id)
+  return out.sort((a, b) => rank(a) - rank(b) || (rank(a) === 0 ? measuredOrder(a) - measuredOrder(b) : a.id.localeCompare(b.id)))
+}
+
+/** The fallback: the three measured Claude models. */
+export function fallbackRouterModels(): RouterModelList {
+  return {
+    source: 'fallback',
+    models: HOSTINGER_ROUTER_MODELS.map((id) => ({ id, claude: true, measured: true, experimental: false, contextTokens: null })),
+  }
+}
+
+/**
+ * The router's model list, fetched with the stored key and cached for 10 minutes; the fallback when it cannot be
+ * fetched. `fetchImpl` is the test seam. The key is only sent to the router, never returned.
+ */
+export async function routerModelList(fetchImpl: typeof fetch = fetch, now: number = Date.now()): Promise<RouterModelList> {
+  if (modelsCache && now - modelsCache.at < ROUTER_MODELS_TTL_MS) return modelsCache.list
+  let key = ''
+  try { key = (getSecret(HOSTINGER_ROUTER_VAULT_KEY) ?? '').trim() } catch { key = '' }
+  if (!key) return fallbackRouterModels()
+  let list: RouterModelList
+  try {
+    const res = await fetchImpl(`${HOSTINGER_ROUTER_BASE_URL}/v1/models`, {
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(ROUTER_MODELS_TIMEOUT_MS),
+    })
+    const models = res.ok ? parseRouterModels(await res.json()) : []
+    list = models.length ? { source: 'router', models } : fallbackRouterModels()
+  } catch {
+    list = fallbackRouterModels()
+  }
+  // Only a real list is cached: a fallback is retried on the next request.
+  if (list.source === 'router') modelsCache = { at: now, list }
+  return list
+}
+
+/** Test seam, and after a key change: the next request fetches again. */
+export function clearRouterModelCache(): void { modelsCache = null }
