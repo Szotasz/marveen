@@ -247,7 +247,14 @@ else
   systemctl restart fail2ban || fail "fail2ban did not restart"
   changed+=("fail2ban guards sshd")
 fi
-fail2ban-client status sshd >/dev/null 2>&1 || fail "fail2ban runs, but its sshd jail does not (fail2ban-client status sshd)"
+# The restart returns before the server answers (measured on the QA VPS: "Server ready" one second later), so the jail
+# is asked again for a while instead of once. HH_F2B_WAIT is for the tests only.
+jail_up=0
+for _ in $(seq 1 "${HH_F2B_WAIT:-20}"); do
+  if fail2ban-client status sshd >/dev/null 2>&1; then jail_up=1; break; fi
+  sleep 1
+done
+[ "$jail_up" = 1 ] || fail "fail2ban runs, but its sshd jail does not (fail2ban-client status sshd)"
 
 # --- 4. password SSH off ----------------------------------------------------------------------------------------
 dropin_text="# docker/host-hardening.sh (HOSTINGERLOCKDOWN1122): keys only. Read before 50-cloud-init.conf.

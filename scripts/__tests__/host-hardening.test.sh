@@ -59,7 +59,14 @@ case "$*" in
 esac
 EOF
 printf '#!/usr/bin/env bash\necho "default via 203.0.113.1 dev eth0 proto static"\n' > "$BIN/ip"
-for c in systemctl apt-get fail2ban-client; do
+# fail2ban-client: "status sshd" fails for the first STUB_F2B_FAILS calls (the server is still starting), then answers.
+cat > "$BIN/fail2ban-client" <<'EOF'
+#!/usr/bin/env bash
+echo "fail2ban-client $*" >> "$HH_ROOT/../calls.log"
+n="$(cat "$HH_ROOT/../f2b-calls" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" > "$HH_ROOT/../f2b-calls"
+[ "$n" -gt "${STUB_F2B_FAILS:-0}" ]
+EOF
+for c in systemctl apt-get; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$HH_ROOT/../calls.log"\n' "$c" > "$BIN/$c"
 done
 chmod +x "$BIN"/*
@@ -69,7 +76,7 @@ ssh-keygen -q -t ed25519 -N '' -C test@example -f "$T/k" >/dev/null
 ED_KEY="$(cat "$T/k.pub")"
 
 fresh() {
-  rm -rf "$T/case"; mkdir -p "$T/case/root"; : > "$T/case/calls.log"
+  rm -rf "$T/case"; mkdir -p "$T/case/root"; : > "$T/case/calls.log"; rm -f "$T/case/f2b-calls"
   local r="$T/case/root"
   mkdir -p "$r/etc/ssh/sshd_config.d" "$r/etc/ufw" "$r/etc/default" "$r/root/.ssh" "$r/home/alice/.ssh" "$r/var/log"
   printf 'root:x:0:0:root:/root:/bin/bash\nalice:x:1000:1000::/home/alice:/bin/bash\n' > "$r/etc/passwd"
@@ -159,6 +166,12 @@ fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; mkdir -p "$T/gl
 check "DenyUsers * from a directory with files: exit 2, root named" '[ "$(rc)" = 2 ] && grep -q "root is in DenyUsers" "$T/case/out" && [ ! -e "$DROPIN" ]'
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_ALLOWUSERS='!bob root' run
 check "a negated pattern: exit 2, said" '[ "$(rc)" = 2 ] && grep -q "negated (!) pattern" "$T/case/out"'
+
+# QA VPS (Marveen 82995): fail2ban answers a moment after its restart; the jail check waits for it.
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_F2B_FAILS=2 HH_F2B_WAIT=5 run
+check "fail2ban not ready for 2 calls: waits, exit 0, password off in the same run" '[ "$(rc)" = 0 ] && grep -q "+ password SSH off" "$T/case/out" && [ "$(calls "^fail2ban-client status sshd")" = 3 ]'
+fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_F2B_FAILS=99 HH_F2B_WAIT=2 run
+check "fail2ban jail never up: exit 1 after the wait, said" '[ "$(rc)" = 1 ] && grep -q "its sshd jail does not" "$T/case/out" && [ "$(calls "^fail2ban-client status sshd")" = 2 ]'
 
 # Dani B3: StrictModes ignores a group-writable key file; with StrictModes off it is used.
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; chmod 664 "$R/root/.ssh/authorized_keys"; run
