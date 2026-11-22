@@ -74,6 +74,9 @@ chmod +x "$BIN"/*
 # A real key: the script lists fingerprints (ssh-keygen -lf), which needs a valid key line.
 ssh-keygen -q -t ed25519 -N '' -C test@example -f "$T/k" >/dev/null
 ED_KEY="$(cat "$T/k.pub")"
+# A second key, injected the way the Hostinger Web Terminal does it: with an expiry-time option (Samu 83011).
+ssh-keygen -q -t ed25519 -N '' -C webterminal@provider -f "$T/k2" >/dev/null
+EXP_KEY="expiry-time=\"20991231000000Z\" $(cat "$T/k2.pub")"
 
 fresh() {
   rm -rf "$T/case"; mkdir -p "$T/case/root"; : > "$T/case/calls.log"; rm -f "$T/case/f2b-calls"
@@ -172,6 +175,12 @@ fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_F2B_FAILS=
 check "fail2ban not ready for 2 calls: waits, exit 0, password off in the same run" '[ "$(rc)" = 0 ] && grep -q "+ password SSH off" "$T/case/out" && [ "$(calls "^fail2ban-client status sshd")" = 3 ]'
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; STUB_F2B_FAILS=99 HH_F2B_WAIT=2 run
 check "fail2ban jail never up: exit 1 after the wait, said" '[ "$(rc)" = 1 ] && grep -q "its sshd jail does not" "$T/case/out" && [ "$(calls "^fail2ban-client status sshd")" = 2 ]'
+
+# Samu 83011 (A): an expiry-time key (the provider's web terminal) is listed but never counted.
+fresh; printf '%s\n' "$EXP_KEY" > "$R/root/.ssh/authorized_keys"; run
+check "only an expiring key: exit 2, said, nothing changed" '[ "$(rc)" = 2 ] && grep -q "only expiring keys (expiry-time" "$T/case/out" && [ ! -e "$DROPIN" ]'
+fresh; printf '%s\n%s\n' "$EXP_KEY" "$ED_KEY" > "$R/root/.ssh/authorized_keys"; run
+check "expiring + own key: exit 0, both listed, the expiring one marked" '[ "$(rc)" = 0 ] && grep -q "SHA256:.*webterminal@provider.*(expires, not counted)" "$T/case/out" && grep "test@example" "$T/case/out" | grep -vq "not counted"'
 
 # Dani B3: StrictModes ignores a group-writable key file; with StrictModes off it is used.
 fresh; printf '%s\n' "$ED_KEY" > "$R/root/.ssh/authorized_keys"; chmod 664 "$R/root/.ssh/authorized_keys"; run

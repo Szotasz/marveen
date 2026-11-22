@@ -68,6 +68,10 @@ matches_any() { # $1 a name, then patterns (user@host: the user part)
   return 1
 }
 key_lines() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -E '(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp[0-9]+|sk-[a-z0-9-]+@openssh\.com)[[:space:]]+AAAA'; }
+# A key with an expiry-time option is not a lasting way in (Samu 83011): the Hostinger Web Terminal injects one such
+# short-lived key (measured on the QA VPS). Listed, never counted.
+expiring() { grep -qiE '(^|,)[[:space:]]*expiry-time=' <<<"$1"; }
+durable_key_lines() { key_lines "$1" | grep -viE '(^|,)[[:space:]]*expiry-time=' ; }
 why=""; kf=""
 # Not in a $( ) subshell: it sets $kf (the key file sshd would read for this user) or $why, for the caller.
 usable_keyfile() { # $1 user, $2 home
@@ -98,7 +102,10 @@ usable_keyfile() { # $1 user, $2 home
   for f in $(printf '%s\n' "$c" | vals authorizedkeysfile); do
     f="${f//%h/$h}"; f="${f//%u/$u}"; f="${f//%%/%}"
     case "$f" in /*) ;; *) f="$h/$f" ;; esac
-    key_lines "$R$f" >/dev/null || continue
+    if ! durable_key_lines "$R$f" >/dev/null; then
+      key_lines "$R$f" >/dev/null && why="only expiring keys (expiry-time, e.g. a provider's web terminal) in $f; they are not counted"
+      continue
+    fi
     # Dani B3: with StrictModes (the default) sshd ignores a key file when it, or a directory above it up to the home,
     # is group/world-writable or owned by someone else than the user or root.
     if [ "$strict" != no ] && ! strict_ok "$u" "$f" "$h"; then return 1; fi
@@ -132,7 +139,12 @@ while read -r u; do
   [ -n "$h" ] || continue
   if usable_keyfile "$u" "$h"; then
     owners+=("$u")
-    listing+="  $u ($kf):"$'\n'"$(key_lines "$R$kf" | ssh-keygen -lf - 2>/dev/null | sed 's/^/    /')"$'\n'
+    listing+="  $u ($kf):"$'\n'
+    while IFS= read -r line; do
+      fp="$(printf '%s\n' "$line" | ssh-keygen -lf - 2>/dev/null)"
+      if expiring "$line"; then fp="$fp (expires, not counted)"; fi
+      listing+="    $fp"$'\n'
+    done < <(key_lines "$R$kf")
   else
     reasons+="  $u: $why"$'\n'
   fi
