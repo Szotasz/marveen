@@ -37,7 +37,7 @@ export const MODEL_ALIASES: Record<string, string> = {
   'sonnet5': 'claude-sonnet-5',
   'opus-5': 'claude-opus-5',
   'opus5': 'claude-opus-5',
-  'haiku': 'claude-haiku-4-5-20251001',
+  'haiku': 'claude-haiku-4-5',
   'haiku-5-5': 'claude-haiku-5-5',
   'haiku55': 'claude-haiku-5-5',
   'fable': 'claude-fable-5',
@@ -1068,6 +1068,19 @@ export function readAgentCustomProvider(name: string): string | null {
     const config = JSON.parse(readFileOr(configPath, '{}'))
     const value = config.customProvider
     if (typeof value === 'string' && value.trim()) return value.trim()
+  } catch { /* fall through */ }
+  return null
+}
+
+/**
+ * HOSTINGERROUTER1122: the context window Claude Code is told for the custom provider's model
+ * (CLAUDE_CODE_MAX_CONTEXT_TOKENS), set only for a model Claude Code does not know. A positive integer, or null.
+ */
+export function readAgentCustomProviderContextTokens(name: string): number | null {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const value = JSON.parse(readFileOr(configPath, '{}')).customProviderContextTokens
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value
   } catch { /* fall through */ }
   return null
 }

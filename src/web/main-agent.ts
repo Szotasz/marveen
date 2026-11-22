@@ -1,6 +1,7 @@
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { MAIN_AGENT_ID, SERVICE_ID } from '../config.js'
+import { deployment, type Deployment } from './deployment.js'
 
 // The channels tmux session name for a given main-agent id. The main agent
 // runs in a long-lived `${id}-channels` tmux session (managed by launchd /
@@ -27,8 +28,18 @@ export function channelsPlistPath(serviceId: string): string {
 // install (#1878 item 6): the "restart failed" messages used to hardcode
 // `systemctl --user restart marveen-channels`, wrong on a renamed install and
 // with no macOS form. macOS: the launchd job in the GUI login's domain (run from
-// a terminal of that login); Linux: the user unit.
-export function channelsRestartCommand(platform: string = process.platform, serviceId: string = SERVICE_ID): string {
+// a terminal of that login); Linux: the user unit. Docker (HOSTINGERLANGFU1122): there is no systemd or launchd in the
+// container; supervisor runs channels.sh (docker/supervisord.conf, [program:channels]), and channels.sh kills the old
+// session at its start, so a supervisor restart is a real restart. Run on the HOST: the container's hostname is its id.
+export function channelsRestartCommand(
+  platform: string = process.platform,
+  serviceId: string = SERVICE_ID,
+  deploy: Deployment = deployment(),
+  host: string = hostname(),
+): string {
+  if (deploy === 'docker') {
+    return `docker exec ${host} supervisorctl -c /opt/marveen-docker/supervisord.conf restart channels`
+  }
   if (platform === 'darwin') {
     const label = channelsLaunchdLabel(serviceId)
     return `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/${label}.plist 2>/dev/null; launchctl kickstart -k gui/$(id -u)/${label}`

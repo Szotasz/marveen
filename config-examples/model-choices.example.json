@@ -15,7 +15,7 @@
     "default_hold_minutes": 240
   },
   "haiku": {
-    "id": "claude-haiku-4-5-20251001",
+    "id": "claude-haiku-4-5",
     "purpose": "gépies, olcsó körök (200K ablak)",
     "default_hold_minutes": 60
   }

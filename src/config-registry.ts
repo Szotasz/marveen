@@ -269,6 +269,8 @@ export const AGENT_MODEL_CHOICES: readonly string[] = [
   'claude-fable-5-2',
   'claude-opus-4-8[1m]',
   'claude-haiku-5-5',
+  'claude-haiku-4-5',
+  // Legacy dated id: existing settings and agent packages may still carry it, so it stays accepted.
   'claude-haiku-4-5-20251001',
 ]
 

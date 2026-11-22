@@ -56,7 +56,7 @@ describe('/api/models/available carries the gate', () => {
     expect(s.measured).toBe(true)
     expect(s.unsupported.map((u) => u.id).sort()).toEqual(['claude-fable-5-1', 'claude-fable-5-2', 'claude-haiku-5-5', 'claude-opus-5-5', 'claude-sonnet-5-5'])
     const ids = (body.claude as Array<{ id: string }>).map((m) => m.id)
-    for (const id of ['claude-fable-5-2', 'claude-fable-5-1', 'claude-opus-5-5[1m]', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001']) expect(ids).toContain(id)
+    for (const id of ['claude-fable-5-2', 'claude-fable-5-1', 'claude-opus-5-5[1m]', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-haiku-5-5', 'claude-haiku-4-5']) expect(ids).toContain(id)
     // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23); the plain id is gone from the API too.
     expect(ids).not.toContain('claude-opus-5-5')
     // the picker markup offers exactly the same Claude ids the API lists

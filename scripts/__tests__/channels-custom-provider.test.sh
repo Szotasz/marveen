@@ -369,6 +369,27 @@ else
   fail "x-api-key suffix stamped into .claude.json" "(skipped)" "(vault setup failed)"
 fi
 
+# 11. HOSTINGERROUTER1122: customProviderContextTokens -> CLAUDE_CODE_MAX_CONTEXT_TOKENS (a model Claude Code does not
+#     know would otherwise get an assumed 1M window); a non-integer value is never exported.
+run '{"customProvider":"litellm-local","model":"kimi-k3","customProviderContextTokens":200000}' "$NONE_PROVIDER"
+if [ "$GOT_RC" -eq 0 ] && printf '%s' "$GOT_OUT" | grep -q "export ANTHROPIC_MODEL='kimi-k3' && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000 && $"; then
+  pass "context window -> export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000 after the model"
+else
+  fail "context window -> export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000 after the model" "...ANTHROPIC_MODEL='kimi-k3' && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000 && " "exit=$GOT_RC, stdout='$GOT_OUT'"
+fi
+run '{"customProvider":"litellm-local","model":"kimi-k3","customProviderContextTokens":"200000; touch /tmp/x"}' "$NONE_PROVIDER"
+if [ "$GOT_RC" -eq 0 ] && ! printf '%s' "$GOT_OUT" | grep -q "CLAUDE_CODE_MAX_CONTEXT_TOKENS"; then
+  pass "a non-integer context window is not exported"
+else
+  fail "a non-integer context window is not exported" "no CLAUDE_CODE_MAX_CONTEXT_TOKENS" "exit=$GOT_RC, stdout='$GOT_OUT'"
+fi
+run '{"customProvider":"litellm-local","model":"oc/test"}' "$NONE_PROVIDER"
+if [ "$GOT_RC" -eq 0 ] && ! printf '%s' "$GOT_OUT" | grep -q "CLAUDE_CODE_MAX_CONTEXT_TOKENS"; then
+  pass "no context window set -> none exported"
+else
+  fail "no context window set -> none exported" "no CLAUDE_CODE_MAX_CONTEXT_TOKENS" "exit=$GOT_RC, stdout='$GOT_OUT'"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

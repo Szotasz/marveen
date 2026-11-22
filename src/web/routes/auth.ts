@@ -25,6 +25,7 @@
 import type http from 'node:http'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
+import { getEffectiveSettingValue } from '../../settings-store.js'
 import { notifySecurityEvent } from '../../notify.js'
 import { parseCookies, SESSION_COOKIE_NAME } from '../auth-gate.js'
 import {
@@ -326,6 +327,14 @@ const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
 // session principal, or a valid owner cookie beside the bearer). A bool only (no id, no expiry), and only for a caller
 // that could hold one: absent for an anonymous caller, an operator key and a sub-agent token. The Bridge reads it to
 // offer the password login once per run.
+/** HOSTINGERI18N1122: the dashboard language the sign-in page should show. DASHBOARD_LANG is not a secret, and before a
+ *  login the page cannot read it from /api/settings (401), so a Docker install set to en showed its login in Hungarian. */
+export function dashboardLang(read: () => unknown = () => getEffectiveSettingValue('DASHBOARD_LANG')): 'hu' | 'en' {
+  let v: unknown
+  try { v = read() } catch { v = null }
+  return v === 'en' ? 'en' : 'hu'
+}
+
 function statusPayload(auth: RouteContext['auth'], req?: http.IncomingMessage) {
   const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device' || auth?.kind === 'setup'
   const method = authenticated ? auth!.kind : null
@@ -339,6 +348,7 @@ function statusPayload(auth: RouteContext['auth'], req?: http.IncomingMessage) {
     device,
     ...(mayHoldOwner ? { owner_session: auth?.kind === 'session' || ownerCookieSession(req) !== null } : {}),
     login_available: countDashboardUsers(false) >= 1,
+    lang: dashboardLang(),
     setup_required: countDashboardUsers(true) === 0,
     // DOCKERHTTPS1119: the public listener before the first login: the page asks for the one-time setup code.
     ...(isPublicRequest(req) ? { setup_code: auth?.kind !== 'setup' && countDashboardUsers(true) === 0 && setupCodeAvailable() } : {}),

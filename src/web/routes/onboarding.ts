@@ -26,9 +26,19 @@ import { teamsAllowlistIds, TEAMS_ALLOWLIST_FILE } from '../../owner-chat.js'
 import type { RouteContext } from './types.js'
 import { deployment } from '../deployment.js'
 import { installLang, switchInstallLanguage, type RunResult } from '../install-lang-switch.js'
+import {
+  applyMainRouter, checkRouterKey, HOSTINGER_ROUTER_DEFAULT_MODEL, HOSTINGER_ROUTER_MODELS, resolveRouterModel, routerAuthPresent,
+  routerAvailable,
+} from '../hostinger-router.js'
+import { writeAgentAuthMode } from '../agent-config.js'
+import { deleteSecret } from '../vault.js'
 
 // DOCKERUX1118: one language switch at a time.
 let langSwitchBusy = false
+// HOSTINGERI18N1122: a switch over the running setup session that failed after its first write (env, .lang, persona
+// already in the new language), did not read back, or whose restart failed, owes the session its restart: the retry finds the language
+// already switched (nothing to render) and pays it then.
+let langRestartOwed = false
 /** A program without a shell, with exactly the given environment; never rejects (a failure is a code). */
 function runNoShell(file: string, args: readonly string[], env: Record<string, string>): Promise<RunResult> {
   return new Promise((resolve) => {
@@ -169,6 +179,9 @@ async function claudeAuthPresent(): Promise<boolean> {
     if (d?.apiKey) return true
   } catch { /* no / unreadable credentials.json */ }
   if (fleetTokenPresent()) return true
+  // HOSTINGERROUTER1122 (Geri 82904): a router install has no Claude credential, but the main agent can run: its
+  // customProvider is the router, the record exists and the key is in the vault. Otherwise the wizard sticks here.
+  if (routerAuthPresent(MAIN_AGENT_ID)) return true
   if (await keychainHasClaudeCredentials()) return true
   return runningSessionAuthenticated()
 }
@@ -370,6 +383,10 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       // DOCKERUX1118: the wizard shows its language switch in the container only, and compares with the install's.
       deployment: deployment(),
       installLang: installLang(readEnvValue),
+      // HOSTINGERROUTER1122: the router choice in the Claude step, only on a Hostinger install (never preselected).
+      router: routerAvailable(PROJECT_ROOT)
+        ? { available: true, models: [...HOSTINGER_ROUTER_MODELS], defaultModel: HOSTINGER_ROUTER_DEFAULT_MODEL }
+        : { available: false },
     })
     return true
   }
@@ -401,8 +418,8 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
 
   // DOCKERUX1118 (owner 33327/33329, Samu 80886/80891): the wizard's language switch. Docker only (a native install's
   // language is the installer's question); the owner session only, never the bare first-run token; only while the
-  // setup is unfinished and the main agent does not run (its CLAUDE.md is in use then). What it rewrites, and the
-  // untouched-only rule: src/web/install-lang-switch.ts.
+  // setup is unfinished. A main agent already running is restarted after the switch (HOSTINGERI18N1122, below). What it
+  // rewrites, and the untouched-only rule: src/web/install-lang-switch.ts.
   if (path === '/api/onboarding/language' && method === 'POST') {
     if (!mayActAsOwner(ctx.auth, req)) {
       json(res, { ...OWNER_SESSION_REQUIRED, error: 'Changing the install language needs the dashboard login (an owner session).' }, 403)
@@ -417,17 +434,29 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'The install language is switched here only in the Docker container. This install chose its language when it was installed.', reason: 'not_docker' }, 409)
       return true
     }
-    if (agentsRunning()) {
-      json(res, { error: 'The main agent is already running, so its files are in use: the install language can only be switched before it starts.', reason: 'agent_running' }, 409)
-      return true
-    }
     if (channelConfigured() && paired() && (await claudeAuthPresent())) {
       json(res, { error: 'The setup is finished: the install language can only be switched during the setup.', reason: 'onboarding_done' }, 409)
+      return true
+    }
+    // HOSTINGERI18N1122 (measured on the develop image): in the container supervisor starts channels.sh at boot, so the
+    // main agent runs from the first second, logged out, and refusing a running agent failed the wizard's switch on
+    // every Docker install. A running session whose channel is not paired yet cannot act on anyone's message (the
+    // claude-auth step's rule: fresh setup state, a bounce loses nothing), so for it the switch writes, reads back, then
+    // restarts it. A stop before the switch does not work: supervisor and the keep-alive bring the session back in ~5 s,
+    // before the renders end. Any other running agent (a paired channel, e.g. a router install whose Claude check
+    // never passes) keeps the refusal, and is never restarted by this switch.
+    const running = agentsRunning()
+    const setupSession = running && !paired()
+    if (running && !setupSession) {
+      json(res, { error: 'The main agent is already running, so its files are in use: the install language can only be switched before it starts.', reason: 'agent_running' }, 409)
       return true
     }
     if (langSwitchBusy) { json(res, { error: 'A language switch is already running.', reason: 'busy' }, 409); return true }
     langSwitchBusy = true
     try {
+      // The n2 re-check (an agent that starts during the switch) is skipped ONLY for the unpaired setup session, which
+      // runs already and is restarted below; said in the log.
+      if (setupSession) logger.info('onboarding: language switch over the running, unpaired setup session: the n2 re-check is skipped, the session is restarted after the switch')
       const result = await switchInstallLanguage(lang, {
         root: PROJECT_ROOT,
         dockerDir: process.env.MARVEEN_DOCKER_DIR || '/opt/marveen-docker',
@@ -438,11 +467,40 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
         writeFile: (p, text) => atomicWriteFileSync(p, text),
         exists: (p) => existsSync(p),
         run: runNoShell,
-        agentRunning: agentsRunning,
+        agentRunning: setupSession ? () => false : agentsRunning,
       })
       logger.info({ lang, ok: result.ok, files: result.files.length }, 'onboarding: install language switched')
       if (!result.ok && result.error === 'agent_running') {
         json(res, { error: 'The main agent started while the language was being switched: nothing was changed. The install language can only be switched before it starts.', reason: 'agent_running' }, 409)
+      } else if (!result.ok && setupSession) {
+        langRestartOwed = true
+        json(res, result, 500)
+      } else if (result.ok && setupSession && (result.lang !== result.previous || langRestartOwed)) {
+        // Read back what the agent loads its language from before the restart.
+        let langFile: string | null = null
+        try { langFile = readFileSync(join(PROJECT_ROOT, '.lang'), 'utf-8').trim() } catch { /* checked below */ }
+        if (langFile !== lang || readEnvValue('AGENT_TEXT_LANG') !== lang) {
+          langRestartOwed = true
+          logger.error({ lang, langFile }, 'onboarding: the switched language did not read back; the session is not restarted')
+          json(res, { ...result, ok: false, restarted: false, error: 'The install language did not read back after the switch, so the main agent was not restarted.', reason: 'readback-failed' }, 500)
+        } else if (paired()) {
+          // Dani 82930: the channel was paired during the switch (it takes seconds), so the session may act on messages
+          // now: not restarted. The files are switched; the restart stays owed.
+          langRestartOwed = true
+          logger.warn('onboarding: the channel was paired during the language switch; the main agent is not restarted')
+          json(res, { ...result, ok: false, restarted: false, error: 'The install language was switched, but the channel was paired meanwhile, so the main agent was not restarted. Restart it to load the new language.', reason: 'paired_during_switch' }, 409)
+        } else {
+          const r = hardRestartMarveenChannels()
+          if (r.ok) {
+            langRestartOwed = false
+            logger.info('onboarding: channels restarted so the main agent loads the switched language')
+            json(res, { ...result, restarted: true })
+          } else {
+            langRestartOwed = true
+            logger.error({ error: r.error }, 'onboarding: channels restart after the language switch FAILED')
+            json(res, { ...result, ok: false, restarted: false, error: `The install language was switched, but the main agent could not be restarted (${r.error || 'restart failed'}). Restart it with: ${channelsRestartCommand()}`, reason: 'restart-failed', restartCommand: channelsRestartCommand() }, 500)
+          }
+        }
       } else {
         json(res, result, result.ok ? 200 : 500)
       }
@@ -565,10 +623,50 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       refuseOwner(res, OWNER_SESSION_REQUIRED.error)
       return true
     }
-    let body: { token?: string; apiKey?: string } = {}
+    let body: { token?: string; apiKey?: string; routerKey?: string; routerModel?: string } = {}
     const raw = await readBodyOrRefuse(req, res)
     if (!raw) return true
     try { body = JSON.parse(raw.toString()) as typeof body } catch { /* empty */ }
+
+    // HOSTINGERROUTER1122 (Samu 83036): the Hostinger AI Router, this step's second choice, offered on a Hostinger
+    // install only and never preselected. Same gate as the subscription token above; the same rules and the same write
+    // as the main agent card's switch (hostinger-router.ts). No live probe: every router call is billed in the owner's
+    // credits, so the key is stored unverified and the next launch tells.
+    if (body.routerKey !== undefined) {
+      if (body.token || body.apiKey) { json(res, { error: 'Either the Claude token or the Hostinger AI Router key, not both.', reason: 'mixed' }, 400); return true }
+      if (!routerAvailable(PROJECT_ROOT)) { json(res, { error: 'The Hostinger AI Router is offered only on a Hostinger install.', reason: 'router-unavailable' }, 409); return true }
+      const routerKey = String(body.routerKey ?? '').trim()
+      const bad = checkRouterKey(routerKey)
+      if (bad) { json(res, { error: bad, reason: 'bad-key' }, 400); return true }
+      const model = resolveRouterModel(body.routerModel)
+      if (!model) { json(res, { error: 'Unknown Hostinger AI Router model.', reason: 'bad-model' }, 400); return true }
+      const hadAuthBeforeRouter = await claudeAuthPresent()
+      try {
+        applyMainRouter(MAIN_AGENT_ID, routerKey, model)
+        // an "api" left next to a custom provider is a launch conflict (main-auth.ts)
+        writeAgentAuthMode(MAIN_AGENT_ID, 'shared')
+        // as the main agent card's router switch does (agents.ts): an API key stored earlier leaves the vault
+        // (HOSTINGERROUTERFU1122, Geri N1)
+        deleteSecret(`agent-${MAIN_AGENT_ID}-api-key`)
+      } catch (err) {
+        logger.error({ err: err instanceof Error ? err.message : String(err) }, 'onboarding: failed to save the Hostinger AI Router')
+        json(res, { error: 'Could not save the Hostinger AI Router setting.', reason: 'write-failed' }, 500)
+        return true
+      }
+      // The same restart rule as below: only when the install had no auth, so the running session is a fresh setup one.
+      let routerRestarted = false
+      let routerRestartError: string | null = null
+      if (!hadAuthBeforeRouter && agentsRunning()) {
+        const r = hardRestartMarveenChannels()
+        routerRestarted = r.ok
+        if (!r.ok) routerRestartError = r.error || 'restart failed'
+      }
+      logger.info({ model, restarted: routerRestarted }, 'onboarding: Hostinger AI Router stored for the main agent')
+      json(res, routerRestartError
+        ? { ok: true, router: true, model, verified: false, restarted: false, restartError: routerRestartError, restartCommand: channelsRestartCommand() }
+        : { ok: true, router: true, model, verified: false, restarted: routerRestarted })
+      return true
+    }
     const token = (body.token ?? '').trim()
     const apiKey = (body.apiKey ?? '').trim()
     if (!token && !apiKey) { json(res, { error: 'token vagy apiKey szukseges.', reason: 'missing' }, 400); return true }
