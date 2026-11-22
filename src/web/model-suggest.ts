@@ -32,7 +32,7 @@ const TOP_TIER_LABEL = humanModelLabel(TOP_TIER_MODEL)
 
 export type ModelId =
   | 'claude-haiku-5-5'
-  | 'claude-haiku-4-5-20251001'
+  | 'claude-haiku-4-5'
   | 'claude-sonnet-5-5'
   | 'claude-sonnet-5'
   | 'claude-opus-5-5[1m]'
@@ -334,7 +334,7 @@ export function classifyPersona(
 
   if (haikuHits >= 2 && opusHits === 0) {
     return {
-      suggestedModel: 'claude-haiku-4-5-20251001',
+      suggestedModel: 'claude-haiku-4-5',
       reason: `A persona rövid, ismétlődő vagy fizikai/adminisztratív feladatokra utal (${haikuHits} egyező jelző) -- Haiku 4.5 elegendő és olcsóbb.`,
       changeAdvised: true,
     }
@@ -393,7 +393,7 @@ export function suggestForAgent(
 
   let suggestedModel: ModelId
   if (totalOpus >= 2) suggestedModel = TOP_TIER_MODEL
-  else if (totalHaiku >= 2 && totalOpus === 0) suggestedModel = 'claude-haiku-4-5-20251001'
+  else if (totalHaiku >= 2 && totalOpus === 0) suggestedModel = 'claude-haiku-4-5'
   else suggestedModel = 'claude-sonnet-5'
 
   const changeAdvised = normalize(suggestedModel) !== normalize(currentModel)

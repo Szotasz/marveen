@@ -20,7 +20,7 @@
 export const DEFAULT_MODEL_CHAIN: readonly string[] = [
   'claude-opus-4-8[1m]',
   'claude-sonnet-5',
-  'claude-haiku-4-5-20251001',
+  'claude-haiku-4-5',
 ]
 
 // Revert only well after the typical 5-hour plan window so we do not climb back

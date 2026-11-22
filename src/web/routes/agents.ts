@@ -1063,7 +1063,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         { id: 'claude-fable-5', label: 'Fable 5' },
         { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus)' },
         { id: 'claude-haiku-5-5', label: 'Haiku 5.5 (legújabb Haiku, leggyorsabb)', minCli: CLAUDE_MODEL_MIN_CLI['claude-haiku-5-5'].minCli },
-        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+        { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
       ],
       deepseek: hasDeepseek
         ? [
