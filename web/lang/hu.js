@@ -1785,6 +1785,7 @@ window._i18n.hu = {
   'tokenUsage.cards_overlap':    'Ebben az időpontban {n} kártya volt egyszerre folyamatban; a hívásból nem derül ki, melyikhez tartozott.',
   'tokenUsage.collect_btn.collecting':'Gyűjtés...',
   'tokenUsage.collect_btn.collect':   'Gyűjtés',
+  'tokenUsage.claude_only_label':     'Csak a claude.ai fiók',
   'tokenUsage.btn.refresh':      'Frissítés',
   'tokenUsage.loading':          'Betöltés...',
   'tokenUsage.empty':            'Nincs token adat',

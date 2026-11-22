@@ -473,12 +473,24 @@ export interface TokenSummary {
   perModel: TokenSummaryModelRow[]
 }
 
-export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
+// CLAUDEACCOUNTONLY1122: every OpenRouter model id has a vendor/model-name shape
+// ("nvidia/nemotron-...", "cohere/..."); every real Anthropic model id does not
+// ("claude-sonnet-5"). That single character already tells apart what actually
+// billed against the owner's own claude.ai account from everything routed
+// through the fleet's free/other-account OpenRouter keys -- no per-agent join
+// needed, and it stays correct for historical rows even if an agent's current
+// config later changes.
+export function claudeOnlyCondition(): string {
+  return "model IS NOT NULL AND model != '' AND model NOT LIKE '%/%'"
+}
+
+export function getTokenSummary(from?: number, to?: number, claudeOnly?: boolean): TokenSummary[] {
   const db = getDb()
   const conditions: string[] = []
   const params: any[] = []
   if (from) { conditions.push('timestamp >= ?'); params.push(from) }
   if (to) { conditions.push('timestamp <= ?'); params.push(to) }
+  if (claudeOnly) conditions.push(claudeOnlyCondition())
   const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : ''
 
   const rows = db.prepare(`
@@ -526,7 +538,7 @@ export interface ModelDistEntry {
   totalCacheCreation: number
 }
 
-export function getModelDistribution(from?: number, to?: number, agent?: string): ModelDistEntry[] {
+export function getModelDistribution(from?: number, to?: number, agent?: string, claudeOnly?: boolean): ModelDistEntry[] {
   const db = getDb()
   const hasModelCol = db.prepare("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'").get() as { n: number }
   if (!hasModelCol.n) return []
@@ -549,6 +561,7 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
   if (from) { conditions.push('timestamp >= ?'); params.push(from) }
   if (to) { conditions.push('timestamp <= ?'); params.push(to) }
   if (agent) { conditions.push('agent = ?'); params.push(agent) }
+  if (claudeOnly) conditions.push("model NOT LIKE '%/%'")
   sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' GROUP BY model ORDER BY count DESC'
 
@@ -661,6 +674,7 @@ export function getTokenTimeline(
   from?: number,
   to?: number,
   agent?: string,
+  claudeOnly?: boolean,
 ): TimelineBucket[] {
   const db = getDb()
   const bucketSeconds = bucketMinutes * 60
@@ -678,6 +692,7 @@ export function getTokenTimeline(
   if (from) { conditions.push('timestamp >= ?'); params.push(from) }
   if (to) { conditions.push('timestamp <= ?'); params.push(to) }
   if (agent) { conditions.push('agent = ?'); params.push(agent) }
+  if (claudeOnly) conditions.push(claudeOnlyCondition())
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' GROUP BY bucket, agent ORDER BY bucket ASC'
 
