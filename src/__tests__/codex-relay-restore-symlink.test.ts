@@ -149,16 +149,33 @@ describe('relay restoreClaimed never links back a symlink', () => {
       }
       symlinkSync(outsideTarget, requestFile)
 
-      // Step 3: the relay must settle the swapped entry by unlinking the claimed copy ONLY. The
-      // poll demands all three facts at once; with the unfixed code the symlink is put back at the
-      // requests/ name on EVERY tick (on macOS as a hard link to the target, on Linux as the symlink
-      // itself), so this never settles and the poll times out -- the expected red on unfixed code.
+      // Step 3: the relay must SETTLE the swapped entry by unlinking the claimed copy ONLY. Settled is
+      // a PERSISTENT state, never one sample: EVERY sample of a window that spans many relay ticks has
+      // to see all three facts. With the unfixed code the entry is put back at the requests/ name on
+      // EVERY tick (on macOS as a hard link to the target, on Linux as the symlink itself), and the
+      // name is missing only during each tick's claim -> restore bounce. One sample DOES land inside
+      // that bounce, because the three observations are not one instant (the lstat sees the name gone,
+      // and by the readdir the relay has linked the entry back and removed the copy): observed on
+      // Linux, a one-sample poll passed in 10 of 30 runs on the unfixed relay. A whole window cannot:
+      // there the poll never settles and times out -- the expected red on unfixed code, on every
+      // platform.
+      const SETTLE_MS = 1500 // spans at least five relay ticks (the relay polls every 250 ms)
+      const SETTLE_MIN_SAMPLES = 20 // a starved test process cannot pass on two lucky samples either
       const deadline = Date.now() + 20_000
+      let settledSince: number | null = null
+      let settledSamples = 0
       for (;;) {
         const goneFromRequests = !lstatExists(requestFile)
         const noClaimedCopy = claimedCopies(claimedRoot, NAME).length === 0
         const targetAlone = statSync(outsideTarget).nlink === 1
-        if (goneFromRequests && noClaimedCopy && targetAlone) break
+        if (goneFromRequests && noClaimedCopy && targetAlone) {
+          if (settledSince === null) settledSince = Date.now()
+          settledSamples++
+          if (Date.now() - settledSince >= SETTLE_MS && settledSamples >= SETTLE_MIN_SAMPLES) break
+        } else {
+          settledSince = null // anything seen again restarts the window
+          settledSamples = 0
+        }
         if (Date.now() >= deadline) {
           throw new Error(
             `relay never settled the swapped ${NAME}: lstat(requests/${NAME}) => ${describeEntry(requestFile)}; ` +
@@ -166,12 +183,10 @@ describe('relay restoreClaimed never links back a symlink', () => {
             `outside target nlink=${statSync(outsideTarget).nlink}`,
           )
         }
-        await new Promise(resolve => setTimeout(resolve, 50))
+        await new Promise(resolve => setTimeout(resolve, 5))
       }
-      // Later ticks must not bring anything back either: stuckDirs forgets the name once it is gone
-      // from requests/, and after that nothing may ever reappear there.
-      await new Promise(resolve => setTimeout(resolve, 600))
-
+      // The window itself proves that later ticks bring nothing back: it spans at least five of them
+      // (stuckDirs forgets the name once it is gone from requests/).
       expect(lstatExists(requestFile)).toBe(false) // the gate: nothing rests at the requests/ name
       expect(claimedCopies(claimedRoot, NAME)).toEqual([]) // the claimed copy is gone too
       expect(statSync(outsideTarget).nlink).toBe(1) // no hard link to the outside target was made ...
