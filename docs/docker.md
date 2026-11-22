@@ -69,6 +69,21 @@ Hostinger's Docker Manager deploys [`docker/hostinger-compose.yml`](../docker/ho
   then open the link from the log on your computer.
 - **Locked out (lost password or phone):** see [Locked out](#locked-out-lost-password-or-phone); on Hostinger with `docker exec -it <name>-marveen-1 ...` over SSH.
 
+### Lock down the server
+
+[`docker/host-hardening.sh`](../docker/host-hardening.sh) locks down the VPS itself (not the container). Run it once, as root, on Ubuntu or Debian:
+
+```bash
+curl -fsSLo host-hardening.sh https://raw.githubusercontent.com/Szotasz/marveen/v<version>/docker/host-hardening.sh && sudo bash host-hardening.sh
+```
+
+Use the version you run (the image tag), so the script is the one that was tested with it. It:
+
+- turns off password SSH (keys only), but **only if root or a sudo user already has a key** in `authorized_keys`; without one it stops and changes nothing, so you are not locked out. Add your key first: `ssh-copy-id root@<your VPS's IP>`;
+- starts fail2ban on SSH;
+- sets the firewall (ufw): incoming only your SSH port, 80 and 443. Docker-published ports skip ufw, so it also adds a rule to Docker's `DOCKER-USER` chain (in `/etc/ufw/after.rules`, kept across reboots) that lets only 80 and 443 reach a container from outside;
+- prints what it changed and what was already in place. Running it again changes nothing.
+
 ## The setup wizard
 
 1. The dashboard password (the owner's login).
