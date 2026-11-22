@@ -155,6 +155,18 @@ describe('onboarding: the Hostinger AI Router choice', () => {
     expect((await call('GET', '/api/onboarding/status')).json.claudeAuthPresent).toBe(true)
   })
 
+  it('an API key stored earlier for the main agent leaves the vault, as on the main agent card (Geri N1)', async () => {
+    writeFileSync(PLATFORM, 'hostinger\n')
+    H.vault.set('agent-marveen-api-key', 'earlier-api-key')
+    H.vault.set('agent-samu-api-key', 'a-sub-agent-key')
+    const r = await call('POST', '/api/onboarding/claude-auth', OWNER, { routerKey: KEY })
+    expect([r.status, r.json.ok]).toEqual([200, true])
+    expect(H.vault.has('agent-marveen-api-key')).toBe(false)
+    // only the main agent's own key: a sub-agent's stays
+    expect(H.vault.get('agent-samu-api-key')).toBe('a-sub-agent-key')
+    expect(H.vault.get('hostinger-router-api-key')).toBe(KEY)
+  })
+
   it('the running, unauthenticated setup session is restarted once, as for the Claude token', async () => {
     writeFileSync(PLATFORM, 'hostinger\n')
     writeFileSync(RUNNING, `${MAIN_CHANNELS_SESSION}\n`)

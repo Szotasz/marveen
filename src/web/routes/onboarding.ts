@@ -31,6 +31,7 @@ import {
   routerAvailable,
 } from '../hostinger-router.js'
 import { writeAgentAuthMode } from '../agent-config.js'
+import { deleteSecret } from '../vault.js'
 
 // DOCKERUX1118: one language switch at a time.
 let langSwitchBusy = false
@@ -644,6 +645,9 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
         applyMainRouter(MAIN_AGENT_ID, routerKey, model)
         // an "api" left next to a custom provider is a launch conflict (main-auth.ts)
         writeAgentAuthMode(MAIN_AGENT_ID, 'shared')
+        // as the main agent card's router switch does (agents.ts): an API key stored earlier leaves the vault
+        // (HOSTINGERROUTERFU1122, Geri N1)
+        deleteSecret(`agent-${MAIN_AGENT_ID}-api-key`)
       } catch (err) {
         logger.error({ err: err instanceof Error ? err.message : String(err) }, 'onboarding: failed to save the Hostinger AI Router')
         json(res, { error: 'Could not save the Hostinger AI Router setting.', reason: 'write-failed' }, 500)
