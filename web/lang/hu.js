@@ -155,7 +155,7 @@ window._i18n.hu = {
   'agentCatalog.start_btn': "Indítás",
   'agentCatalog.skill_findings': "A skill-vizsgáló jelzett valamit ennél a csomagnál; a részletek a Skillek oldalon.",
   'agentCatalog.err.generic': "Hiba történt. Próbáld újra.",
-  'agentCatalog.err.lost': "A telepítés válasza nem érkezett meg, és az ügynök nem látszik telepítettnek. Töltsd újra az oldalt, és nézd meg újra.",
+  'agentCatalog.err.lost': "A telepítés válasza nem érkezett meg, és az ügynök még nem látszik telepítettnek. A telepítés még futhat: frissítsd az oldalt egy perc múlva.",
   'agentCatalog.err.bad_request': "A kérés hibás. Töltsd újra az oldalt.",
   'agentCatalog.err.invalid_code': "Ez a kód nem érvényes vagy lejárt. Kérj újat a marveen.io Marveen-gépeim oldalán.",
   'agentCatalog.err.token_limit': "A fiókodhoz már 5 gép kapcsolódik. Kapcsolj le egyet a marveen.io Marveen-gépeim oldalán.",

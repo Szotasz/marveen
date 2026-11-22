@@ -155,7 +155,7 @@ window._i18n.en = {
   'agentCatalog.start_btn': "Start",
   'agentCatalog.skill_findings': "The skill scanner flagged something in this package; the details are on the Skills page.",
   'agentCatalog.err.generic': "Something went wrong. Try again.",
-  'agentCatalog.err.lost': "The install answer did not arrive, and the agent does not show as installed. Reload the page and check again.",
+  'agentCatalog.err.lost': "The install answer did not arrive, and the agent does not show as installed yet. The install may still be running: reload the page in a minute.",
   'agentCatalog.err.bad_request': "The request was not valid. Reload the page.",
   'agentCatalog.err.invalid_code': "This code is not valid or has expired. Get a new one on the My Marveen machines page of marveen.io.",
   'agentCatalog.err.token_limit': "Your account already has 5 machines connected. Disconnect one on the My Marveen machines page of marveen.io.",
