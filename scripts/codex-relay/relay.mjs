@@ -72,6 +72,11 @@ const tokenFile = parsed.values['--token-file']
 const dashboardUrl = parsed.values['--dashboard-url'].replace(/\/+$/, '')
 const requestsDir = join(relayDir, 'requests')
 const responsesDir = join(relayDir, 'responses')
+// The claim directory of THIS daemon. A request is claimed by MOVING its entry here (claimRequest): the
+// rename is the one step two daemons on one spool cannot both succeed at. The entry is removed again at
+// once, so nothing rests in here; the directory is removed at shutdown.
+const claimedRootDir = join(relayDir, 'claimed')
+const claimedDir = join(claimedRootDir, String(process.pid))
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -88,6 +93,15 @@ function sleep(ms) {
 // the intended availability trade.
 function lstatExists(path) {
   try { lstatSync(path); return true } catch { return false }
+}
+
+function isRealDir(path) {
+  try {
+    const st = lstatSync(path)
+    return !st.isSymbolicLink() && st.isDirectory()
+  } catch {
+    return false
+  }
 }
 
 function assertRealDir(label, path) {
@@ -432,16 +446,34 @@ async function handleRequestFile(fileName) {
   const requestPath = join(requestsDir, fileName)
   const started = Date.now()
   let claimed = false
-  const removeRequest = ({ claim = false } = {}) => {
-    if (claimed) return true // after the claim the name may already hold a NEWER request: never unlink that one
+  const removeRequest = () => {
+    if (claimed) return // after the claim the name may already hold a NEWER request: never unlink that one
     try {
       unlinkSync(requestPath)
     } catch (err) {
-      if (claim && err && err.code === 'ENOENT') return null // another handler owns the request
       if (err && err.code !== 'ENOENT') {
         if (!stuckDirs.has(fileName)) process.stderr.write(`relay: cannot unlink request ${fileName}: ${err.message}\n`)
-        return false
       }
+    }
+  }
+  // The claim MOVES the request entry into this daemon's claimed directory. rename is atomic on every
+  // platform; unlink is not (PR #2652 review C2: two daemons on one spool on macOS both got the claim of
+  // one name and both forwarded). Of two renames of one name exactly one succeeds, the loser gets ENOENT.
+  // The moved entry is removed at once: nothing rests in the claimed directory.
+  // true = claimed, null = lost (another handler owns the request), false = the relay cannot move the entry.
+  const claimRequest = () => {
+    const claimedPath = join(claimedDir, fileName)
+    try {
+      renameSync(requestPath, claimedPath)
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return null // another handler owns the request
+      if (!stuckDirs.has(fileName)) process.stderr.write(`relay: cannot claim request ${fileName}: ${err.message}\n`)
+      return false
+    }
+    try {
+      unlinkSync(claimedPath)
+    } catch (err) {
+      process.stderr.write(`relay: cannot remove claimed request ${fileName}: ${err.message}\n`)
     }
     return true
   }
@@ -528,7 +560,7 @@ async function handleRequestFile(fileName) {
   } finally {
     if (fd !== undefined) closeSync(fd)
   }
-  const claimOk = removeRequest({ claim: true }) // claim: never handle the same file twice
+  const claimOk = claimRequest() // claim: never handle the same file twice
   claimed = true
   if (claimOk === null) return // the name may already hold a newer request: never unlink it again
   if (!claimOk) {
@@ -626,6 +658,13 @@ function shutdown() {
   } catch (err) {
     if (err && err.code !== 'ENOENT') throw err
   }
+  // The claimed directory is empty by now; it is removed so the directories of stopped daemons do not pile
+  // up. lstat first: a swapped path is left alone, never followed.
+  if (isRealDir(claimedRootDir) && isRealDir(claimedDir)) {
+    try {
+      rmdirSync(claimedDir)
+    } catch { /* not empty or already gone: inert, nothing in it is read */ }
+  }
   process.exit(0)
 }
 
@@ -637,12 +676,20 @@ assertRealDir('relay root', dirname(relayDir))
 if (lstatExists(relayDir)) assertRealDir('relay dir', relayDir)
 mkdirSync(requestsDir, { recursive: true })
 mkdirSync(responsesDir, { recursive: true })
-// Startup sanity gate: all three dirs must be real directories BEFORE the
+// Unlike requests/ and responses/, the claimed spool dir sits one level BELOW its root (claimed/<pid>/), and
+// mkdirSync recursive happily creates through a symlinked root. The per-pid dir is therefore only made
+// inside a real claimed root: a swapped root is never written through, the gate below refuses it instead.
+if (!lstatExists(claimedRootDir) || isRealDir(claimedRootDir)) {
+  mkdirSync(claimedDir, { recursive: true, mode: 0o700 })
+}
+// Startup sanity gate: every spool dir must be a real directory BEFORE the
 // ready marker is written -- a symlinked spool never becomes "ready".
 // The relay root (parent of the relay dir) is checked too.
 assertRealDir('relay dir', relayDir)
 assertRealDir('requests dir', requestsDir)
 assertRealDir('responses dir', responsesDir)
+assertRealDir('claimed root', claimedRootDir)
+assertRealDir('claimed dir', claimedDir)
 // Ready marker: drop any stale one, then create ours EXCLUSIVELY, with this
 // daemon's pid as the content -- the starter counts the marker as proof of
 // readiness only when it names the pid it spawned. 'wx' refuses a marker
@@ -664,6 +711,8 @@ for (;;) {
   assertRealDir('relay dir', relayDir)
   assertRealDir('requests dir', requestsDir)
   assertRealDir('responses dir', responsesDir)
+  assertRealDir('claimed root', claimedRootDir)
+  assertRealDir('claimed dir', claimedDir)
   let files = []
   try {
     files = readdirSync(requestsDir).filter(file => file.endsWith('.json')).sort()
