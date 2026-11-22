@@ -662,6 +662,7 @@ describe('relay request-file hardening', () => {
 
   it('H17 nothing rests in the claimed directory, in flight or after the answer', async () => {
     await withRelay(async ({ send, seen, relayDir, hold, child }) => {
+      if (child.pid === undefined) throw new Error('relay child has no pid')
       const claimedDir = claimedDirOf(relayDir, child.pid)
       const requestsDir = join(relayDir, 'requests')
       hold.ms = 1500
@@ -681,6 +682,7 @@ describe('relay request-file hardening', () => {
 
   it('H18 the claimed directory of a daemon is removed when the daemon stops', async () => {
     await withRelay(async ({ relayDir, child }) => {
+      if (child.pid === undefined) throw new Error('relay child has no pid')
       const claimedDir = claimedDirOf(relayDir, child.pid)
       expect(existsSync(claimedDir)).toBe(true)
       const stopped = exited(child)
