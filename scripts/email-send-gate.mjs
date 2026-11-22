@@ -769,6 +769,9 @@ export function maskSubshellMarkers(cmd) {
 
 // Quote-aware tokenizer -> [[token, ...], ...] per segment. Throws on an
 // unbalanced quote (the caller falls back to the legacy content patterns).
+const PROC_SUBST_OPENERS = ['<', '>', '=']
+const PROC_SUBST_WORD = '$__SUBST__' // the undecidable word flattenSubstitutions writes for a substitution
+
 export function segmentsTokens(cmd) {
   const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, '$1'))
   const segments = []
@@ -778,6 +781,10 @@ export function segmentsTokens(cmd) {
   let q = null
   const pushTok = () => { if (hasTok) { cur.push(tok); tok = ''; hasTok = false } }
   const pushSeg = () => { pushTok(); if (cur.length) { segments.push(cur); cur = [] } }
+  // ISSUE3049 (twin of _segments_tokens): a process substitution is ONE WORD of the command around it. Its command is
+  // a segment of its own, and the outer command goes on after its `)` with the undecidable word in its place. Each
+  // entry: [the outer segment so far, the open plain ( inside].
+  const procs = []
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]
     if (q) {
@@ -789,12 +796,30 @@ export function segmentsTokens(cmd) {
     if (ch === "'" || ch === '"') { q = ch; hasTok = true; continue }
     if (ch === '\\' && i + 1 < s.length) { tok += s[++i]; hasTok = true; continue }
     if (ch === ' ' || ch === '\t') { pushTok(); continue }
+    if (ch === '(') {
+      pushTok()
+      if (cur.length && PROC_SUBST_OPENERS.includes(cur[cur.length - 1])) {
+        procs.push([cur.slice(0, -1).concat([PROC_SUBST_WORD]), 0])
+        cur = []
+        continue
+      }
+      if (procs.length) procs[procs.length - 1][1]++
+    } else if (ch === ')' && procs.length) {
+      if (procs[procs.length - 1][1] === 0) {
+        pushSeg()
+        cur = procs.pop()[0]
+        continue
+      }
+      procs[procs.length - 1][1]--
+    }
     if ('|&;()'.includes(ch)) { pushSeg(); continue }
     tok += ch
     hasTok = true
   }
   if (q) throw new Error('unbalanced quote')
   pushSeg()
+  // an unclosed substitution: its outer command is still judged, as a segment of its own
+  for (const [outer] of procs.reverse()) if (outer.length) segments.push(outer)
   return segments
 }
 
