@@ -54,6 +54,7 @@ import {
   commandName,
   cwdAfterSegment,
   dataResidue,
+  definiteAssignments,
   expandBraces,
   expandHome,
   globMatchesName,
@@ -64,6 +65,7 @@ import {
   nameForms,
   normalizePathSegments,
   pathKey,
+  protectedSplit,
   sameKey,
   scheduleSurfaceDeny,
   scheduleSurfaceVariants,
@@ -1723,15 +1725,35 @@ function claudeDirCopyIn(words, ctx) {
 // archive extracted, a patch applied (Dani 56276 2a). The names they create
 // come from the archive or the patch, not from the command.
 const IMPLICIT_WRITER_RX = /(?:^|[\s;&|(/`"'])(?:tar|bsdtar|gtar|unzip|patch|cpio|7z|7za)(?=\s|$)/
+// UNKCWDEXTRACT1121 (review round 2, R2/R3): a program that runs text it is given as commands: one in RESHELL_NAMES at the command
+// position (a shell -- fish, mksh, ash, busybox too --, eval, xargs, find with -exec/-execdir/-ok/-okdir, ...), or env with
+// -S/--split-string. The program word counts by its last path part (any path: fail closed). An extract word is looked for with the quotes and backslashes taken off (`t"a"r`, `un''zip`, `ta\r`).
+const SHELLS_ALL = new Set([...SHELL_RUNNERS, 'fish', 'mksh', 'ash', 'tcsh', 'csh'])
+const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+const STDIN_SCRIPTS = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0'])
+const writerWordIn = (text) => IMPLICIT_WRITER_RX.test(String(text ?? '').replace(/["'\\]/g, ''))
+function reshells(rest, splits) {
+  if (splits && splits.length) return true
+  if (!rest.length) return false
+  // the gate's own list of re-shelling programs (RESHELL_NAMES: shells, eval/source, interpreters, xargs, find, watch, ...), by the
+  // program word's last path part, a version suffix ignored (python3.12, bash5); find only with an -exec form
+  const v = rest[0].value
+  const n = (commandName(rest) || v.slice(v.lastIndexOf('/') + 1)).toLowerCase().replace(/[\d.]+$/, '')
+  return n === 'find' ? rest.some((w) => FIND_EXEC.has(w.value)) : RESHELL_NAMES.has(n)
+}
 function writesIntoCwd(words, name) {
   const vals = words.map((w) => w.value)
   const named = (...flags) => vals.some((v, i) => flags.some((f) =>
     v === f ? i + 1 < vals.length : v.startsWith(f + '=') || (f.length === 2 && v.startsWith(f) && v.length > 2)))
   if (name === 'tar' || name === 'bsdtar' || name === 'gtar') {
     const extract = vals.slice(1).some((v) => v === '--extract' || v === '--get' || (!v.startsWith('--') && /^-?[A-Za-z]*x/.test(v)))
-    return extract && !named('-C', '--directory', '--cd')
+    // UNKCWDEXTRACT1121 (review round 3, Dani 3): -O / --to-stdout writes the members to stdout, no file. The -O is read only in an option
+    // cluster of letters (`-xzOf`, or the dashless first word `xzOf`), never in a file name or any other word.
+    const toStdout = vals.slice(1).some((v, i) => v === '--to-stdout' || /^-[A-Za-z]*O[A-Za-z]*$/.test(v) || (i === 0 && /^[A-Za-z]*O[A-Za-z]*$/.test(v)))
+    return extract && !toStdout && !named('-C', '--directory', '--cd')
   }
-  if (name === 'unzip') return !named('-d')
+  // unzip -p / -c write the member to stdout (a letter cluster of options only, as above)
+  if (name === 'unzip') return !named('-d') && !vals.slice(1).some((v) => /^-[A-Za-z]*[pc][A-Za-z]*$/.test(v))
   if (name === 'patch') return !named('-d', '--directory')
   if (name === 'cpio') return vals.slice(1).some((v) => /^-[A-Za-z]*i/.test(v) || v === '--extract') && !named('-D', '--directory')
   if (name === '7z' || name === '7za') return ['x', 'e'].includes(vals[1]) && !vals.some((v) => v.startsWith('-o'))
@@ -1777,11 +1799,71 @@ function isDirectory(p) {
   try { return statSync(p).isDirectory() } catch { return false }
 }
 
+// UNKCWDEXTRACT1121 (review round 3, Dani 2): `D=/abs/dir && cd $D && tar -x -C bin`. A `cd $NAME` / `cd ${NAME}` (or `pushd`, and a
+// plain `/sub/dir` after it) whose NAME the same command sets to an ABSOLUTE literal is a literal cd, not an unknown one. What counts as
+// "sets" is the rule the gate family already uses for a literal variable (self-pace-gate definiteAssignments, as the mail gate's
+// ISSUE2582): the assignment is a segment of its own, assigned once, every separator from it to the use is `&&` or `;`, and the command
+// holds no group, subshell, compound command or variable-setting builtin (the heredocs are taken out first, see below). Anything else
+// stays an unknown directory.
+// The text without its heredocs: each `<<TAG` operator and the body lines up to the closing TAG line are taken out (a heredoc is data for
+// the command it feeds, it cannot set a variable of the shell that runs the command). null: a heredoc that is not closed.
+const HEREDOC_OP_RX = /(?<!<)<<(?!<)-?[ \t]*(['"]?)([A-Za-z_]\w*)\1/g
+function withoutHeredocs(text) {
+  const lines = String(text).split('\n')
+  const out = []
+  for (let i = 0; i < lines.length; i++) {
+    const tags = []
+    const line = lines[i].replace(HEREDOC_OP_RX, (m, _q, tag) => { tags.push([tag, m.startsWith('<<-')]); return '' })
+    out.push(line)
+    for (const [tag, dash] of tags) {
+      let closed = false
+      for (i++; i < lines.length; i++) {
+        if ((dash ? lines[i].replace(/^\t+/, '') : lines[i]) === tag) { closed = true; break }
+      }
+      if (!closed) return null
+    }
+  }
+  return out.join('\n')
+}
+// Returns segment index -> the segment text with the literal in place (`cd '<dir>'`); the other segments are read as written.
+function literalCdSegments(cmd, segs) {
+  const out = new Map()
+  if (!cmd.includes('$') || !cmd.includes('=')) return out
+  const bare = withoutHeredocs(cmd)
+  if (bare === null) return out
+  let split
+  let defs
+  try {
+    split = protectedSplit(bare)
+    // A pipe between the assignment and the use does not touch the assignment (`S=/x; cd /y && git log | tail -2; cd $S/z`): it reads as `;`
+    // there, unless a neighbour of the pipe is an assignment segment (an assignment in a pipeline runs in a subshell and is lost).
+    const assignSeg = (k) => { const w = k >= 0 && k < split.segs.length ? shellWords(split.segs[k]) : null; return !!w && w.length > 0 && w.every((x) => ASSIGN_RX.test(x.value)) }
+    const seps = split.seps.map((sep, k) => ((sep === '|' || sep === '|&') && !assignSeg(k) && !assignSeg(k + 1) ? ';' : sep))
+    defs = definiteAssignments({ ...split, seps })
+  } catch { return out }
+  if (!split.quoteAware || split.segs.length !== segs.length) return out
+  segs.forEach((seg, i) => {
+    const known = defs[i]
+    if (!known || !known.size || split.segs[i] !== withoutHeredocs(String(seg.own))?.trim()) return
+    const w = shellWords(seg.own)
+    if (!w || !w.length || !['cd', 'pushd'].includes(w[0].value)) return
+    const arg = w.slice(1).find((x) => !/^-[LPe@]+$/.test(x.value))
+    // `dollar` marks an UNQUOTED expansion; a double-quoted one (`cd "$D"`) is read too, but a segment with a single quote or a
+    // backslash may hold the literal text `$D` (`cd '$D'`, `cd \$D`): left unknown
+    if (!arg || (!arg.dollar && /['\\]/.test(seg.own))) return
+    const m = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))((?:\/[^$`*?[\]{}~\s'"\\]*)?)$/.exec(arg.value)
+    const v = m ? known.get(m[1] ?? m[2]) : undefined
+    if (v === undefined || !v.startsWith('/') || /[\s'"\\$`*?[\]{}~]/.test(v)) return
+    out.set(i, `${w[0].value} '${v}${m[3]}'`)
+  })
+  return out
+}
+
 // INSTRFILES1104 A (Dani 69753 SHOULD 3, Samu 69755): a cd joined to the next command by ";", "||" or a newline may
 // fail, and the next commands then run in the OLD directory. The old one is kept as ctx.altCwd, and the segment checks
 // that read the cwd are run on both (the stricter decides). A later cd moves both; when they meet, the second is
 // dropped. ctx.cwd keeps its meaning for the git rule (null: unknown, read as the install).
-function moveCwd(own, seg, ctx) {
+function moveCwd(own, seg, ctx, reaches = null) {
   const before = ctx.cwd
   const altBefore = ctx.altCwd ?? null
   cwdAfterSegment(own, ctx)
@@ -1797,7 +1879,12 @@ function moveCwd(own, seg, ctx) {
   }
   if (isCd && seg.sep !== '&&') {
     if (before && !(ctx.cwd && sameKey(pathKey(before), pathKey(ctx.cwd)))) ctx.altCwd = before
-    if (ctx.cwd && !isDirectory(ctx.cwd)) ctx.cwd = null
+    if (ctx.cwd && !isDirectory(ctx.cwd)) {
+      // UNKCWDEXTRACT1121 (review N4): a directory that is not there now but reaches a protected path (it may be made by
+      // then) is an unknown directory, read as one (cwdLost)
+      if (reaches && reaches(ctx.cwd)) ctx.cwdLost = true
+      ctx.cwd = null
+    }
   }
 }
 
@@ -2069,6 +2156,12 @@ export function installFileDeny(command, opts = {}) {
       return r === 'ancestor' || (t.dir && (r === 'exact' || r === 'under'))
     })
   }
+  // UNKCWDEXTRACT1121 (review round 3, Dani 1): the CLASS rule (a re-shelling program whose text holds an extract word) does not count the
+  // caller's own agent directory as a protected place: the agent writes there anyway (its HANDOFF.md), and a heredoc or a sed text that
+  // only NAMES `patch` or `tar` is no extract. An unknown directory, the install root, scripts/ and another agent's directory still
+  // count. A target-less extract in the own directory is judged by the rules below as before.
+  const ownDirKey = ctx.subAgent ? callerAgentDirKey(ctx.root, ctx.projectDir) : null
+  const classProtected = (cwd) => cwdReaches(cwd) && !(ownDirKey && sameKey(pathKey(resolve(cwd)), ownDirKey))
   // CPDESTDIR1104 (Dani 69118, Samu 69122): where a copy, move, link or install LANDS is judged always, not only after
   // a protected word was found. A destination that is a directory names no file, so `cp x/.mcp.json ../other/` found
   // nothing and passed. Each source's landing (destination + its basename) and the destination itself go through
@@ -2080,6 +2173,10 @@ export function installFileDeny(command, opts = {}) {
     const absOf = (v) => (v.startsWith('/') || v === '~' || v.startsWith('~/') ? resolve(expandHome(v === '~' ? '~/' : v)) : resolve(ctx.cwd ?? process.cwd(), v))
     if (EXTRACT_DIR_FLAGS[name]) {
       const dir = extractTargetDir(vals, name)
+      // UNKCWDEXTRACT1121: a relative target after an unknown directory change is relative to that unknown directory
+      if (dir != null && ctx.cwdLost && !(dir.startsWith('/') || dir === '~' || dir.startsWith('~/'))) return true
+      // review round 2 R4: a ~user or a brace target is no directory this gate can resolve (the base read it relative to the cwd)
+      if (dir != null && (/^~[^/]/.test(dir) || dir.includes('{'))) return true
       return dir != null && cwdReaches(absOf(dir))
     }
     if (!COPIERS.has(name)) return false
@@ -2127,6 +2224,82 @@ export function installFileDeny(command, opts = {}) {
     }
     return false
   }
+  // UNKCWDEXTRACT1121 (review round 1 N2, N3): the extract rule (a target-less extract into a cwd that is unknown or
+  // reaches a protected path; an extract target relative to an unknown cwd, or one that reaches a protected path) on
+  // what a command RUNS, at the directory it runs in:
+  //   - a wrapper (env, sudo, nice, timeout, ...: unwrapRun) is taken off, and its directory changes (env -C/--chdir,
+  //     sudo -D/--chdir), followed in order, are where the command runs: it is judged at each (the stricter); an
+  //     expansion, or a relative one from an unknown cwd, is an unknown directory;
+  //   - a shell's code (its -c word, or the text piped or heredoc'd into it) is read roughly with its cd followed, every
+  //     command at every directory the reading has passed (the stricter, as ancestorOnlyHolds); a shell in that code
+  //     once more (two levels).
+  const extractAt = (cwd, lost, fn) => {
+    const saved = [ctx.cwd, ctx.altCwd, ctx.cwdLost, ctx.cwdInsideDir]
+    ctx.cwd = cwd
+    ctx.altCwd = null
+    ctx.cwdLost = lost
+    ctx.cwdInsideDir = insideDir(cwd)
+    try { return fn() } finally { [ctx.cwd, ctx.altCwd, ctx.cwdLost, ctx.cwdInsideDir] = saved }
+  }
+  const extractDenied = (words, stdinCode = '', depth = 0, text = null) => {
+    const { rest, chdirs, splits } = unwrapRun(words)
+    if (!rest.length && !splits.length) return false
+    const n = rest.length ? commandName(rest) : ''
+    // review round 2 R2 (fail closed, a class): where the cwd is unknown or reaches a protected path, a program that runs text as commands
+    // with an extract word in its text is denied, whatever reading of that text below would or would not follow it
+    const ujraShell = reshells(rest, splits)
+    const szoveg = text ?? words.map((w) => w.value).join(' ')
+    const here = () => {
+      if (ujraShell && (ctx.cwdLost || classProtected(ctx.cwd)) && writerWordIn(szoveg)) return true
+      // R1: env -S / --split-string: each split string is a command line, read as one
+      for (const sp of splits) if (depth >= 2 ? writerWordIn(sp) : roughExtracts(sp, depth + 1)) return true
+      if (!rest.length) return false
+      if (writesIntoCwd(rest, n) && (ctx.cwdLost || cwdReaches(ctx.cwd))) return true
+      if (EXTRACT_DIR_FLAGS[n] && landingDenied(rest, n)) return true
+      // the depth limit: a code text read no deeper is denied when it holds an extract word (fail closed)
+      const tovabb = (code) => !!code && (depth >= 2 ? writerWordIn(code) : roughExtracts(code, depth + 1))
+      const sn = rest.length ? (commandName(rest) || rest[0].value.slice(rest[0].value.lastIndexOf('/') + 1)) : ''
+      if (!SHELLS_ALL.has(sn)) return false
+      // R2: the -c code is the word after -c; a rough reading (depth > 0) splits the code into words, so all of them from there on are the code
+      const ci = rest.findIndex((w, i) => i > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(w.value))
+      let code = ''
+      if (ci > 0) {
+        const k = ci + 1 < rest.length ? ci + 1 : -1
+        code = k < 0 ? '' : depth > 0 ? rest.slice(k).map((w) => w.value).join(' ') : rest[k].value
+      } else {
+        // the stdin is the code: no script word, or -s (its positional words are arguments), or a script word that is the stdin
+        const lead = rest.slice(1)
+        const elso = lead.find((w) => !w.value.startsWith('-'))
+        if (!elso || lead.some((w) => /^-[A-Za-z]*s[A-Za-z]*$/.test(w.value)) || STDIN_SCRIPTS.has(elso.value)) code = stdinCode
+      }
+      return tovabb(code)
+    }
+    // the directory changes in order (`env -C a sudo -D b`: b from a); the command runs in the LAST one (N5, review round 2): the
+    // intermediate ones are only the base of a relative later one. An expansion, a brace, ~user or a relative one from an unknown cwd: unknown
+    const at = () => {
+      if (!chdirs.length) return here()
+      let cur = ctx.cwdLost ? null : ctx.cwd ?? null
+      for (const d of chdirs) {
+        if (!d || /[$`*?[{]/.test(d) || /^~[^/]/.test(d)) cur = null
+        else if (d.startsWith('/') || d === '~' || d.startsWith('~/')) cur = resolve(expandHome(d === '~' ? '~/' : d))
+        else cur = cur ? resolve(cur, d) : null
+      }
+      return extractAt(cur, !cur, here)
+    }
+    return !!(at() || (ctx.altCwd && extractAt(ctx.altCwd, false, at)))
+  }
+  const roughExtracts = (text, depth = 0) => {
+    const c = { ...ctx }
+    const cwds = [[ctx.cwd ?? null, !!ctx.cwdLost], ...(ctx.altCwd ? [[ctx.altCwd, false]] : [])]
+    for (const words of roughCommands(text)) {
+      if (cwds.some(([cwd, lost]) => extractAt(cwd, lost, () => extractDenied(words, '', depth)))) return true
+      if (!['cd', 'pushd', 'popd'].includes(words[0].value)) continue
+      cwdAfterSegment(words.map((w) => w.value).join(' '), c)
+      const next = [c.cwd ?? null, !c.cwd]
+      if (!cwds.some(([cwd, lost]) => cwd === next[0] && lost === next[1])) cwds.push(next)
+    }
+    return false
+  }
   // A flat $(...) naming a protected path is kept as written (not replaced by an
   // opaque marker), so its segment fails to parse below and is denied.
   // 47eeb016: ...unless the outer command is a reader and everything inside the substitution is a plain reader too
@@ -2170,6 +2343,7 @@ export function installFileDeny(command, opts = {}) {
       if (git && gitDecision(git, ctx) === 'deny') return 'git'
       if (writesIntoCwd(words, commandName(words)) && cwdReaches(ctx.cwd)) return true
     }
+    if (roughExtracts(inner)) return true // UNKCWDEXTRACT1121 (review N3): its cd followed
   }
   // An unresolved quoting whose only mention is a directory on the way to a protected path, the install root itself
   // most often (`cd <root>; ... "$(cd $d; git remote get-url origin)"`, Marveen 57083). Holds when the rest, read
@@ -2291,6 +2465,7 @@ export function installFileDeny(command, opts = {}) {
       if (writesIntoCwd(words, commandName(words)) && cwdReaches(ctx.cwd)) return true
       if (landingDenied(words, commandName(words))) return true
     }
+    if (roughExtracts(cmd)) return true // UNKCWDEXTRACT1121 (review N3): its cd followed
     return false
   }
   const tainted = new Set()
@@ -2309,12 +2484,14 @@ export function installFileDeny(command, opts = {}) {
   // A subshell's cd ends with it: the cwd before its "(" comes back after its ")".
   const cwdStack = []
   let closing = 0
+  const literalCds = literalCdSegments(cmdForSegs, segs)
   for (const seg of segs) {
-    for (; closing > 0; closing--) if (cwdStack.length) [ctx.cwd, ctx.altCwd] = cwdStack.pop()
+    for (; closing > 0; closing--) if (cwdStack.length) [ctx.cwd, ctx.altCwd, ctx.cwdLost] = cwdStack.pop()
     const sub = subshellParts(seg.own)
-    for (let k = 0; k < sub.opens; k++) cwdStack.push([ctx.cwd, ctx.altCwd ?? null])
+    for (let k = 0; k < sub.opens; k++) cwdStack.push([ctx.cwd, ctx.altCwd ?? null, !!ctx.cwdLost]) // UNKCWDEXTRACT1121 (review N1): and whether it was lost
     closing = sub.closes
     const own = sub.body
+    const ownMove = literalCds.get(segs.indexOf(seg)) ?? own // UNKCWDEXTRACT1121 (review round 3, Dani 2): a cd to a literal variable
     const words = shellWords(own)
     // INSTRFILES1104 A: with no re-shelling program in the command, quoted spans and heredoc bodies hold no glob.
     // Not when a later segment of the command runs the file this one writes (Dani 69850: `cat > x.sh <<'EOF' ...
@@ -2337,6 +2514,7 @@ export function installFileDeny(command, opts = {}) {
         const g = gitWords(rough)
         if (g && gitDecision(g, ctx) === 'deny') return 'git'
       }
+      if (roughExtracts(own)) return true // UNKCWDEXTRACT1121 (review N3)
     }
     const name = words ? commandName(words) : ''
     if (words && words.length && DIR_CHANGERS.has(name) && both(() => claudeDirCopyIn(words, ctx))) return true
@@ -2423,9 +2601,16 @@ export function installFileDeny(command, opts = {}) {
         if (code && (taintedIn(code) || both(() => shellTextDenied(code)))) return true
       }
     }
+    // UNKCWDEXTRACT1121: after a directory change the gate cannot follow, a target-less extract lands in an unknown
+    // directory -- possibly the install root or scripts/ -- so it is denied in either branch below (fail closed, as
+    // WRITEGATERELPATH1115 reads a relative word after such a cd); behind a wrapper and in a shell's code too (review N2, N3)
+    if (words && words.length) {
+      const bemenet = [pipedInText(segs.indexOf(seg)), ...seg.bodies].filter(Boolean).join('\n')
+      if (extractDenied(words, bemenet, 0, [own, bemenet].join('\n'))) return true
+    }
     if (!rawHits.length && !usesTainted) {
       if (words && words.length && writesIntoCwd(words, name) && (cwdReaches(ctx.cwd) || (!!ctx.altCwd && cwdReaches(ctx.altCwd)))) return true
-      moveCwd(own, seg, ctx)
+      moveCwd(ownMove, seg, ctx, cwdReaches)
       continue
     }
     if (!words || !words.length) return true
@@ -2442,7 +2627,7 @@ export function installFileDeny(command, opts = {}) {
       continue
     }
     const hits = hitsBoth(dataResidue(view, words, name, { surface: 'security' }))
-    if (!hits.length && !usesTainted) { moveCwd(own, seg, ctx); continue } // only message data names it
+    if (!hits.length && !usesTainted) { moveCwd(ownMove, seg, ctx, cwdReaches); continue } // only message data names it
     if (READERS.has(name) || isReadOnlyFsCommand(words, name)) {
       // ...but not as the file list of a pipe into a program that acts on it (xargs rm)
       const next = segs[segs.indexOf(seg) + 1]
@@ -2451,14 +2636,14 @@ export function installFileDeny(command, opts = {}) {
         const nn = nw ? commandName(nw) : ''
         if (!nw || !(READERS.has(nn) || isReadOnlyFsCommand(nw, nn))) return true
       }
-      moveCwd(own, seg, ctx)
+      moveCwd(ownMove, seg, ctx, cwdReaches)
       continue
     }
     if (name === 'git' && gitIsRead(words)) continue
     // PLUGINCODEWRITE1104: a `cp` whose DESTINATION (its last operand) is no protected path only reads the protected
     // sources it names (copying a shared skill into one's own directory). A link-making or target-directory flag
     // (-l, -s, -t, --link, --symbolic-link, --target-directory) keeps the deny: the copy would share the protected file.
-    if (!usesTainted && name === 'cp' && cpOnlyReadsProtected(words, ctx)) { moveCwd(own, seg, ctx); continue }
+    if (!usesTainted && name === 'cp' && cpOnlyReadsProtected(words, ctx)) { moveCwd(ownMove, seg, ctx, cwdReaches); continue }
     const hitWords = new Set(hits.map((h) => h.word))
     if (!usesTainted && isExecOf(words, name, hitWords)) continue
     if (!usesTainted && hits.every((h) => h.kind === 'ancestor') && !DIR_CHANGERS.has(name)) continue

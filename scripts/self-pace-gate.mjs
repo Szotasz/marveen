@@ -564,7 +564,7 @@ export function protectedSegments(command) {
 
 // protectedSegments plus what the definite-assignment rule needs: the separator after each segment ('' after the
 // last) and the mask. `quoteAware` false = the naive fallback, where no separator is known.
-function protectedSplit(command) {
+export function protectedSplit(command) {
   const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const heredocs = []
   const masked = maskInertLiterals(src, heredocs)
