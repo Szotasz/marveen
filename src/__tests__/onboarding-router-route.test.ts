@@ -155,6 +155,16 @@ describe('onboarding: the Hostinger AI Router choice', () => {
     expect((await call('GET', '/api/onboarding/status')).json.claudeAuthPresent).toBe(true)
   })
 
+  it('a fresh install with no agents/<main>/ directory yet: saved, not a 500 (Geri 83276)', async () => {
+    writeFileSync(PLATFORM, 'hostinger\n')
+    rmSync(join(tmpRoot, 'agents'), { recursive: true, force: true })
+    const r = await call('POST', '/api/onboarding/claude-auth', OWNER, { routerKey: KEY })
+    expect([r.status, r.json.ok, r.json.router]).toEqual([200, true, true])
+    const cfg = JSON.parse(readFileSync(MAIN_CFG, 'utf-8')) as Record<string, unknown>
+    expect([cfg.customProvider, cfg.model, cfg.authMode]).toEqual(['hostinger-router', 'claude-sonnet-5-5', 'shared'])
+    expect(H.vault.get('hostinger-router-api-key')).toBe(KEY)
+  })
+
   it('an API key stored earlier for the main agent leaves the vault, as on the main agent card (Geri N1)', async () => {
     writeFileSync(PLATFORM, 'hostinger\n')
     H.vault.set('agent-marveen-api-key', 'earlier-api-key')
