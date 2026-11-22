@@ -468,14 +468,24 @@ async function handleRequestFile(fileName) {
   // the copy stays in the claimed directory (one stderr line, gated by stuckDirs). A directory cannot
   // be hard-linked, but renaming one cannot destroy data either: onto a re-created FILE the rename
   // fails with ENOTDIR, onto a non-empty directory with ENOTEMPTY.
+  // The restore only ever puts back a DIRECTORY or a singly-linked REGULAR FILE; anything else is
+  // unlinked from the claimed directory and stays denied (RELAYSYMLINK1122): Node's linkSync(existing,
+  // new) FOLLOWS a symlink at existing on macOS, so linking a claimed symlink back would place a HARD
+  // LINK to the symlink's TARGET at the requests/ name -- the outside file's content readable inside
+  // the spool, its nlink bumped. A symlink, a FIFO, a socket, or a regular file with nlink !== 1 was
+  // never a valid request, so nothing of it goes back to the requests/ name: the claimed copy is
+  // unlinked, full stop.
   const restoreClaimed = () => {
     try {
-      let isDir = false
-      try { isDir = lstatSync(claimedPath).isDirectory() } catch { return /* the copy is gone: nothing to restore */ }
-      if (isDir) {
+      let st
+      try { st = lstatSync(claimedPath) } catch { return /* the copy is gone: nothing to restore */ }
+      if (st.isDirectory()) {
         renameSync(claimedPath, requestPath)
-      } else {
+      } else if (st.isFile() && st.nlink === 1) {
         linkSync(claimedPath, requestPath)
+        unlinkSync(claimedPath)
+      } else {
+        // Symlink, FIFO, socket, or a multiply-linked regular file: never a valid request, never linked back.
         unlinkSync(claimedPath)
       }
     } catch (err) {
