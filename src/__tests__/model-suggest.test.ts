@@ -15,13 +15,13 @@ describe('classifyPersona', () => {
   it('suggests Haiku for a fitness coach persona', () => {
     const text = 'A neved Peter. Te vagy a fleet sportedzője. Edzés, fitness, futás, kerékpár, úszás -- rövid válaszok.'
     const result = classifyPersona(text)
-    expect(result.suggestedModel).toBe('claude-haiku-4-5-20251001')
+    expect(result.suggestedModel).toBe('claude-haiku-4-5')
   })
 
   it('suggests Haiku for an accounting persona', () => {
     const text = 'Pénzügyi szakember vagy. Számvitel, könyvelés, könyvelő feladatok, adminisztráció.'
     const result = classifyPersona(text)
-    expect(result.suggestedModel).toBe('claude-haiku-4-5-20251001')
+    expect(result.suggestedModel).toBe('claude-haiku-4-5')
   })
 
   it('suggests Sonnet as default for a general backend dev', () => {
@@ -116,7 +116,7 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
     const result = suggestForAgent('peter', 'claude-sonnet-5', haikuPersona, 0, {
       scheduledFreqPerDay: 48,
     })
-    expect(result.suggestedModel).toBe('claude-haiku-4-5-20251001')
+    expect(result.suggestedModel).toBe('claude-haiku-4-5')
   })
 
   it('opus signal hits block Haiku even with >= 2 haiku keyword hits', () => {
@@ -208,7 +208,7 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
       mcpServerCount: 1,
       contextAvgPerCall: 500,
     })
-    expect(result.suggestedModel).toBe('claude-haiku-4-5-20251001')
+    expect(result.suggestedModel).toBe('claude-haiku-4-5')
     expect(result.reason).toMatch(/olcsóbb/)
   })
 })
