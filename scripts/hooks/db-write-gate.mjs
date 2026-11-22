@@ -218,6 +218,10 @@ export const PROTECTED_INSTALL_PATHS = [
   // (the Bash sandbox helper, npm start). Only the dashboard's start writes it; an edited path would be run by the
   // watchdog, a deleted one only makes it fall back to the node on its PATH.
   { rel: 'store/.dashboard-node' },
+  // The install's platform marker (HOSTINGERROUTER1122): docker/first-boot.sh writes it once from the Hostinger compose
+  // file, and the dashboard offers the Hostinger AI Router only when it says "hostinger". A written one would offer a
+  // billed router on an install that is not a Hostinger one.
+  { rel: 'store/.platform' },
   // The per-agent launch files the dashboard derives from the owner's switches and every restart path reads
   // (WDSANDBOXMARKER1119): store/bash-sandbox/<id>.settings.json, the --settings file of an agent on
   // BASH_SANDBOX_AGENTS, and store/code-mode/<id>.on, the Code Mode marker. Only the dashboard's start and the

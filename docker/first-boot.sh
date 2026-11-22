@@ -2,7 +2,7 @@
 # HOSTINGERDOCKER1107: what the Linux installer writes before its services start, done in the container on every
 # start, each step only when its target is missing (idempotent). The configuration the installer asks for (the owner,
 # the names, the Claude token, the channel token, the pairing) is left to the dashboard's first-run wizard.
-# Inputs (compose environment): MARVEEN_CHANNEL (telegram|discord|slack), MARVEEN_AGENT_ID, MARVEEN_LANG, TZ, WEB_PORT.
+# Inputs (compose environment): MARVEEN_CHANNEL (telegram|discord|slack), MARVEEN_AGENT_ID, MARVEEN_LANG, MARVEEN_PLATFORM, TZ, WEB_PORT.
 set -u
 INSTALL_DIR="${MARVEEN_INSTALL_DIR:-/opt/marveen}"
 cd "$INSTALL_DIR" || exit 1
@@ -60,6 +60,9 @@ fi
 chmod 0600 .env
 
 [ -f .lang ] || printf '%s\n' "${MARVEEN_LANG:-en}" > .lang
+# HOSTINGERROUTER1122: the platform marker, written once and only when the compose file sets it (hostinger-compose.yml).
+# The dashboard reads store/.platform to offer the Hostinger AI Router; it is never the default.
+[ -f store/.platform ] || { [ -n "${MARVEEN_PLATFORM:-}" ] && printf '%s\n' "$MARVEEN_PLATFORM" > store/.platform; } || true
 # DOCKERUX1118: the dashboard's default language is the install's (DASHBOARD_LANG defaults to hu, so an en install's
 # wizard came up in Hungarian, Geri 33317). From .lang, so an existing volume gets it too; only when .env has no such
 # line. A choice made later on the Settings page lives in store/config-overrides.json and wins over this line anyway.
