@@ -484,6 +484,7 @@ window._i18n.hu = {
   'agents.online_tip':             'Online: van bekonfigurált csatorna-token (saját bot). Figyelem: ez nem élő kapcsolat, csak a token meglétét jelzi.',
   'agents.offline_tip':            'Offline: nincs csatorna bekötve (channel-less, csak inter-agent ágens).',
   'agents.context_tip':            'Kontextusablak kihasználtsága: {pct}%. Ugyanaz a mérés, amin a context-guard handoff/restart-döntése is alapul.',
+  'agents.context_assumed_tip':    'Feltételezett ablak (ismeretlen modell): a 200k-s alapértékhez mérve. Ha a valódi ablak kisebb, a context-guard beállításainál a Token-limit mezőben rögzíthető.',
   'agents.guard_phase_tip_handoff':    'A context-guard handoff-ot kért ettől az agenttől (a kontextus megtelt), és a HANDOFF.md megírására vár.',
   'agents.guard_phase_tip_restarting': 'A context-guard újraindította ezt az agentet, és arra vár, hogy a friss session felálljon.',
   'agents.guard_phase_tip_cooldown':   'A context-guard nemrég beavatkozott ennél az agentnél, és a jelzett idő leteltéig nem lép újra. A szám a hátralévő idő.',
