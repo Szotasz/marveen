@@ -1,6 +1,6 @@
 // DOCKERUX1118 (Samu 80886): POST /api/onboarding/language, the wizard's install language switch. Docker only, the
-// owner session only (never the bare first-run token), only while the main agent is not running and the setup is
-// unfinished; a refusal changes no file. The route runs on a throwaway install with the REAL templates and render;
+// owner session only (never the bare first-run token), only while the setup is unfinished; a main agent that runs
+// already is restarted after the switch (HOSTINGERI18N1122), one that starts during it refuses; a refusal changes no file. The route runs on a throwaway install with the REAL templates and render;
 // the seeds' script is a stub in the docker dir (its own test: lang-switch-seeds.test.ts).
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -8,7 +8,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
-const H = vi.hoisted(() => ({ root: '' }))
+const H = vi.hoisted(() => ({ root: '', restart: { calls: 0, result: { ok: true } as { ok: boolean; error?: string } } }))
+vi.mock('../web/channel-monitor.js', async (orig) => {
+  const a = await orig<typeof import('../web/channel-monitor.js')>()
+  return { ...a, hardRestartMarveenChannels: () => { H.restart.calls++; return H.restart.result } }
+})
 vi.mock('../config.js', async (orig) => {
   const a = await orig<typeof import('../config.js')>()
   return { ...a, PROJECT_ROOT: H.root, STORE_DIR: `${H.root}/store-dir`, CHANNEL_PROVIDER: 'telegram' as const }
@@ -54,6 +58,11 @@ process.env.PATH = `${binDir}:${origPath ?? ''}`
 process.env.MARVEEN_DOCKER_DIR = dockerDir
 // src/env.ts (deployment(), installLang) reads its .env from here, at import time.
 process.env.CLAUDECLAW_ENV_DIR = tmpRoot
+// The main channel's state (bot token, access.json): a test pairs the channel or finishes the setup through it.
+const TG = join(tmpRoot, 'tg-state')
+mkdirSync(TG, { recursive: true })
+const origTgDir = process.env.TELEGRAM_STATE_DIR
+process.env.TELEGRAM_STATE_DIR = TG
 
 const { tryHandleOnboarding } = await import('../web/routes/onboarding.js')
 const { MAIN_CHANNELS_SESSION } = await import('../web/main-agent.js')
@@ -67,6 +76,8 @@ afterAll(() => {
   else process.env.MARVEEN_DOCKER_DIR = origDockerDir
   if (origEnvDir === undefined) delete process.env.CLAUDECLAW_ENV_DIR
   else process.env.CLAUDECLAW_ENV_DIR = origEnvDir
+  if (origTgDir === undefined) delete process.env.TELEGRAM_STATE_DIR
+  else process.env.TELEGRAM_STATE_DIR = origTgDir
   rmSync(tmpRoot, { recursive: true, force: true })
 })
 
@@ -77,10 +88,18 @@ beforeEach(() => {
   writeFileSync(ENV, ENV_DOCKER, { mode: 0o600 })
   writeFileSync(join(tmpRoot, 'CLAUDE.md'), CLAUDE_EN)
   rmSync(join(tmpRoot, 'SOUL.md'), { force: true })
+  rmSync(join(tmpRoot, '.lang'), { force: true })
   rmSync(RUNNING, { force: true })
   rmSync(LATE, { force: true })
   rmSync(COUNT, { force: true })
+  H.restart = { calls: 0, result: { ok: true } }
+  rmSync(join(TG, 'access.json'), { force: true })
+  rmSync(join(TG, '.env'), { force: true })
+  writeFileSync(SEEDS, SEEDS_OK)
 })
+const SEEDS = join(dockerDir, 'lang-switch-seeds.sh')
+const SEEDS_OK = '#!/bin/bash\necho "seed updated .claude/skills/alpha/SKILL.md"\n'
+const pairChannel = () => writeFileSync(join(TG, 'access.json'), JSON.stringify({ allowFrom: ['12345'] }))
 
 async function call(method: string, path: string, auth?: unknown, body?: unknown) {
   let status = 0
@@ -126,11 +145,76 @@ describe('POST /api/onboarding/language (DOCKERUX1118)', () => {
     expect(readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')).toBe(CLAUDE_EN)
   })
 
-  it('the main agent runs: 409 agent_running, nothing changes', async () => {
+  // HOSTINGERI18N1122: in the container the main agent runs from boot (supervisor starts channels.sh), so the old
+  // refusal failed the wizard's switch on every Docker install (measured on the develop image).
+  it('the main agent already runs during the setup, channel unpaired (a fresh Docker install): switched, read back, restarted once', async () => {
     writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
     expect((await call('GET', '/api/onboarding/status')).json.agentsRunning).toBe(true)
     const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([r.status, r.json.ok, r.json.lang, r.json.restarted]).toEqual([200, true, 'hu', true])
+    expect(readFileSync(ENV, 'utf-8')).toContain('AGENT_TEXT_LANG=hu\n')
+    expect(readFileSync(join(tmpRoot, '.lang'), 'utf-8')).toBe('hu\n')
+    expect(H.restart.calls).toBe(1)
+  })
+
+  it('the restart fails after the switch: 500 restart-failed, the language is switched, the command is said; the retry restarts', async () => {
+    writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
+    H.restart.result = { ok: false, error: 'respawn-pane failed' }
+    const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([r.status, r.json.ok, r.json.reason, r.json.restarted]).toEqual([500, false, 'restart-failed', false])
+    expect(r.json.error).toContain('respawn-pane failed')
+    expect(typeof r.json.restartCommand).toBe('string')
+    expect(readFileSync(join(tmpRoot, '.lang'), 'utf-8')).toBe('hu\n')
+    // The retry (the wizard's click again) finds the language switched and pays the restart it still owes.
+    H.restart.result = { ok: true }
+    const again = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([again.status, again.json.ok, again.json.restarted]).toEqual([200, true, true])
+    expect(H.restart.calls).toBe(2)
+  })
+
+  it('the switch itself fails over the setup session: no restart; the retry finds it switched and pays the owed restart once', async () => {
+    writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
+    writeFileSync(SEEDS, '#!/bin/bash\nexit 3\n')
+    const bad = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([bad.status, bad.json.ok, bad.json.error]).toEqual([500, false, 'seed_refresh_failed'])
+    expect(H.restart.calls).toBe(0)
+    writeFileSync(SEEDS, SEEDS_OK)
+    const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([r.status, r.json.ok, r.json.restarted]).toEqual([200, true, true])
+    // The first attempt switched the env, .lang and the persona before the seeds failed, so the retry has nothing left to
+    // render (the seeds' snapshot finishes them on the container's next start, install-lang-switch.ts); it still owes
+    // and pays the restart.
+    expect(r.json.files).toEqual([])
+    expect(readFileSync(ENV, 'utf-8')).toContain('AGENT_TEXT_LANG=hu\n')
+    expect(readFileSync(join(tmpRoot, '.lang'), 'utf-8')).toBe('hu\n')
+    expect(H.restart.calls).toBe(1)
+  })
+
+  it('the main agent runs with a PAIRED channel, setup not finished (the router install model): 409, no restart', async () => {
+    writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
+    pairChannel()
+    const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
     expect([r.status, r.json.reason]).toEqual([409, 'agent_running'])
+    expect(H.restart.calls).toBe(0)
+    untouched()
+  })
+
+  it('a finished setup with the agent running: 409 onboarding_done, no restart (the done check comes first)', async () => {
+    writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
+    pairChannel()
+    writeFileSync(join(TG, '.env'), 'TELEGRAM_BOT_TOKEN=123456:test-token-value\n')
+    writeFileSync(ENV, ENV_DOCKER + 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test\n', { mode: 0o600 })
+    const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'hu' })
+    expect([r.status, r.json.reason]).toEqual([409, 'onboarding_done'])
+    expect(H.restart.calls).toBe(0)
+    expect(existsSync(join(tmpRoot, '.lang'))).toBe(false)
+  })
+
+  it('the main agent runs and the language is the same: nothing rendered, no restart', async () => {
+    writeFileSync(RUNNING, MAIN_CHANNELS_SESSION + '\n')
+    const r = await call('POST', '/api/onboarding/language', OWNER, { lang: 'en' })
+    expect([r.status, r.json.ok, r.json.files]).toEqual([200, true, []])
+    expect(H.restart.calls).toBe(0)
     untouched()
   })
 
@@ -142,6 +226,7 @@ describe('POST /api/onboarding/language (DOCKERUX1118)', () => {
     expect(readFileSync(COUNT, 'utf-8').trim()).toBe('2')
     untouched()
     expect(existsSync(join(tmpRoot, '.lang'))).toBe(false)
+    expect(H.restart.calls).toBe(0)
   })
 
   it('the owner, in the container, during the setup: switched; an edited CLAUDE.md is kept and said so', async () => {
@@ -165,5 +250,6 @@ describe('POST /api/onboarding/language (DOCKERUX1118)', () => {
     expect(readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')).toBe(CLAUDE_EN)
     expect(existsSync(join(tmpRoot, 'SOUL.md'))).toBe(false)
     expect((await call('GET', '/api/onboarding/status')).json.installLang).toBe('hu')
+    expect(H.restart.calls).toBe(0)
   })
 })
