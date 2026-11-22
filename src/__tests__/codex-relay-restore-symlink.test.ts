@@ -9,6 +9,23 @@
 // then a writer renames the directory away and puts a symlink to an OUTSIDE file in its place, and
 // the next claim hands that symlink to restoreClaimed. The fixed relay unlinks the claimed copy only
 // and leaves the requests/ name free; nothing is ever forwarded for the entry.
+//
+// Nothing in this test is a race. The daemon is single-threaded: it lists requests/, then handles the
+// listed names one after another in name order, and it PARKS inside a handler while it awaits the
+// dashboard's answer (no spool access until the answer arrives). Two marker requests, named to sort
+// just before and just after the swapped entry, hold the daemon still at the two moments that matter:
+//   0-park.json  -- while the daemon awaits this answer, the writer swaps the entry at the requests/
+//                   name; the daemon listed the OLD entry and this name in the same tick, so the
+//                   swapped one is decided as soon as the answer arrives
+//   a.json       -- the daemon decides the swapped entry: claim, open refuses a symlink, restore
+//   b-park.json  -- while the daemon awaits this answer, the test looks at the spool: the decision is
+//                   complete and the tick is not over yet
+// The second marker is written after the first, so the daemon either listed both in one tick, or
+// handles it in a LATER tick -- after the swapped entry either way. At the second park the unfixed
+// restore has put the symlink back (it does so on every tick) and the fixed one has unlinked the
+// claimed copy, whatever the scheduling: no settle window, no sample count, no dependence on how
+// fast the test process runs. A third marker, written only afterwards, shows that a LATER tick
+// brings nothing back.
 import { describe, it, expect } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
@@ -23,6 +40,11 @@ const RELAY_MJS = fileURLToPath(new URL('../../scripts/codex-relay/relay.mjs', i
 const AGENT = 'relay-agent'
 // A plain name, deliberately not a dashboard request: only filesystem state decides this scenario.
 const NAME = 'a.json'
+// Marker requests: valid dashboard calls that the test's own server answers. Their names sort right
+// before and right after NAME, so the daemon meets them around the swapped entry.
+const PARK_BEFORE = { id: '0-park', marker: 'relay-symlink-park-before' }
+const PARK_AFTER = { id: 'b-park', marker: 'relay-symlink-park-after' }
+const LATER = { id: 'c-later', marker: 'relay-symlink-later-tick' }
 
 // lstat, not existsSync: a (dangling or live) symlink at the path counts as STILL THERE.
 function lstatExists(path: string): boolean {
@@ -44,10 +66,11 @@ function exited(child: ChildProcess): Promise<number | null> {
   return new Promise(resolve => child.on('exit', code => resolve(code)))
 }
 
-// The relay appends one JSON line per decided request; used only as the durable proof that a
-// tick ran and decided the directory entry (the claim -> restore bounce itself is over in well
-// under a millisecond, far too fast to observe at the requests/ name directly).
-type AuditLine = { id: string | null; decision: string; reason: string | null }
+// The relay appends one JSON line per decided request. A line is the durable proof of a decision
+// (the claim -> restore bounce itself is over in well under a millisecond, far too fast to observe
+// at the requests/ name directly), and a FORWARDED line with status 200 is the proof that the daemon
+// really stood in that dashboard call: the park the test acted in.
+type AuditLine = { id: string | null; decision: string; reason: string | null; status?: number }
 function readAuditLines(path: string): AuditLine[] {
   try {
     return readFileSync(path, 'utf8').split('\n').filter(line => line !== '').map(line => JSON.parse(line) as AuditLine)
@@ -70,7 +93,7 @@ function claimedCopies(claimedRoot: string, name: string): string[] {
   return found
 }
 
-// What lstat found at the requests/ name, for the failure message of the gate poll below.
+// What lstat found at the requests/ name, for the failure message of the verdict below.
 function describeEntry(path: string): string {
   try {
     const st = lstatSync(path)
@@ -84,6 +107,8 @@ function describeEntry(path: string): string {
 }
 
 type Seen = { method?: string; url?: string; body: string }
+// What the spool looked like while the daemon stood still at the second park.
+type Sample = { entry: string; claimed: string[]; targetNlink: number }
 
 describe('relay restoreClaimed never links back a symlink', () => {
   it('unlinks a claimed symlink without putting anything back at the requests/ name and never hard-links its outside target', async () => {
@@ -94,18 +119,43 @@ describe('relay restoreClaimed never links back a symlink', () => {
     const requestFile = join(requestsDir, NAME)
     const tokenFile = join(work, 'agent.token')
     const auditPath = join(work, 'audit.log')
-    const movedDir = join(work, 'moved-away') // where the non-empty directory is renamed in step 2
+    const movedDir = join(work, 'moved-away') // where the non-empty directory is renamed by the first park
     const outsideTarget = join(work, 'secret.txt') // OUTSIDE the relay dir: the symlink's target
     const secret = `secret-${randomBytes(16).toString('hex')}`
     writeFileSync(tokenFile, `tok-${randomBytes(16).toString('hex')}\n`)
     writeFileSync(outsideTarget, secret)
+
     const seen: Seen[] = []
+    let swapped = false
+    let parkError: string | null = null
+    let sample: Sample | null = null
     const server: Server = createServer((req, res) => {
       let body = ''
       req.on('data', c => { body += c })
       req.on('end', () => {
         seen.push({ method: req.method, url: req.url, body })
         res.setHeader('content-type', 'application/json')
+        // The daemon stands still until res.end(): everything below runs while it is parked.
+        try {
+          if (body.includes(PARK_BEFORE.marker)) {
+            // First park. The directory rests at its requests/ name here -- the relay is not in a
+            // bounce -- so the swap is plain: rename the directory away, put the symlink in its place.
+            renameSync(requestFile, movedDir)
+            symlinkSync(outsideTarget, requestFile)
+            swapped = true
+          } else if (body.includes(PARK_AFTER.marker)) {
+            // Second park: the daemon has decided the swapped entry in this tick and cannot touch the
+            // spool again until this answer arrives.
+            if (!swapped) throw new Error('the second park arrived before the swap')
+            sample = {
+              entry: describeEntry(requestFile),
+              claimed: claimedCopies(claimedRoot, NAME),
+              targetNlink: statSync(outsideTarget).nlink,
+            }
+          }
+        } catch (err) {
+          parkError = err instanceof Error ? err.message : String(err)
+        }
         res.end(JSON.stringify({ ok: true }))
       })
     })
@@ -121,12 +171,19 @@ describe('relay restoreClaimed never links back a symlink', () => {
     ], { stdio: ['ignore', 'pipe', 'pipe'] })
     child.stdout.on('data', () => {})
     child.stderr.on('data', () => {})
+    const lineOf = (id: string): AuditLine | null => readAuditLines(auditPath).find(l => l.id === id) ?? null
+    // A park is proven by its audit line: forwarded, and answered 200 (a timed-out call is no park).
+    const parkedAndAnswered = async (id: string): Promise<void> => {
+      const line = await waitFor(() => lineOf(id))
+      if (line.decision !== 'forwarded' || line.status !== 200) throw new Error(`marker ${id} was not forwarded with a 200: ${JSON.stringify(line)}`)
+    }
     try {
       await waitFor(() => (existsSync(join(relayDir, 'relay.ready')) ? true : null))
 
       // Step 1: a NON-EMPTY directory at requests/<name>.json. The relay claims it, cannot remove it
       // (rmdir fails on non-empty), denies it once -- the audit line is the durable proof a tick ran
-      // and decided this entry -- and RESTORES it: the directory rests at its requests/ name again.
+      // and decided this entry -- and RESTORES it: the directory rests at its requests/ name again
+      // between ticks, and the name is on the relay's list of stuck entries.
       mkdirSync(requestFile)
       writeFileSync(join(requestFile, 'keep.txt'), 'kept')
       await waitFor(() => (readAuditLines(auditPath).some(l => l.decision === 'denied' && l.reason === 'invalid') ? true : null))
@@ -134,64 +191,43 @@ describe('relay restoreClaimed never links back a symlink', () => {
         try { return lstatSync(requestFile).isDirectory() ? true : null } catch { return null }
       })
 
-      // Step 2: a writer renames the directory away and swaps in a symlink to an OUTSIDE file. The
-      // relay re-claims the resting directory on every tick (claim -> rmdir fails -> restore, a
-      // sub-millisecond synchronous bounce), so the rename can race that bounce and find the name
-      // momentarily gone; a short retry lands right after a restore.
-      for (let attempt = 0; ; attempt++) {
-        try {
-          renameSync(requestFile, movedDir)
-          break
-        } catch (err) {
-          if (attempt >= 200 || (err as { code?: string }).code !== 'ENOENT') throw err
-          await new Promise(resolve => setTimeout(resolve, 5))
-        }
-      }
-      symlinkSync(outsideTarget, requestFile)
+      // Step 2: the first marker parks the daemon right before it reaches the entry (0-park sorts
+      // before a.json), and its park is where the writer swaps the entry. The second marker is
+      // written right after the first.
+      const marker = (m: { id: string; marker: string }) => JSON.stringify({
+        id: m.id, method: 'POST', path: '/api/daily-log', body: { agent_id: AGENT, content: m.marker },
+      })
+      writeFileSync(join(requestsDir, `${PARK_BEFORE.id}.json`), marker(PARK_BEFORE))
+      writeFileSync(join(requestsDir, `${PARK_AFTER.id}.json`), marker(PARK_AFTER))
 
-      // Step 3: the relay must SETTLE the swapped entry by unlinking the claimed copy ONLY. Settled is
-      // a PERSISTENT state, never one sample: EVERY sample of a window that spans many relay ticks has
-      // to see all three facts. With the unfixed code the entry is put back at the requests/ name on
-      // EVERY tick (on macOS as a hard link to the target, on Linux as the symlink itself), and the
-      // name is missing only during each tick's claim -> restore bounce. One sample DOES land inside
-      // that bounce, because the three observations are not one instant (the lstat sees the name gone,
-      // and by the readdir the relay has linked the entry back and removed the copy): observed on
-      // Linux, a one-sample poll passed in 10 of 30 runs on the unfixed relay. A whole window cannot:
-      // there the poll never settles and times out -- the expected red on unfixed code, on every
-      // platform.
-      const SETTLE_MS = 1500 // spans at least five relay ticks (the relay polls every 250 ms)
-      const SETTLE_MIN_SAMPLES = 20 // a starved test process cannot pass on two lucky samples either
-      const deadline = Date.now() + 20_000
-      let settledSince: number | null = null
-      let settledSamples = 0
-      for (;;) {
-        const goneFromRequests = !lstatExists(requestFile)
-        const noClaimedCopy = claimedCopies(claimedRoot, NAME).length === 0
-        const targetAlone = statSync(outsideTarget).nlink === 1
-        if (goneFromRequests && noClaimedCopy && targetAlone) {
-          if (settledSince === null) settledSince = Date.now()
-          settledSamples++
-          if (Date.now() - settledSince >= SETTLE_MS && settledSamples >= SETTLE_MIN_SAMPLES) break
-        } else {
-          settledSince = null // anything seen again restarts the window
-          settledSamples = 0
-        }
-        if (Date.now() >= deadline) {
-          throw new Error(
-            `relay never settled the swapped ${NAME}: lstat(requests/${NAME}) => ${describeEntry(requestFile)}; ` +
-            `claimed copies: ${claimedCopies(claimedRoot, NAME).join(', ') || 'none'}; ` +
-            `outside target nlink=${statSync(outsideTarget).nlink}`,
-          )
-        }
-        await new Promise(resolve => setTimeout(resolve, 5))
-      }
-      // The window itself proves that later ticks bring nothing back: it spans at least five of them
-      // (stuckDirs forgets the name once it is gone from requests/).
-      expect(lstatExists(requestFile)).toBe(false) // the gate: nothing rests at the requests/ name
-      expect(claimedCopies(claimedRoot, NAME)).toEqual([]) // the claimed copy is gone too
-      expect(statSync(outsideTarget).nlink).toBe(1) // no hard link to the outside target was made ...
+      // Step 3: the verdict was taken at the second park, while the daemon stood still.
+      await parkedAndAnswered(PARK_AFTER.id)
+
+      // Step 4: a LATER tick brings nothing back. This marker is written only now, so a tick that
+      // STARTS after the one that decided the swapped entry lists and handles it.
+      writeFileSync(join(requestsDir, `${LATER.id}.json`), marker(LATER))
+      await parkedAndAnswered(LATER.id)
+
+      if (parkError) throw new Error(`the park hook failed: ${parkError}`)
+      // The cast is for the type checker only: the assignment happens inside the server callback,
+      // which its control-flow analysis does not follow.
+      const verdict = sample as Sample | null
+      if (!verdict) throw new Error('no verdict was taken at the second park')
+      expect(verdict.entry,
+        `relay never settled the swapped ${NAME} (sampled while the daemon was parked): lstat(requests/${NAME}) => ${verdict.entry}; ` +
+        `claimed copies: ${verdict.claimed.join(', ') || 'none'}; outside target nlink=${verdict.targetNlink}`).toBe('gone') // the gate: nothing rests at the requests/ name
+      expect(verdict.claimed).toEqual([]) // the claimed copy is gone too
+      expect(verdict.targetNlink).toBe(1) // no hard link to the outside target was made
+
+      // Durable: the same after the tick completed and a later tick ran (stuckDirs forgets the name
+      // once it is gone from requests/, and there is no claimed copy left to put back).
+      expect(lstatExists(requestFile)).toBe(false)
+      expect(claimedCopies(claimedRoot, NAME)).toEqual([])
+      expect(statSync(outsideTarget).nlink).toBe(1)
       expect(readFileSync(outsideTarget, 'utf8')).toBe(secret) // ... and its content is unchanged
-      expect(seen).toHaveLength(0) // nothing was forwarded at all, in particular not for this entry
+      // Nothing was forwarded for the entry: the dashboard saw exactly the three markers, in name order.
+      const which = (s: Seen): string => [PARK_BEFORE, PARK_AFTER, LATER].find(m => s.body.includes(m.marker))?.id ?? `other: ${s.method} ${s.url}`
+      expect(seen.map(which)).toEqual([PARK_BEFORE.id, PARK_AFTER.id, LATER.id])
     } finally {
       child.kill('SIGTERM')
       await exited(child)
