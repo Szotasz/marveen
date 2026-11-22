@@ -318,7 +318,7 @@ describe('GET /api/agent-packages/catalog', () => {
     fake.answer({ status: 200, body: JSON.stringify(CATALOG) })
     const keys = [{ kty: 'OKP', crv: 'Ed25519', x: 'PUBLIC-X-ONE', kid: 'k-one' }, { kty: 'OKP', crv: 'Ed25519', x: 'PUBLIC-X-TWO', kid: 'k-two' }] as const
     const out = await call('GET', '/api/agent-packages/catalog', SESSION, undefined, { ...deps, keys })
-    expect(out.body).toEqual({ catalog: CATALOG, knownKids: ['k-one', 'k-two'], origin: TEST_ORIGIN })
+    expect(out.body).toEqual({ catalog: CATALOG, knownKids: ['k-one', 'k-two'], origin: TEST_ORIGIN, marveenVersion: expect.any(String) })
     expect(JSON.stringify(out.body)).not.toContain('PUBLIC-X')
   })
 
@@ -329,7 +329,7 @@ describe('GET /api/agent-packages/catalog', () => {
     const out = await call('GET', '/api/agent-packages/catalog')
     expect(out).toMatchObject({ status: 200, body: { catalog: CATALOG } })
     // MIOAGENTB4-1122 (Samu D2): the kids beside the body, the body itself unchanged.
-    expect(out.body).toEqual({ catalog: CATALOG, knownKids: [], origin: TEST_ORIGIN })
+    expect(out.body).toEqual({ catalog: CATALOG, knownKids: [], origin: TEST_ORIGIN, marveenVersion: expect.any(String) })
     expect(fake.requests).toHaveLength(1)
     const r = fake.requests[0]
     expect(r.url).toBe(`${TEST_ORIGIN}/functions/v1/agent-packages`)

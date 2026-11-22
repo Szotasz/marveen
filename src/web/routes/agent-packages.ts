@@ -3,7 +3,7 @@
 //   GET    /api/agent-packages/credential  -> {connected:false} | {connected:true, label, deviceTokenId, connectedAt}
 //   POST   /api/agent-packages/credential  {code:"PPPP-SSSSSSSS"} -> the GET shape + replaced, replacedDeviceTokenId
 //   DELETE /api/agent-packages/credential  -> {ok:true, connected:false, remoteRevoked:false}
-//   GET    /api/agent-packages/catalog     -> {catalog: <the publishing side's body>, knownKids: [<kid>], origin}
+//   GET    /api/agent-packages/catalog     -> {catalog: <the publishing side's body>, knownKids: [<kid>], origin, marveenVersion}
 //   POST   /api/agents/install-package     {slug} -> {ok, name, version, modelHintApplied, skillReport} (PR-I3, plan 6.1)
 //
 // Every route takes the owner (mayActAsOwner) BEFORE it reads a body: the
@@ -285,8 +285,9 @@ export async function tryHandleAgentPackages(ctx: RouteContext, deps: PackageDep
     if (!r.ok) { json(res, r.refusal.body, r.refusal.status); return true }
     // MIOAGENTB4-1122 (Samu D2): the kids this build accepts, BESIDE the unchanged body, so the dashboard can lock a
     // card before a download. Public key ids, not secrets; the server still refuses on its own (5b). The origin is the
-    // only place the dashboard loads a package picture from (Samu, extra 1).
-    json(res, { catalog: r.catalog, knownKids: deps.keys.map((k) => k.kid), origin: deps.remote.origin() })
+    // only place the dashboard loads a package picture from (Samu, extra 1); the own version locks a card whose minimum
+    // is higher (the publishing side refuses that download before a trial pick too, so this is a convenience).
+    json(res, { catalog: r.catalog, knownKids: deps.keys.map((k) => k.kid), origin: deps.remote.origin(), marveenVersion: currentVersion() })
     return true
   }
 
