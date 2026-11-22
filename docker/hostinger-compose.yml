@@ -22,6 +22,9 @@ services:
       MARVEEN_CHANNEL: ${MARVEEN_CHANNEL:-telegram}
       MARVEEN_AGENT_ID: ${MARVEEN_AGENT_ID:-marveen}
       MARVEEN_LANG: ${MARVEEN_LANG:-en}
+      # HOSTINGERROUTER1122: marks a Hostinger install (store/.platform), so the setup offers the Hostinger AI Router
+      # as an option. Only in this file: the main compose and the native installer never set it.
+      MARVEEN_PLATFORM: ${MARVEEN_PLATFORM:-hostinger}
       MARVEEN_OLLAMA_URL: ${MARVEEN_OLLAMA_URL:-http://ollama:11434}
       MARVEEN_DOMAIN: ${MARVEEN_DOMAIN:-}
       TZ: ${TZ:-UTC}

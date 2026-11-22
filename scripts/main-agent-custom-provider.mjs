@@ -42,10 +42,10 @@ const projectRoot = join(__dirname, '..')
 // into an unconditional channel abort. If any module fails to load and no
 // customProvider is configured, the pre-customProvider behavior (standard
 // Claude/OAuth backend) is the correct fallback: exit 0, empty stdout.
-let MAIN_AGENT_ID, readAgentCustomProvider, readAgentModel, loadCustomProvider, getSecret, launchSecretRef
+let MAIN_AGENT_ID, readAgentCustomProvider, readAgentModel, readAgentCustomProviderContextTokens, loadCustomProvider, getSecret, launchSecretRef
 try {
   ;({ MAIN_AGENT_ID } = await import(join(projectRoot, 'dist', 'config.js')))
-  ;({ readAgentCustomProvider, readAgentModel } = await import(
+  ;({ readAgentCustomProvider, readAgentModel, readAgentCustomProviderContextTokens } = await import(
     join(projectRoot, 'dist', 'web', 'agent-config.js')
   ))
   ;({ loadCustomProvider } = await import(
@@ -197,6 +197,13 @@ if (apiKeyForStamp) {
 //      catalog and silently falls back for unknown values, but ANTHROPIC_MODEL
 //      bypasses that gate entirely.
 //   3. Unset the conflicting auth var so exactly ONE auth mechanism is active.
+// HOSTINGERROUTER1122: for a model Claude Code does not know it assumes a 1M context window (measured, CC 2.1.330);
+// the config may name the real (or a capped) window, which Claude Code then also compacts against. Digits only, so
+// the value is safe in the command string. An older dist without the reader simply passes no window.
+const ctxTokens = typeof readAgentCustomProviderContextTokens === 'function' ? readAgentCustomProviderContextTokens(MAIN_AGENT_ID) : null
+const ctxExport = Number.isSafeInteger(ctxTokens) && ctxTokens > 0 && /^\d+$/.test(String(ctxTokens))
+  ? `export CLAUDE_CODE_MAX_CONTEXT_TOKENS=${ctxTokens} && `
+  : ''
 process.stdout.write(
-  `unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL=${sq(baseUrl)} && ${headerExport}${unsetConflict}export ANTHROPIC_MODEL=${sq(model)} && `,
+  `unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL=${sq(baseUrl)} && ${headerExport}${unsetConflict}export ANTHROPIC_MODEL=${sq(model)} && ${ctxExport}`,
 )

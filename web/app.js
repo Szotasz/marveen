@@ -5404,6 +5404,9 @@ function mainAuthSelected() {
 function renderMainAuthSections() {
   const api = mainAuthSelected() === 'api'
   document.getElementById('mainAuthApiSection').hidden = !api
+  // HOSTINGERROUTER1122: the router section, only with its radio (itself shown only on a Hostinger install)
+  const rs = document.getElementById('mainAuthRouterSection')
+  if (rs) rs.hidden = mainAuthSelected() !== 'router'
 }
 function mainAuthRunningText(d) {
   const l = d && d.mainAuthLaunched
@@ -5415,6 +5418,33 @@ function mainAuthRunningText(d) {
   }
   return base
 }
+// HOSTINGERROUTER1122: the router model select. Experimental (non-Claude) models carry their context cap; a model
+// the main agent already runs on stays selectable even when the list no longer has it.
+function fillMainRouterModels(models, selected, note) {
+  const sel = document.getElementById('mainAuthRouterModel')
+  sel.innerHTML = ''
+  const list = models.slice()
+  if (selected && !list.some((m) => m.id === selected)) list.unshift({ id: selected, experimental: false })
+  for (const m of list) {
+    const o = document.createElement('option')
+    o.value = m.id
+    o.textContent = m.experimental && m.contextTokens
+      ? `${m.id} (${t('agents.main_auth.router_experimental', { cap: Math.round(m.contextTokens / 1000) })})`
+      : m.id
+    o.selected = m.id === selected
+    sel.appendChild(o)
+  }
+  const n = document.getElementById('mainAuthRouterListNote')
+  if (n) n.textContent = note || ''
+}
+async function loadMainRouterModels(selected) {
+  try {
+    const res = await fetch('/api/hostinger-router/models')
+    if (!res.ok) return
+    const d = await res.json()
+    fillMainRouterModels(d.models || [], selected, d.source === 'fallback' ? t('agents.main_auth.router_fallback') : t('agents.main_auth.router_more_claude'))
+  } catch { /* keeps the measured three */ }
+}
 async function loadMainAuthPanel() {
   const group = document.getElementById('mainAuthGroup')
   if (!group) return
@@ -5425,8 +5455,18 @@ async function loadMainAuthPanel() {
     const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}`)
     if (res.ok) d = await res.json()
   } catch { /* shown as unknown */ }
-  const mode = d && d.authMode === 'api' ? 'api' : 'shared'
+  const router = (d && d.router) || { available: false }
+  const mode = router.active ? 'router' : d && d.authMode === 'api' ? 'api' : 'shared'
   for (const r of document.querySelectorAll('input[name="mainAuthMode"]')) r.checked = r.value === mode
+  // HOSTINGERROUTER1122: the router option only on a Hostinger install (or when the main agent already runs on it)
+  document.getElementById('mainAuthRouterOption').hidden = !(router.available || router.active)
+  document.getElementById('mainAuthRouterKey').value = ''
+  const rStatus = document.getElementById('mainAuthRouterKeyStatus')
+  rStatus.textContent = router.keyStored ? t('agents.main_auth.router_key_stored') : t('agents.main_auth.router_key_missing')
+  rStatus.style.color = router.keyStored ? 'var(--success)' : 'var(--warning)'
+  fillMainRouterModels((router.models || []).map((id) => ({ id, experimental: false })), router.model || router.defaultModel, null)
+  // HOSTINGERROUTER1122 (Marveen 83042): the router's own list, fetched by the server with the stored key
+  if (router.available || router.active) loadMainRouterModels(router.model || router.defaultModel)
   const status = document.getElementById('mainAuthKeyStatus')
   status.textContent = d && d.hasApiKey ? t('agents.main_auth.key_stored') : t('agents.main_auth.key_missing')
   status.style.color = d && d.hasApiKey ? 'var(--success)' : 'var(--warning)'
@@ -5443,6 +5483,11 @@ document.getElementById('mainAuthApplyBtn').addEventListener('click', async () =
   const payload = { authMode: mode }
   const key = document.getElementById('mainAuthApiKey').value.trim()
   if (mode === 'api' && key) payload.apiKey = key
+  if (mode === 'router') {
+    const rKey = document.getElementById('mainAuthRouterKey').value.trim()
+    if (rKey) payload.apiKey = rKey
+    payload.model = document.getElementById('mainAuthRouterModel').value
+  }
   btn.disabled = true
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}`, {
@@ -5457,6 +5502,7 @@ document.getElementById('mainAuthApplyBtn').addEventListener('click', async () =
       return
     }
     document.getElementById('mainAuthApiKey').value = ''
+    document.getElementById('mainAuthRouterKey').value = ''
     if (reply.body.verified === false) showToast(t('agents.main_auth.unverified'))
     const restarted = await restartMainAgentGated()
     showToast(t(restarted ? 'agents.main_auth.saved_restarting' : 'agents.main_auth.saved_not_restarted'))
@@ -16626,13 +16672,35 @@ function onbIdentityHtml(s) {
     + `<button class="btn-primary btn-compact" id="onbIdentityBtn">${escapeHtml(t('onboarding.identity.save_btn'))}</button>`
     + `<div id="onbMsg" class="onb-msg"></div>`
 }
+// HOSTINGERROUTER1122 (Samu 83036): on a Hostinger install the Claude step offers the Hostinger AI Router as its SECOND
+// choice; the Claude subscription stays the first, preselected one. Elsewhere the step is exactly as before.
+function onbRouterChoiceHtml(s) {
+  const r = s && s.router
+  if (!r || !r.available) return ''
+  const opts = (r.models || []).map((m) => `<option value="${escapeHtml(m)}"${m === r.defaultModel ? ' selected' : ''}>${escapeHtml(m)}</option>`).join('')
+  return `<div role="radiogroup" style="display:flex;flex-direction:column;gap:6px;margin:6px 0 10px">`
+    + `<label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="radio" name="onbAuthKind" value="claude" checked>${escapeHtml(t('onboarding.router.choice_claude'))}</label>`
+    + `<label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="radio" name="onbAuthKind" value="router">${escapeHtml(t('onboarding.router.choice_router'))}</label>`
+    + `</div>`
+    + `<div id="onbRouterSection" hidden>`
+    + `<label class="form-label-sm">${escapeHtml(t('onboarding.router.key_label'))}</label>`
+    + `<input id="onbRouterKey" type="password" class="onb-input" placeholder="sk-hstgr-..." autocomplete="off">`
+    + `<label class="form-label-sm">${escapeHtml(t('onboarding.router.model_label'))}</label>`
+    + `<select id="onbRouterModel" class="onb-input">${opts}</select>`
+    + `<div class="onb-hint">${escapeHtml(t('onboarding.router.notice'))}</div>`
+    + `<div class="onb-hint">${escapeHtml(t('onboarding.router.more_models'))}</div>`
+    + `</div>`
+}
 function onbStep1Html(s) {
   return `<p>${escapeHtml(t('onboarding.step1.desc'))}</p>`
     + (s.claudeAuthPresent
       ? `<p class="onb-ok-line">${escapeHtml(t('onboarding.step1.auth_done'))}</p>`
-      : `<label class="form-label-sm">${escapeHtml(t('onboarding.step1.token_label'))}</label>`
+      : onbRouterChoiceHtml(s)
+        + `<div id="onbClaudeSection">`
+        + `<label class="form-label-sm">${escapeHtml(t('onboarding.step1.token_label'))}</label>`
         + `<input id="onbToken" type="password" class="onb-input" placeholder="sk-ant-oat01-..." autocomplete="off">`
         + `<div class="onb-hint">${escapeHtml(t('onboarding.step1.token_hint'))}</div>`
+        + `</div>`
         + `<button class="btn-primary btn-compact" id="onbAuthBtn">${escapeHtml(t('onboarding.step1.save_btn'))}</button>`)
     + (s.claudeAuthPresent && !s.agentsRunning
       ? `<button class="btn-primary btn-compact" id="onbLaunchBtn">${escapeHtml(t('onboarding.step1.launch_btn'))}</button>`
@@ -16707,12 +16775,26 @@ function wireOnboarding(step) {
   }
   if (step === 2) {
     const authBtn = document.getElementById('onbAuthBtn')
+    // HOSTINGERROUTER1122: the router choice (present only on a Hostinger install) swaps the token field for its own.
+    const onbRouterSelected = () => (document.querySelector('input[name="onbAuthKind"]:checked') || {}).value === 'router'
+    document.querySelectorAll('input[name="onbAuthKind"]').forEach((el) => el.addEventListener('change', () => {
+      const router = onbRouterSelected()
+      const rs = document.getElementById('onbRouterSection')
+      const cs = document.getElementById('onbClaudeSection')
+      if (rs) rs.hidden = !router
+      if (cs) cs.hidden = router
+    }))
     if (authBtn) authBtn.addEventListener('click', async () => {
-      const token = (document.getElementById('onbToken').value || '').trim()
-      if (!token) { onbMsg(t('onboarding.step1.token_empty'), true); return }
+      const router = onbRouterSelected()
+      const token = router ? '' : (document.getElementById('onbToken').value || '').trim()
+      const routerKey = router ? (document.getElementById('onbRouterKey').value || '').trim() : ''
+      const routerModel = router ? (document.getElementById('onbRouterModel').value || '') : ''
+      if (router && !routerKey) { onbMsg(t('onboarding.router.key_empty'), true); return }
+      if (!router && !token) { onbMsg(t('onboarding.step1.token_empty'), true); return }
       authBtn.disabled = true; onbMsg(t('onboarding.saving'))
       try {
-        const res = await fetch('/api/onboarding/claude-auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) })
+        const payload = router ? { routerKey, routerModel } : { token }
+        const res = await fetch('/api/onboarding/claude-auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
         const d = await res.json().catch(() => ({}))
         if (!res.ok) { authBtn.disabled = false; if (await onbOwnerRefused(d)) return; onbMsg(d.code === 'owner_session_required' ? t('onboarding.step1.owner_login_required') : (d.error || t('onboarding.error')), true); return }
         // Fresh-install path: the server restarts the (previously
@@ -16721,6 +16803,7 @@ function wireOnboarding(step) {
         // silently advancing.
         if (d.restartError) { authBtn.disabled = false; onbMsg(t('onboarding.step1.saved_restart_failed', { cmd: d.restartCommand || '' }), true); setTimeout(refreshOnboarding, 6000); return }
         if (d.restarted) { onbMsg(t('onboarding.step1.saved_restarted')); setTimeout(refreshOnboarding, 2500); return }
+        if (d.router) { onbMsg(t('onboarding.router.saved', { model: d.model || '' })); await refreshOnboarding(); return }
         onbMsg(d.verified ? t('onboarding.step1.saved_verified') : t('onboarding.step1.saved_unverified'))
         await refreshOnboarding()
       } catch (e) { authBtn.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
