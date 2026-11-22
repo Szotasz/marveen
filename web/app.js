@@ -10,7 +10,7 @@ function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
 
 // === i18n runtime ===
 // Priority: localStorage['marveen.lang'] > DASHBOARD_LANG (server default, read
-// from /api/settings on init) > 'hu' (hardcoded fallback).
+// from the public /api/auth/status on init, so the sign-in page has it too) > 'hu' (hardcoded fallback).
 // Rick's spec (kanban card 209696a9): t(key,params), window._i18n={hu,en},
 // window._lang; {name} interpolation; EN-fallback then key; dev-mode warning.
 ;(() => {
@@ -52,17 +52,18 @@ function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
   // server default was silently dead code. Microtasks run after the whole
   // classic script has evaluated, when window.fetch is the wrapped version.
   queueMicrotask(() => {
-    fetch('/api/settings')
+    // HOSTINGERI18N1122: /api/auth/status is public, /api/settings is not, so before a login the server default used to
+    // be out of reach and the sign-in page stayed in the 'hu' fallback even on an install set to en.
+    fetch('/api/auth/status')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data || localStorage.getItem(LS_KEY)) return
-        const entry = (data.settings || []).find(s => s.key === 'DASHBOARD_LANG')
-        if (!entry || !VALID.has(entry.value) || entry.value === window._lang) return
+        if (!VALID.has(data.lang) || data.lang === window._lang) return
         // Apply WITHOUT persisting (localStorage must keep overriding the
         // server default), and re-run the render dance: the initial
         // DOMContentLoaded render almost always beats this response, so a
         // plain applyLang would leave the page painted in the old language.
-        applyLang(entry.value)
+        applyLang(data.lang)
         if (typeof renderNav === 'function') renderNav()
         if (typeof renderStaticI18n === 'function') renderStaticI18n()
         const activeLink = document.querySelector('.sb-link.active[data-page]')
@@ -913,9 +914,9 @@ if (document.readyState !== 'loading') {
 // "Aktivitás" card mode (see renderAgentCardActivity). This table is the shared
 // vocabulary: the same states, labels, colours and tooltips as before.
 const ACTIVITY_STATE_META = {
-  working: { label: () => t('activity.state.working'), cls: 'act-working', tip: 'Élő állapot (a tmux pane tartalmából, 3 másodpercenként): éppen dolgozik / gondolkodik.' },
-  idle: { label: () => t('activity.state.idle'), cls: 'act-idle', tip: 'Élő állapot (3 másodpercenként): fut, de épp nem csinál semmit.' },
-  dead: { label: () => t('activity.state.dead'), cls: 'act-dead', tip: 'A tmux session él, de nincs benne Claude CLI: a pane egy shell promptra esett vissza. Ez nem várakozás, ez halott ágens -- indítsd újra.' },
+  working: { label: () => t('activity.state.working'), cls: 'act-working', tip: () => t('activity.tip.working') },
+  idle: { label: () => t('activity.state.idle'), cls: 'act-idle', tip: () => t('activity.tip.idle') },
+  dead: { label: () => t('activity.state.dead'), cls: 'act-dead', tip: () => t('activity.tip.dead') },
   // Main thread idle, background (sub-)agents running. Display-only: the API's
   // `state` stays 'idle' and this is picked by activityDisplayState.
   subagents: {
@@ -923,11 +924,11 @@ const ACTIVITY_STATE_META = {
       ? t('activity.state.subagents_queued', { n: entry.bgAgents.running, q: entry.bgAgents.queued })
       : t('activity.state.subagents', { n: entry.bgAgents.running }),
     cls: 'act-subagents',
-    tip: 'Élő állapot (3 másodpercenként): a fő szál tétlen, de a háttér-alügynökei dolgoznak. A "vár" az alügynököknek küldött, még fel nem vett üzenetek száma.',
+    tip: () => t('activity.tip.subagents'),
   },
-  unknown: { label: () => t('activity.state.unknown'), cls: 'act-unknown', tip: 'Élő állapot: nem sikerült megállapítani a session pane tartalmából.' },
-  error: { label: () => t('activity.state.error'), cls: 'act-error', tip: 'Élő állapot: hiba látszik az ágens session paneljén.' },
-  stopped: { label: () => t('activity.state.stopped'), cls: 'act-stopped', tip: 'Élő állapot: az ágens session nem fut.' },
+  unknown: { label: () => t('activity.state.unknown'), cls: 'act-unknown', tip: () => t('activity.tip.unknown') },
+  error: { label: () => t('activity.state.error'), cls: 'act-error', tip: () => t('activity.tip.error') },
+  stopped: { label: () => t('activity.state.stopped'), cls: 'act-stopped', tip: () => t('activity.tip.stopped') },
 }
 
 // The state an entry is SHOWN in. The main thread working always wins; only an
@@ -986,7 +987,7 @@ function agentActivityBodyHtml(entry) {
     : ''
   return (
     '<div class="agent-act-head">' +
-      '<span class="activity-badge ' + metaRaw.cls + '" title="' + escapeHtml(metaRaw.tip || '') + '">' + (entry.state === 'working' ? '<span class="act-orb" aria-hidden="true"></span>' : '') + escapeHtml(label) + '</span>' +
+      '<span class="activity-badge ' + metaRaw.cls + '" title="' + escapeHtml(typeof metaRaw.tip === 'function' ? metaRaw.tip() : (metaRaw.tip || '')) + '">' + (entry.state === 'working' ? '<span class="act-orb" aria-hidden="true"></span>' : '') + escapeHtml(label) + '</span>' +
       '<span class="agent-act-head-right">' + modeChip + termIcon + '</span>' +
     '</div>' +
     (tail
@@ -5905,13 +5906,13 @@ async function openOpenrouterModal() {
   // The modal markup lives inside the (hidden) connectors page; reparent it to
   // <body> so it renders full-viewport regardless of which tab is active.
   if (modal.parentElement !== document.body) document.body.appendChild(modal)
-  if (agentEl) agentEl.textContent = (currentAgent && (currentAgent.displayName || currentAgent.name)) || 'ágens'
+  if (agentEl) agentEl.textContent = (currentAgent && (currentAgent.displayName || currentAgent.name)) || t('openrouter.modal.agent_fallback')
   // Two competing .modal-overlay CSS rules: one hides via [hidden], the other
   // via opacity/visibility (toggled by .active). Set both so the modal shows
   // regardless of which rule wins the cascade.
   modal.hidden = false
   modal.classList.add('active')
-  listEl.innerHTML = '<div style="padding:14px;color:var(--text-muted);font-size:13px">Modellek betöltése…</div>'
+  listEl.innerHTML = '<div style="padding:14px;color:var(--text-muted);font-size:13px">' + escapeHtml(t('openrouter.modal.loading')) + '</div>'
   if (searchEl) searchEl.value = ''
   if (freeEl) freeEl.checked = false
   try {
@@ -5932,7 +5933,7 @@ async function openOpenrouterModal() {
     }
     renderOpenrouterList()
   } catch {
-    listEl.innerHTML = '<div style="padding:14px;color:var(--danger,#dc2626);font-size:13px">Nem sikerült betölteni az OpenRouter modelleket.</div>'
+    listEl.innerHTML = '<div style="padding:14px;color:var(--danger,#dc2626);font-size:13px">' + escapeHtml(t('openrouter.modal.load_error')) + '</div>'
   }
 }
 
@@ -5953,7 +5954,7 @@ function renderOpenrouterList() {
     if (ca !== cb) return ca ? -1 : 1
     return a.id.localeCompare(b.id)
   })
-  if (countEl) countEl.textContent = `${rows.length} modell · ${openrouterCurated.size} kézi listán`
+  if (countEl) countEl.textContent = t('openrouter.modal.count', { n: rows.length, m: openrouterCurated.size })
   listEl.innerHTML = ''
   for (const m of rows.slice(0, 400)) {
     const checked = openrouterCurated.has(m.id)
@@ -5978,7 +5979,7 @@ function renderOpenrouterList() {
     row.addEventListener('mouseleave', () => { row.style.background = '' })
     listEl.appendChild(row)
   }
-  if (rows.length === 0) listEl.innerHTML = '<div style="padding:14px;color:var(--text-muted);font-size:13px">Nincs találat.</div>'
+  if (rows.length === 0) listEl.innerHTML = '<div style="padding:14px;color:var(--text-muted);font-size:13px">' + escapeHtml(t('common.no_results')) + '</div>'
 }
 
 // Tick/untick a model into the curated manual list. Persists server-side, then
@@ -5989,7 +5990,7 @@ async function toggleCuratedModel(id, name, checked) {
   const countEl = document.getElementById('openrouterModalCount')
   if (countEl) {
     const total = countEl.textContent.split('·')[0].trim()
-    countEl.textContent = `${total} · ${openrouterCurated.size} kézi listán`
+    countEl.textContent = t('openrouter.modal.count_short', { total, m: openrouterCurated.size })
   }
   try {
     const res = await fetch('/api/openrouter/manual', {
@@ -6457,7 +6458,7 @@ document.getElementById('voiceInstallBtn').addEventListener('click', async () =>
 
   if (sudoHint) sudoHint.hidden = true
   btn.disabled = true
-  btn.textContent = 'Indítás...'
+  btn.textContent = t('agents.auth.btn_starting')
 
   try {
     const r = await fetch('/api/voice/install', { method: 'POST' })
@@ -6468,10 +6469,10 @@ document.getElementById('voiceInstallBtn').addEventListener('click', async () =>
       // Show sudo command -- user must run it then click again
       if (sudoHint) {
         sudoHint.hidden = false
-        sudoHint.innerHTML = 'A rendszercsomagok telepítéséhez futtasd terminálon:<br><code style="display:block;margin-top:4px;word-break:break-all">' + escapeHtml(data.sudoCommand) + '</code><br>Ezután kattints újra a Telepítés gombra.'
+        sudoHint.innerHTML = escapeHtml(t('agents.voice.sudo_hint_before')) + '<br><code style="display:block;margin-top:4px;word-break:break-all">' + escapeHtml(data.sudoCommand) + '</code><br>' + escapeHtml(t('agents.voice.sudo_hint_after'))
       }
       btn.disabled = false
-      btn.textContent = 'Telepítés'
+      btn.textContent = t('connectors.catalog.install_btn')
       return
     }
 
@@ -6484,7 +6485,7 @@ document.getElementById('voiceInstallBtn').addEventListener('click', async () =>
     // Max 4 minutes (80 × 3s); on timeout show a hint and re-enable the button
     // so the user can retry (the only failure signal from a fire-and-forget spawn).
     if (progress) progress.hidden = false
-    btn.textContent = 'Telepítés...'
+    btn.textContent = t('common.installing')
     clearInterval(_voiceInstallPollTimer)
     let _voiceInstallPollCount = 0
     const VOICE_INSTALL_MAX_POLLS = 80 // 80 × 3s = 4 min
@@ -6507,15 +6508,15 @@ document.getElementById('voiceInstallBtn').addEventListener('click', async () =>
         if (progress) progress.hidden = true
         if (sudoHint) {
           sudoHint.hidden = false
-          sudoHint.textContent = 'A telepítés tovább tart vagy elakadt. Ellenőrizd a dashboard logjait, majd próbáld újra.'
+          sudoHint.textContent = t('agents.voice.install_stuck')
         }
         btn.disabled = false
-        btn.textContent = 'Újrapróbálás'
+        btn.textContent = t('agents.voice.retry')
       }
     }, 3000)
   } catch {
     btn.disabled = false
-    btn.textContent = 'Telepítés'
+    btn.textContent = t('connectors.catalog.install_btn')
     showToast(t('agents.voice.install_error'), 'error')
   }
 })
@@ -10139,7 +10140,7 @@ function renderCatalog() {
       </div>
       <div class="catalog-card-footer">
         ${item.installed
-          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${escapeHtml(item.id)}">Eltávolítás</a>`}`
+          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">${escapeHtml(t('connectors.catalog.installed'))} &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${escapeHtml(item.id)}">Eltávolítás</a>`}`
           : `<button class="catalog-install-btn install" data-id="${escapeHtml(item.id)}">${t('connectors.catalog.install_btn')}</button>${authHint}`
         }
       </div>
@@ -10872,7 +10873,7 @@ function renderOssRow(e) {
             status.textContent = 'Telepitve, kulcsok mentve a Vault-ba!'
           } else {
             status.className = 'github-repo-status error'
-            status.textContent = 'Telepitve, de néhány kulcs mentése sikertelen. Add meg újra a Vault-ban.'
+            status.textContent = t('connectors.env_modal.partial_save')
           }
           loadVault()
         } else {
@@ -21105,7 +21106,7 @@ function renderTuTimeline(data, filterAgent) {
   ctx.fillStyle = 'rgba(239, 68, 68, 0.15)'
   ctx.fillRect(legendX, legendY - 7, 10, 10)
   ctx.fillStyle = textSecondary; ctx.font = '10px sans-serif'
-  ctx.fillText('csúcsidő', legendX + 14, legendY + 2)
+  ctx.fillText(t('tokenUsage.chart.peak_legend'), legendX + 14, legendY + 2)
 
   // Store legend hit areas for click handling
   tuChartState = { barRects, pad, h, cssW, cssH, maxVal, maxCum, win5h, winWeekly, legendHits }
