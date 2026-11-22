@@ -697,7 +697,7 @@ export function assertNoProjectCodexConfig(workspace: string, opts: CodexRenderO
   }
 }
 
-function codexPhysicalPath(p: string): string {
+export function codexPhysicalPath(p: string): string {
   let cur = resolve(p)
   const tail: string[] = []
   for (;;) {

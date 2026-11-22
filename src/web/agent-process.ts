@@ -108,7 +108,7 @@ import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInher
 import { isSingleLineEnvValue, readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff, type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
+import { dashboardTokenPathFor, helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { agentVendorHostsEnv } from './agent-egress-env.js'
 import { scaffoldAgentDir, enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetBaseRulesSection, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './agent-scaffold.js'
 import { packageStartRefusal, reportPackageLayersAtStart, prepareFallbackClaudeMd } from './agent-package/install.js'
@@ -2654,6 +2654,7 @@ function ensureRealRelayDir(path: string): string | null {
 // store/, which the relay profile hides from the sandbox. The daemon starts
 // after launcher validation and before tmux, so readiness failure leaves no session.
 async function startDashboardRelayDaemon(name: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  await stopDashboardRelay(name)
   const relayDir = codexRelayDir(name)
   mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true, mode: 0o700 })
   // Verify the whole spool chain (parent first) before any chmod, rm or open.
@@ -2675,7 +2676,7 @@ async function startDashboardRelayDaemon(name: string): Promise<{ ok: true } | {
     join(PROJECT_ROOT, 'scripts', 'codex-relay', 'relay.mjs'),
     '--agent', name,
     '--relay-dir', relayDir,
-    '--token-file', join(PROJECT_ROOT, 'store', 'agent-tokens', `${name}.token`),
+    '--token-file', dashboardTokenPathFor(name),
     '--dashboard-url', dashboardUrl,
     '--audit-log', join(auditDir, `${name}.log`),
   ], { detached: true, stdio: ['ignore', logFd, logFd] })

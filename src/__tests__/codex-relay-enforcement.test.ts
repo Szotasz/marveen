@@ -570,6 +570,21 @@ describe('relay request-file hardening', () => {
     })
   }, T)
 
+  it('a request whose claim loses with ENOENT is skipped without a forward, response or audit', async () => {
+    await withRelay(async ({ seen, relayDir, auditPath }) => {
+      const requestPath = join(relayDir, 'requests', 'claim1.json')
+      writeFileSync(requestPath, JSON.stringify({
+        id: 'claim1', method: 'POST', path: '/api/daily-log',
+        body: { agent_id: AGENT, content: 'lost-claim1' },
+      }))
+      await waitFor(() => !existsSync(requestPath), 2000)
+      await sleep(1500)
+      expect(seen.filter(s => s.body.includes('lost-claim1'))).toHaveLength(0)
+      expect(existsSync(join(relayDir, 'responses', 'claim1.json'))).toBe(false)
+      expect(existsSync(auditPath) ? readFileSync(auditPath, 'utf-8') : '').not.toContain('"id":"claim1"')
+    }, { preload: fileURLToPath(new URL('./fixtures/relay-claim-enoent-preload.mjs', import.meta.url)) })
+  }, T)
+
   it('H15 a valid request written at the name of an entry the relay just removed is not deleted unread', async () => {
     await withRelay(async ({ seen, relayDir }) => {
       mkdirSync(join(relayDir, 'requests', 'race1.json'))

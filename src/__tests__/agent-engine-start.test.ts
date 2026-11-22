@@ -53,6 +53,7 @@ vi.mock('../web/requeue-notice.js', () => ({ requeueAbandonedAndNotify: vi.fn() 
 vi.mock('../notify.js', () => ({ notifyChannel: vi.fn(), notifyTelegram: vi.fn() }))
 
 const agentConfig = await import('../web/agent-config.js')
+const { dashboardTokenPathFor } = await import('../web/agent-tokens.js')
 const { startAgentProcess, stopDashboardRelay } = await import('../web/agent-process.js')
 const name = 'codex-pilot'
 const dir = agentConfig.agentDir(name)
@@ -167,6 +168,11 @@ describe('Codex agent start behaviour', () => {
       const daemonIndex = harness.calls.findIndex(call => call.args[0] === join(sandbox, 'scripts', 'codex-relay', 'relay.mjs'))
       expect(composeIndex).toBeGreaterThanOrEqual(0)
       expect(daemonIndex).toBeGreaterThan(composeIndex)
+      const daemonArgs = harness.calls[daemonIndex].args
+      const tokenIndex = daemonArgs.indexOf('--token-file')
+      expect(tokenIndex).toBeGreaterThanOrEqual(0)
+      expect(daemonArgs.slice(tokenIndex, tokenIndex + 2)).toEqual(['--token-file', dashboardTokenPathFor(name)])
+      expect(existsSync(join(sandbox, 'store', 'agent-tokens'))).toBe(false)
       expect(harness.calls.indexOf(sessionCalls()[0])).toBeGreaterThan(daemonIndex)
       expect(launcherCalls()[0].env?.MARVEEN_CODEX_SANDBOX).toBe('relay')
       expect(existsSync(readyMarker)).toBe(true)
@@ -195,6 +201,32 @@ describe('Codex agent start behaviour', () => {
     while (existsSync(readyMarker) && Date.now() < deadline) await sleep(50)
     expect(existsSync(readyMarker)).toBe(false)
   })
+
+  it('a start stops a relay daemon left over from a previous life', async () => {
+    mkdirSync(join(sandbox, 'scripts', 'codex-relay'), { recursive: true })
+    copyFileSync(resolve('scripts/codex-relay/relay.mjs'), join(sandbox, 'scripts', 'codex-relay', 'relay.mjs'))
+    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify({
+      engine: 'codex', codexConfigDir, codexSandbox: 'relay',
+    }))
+    const relayDir = join(sandbox, 'store', 'codex-relay', name)
+    try {
+      expect(await startAgentProcess(name)).toEqual({ ok: true })
+      const oldPid = Number(readFileSync(join(relayDir, 'relay.pid'), 'utf-8'))
+      expect(() => process.kill(oldPid, 0)).not.toThrow()
+      expect(await startAgentProcess(name)).toEqual({ ok: true })
+      const alive = () => {
+        try { process.kill(oldPid, 0); return true } catch { return false }
+      }
+      const deadline = Date.now() + 5000
+      while (alive() && Date.now() < deadline) await sleep(50)
+      expect(alive()).toBe(false)
+      const newPid = Number(readFileSync(join(relayDir, 'relay.pid'), 'utf-8'))
+      expect(newPid).not.toBe(oldPid)
+      expect(newPid).toBe(Number(readFileSync(join(relayDir, 'relay.ready'), 'utf-8')))
+    } finally {
+      await stopDashboardRelay(name)
+    }
+  }, 10_000)
 
   it('B2-cleanup stops the relay daemon when tmux new-session throws and preserves the tmux error', async () => {
     mkdirSync(join(sandbox, 'scripts', 'codex-relay'), { recursive: true })

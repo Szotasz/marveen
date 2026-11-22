@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { MXD_AGENT_SOCK_DEFAULT } from '../web/agent-extra-channels.js'
 import {
+  codexPhysicalPath,
   codexRelayDeniedReadRoots,
   codexRelayFilesystemEntries,
   codexRelayMxdRunDir,
@@ -60,16 +61,25 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
     const parent = join(root, 'physical')
     mkdirSync(parent)
     symlinkSync(parent, join(root, 'link'))
+    projectRoot = join(root, 'link', 'project')
+    ws = join(projectRoot, 'ws')
+    mkdirSync(ws, { recursive: true })
     home = join(root, 'link', 'home', '..', 'home')
     const runDir = codexRelayMxdRunDir()
+    const seen = new Set<string>()
     const expected = [
       ['/', 'read'], [ws, 'write'],
       ...codexRelayDeniedReadRoots().map(path => [path, 'none']),
-      [resolve(home), 'none'], [join(realpathSync(parent), 'home'), 'none'],
-      [runDir, 'none'],
-      [join(projectRoot!, '.env'), 'none'], [join(projectRoot!, 'agents'), 'none'],
-      [join(USER_HOME, '.claude', 'channels'), 'none'], [join(USER_HOME, '.gmail-mcp'), 'none'],
-    ]
+      [resolve(home), 'none'], [codexPhysicalPath(home), 'none'],
+      [runDir, 'none'], [codexPhysicalPath(runDir), 'none'],
+      ...[join(projectRoot, '.env'), join(projectRoot, 'agents'),
+        join(USER_HOME, '.claude', 'channels'), join(USER_HOME, '.gmail-mcp')]
+        .flatMap(p => [[resolve(p), 'none'], [codexPhysicalPath(p), 'none']]),
+    ].filter(([path]) => {
+      if (seen.has(path)) return false
+      seen.add(path)
+      return true
+    })
     expect(codexRelayFilesystemEntries(ws, home).slice(0, expected.length)).toEqual(expected)
   })
 

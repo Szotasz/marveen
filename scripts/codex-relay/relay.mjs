@@ -432,11 +432,12 @@ async function handleRequestFile(fileName) {
   const requestPath = join(requestsDir, fileName)
   const started = Date.now()
   let claimed = false
-  const removeRequest = () => {
+  const removeRequest = ({ claim = false } = {}) => {
     if (claimed) return true // after the claim the name may already hold a NEWER request: never unlink that one
     try {
       unlinkSync(requestPath)
     } catch (err) {
+      if (claim && err && err.code === 'ENOENT') return null // another handler owns the request
       if (err && err.code !== 'ENOENT') {
         if (!stuckDirs.has(fileName)) process.stderr.write(`relay: cannot unlink request ${fileName}: ${err.message}\n`)
         return false
@@ -527,8 +528,9 @@ async function handleRequestFile(fileName) {
   } finally {
     if (fd !== undefined) closeSync(fd)
   }
-  const claimOk = removeRequest() // claim: never handle the same file twice
+  const claimOk = removeRequest({ claim: true }) // claim: never handle the same file twice
   claimed = true
+  if (claimOk === null) return // the name may already hold a newer request: never unlink it again
   if (!claimOk) {
     // The relay cannot remove the request: never forward it (it would be forwarded again on every tick); deny and
     // audit it once, then skip it while it stays.
