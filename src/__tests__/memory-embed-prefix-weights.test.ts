@@ -194,9 +194,12 @@ describe('EMBED_MAX_CHARS and EMBED_TIMEOUT_SECONDS', () => {
     settingValues.EMBED_MAX_CHARS = '500'
     settingValues.EMBED_DOCUMENT_PREFIX = 'search_document: '
     settingValues.EMBED_TIMEOUT_SECONDS = '30'
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
     await generateEmbedding(long, 'document')
     expect(bodies[0].prompt).toBe('search_document: ' + 'x'.repeat(500))
     expect(embedTimeoutMs()).toBe(30_000)
+    expect(timeout).toHaveBeenCalledWith(30_000)
+    timeout.mockRestore()
   })
 
   it('a value that is not a positive integer falls back to the default', () => {
