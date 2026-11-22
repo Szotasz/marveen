@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The checks a SENDER runs on the exact letter it is about to deliver.
 
-Used by this project's own senders, before any vault, SMTP or Graph call:
+Used by this project's own senders, the pre phase before any vault, SMTP or
+Graph call, the full phase right before delivery (see "Two phases" below):
   - scripts/support-mail/send.py imports it (check());
   - scripts/graph-mail.ts runs it as a CLI (JSON letter on stdin; exit 0 =
     send, 3 = refused, the reason on stderr; anything else is a refusal too).
@@ -38,6 +39,14 @@ What is checked, in this order:
      content_hash is the anchor of THIS delivered envelope (atomically: one
      send per approval), else refuses and prints the anchor; level 3 sends.
      A missing or unreadable config is level 2, as in the hook.
+
+Two phases (APPROVALPRECHECK1122). check(letter) is the full check above.
+check(letter, phase="pre") runs the same checks but changes nothing: no
+standing trace is written and the approval is only looked up, never consumed.
+A sender runs the pre phase first, then its own fallible steps (vault, SMTP
+login, Graph token), then the full check, and delivers right after it: a
+failure in those steps no longer burns the owner's one-shot approval. On the
+CLI the pre phase is `--precheck`.
 
 Every path is this project's own (<root>/store/...): the hook's test-only
 environment overrides (neither the store path nor the window has one since ENVRELAXGATE1104)
@@ -136,8 +145,11 @@ def _ledger_check(gate, letter):
                       f"(kuldes: {sorted(delivered)}, ellenorizve: {sorted(set(verified))}); fail-closed")
 
 
-def check(letter):
+def check(letter, phase="full"):
     """Return the messages to print on success; raise Refused otherwise.
+
+    phase "full" (default): consumes the approval / writes the standing trace.
+    phase "pre": the same decision, with no write: nothing consumed, no trace.
 
     letter: {"to": [...], "cc": [...]   the addresses the sender delivers to,
              "text": subject + "\\n" + body,
@@ -148,6 +160,8 @@ def check(letter):
                 (no configured default), for the standing list,
              "default_cc": [...]   the CC the sender added from its own config
                 (send.py's owner CC), if any}"""
+    if phase not in ("full", "pre"):
+        raise Refused(f"ismeretlen ellenorzesi fazis ({phase!r}); fail-closed")
     if not isinstance(letter, dict) or not isinstance(letter.get("to"), list) or not letter["to"]:
         raise Refused("a level cimzettje nem olvashato ki; fail-closed")
     notes = []
@@ -204,6 +218,8 @@ def check(letter):
                           f"ELESITVE ({live_detail}). Cim-horgony (sha256): {gate.standing_anchor(hit)}; "
                           f"elesites kerese: POST /api/approvals, category=\"{gate.STANDING_CATEGORY}\". "
                           "A dontes a gazdae: a sajat keresedet NE hagyd jova.")
+        if phase == "pre":
+            return notes + [f"email_send level 2: {hit} allando cimzett (elo-ellenorzes, a nyom a kuldes elott kerul be)"]
         try:
             owner_gap = gate.standing_trace(hit, env)
         except OSError as exc:
@@ -215,9 +231,11 @@ def check(letter):
 
     anchor = gate.content_anchor(env)
     try:
-        verdict, detail = gate.find_and_consume(anchor)
+        verdict, detail = gate.find_and_consume(anchor, consume=(phase == "full"))
     except Exception as exc:  # noqa: BLE001 -- DB unreachable is a refusal
         raise Refused(f"a jovahagyasok nem elerhetok ({exc!r}); fail-closed")
+    if verdict == "allowed" and phase == "pre":
+        return notes + [f"email_send level 2: a(z) {detail} jovahagyas megvan (elo-ellenorzes, meg NINCS felhasznalva)"]
     if verdict == "allowed":
         return notes + [f"email_send level 2: a(z) {detail} jovahagyas felhasznalva (egyszer-hasznalatos)"]
     reasons = {
@@ -240,8 +258,11 @@ def check(letter):
 
 def main():
     try:
+        args = sys.argv[1:]
+        if args not in ([], ["--precheck"]):
+            raise Refused(f"ismeretlen argumentum ({args!r}); hasznalat: sender_check.py [--precheck] < letter.json")
         letter = json.loads(sys.stdin.read())
-        for line in check(letter):
+        for line in check(letter, phase="pre" if args else "full"):
             print(line, file=sys.stderr)
     except Refused as exc:
         print(str(exc), file=sys.stderr)

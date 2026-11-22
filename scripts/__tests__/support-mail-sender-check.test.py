@@ -130,15 +130,42 @@ INPROC = r"""
 import json, os, runpy, smtplib, imaplib, sys
 sys.argv = json.loads(os.environ['T_ARGV'])
 sys.path.insert(0, os.path.join(os.environ['T_ROOT'], 'scripts', 'support-mail'))
-import lib
-lib.password = lambda: 'x'
+import lib, sqlite3
 sent = {}
+events = []
+MODE = os.environ.get('T_LOGIN_MODE', 'ok')
+def _db():
+    return sqlite3.connect(os.path.join(os.environ['T_ROOT'], 'store', 'claudeclaw.db'))
+def _consumed():
+    con = _db()
+    n = con.execute("SELECT COUNT(*) FROM approvals WHERE category='email_send' AND consumed_at IS NOT NULL").fetchone()[0]
+    con.close()
+    return n
+def _vault():
+    events.append('vault consumed=%d' % _consumed())
+    if MODE == 'vault-fail':
+        raise RuntimeError('vault down')
+    return 'x'
+lib.password = _vault
 class FakeSMTP:
-    def __init__(self, *a, **k): pass
+    def __init__(self, *a, **k): events.append('connect consumed=%d' % _consumed())
     def __enter__(self): return self
-    def __exit__(self, *a): return False
-    def login(self, *a): pass
-    def send_message(self, msg, to_addrs=None): sent['rcpt'] = list(to_addrs)
+    def __exit__(self, *a):
+        events.append('close')
+        return False
+    def login(self, *a):
+        events.append('login consumed=%d' % _consumed())
+        if MODE == 'login-fail':
+            raise smtplib.SMTPAuthenticationError(535, b'bad credentials')
+        if MODE == 'steal':
+            # a parallel send uses the approval between the pre and the full check
+            con = _db()
+            con.execute("UPDATE approvals SET consumed_at=1 WHERE category='email_send'")
+            con.commit()
+            con.close()
+    def send_message(self, msg, to_addrs=None):
+        events.append('send consumed=%d' % _consumed())
+        sent['rcpt'] = list(to_addrs)
 smtplib.SMTP_SSL = FakeSMTP
 class FakeIMAP:
     def __init__(self, *a, **k): raise OSError('no imap here')
@@ -148,7 +175,10 @@ try:
     runpy.run_path(os.path.join(os.environ['T_ROOT'], os.environ['T_FILE']), run_name='__main__')
 except SystemExit as e:
     code = e.code
-print('RESULT=' + json.dumps({'sent': sent, 'exit': code if isinstance(code, int) or code is None else str(code)}))
+except Exception as e:
+    code = 'exc:' + type(e).__name__
+print('RESULT=' + json.dumps({'sent': sent, 'events': events,
+                              'exit': code if isinstance(code, int) or code is None else str(code)}))
 """
 
 
@@ -161,6 +191,7 @@ def inproc(root, args, extra_env=None):
 
 
 SEND = f"python3 {SENDER} --to a@example.com --subject 'Tárgy' --body 'Kedves Ügyfél, ez a levél törzse.'"
+SEND_ARGS = ["--to", "a@example.com", "--subject", "Tárgy", "--body", "Kedves Ügyfél, ez a levél törzse."]
 
 with tempfile.TemporaryDirectory() as td:
     # --- level 1: every spelling is refused BY THE SENDER ----------------------
@@ -190,7 +221,12 @@ with tempfile.TemporaryDirectory() as td:
     r = bash(root, SEND)
     check("level 2 with the approval: the checks pass (the run goes on to the vault)", passed(r),
           f"rc={r[0]} err={r[2][-200:]!r}")
-    check("level 2: the sender consumed the approval", consumed(root))
+    # APPROVALPRECHECK1122: the checks passed, but the vault is down here, so
+    # nothing was delivered and the approval must still be there.
+    check("level 2: a vault failure after the checks leaves the approval UNCONSUMED", not consumed(root))
+    res, err = inproc(root, SEND_ARGS)
+    check("level 2: the delivered letter consumed the approval",
+          res["sent"].get("rcpt") == ["a@example.com"] and consumed(root), f"res={res} err={err[-200:]!r}")
     r = bash(root, SEND)
     check("level 2: the same letter again is refused (one-shot)", refused(r) and "FEL LETT HASZNALVA" in r[2],
           f"rc={r[0]}")
@@ -229,8 +265,12 @@ with tempfile.TemporaryDirectory() as td:
     r = bash(root, SEND)
     check("standing and live: the checks pass without a per-letter approval (the owner CC is not in the view)",
           passed(r) and "allando cimzett" in r[2], f"rc={r[0]} err={r[2][-200:]!r}")
-    log = open(os.path.join(root, "store", "email-standing-sends.log"), encoding="utf-8").read()
-    check("standing: the approval-free send left its trace", "a@example.com" in log)
+    log_path = os.path.join(root, "store", "email-standing-sends.log")
+    check("standing: no trace while nothing was delivered (vault down)", not os.path.exists(log_path))
+    res, err = inproc(root, SEND_ARGS)
+    log = open(log_path, encoding="utf-8").read() if os.path.exists(log_path) else ""
+    check("standing: the approval-free send left its trace", res["sent"].get("rcpt") and "a@example.com" in log,
+          f"res={res} err={err[-200:]!r}")
     r = bash(root, SEND + " --cc c@example.com")
     check("standing: an explicit --cc takes the letter off the standing path", refused(r), f"rc={r[0]}")
 
@@ -259,10 +299,10 @@ with tempfile.TemporaryDirectory() as td:
     with open(os.path.join(root, "store", "email-standing-recipients.json"), "w") as fh:
         json.dump({"recipients": ["a@example.com"]}, fh)
     approve(root, hashlib.sha256(b"a@example.com").hexdigest(), aid="st-2", category="email_standing_recipient")
-    r = bash(root, SEND, {"WEB_PORT": "1"})
+    res, err = inproc(root, SEND_ARGS, {"WEB_PORT": "1"})
     srv.shutdown()
     check("standing: the owner's daily-log notice uses WEB_PORT from .env, not from the environment",
-          "allando cimzett" in r[2] and "/api/daily-log" in posts, f"posts={posts} err={r[2][-200:]!r}")
+          "allando cimzett" in err and "/api/daily-log" in posts, f"posts={posts} err={err[-200:]!r}")
 
     # --- level 3 / missing config ---------------------------------------------
     root = make_project(os.path.join(td, "l3"), level=3)
@@ -394,6 +434,101 @@ with tempfile.TemporaryDirectory() as td:
     r = bash(root, SEND)
     check("copy check: a missing copy gate module refuses (fail-closed)", refused(r) and "KIMENO-SZOVEG" in r[2],
           f"err={r[2][-200:]!r}")
+
+# --- APPROVALPRECHECK1122: the approval is consumed last ---------------------
+# The pre phase decides without writing; send.py runs it before the vault and
+# SMTP, and the consuming full check only after the SMTP login, right before
+# send_message. A failure in between leaves the owner's approval unused.
+def load_sender_check(root):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "sender_check_" + hashlib.sha256(root.encode()).hexdigest()[:8],
+        os.path.join(root, "scripts", "hooks", "sender_check.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+LETTER = {"to": ["a@example.com"], "cc": [], "text": "Tárgy\nKedves Ügyfél, ez a levél törzse.", "render": "",
+          "attachments": [], "raw_to": "a@example.com", "raw_cc": None,
+          "explicit_to": ["a@example.com"], "explicit_cc": []}
+
+with tempfile.TemporaryDirectory() as td:
+    root = make_project(os.path.join(td, "phase"), level=2)
+    sc = load_sender_check(root)
+    anchor = None
+    try:
+        sc.check(dict(LETTER), phase="pre")
+        check("pre phase without an approval: refused", False)
+    except sc.Refused as exc:
+        anchor = anchor_of(str(exc))
+        check("pre phase without an approval: refused with the anchor", anchor is not None, str(exc)[-200:])
+    approve(root, anchor)
+    notes = sc.check(dict(LETTER), phase="pre")
+    check("pre phase with the approval: passes and does NOT consume",
+          not consumed(root) and any("NINCS felhasznalva" in n for n in notes), f"notes={notes}")
+    sc.check(dict(LETTER), phase="pre")
+    check("pre phase twice: still unconsumed", not consumed(root))
+    cli = os.path.join(root, "scripts", "hooks", "sender_check.py")
+    p = subprocess.run([sys.executable, "-I", cli, "--precheck"], input=json.dumps(LETTER),
+                       capture_output=True, text=True)
+    check("CLI --precheck: exit 0 and the approval stays unconsumed", p.returncode == 0 and not consumed(root),
+          f"rc={p.returncode} err={p.stderr[-200:]!r}")
+    p = subprocess.run([sys.executable, "-I", cli, "--pre"], input=json.dumps(LETTER), capture_output=True, text=True)
+    check("CLI: an unknown argument refuses (exit 3), nothing consumed", p.returncode == 3 and not consumed(root),
+          f"rc={p.returncode}")
+    try:
+        sc.check(dict(LETTER), phase="bogus")
+        check("an unknown phase refuses", False)
+    except sc.Refused:
+        check("an unknown phase refuses, nothing consumed", not consumed(root))
+    notes = sc.check(dict(LETTER))
+    check("full phase (the default): consumes, exactly as before",
+          consumed(root) and any("felhasznalva (egyszer" in n for n in notes), f"notes={notes}")
+    try:
+        sc.check(dict(LETTER), phase="pre")
+        check("pre phase after the consume: refused as used", False)
+    except sc.Refused as exc:
+        check("pre phase after the consume: refused as used", "FEL LETT HASZNALVA" in str(exc))
+
+    # the standing list: the pre phase writes no trace, the full phase does
+    root = make_project(os.path.join(td, "phase-standing"), level=2)
+    with open(os.path.join(root, "store", "email-standing-recipients.json"), "w") as fh:
+        json.dump({"recipients": ["a@example.com"]}, fh)
+    approve(root, hashlib.sha256(b"a@example.com").hexdigest(), aid="st-p", category="email_standing_recipient")
+    sc = load_sender_check(root)
+    log_path = os.path.join(root, "store", "email-standing-sends.log")
+    notes = sc.check(dict(LETTER), phase="pre")
+    check("standing, pre phase: passes and writes NO trace",
+          not os.path.exists(log_path) and any("allando cimzett" in n for n in notes), f"notes={notes}")
+    sc.check(dict(LETTER))
+    check("standing, full phase: writes the trace as before",
+          os.path.exists(log_path) and "a@example.com" in open(log_path, encoding="utf-8").read())
+
+    # send.py: vault -> connect -> login -> consume -> send_message
+    root = make_project(os.path.join(td, "order"), level=2)
+    approve(root, anchor_of(bash(root, SEND)[2]))
+    res, err = inproc(root, SEND_ARGS)
+    check("send.py order: vault, connect and login before the consume, send_message after it",
+          res["events"][:4] == ["vault consumed=0", "connect consumed=0", "login consumed=0", "send consumed=1"]
+          and res["sent"].get("rcpt") == ["a@example.com"], f"res={res} err={err[-200:]!r}")
+    for mode, label in (("vault-fail", "a vault failure"), ("login-fail", "an SMTP login failure")):
+        root = make_project(os.path.join(td, "order-" + mode), level=2)
+        approve(root, anchor_of(bash(root, SEND)[2]))
+        res, err = inproc(root, SEND_ARGS, {"T_LOGIN_MODE": mode})
+        check(f"send.py: {label} sends nothing and leaves the approval UNCONSUMED",
+              not res["sent"] and not consumed(root) and res["exit"] not in (0, None), f"res={res}")
+    root = make_project(os.path.join(td, "order-steal"), level=2)
+    approve(root, anchor_of(bash(root, SEND)[2]))
+    res, err = inproc(root, SEND_ARGS, {"T_LOGIN_MODE": "steal"})
+    check("send.py: a full check refused after the login sends nothing, closes the connection, exits 3",
+          not res["sent"] and res["exit"] == 3 and "close" in res["events"]
+          and not any(e.startswith("send") for e in res["events"]) and "KULDES MEGTAGADVA" in err,
+          f"res={res} err={err[-200:]!r}")
+    root = make_project(os.path.join(td, "order-l1"), level=1)
+    res, err = inproc(root, SEND_ARGS)
+    check("send.py: a pre-phase refusal touches neither the vault nor SMTP",
+          res["exit"] == 3 and res["events"] == [], f"res={res}")
 
 print()
 if failed:
