@@ -249,6 +249,7 @@ window._i18n.hu = {
   'kanban.modal.title_label':    'Cím *',
   'kanban.modal.desc_label':     'Leírás',
   'kanban.modal.project_label':  'Projekt',
+  'kanban.modal.project_ph':     'pl. Dream Engine',
   'kanban.modal.assignee_label': 'Felelős',
   'kanban.modal.priority_label': 'Prioritás',
   'kanban.modal.status_label':   'Státusz',
@@ -505,6 +506,7 @@ window._i18n.hu = {
   'agents.wizard.desc_label':    'Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök',
   'agents.wizard.profile_label': 'Biztonsági profil',
   'agents.model.custom_model_required': 'Egyéni szolgáltatóhoz add meg a modell azonosítóját is.',
+  'agents.model.custom_model_id_ph': 'Model ID (pl. claude-sonnet-4-6)',
   'agents.model.provider_deleted': '{id} (törölve)',
   'agents.model.provider_missing': 'Ez a szolgáltató már nem létezik, ezért az ügynök nem indul el. Válassz másik modellt.',
   'agents.model.provider_missing_card': 'A szolgáltató („{id}”) már nem létezik, ezért az ügynök nem indul el. A Beállítások fülön válassz neki másik modellt.',
@@ -2944,4 +2946,10 @@ window._i18n.hu = {
   'autonomy.level.1': 'Csak jelez',
   'ideas.toast.score_saved_error': 'Hiba a pontszám mentésekor',
   'tokenUsage.chart.peak_legend': 'csúcsidő',
+  // HOSTINGERLANGFU1122: placeholders that said the unaccented Hungarian "pl." in English too.
+  'channels.pair.code_ph': 'pl. a1b2c3',
+  'skills.form.name_ph': 'pl. piackutato, riport-keszito',
+  'schedules.form.name_ph': 'pl. reggeli-napindito',
+  'memories.form.keywords_ph': 'pl. marketing, kampány, ROI',
+  'connectors.field.name_ph': 'pl. google-drive',
 }

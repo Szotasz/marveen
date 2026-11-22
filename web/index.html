@@ -2345,7 +2345,7 @@
         <div class="form-row">
           <div class="form-group form-half">
             <label for="cardProject" data-i18n="common.project">Projekt <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
-            <input type="text" id="cardProject" list="projectSuggestions" placeholder="pl. Dream Engine" autocomplete="off">
+            <input type="text" id="cardProject" list="projectSuggestions" placeholder="pl. Dream Engine" data-i18n-placeholder="kanban.modal.project_ph" autocomplete="off">
             <datalist id="projectSuggestions"></datalist>
           </div>
         </div>
@@ -2576,7 +2576,7 @@
             </select>
             <p class="model-cli-hint" id="agentModelCliHint" style="display:none;font-size:12px;color:var(--muted,#888);margin:4px 0 0"></p>
             <div id="agentModelCustomModelRow" style="display:none;margin-top:6px">
-              <input type="text" id="agentModelCustomModelId" class="input" placeholder="Model ID (pl. claude-sonnet-4-6)" style="width:100%">
+              <input type="text" id="agentModelCustomModelId" class="input" placeholder="Model ID (pl. claude-sonnet-4-6)" data-i18n-placeholder="agents.model.custom_model_id_ph" style="width:100%">
               <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px" data-i18n="agents.custom_provider.endpoint_hint">Anthropic Messages API (/v1/messages) kompatibilis végpont szükséges. Tiszta OpenAI végponthoz proxy kell.</small>
             </div>
           </div>
@@ -2762,7 +2762,7 @@
             <p class="model-cli-hint" id="editAgentModelCliHint" style="display:none;font-size:12px;color:var(--muted,#888);margin:4px 0 0"></p>
             <p id="editAgentModelProviderMissing" hidden style="font-size:12px;color:var(--danger);margin:4px 0 0" data-i18n="agents.model.provider_missing">Ez a szolgáltató már nem létezik, ezért az ügynök nem indul el. Válassz másik modellt.</p>
             <div id="editAgentModelCustomModelRow" style="display:none;margin-top:6px">
-              <input type="text" id="editAgentModelCustomModelId" class="input" placeholder="Model ID (pl. claude-sonnet-4-6)" style="width:100%">
+              <input type="text" id="editAgentModelCustomModelId" class="input" placeholder="Model ID (pl. claude-sonnet-4-6)" data-i18n-placeholder="agents.model.custom_model_id_ph" style="width:100%">
               <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px" data-i18n="agents.custom_provider.endpoint_hint">Anthropic Messages API (/v1/messages) kompatibilis végpont szükséges. Tiszta OpenAI végponthoz proxy kell.</small>
             </div>
             <button class="btn-secondary btn-compact agent-save-section" id="saveModelBtn" data-i18n="common.btn.save">Mentés</button>
@@ -3184,7 +3184,7 @@
               <div class="form-row" style="gap:8px; align-items:flex-end; margin-top: 12px;">
                 <div class="form-group" style="flex:1; margin-bottom:0">
                   <label for="chPairCode" data-i18n="agents.channel.pair_code_label">Párosítási kód</label>
-                  <input type="text" id="chPairCode" placeholder="pl. a1b2c3">
+                  <input type="text" id="chPairCode" placeholder="pl. a1b2c3" data-i18n-placeholder="channels.pair.code_ph">
                 </div>
                 <button class="btn-primary btn-compact" id="chApproveBtn" style="margin-top:0" data-i18n="common.btn.approve">Jóváhagyás</button>
               </div>
@@ -3290,7 +3290,7 @@
         <div class="skill-tab-panel" id="skillTabCreate">
           <div class="form-group">
             <label for="skillName" data-i18n="skills.modal.title_label">Skill neve</label>
-            <input type="text" id="skillName" placeholder="pl. piackutato, riport-keszito">
+            <input type="text" id="skillName" placeholder="pl. piackutato, riport-keszito" data-i18n-placeholder="skills.form.name_ph">
           </div>
           <div class="form-group">
             <label for="skillDescription" data-i18n="skills.modal.desc_label">Írd le szabadon, mit csináljon ez a skill</label>
@@ -3348,7 +3348,7 @@
         <div class="form-row">
           <div class="form-group form-half">
             <label for="scheduleName" data-i18n="common.name">Név</label>
-            <input type="text" id="scheduleName" placeholder="pl. reggeli-napindito">
+            <input type="text" id="scheduleName" placeholder="pl. reggeli-napindito" data-i18n-placeholder="schedules.form.name_ph">
           </div>
           <div class="form-group form-half">
             <label for="scheduleAgent" data-i18n="common.agent">Ügynök</label>
@@ -3464,7 +3464,7 @@
         </div>
         <div class="form-group">
           <label for="memKeywords">Kulcsszavak <span class="hint">(vesszoval elvalasztva, keresest segiti)</span></label>
-          <input type="text" id="memKeywords" placeholder="pl. marketing, kampany, ROI">
+          <input type="text" id="memKeywords" placeholder="pl. marketing, kampany, ROI" data-i18n-placeholder="memories.form.keywords_ph">
         </div>
         <input type="hidden" id="memEditId">
         <button class="btn-primary" id="saveMemBtn" data-i18n="common.btn.save">Mentés</button>
@@ -3523,7 +3523,7 @@
       <div class="modal-body">
         <div class="form-group">
           <label for="connectorName" data-i18n="connectors.field.name">Név <span style="font-weight:400;color:var(--text-muted);font-size:12px" data-i18n="connectors.field.name_hint">(betűk, számok, kötőjel, aláhúzás; szóköz nem!)</span></label>
-          <input type="text" id="connectorName" placeholder="pl. google-drive">
+          <input type="text" id="connectorName" placeholder="pl. google-drive" data-i18n-placeholder="connectors.field.name_ph">
         </div>
         <div class="form-row">
           <div class="form-group form-half">

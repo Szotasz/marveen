@@ -249,6 +249,7 @@ window._i18n.en = {
   'kanban.modal.title_label':    'Title *',
   'kanban.modal.desc_label':     'Description',
   'kanban.modal.project_label':  'Project',
+  'kanban.modal.project_ph':     'e.g. Dream Engine',
   'kanban.modal.assignee_label': 'Assignee',
   'kanban.modal.priority_label': 'Priority',
   'kanban.modal.status_label':   'Status',
@@ -1570,6 +1571,7 @@ window._i18n.en = {
   'agents.wizard.desc_label':    'Describe freely what you want this agent to do',
   'agents.wizard.profile_label': 'Security profile',
   'agents.model.custom_model_required': 'With a custom provider, enter the model ID too.',
+  'agents.model.custom_model_id_ph': 'Model ID (e.g. claude-sonnet-4-6)',
   'agents.model.provider_deleted': '{id} (deleted)',
   'agents.model.provider_missing': 'This provider no longer exists, so the agent does not start. Choose another model.',
   'agents.model.provider_missing_card': 'The provider ("{id}") no longer exists, so the agent does not start. Choose another model on its Settings tab.',
@@ -2942,4 +2944,10 @@ window._i18n.en = {
   'autonomy.level.1': 'Notify only',
   'ideas.toast.score_saved_error': 'Error saving the score',
   'tokenUsage.chart.peak_legend': 'peak',
+  // HOSTINGERLANGFU1122: placeholders that said the unaccented Hungarian "pl." in English too.
+  'channels.pair.code_ph': 'e.g. a1b2c3',
+  'skills.form.name_ph': 'e.g. market-research, report-writer',
+  'schedules.form.name_ph': 'e.g. morning-briefing',
+  'memories.form.keywords_ph': 'e.g. marketing, campaign, ROI',
+  'connectors.field.name_ph': 'e.g. google-drive',
 }
