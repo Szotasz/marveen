@@ -1,18 +1,21 @@
 // Preload for test H15 (codex-relay-enforcement.test.ts), loaded via `node --import` before relay.mjs.
-// Simulates a writer racing the relay: it re-creates a request file at the very name the relay has JUST
-// removed itself (the rmdirSync/unlinkSync of a deny-path entry), in the window before finishDenied's
-// removeRequest() would unlink that name again -- that second unlink must never happen, or the freshly
-// written request is deleted unread. Only the FIRST successful removal of a given race-named path injects,
-// so exactly one injected request exists per name and the test can count dashboard forwards.
+// Simulates a writer racing the relay's CLAIM: the claim rename of requests/raceN.json frees that name
+// the instant it succeeds, and the writer drops a NEW request file at the very same name in that
+// window. The relay must answer the FIRST entry from its claimed copy (the test plants a directory
+// there, so it is denied as invalid) and must still read and forward the injected request exactly
+// once on a later tick -- its own claim of the injected entry frees the name again, so only the FIRST
+// claim of a given race-named path injects (per-path dedupe): exactly one injected request exists per
+// name and the test can count dashboard forwards.
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { basename } from 'node:path'
 
 const AGENT = 'relay-agent' // keep in sync with AGENT in src/__tests__/codex-relay-enforcement.test.ts
-// Only an entry of requests/ is re-created: the same file name also passes through the daemon's claimed
-// directory (the claim moves it there and removes it again), and nothing must be injected there.
+// Only the CLAIM of an entry of requests/ injects: the rename into the daemon's claimed directory is
+// the one step that frees the requests/ name, so that is where the racing writer strikes.
 const RACE_NAME = /[/\\]requests[/\\]race\d+\.json$/
 const injected = new Set()
+const realRenameSync = fs.renameSync
 const realWriteFileSync = fs.writeFileSync
 
 function maybeInject(path) {
@@ -27,16 +30,12 @@ function maybeInject(path) {
   }))
 }
 
-const realRmdirSync = fs.rmdirSync
-fs.rmdirSync = function rmdirSync(path, options) {
-  realRmdirSync(path, options)
-  maybeInject(path)
-}
-
-const realUnlinkSync = fs.unlinkSync
-fs.unlinkSync = function unlinkSync(path) {
-  realUnlinkSync(path)
-  maybeInject(path)
+// The REAL rename runs first; only when it succeeded (the name is really free) does the racing
+// writer grab that name for the injected request.
+fs.renameSync = function renameSync(from, to) {
+  const result = realRenameSync(from, to)
+  maybeInject(from)
+  return result
 }
 
 syncBuiltinESMExports()

@@ -73,8 +73,10 @@ const dashboardUrl = parsed.values['--dashboard-url'].replace(/\/+$/, '')
 const requestsDir = join(relayDir, 'requests')
 const responsesDir = join(relayDir, 'responses')
 // The claim directory of THIS daemon. A request is claimed by MOVING its entry here (claimRequest): the
-// rename is the one step two daemons on one spool cannot both succeed at. The entry is removed again at
-// once, so nothing rests in here; the directory is removed at shutdown.
+// rename is the one step two daemons on one spool cannot both succeed at, and it happens BEFORE the
+// entry is read -- the request bytes are read from the claimed copy, never from the requests/ name.
+// The copy is removed again at once after the raw read, so nothing rests in here while a request is
+// parsed or forwarded; the directory is removed at shutdown.
 const claimedRootDir = join(relayDir, 'claimed')
 const claimedDir = join(claimedRootDir, String(process.pid))
 
@@ -444,38 +446,59 @@ const pathnameOf = p => (typeof p === 'string' ? p.split('?')[0] : null)
 
 async function handleRequestFile(fileName) {
   const requestPath = join(requestsDir, fileName)
+  const claimedPath = join(claimedDir, fileName)
   const started = Date.now()
-  let claimed = false
-  const removeRequest = () => {
-    if (claimed) return // after the claim the name may already hold a NEWER request: never unlink that one
+  // Removes the CLAIMED copy only. After a successful claim the requests/ name was consumed by the claim
+  // rename itself and may already hold a NEWER request: nothing in this handler ever unlinks that name again.
+  const removeClaimed = () => {
     try {
-      unlinkSync(requestPath)
+      unlinkSync(claimedPath)
     } catch (err) {
       if (err && err.code !== 'ENOENT') {
-        if (!stuckDirs.has(fileName)) process.stderr.write(`relay: cannot unlink request ${fileName}: ${err.message}\n`)
+        if (!stuckDirs.has(fileName)) process.stderr.write(`relay: cannot remove claimed request ${fileName}: ${err instanceof Error ? err.message : String(err)}\n`)
       }
     }
   }
-  // The claim MOVES the request entry into this daemon's claimed directory. rename is atomic on every
-  // platform; unlink is not (PR #2652 review C2: two daemons on one spool on macOS both got the claim of
-  // one name and both forwarded). Of two renames of one name exactly one succeeds, the loser gets ENOENT.
-  // The moved entry is removed at once: nothing rests in the claimed directory.
-  // true = claimed, null = lost (another handler owns the request), false = the relay cannot move the entry.
+  // An entry the relay cannot remove keeps resting at its requests/ name: the claimed copy is moved BACK.
+  // The restore never forwards anything, so it cannot reintroduce the stale-read race. If a writer
+  // re-created requests/<fileName> in the window, the copy stays in the claimed directory (one stderr
+  // line, gated by stuckDirs) and the writer's entry keeps the name.
+  const restoreClaimed = () => {
+    try {
+      renameSync(claimedPath, requestPath)
+    } catch (err) {
+      if (!stuckDirs.has(fileName)) process.stderr.write(`relay: cannot restore request ${fileName}: ${err instanceof Error ? err.message : String(err)}\n`)
+    }
+  }
+  // The claim MOVES the request entry into this daemon's claimed directory, and it is the FIRST action of
+  // this handler -- before a single byte of the request is read. rename is atomic on every platform;
+  // unlink is not (PR #2652 review C2: two daemons on one spool on macOS both got the claim of one name
+  // and both forwarded). Of two renames of one name exactly one succeeds, the loser gets ENOENT. Taking
+  // ownership of the NAME before reading is what closes the stale-read ABA hole of the old
+  // read-then-claim order (#2652 review C2 / dual-review R1 blocker A3): the read pipeline below takes
+  // the bytes from the CLAIMED copy -- the entry this renamer owns -- so a writer re-creating
+  // requests/<fileName> the instant the claim frees that name only ever places a NEW entry at that name.
+  // Reading strictly after the claim, from the copy, makes a stale read of a since-replaced requests/
+  // entry impossible; the old order let the claim loser forward bytes it had read from the ORIGINAL
+  // entry while holding the NEW one (original forwarded twice, new one lost).
+  // claimedPath = claimed, null = lost (another handler owns the request), false = the relay cannot move the entry.
   const claimRequest = () => {
-    const claimedPath = join(claimedDir, fileName)
     try {
       renameSync(requestPath, claimedPath)
     } catch (err) {
       if (err && err.code === 'ENOENT') return null // another handler owns the request
+      // One rename failure is not worth an operator line: Linux refuses to rename a DIRECTORY the
+      // relay cannot write (the rename must update the moved directory's own `..` entry), so a
+      // mode-000 directory cannot be claimed even though requests/ itself is writable. The caller
+      // denies such an entry in place, silently -- and an entry that vanished with the attempt is
+      // equally not reportable.
+      let st = null
+      try { st = lstatSync(requestPath) } catch { /* gone: nothing to report */ }
+      if (!st || st.isDirectory()) return false
       if (!stuckDirs.has(fileName)) process.stderr.write(`relay: cannot claim request ${fileName}: ${err.message}\n`)
       return false
     }
-    try {
-      unlinkSync(claimedPath)
-    } catch (err) {
-      process.stderr.write(`relay: cannot remove claimed request ${fileName}: ${err.message}\n`)
-    }
-    return true
+    return claimedPath
   }
   const writeResponse = (name, value) => {
     try {
@@ -486,36 +509,75 @@ async function handleRequestFile(fileName) {
   }
   const finishDenied = (id, method, path, routeKey, status, error, reason) => {
     writeResponse(id || 'invalid', { id: id ?? null, status, error })
-    removeRequest()
+    removeClaimed() // the CLAIMED COPY, never the requests/ name: the claim rename already consumed it
     logLine(id, method, path, status, Date.now() - started)
     auditLine({ id, method, route: routeKey, path: pathnameOf(path), reason, status, ms: Date.now() - started })
   }
 
   const stem = fileName.replace(/\.json$/, '')
   const stemId = REQUEST_ID.test(stem) ? stem : null
+
+  // Claim FIRST (see claimRequest above): only the winner of the rename may read the entry.
+  const claimOk = claimRequest()
+  if (claimOk === null) return // the name is another handler's: skip silently, no response, no audit
+  if (!claimOk) {
+    // A DIRECTORY the rename cannot take (see claimRequest above) is the one entry kind that was never
+    // claimable at all, before the claim-first order or now: it is denied IN PLACE, at its requests/
+    // name -- removed when empty, otherwise denied and audited once, then skipped while it stays. It is
+    // never forwarded, so this lane cannot reintroduce the stale-read race the claim-first order fixes.
+    let entry = null
+    try { entry = lstatSync(requestPath) } catch { /* vanished with the rename attempt */ }
+    if (!entry) return // nothing there anymore: nothing to deny
+    if (entry.isDirectory()) {
+      if (stuckDirs.has(fileName)) return // denied and audited on an earlier tick: skip while it stays
+      try {
+        rmdirSync(requestPath)
+      } catch {
+        stuckDirs.add(fileName)
+      }
+      finishDenied(stemId, null, null, null, 400, 'invalid request', 'invalid')
+      return
+    }
+    // The relay cannot move the request: never forward it (it would be forwarded again on every tick); deny and
+    // audit it once, then skip it while it stays.
+    if (stuckDirs.has(fileName)) return
+    stuckDirs.add(fileName)
+    finishDenied(stemId, null, null, null, 500, 'request not claimable', 'unclaimable')
+    return
+  }
+
+  // Everything below reads the CLAIMED copy, never the requests/ name: the bytes answered are exactly
+  // the bytes the claim rename took ownership of.
   let fd
   try {
-    fd = openSync(requestPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    fd = openSync(claimedPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   } catch (err) {
     if (err && err.code === 'ENOENT') return // already gone
+    if (stuckDirs.has(fileName)) {
+      // Denied and audited on an earlier tick: put the entry back and skip it while it stays.
+      restoreClaimed()
+      return
+    }
     try {
-      unlinkSync(requestPath)
+      unlinkSync(claimedPath)
     } catch (err2) {
       if (err2 && err2.code === 'ENOENT') return
       if (!(err2 && (err2.code === 'EISDIR' || err2.code === 'EPERM'))) {
         process.stderr.write(`relay: cannot remove request ${fileName}: ${err2 instanceof Error ? err2.message : String(err2)}\n`)
+        restoreClaimed()
         return
       }
       // A directory the relay cannot open (e.g. mode 000): the same rule as a readable one -- removed when empty,
-      // otherwise denied and audited once, then skipped while it stays.
+      // otherwise denied and audited once, then skipped while it stays (resting at its requests/ name again).
       try {
-        rmdirSync(requestPath)
+        rmdirSync(claimedPath)
       } catch {
-        if (stuckDirs.has(fileName)) return
         stuckDirs.add(fileName)
+        restoreClaimed()
+        finishDenied(stemId, null, null, null, 400, 'invalid request', 'invalid')
+        return
       }
     }
-    claimed = true // the relay removed the entry itself (or cannot remove it): never unlink the name again, it may already hold a newer request
     finishDenied(stemId, null, null, null, 400, 'invalid request', 'invalid')
     return
   }
@@ -526,14 +588,25 @@ async function handleRequestFile(fileName) {
       closeSync(fd)
       fd = undefined
       if (st.isDirectory()) {
+        // A directory entry: removed when empty, otherwise denied and audited once, then skipped while
+        // it rests at its requests/ name.
         try {
-          rmdirSync(requestPath)
+          rmdirSync(claimedPath)
         } catch {
-          if (stuckDirs.has(fileName)) return
+          if (stuckDirs.has(fileName)) {
+            restoreClaimed()
+            return
+          }
           stuckDirs.add(fileName)
+          restoreClaimed()
+          finishDenied(stemId, null, null, null, 400, 'invalid request', 'invalid')
+          return
         }
-        claimed = true // the relay removed the entry itself (or cannot remove it): never unlink the name again, it may already hold a newer request
+        finishDenied(stemId, null, null, null, 400, 'invalid request', 'invalid')
+        return
       }
+      // Hard link, FIFO, ... : the claimed copy is unlinked best effort (finishDenied's removal step);
+      // an outside original a hard link points at survives with its own name.
       finishDenied(stemId, null, null, null, 400, 'invalid request', 'invalid')
       return
     }
@@ -560,17 +633,11 @@ async function handleRequestFile(fileName) {
   } finally {
     if (fd !== undefined) closeSync(fd)
   }
-  const claimOk = claimRequest() // claim: never handle the same file twice
-  claimed = true
-  if (claimOk === null) return // the name may already hold a newer request: never unlink it again
-  if (!claimOk) {
-    // The relay cannot remove the request: never forward it (it would be forwarded again on every tick); deny and
-    // audit it once, then skip it while it stays.
-    if (stuckDirs.has(fileName)) return
-    stuckDirs.add(fileName)
-    finishDenied(stemId, null, null, null, 500, 'request not claimable', 'unclaimable')
-    return
-  }
+  // The raw bytes are in hand: the claimed copy is removed AT ONCE, before parse/forward, so nothing
+  // rests in the claimed directory while the request is in flight (every removal step of the deny and
+  // success paths below is a no-op). The requests/ name is never touched again: the claim already
+  // consumed it, and it may already hold a NEWER request.
+  removeClaimed()
   const request = parseRequest(raw)
   if (!request) {
     let method = null
@@ -627,8 +694,8 @@ async function handleRequestFile(fileName) {
     outcome.body = items
   }
   writeResponse(request.id, outcome)
-  // ALWAYS delete the request file after handling, success or error alike.
-  removeRequest()
+  // Nothing left to remove: the claimed copy went away right after the raw read, and the requests/
+  // name was consumed by the claim rename itself.
   const ms = Date.now() - started
   logLine(request.id, request.method, request.path, outcome.status, ms)
   auditLine({ id: request.id, method: request.method, route: route.key, path: pathname, reason: null, status: outcome.status, ms })
