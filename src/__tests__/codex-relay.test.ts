@@ -47,6 +47,7 @@ describe('renderCodexConfig relay profile', () => {
       'approval_policy = "on-request"',
       'default_permissions = "marveen-relay"',
       'web_search = "disabled"',
+      'check_for_update_on_startup = false',
       '',
       '[sandbox_workspace_write]',
       'network_access = false',
@@ -105,11 +106,12 @@ describe('renderCodexOverrides relay profile', () => {
     // existing validator in full-access mode; under relay it is replaced first,
     // so the rendering succeeds and no credential reaches argv.
     const overrides = renderCodexOverrides(WORKSPACE, { 'marveen-dashboard': dashboardServerSeat }, { profile: 'relay', codexHome: CODEX_HOME, agentName: 'relay-agent' })
-    expect(overrides.slice(0, 10)).toEqual([
+    expect(overrides.slice(0, 11)).toEqual([
       'sandbox_mode="workspace-write"',
       'approval_policy="on-request"',
       'default_permissions="marveen-relay"',
       'web_search="disabled"',
+      'check_for_update_on_startup=false',
       'sandbox_workspace_write.network_access=false',
       'sandbox_workspace_write.exclude_slash_tmp=true',
       'sandbox_workspace_write.exclude_tmpdir_env_var=true',
@@ -135,6 +137,7 @@ describe('default rendering unchanged', () => {
     const servers = { 'marveen-dashboard': dashboardServerOverrides }
     const config = [
       'sandbox_mode = "danger-full-access"', 'approval_policy = "never"',
+      'check_for_update_on_startup = false',
       '', '[notice]', 'hide_full_access_warning = true', '',
       '[projects."/tmp/marveen-relay-ws"]', 'trust_level = "trusted"', '', '[mcp_servers]',
       '', '[mcp_servers."marveen-dashboard"]', 'command = "node"',
@@ -143,6 +146,7 @@ describe('default rendering unchanged', () => {
     ].join('\n')
     const overrides = [
       'sandbox_mode="danger-full-access"', 'approval_policy="never"',
+      'check_for_update_on_startup=false',
       'notice.hide_full_access_warning=true', 'projects./tmp/marveen-relay-ws.trust_level="trusted"',
       'mcp_servers.marveen-dashboard.command="node"',
       'mcp_servers.marveen-dashboard.args=["dist/dashboard-mcp.js"]',

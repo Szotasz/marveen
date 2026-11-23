@@ -57,6 +57,15 @@ const plain = { command: 'uvx' }
 const withoutPermissionsTable = (content: string) => content.replace(/\n\[permissions\.marveen-relay\.filesystem\][\s\S]*?(?=\n\[|$)/, '')
   .replace('web_search = "disabled"\n', '').replace('[features]\napps = false\n', '')
 
+describe('startup update configuration', () => {
+  it.each([RELAY, { profile: 'full-access' as const }])('U2B5E disables startup updates once before any table ($profile)', opts => {
+    const lines = renderCodexConfig(WS, {}, opts).split('\n')
+    const setting = 'check_for_update_on_startup = false'
+    expect(lines.filter(line => line === setting)).toHaveLength(1)
+    expect(lines.indexOf(setting)).toBeLessThan(lines.findIndex(line => line.startsWith('[')))
+  })
+})
+
 describe('relay default', () => {
   it('resolveCodexSandbox', () => {
     expect(resolveCodexSandbox(undefined, 'codex')).toBe('relay')
@@ -212,6 +221,13 @@ describe('existing config.toml under relay', () => {
         expect(() => check(escaped)).toThrow(/backslash/)
       })
 
+      it('U2B5E accepts a fresh relay fixture with startup updates disabled', () => {
+        expect(withDash.split('\n')).toContain('check_for_update_on_startup = false')
+        expect(without.split('\n')).toContain('check_for_update_on_startup = false')
+        expect(() => check(withDash)).not.toThrow()
+        expect(() => check(without)).not.toThrow()
+      })
+
       it('accepts the relay fixture for this identity', () => {
         expect(() => check(withDash)).not.toThrow()
         expect(() => check(without)).not.toThrow()
@@ -335,6 +351,7 @@ describe('B4 named relay permissions', () => {
       'approval_policy = "on-request"',
       'default_permissions = "marveen-relay"',
       'web_search = "disabled"',
+      'check_for_update_on_startup = false',
       '', '[sandbox_workspace_write]',
       'network_access = false',
       'exclude_slash_tmp = true',
@@ -358,6 +375,7 @@ describe('B4 named relay permissions', () => {
       'approval_policy="on-request"',
       'default_permissions="marveen-relay"',
       'web_search="disabled"',
+      'check_for_update_on_startup=false',
       'sandbox_workspace_write.network_access=false',
       'sandbox_workspace_write.exclude_slash_tmp=true',
       'sandbox_workspace_write.exclude_tmpdir_env_var=true',

@@ -61,10 +61,19 @@ const SERVERS = {
 }
 
 describe('renderCodexOverrides', () => {
+  it.each([
+    { profile: 'relay' as const, agentName: 'pilot', codexHome: '/opt/codex-home' },
+    { profile: 'full-access' as const },
+  ])('U2B5E disables startup updates exactly once in overrides ($profile)', opts => {
+    const overrides = renderCodexOverrides(WORKSPACE, {}, opts)
+    expect(overrides.filter(line => line === 'check_for_update_on_startup=false')).toHaveLength(1)
+  })
+
   it('renders one key=value per -c override, in the config.toml order', () => {
     expect(renderCodexOverrides(WORKSPACE, SERVERS)).toEqual([
       'sandbox_mode="danger-full-access"',
       'approval_policy="never"',
+      'check_for_update_on_startup=false',
       'notice.hide_full_access_warning=true',
       'projects./srv/marveen/agents/pilot.trust_level="trusted"',
       'mcp_servers.marveen.command="/usr/local/bin/marveen-mcp"',
@@ -465,6 +474,7 @@ describe("scaffoldCodexHome in 'overrides' mode", () => {
       expect(readFileSync(join(workspace, '.codex-overrides'), 'utf-8')).toBe([
         'sandbox_mode="danger-full-access"',
         'approval_policy="never"',
+        'check_for_update_on_startup=false',
         'notice.hide_full_access_warning=true',
         `projects.${workspace}.trust_level="trusted"`,
         'mcp_servers.m.command="bin"',
@@ -497,6 +507,7 @@ describe("scaffoldCodexHome in 'overrides' mode", () => {
       expect(readFileSync(join(workspace, '.codex-overrides'), 'utf-8')).toBe([
         'sandbox_mode="danger-full-access"',
         'approval_policy="never"',
+        'check_for_update_on_startup=false',
         'notice.hide_full_access_warning=true',
         `projects.${workspace}.trust_level="trusted"`,
       ].join('\n') + '\n')

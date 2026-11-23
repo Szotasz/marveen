@@ -125,11 +125,13 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
   it('T3 preserves the full-access output without a home', () => {
     const config = [
       'sandbox_mode = "danger-full-access"', 'approval_policy = "never"',
+      'check_for_update_on_startup = false',
       '', '[notice]', 'hide_full_access_warning = true', '',
       `[projects.${JSON.stringify(ws)}]`, 'trust_level = "trusted"', '', '[mcp_servers]', '',
     ].join('\n')
     const overrides = [
       'sandbox_mode="danger-full-access"', 'approval_policy="never"',
+      'check_for_update_on_startup=false',
       'notice.hide_full_access_warning=true', `projects.${ws}.trust_level="trusted"`,
     ]
     for (const renderOpts of [undefined, { profile: 'full-access' as const }]) {
