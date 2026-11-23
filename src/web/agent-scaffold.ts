@@ -4495,6 +4495,12 @@ export function ensureFleetRosterSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+/** PR-I4 (plan 8.4, v1.2.4): the marked fleet-roster block for `name`, as ensureFleetRosterSection writes it; the
+ *  package repair writes it WITH the shell in one exclusive write. */
+export function fleetRosterBlock(name: string): string {
+  return `${FLEET_ROSTER_BEGIN}\n${buildFleetRosterBody(name)}\n${FLEET_ROSTER_END}`
+}
+
 // MIOAGENTINSTALL1114 (plan 4.3, N12): the fleet base rules block of a package agent's CLAUDE.md. A package cannot
 // carry the unknown-sender rule and the eight fleet rules (they name this install's main agent, owner and token
 // path), so the installer writes them rendered for the agent between these markers, right after the shell prefix,

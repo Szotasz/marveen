@@ -5969,6 +5969,17 @@ const AGENT_PKG_ERR_KEYS = {
   name_taken: 'name_taken', stale_install: 'stale_install', already_installed: 'already_installed',
   unsupported_layout: 'unsupported_layout', own_version_unknown: 'own_version_unknown', install_failed: 'install_failed',
   invalid_display_name: 'invalid_display_name',
+  // PR-I4: the update's check and apply (plan 6.2, 6.3).
+  agent_not_found: 'agent_not_found',
+  not_a_package: 'not_a_package',
+  manifest_unreadable: 'manifest_unreadable',
+  version_conflict: 'version_conflict',
+  downgrade_refused: 'downgrade_refused',
+  plan_changed: 'plan_changed',
+  decision_required: 'decision_required',
+  path_blocked: 'path_blocked',
+  update_in_progress: 'update_in_progress',
+  update_failed: 'update_failed',
 }
 function agentPkgErrorText(d) {
   const owner = ownerSessionText(d)

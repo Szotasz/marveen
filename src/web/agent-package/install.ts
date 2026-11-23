@@ -114,9 +114,9 @@ export function readPackageManifest(dir: string): ManifestRead {
  * The record's bytes. The payload is the signed payload exactly as signed: this is the ONE caller of
  * unverifiedPayloadBytes (plan 4.1, mutant 55); nothing shown or written into a file the CLI reads comes from it.
  */
-export function manifestRecordText(pkg: VerifiedPackage, at: string): string {
+export function manifestRecordText(pkg: VerifiedPackage, at: string, installedAt: string = at): string {
   const payload = Buffer.from(pkg.unverifiedPayloadBytes()).toString('utf8')
-  const head = JSON.stringify({ schema: 1, payloadSha256: pkg.payloadSha256, kid: pkg.kid, installedAt: at, updatedAt: at })
+  const head = JSON.stringify({ schema: 1, payloadSha256: pkg.payloadSha256, kid: pkg.kid, installedAt, updatedAt: at })
   return head.slice(0, -1) + ',"payload":' + payload + '}\n'
 }
 
@@ -381,7 +381,7 @@ export function packageDiskFiles(pkg: VerifiedPackage): Array<{ path: string; by
  * standing on the path stops the write. This narrows the window, it does not close it: a swap between the lstat and
  * the write is still possible (Node has no openat/O_NOFOLLOW-per-component here).
  */
-function mkdirInsideAgentDir(dir: string, folder: string): void {
+export function mkdirInsideAgentDir(dir: string, folder: string): void {
   const rel = relative(dir, folder)
   if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('package folder resolves outside the agent directory')
   let cur = dir
