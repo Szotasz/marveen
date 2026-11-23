@@ -186,6 +186,13 @@ export const DISABLEABLE_TOOLS = ['Artifact', 'Workflow', 'SendFeedback', 'Repor
 export function disallowedToolList(v: string): string[] {
   return [...new Set(v.split(/[\s,]+/).filter((t) => (DISABLEABLE_TOOLS as readonly string[]).includes(t)))]
 }
+/** SKILL_LISTING_BUDGET_FRACTION as a number in (0, 1], or null when it is empty or not one. */
+export function skillListingBudgetFraction(v: string): number | null {
+  const t = v.trim()
+  if (!/^\d*\.?\d+$/.test(t)) return null
+  const n = Number(t)
+  return n > 0 && n <= 1 ? n : null
+}
 function validAgentNameList(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -1126,6 +1133,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
         ? null
         : 'Ügynöknevek vesszővel elválasztva (pl. pm,reviewer), vagy * minden al-ügynökre.',
     description: 'Al-ügynökök, akik NEM töltik be a telepítés gyökerében álló CLAUDE.md-t (a fő ágens személyiségét és a közös szabályokat), csak a sajátjukat: így egy hívás kb. 50 KB-tal kisebb. Vesszővel elválasztott ügynöknevek, vagy * minden al-ügynökre, a később létrehozottakra is. A fő ágensre nem hat. FIGYELEM: a kizárt ügynök a gyökér közös szabályait sem kapja meg, ezért előbb a saját CLAUDE.md-jébe kell kerülniük. Ügynököt felvenni csak bejelentkezett gazda-session tud (a közös tokennel és eszközkulccsal nem), levenni bárki. A .env ROOT_CLAUDEMD_EXCLUDE_AGENTS sora (a korábbi út) ettől függetlenül érvényes marad, a kettő összeadódik. A módosítás az ügynök következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'SKILL_LISTING_BUDGET_FRACTION',
+    type: 'string',
+    default: '',
+    validate: (v) =>
+      v.trim() === '' || skillListingBudgetFraction(v) !== null
+        ? null
+        : 'Tört 0 és 1 között, ponttal írva (pl. 0.005), vagy üresen a Claude Code saját értéke (0.01) él.',
+    description: 'Mekkora részét kaphatja a kontextusablaknak (karakterben) a skill-lista, amit a Claude Code minden al-ügynök munkamenetének elküld. Üresen a Claude Code saját értéke él (0.01, vagyis 1%). Kisebb érték kevesebb tokent jelent hívásonként: ha a lista nem fér bele, a legritkábban használt skillek LEÍRÁSA marad ki (a nevük megmarad és hívhatók), a többié teljes marad. Az al-ügynökök settings.json-jába kerül (skillListingBudgetFraction), a fő ágensébe nem; az érték törlésekor a következő indításnál kikerül onnan. A módosítás az ügynök következő indításakor lép életbe.',
     module: 'system',
     secret: false,
     requiresRestart: true,
