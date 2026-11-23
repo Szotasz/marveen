@@ -3650,8 +3650,26 @@ def _bound_is_plain(bound: str, expected=None) -> bool:
 #   - P is named exactly twice in the command: the write and one run. Another write, a cp, mv or sed -i on it, or a
 #     second run would change what runs, so they keep today's verdict.
 # Every other case reads the disk as before (and a missing file stays fail-closed).
+#
+# MAILGATEWRITTENAND1123: one conditional write is provable too: `mkdir -p D && cat > P <<'EOF' ... EOF`, the way an
+# agent prepares a scratch file, with P run by the very next command. If the chain fails, P is not written and did not
+# exist (see above), so the run finds no file and nothing is sent; if it holds, the body is what runs. So only when:
+#   - the chain opens the command and is nothing but `mkdir [-p] WORD` / `cd WORD` joined by `&&`, each WORD plain
+#     characters (no substitution, glob, brace, redirect, variable): none of it can create a file;
+#   - the first command after the body is `python3|python|node P`, with P spelled as in the write: nothing can put a
+#     file at P between the skipped write and the run.
+_WRITTEN_AND_CHAIN = re.compile(r"(?:(?:mkdir(?:[ \t]+-p)?|cd)[ \t]+[A-Za-z0-9_./-]+[ \t]*&&[ \t]*)+")
+
+
+def _written_and_chain_ok(pre: str, line_start: int, rest: str, path: str) -> bool:
+    """MAILGATEWRITTENAND1123: `rest` is what follows the heredoc's closing tag."""
+    if line_start != 0 or not _WRITTEN_AND_CHAIN.fullmatch(pre):
+        return False
+    return bool(re.match(r"[ \t]*\n[ \t]*(?:python3?|node)[ \t]+" + re.escape(path) + r"(?=[ \t\n;&|]|$)", rest))
+
+
 _WRITTEN_OPENER = re.compile(
-    r"""^(?P<pre>[^\n'"`\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?P<p1>[^\s'"<>;&|$`]+)[ \t]+<<-?[ \t]*(?P<q1>'?)(?P<t1>\w+)(?P=q1)"""
+    r"""^(?P<pre>[^\n'"`\\]*(?:;|&&)[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?P<p1>[^\s'"<>;&|$`]+)[ \t]+<<-?[ \t]*(?P<q1>'?)(?P<t1>\w+)(?P=q1)"""
     r"""|cat[ \t]+<<-?[ \t]*(?P<q2>'?)(?P<t2>\w+)(?P=q2)[ \t]+>[ \t]*(?P<p2>[^\s'"<>;&|$`]+)"""
     r"""|tee[ \t]+(?P<p3>[^\s'"<>;&|$`-][^\s'"<>;&|$`]*)(?:[ \t]+>[ \t]*/dev/null)?[ \t]+<<-?[ \t]*(?P<q3>'?)(?P<t3>\w+)(?P=q3)"""
     r""")[ \t]*$""")
@@ -3699,6 +3717,10 @@ def _written_scripts(cmd: str, cwd):
             continue
         # the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
         if re.search(r"(?:&&|\|\||\||\\)\s*$", cmd[:line_start]):
+            continue
+        # MAILGATEWRITTENAND1123: a write after `&&` counts only in the one shape that is provable
+        if (w.group("pre") or "").rstrip().endswith("&&") and not _written_and_chain_ok(
+                w.group("pre"), line_start, cmd[m.end():], path):
             continue
         # nothing before the write can have left P there unnamed (so the write does not fail on it)
         if not _written_safe_before(_outside_bodies(cmd, 0, line_start) + (w.group("pre") or "")):
