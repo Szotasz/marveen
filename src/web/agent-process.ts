@@ -2506,6 +2506,12 @@ export function agentHasChannel(name: string): boolean {
   return false
 }
 
+// The mcp-list-channel warning's reader (ensureMcpListChannelSection): the primary channel, or a configured co-listen
+// one (AGENTEXTRACH1006). An extra counts by configuration alone, so a doubtful case keeps the warning.
+export function agentMayCarryChannel(name: string): boolean {
+  return agentHasChannel(name) || readAgentExtraChannels(name).length > 0
+}
+
 // Remote agent launch (ssh). Starts a DETACHED tmux session on the laptop so
 // the claude process is a child of the laptop's tmux server -- NOT of sshd --
 // and therefore survives any ssh disconnect; an outage only pauses the orchestrator's
@@ -2669,7 +2675,7 @@ export function rewriteAgentClaudeMdOnStart(name: string, profile: ProfileTempla
   ensureMemoryFactChangeSection(name)
   ensureFleetAuthSection(name)
   ensureEvidenceSection(name)
-  ensureMcpListChannelSection(name)
+  ensureMcpListChannelSection(name, agentMayCarryChannel)
   ensureMessageCloseSection(name)
   // #2232: a strict (dontAsk) agent's recipes for the creation-time text, through the helper.
   ensureStrictApiSection(name)

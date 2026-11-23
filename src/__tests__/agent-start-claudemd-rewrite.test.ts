@@ -65,7 +65,8 @@ const blocks = (text: string) => [...text.matchAll(/^<!-- BEGIN GENERATED: ([a-z
 
 // Literal on purpose: the blocks a permissive agent with no opt-in gets, in the order the calls append them.
 // The writers that leave no block here: the token sync and the root replacer (they rewrite in place), the
-// skill-section refresher (only an existing section), THIN CHIEF (opt-in) and the strict recipes (strict only).
+// skill-section refresher (only an existing section), THIN CHIEF (opt-in), the strict recipes (strict only) and the
+// mcp-list warning (only an agent with a channel token: CHANNEL_BLOCKS below).
 const BLOCKS = [
   'fleet-roster',
   'autonomy-wiring',
@@ -76,12 +77,14 @@ const BLOCKS = [
   'memory-fact-change',
   'fleet-auth',
   'evidence-rule',
-  'mcp-list-channel',
   'message-close',
   'api-helper',
   'background-checkpoint',
   'pane-at-escape',
 ]
+
+const CHANNEL_BLOCKS = [...BLOCKS.slice(0, BLOCKS.indexOf('message-close')), 'mcp-list-channel', ...BLOCKS.slice(BLOCKS.indexOf('message-close'))]
+const tgEnv = (agent: string) => join(tmpRoot, 'agents', agent, '.claude', 'channels', 'telegram', '.env')
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }))
 
@@ -112,6 +115,31 @@ describe('rewriteAgentClaudeMdOnStart on an agent directory', () => {
     const at = BLOCKS.indexOf('memory-search-label')
     expect(blocks(withOptIn)).toEqual([...BLOCKS.slice(0, at), 'thin-chief-handoff', ...BLOCKS.slice(at)])
     expect(blocks(first)).not.toContain('thin-chief-handoff')
+  })
+})
+
+// The mcp-list-channel warning is for a session whose channel state dir holds a bot token
+// (docs/mcp-list-channel-plugin.md: a channel-less session has nothing to break).
+describe('rewriteAgentClaudeMdOnStart and the mcp-list warning', () => {
+  it('an agent with a Telegram token gets the block in its place; twice is once', () => {
+    setup('agent-t')
+    mkdirSync(join(tmpRoot, 'agents', 'agent-t', '.claude', 'channels', 'telegram'), { recursive: true })
+    writeFileSync(tgEnv('agent-t'), 'TELEGRAM_BOT_TOKEN=123:test\n', 'utf-8')
+    rewriteAgentClaudeMdOnStart('agent-t', PROFILE)
+    const once = read('agent-t')
+    expect(blocks(once)).toEqual(CHANNEL_BLOCKS)
+    rewriteAgentClaudeMdOnStart('agent-t', PROFILE)
+    expect(read('agent-t')).toBe(once)
+  })
+
+  it('when the token goes, the block goes, and the rest of the file is what a channel-less start writes', () => {
+    rmSync(tgEnv('agent-t'))
+    rewriteAgentClaudeMdOnStart('agent-t', PROFILE)
+    const after = read('agent-t')
+    expect(blocks(after)).toEqual(BLOCKS)
+    setup('agent-u')
+    rewriteAgentClaudeMdOnStart('agent-u', PROFILE)
+    expect(after).toBe(read('agent-u').replaceAll('agent-u', 'agent-t'))
   })
 })
 

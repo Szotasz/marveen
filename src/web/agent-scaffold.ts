@@ -4111,7 +4111,10 @@ export function ensureEvidenceSection(name: string): void {
 // automatically on respawn without manual migration.
 //
 // Idempotency contract mirrors ensureFleetRosterSection (five rules apply).
-export function ensureMcpListChannelSection(name: string): void {
+// `hasChannel`: the warning is for a session whose channel state dir holds a bot token (docs/mcp-list-channel-plugin.md:
+// "csatorna nélküli sessionben nincs mit elrontania"); an agent without one gets no block, and a stale one is removed.
+// A predicate, not a value: agent-process.ts owns the channel probe and this module must not import it (a cycle).
+export function ensureMcpListChannelSection(name: string, hasChannel: (name: string) => boolean = () => true): void {
   // The main agent's CLAUDE.md lives at PROJECT_ROOT, not inside agents/<name>/.
   const claudeMdPath = name === MAIN_AGENT_ID
     ? join(PROJECT_ROOT, 'CLAUDE.md')
@@ -4128,7 +4131,11 @@ export function ensureMcpListChannelSection(name: string): void {
   }
 
   let updated: string
-  if (MCPLIST_BLOCK_RE.test(existing)) {
+  if (!hasChannel(name)) {
+    if (!MCPLIST_BLOCK_RE.test(existing)) return
+    updated = existing.replace(new RegExp(`\\n*${MCPLIST_BLOCK_RE.source}`), '')
+    if (!updated.endsWith('\n')) updated += '\n'
+  } else if (MCPLIST_BLOCK_RE.test(existing)) {
     updated = existing.replace(MCPLIST_BLOCK_RE, () => block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
