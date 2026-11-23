@@ -11,7 +11,9 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'review-action-root-'))
 
 // The agents the tests call as have a profile that turns the second reviewer on; 'plain-agent' has none.
 mkdirSync(join(tmpRoot, 'templates', 'profiles'), { recursive: true })
-writeFileSync(join(tmpRoot, 'templates', 'profiles', 'reviewed.json'), JSON.stringify({ id: 'reviewed', secondReviewer: true }))
+// A real profile carries filesystem allow/deny lists: the settings writer needs them to start the agent at all, and
+// resolveProfileTemplate treats a file without them as unreadable (AGENTISO1123).
+writeFileSync(join(tmpRoot, 'templates', 'profiles', 'reviewed.json'), JSON.stringify({ id: 'reviewed', secondReviewer: true, filesystem: { allow: [], deny: [] } }))
 for (const name of ['probe-agent', 'auth-agent', 'host-main']) {
   mkdirSync(join(tmpRoot, 'agents', name), { recursive: true })
   writeFileSync(join(tmpRoot, 'agents', name, 'agent-config.json'), JSON.stringify({ securityProfile: 'reviewed' }))
