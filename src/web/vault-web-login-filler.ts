@@ -30,12 +30,12 @@ export interface FillResult {
 }
 
 /**
- * Whether DEBUG turns on any of Playwright's debug namespaces (pw:api, pw:protocol, pw:channel, ...), read the way the
- * debug package reads it: pieces split on commas and white space, a leading '-' is an exclusion (ignored here, so the
- * answer errs on the side of refusing), '*' matches anything. On when a piece is '*' or starts with 'pw' (Dani #3071 B2).
+ * Whether the dashboard runs with DEBUG set at all. Playwright's debug log (DEBUG=pw:*, *, pw*, ...) writes the typed
+ * text to stderr, and the debug package's pattern language is not imitated here: any non-empty DEBUG refuses the run
+ * (Samu 83645, Dani #3071 B2). A live dashboard has no reason to run with DEBUG.
  */
 export function playwrightDebugOn(debug: string | undefined): boolean {
-  return (debug ?? '').split(/[\s,]+/).some((piece) => piece !== '' && !piece.startsWith('-') && (piece.startsWith('*') || piece.startsWith('pw')))
+  return (debug ?? '').trim() !== ''
 }
 
 /**
@@ -144,7 +144,7 @@ export async function fillWebLogin(req: FillRequest, connect?: (endpoint: string
   const passSelector = req.passSelector || PASSWORD_SELECTOR
   const userSelector = req.userSelector || USERNAME_SELECTOR
 
-  // Playwright's own debug log would write the typed text to the dashboard's stderr.
+  // Any DEBUG at all: Playwright's own debug log would write the typed text to the dashboard's stderr.
   if (playwrightDebugOn(process.env.DEBUG)) return { outcome: 'browser-unavailable' }
 
   let browser: Browser

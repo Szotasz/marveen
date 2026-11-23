@@ -279,7 +279,7 @@ describe.skipIf(!CHROME)('vault web login filler against a real Chrome', () => {
 })
 
 describe('the filler refuses to run under Playwright\'s debug log', () => {
-  it.each(['pw:api', 'pw:protocol', 'x,pw:*', '*', 'pw*', 'pw:*', 'app:*, pw:channel', '*,-pw:*'])('DEBUG=%s: browser-unavailable, no connection attempted', async (dbg) => {
+  it.each(['*', 'pw*', 'pw:api', 'pw:protocol', 'x,pw:*', 'pw:*', 'app:*, pw:channel', '*,-pw:*', 'express:*'])('DEBUG=%s: browser-unavailable, no connection attempted', async (dbg) => {
     const saved = process.env.DEBUG
     process.env.DEBUG = dbg
     let connected = 0
@@ -298,8 +298,9 @@ describe('the filler refuses to run under Playwright\'s debug log', () => {
 })
 
 describe('the debug and submit-request rules (pure)', () => {
-  it('debug off for other namespaces, an exclusion alone, or nothing', () => {
-    for (const d of [undefined, '', 'express:*', 'app:db,app:http', '-pw:*', 'xpw:api']) expect(playwrightDebugOn(d), String(d)).toBe(false)
+  it('only an unset or empty DEBUG lets the filler run', () => {
+    for (const d of [undefined, '', '  ']) expect(playwrightDebugOn(d), String(d)).toBe(false)
+    for (const d of ['*', 'pw*', '-pw:*', 'express:*']) expect(playwrightDebugOn(d), d).toBe(true)
   })
   it('a submit request is a page load or a non-GET XHR/fetch; never an image, a favicon or a beacon', () => {
     expect(isSubmitRequest('document', 'GET')).toBe(true)
