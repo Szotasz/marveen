@@ -10,7 +10,7 @@ exits 2 at parse time and Linux CI (bash >= 4) is structurally blind to it
 (measured on the PR #1080 verify). With the body in its own file the
 hazard class is gone and comments may use normal punctuation.
 """
-import json, os, sys, time
+import glob, json, os, sys, time
 
 # The ONE place the staleness window is decided for the measured quota path.
 # limit-monitor.sh used to carry its own copy of the default; it no longer does,
@@ -63,18 +63,6 @@ def resolve_max_age(raw):
     return value, None
 
 
-path = os.environ["QUOTA_FILE"]
-warn = float(os.environ["QUOTA_WARN_PCT"])
-max_age, max_age_note = resolve_max_age(os.environ.get("QUOTA_MAX_AGE_SEC"))
-if max_age_note:
-    # stderr, not stdout: stdout carries the single STALE / EXPIRED / HIT line
-    # the monitor parses, and a second line there would break its `case`.
-    print(max_age_note, file=sys.stderr)
-try:
-    d = json.load(open(path))
-except Exception:
-    raise SystemExit(0)
-
 
 
 def reading_age(d, now):
@@ -100,60 +88,129 @@ def reading_age(d, now):
     return int(now) - int(ts), None
 
 
-age, no_stamp = reading_age(d, time.time())
-if no_stamp:
-    # Still a STALE line, so the measured path is skipped exactly as before, but
-    # the second field is a word, never a number: it cannot be read as an age.
-    print("STALE\tnostamp\t%s" % no_stamp)
-    raise SystemExit(0)
-if age > max_age:
-    print("STALE\t%d" % age)
-    raise SystemExit(0)
+def evaluate(d, warn, max_age):
+    """The one STALE / EXPIRED / HIT line for one reading, or None (nothing to say)."""
+    out = None
+    age, no_stamp = reading_age(d, time.time())
+    if no_stamp:
+        # Still a STALE line, so the measured path is skipped exactly as before, but
+        # the second field is a word, never a number: it cannot be read as an age.
+        out = ("STALE\tnostamp\t%s" % no_stamp)
+        return out
+    if age > max_age:
+        out = ("STALE\t%d" % age)
+        return out
 
-# Alert on crossed LEVELS, not on the raw percentage: keying the dedupe on the
-# exact number would send a fresh alert for every single point from 90 to 100.
-# Two levels are enough -- the heads-up, and the moment it is actually gone.
-levels = sorted({100.0, warn}, reverse=True)
+    # Alert on crossed LEVELS, not on the raw percentage: keying the dedupe on the
+    # exact number would send a fresh alert for every single point from 90 to 100.
+    # Two levels are enough -- the heads-up, and the moment it is actually gone.
+    levels = sorted({100.0, warn}, reverse=True)
 
-labels = {"five_hour": "5 oras keret", "seven_day": "heti keret"}
-labels_short = {"five_hour": "five_hour", "seven_day": "seven_day"}
-hits = []
-expired = []
-for key in ("five_hour", "seven_day"):
-    w = (d.get("rate_limits") or {}).get(key) or {}
-    pct = w.get("used_percentage")
-    if not isinstance(pct, (int, float)) or pct < warn:
-        continue
-    resets = w.get("resets_at")
-    # A window whose reset time has already passed describes a window that no
-    # longer exists. The numbers only move when an API response brings new ones,
-    # so after a rollover the block sits there unchanged with resets_at in the
-    # past (measured at the 22:00 rollover on 2026-08-18: 25% / "resets 22:00"
-    # still standing at 22:00:29). Alerting on it would report a spent quota
-    # that has since been handed back. Nothing real is lost by skipping: while
-    # the quota was actually spent, resets_at was in the future and the alert
-    # already went out.
-    if isinstance(resets, (int, float)) and resets <= time.time():
-        expired.append(labels_short[key])
-        continue
-    level = next((L for L in levels if pct >= L), warn)
-    when = ""
-    if isinstance(resets, (int, float)):
-        when = time.strftime("%m-%d %H:%M", time.localtime(resets))
-    hits.append((key, round(float(pct)), when, int(resets or 0), int(level)))
+    labels = {"five_hour": "5 oras keret", "seven_day": "heti keret"}
+    labels_short = {"five_hour": "five_hour", "seven_day": "seven_day"}
+    hits = []
+    expired = []
+    for key in ("five_hour", "seven_day"):
+        w = (d.get("rate_limits") or {}).get(key) or {}
+        pct = w.get("used_percentage")
+        if not isinstance(pct, (int, float)) or pct < warn:
+            continue
+        resets = w.get("resets_at")
+        # A window whose reset time has already passed describes a window that no
+        # longer exists. The numbers only move when an API response brings new ones,
+        # so after a rollover the block sits there unchanged with resets_at in the
+        # past (measured at the 22:00 rollover on 2026-08-18: 25% / "resets 22:00"
+        # still standing at 22:00:29). Alerting on it would report a spent quota
+        # that has since been handed back. Nothing real is lost by skipping: while
+        # the quota was actually spent, resets_at was in the future and the alert
+        # already went out.
+        if isinstance(resets, (int, float)) and resets <= time.time():
+            expired.append(labels_short[key])
+            continue
+        level = next((L for L in levels if pct >= L), warn)
+        when = ""
+        if isinstance(resets, (int, float)):
+            when = time.strftime("%m-%d %H:%M", time.localtime(resets))
+        hits.append((key, round(float(pct)), when, int(resets or 0), int(level)))
 
-if not hits:
+    if not hits:
+        if expired:
+            out = ("EXPIRED\t%s" % ",".join(expired))
+        return out
+
+    # Dedupe key: window + crossed level + the reset timestamp of that window. One
+    # alert per level per window; the next window (new resets_at) starts clean.
+    key = "|".join("%s:%s:%s" % (k, lv, rs) for k, _p, _w, rs, lv in hits)
+    lines = []
+    for k, p, w, _rs, _lv in hits:
+        line = "%s: %d%% elhasznalva" % (labels[k], p)
+        if w:
+            line += " (nullazodik: %s)" % w
+        lines.append(line)
+    return "HIT\t%s\t%s" % (key, " / ".join(lines))
+
+
+def main():
+    warn = float(os.environ["QUOTA_WARN_PCT"])
+    max_age, max_age_note = resolve_max_age(os.environ.get("QUOTA_MAX_AGE_SEC"))
+    if max_age_note:
+        # stderr, not stdout: stdout carries the single STALE / EXPIRED / HIT line
+        # the monitor parses, and a second line there would break its `case`.
+        print(max_age_note, file=sys.stderr)
+    qdir = os.environ.get("QUOTA_DIR", "")
+    if qdir and glob.glob(os.path.join(qdir, "wk-*.json")):
+        line = evaluate_accounts(qdir, warn, max_age)
+    else:
+        try:
+            d = json.load(open(os.environ["QUOTA_FILE"]))
+        except Exception:
+            return
+        line = evaluate(d, warn, max_age)
+    if line:
+        print(line)
+
+
+def evaluate_accounts(qdir, warn, max_age):
+    """USAGEPERACCOUNT1123: one reading per subscription account
+    (store/claude-rate-limits/, see claude_accounts.py), checked one by one and
+    folded into the single line the monitor parses. The HIT key and text carry the
+    account, so an alert says WHICH plan is running out, and a second account
+    crossing the level is a new alert, not a duplicate of the first.
+    Precedence: any HIT > any EXPIRED > all STALE (the freshest age) > nothing."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import claude_accounts
+    root = os.path.dirname(os.path.dirname(qdir))
+    lab = claude_accounts.Labeler(root)
+    hits, expired, stale = [], [], []
+    for path in sorted(glob.glob(os.path.join(qdir, "wk-*.json"))):
+        try:
+            d = json.load(open(path))
+        except Exception:
+            continue
+        fp = claude_accounts.fingerprint((d.get("rate_limits") if isinstance(d, dict) else None) or {})
+        plan, acct, _src, _c = lab.label(fp, d.get("cwd") if isinstance(d, dict) else None)
+        name = lab.plans.get(plan, acct)
+        line = evaluate(d, warn, max_age)
+        if not line:
+            continue
+        f = line.split("\t")
+        if f[0] == "HIT":
+            hits.append(("%s=%s" % (acct, f[1]), "%s: %s" % (name, f[2])))
+        elif f[0] == "EXPIRED":
+            expired.append("%s:%s" % (acct, f[1]))
+        elif f[0] == "STALE":
+            stale.append(f)
+    if hits:
+        return "HIT\t%s\t%s" % (";".join(k for k, _t in hits), " / ".join(t for _k, t in hits))
     if expired:
-        print("EXPIRED\t%s" % ",".join(expired))
-    raise SystemExit(0)
+        return "EXPIRED\t%s" % ",".join(expired)
+    if stale:
+        ages = [x for x in stale if x[1] != "nostamp"]
+        if ages:
+            return "STALE\t%s" % min(ages, key=lambda x: int(x[1]))[1]
+        return "\t".join(stale[0])
+    return None
 
-# Dedupe key: window + crossed level + the reset timestamp of that window. One
-# alert per level per window; the next window (new resets_at) starts clean.
-key = "|".join("%s:%s:%s" % (k, lv, rs) for k, _p, _w, rs, lv in hits)
-lines = []
-for k, p, w, _rs, _lv in hits:
-    line = "%s: %d%% elhasznalva" % (labels[k], p)
-    if w:
-        line += " (nullazodik: %s)" % w
-    lines.append(line)
-print("HIT\t%s\t%s" % (key, " / ".join(lines)))
+
+if __name__ == "__main__":
+    main()

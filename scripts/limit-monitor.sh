@@ -96,6 +96,11 @@ send_alert() {
 # timestamps beat guessing at banner wording, so this runs first and the text
 # scan below stays only as a fallback for installs without the status line.
 QUOTA_FILE="$STORE/.claude-rate-limits.json"
+# USAGEPERACCOUNT1123: one reading per subscription account, written next to the
+# shared file by the same status line. When it has readings, quota-check.py checks
+# every account and names the plan in the alert; the shared file (last writer wins,
+# any account) is then not used.
+QUOTA_DIR="$STORE/claude-rate-limits"
 QUOTA_WARN_PCT="${QUOTA_WARN_PCT:-90}"
 # Older than this and the numbers describe a window that may have reset since;
 # alerting on them would cry wolf, so they are logged and skipped instead.
@@ -104,7 +109,7 @@ QUOTA_WARN_PCT="${QUOTA_WARN_PCT:-90}"
 # number. An unset value reaches the checker empty and it applies its own
 # default; an out-of-range or non-numeric one is rejected THERE, out loud.
 
-if [ -s "$QUOTA_FILE" ] && command -v python3 >/dev/null 2>&1; then
+if { [ -s "$QUOTA_FILE" ] || [ -d "$QUOTA_DIR" ]; } && command -v python3 >/dev/null 2>&1; then
   QUOTA_CHECK="$INSTALL_DIR/scripts/lib/quota-check.py"
   if [ ! -f "$QUOTA_CHECK" ]; then
     # Fail-open on purpose (the text-scan fallback below still runs), but NEVER
@@ -120,7 +125,7 @@ if [ -s "$QUOTA_FILE" ] && command -v python3 >/dev/null 2>&1; then
     # empty, and the `case` below has no empty branch -- so the measured quota
     # path could drop out of a round without a single word in the log.
     QUOTA_ERR="$STORE/.quota-check.stderr"
-    QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="${QUOTA_MAX_AGE_SEC:-}" python3 "$QUOTA_CHECK" 2>"$QUOTA_ERR")"
+    QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_DIR="$QUOTA_DIR" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="${QUOTA_MAX_AGE_SEC:-}" python3 "$QUOTA_CHECK" 2>"$QUOTA_ERR")"
     if [ -s "$QUOTA_ERR" ]; then
       log "quota-check.py uzenete: $(tr '\n' ' ' < "$QUOTA_ERR")"
     fi

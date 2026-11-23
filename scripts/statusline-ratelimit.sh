@@ -27,7 +27,7 @@ OUT="$INSTALL_DIR/store/.claude-rate-limits.json"
 
 PAYLOAD="$(cat)"
 
-printf '%s' "$PAYLOAD" | RL_OUT="$OUT" python3 -c '
+printf '%s' "$PAYLOAD" | RL_OUT="$OUT" RL_LIB="$INSTALL_DIR/scripts/lib" python3 -c '
 import json, os, sys, time
 
 out = os.environ["RL_OUT"]
@@ -57,6 +57,16 @@ if rl:
         with open(tmp, "w") as f:
             json.dump(rec, f)
         os.replace(tmp, out)
+    except Exception:
+        pass
+    # USAGEPERACCOUNT1123: the file above is shared by every agent, whatever
+    # subscription it runs on, so the last writer wins. The same reading also
+    # goes to store/claude-rate-limits/<account fingerprint>.json, one file per
+    # account, which the collector and the monitor read (scripts/lib/claude_accounts.py).
+    try:
+        sys.path.insert(0, os.environ["RL_LIB"])
+        import claude_accounts
+        claude_accounts.write_reading(os.path.dirname(out), rec)
     except Exception:
         pass
 
