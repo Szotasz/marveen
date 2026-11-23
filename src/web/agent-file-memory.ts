@@ -6,7 +6,10 @@
 // `projects` is a link to the shared ~/.claude/projects, its "own" memory is the main agent's, and every agent on
 // the same link writes the same folder. So a folder only travels with ONE agent when no other agent, and not the
 // main agent, resolves to it; otherwise it is shared, and a per-agent copy would leak the others' memory.
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import {
+  closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync,
+  writeSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
@@ -111,7 +114,7 @@ export interface ImportedMemory { written: string[]; renamed: Array<{ from: stri
  * the exclusive flag, so a file created in between is not overwritten either.
  */
 export function writeImportedMemory(targetDir: string, files: ReadonlyArray<{ name: string; bytes: Buffer }>, source: string, now: Date,
-  io: { mkdir: (p: string) => void; writeExclusive: (p: string, b: Buffer) => boolean; append: (p: string, s: string) => void; exists: (p: string) => boolean }): ImportedMemory {
+  io: { mkdir: (p: string) => void; writeExclusive: (p: string, b: Buffer) => boolean; append: (p: string, s: string) => boolean; exists: (p: string) => boolean }): ImportedMemory {
   io.mkdir(targetDir)
   const out: ImportedMemory = { written: [], renamed: [], indexAppended: false }
   // #3086 M2: MEMORY.md LAST, so its links can follow the files that had to take another name.
@@ -123,12 +126,16 @@ export function writeImportedMemory(targetDir: string, files: ReadonlyArray<{ na
       // A link to a renamed file points at the import's copy, never at the target's own file of that name.
       let text = f.bytes.toString('utf8')
       for (const r of out.renamed) text = text.split(`(${r.from})`).join(`(${r.to})`)
-      if (io.exists(p)) {
-        io.append(p, `\n\n## Imported ${now.toISOString().slice(0, 10)} from ${source}\n\n${text.replace(/\n+$/, '')}\n`)
+      // Dani B1 (#3086): `append` refuses anything but a plain file (no link followed); then the index goes beside it.
+      if (io.exists(p) && io.append(p, `\n\n## Imported ${now.toISOString().slice(0, 10)} from ${source}\n\n${text.replace(/\n+$/, '')}\n`)) {
         out.indexAppended = true
         continue
       }
-      if (io.writeExclusive(p, Buffer.from(text, 'utf8'))) out.written.push(f.name)
+      if (io.writeExclusive(p, Buffer.from(text, 'utf8'))) { out.written.push(f.name); continue }
+      for (let n = 1; n < 1000; n++) {
+        const alt = `MEMORY.imported-${n}.md`
+        if (io.writeExclusive(join(targetDir, alt), Buffer.from(text, 'utf8'))) { out.renamed.push({ from: f.name, to: alt }); break }
+      }
       continue
     }
     if (io.writeExclusive(p, f.bytes)) { out.written.push(f.name); continue }
@@ -188,6 +195,21 @@ export const FS_IO = {
       throw err
     }
   },
-  append: (p: string, s: string) => { appendFileSync(p, s) },
+  /** Appends to a PLAIN file only: O_NOFOLLOW refuses a link at the path, fstat refuses anything but a file. */
+  append: (p: string, s: string): boolean => {
+    let fd: number
+    try {
+      fd = openSync(p, fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
+    } catch {
+      return false
+    }
+    try {
+      if (!fstatSync(fd).isFile()) return false
+      writeSync(fd, s)
+      return true
+    } finally {
+      closeSync(fd)
+    }
+  },
   exists: (p: string) => existsSync(p),
 }

@@ -348,7 +348,8 @@ export function importAgentBundle(
       if (target.shared) fileMemory = { state: 'skipped_shared_target', written: 0, renamed: 0, indexAppended: false }
       else if (!files.ok) fileMemory = { state: 'over_cap', written: 0, renamed: 0, indexAppended: false }
       else {
-        const w = writeImportedMemory(target.dir, files.files, manifest.agentName, (opts.now ?? (() => new Date()))(), FS_IO)
+        // Dani N1: the heading names the SANITIZED agent, never the archive's raw text.
+        const w = writeImportedMemory(target.dir, files.files, name, (opts.now ?? (() => new Date()))(), FS_IO)
         fileMemory = { state: 'imported', written: w.written.length, renamed: w.renamed.length, indexAppended: w.indexAppended }
       }
     }
