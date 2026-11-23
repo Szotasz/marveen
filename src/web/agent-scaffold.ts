@@ -2037,7 +2037,8 @@ export const SUBAGENT_VAULT_KEY_DENY = ['Read(//**/store/.vault-key)', 'Read(//*
 
 // AGENTISO1123 (PR-A, Dani S3): a STRICT agent may not rewrite the files that define its own limits. Same OS user, so
 // this is a rule layer, not an OS boundary: it stops the file tools, not a script that opens the file itself. Covered:
-// its own .claude/settings.json + settings.local.json, its isolated config dir, the hook scripts its settings run
+// its own .claude/settings.json + settings.local.json, the limit-defining entries of its isolated config dir (not
+// projects/, its file memory), the hook scripts its settings run
 // (scripts/ and scripts/hooks/ of this install, plus the shared ~/.claude/hooks its config dir links to), and the Bash
 // sandbox inputs bash-sandbox.ts writes or reads (store/bash-sandbox/*, the vendor-host and write-path lists).
 // Only `Edit(...)` rules: per code.claude.com/docs/en/permissions (read 2026-11-23) Edit rules apply to every built-in
@@ -2053,7 +2054,16 @@ export function strictSelfProtectDeny(
   return [
     join(agentRoot, '.claude', 'settings.json'),
     join(agentRoot, '.claude', 'settings.local.json'),
-    join(agentRoot, '.claude-config', '**'),
+    // The limit-defining entries of the isolated config dir, not the whole dir: projects/ (Claude Code's own file
+    // memory for this agent) stays writable.
+    join(agentRoot, '.claude-config', 'settings.json'),
+    join(agentRoot, '.claude-config', 'settings.local.json'),
+    join(agentRoot, '.claude-config', '.claude.json'),
+    join(agentRoot, '.claude-config', 'plugins', '**'),
+    join(agentRoot, '.claude-config', 'skills', '**'),
+    join(agentRoot, '.claude-config', 'hooks', '**'),
+    join(agentRoot, '.claude-config', 'agents', '**'),
+    join(agentRoot, '.claude-config', 'commands', '**'),
     join(projectRoot, 'scripts', '**'),
     join(home, '.claude', 'hooks', '**'),
     join(storeDir, 'bash-sandbox', '**'),

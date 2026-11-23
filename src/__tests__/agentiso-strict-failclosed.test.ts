@@ -167,7 +167,14 @@ describe('strict deny list covers the agent\'s own limit-defining files (S3)', (
   const expected = (root: string) => [
     `Edit(/${join(root, '.claude', 'settings.json')})`,
     `Edit(/${join(root, '.claude', 'settings.local.json')})`,
-    `Edit(/${join(root, '.claude-config')}/**)`,
+    `Edit(/${join(root, '.claude-config', 'settings.json')})`,
+    `Edit(/${join(root, '.claude-config', 'settings.local.json')})`,
+    `Edit(/${join(root, '.claude-config', '.claude.json')})`,
+    `Edit(/${join(root, '.claude-config', 'plugins')}/**)`,
+    `Edit(/${join(root, '.claude-config', 'skills')}/**)`,
+    `Edit(/${join(root, '.claude-config', 'hooks')}/**)`,
+    `Edit(/${join(root, '.claude-config', 'agents')}/**)`,
+    `Edit(/${join(root, '.claude-config', 'commands')}/**)`,
     `Edit(/${join(PROJECT_ROOT, 'scripts')}/**)`,
     `Edit(/${join(homedir(), '.claude', 'hooks')}/**)`,
     `Edit(/${join(STORE_DIR, 'bash-sandbox')}/**)`,
@@ -179,6 +186,15 @@ describe('strict deny list covers the agent\'s own limit-defining files (S3)', (
     const rules = strictSelfProtectDeny(agentRoot)
     expect(rules).toEqual(expected(agentRoot))
     for (const r of rules) expect(r.startsWith('Edit(//')).toBe(true)
+  })
+
+  it('the agent\'s file memory (.claude-config/projects) is NOT denied, nor the config dir as a whole', () => {
+    const cfg = join(agentRoot, '.claude-config')
+    for (const r of strictSelfProtectDeny(agentRoot)) {
+      expect(r.startsWith(`Edit(/${join(cfg, 'projects')}`)).toBe(false)
+      expect(r).not.toBe(`Edit(/${cfg}/**)`)
+      expect(r).not.toBe(`Edit(/${cfg})`)
+    }
   })
 
   it('a strict profile\'s written settings.json carries all of them', () => {
