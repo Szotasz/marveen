@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { gateDecision, GIT_GATE_MSG } from '../../scripts/hooks/db-write-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import * as spg from '../../scripts/self-pace-gate.mjs'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -273,5 +274,64 @@ describe('VARDEFDB1121: a definite literal variable is read as its value', () =>
       `W=${sp}/wt; [ -d $W ] && git -C $W fetch -q origin develop`]) {
       for (const v of both(c)) expect(v, c).toEqual(PASS)
     }
+  })
+})
+
+// B1 (review of GitHub #3063): a name either shell treats as SPECIAL is never read as its assigned literal. zsh 5.9 has 112
+// special parameters, and several accept the assignment, keep running and hold ANOTHER value: KEYBOARD_HACK keeps one
+// character, HISTCHARS/histchars three, USERNAME its old value. The denylist is not grown name by name: every special name
+// of zsh (the embedded list) and of bash (its documented dynamic and special variables) stays unresolved.
+describe('VARDEFDB1121 B1: special parameters of zsh and bash are not definite literals', () => {
+  // the reviewer's three rows: the gate must read `$NAME<install>` as unknown, not as <scratch>/x<install>
+  it('B1a KEYBOARD_HACK and USERNAME: the writes into the install are denied, sub-agent or not', () => {
+    const cases = [
+      `KEYBOARD_HACK=${sp}/x; cp /tmp/e.mjs $KEYBOARD_HACK${root}/scripts/hooks/e.mjs`,
+      `KEYBOARD_HACK=${sp}/x; git -C $KEYBOARD_HACK${root} reset --hard origin/develop`,
+      `USERNAME=${sp}/x; git -C $USERNAME reset --hard origin/develop`,
+    ]
+    for (const c of cases) for (const v of both(c)) expect(v, c).toMatchObject({ deny: true })
+  })
+
+  it('B1b the helper leaves each of the three commands unchanged', () => {
+    for (const n of ['KEYBOARD_HACK', 'HISTCHARS', 'histchars', 'USERNAME']) {
+      const c = `${n}=${sp}/x; git -C $${n} reset --hard`
+      expect(spg.substituteDefiniteCommand(c), c).toBe(c)
+    }
+  })
+
+  // every identifier-shaped name of the embedded zsh list, and the bash list, plus one name of each excluded prefix
+  // (`?? []`: before the change the exports do not exist, and the assertion below must be the red reason, not a TypeError)
+  const identifiers = (): string[] => [...(spg.ZSH_SPECIAL_NAMES ?? []), ...(spg.BASH_SPECIAL_NAMES ?? []), 'BASH_FOO', 'ZSH_FOO',
+    'COMP_FOO', 'READLINE_FOO', 'LC_FOO'].filter((n: string) => /^[A-Za-z_]\w*$/.test(n))
+
+  it('B1c no special name is replaced by the helper, and the use is denied at the gate (a git target)', () => {
+    const names = identifiers()
+    expect(names.length).toBeGreaterThan(150)
+    for (const n of names) {
+      const c = `${n}=${sp}/wt; git -C $${n} reset --hard`
+      expect(spg.substituteDefiniteCommand(c), n).toBe(c)
+      expect(bash(c, true), n).toMatchObject({ deny: true })
+    }
+  })
+
+  // positive control: the list is exact names, not prefixes of ordinary names
+  it('B1d a near-miss name that no shell treats as special is still replaced', () => {
+    for (const n of ['KEYBOARD_HACKS', 'USERNAMES', 'WORDCHARSX', 'PATHX', 'HOMEDIR', 'TERMINAL', 'WORKTREE']) {
+      const c = `${n}=${sp}/wt; git -C $${n} fetch -q origin develop`
+      const out = spg.substituteDefiniteCommand(c)
+      expect(out, n).not.toBe(c)
+      expect(out, n).toContain(`git -C ${sp}/wt`)
+    }
+  })
+
+  // The embedded zsh list is compared with the running zsh's own list (the reviewer's recipe). Where there is no zsh the
+  // test is SKIPPED; a newer zsh that adds a special parameter makes it red on a machine that has one.
+  const ZSH_RECIPE = 'for k in ${(ko)parameters}; do [[ ${parameters[$k]} == *special* ]] && print -r -- $k; done'
+  const hasZsh = (() => { const r = spawnSync('zsh', ['--version'], { encoding: 'utf8' }); return !r.error && r.status === 0 })()
+  it.skipIf(!hasZsh)('B1e the embedded zsh special-parameter list equals the running zsh list', () => {
+    const r = spawnSync('zsh', ['-f', '-c', ZSH_RECIPE], { encoding: 'utf8' })
+    expect(r.status, r.stderr).toBe(0)
+    const live = r.stdout.split('\n').filter(Boolean).sort()
+    expect([...(spg.ZSH_SPECIAL_NAMES ?? [])].sort()).toEqual(live)
   })
 })
