@@ -67,6 +67,8 @@ const VAULT_ID_RE = /^[A-Za-z0-9._-]{1,128}$/
 // The SSH key pool owns these entries (routes/vault-ssh-keys.ts); the generic
 // owner vault list hides them too.
 const SSH_KEY_PREFIX = 'ssh-key-'
+// VAULTLOGIN1112: web login passwords are managed by /api/vault/web-logins, never by an operator device.
+const WEB_LOGIN_SECRET_PREFIX = 'web-login-'
 
 /** What the server types into the pane for each allowed command. Fixed: the operator sends a name, never text. */
 export const OPERATOR_COMMAND_TEXT: Record<OperatorCommand, string> = {
@@ -396,7 +398,7 @@ export async function tryHandleOperator(ctx: RouteContext, webDir: string): Prom
     if (!requireCapability(ctx, access, 'vaultWrite')) return true
     json(res, {
       secrets: listSecrets()
-        .filter(s => !s.id.startsWith(SSH_KEY_PREFIX))
+        .filter(s => !s.id.startsWith(SSH_KEY_PREFIX) && !s.id.startsWith(WEB_LOGIN_SECRET_PREFIX))
         .map(s => ({ id: s.id, label: s.label, createdAt: s.createdAt, updatedAt: s.updatedAt })),
     })
     return true
@@ -406,7 +408,7 @@ export async function tryHandleOperator(ctx: RouteContext, webDir: string): Prom
     if (!requireCapability(ctx, access, 'vaultWrite')) return true
     let id = ''
     try { id = decodeURIComponent(vaultMatch[1]!) } catch { /* rejected below */ }
-    if (!VAULT_ID_RE.test(id) || id.startsWith(SSH_KEY_PREFIX)) {
+    if (!VAULT_ID_RE.test(id) || id.startsWith(SSH_KEY_PREFIX) || id.toLowerCase().startsWith(WEB_LOGIN_SECRET_PREFIX)) {
       json(res, { error: 'Invalid secret id' }, 400)
       return true
     }

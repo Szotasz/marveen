@@ -409,6 +409,9 @@ export const AGENT_TOKEN_ALLOWLIST: readonly AgentAllowEntry[] = [
   { methods: ['GET'], pattern: /^\/api\/vault\/([^/]+)$/, check: (m, c) => isAgentVaultReadAllowed(c.agent, m[1]!, c.vaultAcl()), why: 'secret read, ONLY ids store/vault-acl.json lists for the caller' },
   // The route judges every id itself (vaultReadRefused binds a sub-agent token to the ACL in any mode).
   { methods: ['POST'], pattern: /^\/api\/vault\/resolve$/, why: 'batch secret resolve (scripts/vault-resolve.mjs); per id, the ACL decides in the route' },
+  // VAULTLOGIN1112: the route checks the entry's allowed_agents against the token's agent; the answer is an outcome only.
+  { methods: ['GET'], pattern: /^\/api\/vault\/web-logins$/, why: 'web login list: origins, usernames, allowed agents; never a password' },
+  { methods: ['POST'], pattern: /^\/api\/vault\/web-logins\/[a-z0-9-]{1,64}\/login$/, why: 'vault web login in the agent\'s own browser (marveen-api.sh vault-login)' },
   { methods: ['GET', 'POST'], pattern: /^\/api\/agent-taskstate\/[^/]+(?:\/replay|\/consume)?$/, why: 'task-state save/replay (PreCompact prompt, taskstate-replay hook)' },
   { methods: ['POST'], pattern: /^\/api\/skill-usage$/, why: 'skill-usage-capture hook' },
   { methods: ['POST'], pattern: /^\/api\/tool-log$/, why: 'tool-log-capture hook' },

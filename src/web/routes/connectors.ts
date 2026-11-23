@@ -17,7 +17,7 @@ import { readBody, json } from '../http-helpers.js'
 import { mayActAsOwner, refuseOwner } from './auth.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret, updateSecretLabel, normalizeVaultLabel, VAULT_LABEL_MAX_LENGTH } from '../vault.js'
-import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
+import { logVaultRead, isSshPrivateKeyId, isWebLoginSecretId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -846,7 +846,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/vault' && method === 'GET') {
     // ssh-key-* entries are managed exclusively via the SSH key pool
     // (/api/vault/ssh-keys) and must not appear as generic secret cards too.
-    json(res, { secrets: listSecrets().filter(s => !s.id.startsWith('ssh-key-')) })
+    // web-login-* passwords are managed by /api/vault/web-logins (VAULTLOGIN1112), the same way.
+    json(res, { secrets: listSecrets().filter(s => !s.id.startsWith('ssh-key-') && !isWebLoginSecretId(s.id)) })
     return true
   }
 
@@ -854,6 +855,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
     if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
+    if (isWebLoginSecretId(id)) { json(res, { error: 'A web login password is managed by /api/vault/web-logins' }, 403); return true }
     if (agentApiKeyWriteRefused(id.trim())) {
       refuseOwner(res, 'Storing an agent API key needs the dashboard login (an owner session): it decides which Console account the agent runs on.')
       return true
@@ -887,12 +889,17 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const acl = readVaultAcl()
     const values: Record<string, string> = Object.create(null)
     const missing: string[] = []
-    const refused: Array<{ id: string; reason: 'ssh-key' | 'acl' }> = []
+    const refused: Array<{ id: string; reason: 'ssh-key' | 'web-login' | 'acl' }> = []
     for (const raw of ids as string[]) {
       const id = raw.trim()
       if (isSshPrivateKeyId(id)) {
         logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'resolve', refused: true })
         refused.push({ id, reason: 'ssh-key' })
+        continue
+      }
+      if (isWebLoginSecretId(id)) {
+        logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'resolve', refused: true })
+        refused.push({ id, reason: 'web-login' })
         continue
       }
       if (vaultReadRefused(id, ctx.auth, acl)) {
@@ -915,7 +922,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   // /api/vault/ssh-servers matches THIS generic secret-store route first
   // (id="ssh-servers"), finds no such secret, and returns 404 before
   // tryHandleVaultSsh ever runs (2026-07-01, frontend/backend Vault epic).
-  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys', 'resolve'].includes(vaultMatch[1])
+  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys', 'resolve', 'web-logins'].includes(vaultMatch[1])
   if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
     // VAULTSZELES826: SSH private keys are NEVER served by this generic value route.
@@ -929,6 +936,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     if (isSshPrivateKeyId(id)) {
       logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), readVaultAcl(), { channel: 'value', refused: true })
       json(res, { error: 'SSH private keys are not served by this route' }, 403)
+      return true
+    }
+    // VAULTLOGIN1112: a web login's password is typed by the filler only; it is never served.
+    if (isWebLoginSecretId(id)) {
+      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), readVaultAcl(), { channel: 'value', refused: true })
+      json(res, { error: 'Web login passwords are not served by this route' }, 403)
       return true
     }
     const acl = readVaultAcl()
@@ -956,6 +969,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'SSH private keys are managed by the SSH key pool' }, 403)
       return true
     }
+    if (isWebLoginSecretId(id)) { json(res, { error: 'A web login password is managed by /api/vault/web-logins' }, 403); return true }
     let body: { label?: unknown } | null
     try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
     if (!body || typeof body !== 'object' || typeof body.label !== 'string') {
@@ -977,6 +991,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       refuseOwner(res, 'Deleting an agent API key needs the dashboard login (an owner session).')
       return true
     }
+    if (isWebLoginSecretId(id)) { json(res, { error: 'A web login password is managed by /api/vault/web-logins' }, 403); return true }
     if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
     removeBindingsForSecret(id)
     json(res, { ok: true })
@@ -1012,13 +1027,13 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // to vault-headers-helper, which sends it to a REMOTE server as an HTTP header; an env
     // binding would put it into a child process. Refused before any write or sync runs.
     // Measured 2026-09-23: the live store/vault-bindings.json has 1 binding, 0 on an ssh-key.
-    if (isSshPrivateKeyId(data.vaultSecretId)) {
+    if (isSshPrivateKeyId(data.vaultSecretId) || isWebLoginSecretId(data.vaultSecretId)) {
       // The refusal leaves a server-side trace (Marveen 29017): a binding attempt that only
       // gets a 400 back would be visible to the caller and to no one else. No value is read.
       const { kind, principal } = principalOf(ctx.auth)
       logger.warn({ event: 'vault-binding-refused', vaultSecretId: data.vaultSecretId, kind, principal,
         via: data.headerName?.trim() ? 'header' : 'env' }, 'vault: SSH private key binding refused')
-      json(res, { error: 'SSH private keys cannot be bound to an env var or a header' }, 400)
+      json(res, { error: 'SSH private keys and web login passwords cannot be bound to an env var or a header' }, 400)
       return true
     }
 
