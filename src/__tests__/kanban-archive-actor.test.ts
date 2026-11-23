@@ -118,6 +118,39 @@ describe('the routes: POST /archive and /unarchive take an optional {actor}', ()
     expect(fields.body[0]).toMatchObject({ field: 'archived_at', old_value: null, actor: 'elvis' })
   })
 
+  it('unarchive with {actor}: 200, the unarchive row names it (review point 1 on #3044)', async () => {
+    createKanbanCard({ id: 'r5', title: 'Unarchive actor', status: 'done' })
+    expect((await call('POST', '/api/kanban/r5/archive', JSON.stringify({ actor: 'elvis' }))).status).toBe(200)
+    expect((await call('POST', '/api/kanban/r5/unarchive', JSON.stringify({ actor: 'x' }))).status).toBe(200)
+    expect(archiveRows('r5')).toEqual([
+      { old: null, archived: true, actor: 'elvis' },
+      { old: expect.anything(), archived: false, actor: 'x' },
+    ])
+  })
+
+  it('a "system:" actor is refused on every route BEFORE the write (KANBANSYSACTOR1123, review N1 on #3044)', async () => {
+    createKanbanCard({ id: 'r6', title: 'Reserved actor', status: 'done' })
+    for (const actor of [KANBAN_SWEEP_ACTOR, 'system:anything', 'SYSTEM:auto-archive', '  system:auto-archive']) {
+      const body = JSON.stringify({ actor })
+      const a = await call('POST', '/api/kanban/r6/archive', body)
+      expect(a.status, actor).toBe(400)
+      expect(a.body.error).toMatch(/system:/)
+      expect((await call('PUT', '/api/kanban/r6', JSON.stringify({ title: 'x', actor }))).status, actor).toBe(400)
+      expect((await call('POST', '/api/kanban/r6/move', JSON.stringify({ status: 'planned', actor }))).status, actor).toBe(400)
+    }
+    const card = getKanbanCard('r6')!
+    expect(card.archived_at).toBeNull()
+    expect(card.title).toBe('Reserved actor')
+    expect(card.status).toBe('done')
+    expect(getKanbanCardFieldEvents('r6')).toHaveLength(0)
+    // an archived card: its unarchive is refused the same way
+    expect((await call('POST', '/api/kanban/r6/archive', JSON.stringify({ actor: 'elvis' }))).status).toBe(200)
+    expect((await call('POST', '/api/kanban/r6/unarchive', JSON.stringify({ actor: KANBAN_SWEEP_ACTOR }))).status).toBe(400)
+    expect(getKanbanCard('r6')!.archived_at).not.toBeNull()
+    // a name that only contains the word is fine
+    expect((await call('POST', '/api/kanban/r6/unarchive', JSON.stringify({ actor: 'ops-system:x' }))).status).toBe(200)
+  })
+
   it('an empty body still works (the dashboard button, older callers): 200, actor null', async () => {
     createKanbanCard({ id: 'r2', title: 'Button', status: 'done' })
     expect((await call('POST', '/api/kanban/r2/archive')).status).toBe(200)

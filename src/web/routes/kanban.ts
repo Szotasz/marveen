@@ -231,8 +231,12 @@ export function kanbanMoveInstructions(id: string, target: string): string {
 // PUT, X16 on /move). An empty or blank string names nobody, so it counts as no actor (X15). With no actor, a browser
 // session's user made the change (the dashboard's own edits may send none), so the rows name them; a token caller
 // without one stays anonymous (NULL), as before.
+// KANBANSYSACTOR1123 (review N1 on #3044): the `system:` prefix is reserved for the server's own writers (the done-card
+// sweep's KANBAN_SWEEP_ACTOR). An API caller asserting it is refused, so an archive an agent or a person made can never
+// read as the sweep. The check ignores case and leading blanks, as a reader of the rows would.
 function kanbanWriteActor(actor: unknown, auth: RouteContext['auth']): { error: string } | { actor: string | undefined } {
   if (actor !== undefined && actor !== null && typeof actor !== 'string') return { error: 'actor must be a string or null' }
+  if (typeof actor === 'string' && /^\s*system:/i.test(actor)) return { error: 'actor must not start with "system:" (reserved for the server)' }
   if (typeof actor === 'string' && actor.trim() !== '') return { actor }
   return { actor: auth?.kind === 'session' && auth.user ? auth.user : undefined }
 }
