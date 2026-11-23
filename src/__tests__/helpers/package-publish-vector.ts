@@ -1,6 +1,6 @@
 // The shared package PUBLISH vector (MIOAGENTPUBVEC1122), copied byte for byte from
-// marveen-io (supabase/functions/_shared/package-publish-vector.json, merge
-// commit 3ee7459f8f of PR 389). The publisher runs its "upload" cases, the
+// marveen-io (supabase/functions/_shared/package-publish-vector.json, squash
+// commit 44af4f7 of PR 390, PR-3b). The publisher runs its "upload" cases, the
 // installer its "install" cases. Swapping in the next vector is ONE edit here:
 // the file name and its sha256 below (the publisher's test pins the same hash).
 import { readFileSync } from 'node:fs'
@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const PACKAGE_PUBLISH_VECTOR_FILE = 'package-publish-vector.json'
-export const PACKAGE_PUBLISH_VECTOR_SHA256 = 'f6488f8bbad2c71d133c7d2f445c8581c6486b982280b1b69e9c1311be95abeb'
+export const PACKAGE_PUBLISH_VECTOR_SHA256 = 'd8aaf5d4427338d3b7436e97ec2f3b9ea91fff8d45755abd61fcb3a913401ab3'
 
 /** An avatar or a cover image; the expectation is the publisher's rule name, which is the installer's for S20. */
 export interface PublishImageCase {

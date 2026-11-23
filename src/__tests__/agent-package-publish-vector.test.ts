@@ -36,20 +36,6 @@ const TEXT_RULES: Record<string, string> = {
   'manifest-edge-whitespace': N21B_PROVISIONAL_REASONS.manifestEdgeWhiteSpace,
 }
 
-/**
- * Install cases the installer refuses with the same reason but under ANOTHER
- * rule than the vector names. Each is a finding sent to the publishing side
- * (MIOAGENTPUBVEC1122), pinned here as the installer decides it today, so a
- * change on either side turns the test red instead of passing quietly.
- *  - title-edge-nel: U+0085 is a C1 control, so the installer's S11 character
- *    rule refuses it before the edge rule runs (scanManifestText's order: the
- *    edge rule is last on purpose). The publisher's manifest check leaves the
- *    character rules to package-scan, so the vector names the edge rule.
- */
-const KNOWN_RULE_DIFFERENCES: Record<string, string> = {
-  'title-edge-nel': 'forbidden-char',
-}
-
 function avatarOf(bytes: Buffer): { path: string; contentType: string } {
   if (bytes.subarray(1, 4).toString('latin1') === 'PNG') return { path: 'avatar.png', contentType: 'image/png' }
   return { path: 'avatar.webp', contentType: 'image/webp' }
@@ -125,15 +111,7 @@ describe('shared package publish vector: every install-stage manifest case, as t
     }
     expect(refusal.rule !== undefined && refusal.rule in TEXT_RULES, `no installer mapping for ${JSON.stringify(refusal)}`).toBe(true)
     expect({ step: got.step, reason: got.reason }).toEqual({ step: 5, reason: TEXT_RULES[refusal.rule!] })
-    expect(got.detail).toEqual({ field: refusal.field, rule: KNOWN_RULE_DIFFERENCES[c.name] ?? refusal.rule })
-  })
-
-  it('every known rule difference is an install case the vector refuses', () => {
-    for (const name of Object.keys(KNOWN_RULE_DIFFERENCES)) {
-      const c = manifestCases.find((m) => m.name === name)
-      expect(c, name).toBeDefined()
-      expect('refusals' in c!.expect, name).toBe(true)
-    }
+    expect(got.detail).toEqual({ field: refusal.field, rule: refusal.rule })
   })
 
   it('the slug cases are refused by the one slug pattern itself, not only by the delivery check', () => {
