@@ -2647,7 +2647,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           exportedBy: MAIN_AGENT_ID,
           exportedAt: new Date().toISOString(),
         })
-        return { bytes: readFileSync(outPath), fileMemory: m.fileMemory ?? 'none' }
+        return { bytes: readFileSync(outPath), fileMemory: m?.fileMemory ?? 'none' }
       })
       if (!data) { json(res, { error: 'Agent not found' }, 404); return true }
       res.writeHead(200, {
