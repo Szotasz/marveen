@@ -10,7 +10,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { EMBED_SEAM_MARKER, isEmbeddingEndpoint } from './setup/embed-endpoint-seam.js'
+
+// Read at module load, before any test body runs. This file must NOT
+// statically import './setup/embed-endpoint-seam.js': static imports are
+// hoisted, so the import itself would install the seam and the "is installed
+// by setupFiles" test below could never fail. The marker is read from the
+// same process-wide registry the seam writes to; tests that need
+// isEmbeddingEndpoint dynamic-import it inside the test body.
+const SEAM_MARKER = Symbol.for('marveen.embedEndpointSeam')
+const seamedAtLoad = (globalThis.fetch as any)[SEAM_MARKER] === true
 
 // Every request the server receives is counted; the answer is deliberately
 // boring (200 'ok') so the assertions below only ever read the count.
@@ -60,33 +68,53 @@ async function expectDeadPortRejection(promise: Promise<Response>): Promise<void
 
 describe('embed-endpoint-seam (EMBEDSEAM1123)', () => {
   it('is installed by setupFiles: fetch carries the seam marker', () => {
-    expect((globalThis.fetch as any)[EMBED_SEAM_MARKER]).toBe(true)
+    expect(seamedAtLoad).toBe(true)
+    expect((globalThis.fetch as any)[SEAM_MARKER]).toBe(true)
   })
 
-  it('isEmbeddingEndpoint: exactly /api/embeddings or /api/embed, any host', () => {
+  it('isEmbeddingEndpoint: path ends with /api/embeddings or /api/embed, any host or prefix', async () => {
+    const { isEmbeddingEndpoint } = await import('./setup/embed-endpoint-seam.js')
     expect(isEmbeddingEndpoint('http://localhost:11434/api/embeddings')).toBe(true)
     expect(isEmbeddingEndpoint('http://localhost:9/api/embed')).toBe(true)
     expect(isEmbeddingEndpoint('https://embed.example.com/api/embeddings/')).toBe(true)
+
+    expect(isEmbeddingEndpoint('http://h:1/api/embeddings')).toBe(true)
+    expect(isEmbeddingEndpoint('http://h:1/api/embed')).toBe(true)
+    expect(isEmbeddingEndpoint('http://h:1//api/embeddings')).toBe(true)
+    expect(isEmbeddingEndpoint('http://h:1/api/embeddings/')).toBe(true)
+    expect(isEmbeddingEndpoint('http://h:1/ollama/api/embeddings')).toBe(true)
+    expect(isEmbeddingEndpoint('http://h:1/a/b/api/embed/')).toBe(true)
+    expect(isEmbeddingEndpoint('http://h:1/api//embeddings')).toBe(true)
 
     expect(isEmbeddingEndpoint('http://localhost:11434/api/tags')).toBe(false)
     expect(isEmbeddingEndpoint('http://localhost:11434/api/embeddings-x')).toBe(false)
     expect(isEmbeddingEndpoint('http://localhost:11434/v1/embeddings')).toBe(false)
     expect(isEmbeddingEndpoint('not a url')).toBe(false)
     expect(isEmbeddingEndpoint('')).toBe(false)
+
+    expect(isEmbeddingEndpoint('http://h:1/api/embeddings-x')).toBe(false)
+    expect(isEmbeddingEndpoint('http://h:1/fooapi/embeddings')).toBe(false)
+    expect(isEmbeddingEndpoint('http://h:1/api/embeddings/x')).toBe(false)
+    expect(isEmbeddingEndpoint('http://h:1/v1/embeddings')).toBe(false)
+    expect(isEmbeddingEndpoint('http://h:1/api/tags')).toBe(false)
+    expect(isEmbeddingEndpoint('http://h:1/')).toBe(false)
+    expect(isEmbeddingEndpoint('not a url')).toBe(false)
   })
 
   it('an embedding POST never reaches the server', async () => {
+    const before = requestCount
     await expectDeadPortRejection(
       fetch(`http://localhost:${port}/api/embeddings`, { method: 'POST', body: '{}' }),
     )
-    expect(requestCount).toBe(0)
+    expect(requestCount - before).toBe(0)
   })
 
   it('positive control: a non-embedding path on the same server goes through', async () => {
+    const before = requestCount
     const res = await fetch(`http://localhost:${port}/health`)
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('ok')
-    expect(requestCount).toBe(1)
+    expect(requestCount - before).toBe(1)
   })
 
   it('URL-object and Request inputs are blocked too', async () => {
@@ -98,6 +126,17 @@ describe('embed-endpoint-seam (EMBEDSEAM1123)', () => {
     expect(requestCount).toBe(before)
   })
 
+  it('a doubled slash or a reverse-proxy prefix on the embedding path is blocked too', async () => {
+    const before = requestCount
+    await expectDeadPortRejection(
+      fetch(`http://127.0.0.1:${port}//api/embeddings`, { method: 'POST', body: '{}' }),
+    )
+    await expectDeadPortRejection(
+      fetch(`http://127.0.0.1:${port}/ollama/api/embeddings`, { method: 'POST', body: '{}' }),
+    )
+    expect(requestCount - before).toBe(0)
+  })
+
   it('a test that stubs fetch wins over the seam', async () => {
     const stub = vi.fn(async () => new Response('{"embedding":[1,2]}'))
     vi.stubGlobal('fetch', stub)
@@ -107,6 +146,6 @@ describe('embed-endpoint-seam (EMBEDSEAM1123)', () => {
     expect(await res.text()).toBe('{"embedding":[1,2]}')
     // Unstubbing must land back on the seam, not on the raw fetch.
     vi.unstubAllGlobals()
-    expect((globalThis.fetch as any)[EMBED_SEAM_MARKER]).toBe(true)
+    expect((globalThis.fetch as any)[SEAM_MARKER]).toBe(true)
   })
 })

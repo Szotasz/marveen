@@ -18,13 +18,21 @@
 // branch it would exercise with no Ollama running at all. A test never needs
 // a real vector unless it stubs fetch itself.
 //
-// Matched by path, not by host: exactly /api/embeddings or /api/embed (any
-// trailing slashes stripped) on ANY host, port or scheme. EMBED_URL is
+// Matched by path, not by host: take the pathname, collapse every run of two
+// or more '/' into a single '/', strip any trailing '/', and match when what
+// is left ENDS with /api/embeddings or /api/embed on a path-segment boundary
+// (the leading '/' of the suffix is part of the match, so /fooapi/embeddings
+// does not count) -- under any prefix, on ANY host, port or scheme. Why so
+// loose: src/db.ts builds the request as `${EMBED_URL}/api/embeddings` with
+// EMBED_URL verbatim from the developer's .env and no normalisation, so
+// EMBED_URL "http://h:11434/" yields "//api/embeddings" and a reverse-proxy
+// prefix ("http://h/ollama") yields "/ollama/api/embeddings" -- both must
+// still be caught, or those requests reach a real server. EMBED_URL is
 // configurable, so pinning localhost:11434 here would let a test that points
 // it elsewhere slip straight through to a real server. Near-misses
 // (/api/embeddings-x, /v1/embeddings, /api/tags) are not matched and reach
 // the network untouched, which is what the positive control in the test file
-// proves.
+// proves; /v1/embeddings is not matched because this codebase never calls it.
 //
 // A test's own stub still wins: vi.stubGlobal('fetch', ...) replaces this
 // whole wrapper (vi.unstubAllGlobals() puts it back), so tests that provide
@@ -52,8 +60,13 @@ export function isEmbeddingEndpoint(url: string): boolean {
     // Not a parseable absolute URL -- not ours to judge.
     return false
   }
-  const stripped = pathname.replace(/\/+$/, '')
-  return stripped === '/api/embeddings' || stripped === '/api/embed'
+  const normalized = pathname.replace(/\/{2,}/g, '/').replace(/\/+$/, '')
+  return (
+    normalized === '/api/embeddings' ||
+    normalized === '/api/embed' ||
+    normalized.endsWith('/api/embeddings') ||
+    normalized.endsWith('/api/embed')
+  )
 }
 
 // Opt out with MARVEEN_TEST_REAL_EMBED=1; skip re-installation when a previous
