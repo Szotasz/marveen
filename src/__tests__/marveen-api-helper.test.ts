@@ -539,6 +539,7 @@ describe('marveen-api.sh: schedules are read only', () => {
     '        "kanban-comment": ["c-1", "dani", f], "kanban-assign": ["c-1", "dani"], "kanban-archive": ["c-1"],',
     '        "agents-list": [],',
     '        "agent-restart": ["dani"], "federation-directory": [], "daily-log-read": ["dani"], "memory-backfill": [],',
+    '        "password-reset-request": ["alice"],',
     '    }',
     '    verbs = re.findall(r"^ {2}([a-z-]+)(?= |$)", m.USAGE, re.M)',
     '    built = [[v] + list(m.build_request(v, s[v])[:2]) for v in verbs if v != "message"]',

@@ -6,6 +6,42 @@ a visszautakat írja le. Alapelv: **aki a gazdagépen parancsot tud futtatni, az
 a gyökér-hitelesítő** -- minden visszaút erre épül, és egyik sem függ a webes
 kaputól vagy a Telegramtól.
 
+## Elfelejtett jelszó: visszaállító kód a Marveenen át (terminál nélkül)
+
+A tag szól a saját Marveenjének, hogy elfelejtette a dashboard-jelszavát. Marveen kér egy visszaállító kódot:
+
+```bash
+bash scripts/marveen-api.sh password-reset-request [<felhasznalo>]   # név nélkül: az egyetlen dashboard-user
+```
+
+- **A kódot csak a gazda privát csevegése kapja** (a Slack DM-je, vagy a privát Telegram-chatje; csoportba vagy
+  csatornába soha). A kérő válasza csak azt mondja meg, hogy kiment-e (`sent`, `via`), a kódot sosem. Ha nincs ilyen
+  privát csevegés bekötve, a válasz 409 `no_private_channel`, és marad a lenti terminálos visszaút.
+- **A tag a dashboard belépő ablakában** a "Visszaállító kódom van" gombbal adja meg a felhasználónevét, a kódot és
+  kétszer az új jelszót. A Bridge-ben (ahol a dashboard eszközkulccsal, belépő ablak nélkül nyílik) ugyanez a gomb a
+  Beállítások, Biztonság, Dashboard belépés kártyán van. Ha a szerver ismeri a saját külső címét
+  (`DASHBOARD_PUBLIC_URL`), az üzenetben egy link is jön (`/#jelszo-visszaallitas=<kod>&u=<felhasznalo>`); a kód a `#`
+  után áll, így nem megy el a szervernek, és nem kerül naplóba.
+- **Szabályok:** a kód 15 percig él és egyszer használható; egy új kérés a régit érvényteleníti; 5 hibás próbálkozás
+  (a hibás kétlépcsős kód is) után érvénytelen; felhasználónként óránként legfeljebb 3 kérés (a naplóból számolva, így
+  újraindítás sem nullázza). A kérés semmit nem változtat: a régi jelszó a kód felhasználásáig érvényes.
+- **A kétlépcsős belépést nem kerüli meg:** akinél be van kapcsolva, annál a kód mellé a telefonos kód is kell.
+- **A felhasználás után** minden bejelentkezése kijelentkezik, a támogatói hozzáférés lekerül, és a gazda értesítést
+  kap. A kódok csak a szerverfolyamat memóriájában élnek (hash-ként): újraindítás után új kódot kell kérni.
+- **Napló** (`config_change_log`): `security.password_reset_requested` (ki kérte), `..._not_delivered`,
+  `..._code_expired`, `..._code_locked`, `security.password_reset_by_code`.
+
+Ismert, vállalt rés (a gazda a folyamat jóváhagyásakor elfogadta), **Slacken**: a kód ugyanabba a DM-be megy, ahol a gazda
+a fő ügynökkel beszél, ugyanazzal a bot-tokennel, és a Slack-plugin `fetch_messages` eszköze ennek a DM-nek az előzményét
+szűrés nélkül visszaadja, a bot saját üzeneteivel együtt (forrásból és a telepítés állapotfájljaiból mérve, 2026-11-23).
+A fő ügynök tehát Slacken kérhet kódot, és vissza is olvashatja. A kérés válasza a kódot sosem tartalmazza, de Slacken ez
+nem jelenti azt, hogy az ügynök nem láthatja. A rést a kétlépcsős belépés zárja be (a kód mellé a telefonos kód is kell):
+Slackes telepítésen ezért kapcsold be. A 15 perces, egyszeri élettartam csak szűkíti. Telegramon ez a rés nincs: a bot
+nem olvashat előzményt.
+
+Egy új kérés az élő kódot érvényteleníti, így bárki, aki kérni tud (a flotta tokenjével), óránként legfeljebb háromszor
+megszakíthat egy folyamatban lévő visszaállítást. Ilyenkor a legutolsó kóddal kell befejezni.
+
 ## `npm run dashboard-user` -- a break-glass eszköz
 
 A CLI közvetlenül az SQLite-ot írja (nincs HTTP, nincs auth-kapu), ezért akkor

@@ -140,6 +140,8 @@ export const PUBLIC_LISTENER_OPEN_PATHS: ReadonlyArray<readonly [method: string,
   ['POST', '/api/auth/login'],
   ['POST', '/api/auth/login/totp'],
   ['POST', '/api/auth/setup-code'],
+  // DASHUSERGATE1123: the reset-code step of a forgotten password, typed into the sign-in window before any cookie.
+  ['POST', '/api/auth/password-reset/complete'],
 ]
 
 // DOCKERHTTPS1119 (Geri's live run 81231, Dani): what a setup session (a redeemed one-time code, before the first
@@ -170,6 +172,9 @@ export function requiresAuth(path: string, method: string): boolean {
   if (path === '/api/auth/login/totp' && method === 'POST') return false
   // DOCKERHTTPS1119: the one-time setup code is redeemed before any cookie exists (public listener only).
   if (path === '/api/auth/setup-code' && method === 'POST') return false
+  // DASHUSERGATE1123: a forgotten password's reset code. Public like the login: authorised by the one-time code the
+  // owner got in a private chat (and the second factor, when on), throttled like the login.
+  if (path === '/api/auth/password-reset/complete' && method === 'POST') return false
   // DASHOPERATOR1005: the operator page signs in with its key here, before any
   // cookie exists. The handler checks the key, the scope and the owner switch.
   if (path === '/api/operator/login' && method === 'POST') return false

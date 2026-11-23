@@ -283,6 +283,8 @@ function mainAgentId() {
   // top of it, GROMZOAGENTPICK1101), so it gets a Cancel button.
   function showLoginOverlay(opts) {
     if (document.getElementById('mv-login-overlay')) return
+    // DASHUSERGATE1123: the reset window is open (a reset link, or its button): the sign-in waits until it is done.
+    if (document.getElementById('mv-reset-overlay')) return
     const tr = (k, fallback) => (typeof window.t === 'function' ? window.t(k) : fallback) || fallback
     const overlay = document.createElement('div')
     overlay.id = 'mv-login-overlay'
@@ -315,6 +317,18 @@ function mainAgentId() {
       })
       overlay.querySelector('#mv-login-form').appendChild(cancel)
     }
+    // DASHUSERGATE1123: a forgotten password: the one-time code from the owner's private chat.
+    const resetBtn = document.createElement('button')
+    resetBtn.type = 'button'
+    resetBtn.id = 'mv-login-reset'
+    resetBtn.className = 'btn-secondary btn-compact'
+    resetBtn.textContent = tr('auth.reset.open', 'I have a reset code')
+    resetBtn.addEventListener('click', () => {
+      const username = (overlay.querySelector('#mv-login-user').value || '').trim()
+      overlay.remove()
+      showResetCodeOverlay({ username, fromLogin: true, loginOpts: opts })
+    })
+    overlay.querySelector('#mv-login-form').appendChild(resetBtn)
     const form = overlay.querySelector('#mv-login-form')
     const userEl = overlay.querySelector('#mv-login-user')
     const passEl = overlay.querySelector('#mv-login-pass')
@@ -378,6 +392,135 @@ function mainAgentId() {
     })
     setTimeout(() => userEl.focus(), 50)
   }
+
+  // DASHUSERGATE1123: a forgotten password, reset with the one-time code the owner got in a private chat. Opened from
+  // the sign-in window's "I have a reset code" button, from the Dashboard login card (the Bridge's way in: its device
+  // key opens the page without the sign-in window), or from a #jelszo-visszaallitas=<code>&u=<user> link. Posts to the
+  // public /api/auth/password-reset/complete on the unwrapped fetch, so its 401s never wipe a stored key or token.
+  // The prefill goes in through .value, never into the HTML.
+  function showResetCodeOverlay(opts) {
+    if (document.getElementById('mv-reset-overlay')) return
+    const o = opts || {}
+    const tr = (k, fallback) => (typeof window.t === 'function' ? window.t(k) : fallback) || fallback
+    const loginOverlay = document.getElementById('mv-login-overlay')
+    if (loginOverlay) loginOverlay.remove()
+    const overlay = document.createElement('div')
+    overlay.id = 'mv-reset-overlay'
+    overlay.className = 'mv-auth-overlay'
+    overlay.innerHTML =
+      '<form class="mv-auth-card" id="mv-reset-form">' +
+        '<h2>' + tr('auth.reset.title', 'Set a new password') + '</h2>' +
+        '<p class="mv-auth-desc">' + tr('auth.reset.desc', 'Enter your username, the reset code from your private message, and your new password twice.') + '</p>' +
+        '<input id="mv-reset-user" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="' + tr('auth.login.username', 'Username') + '">' +
+        '<input id="mv-reset-code" type="text" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="' + tr('auth.reset.code', 'Reset code') + '">' +
+        '<input id="mv-reset-pass" type="password" autocomplete="new-password" placeholder="' + tr('auth.reset.new_password', 'New password') + '">' +
+        '<input id="mv-reset-pass2" type="password" autocomplete="new-password" placeholder="' + tr('auth.reset.repeat_password', 'New password again') + '">' +
+        '<input id="mv-reset-totp" type="text" inputmode="numeric" autocomplete="one-time-code" hidden placeholder="' + tr('auth.reset.totp', 'Two-step code (6 digits, or a backup code)') + '">' +
+        '<button type="submit" id="mv-reset-submit">' + tr('auth.reset.submit', 'Set the new password') + '</button>' +
+        '<button type="button" id="mv-reset-cancel" class="btn-secondary btn-compact">' + tr('auth.login.cancel', 'Cancel') + '</button>' +
+        '<div class="mv-auth-err" id="mv-reset-err" role="alert"></div>' +
+      '</form>'
+    document.body.appendChild(overlay)
+    const form = overlay.querySelector('#mv-reset-form')
+    const userEl = overlay.querySelector('#mv-reset-user')
+    const codeEl = overlay.querySelector('#mv-reset-code')
+    const passEl = overlay.querySelector('#mv-reset-pass')
+    const pass2El = overlay.querySelector('#mv-reset-pass2')
+    const totpEl = overlay.querySelector('#mv-reset-totp')
+    const errEl = overlay.querySelector('#mv-reset-err')
+    const submitEl = overlay.querySelector('#mv-reset-submit')
+    if (o.username) userEl.value = String(o.username)
+    if (o.code) codeEl.value = String(o.code)
+    // Back where it was opened from: the sign-in window, a reload for a link (the page's own sign-in flow then runs),
+    // or nothing for the Dashboard login card (the page already works there).
+    const backToLogin = () => {
+      overlay.remove()
+      if (o.fromLogin) showLoginOverlay(o.loginOpts)
+      else if (o.reloadOnClose) window.location.reload()
+    }
+    overlay.querySelector('#mv-reset-cancel').addEventListener('click', backToLogin)
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      errEl.textContent = ''
+      const username = (userEl.value || '').trim()
+      const code = (codeEl.value || '').trim()
+      const p1 = passEl.value || ''
+      if (!username || !code || !p1) { errEl.textContent = tr('auth.reset.err_empty', 'Fill in every field.'); return }
+      if (p1 !== (pass2El.value || '')) { errEl.textContent = tr('auth.reset.err_mismatch', 'The two passwords differ.'); return }
+      const body = { username, code, new_password: p1 }
+      if (!totpEl.hidden && totpEl.value) body.totp_code = totpEl.value.trim()
+      submitEl.disabled = true
+      try {
+        const r = await originalFetch('/api/auth/password-reset/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        let data = null
+        try { data = await r.json() } catch { /* not JSON */ }
+        const c = data && typeof data.code === 'string' ? data.code : ''
+        if (r.ok) {
+          form.innerHTML = ''
+          const title = document.createElement('h2')
+          title.textContent = tr('auth.reset.title', 'Set a new password')
+          form.appendChild(title)
+          const done = document.createElement('p')
+          done.className = 'mv-auth-desc'
+          done.textContent = tr('auth.reset.done', 'Done: your new password works, and every earlier sign-in was logged out. Sign in with the new password.')
+          const go = document.createElement('button')
+          go.type = 'button'
+          go.textContent = tr('auth.reset.to_login', 'Sign in')
+          go.addEventListener('click', () => {
+            overlay.remove()
+            if (o.fromLogin) showLoginOverlay(o.loginOpts)
+            else if (o.reloadOnClose) window.location.reload()
+            else showLoginOverlay({ cancellable: true })
+          })
+          form.append(done, go)
+          return
+        }
+        if (c === 'totp_required') {
+          totpEl.hidden = false
+          errEl.textContent = tr('auth.reset.totp_needed', 'Two-step sign-in is on: enter the code from your phone too.')
+          setTimeout(() => totpEl.focus(), 50)
+        } else if (c === 'totp_invalid') {
+          errEl.textContent = tr('auth.reset.err_totp', 'Wrong two-step code.')
+        } else if (c === 'reset_code_locked') {
+          errEl.textContent = tr('auth.reset.err_locked', 'Too many wrong attempts: this code no longer works. Ask Marveen for a new one.')
+        } else if (r.status === 429) {
+          const retry = (data && data.retry_after_s) || 0
+          errEl.textContent = tr('auth.login.err_throttled', 'Too many attempts. Try again later.') + (retry ? ' (' + retry + 's)' : '')
+        } else if (r.status === 400 && data && data.error) {
+          errEl.textContent = String(data.error)
+        } else if (r.status === 503 && data && data.error) {
+          errEl.textContent = String(data.error)
+        } else {
+          errEl.textContent = tr('auth.reset.err_invalid', 'Wrong or expired code.')
+        }
+      } catch {
+        errEl.textContent = tr('auth.login.err_network', 'Network error.')
+      } finally {
+        submitEl.disabled = false
+      }
+    })
+    setTimeout(() => (userEl.value ? (codeEl.value ? passEl : codeEl) : userEl).focus(), 50)
+  }
+
+  window.mvShowResetCode = (opts) => showResetCodeOverlay(opts)
+
+  // DASHUSERGATE1123: the link form of the code, #jelszo-visszaallitas=<code>&u=<user>. Read once and dropped from the
+  // address bar (and so from the history entry) before anything else runs on the page.
+  ;(function openResetFromHash() {
+    const m = /^#jelszo-visszaallitas=([^&]*)(?:&u=([^&]*))?$/.exec(window.location.hash || '')
+    if (!m) return
+    try { history.replaceState(null, '', window.location.pathname + window.location.search) } catch { /* ignore */ }
+    let code = ''
+    let username = ''
+    try { code = decodeURIComponent(m[1] || ''); username = decodeURIComponent(m[2] || '') } catch { /* malformed: open empty */ }
+    const open = () => showResetCodeOverlay({ code, username, reloadOnClose: true })
+    if (document.body) open()
+    else document.addEventListener('DOMContentLoaded', open, { once: true })
+  })()
 
   window.mvShowLogin = (opts) => showLoginOverlay(opts)
 
@@ -19121,6 +19264,15 @@ function renderTokenModePanel(body, status) {
   })
   body.appendChild(p)
   body.appendChild(btn)
+  // DASHUSERGATE1123: a forgotten password from here too. The Bridge opens the page with its device key, so its sign-in
+  // window comes up only when an owner step asks for it; this button is the way in that is always there.
+  const reset = document.createElement('button')
+  reset.type = 'button'
+  reset.className = 'btn-secondary btn-compact'
+  reset.id = 'authResetCodeBtn'
+  reset.textContent = t('auth.reset.open')
+  reset.addEventListener('click', () => { if (typeof window.mvShowResetCode === 'function') window.mvShowResetCode({}) })
+  body.appendChild(reset)
 }
 
 // Dismissible setup banner: shown only when no browser login exists yet and this window can create one: the

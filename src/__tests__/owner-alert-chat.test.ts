@@ -265,7 +265,9 @@ function readEnvProvider(): string | undefined {
 describe('where the key is read (pinned in source)', () => {
   const src = (p: string) => readFileSync(join(REPO_ROOT, p), 'utf-8')
   it('the delivery sites', () => {
-    expect(src('src/notify.ts').match(/resolveAlertDeliveryChat\(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER\)/g)).toHaveLength(3)
+    // 4: sendOwnerMessage, telegramOwner, notifySecurityEvent, and sendOwnerPrivate (DASHUSERGATE1123: the
+    // reset code's private-chat sender, which takes only a positive, private chat id from it).
+    expect(src('src/notify.ts').match(/resolveAlertDeliveryChat\(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER\)/g)).toHaveLength(4)
     expect(src('src/notify.ts')).not.toMatch(/resolveAlertOwnerChat\(/)
     expect(src('src/index.ts')).toContain("ownerAlertChatOverride('telegram') ?? resolveOwnerChatId()")
     expect(src('src/web/telegram.ts').match(/ownerAlertChatOverride\('telegram'\) \?\? resolveOwnerChatId\(\)/g)).toHaveLength(4)
