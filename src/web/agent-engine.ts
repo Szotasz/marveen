@@ -172,6 +172,15 @@ export function codexRelayFilesystemEntries(workspace: string, codexHome: string
   if (hidden !== undefined) {
     throw new Error(`relay sandbox profile refuses workspace ${workspace}: it is ${hidden}, which the relay hides from the sandbox (store/, the Codex home, the mxd run dir, the install dotenv file, agents/, ~/.claude/channels or ~/.gmail-mcp); the workspace grant would replace that denial`)
   }
+  // Agent workspaces live under agents/<name> by design, so exclude both
+  // lexical and physical agents/ roots from the containment check.
+  const agents = join(PROJECT_ROOT, 'agents')
+  const agentRoots = [resolve(agents), codexPhysicalPath(agents)]
+  const root = denied.find(parent => !agentRoots.includes(parent) &&
+    workspacePaths.some(child => child !== parent && child.startsWith(parent.endsWith(sep) ? parent : parent + sep)))
+  if (root !== undefined) {
+    throw new Error(`relay sandbox profile refuses workspace ${workspace}: it is inside ${root}, which the relay hides from the sandbox (store/, the Codex home, the mxd run dir, ~/.claude/channels or ~/.gmail-mcp); the workspace grant would open part of that hidden root`)
+  }
   const entries: Array<[string, 'read' | 'write' | 'none']> = [
     ['/', 'read'], [workspace, 'write'],
     ...denied.map((path): [string, 'none'] => [path, 'none']),

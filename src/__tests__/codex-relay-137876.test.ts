@@ -284,6 +284,46 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
     expect(() => preflightCodexHome(home, ws, servers, 'overrides', opts)).not.toThrow()
   })
 
+  it('D0480 refuses a workspace inside store/, lexically and through a symlink', () => {
+    const store = codexRelayDeniedReadRoots()[0]
+    const workspace = join(store, 'sub')
+    mkdirSync(workspace, { recursive: true })
+    expect(() => codexRelayFilesystemEntries(workspace, home))
+      .toThrow(/relay sandbox profile refuses workspace .*: it is inside /)
+    symlinkSync(workspace, join(root, 'ws-into-store'))
+    expect(() => codexRelayFilesystemEntries(join(root, 'ws-into-store'), home)).toThrow(/it is inside /)
+    expect(() => renderCodexOverrides(join(store, 'sub'), {}, { ...opts, codexHome: home }))
+      .toThrow(/relay sandbox profile refuses workspace/)
+  })
+
+  it('D0480 refuses a workspace inside the Codex home and the mxd run dir', () => {
+    expect(() => codexRelayFilesystemEntries(join(home, 'sub'), home)).toThrow(/it is inside /)
+    expect(() => codexRelayFilesystemEntries(join(codexRelayMxdRunDir(), 'sub'), home)).toThrow(/it is inside /)
+  })
+
+  it('D0480 keeps prefix siblings and nested agent workspaces allowed', () => {
+    const store = codexRelayDeniedReadRoots()[0]
+    const workspace = store + '-other'
+    mkdirSync(workspace, { recursive: true })
+    expect(() => codexRelayFilesystemEntries(workspace, home)).not.toThrow()
+    expect(codexRelayFilesystemEntries(workspace, home)).toContainEqual([workspace, 'write'])
+    mkdirSync(home + '2', { recursive: true })
+    expect(() => codexRelayFilesystemEntries(home + '2', home)).not.toThrow()
+    const agentWorkspace = join(projectRoot!, 'agents', 'x')
+    mkdirSync(agentWorkspace, { recursive: true })
+    expect(() => codexRelayFilesystemEntries(agentWorkspace, home)).not.toThrow()
+    expect(codexRelayFilesystemEntries(agentWorkspace, home)).toContainEqual([agentWorkspace, 'write'])
+  })
+
+  it('D0480 keeps an agent workspace allowed when agents/ is a symlink', () => {
+    const realAgents = join(root, 'real-agents')
+    mkdirSync(join(realAgents, 'y'), { recursive: true })
+    symlinkSync(realAgents, join(projectRoot!, 'agents'))
+    const agentWorkspace = join(projectRoot!, 'agents', 'y')
+    expect(() => codexRelayFilesystemEntries(agentWorkspace, home)).not.toThrow()
+    expect(codexRelayFilesystemEntries(agentWorkspace, home)).toContainEqual([agentWorkspace, 'write'])
+  })
+
   it('R1 refuses a workspace that is a hidden path, lexically or physically', () => {
     const runDir = codexRelayMxdRunDir()
     const store = codexRelayDeniedReadRoots()[0]
