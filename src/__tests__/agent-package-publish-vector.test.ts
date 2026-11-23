@@ -123,3 +123,16 @@ describe('shared package publish vector: every install-stage manifest case, as t
     }
   })
 })
+
+// Dani's nit on #3069 (84060): with title-edge-nel an upload-only case, nothing on the installer side pinned how a
+// U+0085 title is refused. It is a C1 control, so the installer's character rule (S11) refuses it in step 5 before
+// the edge rule runs (scanManifestText checks the edge last on purpose).
+describe('installer: a U+0085 title', () => {
+  it('is refused in step 5 as bad_text under forbidden-char, field title', () => {
+    const bytes = makeSignedDelivery({ kid: signer.kid, privateKey: signer.privateKey, slug: 'nel-case', version: '1.0.0', title: 'Invoice helper\u0085' })
+    const got = verifyDelivery(bytes, 'nel-case', [signer.jwk])
+    expect(got.ok).toBe(false)
+    if (got.ok) return
+    expect({ step: got.step, reason: got.reason, detail: got.detail }).toEqual({ step: 5, reason: 'bad_text', detail: { field: 'title', rule: 'forbidden-char' } })
+  })
+})
