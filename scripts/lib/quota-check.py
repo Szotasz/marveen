@@ -159,7 +159,8 @@ def main():
         print(max_age_note, file=sys.stderr)
     qdir = os.environ.get("QUOTA_DIR", "")
     if qdir and glob.glob(os.path.join(qdir, "wk-*.json")):
-        line = evaluate_accounts(qdir, warn, max_age)
+        line = evaluate_accounts(qdir, warn, max_age, os.environ.get("QUOTA_STATE") or None,
+                                 os.environ.get("QUOTA_FILE") or None)
     else:
         try:
             d = json.load(open(os.environ["QUOTA_FILE"]))
@@ -170,38 +171,81 @@ def main():
         print(line)
 
 
-def evaluate_accounts(qdir, warn, max_age):
+def evaluate_accounts(qdir, warn, max_age, state_path=None, shared_path=None, now=None):
     """USAGEPERACCOUNT1123: one reading per subscription account
     (store/claude-rate-limits/, see claude_accounts.py), checked one by one and
-    folded into the single line the monitor parses. The HIT key and text carry the
-    account, so an alert says WHICH plan is running out, and a second account
-    crossing the level is a new alert, not a duplicate of the first.
-    Precedence: any HIT > any EXPIRED > all STALE (the freshest age) > nothing."""
+    folded into the single line the monitor parses. The HIT text names the plan.
+
+    Dedupe is per account and window (Revizor 5372 J2): the monitor keeps ONE
+    stored key, so the key printed here is the full set of alerted parts
+    "<account>/<window>:<level>:<reset>" (the stored ones whose reset is still
+    ahead, plus the new ones), and a HIT is printed only when a part is NEW. An
+    account whose reading goes stale and comes back is therefore not alerted
+    twice for the same level of the same window. The text lists only the new parts.
+
+    A reading that cannot be tied to an account (no seven-day reset, so no
+    fingerprint) is checked as "ismeretlen fiok" instead of being skipped or
+    crashing the round (J3), and so is the shared file when its reading has no
+    fingerprint (a five-hour-only block never gets a per-account file, M3).
+    Precedence: any new HIT > any EXPIRED > all STALE (the freshest age) > nothing."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import claude_accounts
+    now = time.time() if now is None else now
     root = os.path.dirname(os.path.dirname(qdir))
     lab = claude_accounts.Labeler(root)
-    hits, expired, stale = [], [], []
+    readings = []
     for path in sorted(glob.glob(os.path.join(qdir, "wk-*.json"))):
         try:
-            d = json.load(open(path))
+            readings.append(json.load(open(path)))
         except Exception:
             continue
-        fp = claude_accounts.fingerprint((d.get("rate_limits") if isinstance(d, dict) else None) or {})
-        plan, acct, _src, _c = lab.label(fp, d.get("cwd") if isinstance(d, dict) else None)
-        name = lab.plans.get(plan, acct)
+    if shared_path:
+        try:
+            d = json.load(open(shared_path))
+            if isinstance(d, dict) and claude_accounts.fingerprint(d.get("rate_limits") or {}) is None:
+                readings.append(d)
+        except Exception:
+            pass
+    parts, texts, expired, stale = {}, {}, [], []
+    for d in readings:
+        rl = (d.get("rate_limits") if isinstance(d, dict) else None) or {}
+        fp = claude_accounts.fingerprint(rl if isinstance(rl, dict) else {})
+        if fp is None:
+            acct, name = "unknown", "ismeretlen fiok"
+        else:
+            plan, acct, _src, _c = lab.label(fp, d.get("cwd"))
+            name = lab.plans.get(plan, acct)
         line = evaluate(d, warn, max_age)
         if not line:
             continue
         f = line.split("\t")
         if f[0] == "HIT":
-            hits.append(("%s=%s" % (acct, f[1]), "%s: %s" % (name, f[2])))
+            texts_by_win = dict(zip([x.split(":", 1)[0] for x in f[1].split("|")], f[2].split(" / ")))
+            for part in f[1].split("|"):
+                k = "%s/%s" % (acct, part)
+                parts[k] = "%s: %s" % (name, texts_by_win.get(part.split(":", 1)[0], ""))
         elif f[0] == "EXPIRED":
             expired.append("%s:%s" % (acct, f[1]))
         elif f[0] == "STALE":
             stale.append(f)
-    if hits:
-        return "HIT\t%s\t%s" % (";".join(k for k, _t in hits), " / ".join(t for _k, t in hits))
+    if parts:
+        seen = set()
+        if state_path:
+            try:
+                prev = open(state_path).read().strip()
+            except OSError:
+                prev = ""
+            for k in prev.split(";") if "/" in prev else []:
+                try:
+                    if int(k.rsplit(":", 1)[1]) > now:
+                        seen.add(k)
+                except (IndexError, ValueError):
+                    continue
+        new = [k for k in parts if k not in seen]
+        if not new:
+            return None
+        key = ";".join(sorted(seen | set(parts)))
+        return "HIT\t%s\t%s" % (key, " / ".join(parts[k] for k in sorted(new)))
     if expired:
         return "EXPIRED\t%s" % ",".join(expired)
     if stale:
@@ -210,7 +254,6 @@ def evaluate_accounts(qdir, warn, max_age):
             return "STALE\t%s" % min(ages, key=lambda x: int(x[1]))[1]
         return "\t".join(stale[0])
     return None
-
 
 if __name__ == "__main__":
     main()

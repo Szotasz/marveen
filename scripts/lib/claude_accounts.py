@@ -11,17 +11,24 @@ The statusLine payload carries no account id, so the writer keys each reading by
 ACCOUNT FINGERPRINT instead: the seven-day window's reset time modulo one week. It is
 the same for every session of one account and differs between accounts (measured: Max
 11-23 14:00 -> 11-30 14:00, exactly +7 days; Team 11-25 22:00). The readers below turn
-a fingerprint into a plan id from what the install already records, in this order:
+a fingerprint into a plan id from what the install already records. The fingerprint is
+MEASURED, everything else is a claim about the writer, so the measurement decides:
 
-  1. agent_token_file  the writing agent (from the reading's cwd) has an own token file
-                       agents/<name>/agent-config.json oauthTokenFile named
-                       .claude-oauth-token-<plan id> for a plan in store/claude-plans.json
-  2. active_plan       the writer is the main agent and store/claude-plans-state.json
-                       activePlanByAgent names its plan
-  3. probe_fingerprint a plan probe in claude-plans-state.json saw the same weekly
-                       reset (modulo one week)
-  4. fingerprint_only  none of the above: the label is the fingerprint key itself, and
-                       the reading is never merged into a named plan
+  1. probe_fingerprint a plan probe in claude-plans-state.json saw the same weekly reset
+                       (modulo one week). Always wins.
+  2. active_plan / agent_plan / agent_token_file
+                       the writing agent, from the reading's cwd (agents/<name>/..., or
+                       exactly the install root for the main agent; a worktree or any
+                       other folder under the root names nobody): its activePlanByAgent
+                       entry, else agent-config.json claudePlan, else an own token file
+                       named .claude-oauth-token-<plan id>. Used ONLY when no probe ties
+                       that plan to a DIFFERENT fingerprint.
+  3. fingerprint_only  nothing names it, or the claims contradict a measurement: the
+                       label is the fingerprint key itself (label_conflict says which),
+                       and the reading is never merged into a named plan.
+
+read_accounts() adds one more guard: two different fingerprints that come out under the
+same plan are BOTH kept under their own keys (label_conflict), never one under the name.
 
 Stdlib only. Never reads a token: only file names, ids and reset times.
 """
@@ -93,17 +100,24 @@ class Labeler:
         agents = os.path.join(self.root, "agents") + os.sep
         if cwd.startswith(agents):
             return cwd[len(agents):].split(os.sep, 1)[0] or None
-        if cwd == self.root or cwd.startswith(self.root + os.sep):
+        # Only the root itself is the main agent: a worktree (<root>/.claude/worktrees/..)
+        # or any other folder below it can be a session on any account.
+        if cwd.rstrip(os.sep) == self.root.rstrip(os.sep):
             return self.main
         return None
 
     def plan_of_agent(self, agent):
         if not agent:
             return None, None
+        p = self.active.get(agent)
+        if p in self.plans:
+            return p, "active_plan"
         if agent == self.main:
-            p = self.active.get(agent)
-            return (p, "active_plan") if p in self.plans else (None, None)
+            return None, None
         cfg = _load(os.path.join(self.root, "agents", agent, "agent-config.json"), {})
+        cp = cfg.get("claudePlan") if isinstance(cfg, dict) else None
+        if cp in self.plans:
+            return cp, "agent_plan"
         tf = cfg.get("oauthTokenFile") if isinstance(cfg, dict) else None
         if isinstance(tf, str):
             base = os.path.basename(tf)
@@ -113,14 +127,17 @@ class Labeler:
         return None, None
 
     def label(self, fp, cwd):
-        """(plan id or None, account key, label source, conflict flag)."""
+        """(plan id or None, account key, label source, conflict flag). fp must not be None."""
+        by_fp = self.probe_fp.get(fp)
         plan, src = self.plan_of_agent(self.agent_of(cwd))
-        by_fp = self.probe_fp.get(fp) if fp is not None else None
-        conflict = bool(plan and by_fp and plan != by_fp)
-        if plan:
-            return plan, plan, src, conflict
         if by_fp:
-            return by_fp, by_fp, "probe_fingerprint", False
+            return by_fp, by_fp, "probe_fingerprint", bool(plan and plan != by_fp)
+        if plan:
+            if plan in self.probe_fp.values():
+                # A probe ties this plan to another fingerprint: the claim is wrong
+                # (a stale activePlanByAgent, a session on another account).
+                return None, key_for(fp), "fingerprint_only", True
+            return plan, plan, src, False
         return None, key_for(fp), "fingerprint_only", False
 
 
@@ -148,6 +165,7 @@ def read_accounts(root, now=None, with_probe=True):
     now = time.time() if now is None else now
     lab = Labeler(root)
     out = {}
+    fps_of_plan = {}
     for path in glob.glob(os.path.join(root, "store", DIR_NAME, "wk-*.json")):
         d = _load(path, None)
         if not isinstance(d, dict):
@@ -161,6 +179,8 @@ def read_accounts(root, now=None, with_probe=True):
         if fp is None or not windows:
             continue
         plan, key, src, conflict = lab.label(fp, d.get("cwd"))
+        if plan:
+            fps_of_plan.setdefault(plan, set()).add(fp)
         prev = out.get(key)
         if prev and prev["written_at"] >= wa:
             continue
@@ -169,6 +189,29 @@ def read_accounts(root, now=None, with_probe=True):
             "fingerprint": key_for(fp), "writer_agent": lab.agent_of(d.get("cwd")), "source": "statusline",
             "written_at": int(wa), "age_minutes": round((now - wa) / 60.0, 1), "windows": windows,
         }
+    # Two live fingerprints under one plan: one of them is mislabelled and the
+    # readings cannot tell which, so neither gets the name.
+    for plan, fps in fps_of_plan.items():
+        if len(fps) > 1 and plan in out:
+            del out[plan]
+            for path in glob.glob(os.path.join(root, "store", DIR_NAME, "wk-*.json")):
+                d = _load(path, None)
+                rl = d.get("rate_limits") if isinstance(d, dict) else None
+                fp = fingerprint(rl)
+                windows = _live_windows(rl, now)
+                if fp not in fps or not windows:
+                    continue
+                wa = d.get("written_at")
+                if isinstance(wa, bool) or not isinstance(wa, (int, float)):
+                    continue
+                k = key_for(fp)
+                if k in out and out[k]["written_at"] >= wa:
+                    continue
+                out[k] = {
+                    "plan": None, "label": k, "label_source": "fingerprint_only", "label_conflict": True,
+                    "fingerprint": k, "writer_agent": lab.agent_of(d.get("cwd")), "source": "statusline",
+                    "written_at": int(wa), "age_minutes": round((now - wa) / 60.0, 1), "windows": windows,
+                }
     if with_probe:
         for pid, ps in (lab.state.get("plans") or {}).items():
             if pid in out or pid not in lab.plans or not isinstance(ps, dict):

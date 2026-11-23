@@ -165,7 +165,7 @@ describe('quota-check per account', () => {
     render(join(root, 'agents', 'grafit'), TEAM_RESET, 95)
     render(join(root, 'agents', 'prorab'), MAX_RESET, 20)
     const out = run(true)
-    expect(out).toMatch(/^HIT\tteam-plan=seven_day:90:\d+\tTeam: heti keret: 95% elhasznalva/)
+    expect(out).toMatch(/^HIT\tteam-plan\/seven_day:90:\d+\tTeam: heti keret: 95% elhasznalva/)
     // The old path, reading the shared file only, would have seen the 20% of Max.
     expect(run(false)).toBe('')
   })
@@ -175,5 +175,104 @@ describe('quota-check per account', () => {
       written_at: now, rate_limits: { seven_day: { used_percentage: 95, resets_at: TEAM_RESET } },
     }))
     expect(run(true)).toMatch(/^HIT\tseven_day:90:\d+\theti keret: 95% elhasznalva/)
+  })
+})
+
+// Revizor 5372: J1 (a claim about the writer must not override the measured
+// fingerprint), J2 (per-account dedupe), J3/M3 (readings without a fingerprint).
+describe('review fixes (5372)', () => {
+  const accounts = () => JSON.parse(py(LOAD_UC + 'print(json.dumps(uc.collect_claude_accounts()))'))
+  const qc = (env: Record<string, string> = {}) => spawnSync('python3', [join(root, 'scripts', 'lib', 'quota-check.py')], {
+    encoding: 'utf-8',
+    env: {
+      ...process.env, MAIN_AGENT_ID: 'marveen', QUOTA_WARN_PCT: '90',
+      QUOTA_FILE: join(root, 'store', '.claude-rate-limits.json'), QUOTA_DIR: join(root, 'store', 'claude-rate-limits'), ...env,
+    },
+  })
+  const knowBoth = () => writeFileSync(join(root, 'store', 'claude-plans-state.json'), JSON.stringify({
+    activePlanByAgent: { marveen: 'max-plan' },
+    plans: {
+      'max-plan': { observedAt: (now - 86400) * 1000, windows: { seven_day: { usedPercent: 10, resetsAt: MAX_RESET } } },
+      'team-plan': { observedAt: (now - 86400) * 1000, windows: { seven_day: { usedPercent: 10, resetsAt: TEAM_RESET } } },
+    },
+  }))
+
+  it('J1: a session in a worktree under the root is not the main agent', () => {
+    render(join(root, 'agents', 'prorab'), MAX_RESET, 20)
+    render(join(root, '.claude', 'worktrees', 'x'), TEAM_RESET, 95)
+    const a = accounts()
+    expect(a['max-plan'].windows.seven_day.used_percent).toBe(20)
+    expect(a[`wk-${TEAM_RESET % WEEK}`]).toMatchObject({ plan: null, writer_agent: null })
+    expect(JSON.parse(py(LOAD_UC + 'w, a = uc._main_account_statusline(10); print(json.dumps(w))')).seven_day.used_percent).toBe(20)
+  })
+
+  it('J1: the probe fingerprint beats a stale activePlanByAgent', () => {
+    knowBoth()
+    writeFileSync(join(root, 'store', 'claude-plans-state.json'), JSON.stringify({
+      ...JSON.parse(readFileSync(join(root, 'store', 'claude-plans-state.json'), 'utf-8')), activePlanByAgent: { marveen: 'team-plan' },
+    }))
+    render(root, MAX_RESET, 21)
+    render(join(root, 'agents', 'grafit'), TEAM_RESET, 95)
+    const a = accounts()
+    expect(a['max-plan']).toMatchObject({ label_source: 'probe_fingerprint', label_conflict: true, writer_agent: 'marveen' })
+    expect(a['max-plan'].windows.seven_day.used_percent).toBe(21)
+    expect(a['team-plan'].windows.seven_day.used_percent).toBe(95)
+  })
+
+  it('J1: a claim contradicted by a probe of that plan stays under its fingerprint', () => {
+    knowBoth()
+    render(join(root, 'agents', 'grafit'), OTHER_RESET, 50)   // grafit's token file says team, the fingerprint is neither
+    const a = accounts()
+    expect(a[`wk-${OTHER_RESET % WEEK}`]).toMatchObject({ plan: null, label_conflict: true })
+    expect(a['team-plan'].source).toBe('probe')
+  })
+
+  it('J1: two fingerprints under one claimed plan: neither gets the name', () => {
+    rmSync(join(root, 'store', 'claude-plans-state.json'))
+    writeFileSync(join(root, 'agents', 'prorab', 'agent-config.json'), JSON.stringify({ claudePlan: 'team-plan' }))
+    render(join(root, 'agents', 'grafit'), TEAM_RESET, 30)
+    render(join(root, 'agents', 'prorab'), MAX_RESET, 80)
+    const a = accounts()
+    expect(a['team-plan']).toBeUndefined()
+    expect(a[`wk-${TEAM_RESET % WEEK}`]).toMatchObject({ label_conflict: true })
+    expect(a[`wk-${MAX_RESET % WEEK}`]).toMatchObject({ label_conflict: true })
+  })
+
+  it('J2: an account whose reading goes stale and comes back is not alerted twice', () => {
+    knowBoth()
+    const state = join(root, 'store', '.limit-monitor-quota-state')
+    render(join(root, 'agents', 'grafit'), TEAM_RESET, 95)
+    render(join(root, 'agents', 'prorab'), MAX_RESET, 92)
+    const t1 = qc({ QUOTA_STATE: state }).stdout
+    expect(t1).toMatch(/^HIT\t/)
+    expect(t1).toContain('Team: heti keret: 95%')
+    expect(t1).toContain('Max: heti keret: 92%')
+    writeFileSync(state, t1.split('\t')[1])                       // what limit-monitor.sh stores after a delivered send
+    const maxFile = join(root, 'store', 'claude-rate-limits', `wk-${MAX_RESET % WEEK}.json`)
+    const maxReading = readFileSync(maxFile, 'utf-8')
+    rmSync(maxFile)                                               // Max agents idle: no reading
+    expect(qc({ QUOTA_STATE: state }).stdout).toBe('')
+    writeFileSync(maxFile, maxReading)                            // back again
+    expect(qc({ QUOTA_STATE: state }).stdout).toBe('')
+    render(join(root, 'agents', 'prorab'), MAX_RESET, 100)        // a NEW level is a new alert, and only that one is named
+    const t4 = qc({ QUOTA_STATE: state }).stdout
+    expect(t4).toContain('Max: heti keret: 100%')
+    expect(t4).not.toContain('Team:')
+  })
+
+  it('J3/M3: readings without a weekly reset are checked, not skipped or fatal', () => {
+    knowBoth()
+    render(join(root, 'agents', 'grafit'), TEAM_RESET, 30)
+    writeFileSync(join(root, 'store', 'claude-rate-limits', 'wk-1.json'), JSON.stringify({
+      written_at: now, rate_limits: { five_hour: { used_percentage: 99, resets_at: now + 1800 } },
+    }))
+    const r = qc()
+    expect(r.status).toBe(0)
+    expect(r.stdout).toMatch(/ismeretlen fiok: 5 oras keret: 99%/)
+    rmSync(join(root, 'store', 'claude-rate-limits', 'wk-1.json'))
+    writeFileSync(join(root, 'store', '.claude-rate-limits.json'), JSON.stringify({
+      written_at: now, rate_limits: { five_hour: { used_percentage: 97, resets_at: now + 1800 } },
+    }))
+    expect(qc().stdout).toMatch(/ismeretlen fiok: 5 oras keret: 97%/)
   })
 })

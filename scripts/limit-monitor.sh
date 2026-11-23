@@ -125,7 +125,7 @@ if { [ -s "$QUOTA_FILE" ] || [ -d "$QUOTA_DIR" ]; } && command -v python3 >/dev/
     # empty, and the `case` below has no empty branch -- so the measured quota
     # path could drop out of a round without a single word in the log.
     QUOTA_ERR="$STORE/.quota-check.stderr"
-    QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_DIR="$QUOTA_DIR" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="${QUOTA_MAX_AGE_SEC:-}" python3 "$QUOTA_CHECK" 2>"$QUOTA_ERR")"
+    QUOTA_OUT="$(QUOTA_FILE="$QUOTA_FILE" QUOTA_DIR="$QUOTA_DIR" QUOTA_STATE="$STORE/.limit-monitor-quota-state" QUOTA_WARN_PCT="$QUOTA_WARN_PCT" QUOTA_MAX_AGE_SEC="${QUOTA_MAX_AGE_SEC:-}" python3 "$QUOTA_CHECK" 2>"$QUOTA_ERR")"
     if [ -s "$QUOTA_ERR" ]; then
       log "quota-check.py uzenete: $(tr '\n' ' ' < "$QUOTA_ERR")"
     fi
