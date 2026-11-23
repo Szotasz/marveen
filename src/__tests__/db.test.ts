@@ -75,7 +75,7 @@ describe('memories', () => {
 
   it('epizodikus emleket ment', () => {
     saveMemory('mem-chat-2', 'Mai megbeszeles eredmenye', 'episodic')
-    const mems = getMemoriesForChat('mem-chat-2')
+    const mems = getMemoriesForChat()
     expect(mems.length).toBeGreaterThan(0)
     expect(mems[0].sector).toBe('episodic')
   })
@@ -92,7 +92,7 @@ describe('memories', () => {
   // sem, ha az embedding szolgaltatas (Ollama) nem elerheto.
   it('saveMemory nem hasal el, ha nincs Ollama', async () => {
     expect(() => saveMemory('mem-chat-embed', '[Napi naplo teszt] digest', 'episodic')).not.toThrow()
-    const mems = getMemoriesForChat('mem-chat-embed')
+    const mems = getMemoriesForChat()
     expect(mems.length).toBeGreaterThan(0)
     expect(mems[0].content).toBe('[Napi naplo teszt] digest')
     // a fire-and-forget agnak egy tick alatt sem szabad unhandled rejectiont dobnia
@@ -116,7 +116,7 @@ describe('memories', () => {
 
     try {
       saveMemory('mem-chat-embed-ok', '[Napi naplo teszt] vektorizalando', 'episodic')
-      const id = getMemoriesForChat('mem-chat-embed-ok')[0].id
+      const id = getMemoriesForChat()[0].id
 
       // Az embed-ag fire-and-forget, ezert nem szinkron assert kell, hanem
       // idokorlatos varakozas. Szinkron ellenorzes vagy hibasan bukna, vagy

@@ -2433,9 +2433,12 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
+// MEMCHATID1123: no chat_id filter. One install has one owner and one memory store; the column carried whatever
+// chat id the WRITER had (the API and the daily-log mirror ALLOWED_CHAT_ID, the nightly digest the resolved owner
+// chat), so a filter on one of them hid the other's rows, and every row written before a change of ALLOWED_CHAT_ID.
+// The writers and the column are unchanged.
 export function searchMemories(
   query: string,
-  chatId: string,
   limit = 3,
   allowRelaxed = true,
   category?: string,
@@ -2450,10 +2453,10 @@ export function searchMemories(
       db.prepare(
         `SELECT m.*, f.rank AS rank FROM memories m
          JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.memories_fts MATCH ? AND m.chat_id = ?${category ? ' AND m.category = ?' : ''} AND m.retracted_at IS NULL${dt.sql}
+         WHERE f.memories_fts MATCH ?${category ? ' AND m.category = ?' : ''} AND m.retracted_at IS NULL${dt.sql}
          ORDER BY rank
          LIMIT ?`
-      ).all(terms, chatId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+      ).all(terms, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
       , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
@@ -2551,7 +2554,8 @@ export function decayMemories(): void {
 // staleBefore (card ca046c9a, #570): only rows whose LAST WRITE
 // (updated_at, or created_at when it was never updated) is older than this
 // unix time -- the "hot for a week and nobody touched it" view.
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange, staleBefore?: number): Memory[] {
+// MEMCHATID1123: every row of the store, no chat_id filter (see searchMemories).
+export function getMemoriesForChat(limit = 10, offset = 0, category?: string, range?: TsRange, staleBefore?: number): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
@@ -2568,8 +2572,8 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   const dt = tsClause('created_at', range)
   const stale = staleBefore !== undefined ? ' AND COALESCE(updated_at, created_at) < ?' : ''
   return db
-    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
-    .all(chatId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE retracted_at IS NULL${category ? ' AND category = ?' : ''}${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
