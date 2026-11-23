@@ -342,6 +342,16 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
     expect(() => codexRelayFilesystemEntries(join(agents, 'y'), home)).toThrow(/it is inside /)
   })
 
+  it('D0480 refuses a workspace inside the other secret roots (channels, gmail, dotenv file)', () => {
+    expect(() => codexRelayFilesystemEntries(join(USER_HOME, '.claude', 'channels', 'sub'), home))
+      .toThrow(/relay sandbox profile refuses workspace .*: it is inside /)
+    expect(() => codexRelayFilesystemEntries(join(USER_HOME, '.gmail-mcp', 'sub'), home))
+      .toThrow(/relay sandbox profile refuses workspace .*: it is inside /)
+    writeFileSync(join(projectRoot!, '.env'), '')
+    expect(() => codexRelayFilesystemEntries(join(projectRoot!, '.env', 'sub'), home))
+      .toThrow(/relay sandbox profile refuses workspace .*: it is inside /)
+  })
+
   it('R1 refuses a workspace that is a hidden path, lexically or physically', () => {
     const runDir = codexRelayMxdRunDir()
     const store = codexRelayDeniedReadRoots()[0]
