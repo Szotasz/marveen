@@ -495,7 +495,7 @@ describe('the retired path of the English text (EGM review Major 2): per languag
 // update the hash here (the failing test prints the new one). The hash covers every branch combination above.
 const HU_SOURCE_HASHES: Record<string, string> = {
   'agent-id-header': '44f5248d7fc36cbc',
-  'api-helper': 'b8eeff8bebdff1d1',
+  'api-helper': 'ed22c832dfe7b836',
   'autonomy': '728210d786c75e11',
   'background-checkpoint': '04505f8789507f70',
   'evidence': '9dff6e8bd9b8d64c',
@@ -509,7 +509,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'message-close': '835ee6c92d6e0a7a',
   'pane-at-escape': '81d1f7d930d89739',
   'skills-path-trap': '76b7632b730c8120',
-  'strict-api': '0eeec47cd845f598',
+  'strict-api': '7320a9a83c878d0b',
   'system-directive-auth': '5f72174ed4de6b5d',
 }
 
