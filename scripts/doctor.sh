@@ -80,7 +80,7 @@ else
 fi
 
 # --- Channel health ---
-echo -e "\n${BOLD}Telegram bridge${RESET}"
+echo -e "\n${BOLD}Channel bridge ($CHANNEL_PROVIDER)${RESET}"
 bash scripts/verify-channels-health.sh 2>&1 | grep -E '^\s+\(|HEALTHY|UNHEALTHY' | while read line; do
   case "$line" in
     *OK*) echo -e "  ${GREEN}✓${RESET} $line" ;;
@@ -200,10 +200,24 @@ fi
 
 # --- .env keys ---
 echo -e "\n${BOLD}.env keys${RESET}"
-for key in MAIN_AGENT_ID BOT_NAME TELEGRAM_BOT_TOKEN ALLOWED_CHAT_ID; do
+# CHANPIDPROVIDER1123: the Telegram keys only on a Telegram install. Another token provider keeps its token in the
+# channel state dir, so it is checked the way channels.sh decides "configured" (scripts/main-channel-configured.sh).
+_env_keys="MAIN_AGENT_ID BOT_NAME"
+[ "$CHANNEL_PROVIDER" = "telegram" ] && _env_keys="$_env_keys TELEGRAM_BOT_TOKEN ALLOWED_CHAT_ID"
+for key in $_env_keys; do
   val=$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2-)
   if [ -n "$val" ]; then ok "$key: present"; else fail "$key: MISSING"; fi
 done
+unset _env_keys
+if [ "$CHANNEL_PROVIDER" != "telegram" ] && . "$INSTALL_DIR/scripts/main-channel-configured.sh" 2>/dev/null \
+   && _tok_key="$(main_channel_token_key "$CHANNEL_PROVIDER")"; then
+  if main_channel_unconfigured "$CHANNEL_PROVIDER" "$INSTALL_DIR" "${HOME:-}"; then
+    fail "$_tok_key: MISSING (.claude/channels/$CHANNEL_PROVIDER/.env)"
+  else
+    ok "$_tok_key: present (channel .env)"
+  fi
+  unset _tok_key
+fi
 # OWNERAUTHGUESS1106 (Samu 71849): with several paired DMs and no explicit owner id the chat commands do not run
 # (nobody is guessed as the owner). Report only; the line comes from the same resolver the dashboard uses
 # (dist/owner-identity.js) and names no id.
