@@ -256,14 +256,21 @@ describe('a non-strict agent gets the helper recipes in the generated blocks', (
     expect([...seen].sort()).toEqual(Object.keys(KIND).sort())
   })
 
-  it('every block that names a payload file says: one file, one send (Dani 65157/1, Samu 65160)', () => {
-    stageAgent('plain-o', null)
-    const file = startBlocks('plain-o')
-    const parts = file.split('<!-- BEGIN GENERATED: ').slice(1).filter((p) => /api-[a-z]+\.txt/.test(p))
-    expect(parts.length).toBe(4) // autonomy (message + approval), message-close, agent-id, api-helper (PR-A2)
-    for (const p of parts) expect(p, p.slice(0, 40)).toContain(S.ONE_FILE_ONE_SEND)
-    const autonomy = parts.find((p) => p.startsWith('autonomy-wiring'))!
-    expect(autonomy.split(S.ONE_FILE_ONE_SEND).length - 1).toBe(2)
+  // Every block that names a payload file says: one file, one send (Dani 65157/1, Samu 65160). The full sentence
+  // stands once, in the "Dashboard-hívások" section (api-helper, or strict-api for a strict agent); the others name it.
+  it('every block that names a payload file says: one file, one send, in full once (Dani 65157/1, Samu 65160)', () => {
+    for (const [name, profile, full] of [['plain-o', null, 'api-helper'], ['strict-o', 'developer-junior', 'strict-api']] as const) {
+      stageAgent(name, profile)
+      const file = startBlocks(name)
+      const parts = file.split('<!-- BEGIN GENERATED: ').slice(1).filter((p) => /api-[a-z]+\.txt/.test(p))
+      expect(parts.length, name).toBe(4) // autonomy (message + approval), message-close, agent-id, api-helper / strict-api
+      expect(parts.filter((p) => p.includes(S.ONE_FILE_ONE_SEND)).map((p) => p.split(' ')[0]), name).toEqual([full])
+      for (const p of parts.filter((p) => !p.startsWith(full))) expect(p, `${name}: ${p.slice(0, 40)}`).toContain(S.ONE_FILE_ONE_SEND_REF)
+      const autonomy = parts.find((p) => p.startsWith('autonomy-wiring'))!
+      expect(autonomy.split(S.ONE_FILE_ONE_SEND_REF).length - 1, name).toBe(2)
+      // the reference points at a section the same file carries
+      expect(file, name).toContain('## Dashboard-hívások')
+    }
   })
 
   it('the main agent too: its payload files in the project root, which git ignores', () => {
