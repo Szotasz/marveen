@@ -1044,6 +1044,7 @@ export function agentMaySudo(name: string): boolean {
 // A '*' entry means every sub-agent, including ones created later (it is not a valid agent name, so no clash).
 // The Settings page value (owner-only to add, see the registry's loosens) adds to the .env line. The .env line is read
 // raw on purpose: the registry key is overrides-only, but dropping the released .env path would break installs using it.
+// The registry marks the key envStillApplies, so the Settings page and the boot log do not call that line ignored.
 export function agentExcludesRootClaudeMd(name: string): boolean {
   if (name === MAIN_AGENT_ID) return false
   try {

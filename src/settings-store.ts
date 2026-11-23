@@ -130,8 +130,14 @@ export function getEffectiveSettingSource(key: string): { value: string | number
 function envLayer(def: SettingDefinition, key: string): { value?: string; ignored: boolean } {
   const envValue = readEnvFile([key])[key]
   if (envValue === undefined) return { ignored: false }
-  if (isOverridesOnly(def) && !envValueTightens(def, envValue)) return { ignored: true }
+  if (envLineIgnored(def, envValue)) return { ignored: true }
   return { value: envValue, ignored: false }
+}
+
+// Does the overrides-only rule leave this .env value out? Never for a key whose .env line a consumer still reads
+// (envStillApplies): calling that line ignored would tell the owner the opposite of what is in effect.
+function envLineIgnored(def: SettingDefinition, envValue: string): boolean {
+  return isOverridesOnly(def) && def.envStillApplies !== true && !envValueTightens(def, envValue)
 }
 
 // Is this key's .env line ignored by the overrides-only rule? For the Settings page marker (envIgnored).
@@ -146,7 +152,7 @@ export function isEnvValueIgnored(key: string): boolean {
 export function getIgnoredEnvKeys(): string[] {
   const keys = SETTINGS_REGISTRY.filter(isOverridesOnly).map((d) => d.key)
   const env = readEnvFile(keys)
-  return keys.filter((key) => env[key] !== undefined && !envValueTightens(getSettingDefinition(key)!, env[key]))
+  return keys.filter((key) => env[key] !== undefined && envLineIgnored(getSettingDefinition(key)!, env[key]))
 }
 
 // The overrides-only keys, in registry order: what an unreadable overrides file can drop to the default.

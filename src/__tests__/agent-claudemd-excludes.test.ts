@@ -28,10 +28,15 @@ vi.mock('../env.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../env.js')>()
   return {
     ...orig,
-    readEnvFile: (keys?: string[]) =>
-      keys?.length === 1 && keys[0] === 'ROOT_CLAUDEMD_EXCLUDE_AGENTS'
-        ? (env.value === undefined ? {} : { [keys[0]]: env.value })
-        : orig.readEnvFile(keys),
+    // every read that asks for the key sees the test's value, the many-key read of getIgnoredEnvKeys too
+    readEnvFile: (keys?: string[]) => {
+      const out = orig.readEnvFile(keys)
+      if (keys?.includes('ROOT_CLAUDEMD_EXCLUDE_AGENTS')) {
+        delete out.ROOT_CLAUDEMD_EXCLUDE_AGENTS
+        if (env.value !== undefined) out.ROOT_CLAUDEMD_EXCLUDE_AGENTS = env.value
+      }
+      return out
+    },
   }
 })
 
@@ -40,7 +45,8 @@ import { agentDir, agentExcludesRootClaudeMd } from '../web/agent-config.js'
 import { loadProfileTemplate } from '../web/profiles.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { getSettingDefinition, isOverridesOnly, validateSettingValue } from '../config-registry.js'
-import { setOverride, clearOverride, getEffectiveSettingValue } from '../settings-store.js'
+import { setOverride, clearOverride, getEffectiveSettingSource, getIgnoredEnvKeys, isEnvValueIgnored } from '../settings-store.js'
+import { logIgnoredEnvKeys } from '../settings-health.js'
 import { logger } from '../logger.js'
 
 const NAME = 'mdexcl-test-agent'
@@ -153,7 +159,7 @@ it(`${KEY}: the Settings value works alone and adds to the .env line`, () => {
   expect(settingsOf(NAME)).not.toHaveProperty('claudeMdExcludes')
 })
 
-it(`${KEY}: registry key whose additions need the owner; a .env line never counts through the settings layer`, () => {
+it(`${KEY}: registry key whose additions need the owner; its .env line is reported as in effect, never as ignored (#2996 B1)`, () => {
   const def = getSettingDefinition(KEY)!
   expect(isOverridesOnly(def)).toBe(true)
   expect(def.loosens!('', NAME)).toBe(true)
@@ -162,6 +168,16 @@ it(`${KEY}: registry key whose additions need the owner; a .env line never count
   expect(def.loosens!(NAME, '')).toBe(false)
   expect(validateSettingValue(def, `${NAME}, *`).ok).toBe(true)
   expect(validateSettingValue(def, 'bad/name').ok).toBe(false)
+  // the .env line excludes the agent, so every place that reports on it has to say so
   env.value = NAME
-  expect(getEffectiveSettingValue(KEY)).toBe('')
+  expect(agentExcludesRootClaudeMd(NAME)).toBe(true)
+  expect(getEffectiveSettingSource(KEY)).toEqual({ value: NAME, source: 'env' })
+  expect(isEnvValueIgnored(KEY)).toBe(false)
+  expect(getIgnoredEnvKeys()).not.toContain(KEY)
+  expect(logIgnoredEnvKeys()).not.toContain(KEY)
+  // an override answers for the page, and the .env line still adds to it
+  expect(setOverride(KEY, OTHER)).toEqual({ ok: true })
+  expect(getEffectiveSettingSource(KEY)).toEqual({ value: OTHER, source: 'override' })
+  expect(isEnvValueIgnored(KEY)).toBe(false)
+  expect(agentExcludesRootClaudeMd(NAME)).toBe(true)
 })
