@@ -271,4 +271,18 @@ describe('the start-up sweep', () => {
     expect(row(two.approvalId)!.outcome).toBe('interrupted')
     expect(h.alerts.some((t) => t.includes('megszakadt'))).toBe(true)
   })
+
+  it('Revizor M3: an approval left unconsumed past the window is reported ONCE, never run, and not again on the next start', async () => {
+    const { body } = await file()
+    const old = Math.floor(Date.now() / 1000) - oa.OWNER_ACTION_CONSUME_WINDOW_S - 3600
+    db.getDb().prepare("UPDATE approvals SET status = 'approved', resolved_at = ?, resolved_by = 'dashboard_owner' WHERE id = ?").run(old, body.approvalId)
+    expect(await oa.sweepOwnerActionOnStart()).toEqual({ consumed: 1, interrupted: 0 })
+    expect(h.channelSetups).toEqual([])
+    expect(row(body.approvalId)!.outcome).toBe('refused:consume_expired')
+    expect(h.alerts.filter((t) => t.includes(body.approvalId))).toHaveLength(1)
+    // the next server start: nothing to sweep, no new alert
+    expect(await oa.sweepOwnerActionOnStart()).toEqual({ consumed: 0, interrupted: 0 })
+    expect(h.alerts.filter((t) => t.includes(body.approvalId))).toHaveLength(1)
+    expect(h.channelSetups).toEqual([])
+  })
 })

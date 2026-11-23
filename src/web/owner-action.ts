@@ -224,7 +224,12 @@ export function consumeOwnerActionStep(approvalId: string): ConsumeStep {
     const row = db.prepare('SELECT request_json, content_hash FROM owner_action_requests WHERE approval_id = ?').get(approvalId) as { request_json: string; content_hash: string } | undefined
     if (!row) return { go: false, reason: 'no_request' }
     const c = consumeApproval({ id: approvalId, contentHash: row.content_hash, consumer: OWNER_ACTION_CATEGORY, messageId: approvalId, windowSeconds: OWNER_ACTION_CONSUME_WINDOW_S, category: OWNER_ACTION_CATEGORY })
-    if (!c.ok) return { go: false, reason: `consume_refused:${c.reason}` }
+    if (!c.ok) {
+      // Revizor M3: a refusal other than already_consumed (e.g. expired: approved but not consumed within the window) is
+      // final. Its outcome is written once, so the start-up sweep (outcome IS NULL) does not pick it up and alert again.
+      if (c.reason !== 'already_consumed') setOutcome(approvalId, `refused:consume_${c.reason}`)
+      return { go: false, reason: `consume_refused:${c.reason}` }
+    }
     const stamped = db.prepare('UPDATE owner_action_requests SET consumed_at = ? WHERE approval_id = ? AND consumed_at IS NULL').run(Math.floor(Date.now() / 1000), approvalId).changes
     if (stamped !== 1) throw new Error('owner_action request already consumed while its approval was not')
     const re = recheckStoredRequest(row.request_json, row.content_hash)
@@ -304,7 +309,7 @@ export async function sweepOwnerActionOnStart(): Promise<{ consumed: number; int
   const db = getDb()
   const pending = db.prepare(`
     SELECT a.* FROM approvals a JOIN owner_action_requests r ON r.approval_id = a.id
-    WHERE a.category = ? AND a.status = 'approved' AND a.consumed_at IS NULL AND r.consumed_at IS NULL
+    WHERE a.category = ? AND a.status = 'approved' AND a.consumed_at IS NULL AND r.consumed_at IS NULL AND r.outcome IS NULL
   `).all(OWNER_ACTION_CATEGORY) as Approval[]
   const interrupted = db.prepare('SELECT approval_id FROM owner_action_requests WHERE consumed_at IS NOT NULL AND outcome IS NULL').all() as Array<{ approval_id: string }>
   for (const r of interrupted) {
