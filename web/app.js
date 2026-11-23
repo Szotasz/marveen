@@ -12094,6 +12094,194 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
   })
 })()
 
+// --- Web logins (VAULTLOGIN1112) ---
+// The vault's web logins: an exact origin, a username and a password the dashboard types into an agent's own
+// browser. The password is write-only here: it is sent once on save and never rendered or read back.
+let _webLogins = []
+let _webLoginAgents = []
+let _webLoginEditingId = null
+
+async function loadWebLogins() {
+  try {
+    const [res, agentsRes] = await Promise.all([fetch('/api/vault/web-logins'), fetch('/api/agents')])
+    if (res.ok) _webLogins = (await res.json()).logins || []
+    if (agentsRes.ok) {
+      const list = await agentsRes.json()
+      _webLoginAgents = (Array.isArray(list) ? list : []).map(a => a && a.name).filter(n => n && n !== mainAgentId())
+    }
+    renderWebLogins()
+  } catch { /* ignore */ }
+}
+
+function _webLoginResultText(result) {
+  const key = 'vault.weblogin.result.' + result
+  const text = t(key)
+  return text === key ? result : text
+}
+
+function renderWebLogins() {
+  const cards = document.getElementById('webLoginCards')
+  const empty = document.getElementById('webLoginEmpty')
+  if (!cards || !empty) return
+  if (_webLogins.length === 0) { cards.innerHTML = ''; empty.hidden = false; return }
+  empty.hidden = true
+  cards.innerHTML = _webLogins.map(e => {
+    const agents = (e.allowedAgents || []).length ? e.allowedAgents.join(', ') : t('vault.weblogin.card.no_agents')
+    const last = e.lastResult
+      ? t('vault.weblogin.card.last', {
+          result: _webLoginResultText(e.lastResult),
+          agent: e.lastAgent || '',
+          time: e.lastAttemptAt ? new Date(e.lastAttemptAt).toLocaleString(window._lang === 'en' ? 'en-GB' : 'hu-HU') : '',
+        })
+      : t('vault.weblogin.card.never')
+    return `
+    <div class="ssh-card web-login-card" data-id="${escapeHtml(e.id)}">
+      <div class="ssh-card-head">
+        <div class="ssh-card-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        </div>
+        <div class="ssh-card-title">
+          <div class="ssh-card-name" title="${escapeHtml(e.origin)}">${escapeHtml(e.origin)}</div>
+          <div class="ssh-card-desc">${escapeHtml(e.username)}</div>
+        </div>
+        ${e.locked ? `<span class="ssh-key-badge expired web-login-locked" title="${escapeHtml(t('vault.weblogin.card.locked_title'))}">${escapeHtml(t('vault.weblogin.card.locked'))}</span>` : ''}
+      </div>
+      <div class="ssh-card-meta">
+        <div class="ssh-card-row web-login-agents-row">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span>${escapeHtml(t('vault.weblogin.card.agents', { agents }))}</span>
+        </div>
+        <div class="ssh-card-row web-login-last"><span>${escapeHtml(last)}</span></div>
+      </div>
+      <div class="ssh-card-footer">
+        <div class="ssh-card-actions web-login-actions">
+          ${e.locked ? `<button class="btn-secondary btn-compact web-login-unlock-btn" data-id="${escapeHtml(e.id)}">${escapeHtml(t('vault.weblogin.card.unlock'))}</button>` : ''}
+          <button class="btn-secondary btn-compact web-login-edit-btn" data-id="${escapeHtml(e.id)}" title="${escapeHtml(t('common.btn.edit'))}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="btn-secondary btn-compact web-login-delete-btn" data-id="${escapeHtml(e.id)}" title="${escapeHtml(t('common.btn.delete'))}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>`
+  }).join('')
+
+  cards.querySelectorAll('.web-login-edit-btn').forEach(btn => btn.addEventListener('click', () => openWebLoginForm(btn.dataset.id)))
+  cards.querySelectorAll('.web-login-unlock-btn').forEach(btn => btn.addEventListener('click', async () => {
+    try {
+      const res = await fetch(`/api/vault/web-logins/${encodeURIComponent(btn.dataset.id)}/unlock`, { method: 'POST' })
+      if (!res.ok) { const err = await res.json().catch(() => ({})); showToast(err.error || t('common.error_save'), 'error'); return }
+      showToast(t('vault.weblogin.toast.unlocked'))
+      await loadWebLogins()
+    } catch { showToast(t('vault.toast.network_error'), 'error') }
+  }))
+  cards.querySelectorAll('.web-login-delete-btn').forEach(btn => btn.addEventListener('click', async () => {
+    const entry = _webLogins.find(e => e.id === btn.dataset.id)
+    const confirmed = await confirmDialog({
+      title: t('vault.weblogin.confirm.delete_title'),
+      message: t('vault.weblogin.confirm.delete', { name: entry ? `${entry.origin} (${entry.username})` : btn.dataset.id }),
+      okLabel: t('vault.weblogin.confirm.delete_ok'),
+      danger: true,
+    })
+    if (!confirmed) return
+    try {
+      const res = await fetch(`/api/vault/web-logins/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { showToast(data.error || t('vault.toast.delete_error'), 'error'); return }
+      showToast(t('vault.weblogin.toast.deleted'))
+      _showWebLoginRestartNote(data.restartAgents)
+      await loadWebLogins()
+    } catch { showToast(t('vault.toast.network_error'), 'error') }
+  }))
+}
+
+function _showWebLoginRestartNote(agents) {
+  const note = document.getElementById('webLoginRestartNote')
+  if (!note) return
+  if (!Array.isArray(agents) || agents.length === 0) { note.hidden = true; note.textContent = ''; return }
+  note.textContent = t('vault.weblogin.restart_note', { agents: agents.join(', ') })
+  note.hidden = false
+}
+
+function _renderWebLoginAgentChecks(checked) {
+  const box = document.getElementById('webLoginAgents')
+  if (!box) return
+  if (_webLoginAgents.length === 0) { box.innerHTML = `<span class="web-login-hint">${escapeHtml(t('vault.weblogin.form.no_agents'))}</span>`; return }
+  box.innerHTML = _webLoginAgents.map(a => `
+    <label class="web-login-agent"><input type="checkbox" value="${escapeHtml(a)}"${checked.includes(a) ? ' checked' : ''}> <span>${escapeHtml(a)}</span></label>`).join('')
+}
+
+function openWebLoginForm(id) {
+  const entry = id ? _webLogins.find(e => e.id === id) : null
+  _webLoginEditingId = entry ? entry.id : null
+  const origin = document.getElementById('webLoginOriginInput')
+  origin.value = entry ? entry.origin : ''
+  // The origin is the entry's identity: it is not changed in place (delete and add instead).
+  origin.disabled = !!entry
+  document.getElementById('webLoginUserInput').value = entry ? entry.username : ''
+  const pass = document.getElementById('webLoginPassInput')
+  pass.value = ''
+  pass.placeholder = entry ? t('vault.weblogin.form.password_keep_ph') : ''
+  document.getElementById('webLoginUrlInput').value = entry && entry.loginUrl ? entry.loginUrl : ''
+  document.getElementById('webLoginUserSelInput').value = entry && entry.userSelector ? entry.userSelector : ''
+  document.getElementById('webLoginPassSelInput').value = entry && entry.passSelector ? entry.passSelector : ''
+  _renderWebLoginAgentChecks(entry ? entry.allowedAgents || [] : [])
+  document.getElementById('webLoginPanelTitle').textContent = entry
+    ? t('vault.weblogin.form.edit_title', { name: entry.origin })
+    : t('vault.weblogin.form.add_title')
+  document.getElementById('webLoginPanel').hidden = false
+  ;(entry ? document.getElementById('webLoginUserInput') : origin).focus()
+}
+
+function closeWebLoginForm() {
+  // The password never stays in the DOM once the form is closed or saved.
+  document.getElementById('webLoginPassInput').value = ''
+  document.getElementById('webLoginPanel').hidden = true
+  _webLoginEditingId = null
+}
+
+;(function wireWebLogins() {
+  const newBtn = document.getElementById('webLoginNewBtn')
+  if (!newBtn) return
+  newBtn.addEventListener('click', () => openWebLoginForm(null))
+  document.getElementById('webLoginPanelClose')?.addEventListener('click', closeWebLoginForm)
+  document.getElementById('webLoginSaveBtn')?.addEventListener('click', async () => {
+    const isEdit = !!_webLoginEditingId
+    const origin = document.getElementById('webLoginOriginInput').value.trim()
+    const username = document.getElementById('webLoginUserInput').value.trim()
+    const passEl = document.getElementById('webLoginPassInput')
+    const password = passEl.value
+    const loginUrl = document.getElementById('webLoginUrlInput').value.trim()
+    const userSelector = document.getElementById('webLoginUserSelInput').value.trim()
+    const passSelector = document.getElementById('webLoginPassSelInput').value.trim()
+    const allowedAgents = [...document.querySelectorAll('#webLoginAgents input[type="checkbox"]:checked')].map(c => c.value)
+    const missing = !isEdit && !origin ? ['webLoginOriginInput', 'vault.weblogin.form.origin_required']
+      : !username ? ['webLoginUserInput', 'vault.weblogin.form.user_required']
+      : !isEdit && !password ? ['webLoginPassInput', 'vault.weblogin.form.pass_required']
+      : null
+    if (missing) { document.getElementById(missing[0]).focus(); showToast(t(missing[1]), 'warn'); return }
+    const body = { username, loginUrl: loginUrl || null, userSelector: userSelector || null, passSelector: passSelector || null, allowedAgents }
+    if (!isEdit) body.origin = origin
+    // On edit an empty password field keeps the stored one: the key is only sent when the owner typed a new one.
+    if (password) body.password = password
+    try {
+      const res = await fetch(isEdit ? `/api/vault/web-logins/${encodeURIComponent(_webLoginEditingId)}` : '/api/vault/web-logins', {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { showToast(data.error || t('common.error_save'), 'error'); return }
+      passEl.value = ''
+      closeWebLoginForm()
+      showToast(t(isEdit ? 'vault.weblogin.toast.updated' : 'vault.weblogin.toast.added'))
+      _showWebLoginRestartNote(data.restartAgents)
+      await loadWebLogins()
+    } catch { showToast(t('vault.toast.network_error'), 'error') }
+  })
+})()
+
 // --- Vault Page ---
 let _vaultSecrets = []
 
@@ -12112,7 +12300,7 @@ async function loadVaultPage() {
     document.getElementById('vaultStatTotal').textContent = String(_vaultSecrets.length)
     document.getElementById('vaultStatBindings').textContent = String(_vaultBindings.length)
     renderVaultGrid(_vaultSecrets)
-    await Promise.all([loadSshKeys(), loadSshServers()])
+    await Promise.all([loadSshKeys(), loadSshServers(), loadWebLogins()])
   } catch { /* ignore */ }
 }
 

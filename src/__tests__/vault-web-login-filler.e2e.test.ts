@@ -63,6 +63,7 @@ function siteA(): Server {
     if (url.pathname === '/login') { res.end(html('Login', form('/login'))); return }
     if (url.pathname === '/login-2fa-page') { res.end(html('Login', form('/login-2fa'))); return }
     if (url.pathname === '/captcha') { res.end(html('Login', form('/login-captcha'))); return }
+    if (url.pathname === '/redirect-user') { res.writeHead(302, { location: `${B}/user-only` }); res.end(); return }
     if (url.pathname === '/redirect') { res.writeHead(302, { location: `${B}/login` }); res.end(); return }
     if (url.pathname === '/framed') { res.end(html('Framed', `<h1>Shop</h1><iframe src="${B}/login" width="600" height="300"></iframe>`)); return }
     if (url.pathname === '/two-step') { res.end(html('User', '<form action="/two-step-user" method="post"><input name="u" autocomplete="username"><button>Next</button></form>')); return }
@@ -89,6 +90,7 @@ function siteB(): Server {
       return
     }
     if (url.pathname === '/login') { res.end(html('Other origin', form('/login'))); return }
+    if (url.pathname === '/user-only') { res.end(html('Other origin', '<form action="/next" method="post"><input name="u" autocomplete="username"><button>Next</button></form>')); return }
     res.end(html('B', '<p>recaptcha</p>'))
   })
 }
@@ -172,6 +174,12 @@ describe.skipIf(!CHROME)('vault web login filler against a real Chrome', () => {
     expect(posts).toEqual([])
   }, 60_000)
 
+  it('origin gate: a redirect to another origin that asks for the username first: not even the username is typed', async () => {
+    posts.length = 0
+    expect(await run('/redirect-user')).toEqual({ outcome: 'origin-mismatch' })
+    expect(posts).toEqual([])
+  }, 60_000)
+
   it('origin gate: a password field only in a foreign-origin iframe is refused, nothing typed', async () => {
     posts.length = 0
     expect(await run('/framed')).toEqual({ outcome: 'origin-mismatch' })
@@ -232,4 +240,23 @@ describe.skipIf(!CHROME)('vault web login filler against a real Chrome', () => {
     expect(await fillWebLogin({ cdpEndpoint: `http://127.0.0.1:${dead}`, origin: A, loginUrl: `${A}/login`, username: USER, password: SECRET, timeoutMs: 5000 }))
       .toEqual({ outcome: 'browser-unavailable' })
   }, 30_000)
+})
+
+describe('the filler refuses to run under Playwright\'s debug log', () => {
+  it.each(['pw:api', 'pw:protocol', 'x,pw:*'])('DEBUG=%s: browser-unavailable, no connection attempted', async (dbg) => {
+    const saved = process.env.DEBUG
+    process.env.DEBUG = dbg
+    let connected = 0
+    try {
+      const r = await fillWebLogin(
+        { cdpEndpoint: 'http://127.0.0.1:1', origin: 'https://a.example', loginUrl: 'https://a.example/', username: 'u', password: SECRET },
+        async () => { connected++; throw new Error('no') },
+      )
+      expect(r).toEqual({ outcome: 'browser-unavailable' })
+      expect(connected).toBe(0)
+    } finally {
+      if (saved === undefined) delete process.env.DEBUG
+      else process.env.DEBUG = saved
+    }
+  })
 })

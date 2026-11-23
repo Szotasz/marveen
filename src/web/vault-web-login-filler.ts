@@ -125,6 +125,9 @@ export async function fillWebLogin(req: FillRequest, connect?: (endpoint: string
   const passSelector = req.passSelector || PASSWORD_SELECTOR
   const userSelector = req.userSelector || USERNAME_SELECTOR
 
+  // Playwright's own debug log (DEBUG=pw:protocol / pw:api) would write the typed text to the dashboard's stderr.
+  if (/(^|,)\s*pw:/.test(process.env.DEBUG ?? '')) return { outcome: 'browser-unavailable' }
+
   let browser: Browser
   try {
     const doConnect = connect ?? (async (endpoint: string, timeout: number) => (await import('playwright-core')).chromium.connectOverCDP(endpoint, { timeout }))

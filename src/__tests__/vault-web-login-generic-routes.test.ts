@@ -88,6 +88,7 @@ describe('the generic vault routes refuse a web-login password', () => {
     for (const b of [{ vaultSecretId: ID, envVar: 'SITE_PASSWORD' }, { vaultSecretId: ID, headerName: 'Authorization' }]) {
       const r = await call('POST', '/api/vault/bindings', OWNER, b)
       expect(r.statusCode).toBe(400)
+      expect(JSON.parse(r.body).error).toBe('Web login passwords cannot be bound to an env var or a header')
     }
     expect(reads).not.toContain(ID)
   })
