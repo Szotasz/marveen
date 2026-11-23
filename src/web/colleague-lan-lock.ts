@@ -100,6 +100,7 @@ export const LAN_LOCK_LOGIN_ROUTES: ReadonlySet<string> = new Set([
   '/api/auth/login/totp',
   '/api/auth/setup-code',
   '/api/operator/login',
+  '/api/auth/password-reset/complete',
 ])
 
 export interface LanLockRequest {

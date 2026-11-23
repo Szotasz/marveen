@@ -32,6 +32,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CATEGORIES = ('hot', 'warm', 'cold', 'shared')
 NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}$')
 ID_RE = re.compile(r'^[0-9]{1,18}$')
+# DASHUSERGATE1123: a dashboard login name (routes/auth.ts USERNAME_RE).
+DASH_USER_RE = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
 APPROVAL_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 CATEGORY_KEY_RE = re.compile(r'^[a-z][a-z0-9_]{1,63}$')
 HASH_RE = re.compile(r'^[A-Za-z0-9:_-]{8,128}$')
@@ -85,6 +87,9 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   daily-log-read <agent> [--date YYYY-MM-DD]
                 (without --date: today on this machine's clock; the server's own default is the UTC day)
   memory-backfill
+  password-reset-request [<dashboard-username>]
+                (a forgotten dashboard password: the server sends a one-time code to the owner's private chat;
+                 you never see it. Without a name: the only dashboard user)
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
 
@@ -490,6 +495,16 @@ def build_request(verb, args):
                        '(restart the main agent from the dashboard)')
         # A JSON body always goes, {} when there is no option: the route refuses a body that did not arrive in full.
         return 'POST', f'/api/agents/{agent}/restart', {'fresh': True} if fresh else {}, headers, {}
+    if verb == 'password-reset-request':
+        # DASHUSERGATE1123: the answer says only whether the code went out; the code itself goes to the owner alone.
+        if len(args) > 1:
+            fail_usage(f'{verb}: expected at most 1 argument, got {len(args)}')
+        rest = positional(args, len(args), verb)
+        body = {}
+        if rest:
+            check(rest[0], DASH_USER_RE, 'dashboard username')
+            body['username'] = rest[0]
+        return 'POST', '/api/auth/password-reset/request', body, headers, {}
     if verb == 'federation-directory':
         # The catalog the federation block tells the agent to read before any substantive request.
         positional(args, 0, verb)

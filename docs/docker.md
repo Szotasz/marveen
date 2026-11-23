@@ -114,6 +114,8 @@ If you decide you need no name rule, say so in the file, and the warning stops: 
 
 ## Locked out: lost password or phone
 
+A forgotten password needs no terminal when a private chat with the owner is set up (Slack DM or Telegram): ask Marveen for a reset code, which goes to that chat only, and enter it under "I have a reset code" in the dashboard's sign-in window (see [dashboard-auth-recovery.md](dashboard-auth-recovery.md)). The commands below are the path that always works.
+
 The break-glass commands run inside the container, on the server (being on the machine is the proof). The image has no TypeScript runner, so they run with node, not `npm run`:
 
 ```bash

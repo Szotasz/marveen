@@ -7552,6 +7552,14 @@ export function logConfigChange(
   ).run(key, oldValue === null ? null : String(oldValue), newValue === null ? null : String(newValue), actor, now)
 }
 
+/** DASHUSERGATE1123: how many audit rows of `key` with this new_value were written since `sinceSec` (unix seconds). */
+export function countConfigChangesSince(key: string, newValue: string, sinceSec: number): number {
+  const row = db.prepare(
+    'SELECT COUNT(*) AS n FROM config_change_log WHERE key = ? AND new_value = ? COLLATE NOCASE AND created_at >= ?',
+  ).get(key, newValue, sinceSec) as { n: number }
+  return row.n
+}
+
 export interface ConfigChangeLogRow {
   id: number
   key: string

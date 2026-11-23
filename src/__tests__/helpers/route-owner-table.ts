@@ -24,6 +24,8 @@ export const UNGATED_ROUTES: ReadonlyArray<{ key: string; cls: RouteClass; why: 
   { key: "auth.ts POST /api/auth/setup-code", cls: "own-check", why: "DOCKERHTTPS1119: redeems the one-time setup code (public listener only, before the first login, throttled); it proves itself like a login" },
   { key: "auth.ts POST /api/auth/login", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },
   { key: "auth.ts POST /api/auth/login/totp", cls: "own-check", why: "the second step of the login (DOCKERHTTPS1119): authorised by the pending token a right password returned, throttled like the login; no token or session reaches it" },
+  { key: "auth.ts POST /api/auth/password-reset/request", cls: "agent", why: "DASHUSERGATE1123: an agent asks for a forgotten password's reset code; the code goes ONLY to the owner's private chat (sendOwnerPrivate), the answer never carries it, 3 an hour; nothing changes until the code is used" },
+  { key: "auth.ts POST /api/auth/password-reset/complete", cls: "own-check", why: "DASHUSERGATE1123: authorised by the one-time code from the owner's private chat (and the second factor when on), throttled like the login, 5 wrong tries end the code" },
   { key: "auth.ts POST /api/auth/logout", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },
   { key: "auth.ts POST /api/auth/logout-all", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },
   { key: "auth.ts POST /api/auth/password", cls: "own-check", why: "the caller's own session or credential (login, logout); a password change refuses the token" },

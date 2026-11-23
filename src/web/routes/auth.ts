@@ -26,9 +26,9 @@ import type http from 'node:http'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
-import { notifySecurityEvent } from '../../notify.js'
+import { notifySecurityEvent, sendOwnerPrivate } from '../../notify.js'
 import { parseCookies, SESSION_COOKIE_NAME, messengerNameTaken } from '../auth-gate.js'
-import { MAIN_AGENT_ID, RESERVED_AGENT_IDS, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, RESERVED_AGENT_IDS, SYSTEM_SENDER_IDS, parseSystemSenderIds, DASHBOARD_PUBLIC_URL } from '../../config.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import {
   hashPassword,
@@ -70,6 +70,7 @@ import {
   deleteDashboardUser,
   setDashboardUserTotpEnabled,
   logConfigChange,
+  countConfigChangesSince,
 } from '../../db.js'
 import { supportPasswordGate } from '../support-password.js'
 import {
@@ -97,6 +98,7 @@ import {
 } from '../totp.js'
 import { isPublicRequest, redeemSetupCode, setupCodeAvailable, setupSessionCookie } from '../public-access.js'
 import { takeSupportAccessDown } from '../support-standby-runtime.js'
+import { issueResetCode, checkResetCode, countResetFailure, dropResetCode, RESET_CODE_TTL_MS, RESET_REQUESTS_PER_HOUR } from '../password-reset-code.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -287,6 +289,37 @@ export function firstLoginNotice(username: string, device: string): string {
 export function totpDisabledNotice(username: string): string {
   return `🔑 Kétlépcsős belépés kikapcsolva a dashboardon (jelszóval és kóddal): "${username}". ` +
     'Ha nem te voltál, a jelszavad és egy kódod mással is megvan: változtasd meg a jelszót, és kapcsold vissza a kétlépcsős belépést.'
+}
+
+// DASHUSERGATE1123: the reset code's audit key (also the hourly cap's counter) and texts.
+export const RESET_REQUESTED_KEY = 'security.password_reset_requested'
+export const RESET_CODE_INVALID = { error: 'Wrong or expired reset code.', code: 'reset_code_invalid' }
+export const RESET_CODE_LOCKED = { error: 'Too many wrong attempts: this reset code no longer works. Ask for a new one.', code: 'reset_code_locked' }
+
+/** The owner's private message with the code. The link only where the server knows its own outside address. */
+export function resetCodeMessage(username: string, code: string, lang: 'hu' | 'en', publicUrl: string = DASHBOARD_PUBLIC_URL): string {
+  const base = publicUrl.replace(/\/+$/, '')
+  const link = base ? `${base}/#jelszo-visszaallitas=${code}&u=${encodeURIComponent(username)}` : ''
+  if (lang === 'en') {
+    return `🔑 A password reset was requested for the dashboard login "${username}".\n` +
+      `Reset code: ${code}\n` +
+      'If it was you: open the dashboard (on the machine, in the Bridge or remotely), click "I have a reset code" in the sign-in window ' +
+      '(in the Bridge also under Settings, Security, Dashboard login), and enter the code with your new password.\n' +
+      (link ? `Or open: ${link}\n` : '') +
+      'The code works for 15 minutes, once. If it was not you, do nothing: your current password stays valid.'
+  }
+  return `🔑 Jelszó-visszaállítást kértek a(z) "${username}" dashboard-belépéshez.\n` +
+    `Visszaállító kód: ${code}\n` +
+    'Ha te kérted: nyisd meg a dashboardot (a gépen, a Bridge-ben vagy távolról), a belépő ablakban kattints a "Visszaállító kódom van" gombra ' +
+    '(a Bridge-ben a Beállítások, Biztonság, Dashboard belépés kártyán is ott van), és add meg a kódot és az új jelszavad.\n' +
+    (link ? `Vagy nyisd meg: ${link}\n` : '') +
+    'A kód 15 percig él, és egyszer használható. Ha nem te kérted, ne csinálj semmit: a mostani jelszavad érvényes marad.'
+}
+
+export function resetDoneNotice(username: string, lang: 'hu' | 'en'): string {
+  return lang === 'en'
+    ? `🔑 The dashboard password of "${username}" was changed with a reset code; every sign-in of it was logged out. If it was not you, act now: use the panic button on the machine (security:reset), then set a new password.`
+    : `🔑 A(z) "${username}" dashboard-jelszava megváltozott (visszaállító kóddal), és minden bejelentkezése kijelentkezett. Ha nem te voltál, azonnal lépj: a gépen a pánikgomb (security:reset), utána új jelszó.`
 }
 
 export const CLI_RECOVERY_ONLY = {
@@ -862,6 +895,135 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // sessions must not stay valid meanwhile.
     await takeSupportAccessDown('password_change')
     json(res, { ok: true })
+    return true
+  }
+
+  // ---- DASHUSERGATE1123: a forgotten password, reset with a one-time code (../password-reset-code.ts) ----------------
+  // The request is made by an agent (or the owner) and sends the code ONLY to the owner's private chat; the answer
+  // never carries it. The member types it into the dashboard's sign-in window, which reaches the second route.
+  if (path === '/api/auth/password-reset/request' && method === 'POST') {
+    if (!(auth?.kind === 'token' || auth?.kind === 'session' || (auth?.kind === 'device' && auth.scope === 'full'))) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    let body: Record<string, unknown>
+    try { body = await parseJsonBody(req) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    let username = str(body.username).trim()
+    if (!username) {
+      // A single-login install (the usual case): the agent need not know the name.
+      const enabled = listDashboardUsers().filter((u) => !u.disabled)
+      if (enabled.length !== 1) {
+        json(res, { error: 'Name the dashboard user (username).', code: 'username_required' }, 400)
+        return true
+      }
+      username = enabled[0].username
+    }
+    const user = USERNAME_RE.test(username) ? getDashboardUser(username) : undefined
+    if (!user || user.disabled) {
+      json(res, { error: 'No such dashboard user.', code: 'user_not_found' }, 404)
+      return true
+    }
+    const nowS = Math.floor(Date.now() / 1000)
+    if (countConfigChangesSince(RESET_REQUESTED_KEY, user.username, nowS - 3600) >= RESET_REQUESTS_PER_HOUR) {
+      noStoreJson(res, { error: `At most ${RESET_REQUESTS_PER_HOUR} reset codes an hour. Try again later.`, code: 'reset_rate_limited' }, 429)
+      return true
+    }
+    const actor = auth.kind === 'token'
+      ? `token:${auth.tokenAgent ?? auth.agent ?? 'shared'}`
+      : auth.kind === 'session' ? `session:${auth.user ?? '?'}` : `device:${auth.device}`
+    // Logged before the send, so a failed delivery counts toward the hourly cap too.
+    logConfigChange(RESET_REQUESTED_KEY, null, user.username, actor)
+    const { code } = issueResetCode(user.id)
+    const sent = await sendOwnerPrivate(resetCodeMessage(user.username, code, dashboardLang()))
+    if (!sent.sent) {
+      dropResetCode(user.id)
+      logConfigChange('security.password_reset_not_delivered', null, user.username, sent.reason)
+      if (sent.reason === 'no_private_channel') {
+        json(res, { error: 'No private chat with the owner is set up (Slack DM or Telegram), so the code cannot be sent. Use the recovery on the machine: docs/dashboard-auth-recovery.md.', code: 'no_private_channel' }, 409)
+      } else {
+        json(res, { error: 'The code could not be sent to the owner\'s private chat. Nothing changed; try again later.', code: 'delivery_failed' }, 502)
+      }
+      return true
+    }
+    logger.info({ via: sent.via }, 'password reset code sent to the owner\'s private chat')
+    noStoreJson(res, { ok: true, sent: true, via: sent.via, username: user.username, expires_in_s: RESET_CODE_TTL_MS / 1000 }, 200)
+    return true
+  }
+
+  if (path === '/api/auth/password-reset/complete' && method === 'POST') {
+    let body: Record<string, unknown>
+    try { body = await parseJsonBody(req) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    const username = str(body.username).trim()
+    const newPassword = str(body.new_password)
+    // Its own bucket of the login throttle (no username has a colon), counting toward the global cap too.
+    const key = username.toLowerCase() + ':reset'
+    const throttle = checkThrottle(key)
+    if (throttle.locked) {
+      if (throttle.global) logger.warn('password reset code: global failure cap reached -- all logins throttled')
+      tooManyAttempts(res, throttle.retryAfterS)
+      return true
+    }
+    try {
+      assertPasswordPolicy(newPassword)
+    } catch (err) {
+      json(res, { error: err instanceof PasswordPolicyError ? err.message : 'Invalid password', code: 'password_policy' }, 400)
+      return true
+    }
+    const user = USERNAME_RE.test(username) ? getDashboardUser(username) : undefined
+    if (!user || user.disabled) {
+      recordFailure(key)
+      noStoreJson(res, RESET_CODE_INVALID, 401)
+      return true
+    }
+    const checked = checkResetCode(user.id, str(body.code))
+    if (!checked.ok) {
+      recordFailure(key)
+      if (checked.reason === 'expired') logConfigChange('security.password_reset_code_expired', null, user.username, 'reset_code')
+      if (checked.reason === 'locked') logConfigChange('security.password_reset_code_locked', null, user.username, 'reset_code')
+      noStoreJson(res, checked.reason === 'locked' ? RESET_CODE_LOCKED : RESET_CODE_INVALID, 401)
+      return true
+    }
+    // The second factor is not skipped: with it on, the code alone does not reset the password.
+    let rec: TotpRecord | undefined
+    try {
+      rec = getTotpForUser(user)
+    } catch (err) {
+      if (user.totp_enabled || !(err instanceof TotpStoreError)) {
+        logger.error({ err: (err as Error).message }, 'password reset code: the two-step sign-in store is unreadable, refused')
+        noStoreJson(res, TOTP_STORE_UNAVAILABLE, 503)
+        return true
+      }
+    }
+    if (rec) {
+      const totpCode = str(body.totp_code)
+      if (!totpCode) {
+        noStoreJson(res, TOTP_REQUIRED, 401)
+        return true
+      }
+      const second = checkSecondFactor(rec, totpCode)
+      if (!second) {
+        recordFailure(key)
+        if (countResetFailure(user.id)) {
+          logConfigChange('security.password_reset_code_locked', null, user.username, 'reset_code')
+          noStoreJson(res, RESET_CODE_LOCKED, 401)
+          return true
+        }
+        noStoreJson(res, TOTP_INVALID, 401)
+        return true
+      }
+      saveTotpRecord(user.id, second.rec)
+    }
+    // Used up BEFORE the first await, so a second request with the same code cannot pass the check meanwhile.
+    dropResetCode(user.id)
+    recordSuccess(key)
+    const hash = await hashPassword(newPassword)
+    updateDashboardUserPassword(user.id, hash)
+    revokeAllForUser(user.id)
+    logConfigChange('security.password_reset_by_code', null, user.username, 'reset_code')
+    // SUPPORTKULCS1109 (terv-v7 3.9): a password change takes support access off this machine (after the revoke).
+    await takeSupportAccessDown('password_change')
+    void notifySecurityEvent(resetDoneNotice(user.username, dashboardLang()))
+    noStoreJson(res, { ok: true, user: user.username }, 200)
     return true
   }
 

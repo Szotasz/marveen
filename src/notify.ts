@@ -506,6 +506,62 @@ export async function notifySecurityEvent(text: string): Promise<void> {
 }
 
 /**
+ * DASHUSERGATE1123: a message that carries a secret meant for the owner alone (the password reset code). Unlike
+ * notifyOwner it goes ONLY to a private one-to-one chat with the owner and has no other way out:
+ *   - Slack: always the owner's DM ('dm', the owner's user id), never NOTIFY_SLACK_TARGET, which may name a channel;
+ *   - Telegram: only the resolved owner chat, and only a private one (a positive chat id; groups are negative);
+ *   - never the Gromzo relay (it hands the text to the main agent's inbox) and never the "undelivered" signal (it
+ *     quotes the text to an agent sink).
+ * The order follows the owner's choice: Slack first when NOTIFY_SLACK_TARGET is set, else Telegram; the other is the
+ * fallback, unless NOTIFY_TELEGRAM_FALLBACK=0 keeps Telegram out after Slack. Never throws, never logs the text.
+ */
+export async function sendOwnerPrivate(
+  text: string,
+  deps: { send?: typeof SendSlack; telegram?: (chatId: string, text: string) => Promise<boolean> } = {},
+): Promise<{ sent: true; via: 'slack' | 'telegram' } | { sent: false; reason: 'no_private_channel' | 'failed' }> {
+  let setting: SettingFn
+  try { setting = await loadSetting() } catch { return { sent: false, reason: 'failed' } }
+  const slackFirst = !!(await slackTargetFor('owner', setting))
+  const noTelegramAfterSlack = slackFirst && setting('NOTIFY_TELEGRAM_FALLBACK') === '0'
+  const ownerChat = resolveAlertDeliveryChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER).chatId
+  const telegramChat = CHANNEL_PROVIDER === 'telegram' && CHANNEL_TOKEN && ownerChat && /^[1-9]\d*$/.test(ownerChat) ? ownerChat : ''
+  let tried = false
+  const viaSlack = async (): Promise<boolean> => {
+    try {
+      const send = deps.send ?? (await import('./slack-notify.js')).sendSlackNotification
+      const r = await send('dm', markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID'), raw: true })
+      if (r.ok) return true
+      // no_slack_token / unresolved_target: Slack is not set up for a DM here, which is not a failed try.
+      if (!/^(no_slack_token|unresolved_target)/.test(r.error ?? '')) tried = true
+      logger.warn({ error: r.error }, 'owner private message: Slack DM not sent')
+      return false
+    } catch (err) {
+      tried = true
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'owner private message: Slack DM threw')
+      return false
+    }
+  }
+  const viaTelegram = async (): Promise<boolean> => {
+    if (!telegramChat) return false
+    tried = true
+    try {
+      if (deps.telegram) return await deps.telegram(telegramChat, text)
+      return (await sendToChat(telegramChat, text, 'owner', { recipient: 'owner' })).sent
+    } catch {
+      return false
+    }
+  }
+  if (slackFirst) {
+    if (await viaSlack()) return { sent: true, via: 'slack' }
+    if (!noTelegramAfterSlack && (await viaTelegram())) return { sent: true, via: 'telegram' }
+  } else {
+    if (await viaTelegram()) return { sent: true, via: 'telegram' }
+    if (await viaSlack()) return { sent: true, via: 'slack' }
+  }
+  return { sent: false, reason: tried ? 'failed' : 'no_private_channel' }
+}
+
+/**
  * APPROVALSLACK1030 (Samu 66026): NOTIFY_SLACK_TARGET names where the owner's approval requests go (a raw D id is
  * posted to directly). When it changes, the OLD target is told, so a change made around the gate (a text brake) is
  * still seen where the owner was reading. Never throws; logged either way. Exported for tests.
