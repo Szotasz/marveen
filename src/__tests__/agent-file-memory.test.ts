@@ -12,6 +12,7 @@ import {
   FILE_MEMORY_LIMITS, FS_IO, fleetFileMemory, memoryDirAt, memoryKeyRoot, readMemoryFiles, slugOf, targetIsShared, writeImportedMemory,
 } from '../web/agent-file-memory.js'
 import { BUNDLE_SCHEMA_VERSION, importAgentBundle, stageFileMemoryForExport, type BundleManifest } from '../web/agent-bundle.js'
+import { encodeClaudeProjectDir, projectDirHasSession } from '../claude-project-dir.js'
 
 const tmp = (p: string) => realpathSync(mkdtempSync(join(tmpdir(), p)))
 const put = (p: string, s: string) => { mkdirSync(join(p, '..'), { recursive: true }); writeFileSync(p, s) }
@@ -199,3 +200,83 @@ describe('import', () => {
     expect('fileMemory' in r).toBe(false)
   })
 })
+
+describe('#3086 M1: an imported memory does not look like a prior session to the launcher', () => {
+  it('with no .git above, the memory slug IS the launcher\'s project folder name (Samu\'s measurement)', () => {
+    const d = tmp('marveen-fm-nogit-')
+    expect(slugOf(memoryKeyRoot(d))).toBe(encodeClaudeProjectDir(d))
+  })
+  it('projectDirHasSession: a memory/ folder alone is no session; a .jsonl file is; a .jsonl folder is not', () => {
+    const p = tmp('marveen-fm-proj-')
+    mkdirSync(join(p, 'memory'))
+    writeFileSync(join(p, 'memory', 'MEMORY.md'), '- x\n')
+    expect(projectDirHasSession(p)).toBe(false)
+    mkdirSync(join(p, 'dir.jsonl'))
+    expect(projectDirHasSession(p)).toBe(false)
+    writeFileSync(join(p, '0b7c.jsonl'), '{}\n')
+    expect(projectDirHasSession(p)).toBe(true)
+    expect(projectDirHasSession(join(p, 'nope'))).toBe(false)
+  })
+  it('an import into a never-run agent with no .git: the project folder exists, and still no prior session', () => {
+    const base = tmp('marveen-fm-fresh-')
+    const cfg = join(base, 'cfg')
+    let dest = ''
+    importAgentBundle(bundleOf({ 'fact.md': 'f\n' }), {
+      resolveDest: (n) => (dest = join(base, 'agents', n)),
+      memoryTarget: (_n, d) => ({ dir: join(cfg, 'projects', slugOf(memoryKeyRoot(d)), 'memory'), shared: false }),
+    })
+    const project = join(cfg, 'projects', encodeClaudeProjectDir(realpathSync(dest)))
+    expect(existsSync(join(project, 'memory', 'fact.md'))).toBe(true)
+    expect(projectDirHasSession(project)).toBe(false)
+  })
+})
+
+describe('#3086 M1: the launcher reads a session, not a folder', () => {
+  it('agent-process decides --continue with projectDirHasSession, not a bare existsSync of the project folder', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf8')
+    expect(src).toMatch(/const hasPriorSession = projectDirHasSession\(join\(projectsRoot, encodedProject\)\)/)
+    expect(src).not.toMatch(/hasPriorSession = existsSync\(/)
+  })
+})
+
+describe('#3086 M2: MEMORY.md links follow a renamed file', () => {
+  const NOW = new Date('2026-11-23T17:00:00.000Z')
+  it('appended to an existing index: the link points at the import\'s copy, even when MEMORY.md came first', () => {
+    const parent = tmp('marveen-fm-m2-')
+    const d = join(parent, 'memory')
+    mkdirSync(d)
+    writeFileSync(join(d, 'MEMORY.md'), '- [Mine](fact.md): the target\'s own\n')
+    writeFileSync(join(d, 'fact.md'), 'target fact\n')
+    const r = writeImportedMemory(d, [
+      { name: 'MEMORY.md', bytes: Buffer.from('- [Fact](fact.md): from abel\n- [New](new.md): new\n') },
+      { name: 'fact.md', bytes: Buffer.from('source fact\n') },
+      { name: 'new.md', bytes: Buffer.from('new\n') },
+    ], 'abel', NOW, FS_IO)
+    expect(r.renamed).toEqual([{ from: 'fact.md', to: 'fact.imported-1.md' }])
+    const index = readFileSync(join(d, 'MEMORY.md'), 'utf8')
+    expect(index.startsWith("- [Mine](fact.md): the target's own\n")).toBe(true)
+    expect(index).toContain('- [Fact](fact.imported-1.md): from abel')
+    expect(index).toContain('- [New](new.md): new')
+  })
+  it('a target with no index: the index is written with the rewritten links', () => {
+    const parent = tmp('marveen-fm-m2b-')
+    const d = join(parent, 'memory')
+    mkdirSync(d)
+    writeFileSync(join(d, 'fact.md'), 'target fact\n')
+    writeImportedMemory(d, [
+      { name: 'MEMORY.md', bytes: Buffer.from('- [Fact](fact.md)\n') },
+      { name: 'fact.md', bytes: Buffer.from('source fact\n') },
+    ], 'abel', NOW, FS_IO)
+    expect(readFileSync(join(d, 'MEMORY.md'), 'utf8')).toBe('- [Fact](fact.imported-1.md)\n')
+  })
+})
+
+function bundleOf(files: Record<string, string>): Buffer {
+  const stage = tmp('marveen-fm-bundle2-')
+  put(join(stage, 'agent', 'CLAUDE.md'), '# imported\n')
+  for (const [n, t] of Object.entries(files)) put(join(stage, 'file-memory', n), t)
+  writeFileSync(join(stage, 'manifest.json'), JSON.stringify({ schemaVersion: BUNDLE_SCHEMA_VERSION, agentName: 'abel', includesSecrets: false, fileMemory: 'included' }))
+  const out = join(stage, '..', `b2-${Date.now()}-${Math.random()}.tar.gz`)
+  execFileSync('tar', ['-czf', out, '-C', stage, 'manifest.json', 'agent', 'file-memory'])
+  return readFileSync(out)
+}

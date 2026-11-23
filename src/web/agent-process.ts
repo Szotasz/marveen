@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync, openSync, fstatSync, readSync, closeSync, fchmodSync, constants as fsConstants } from 'node:fs'
-import { encodeClaudeProjectDir } from '../claude-project-dir.js'
+import { encodeClaudeProjectDir, projectDirHasSession } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
@@ -3526,7 +3526,8 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
       ? join(claudeConfigDir, 'projects')
       : join(homedir(), '.claude', 'projects')
     const encodedProject = encodeClaudeProjectDir(dir)
-    const hasPriorSession = existsSync(join(projectsRoot, encodedProject))
+    // #3086 M1: a session file, not just the folder (an imported file memory creates the folder before any run).
+    const hasPriorSession = projectDirHasSession(join(projectsRoot, encodedProject))
     // opts.fresh forces a brand-new conversation (auto-restart 'fresh' mode):
     // omit --continue so the heavy accumulated context is dropped. Without it
     // we resume the prior session (the 'continue' mode / normal restart).

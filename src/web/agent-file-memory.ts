@@ -114,13 +114,21 @@ export function writeImportedMemory(targetDir: string, files: ReadonlyArray<{ na
   io: { mkdir: (p: string) => void; writeExclusive: (p: string, b: Buffer) => boolean; append: (p: string, s: string) => void; exists: (p: string) => boolean }): ImportedMemory {
   io.mkdir(targetDir)
   const out: ImportedMemory = { written: [], renamed: [], indexAppended: false }
-  for (const f of files) {
+  // #3086 M2: MEMORY.md LAST, so its links can follow the files that had to take another name.
+  const ordered = [...files.filter((f) => f.name !== 'MEMORY.md'), ...files.filter((f) => f.name === 'MEMORY.md')]
+  for (const f of ordered) {
     if (!isMemoryFileName(f.name)) continue
     const p = join(targetDir, f.name)
-    if (f.name === 'MEMORY.md' && io.exists(p)) {
-      const lines = f.bytes.toString('utf8').replace(/\n+$/, '')
-      io.append(p, `\n\n## Imported ${now.toISOString().slice(0, 10)} from ${source}\n\n${lines}\n`)
-      out.indexAppended = true
+    if (f.name === 'MEMORY.md') {
+      // A link to a renamed file points at the import's copy, never at the target's own file of that name.
+      let text = f.bytes.toString('utf8')
+      for (const r of out.renamed) text = text.split(`(${r.from})`).join(`(${r.to})`)
+      if (io.exists(p)) {
+        io.append(p, `\n\n## Imported ${now.toISOString().slice(0, 10)} from ${source}\n\n${text.replace(/\n+$/, '')}\n`)
+        out.indexAppended = true
+        continue
+      }
+      if (io.writeExclusive(p, Buffer.from(text, 'utf8'))) out.written.push(f.name)
       continue
     }
     if (io.writeExclusive(p, f.bytes)) { out.written.push(f.name); continue }
