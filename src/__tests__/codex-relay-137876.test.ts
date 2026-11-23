@@ -324,6 +324,24 @@ describe('relay Codex home, mxd and web/apps containment (#137876)', () => {
     expect(codexRelayFilesystemEntries(agentWorkspace, home)).toContainEqual([agentWorkspace, 'write'])
   })
 
+  it('D0480 refuses an agent workspace when agents/ is a symlink to the store root', () => {
+    const store = codexRelayDeniedReadRoots()[0]
+    mkdirSync(join(store, 'x'), { recursive: true })
+    symlinkSync(store, join(projectRoot!, 'agents'))
+    expect(() => codexRelayFilesystemEntries(join(projectRoot!, 'agents', 'x'), home))
+      .toThrow(/relay sandbox profile refuses workspace .*: it is inside /)
+  })
+
+  it('D0480 refuses an agent workspace when agents/ is the Codex home, directly or through a symlink', () => {
+    const agents = join(projectRoot!, 'agents')
+    mkdirSync(join(agents, 'x'), { recursive: true })
+    expect(() => codexRelayFilesystemEntries(join(agents, 'x'), agents)).toThrow(/it is inside /)
+    rmSync(agents, { recursive: true })
+    mkdirSync(join(home, 'y'), { recursive: true })
+    symlinkSync(home, agents)
+    expect(() => codexRelayFilesystemEntries(join(agents, 'y'), home)).toThrow(/it is inside /)
+  })
+
   it('R1 refuses a workspace that is a hidden path, lexically or physically', () => {
     const runDir = codexRelayMxdRunDir()
     const store = codexRelayDeniedReadRoots()[0]
