@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { runLsof } from './lsof.js'
-import { isOwnDashboardProcess, readPortHolder } from './port-reclaim.js'
+import { readPortHolder, selectReclaimVictims } from './port-reclaim.js'
 import { PROJECT_ROOT, WEB_HOST, WEB_PUBLIC_PORT, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
@@ -402,16 +402,10 @@ export function startWebServer(port = 3420): http.Server {
         const pidsRaw = (runLsof(['-ti', `:${port}`], 3000) ?? '').trim()
         const pids = pidsRaw.split('\n').map(s => s.trim()).filter(Boolean).map(Number).filter(n => Number.isFinite(n) && n > 0)
         const uid = typeof process.getuid === 'function' ? process.getuid() : null
-        const victims: number[] = []
-        for (const pid of pids) {
-          if (pid === process.pid) continue
-          const holder = readPortHolder(pid)
-          if (!isOwnDashboardProcess(holder, PROJECT_ROOT, uid)) {
-            // The command line can carry secrets in its arguments: only its first word goes into the log.
-            logger.warn({ port, pid, cmd: holder.command.split(/\s+/)[0] ?? '' }, 'Port held by a process that is not this install\'s dashboard -- refusing to stop it')
-            continue
-          }
-          victims.push(pid)
+        const { victims, foreign } = selectReclaimVictims(pids, process.pid, readPortHolder, PROJECT_ROOT, uid)
+        for (const { pid, holder } of foreign) {
+          // The command line can carry secrets in its arguments: only its first word goes into the log.
+          logger.warn({ port, pid, cmd: holder.command.split(/\s+/)[0] ?? '' }, 'Port held by a process that is not this install\'s dashboard -- refusing to stop it')
         }
         for (const pid of victims) {
           try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }

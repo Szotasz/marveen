@@ -8,7 +8,7 @@
 // directory. Anything else on the port is left alone, and the startup reports the foreign holder instead.
 
 import { execFileSync } from 'node:child_process'
-import { readlinkSync } from 'node:fs'
+import { readlinkSync, realpathSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { runLsof } from './lsof.js'
 
@@ -31,16 +31,51 @@ const ENTRY_POINTS = ['dist/index.js', 'src/index.ts']
  */
 export function isOwnDashboardProcess(info: PortHolderInfo, projectRoot: string, myUid: number | null): boolean {
   if (myUid !== null && info.uid !== myUid) return false
-  const root = resolve(projectRoot)
-  for (const entry of ENTRY_POINTS) {
-    const abs = resolve(root, entry)
-    // Bounded by whitespace or the end, so <root>/dist/index.js.bak or <root>-old/dist/index.js do not count.
-    const absRx = new RegExp(`(^|\\s)${escapeRx(abs)}(\\s|$)`)
-    if (absRx.test(info.command)) return true
-    const relRx = new RegExp(`(^|\\s)(\\./)?${escapeRx(entry)}(\\s|$)`)
-    if (relRx.test(info.command) && info.cwd !== null && isAbsolute(info.cwd) && resolve(info.cwd) === root) return true
+  // Both the resolved and the real (symlink-free) root count: an install reached through a symlink is started under
+  // either spelling, and its own predecessor must be recognised in both (Dani, Geri #3072).
+  const roots = [...new Set([resolve(projectRoot), realOrSame(projectRoot)])]
+  const cwd = info.cwd !== null && isAbsolute(info.cwd) ? [resolve(info.cwd), realOrSame(info.cwd)] : []
+  for (const root of roots) {
+    for (const entry of ENTRY_POINTS) {
+      const abs = resolve(root, entry)
+      // Bounded by whitespace or the end, so <root>/dist/index.js.bak or <root>-old/dist/index.js do not count.
+      const absRx = new RegExp(`(^|\\s)${escapeRx(abs)}(\\s|$)`)
+      if (absRx.test(info.command)) return true
+      // Another spelling of the same root (one side through a symlink): compare the real directories.
+      for (const word of info.command.split(/\s+/)) {
+        if (isAbsolute(word) && word.endsWith(`/${entry}`) && roots.includes(realOrSame(word.slice(0, -entry.length - 1)))) return true
+      }
+      const relRx = new RegExp(`(^|\\s)(\\./)?${escapeRx(entry)}(\\s|$)`)
+      if (relRx.test(info.command) && cwd.some((c) => roots.includes(c))) return true
+    }
   }
   return false
+}
+
+function realOrSame(p: string): string {
+  try { return realpathSync(p) } catch { return resolve(p) }
+}
+
+/**
+ * The pids the reclaim may stop: every holder of the port except this process that is this install's own dashboard.
+ * The rest are returned too, so the caller can say which foreign holder it left alone.
+ */
+export function selectReclaimVictims(
+  pids: number[],
+  selfPid: number,
+  readHolder: (pid: number) => PortHolderInfo,
+  projectRoot: string,
+  myUid: number | null,
+): { victims: number[]; foreign: Array<{ pid: number; holder: PortHolderInfo }> } {
+  const victims: number[] = []
+  const foreign: Array<{ pid: number; holder: PortHolderInfo }> = []
+  for (const pid of pids) {
+    if (pid === selfPid) continue
+    const holder = readHolder(pid)
+    if (isOwnDashboardProcess(holder, projectRoot, myUid)) victims.push(pid)
+    else foreign.push({ pid, holder })
+  }
+  return { victims, foreign }
 }
 
 function escapeRx(s: string): string {
