@@ -162,6 +162,48 @@ export function getEmbeddingCacheSize(): number { return embeddingCache.size }
 // STILL gets pre-create + tighten -- this lets the permission tests exercise the
 // tightening logic on a throwaway file instead of touching the prod DB. The
 // STORE_DIR mkdir stays prod-only; a temp-file override owns its own directory.
+/** Test seam (DELEGAPPROVER1123): runs inside the approval_events rebuild, after the old table is dropped and before
+ *  the new one takes its name, so a test can fail the rebuild at its most dangerous point. */
+let approvalEventsRebuildHookForTest: (() => void) | null = null
+export function _setApprovalEventsRebuildHookForTest(fn: (() => void) | null): void { approvalEventsRebuildHookForTest = fn }
+
+/**
+ * DELEGAPPROVER1123: rebuilds approval_events so its CHECK accepts 'decided'. The whole rebuild (new table, copy, drop,
+ * rename, index) is ONE transaction (BEGIN IMMEDIATE ... COMMIT, ROLLBACK on any error): a failure or a crash midway
+ * leaves the original audit table and every row of it as they were, and the next start runs it again. Idempotent: a
+ * table that already accepts 'decided' (or a fresh one) is left alone. Throws after the rollback.
+ */
+function migrateApprovalEventsDecided(): void {
+  const aeSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='approval_events'").get() as { sql: string } | undefined
+  if (!aeSchema?.sql || aeSchema.sql.includes("'decided'")) return
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.exec(`
+      CREATE TABLE approval_events_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        approval_id TEXT NOT NULL,
+        event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill','decided')),
+        reason TEXT,
+        actor TEXT,
+        ref TEXT,
+        created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+      )
+    `)
+    db.exec(`
+      INSERT INTO approval_events_new (id, approval_id, event, reason, actor, ref, created_at)
+        SELECT id, approval_id, event, reason, actor, ref, created_at FROM approval_events
+    `)
+    db.exec('DROP TABLE approval_events')
+    approvalEventsRebuildHookForTest?.()
+    db.exec('ALTER TABLE approval_events_new RENAME TO approval_events')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)')
+    db.exec('COMMIT')
+  } catch (err) {
+    if (db.inTransaction) db.exec('ROLLBACK')
+    throw err
+  }
+}
+
 export function initDatabase(dbPathOverride?: string): void {
   embeddingCache.clear() // ids are per database: a re-init (tests, ':memory:') must not reuse vectors
   const useOverride = dbPathOverride !== undefined
@@ -1906,28 +1948,11 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   // DELEGAPPROVER1123: 'decided' is an approver's decision (who, on which scope, on which content hash). SQLite cannot
-  // alter a CHECK, so a table created before it is rebuilt once, rows and ids kept.
+  // alter a CHECK, so a table created before it is rebuilt once, rows and ids kept (migrateApprovalEventsDecided).
   try {
-    const aeSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='approval_events'").get() as { sql: string } | undefined
-    if (aeSchema?.sql && !aeSchema.sql.includes("'decided'")) {
-      db.exec(`
-        CREATE TABLE approval_events_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          approval_id TEXT NOT NULL,
-          event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill','decided')),
-          reason TEXT,
-          actor TEXT,
-          ref TEXT,
-          created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
-        );
-        INSERT INTO approval_events_new (id, approval_id, event, reason, actor, ref, created_at)
-          SELECT id, approval_id, event, reason, actor, ref, created_at FROM approval_events;
-        DROP TABLE approval_events;
-        ALTER TABLE approval_events_new RENAME TO approval_events;
-      `)
-    }
+    migrateApprovalEventsDecided()
   } catch (err) {
-    logger.warn({ err }, 'approval_events decided-event migration failed -- continuing')
+    logger.warn({ err }, 'approval_events decided-event migration failed and was rolled back -- continuing')
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)`)
 
