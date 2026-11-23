@@ -335,6 +335,12 @@
     {"name": "ISSUE3049: the same with cmp (the reported read-only check)", "cmd": "cmp <(curl -s http://localhost:3420/app.js) send.py", "main": false, "sub": false},
     {"name": "ISSUE3049: two substitutions, then the file", "cmd": "diff <(sort a) <(sort b) send.py", "main": false, "sub": false},
     {"name": "ISSUE3049 negative twin: the script operand before a substitution still runs", "cmd": "python3 send.py <(echo x)", "main": true, "sub": true},
-    {"name": "ISSUE3049 negative twin: a send inside the substitution is still seen", "cmd": "cat <(python3 send.py) plain.py", "main": true, "sub": true}
+    {"name": "ISSUE3049 negative twin: a send inside the substitution is still seen", "cmd": "cat <(python3 send.py) plain.py", "main": true, "sub": true},
+    {"name": "42c3114d (Revizor 4123 L6): cd $HOME in a shell -c string, no address: $HOME is a variable, so the cd is undecidable; the stated split (main fail-closed, sub passes), not a twin bug", "cmd": "bash -c \"cd $HOME && python3 plain.py\"", "main": true, "sub": false},
+    {"name": "42c3114d: the same in a single-quoted -c string", "cmd": "bash -c 'cd $HOME && python3 plain.py'", "main": true, "sub": false},
+    {"name": "42c3114d: the same without the -c wrapper (the -c string only recurses, the verdict is the bare command's)", "cmd": "cd $HOME && python3 plain.py", "main": true, "sub": false},
+    {"name": "42c3114d: cd $HOME in a -c string, addressed: a send on both", "cmd": "bash -c \"cd $HOME && python3 plain.py --to a@example.invalid\"", "main": true, "sub": true},
+    {"name": "42c3114d: a readable sender in the cwd after cd $HOME in a -c string: a send on both", "cmd": "bash -c \"cd $HOME && python3 send.py\"", "main": true, "sub": true},
+    {"name": "42c3114d control: cd ~ is a literal home cd (decidable), no address: no send on either gate", "cmd": "bash -c \"cd ~ && python3 plain.py\"", "main": false, "sub": false}
   ]
 }
