@@ -31,6 +31,10 @@ it:
   Discord needs `channelId`.
 - `channel_approve`: the code must be pending now (404 otherwise); the request binds the sender id it names.
 - The open requests are capped: three per requester, twenty in all (429).
+- Who asked is the agent's own token's name, or, with the shared token, the name the caller claims (`X-Agent-Id`), as on
+  `/api/agent-specs`. So with the shared token the "Requested by" line is not verified, the vault rule runs for the
+  claimed name, and the per-requester cap can be dodged by claiming another name (the cap of twenty cannot). Nothing
+  runs on that account: the action still runs only after the owner's hash-bound approval.
 - The answer is `{ ok, approvalId, contentHash }`. The owner is asked on the channels like for any server-filed request.
 
 ## The decision
