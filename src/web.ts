@@ -139,6 +139,8 @@ import { tryHandleVoice } from './web/routes/voice.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
+import { tryHandleVaultWebLogins } from './web/routes/vault-web-logins.js'
+import { startAgentBrowserWatchdog } from './web/agent-browser.js'
 import { tryHandleCustomProviders } from './web/routes/custom-providers.js'
 import type { RouteContext } from './web/routes/types.js'
 import { isMalformedBodyError } from './web/malformed-body.js'
@@ -354,6 +356,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleSettings(routeCtx)) return
       if (await tryHandleVoice(routeCtx)) return
       if (await tryHandleVaultSshKeys(routeCtx)) return
+      if (await tryHandleVaultWebLogins(routeCtx)) return
       if (await tryHandleVaultSsh(routeCtx)) return
       if (await tryHandleCustomProviders(routeCtx)) return
       if (await tryHandleAuditLog(routeCtx)) return
@@ -751,6 +754,9 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       .catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
     logger.info('Token usage auto-collect started (1h poll + startup)')
   }
+
+  // VAULTLOGIN1112: every sub-agent a vault web login allows keeps its own browser running (a no-op with none).
+  if (!servicesOff) startAgentBrowserWatchdog()
 
   // NOTE: startMcpListChecker() is intentionally NOT called here.
   //

@@ -122,6 +122,7 @@ export function isAgentReadableDecodedVaultId(id: string): boolean {
   if (!lc || lc.includes('/')) return false
   if (['bindings', 'scan', 'sync', 'import', 'resolve'].includes(lc)) return false
   if (lc.startsWith('ssh')) return false
+  if (lc.startsWith(WEB_LOGIN_SECRET_PREFIX)) return false
   return true
 }
 
@@ -212,4 +213,13 @@ export function logVaultRead(
 // The two .mjs resolvers cannot import TypeScript and carry the same one-line check.
 export function isSshPrivateKeyId(id: string): boolean {
   return id.trim().startsWith('ssh-key-')
+}
+
+// VAULTLOGIN1112: a web login's password lives in the vault as `web-login-<id>` and is used ONLY in-process, by the
+// filler (vault-web-login.ts), which types it into the agent's browser. Like an SSH private key, no generic path hands
+// it out or lets it be written: not the value route, not resolve, not a binding, not the generic write routes. The two
+// .mjs resolvers carry the same one-line check.
+export const WEB_LOGIN_SECRET_PREFIX = 'web-login-'
+export function isWebLoginSecretId(id: string): boolean {
+  return id.trim().toLowerCase().startsWith(WEB_LOGIN_SECRET_PREFIX)
 }

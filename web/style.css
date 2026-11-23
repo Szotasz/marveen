@@ -5110,6 +5110,33 @@ a.oss-inv-name:hover { text-decoration: underline; }
   .ssh-section-header { flex-direction: column; }
 }
 
+/* Web logins (VAULTLOGIN1112) */
+/* A grid item is as wide as its widest no-wrap line by default; a long origin or username must not push the card past the screen. */
+.web-login-card { min-width: 0; }
+.web-login-card .ssh-card-head { align-items: center; }
+.web-login-card .ssh-card-name { overflow-wrap: anywhere; }
+.web-login-card .ssh-card-row span { min-width: 0; overflow-wrap: anywhere; }
+.web-login-card .ssh-card-meta, .web-login-card .ssh-card-meta span { font-family: inherit; }
+.web-login-last { color: var(--text-muted); font-size: 12px; }
+.web-login-actions { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+.web-login-locked { flex-shrink: 0; }
+.web-login-advanced { margin: 0 0 16px; }
+.web-login-advanced > summary { cursor: pointer; font-size: 13px; color: var(--text-muted); margin-bottom: 12px; }
+.web-login-agents-group { margin-bottom: 16px; }
+.web-login-agents { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 4px 0; }
+.web-login-agent { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.web-login-hint { font-size: 12px; color: var(--text-muted); margin: 4px 0 0; }
+.web-login-note {
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 12px;
+  overflow-wrap: anywhere;
+}
+.web-login-note[hidden] { display: none; }
+
 /* SSH keygen + info modal styles */
 .ssh-pubkey-label {
   display: flex;

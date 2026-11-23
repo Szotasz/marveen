@@ -1716,6 +1716,28 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_name ON vault_ssh_servers(name)`)
+
+  // --- Vault web logins (VAULTLOGIN1112) ---
+  // The password lives in the AES-256-GCM vault as web-login-<id>; this row holds only what is not secret. An empty
+  // allowed_agents list ('[]', the default) means no agent may log in with it. locked_at is set after a wrong password
+  // and cleared only by the owner (the unlock route).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vault_web_logins (
+      id TEXT PRIMARY KEY,
+      origin TEXT NOT NULL,
+      username TEXT NOT NULL,
+      login_url TEXT,
+      user_selector TEXT,
+      pass_selector TEXT,
+      allowed_agents TEXT NOT NULL DEFAULT '[]',
+      locked_at INTEGER,
+      last_result TEXT,
+      last_attempt_at INTEGER,
+      last_agent TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
   // Migrations for installs that ran earlier schema versions. MUST run before
   // the ssh_key_id index below: on an install where vault_ssh_servers already
   // existed (pre-dating this column), CREATE TABLE IF NOT EXISTS above is a

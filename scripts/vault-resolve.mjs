@@ -112,6 +112,12 @@ for (const line of input.trim().split('\n')) {
   }
   const envVar = line.slice(0, eq)
   const secretId = line.slice(eq + 1).trim()
+  // VAULTLOGIN1112: a web login password is typed by the dashboard's filler only, never resolved into an env var.
+  if (secretId.toLowerCase().startsWith('web-login-')) {
+    process.stderr.write(`vault-resolve: refused, web login passwords are not resolvable here: ${secretId}\n`)
+    refused++
+    continue
+  }
   // VAULTSZELES826: SSH private keys are consumed only in-process by the SSH feature;
   // this resolver never hands one out (same rule as isSshPrivateKeyId in vault-acl.ts).
   if (secretId.startsWith('ssh-key-')) {
