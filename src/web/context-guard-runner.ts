@@ -2,7 +2,7 @@ import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 import { logger } from '../logger.js'
 import { BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
-import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
+import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending, readConfiguredMainModel } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
 import { configDirFor } from './main-transcript-root.js'
@@ -59,6 +59,7 @@ import { createAgentMessage, countRestartQueueState, listKanbanCards, hasOpenInb
 import {
   decideGuard,
   contextLimitForModel,
+  withLaunchWindowMarker,
   isKnownContextModel,
   calibrateLimit,
   handoffStaleMinutes,
@@ -799,9 +800,14 @@ export function measureIdleMs(name: string, nowMs: number): number | null {
  *  model read from a stale root produces a wrong pct from a right token count -- and pct is what the handoff threshold
  *  compares. */
 function guardModelFor(name: string): string {
-  return (name === MAIN_AGENT_ID
-    ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
-    : readAgentModel(name)) ?? ''
+  if (name !== MAIN_AGENT_ID) return readAgentModel(name) ?? ''
+  // The main agent's model is read from its transcript, where the "[1m]" marker of the launch id is lost; a sub-agent's
+  // comes from its config and keeps it. withLaunchWindowMarker puts it back from the configured launch model.
+  // shortcut: a temporary /model switch to another "[1m]" id is not seen (it is sized as the bare id until the
+  // calibration learns the window), upgrade when the hold flow needs it: main-model.ts knows the id it sent.
+  let launched: string | null = null
+  try { launched = readConfiguredMainModel(PROJECT_ROOT) } catch { /* no launch id: the transcript's id as it is */ }
+  return withLaunchWindowMarker(readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name)), launched) ?? ''
 }
 
 /** CTXUNKNOWNMODEL1122: true when the pct is measured against the 200k fallback of a model id the guard does not know
@@ -1174,9 +1180,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           limitTokens: cfg.limitTokens,
           // The actionable field: this is what says WHAT to fix. Same branch as
           // measurePct's, and it only runs on this rare state change.
-          model: (name === MAIN_AGENT_ID
-            ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
-            : readAgentModel(name)) ?? null,
+          model: guardModelFor(name) || null,
         },
         // Fleet-side checks should match on the fields above (name, model, pct,
         // thresholdPct), never on this wording: the message is prose and may be
