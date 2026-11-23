@@ -27,6 +27,7 @@ import { readTeamsCreds, channelStateDir } from '../../channel-provider.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import type { RouteContext } from './types.js'
 import { fileAgentSpecRequest, AGENT_CREATE_CATEGORY } from '../agent-create-approval.js'
+import { fileOwnerActionRequest, OWNER_ACTION_CATEGORY } from '../owner-action.js'
 import { readVaultAcl, isAgentReadableDecodedVaultId, claimedAgentOf } from '../vault-acl.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
@@ -255,6 +256,12 @@ const notifyAgentCreateDefault = (approval: Approval, lang: ApprovalLang): void 
   void postAgentCreateToGromzo(approval, lang)
 }
 let agentCreateNotifier = notifyAgentCreateDefault
+/** OWNERACTION1123: the owner's channel ask of a filed owner_action request (server-filed: the text is the server's). */
+const notifyOwnerActionDefault = (approval: Approval, lang: ApprovalLang): void => { notifyOwner(approval, null, true, lang) }
+let ownerActionNotifier = notifyOwnerActionDefault
+export function _setOwnerActionNotifierForTest(fn: ((approval: Approval, lang: ApprovalLang) => void) | null): void {
+  ownerActionNotifier = fn ?? notifyOwnerActionDefault
+}
 function notifyAgentCreateOwner(approval: Approval, lang: ApprovalLang): void { agentCreateNotifier(approval, lang) }
 /** Test seam: the owner's channel ask of one request, as a server-filed one. */
 export function _notifyOwnerForTest(approval: Approval, lang: ApprovalLang): void { notifyOwner(approval, null, true, lang) }
@@ -571,6 +578,42 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // POST /api/owner-actions -- OWNERACTION1123: an agent files an owner_action REQUEST (a channel setup or a pairing
+  // approve; the shared token too: nothing runs here). The server validates and stores the request and opens an approval
+  // bound to its hash; the owner's text is the server's rendering. Off unless OWNER_ACTION_VIA_APPROVAL=on.
+  if (path === '/api/owner-actions' && method === 'POST') {
+    const raw = await readBodyOrRefuse(req, res, { maxBytes: 16 * 1024 })
+    if (!raw) return true
+    let body: unknown
+    try { body = JSON.parse(raw.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    const header = req.headers['x-agent-id']
+    const declared = typeof header === 'string' && /^[a-z0-9_-]{1,64}$/i.test(header) ? header : 'unknown'
+    const requestedBy = ctx.auth?.kind === 'token' ? (ctx.auth.tokenAgent ?? claimedAgentOf(ctx.auth) ?? declared) : declared
+    // The same vault rule as /api/agent-specs (Dani #2922 B1): a requester names only an entry it may read itself.
+    const auth = ctx.auth
+    const reader = auth?.kind === 'token' ? (auth.tokenAgent ?? claimedAgentOf(auth)) : null
+    const acl = readVaultAcl()
+    const vaultReadable = (id: string): boolean => {
+      if (!isAgentReadableDecodedVaultId(id)) return false
+      if (auth?.kind === 'session') return true
+      if (!reader) return false
+      const listed = Object.prototype.hasOwnProperty.call(acl, id) && Array.isArray(acl[id]) ? acl[id] : []
+      return listed.includes(reader)
+    }
+    const lang = approvalTextLang()
+    const r = fileOwnerActionRequest(body, requestedBy, { setting: (k) => String(getEffectiveSettingValue(k) ?? ''), lang, vaultReadable })
+    if (r.status === 201 && typeof r.body.approvalId === 'string') {
+      try {
+        const approval = getApproval(r.body.approvalId)
+        if (approval) ownerActionNotifier(approval, lang)
+      } catch (err) {
+        logger.error({ approvalId: r.body.approvalId, err: err instanceof Error ? err.message : String(err) }, 'owner_action request filed, but the owner could NOT be notified on a channel: it is on the dashboard only')
+      }
+    }
+    json(res, r.body, r.status)
+    return true
+  }
+
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
     let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown; owner_approved_message_id?: unknown; for_agent?: unknown }
@@ -594,6 +637,11 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // exact call as payload. A caller-filed row could carry a call's hash under a harmless text.
     if (category.trim() === 'second_review') {
       json(res, { error: 'category second_review is reserved for the server' }, 403)
+      return true
+    }
+    // OWNERACTION1123: an owner_action row is filed by the server only (POST /api/owner-actions), bound to a stored request.
+    if (category.trim() === OWNER_ACTION_CATEGORY) {
+      json(res, { error: 'category owner_action is reserved for the server (POST /api/owner-actions)' }, 403)
       return true
     }
     if (typeof action_description !== 'string' || !action_description.trim()) {
@@ -840,15 +888,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // AGENTCREATEPR2-1119 (Samu 81167): an agent_create request is approved here only by the owner's session (the owner
     // gate above), and only through the decision core with the hash the dashboard showed the owner: never by a plain
     // status write. Rejecting it stays a status write.
-    if (target?.category === AGENT_CREATE_CATEGORY && status === 'approved') {
+    // OWNERACTION1123: an owner_action request the same way (hash-bound, through the decision core, its consumer runs it).
+    if ((target?.category === AGENT_CREATE_CATEGORY || target?.category === OWNER_ACTION_CATEGORY) && status === 'approved') {
       const shown = body.content_hash
       if (typeof shown !== 'string' || !/^[0-9a-f]{64}$/.test(shown)) {
-        json(res, { error: 'content_hash (the hash the owner was shown) is required to approve an agent_create request' }, 400)
+        json(res, { error: `content_hash (the hash the owner was shown) is required to approve an ${target.category} request` }, 400)
         return true
       }
       const d = decideApproval({ approvalId: target.id, status: 'approved', evidence: { channel: 'dashboard', mode: 'owner' }, expectedContentHash: shown })
       if (d.outcome !== 'decided') { json(res, { error: `Not approved: ${d.outcome}` }, 409); return true }
-      logger.info({ id: target.id }, 'agent_create approved by the owner on the dashboard')
+      logger.info({ id: target.id, category: target.category }, 'hash-bound request approved by the owner on the dashboard')
       json(res, d.approval)
       return true
     }

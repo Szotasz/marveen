@@ -18350,15 +18350,17 @@ async function _resolveApproval(id, decision) {
     // AGENTCREATEPR2-1119: a new agent is approved on the WHOLE server-rendered spec (the table shows 80 characters),
     // and the click sends back the hash the owner was shown; the server decides with it.
     const row = _approvalsAll.find(a => a.id === id)
-    if (row && row.category === 'agent_create' && decision === 'approved') {
+    // OWNERACTION1123: an owner_action request (channel setup, pairing approve) the same way, with its own words.
+    if (row && (row.category === 'agent_create' || row.category === 'owner_action') && decision === 'approved') {
       const pre = document.createElement('pre')
       pre.className = 'approval-spec-text'
       pre.style.whiteSpace = 'pre-wrap'
       pre.textContent = row.action_description
+      const k = row.category === 'owner_action' ? 'approvals.owner_action' : 'approvals.agent_create'
       const ok = await confirmDialog({
-        title: t('approvals.agent_create.confirm_title'),
-        message: t('approvals.agent_create.confirm_message', { code: String(row.content_hash || '').slice(0, 8) }),
-        okLabel: t('approvals.agent_create.confirm_ok'),
+        title: t(k + '.confirm_title'),
+        message: t(k + '.confirm_message', { code: String(row.content_hash || '').slice(0, 8) }),
+        okLabel: t(k + '.confirm_ok'),
         content: pre,
         wide: true,
       })

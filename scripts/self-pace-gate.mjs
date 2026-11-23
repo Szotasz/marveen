@@ -1440,7 +1440,7 @@ const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into
 // support_consents and support_password_state (SUPPORTKULCS1109, D5): the owner's consent to support access, with
 // how and why it ended, and the support password bucket. An agent that could write them could forge or erase the
 // trail of an enabling, or lift the lock that stands in front of enabling.
-export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'owner_action_requests', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']
 // An SQL write on one of them. The table name is read wherever the statement
 // names its target: after a schema prefix (`main.approvals`, an ATTACHed
 // `x.approvals`), in [brackets], with SQL comments or line breaks between the
