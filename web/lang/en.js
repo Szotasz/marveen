@@ -190,7 +190,7 @@ window._i18n.en = {
   'agentCatalog.err.downgrade_refused': "The catalog has an older version than the installed one. There is no going back; nothing changed.",
   'agentCatalog.err.plan_changed': "The agent's files changed in the meantime. Look at the changes again and decide again.",
   'agentCatalog.err.decision_required': "Some files still need your decision before the update runs.",
-  'agentCatalog.err.path_blocked': "A link stands where the update would write, so nothing was written. Replace it with a plain folder or file and try again.",
+  'agentCatalog.err.path_blocked': "A link stands where the update would write, so the update stopped. Replace it with a plain folder or file and run the update again: it keeps the files already written and finishes.",
   'agentCatalog.err.update_in_progress': "This agent is already being updated. Wait for it to finish.",
   'agentCatalog.err.update_failed': "The update was interrupted. Run it again: it keeps the files already written and finishes.",
   'nav.skills':       'Skills',

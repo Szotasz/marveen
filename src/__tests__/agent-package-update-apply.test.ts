@@ -159,6 +159,23 @@ describe('decisions and backups', () => {
     expect(readdirSync(join(dir, '.package', 'backup'))).toEqual([key])
     expect(readFileSync(join(dir, '.package', 'backup', key, 'PACKAGE.md'), 'utf8')).toBe('first copy\n')
   })
+  it('M1 (#3085): a repair after a finished upgrade to the same target keeps BOTH owner texts', () => {
+    writeFileSync(at('PACKAGE.md'), 'owner A\n')
+    expect(update(V2, '1.1.0', { 'CLAUDE.md': 'take-package' }).result?.ok).toBe(true)
+    writeFileSync(at('PACKAGE.md'), 'owner B\n')
+    const r = update(V2, '1.1.0', { 'CLAUDE.md': 'take-package' })
+    expect(r.list.kind).toBe('repair')
+    expect(r.result?.ok).toBe(true)
+    const b = join(dir, '.package', 'backup', r.pkg!.payloadSha256.slice(0, 16))
+    expect(readFileSync(join(b, 'PACKAGE.md'), 'utf8')).toBe('owner A\n')
+    expect(readFileSync(join(b, 'PACKAGE.md.2'), 'utf8')).toBe('owner B\n')
+    expect((statSync(join(b, 'PACKAGE.md.2')).mode & 0o777).toString(8)).toBe('600')
+    expect(read('PACKAGE.md')).toBe(V2['CLAUDE.md'])
+    // The same text a third time: already saved, no third copy.
+    writeFileSync(at('PACKAGE.md'), 'owner B\n')
+    expect(update(V2, '1.1.0', { 'CLAUDE.md': 'take-package' }).result?.ok).toBe(true)
+    expect(readdirSync(b).sort()).toEqual(['PACKAGE.md', 'PACKAGE.md.2'])
+  })
   it('a link at .package/backup: path_blocked, nothing written', () => {
     const outside = mkdtempSync(join(tmpdir(), 'marveen-outside-'))
     mkdirSync(join(dir, '.package'), { recursive: true })

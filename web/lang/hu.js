@@ -190,7 +190,7 @@ window._i18n.hu = {
   'agentCatalog.err.downgrade_refused': "A katalógusban régebbi verzió áll, mint ami telepítve van. Visszalépés nincs, semmi nem változott.",
   'agentCatalog.err.plan_changed': "Az ügynök fájljai közben megváltoztak. Nézd meg újra a változásokat, és dönts újra.",
   'agentCatalog.err.decision_required': "Néhány fájlról még döntened kell, mielőtt a frissítés lefut.",
-  'agentCatalog.err.path_blocked': "Ott, ahová a frissítés írna, egy hivatkozás (link) áll, ezért semmi nem íródott. Cseréld rendes mappára vagy fájlra, és próbáld újra.",
+  'agentCatalog.err.path_blocked': "Ott, ahová a frissítés írna, egy hivatkozás (link) áll, ezért a frissítés megállt. Cseréld rendes mappára vagy fájlra, és futtasd újra: a már megírt fájlokat megtartja, és befejezi.",
   'agentCatalog.err.update_in_progress': "Ennek az ügynöknek a frissítése már fut. Várd meg a végét.",
   'agentCatalog.err.update_failed': "A frissítés félbeszakadt. Futtasd újra: a már megírt fájlokat megtartja, és befejezi.",
   'nav.skills':       'Skillek',

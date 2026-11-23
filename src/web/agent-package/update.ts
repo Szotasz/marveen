@@ -540,10 +540,21 @@ export function runApplyBlock(c: ApplyInput): ApplyResult {
       const dest = join(backupRoot, backupKey, item.disk)
       mkdirChain(c.agentDir, join('.package', 'backup', backupKey, dirname(item.disk)), 0o700)
       if (!insideAgent(agentReal, dirname(dest))) throw blockedAt(item.path)
-      try {
-        writeFileSync(dest, now.bytes, { flag: 'wx', mode: 0o600 })
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
+      // An existing backup is never overwritten (IR11). A repair after a finished upgrade has the SAME target key, so
+      // a saved file there may be an OLDER owner text (Samu M1, #3085): the same bytes are saved already; other bytes
+      // go under the next free name (<name>.2, <name>.3, ...), so neither owner text is lost.
+      for (let n = 1; ; n++) {
+        const name = n === 1 ? dest : `${dest}.${n}`
+        try {
+          writeFileSync(name, now.bytes, { flag: 'wx', mode: 0o600 })
+          return
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
+        }
+        const there = readDiskEntry(c.agentDir, join('.package', 'backup', backupKey, n === 1 ? item.disk : `${item.disk}.${n}`))
+        if (there.kind === 'blocked') throw blockedAt(item.path)
+        if (there.kind === 'file' && there.bytes.equals(now.bytes)) return
+        if (n >= 1000) throw new Error('too many backups of one file')
       }
     }
     // D2: what the list says stands on the disk must still stand there, else the owner's newer text would be lost.
