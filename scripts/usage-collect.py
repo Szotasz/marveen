@@ -80,6 +80,11 @@ CONFIG = {
     # last sees it; anything older would let the gate act on a number that
     # has had a long time to move. Older -> not used, fall through (fail open).
     "claude_statusline_max_age_min": 10,
+    # A per-account statusLine reading is alerted on while it is younger than
+    # this (USAGEPERACCOUNT1123). An idle account stops being refreshed; its last
+    # number still describes the live window (expired windows are dropped), but
+    # past an hour a pace verdict on it would be about a stale burn rate.
+    "claude_account_alert_max_age_min": 60,
 }
 
 
@@ -112,6 +117,11 @@ STATE_PATH = os.path.join(STORE_DIR, "usage-alert-state.json")
 STATUSLINE_PATH = os.path.join(STORE_DIR, ".claude-rate-limits.json")
 ENV_PATH = os.path.join(REPO_ROOT, ".env")
 SETUP_TOKEN_PATH = os.path.join(STORE_DIR, ".claude-oauth-token")
+PLANS_PATH = os.path.join(STORE_DIR, "claude-plans.json")
+
+# USAGEPERACCOUNT1123: per-account statusLine readings, see scripts/lib/claude_accounts.py.
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts", "lib"))
+import claude_accounts  # noqa: E402
 
 # Display timezone for reset stamps: MARVEEN_TZ when set, else the install zone
 # (SCHEDULER_TZ, config-overrides.json over .env, the same rule as APP_TZ in
@@ -298,7 +308,7 @@ def compute_pace(used_percent, resets_at, window_len_sec, now_utc=None):
 def _window_length_seconds(scope_key, window_data):
     """scope_key looks like 'claude_five_hour' or 'codex_weekly'."""
     if scope_key.startswith("claude_"):
-        return CLAUDE_WINDOW_SECONDS.get(scope_key[len("claude_"):])
+        return CLAUDE_WINDOW_SECONDS.get(scope_key[len("claude_"):].split("@", 1)[0])
     if scope_key.startswith("codex_"):
         wm = window_data.get("window_minutes") if window_data else None
         return wm * 60 if isinstance(wm, (int, float)) else None
@@ -314,6 +324,21 @@ def _iter_pace_windows(snapshot):
     if claude.get("ok") and claude.get("source") in ("authoritative", "authoritative_cached"):
         for key, w in (claude.get("windows") or {}).items():
             scope_key = f"claude_{key}"
+            length = _window_length_seconds(scope_key, w)
+            if length:
+                yield scope_key, w, length
+
+    # USAGEPERACCOUNT1123: each account's own statusLine reading is a measured
+    # number of ONE account (the block Claude Code hands out), unlike the mixed
+    # shared file, so it is alerted on, keyed and named per account. Probe readings
+    # and readings older than claude_account_alert_max_age_min are not.
+    for acct_key, a in sorted((snapshot.get("claude_accounts") or {}).items()):
+        if not isinstance(a, dict) or a.get("source") != "statusline":
+            continue
+        if not isinstance(a.get("age_minutes"), (int, float)) or a["age_minutes"] > CONFIG["claude_account_alert_max_age_min"]:
+            continue
+        for key, w in (a.get("windows") or {}).items():
+            scope_key = f"claude_{key}@{acct_key}"
             length = _window_length_seconds(scope_key, w)
             if length:
                 yield scope_key, w, length
@@ -518,6 +543,13 @@ def _collect_claude_authoritative():
     token, token_source = _read_claude_token()
     if not token:
         return None, "no oauth token available (no credentials.json, no keychain entry, no .env token)", "no_token"
+    if token_source == "env_file":
+        # USAGEPERACCOUNT1123: the .env CLAUDE_CODE_OAUTH_TOKEN is a setup-token, and
+        # the usage endpoint refuses it with 403 every single time (measured: every
+        # 15-minute round from 2026-11-20 21:27 on, once Keychain reads were switched
+        # off). Calling it only spent a request to log the same 403; the reason is
+        # stated instead, and the readings come from the statusLine, per account.
+        return None, "setup-token (.env) not accepted by the usage endpoint, not called", "permanent"
 
     version = _claude_cli_version()
     req = urllib.request.Request(
@@ -705,6 +737,45 @@ def _collect_claude_ratelimit_headers():
     return None, f"{out.get('reason', 'no reading')} ({token_source} token)"
 
 
+def _configured_plans():
+    try:
+        with open(PLANS_PATH, "r", encoding="utf-8") as f:
+            plans = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [p for p in plans if isinstance(p, dict) and isinstance(p.get("id"), str)] if isinstance(plans, list) else []
+
+
+def _main_account_statusline(max_age_minutes, now_utc=None, accounts=None):
+    """The statusLine reading for the snapshot's single `claude` entry (USAGEPERACCOUNT1123).
+
+    With no store/claude-plans.json every agent runs on one subscription, so the
+    shared side file is still right (unchanged behaviour). With plans configured
+    the shared file holds whichever account wrote last, so only the MAIN agent's
+    own plan is used here (claude-plans-state.json activePlanByAgent), from its
+    per-account file; when that plan has no fresh reading, nothing -- never the
+    number of another account."""
+    if not _configured_plans():
+        return _read_claude_statusline(max_age_minutes, now_utc)
+    now_ts = (now_utc or datetime.now(timezone.utc)).timestamp()
+    accounts = accounts if accounts is not None else claude_accounts.read_accounts(REPO_ROOT, now_ts, with_probe=False)
+    lab = claude_accounts.Labeler(REPO_ROOT)
+    main_plan = lab.active.get(lab.main)
+    a = accounts.get(main_plan) if main_plan else None
+    if not a or a.get("source") != "statusline" or a["age_minutes"] > max_age_minutes or a["age_minutes"] < 0:
+        return None, None
+    return a["windows"], a["age_minutes"]
+
+
+def collect_claude_accounts(now_utc=None):
+    """One entry per subscription account, each with its own source and label."""
+    now_ts = (now_utc or datetime.now(timezone.utc)).timestamp()
+    try:
+        return claude_accounts.read_accounts(REPO_ROOT, now_ts)
+    except Exception as e:
+        return {"_error": type(e).__name__}
+
+
 def _claude_transcript_globs():
     """Every place Claude Code transcripts live on this install. A glob over
     ~/.claude/projects alone finds nothing when the main agent and the
@@ -806,7 +877,7 @@ def collect_claude():
     # The official endpoint gave nothing (no token, 401/403, outage). The
     # statusLine side file is the same rate_limits block, token-free, and
     # fresher than the 90-min cache below, so it goes first.
-    sl_windows, sl_age = _read_claude_statusline(CONFIG["claude_statusline_max_age_min"])
+    sl_windows, sl_age = _main_account_statusline(CONFIG["claude_statusline_max_age_min"])
     if sl_windows is not None:
         result["source"] = "statusline"
         result["windows"] = sl_windows
@@ -856,6 +927,7 @@ def build_snapshot():
         "generated_at_local": now.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         "codex": collect_codex(),
         "claude": collect_claude(),
+        "claude_accounts": collect_claude_accounts(now),
     }
 
 
@@ -959,6 +1031,27 @@ def render_summary(snapshot):
         lines.append(f"  weekly Opus estimated token volume: {claude.get('seven_day_opus_est_tokens', '?')}")
         lines.append(f"  ({claude.get('files_scanned', 0)} transcript files scanned, no %/reset info from estimate)")
 
+    accounts = snapshot.get("claude_accounts") or {}
+    if accounts:
+        lines.append("")
+        lines.append("Claude accounts:")
+        for acct_key, a in sorted(accounts.items()):
+            if not isinstance(a, dict):
+                lines.append(f"  {acct_key}: {a}")
+                continue
+            parts = []
+            for wk, wn in (("five_hour", "5-hour"), ("seven_day", "weekly")):
+                w = (a.get("windows") or {}).get(wk)
+                if w:
+                    parts.append(f"{wn} {w.get('used_percent')}%")
+            age = a.get("age_minutes")
+            lines.append(
+                f"  {a.get('label') or acct_key} ({acct_key}): {', '.join(parts) or 'no live window'}"
+                f" -- {a.get('source')}, {age:.0f} min ago, label: {a.get('label_source')}"
+                + (f", writer: {a.get('writer_agent')}" if a.get("writer_agent") else "")
+                + (" [LABEL CONFLICT]" if a.get("label_conflict") else "")
+            )
+
     return "\n".join(lines)
 
 
@@ -1042,7 +1135,11 @@ def compute_alerts(snapshot, state, now_utc=None):
             continue
 
         underuse_eligible = window_len_sec >= CONFIG["underuse_min_window_sec"]
-        name = ALERT_WINDOW_NAMES.get(scope_key, scope_key)
+        base_key, _, acct_key = scope_key.partition("@")
+        name = ALERT_WINDOW_NAMES.get(base_key, base_key)
+        if acct_key:
+            acct = (snapshot.get("claude_accounts") or {}).get(acct_key) or {}
+            name = f"{name} [{acct.get('label') or acct_key}]"
         used_pct = pace["used_fraction"] * 100
         elapsed_pct = pace["elapsed_fraction"] * 100
         pace_ratio = pace["pace_ratio"]
