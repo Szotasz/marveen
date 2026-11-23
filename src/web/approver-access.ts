@@ -16,22 +16,22 @@ import { mayActAsOwner } from './routes/auth.js'
 import type { RouteContext } from './routes/types.js'
 
 /**
- * The categories only the owner decides, whatever scope an approver holds. A CODE constant on purpose, not config: the
- * config files live on the owner's machine where an agent can write them, and widening this list must be a review.
- * The six locked categories of the autonomy config, plus agent_create (owner decision, DELEGAPPROVER1123).
+ * The categories an approver MAY be given: an ALLOWLIST (Dani's review of #3094, B1). Every other category, the locked
+ * ones, update_rebase, second_review, deploy_retry, skill_patch, agent_create and any key added later or made up by an
+ * agent, is decided by the owner only. A CODE constant on purpose, not config: the config files live on the owner's
+ * machine where an agent can write them, and widening this list must be a review. The category is the requesting
+ * agent's own claim; the allowlist keeps an approver to the low-risk housekeeping keys of the autonomy config.
  */
-export const OWNER_ONLY_APPROVAL_CATEGORIES: readonly string[] = Object.freeze([
-  'email_send',
-  'data_delete',
-  'payment',
-  'permission_change',
-  'publish_content',
-  'external_message',
-  'agent_create',
+export const DELEGABLE_APPROVAL_CATEGORIES: readonly string[] = Object.freeze([
+  'kanban_archive_done',
+  'kanban_stuck_nudge',
+  'kanban_restructure',
+  'memory_maintenance',
+  'routine_trivial_fix',
 ])
 
 export function isOwnerOnlyCategory(category: string): boolean {
-  return OWNER_ONLY_APPROVAL_CATEGORIES.includes(category)
+  return !DELEGABLE_APPROVAL_CATEGORIES.includes(category)
 }
 
 /** A scope's category: a category key as the autonomy config spells them (the same alphabet as routes/approvals.ts

@@ -34,7 +34,9 @@ import { _setTotpStorePathForTest, _resetTotpStateForTest } from '../web/dashboa
 import { hotp, base32Decode, totpStepAt } from '../web/totp.js'
 import { hashPassword } from '../web/password-hash.js'
 import { approverGateDecision } from '../web/approver-gate.js'
-import { OWNER_ONLY_APPROVAL_CATEGORIES, mayApprove } from '../web/approver-access.js'
+import { DELEGABLE_APPROVAL_CATEGORIES, isOwnerOnlyCategory, mayApprove } from '../web/approver-access.js'
+import { UPDATE_REBASE_CATEGORY } from '../update-rebase-plan.js'
+import { SECOND_REVIEW_CATEGORY } from '../web/routes/review-action.js'
 import { scanRoutes } from './helpers/route-owner-scan.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -43,6 +45,24 @@ type Auth = RouteContext['auth']
 const PW = 'approver-secret-pw-1'
 const OWNER: Auth = { kind: 'session', user: 'owner' }
 const HASH = 'a'.repeat(64)
+
+// Every category the seed autonomy config ships, read from the file (not a copy of it).
+const SEED_CATEGORIES: string[] = (JSON.parse(readFileSync(new URL('../../seed-config/autonomy-config.json', import.meta.url), 'utf8')) as {
+  categories: { key: string }[]
+}).categories.map((c) => c.key)
+
+// DELEGAPPROVER1123 (Dani's review of #3094, B1): the owner-only set is everything outside the allowlist. Sampled here:
+// every seed key outside it, the categories the code itself asks for, and keys no config knows (a later or made-up one).
+const OWNER_ONLY_SAMPLE: string[] = [
+  ...SEED_CATEGORIES.filter((c) => !DELEGABLE_APPROVAL_CATEGORIES.includes(c)),
+  UPDATE_REBASE_CATEGORY,
+  SECOND_REVIEW_CATEGORY,
+  'agent_create',
+  'pr_merge',
+  'github_issue_handling',
+  'kanban_anything_new',
+  'some_future_key',
+]
 
 const td = mkdtempSync(join(tmpdir(), 'delegapprover-'))
 afterAll(() => rmSync(td, { recursive: true, force: true }))
@@ -151,7 +171,7 @@ describe('role and migration', () => {
     }
     await createApprover('anna')
     for (const who of [{ kind: 'token' } as Auth, APPROVER()]) {
-      expect((await auth('POST', '/api/auth/approvers/anna/scopes', { auth: who, body: { category: 'deploy', agent: '*' } })).status).toBe(403)
+      expect((await auth('POST', '/api/auth/approvers/anna/scopes', { auth: who, body: { category: 'kanban_restructure', agent: '*' } })).status).toBe(403)
       expect((await auth('POST', '/api/auth/approvers/anna/disable', { auth: who })).status).toBe(403)
     }
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM approver_scopes').get()).toEqual({ n: 0 })
@@ -162,7 +182,7 @@ describe('role and migration', () => {
 
   it('the API refuses an owner-only category as a scope', async () => {
     await createApprover('anna')
-    for (const c of OWNER_ONLY_APPROVAL_CATEGORIES) {
+    for (const c of OWNER_ONLY_SAMPLE) {
       const r = await addScope('anna', c, '*')
       expect(r.status, c).toBe(400)
       expect(r.json().code).toBe('owner_only_category')
@@ -259,7 +279,7 @@ describe('an approver session is never the owner', () => {
       ['POST', '/api/auth/users', { username: 'evil', password: PW }],
       ['GET', '/api/auth/approvers', undefined],
       ['POST', '/api/auth/approvers', { username: 'evil2', password: PW }],
-      ['POST', '/api/auth/approvers/anna/scopes', { category: 'deploy', agent: '*' }],
+      ['POST', '/api/auth/approvers/anna/scopes', { category: 'kanban_restructure', agent: '*' }],
       ['POST', '/api/auth/approvers/anna/disable', undefined],
       ['GET', '/api/auth/totp', undefined],
       ['POST', '/api/auth/totp/setup', undefined],
@@ -270,7 +290,7 @@ describe('an approver session is never the owner', () => {
     }
     expect(getDashboardUser('evil')).toBeUndefined()
     // born-approved POST on the approvals route: the owner gate refuses it
-    const born = await approvals('POST', '/api/approvals', { auth: a, body: { agent_id: 'marveen', category: 'deploy', action_description: 'x', owner_approved_message_id: 5 } })
+    const born = await approvals('POST', '/api/approvals', { auth: a, body: { agent_id: 'marveen', category: 'kanban_restructure', action_description: 'x', owner_approved_message_id: 5 } })
     expect([400, 403]).toContain(born.status)
     expect(getDb().prepare("SELECT COUNT(*) AS n FROM approvals WHERE status = 'approved'").get()).toEqual({ n: 0 })
   })
@@ -279,31 +299,31 @@ describe('an approver session is never the owner', () => {
 describe('mayApprove on the decide route', () => {
   it('an in-scope, non-owner-only request: approved through the core, mode approver, with a decided event', async () => {
     await createApprover('anna')
-    expect((await addScope('anna', 'deploy', 'samu')).status).toBe(201)
-    const id = newApproval('deploy', 'samu')
+    expect((await addScope('anna', 'kanban_restructure', 'samu')).status).toBe(201)
+    const id = newApproval('kanban_restructure', 'samu')
     const r = await approvals('PATCH', `/api/approvals/${id}`, { auth: APPROVER(), body: { status: 'approved', resolved_by: 'anna', content_hash: HASH } })
     expect(r.status).toBe(200)
     const row = getApproval(id)!
     expect(row.status).toBe('approved')
     expect(row.resolved_by).toBe('dashboard_approver:anna')
     const ev = listApprovalEvents(id)
-    expect(ev.map((e) => [e.event, e.actor, e.reason, e.ref])).toEqual([['decided', 'anna', 'approved scope=deploy:samu', HASH]])
+    expect(ev.map((e) => [e.event, e.actor, e.reason, e.ref])).toEqual([['decided', 'anna', 'approved scope=kanban_restructure:samu', HASH]])
   })
 
   it('a reject goes the same way; the wildcard agent scope covers every agent', async () => {
     await createApprover('anna')
-    await addScope('anna', 'deploy', '*')
-    const id = newApproval('deploy', 'bence', null)
+    await addScope('anna', 'kanban_restructure', '*')
+    const id = newApproval('kanban_restructure', 'bence', null)
     const r = await approvals('PATCH', `/api/approvals/${id}`, { auth: APPROVER(), body: { status: 'rejected', resolved_by: 'anna' } })
     expect(r.status).toBe(200)
     expect(getApproval(id)!.status).toBe('rejected')
-    expect(listApprovalEvents(id).map((e) => [e.event, e.reason, e.ref])).toEqual([['decided', 'rejected scope=deploy:*', null]])
+    expect(listApprovalEvents(id).map((e) => [e.event, e.reason, e.ref])).toEqual([['decided', 'rejected scope=kanban_restructure:*', null]])
   })
 
   it('a hash-bound request needs the hash shown, and the right one', async () => {
     await createApprover('anna')
-    await addScope('anna', 'deploy', 'samu')
-    const id = newApproval('deploy', 'samu')
+    await addScope('anna', 'kanban_restructure', 'samu')
+    const id = newApproval('kanban_restructure', 'samu')
     expect((await approvals('PATCH', `/api/approvals/${id}`, { auth: APPROVER(), body: { status: 'approved', resolved_by: 'anna' } })).status).toBe(400)
     expect((await approvals('PATCH', `/api/approvals/${id}`, { auth: APPROVER(), body: { status: 'approved', resolved_by: 'anna', content_hash: 'b'.repeat(64) } })).status).toBe(409)
     expect(getApproval(id)!.status).toBe('pending')
@@ -312,8 +332,8 @@ describe('mayApprove on the decide route', () => {
 
   it('refused for a category outside the scope', async () => {
     await createApprover('anna')
-    await addScope('anna', 'deploy', '*')
-    const id = newApproval('schedule_change', 'samu')
+    await addScope('anna', 'kanban_restructure', '*')
+    const id = newApproval('memory_maintenance', 'samu')
     const r = await approvals('PATCH', `/api/approvals/${id}`, { auth: APPROVER(), body: { status: 'approved', resolved_by: 'anna', content_hash: HASH } })
     expect(r.status).toBe(403)
     expect(getApproval(id)!.status).toBe('pending')
@@ -322,8 +342,8 @@ describe('mayApprove on the decide route', () => {
 
   it('refused for an agent outside the scope', async () => {
     await createApprover('anna')
-    await addScope('anna', 'deploy', 'samu')
-    const id = newApproval('deploy', 'bence')
+    await addScope('anna', 'kanban_restructure', 'samu')
+    const id = newApproval('kanban_restructure', 'bence')
     const r = await approvals('PATCH', `/api/approvals/${id}`, { auth: APPROVER(), body: { status: 'approved', resolved_by: 'anna', content_hash: HASH } })
     expect(r.status).toBe(403)
     expect(getApproval(id)!.status).toBe('pending')
@@ -332,16 +352,16 @@ describe('mayApprove on the decide route', () => {
   it('refused for another approver\'s scope', async () => {
     await createApprover('anna')
     await createApprover('bea')
-    await addScope('bea', 'deploy', '*')
-    const id = newApproval('deploy', 'samu')
+    await addScope('bea', 'kanban_restructure', '*')
+    const id = newApproval('kanban_restructure', 'samu')
     expect((await approvals('PATCH', `/api/approvals/${id}`, { auth: APPROVER('anna'), body: { status: 'approved', resolved_by: 'anna', content_hash: HASH } })).status).toBe(403)
   })
 
   it('refused for EVERY owner-only category, even with a scope row written past the API', async () => {
     await createApprover('anna')
     const anna = getDashboardUser('anna')!
-    expect(OWNER_ONLY_APPROVAL_CATEGORIES).toEqual(['email_send', 'data_delete', 'payment', 'permission_change', 'publish_content', 'external_message', 'agent_create'])
-    for (const c of OWNER_ONLY_APPROVAL_CATEGORIES) {
+    expect(DELEGABLE_APPROVAL_CATEGORIES).toEqual(['kanban_archive_done', 'kanban_stuck_nudge', 'kanban_restructure', 'memory_maintenance', 'routine_trivial_fix'])
+    for (const c of OWNER_ONLY_SAMPLE) {
       addApproverScope(anna.id, c, '*', 'test')
       const id = newApproval(c, 'samu')
       expect(mayApprove(APPROVER(), getApproval(id)), c).toBe(false)
@@ -356,15 +376,15 @@ describe('mayApprove on the decide route', () => {
 
   it('refused for a request already decided', async () => {
     await createApprover('anna')
-    await addScope('anna', 'deploy', '*')
-    const id = newApproval('deploy', 'samu')
+    await addScope('anna', 'kanban_restructure', '*')
+    const id = newApproval('kanban_restructure', 'samu')
     getDb().prepare("UPDATE approvals SET status = 'rejected', resolved_by = 'owner' WHERE id = ?").run(id)
     expect((await approvals('PATCH', `/api/approvals/${id}`, { auth: APPROVER(), body: { status: 'approved', resolved_by: 'anna', content_hash: HASH } })).status).toBe(403)
     expect(getApproval(id)!.status).toBe('rejected')
   })
 
   it('the owner decides as before (no routing change)', async () => {
-    const id = newApproval('deploy', 'samu')
+    const id = newApproval('kanban_restructure', 'samu')
     const owner = getDashboardUser('owner')!
     const c = createSession({ userId: owner.id, username: 'owner' })
     const r = await approvals('PATCH', `/api/approvals/${id}`, { auth: OWNER, cookie: `${SESSION_COOKIE_NAME}=${c}`, body: { status: 'approved', resolved_by: 'owner' } })
@@ -389,16 +409,37 @@ describe('immediate revocation', () => {
 
   it('removing a scope deletes the approver\'s sessions in the same step', async () => {
     const secret = await createApprover('anna')
-    await addScope('anna', 'deploy', 'samu')
+    await addScope('anna', 'kanban_restructure', 'samu')
     const c = await signIn('anna', secret)
     const id = getDashboardUser('anna')!.id
-    const r = await auth('DELETE', '/api/auth/approvers/anna/scopes?category=deploy&agent=samu', { auth: OWNER })
+    const r = await auth('DELETE', '/api/auth/approvers/anna/scopes?category=kanban_restructure&agent=samu', { auth: OWNER })
     expect(r.status).toBe(200)
     expect(r.json().removed).toBe(true)
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM auth_sessions WHERE user_id = ?').get(id)).toEqual({ n: 0 })
     expect(resolveSession(c)).toBeNull()
     // signed in again, the removed scope no longer decides
-    const ap = newApproval('deploy', 'samu')
+    const ap = newApproval('kanban_restructure', 'samu')
     expect((await approvals('PATCH', `/api/approvals/${ap}`, { auth: APPROVER(), body: { status: 'approved', resolved_by: 'anna', content_hash: HASH } })).status).toBe(403)
+  })
+})
+
+describe('the delegable categories are an allowlist (DELEGAPPROVER1123, B1)', () => {
+  it('every allowlisted key is a real seed category, and none of them is locked', () => {
+    const seed = (JSON.parse(readFileSync(new URL('../../seed-config/autonomy-config.json', import.meta.url), 'utf8')) as {
+      categories: { key: string; locked?: boolean }[]
+    }).categories
+    for (const c of DELEGABLE_APPROVAL_CATEGORIES) {
+      const row = seed.find((r) => r.key === c)
+      expect(row, c).toBeDefined()
+      expect(row!.locked, c).not.toBe(true)
+      expect(isOwnerOnlyCategory(c), c).toBe(false)
+    }
+  })
+
+  it('every other seed key, every code-owned category and any unknown key is owner-only', () => {
+    expect(OWNER_ONLY_SAMPLE).toContain('deploy_retry')
+    expect(OWNER_ONLY_SAMPLE).toContain('skill_patch')
+    expect(OWNER_ONLY_SAMPLE).toContain('external_skill_adoption')
+    for (const c of OWNER_ONLY_SAMPLE) expect(isOwnerOnlyCategory(c), c).toBe(true)
   })
 })

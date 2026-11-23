@@ -103,7 +103,7 @@ import {
 import { isPublicRequest, redeemSetupCode, setupCodeAvailable, setupSessionCookie } from '../public-access.js'
 import { takeSupportAccessDown } from '../support-standby-runtime.js'
 import type { RouteContext } from './types.js'
-import { OWNER_ONLY_APPROVAL_CATEGORIES, isOwnerOnlyCategory, isScopeAgent, isScopeCategory } from '../approver-access.js'
+import { DELEGABLE_APPROVAL_CATEGORIES, isOwnerOnlyCategory, isScopeAgent, isScopeCategory } from '../approver-access.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
 /** DOCKERHTTPS1119: the login throttle's key for setup-code attempts (no username can contain a space). */
@@ -988,7 +988,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     const approvers = listDashboardUsers().filter((u) => u.role === 'approver')
       .map((u) => ({ ...u, scopes: listApproverScopes(u.id).map((s) => ({ category: s.category, agent: s.agent, created_at: s.created_at })) }))
-    json(res, { approvers, owner_only_categories: OWNER_ONLY_APPROVAL_CATEGORIES })
+    json(res, { approvers, delegable_categories: DELEGABLE_APPROVAL_CATEGORIES })
     return true
   }
 
