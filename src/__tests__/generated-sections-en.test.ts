@@ -103,6 +103,7 @@ const NAMES = [MAIN, OWN, SHARED]
 const B = [false, true]
 const CASES: Array<{ id: string; build: () => string }> = [
   { id: 'mcp-list-channel', build: () => sc.buildMcpListChannelBody() },
+  { id: 'mcp-list-channel-short', build: () => sc.buildMcpListChannelShortBody() },
   { id: 'background-checkpoint', build: () => sc.buildBackgroundCheckpointBody() },
   { id: 'pane-at-escape', build: () => sc.buildPaneAtEscapeBody() },
   { id: 'fleet-auth', build: () => sc.buildFleetAuthBody() },
@@ -505,6 +506,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'claude-md-prompt': '47a4cd6b4097e6be',
   'precompact-prompt': 'ba0d64daf27b1316',
   'mcp-list-channel': 'a7ccf3ed2f0ca342',
+  'mcp-list-channel-short': 'c1583023a1e8fec1',
   'memory-search-label': '9ddf9811134c353e',
   'message-close': '835ee6c92d6e0a7a',
   'pane-at-escape': '81d1f7d930d89739',

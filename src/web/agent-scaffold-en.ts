@@ -86,6 +86,15 @@ export function buildMcpListChannelBodyEn(): string {
   ].join('\n')
 }
 
+export function buildMcpListChannelShortBodyEn(): string {
+  return [
+    '## A child `claude` in an agent without a channel',
+    '',
+    'Do not start a child `claude` (e.g. `claude -p`, `claude mcp list`) with a cleared environment (`env -i`, an unset `TELEGRAM_STATE_DIR` or `CLAUDE_CONFIG_DIR`): with an empty environment it loads the main agent\'s `~/.claude` and bot folder and shoots down the main bot\'s poller.',
+    'To detach it, point both at a folder of its own (the config folder plugin-free); the measurement: `docs/mcp-list-channel-plugin.md`.',
+  ].join('\n')
+}
+
 // ---- autonomy-wiring ----
 function autonomyLevel1HelperEn(name: string, strict: boolean, f: ScaffoldFrags): string[] {
   const file = f.payload('uzenet')

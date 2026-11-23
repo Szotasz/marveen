@@ -26,6 +26,10 @@ const DOC = readFileSync(join(ROOT, 'docs', 'mcp-list-channel-plugin.md'), 'utf-
 
 const body = SCAFFOLD.slice(
   SCAFFOLD.indexOf('function buildMcpListChannelBody('),
+  SCAFFOLD.indexOf('function buildMcpListChannelShortBody('),
+)
+const shortBody = SCAFFOLD.slice(
+  SCAFFOLD.indexOf('function buildMcpListChannelShortBody('),
   SCAFFOLD.indexOf('const EVIDENCE_BEGIN'),
 )
 
@@ -82,6 +86,27 @@ describe('mcp-list channel warning: what it says', () => {
     expect(body).toMatch(/állítsd egy üres mappára/)
     expect(body).toMatch(/NE töröld/)
     expect(body).not.toMatch(/vedd ki a környezetéből/)
+  })
+})
+
+// Review on #3082: a channel-less agent keeps a short form, because a child started with a cleared environment
+// (env -i) loads the main agent's ~/.claude and bot folder (docs/mcp-list-channel-plugin.md, the fallback).
+describe('mcp-list channel warning: the short form for a channel-less agent', () => {
+  it('names the cleared environment and both variables, the consequence, and the safe shape', () => {
+    expect(shortBody).toMatch(/env -i/)
+    expect(shortBody).toMatch(/TELEGRAM_STATE_DIR/)
+    expect(shortBody).toMatch(/CLAUDE_CONFIG_DIR/)
+    expect(shortBody).toMatch(/fő bot pollerét lövi le/)
+    expect(shortBody).toMatch(/mindkettőt saját mappára állítsd/)
+    expect(shortBody).toMatch(/docs\/mcp-list-channel-plugin\.md/)
+  })
+
+  it('stays short: a heading and two lines', () => {
+    expect((shortBody.match(/^\s+'/gm) || []).length).toBeLessThanOrEqual(4)
+  })
+
+  it('the ensure function picks it when the agent carries no channel, the full block otherwise', () => {
+    expect(SCAFFOLD).toContain('hasChannel(name) ? buildMcpListChannelBody() : buildMcpListChannelShortBody()')
   })
 })
 
