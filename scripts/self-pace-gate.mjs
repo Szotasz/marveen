@@ -595,7 +595,7 @@ export function protectedSplit(command) {
 //     export, local, declare, typeset, readonly, let, `printf -v`;
 //   - the name is assigned exactly ONCE in the whole command (NAME= or NAME+=, quoted text excluded), in a segment
 //     that is only literal NAME=value words, and the use comes after it;
-//   - the name is not one the shell itself sets or rewrites (SHELL_MANAGED_NAMES, any BASH*/ZSH*: Dani 71554);
+//   - the name is not one the shell itself sets or rewrites (SHELL_MANAGED_NAMES: every special name of zsh and bash; any BASH*/ZSH*/COMP_*/READLINE_*/LC_*: Dani 71554);
 //   - every separator from that assignment to the use is && or ; (or a newline);
 //   - from the last ; before the assignment up to it there is no || (`a || F=x && use $F` can run use without F);
 //   - the separator right before the assignment is not a pipe or & (that would run it in a subshell).
@@ -604,11 +604,44 @@ const COMPOUND_WORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'for', 'whil
 // Names the SHELL itself sets or rewrites: an assignment to one is no definite literal. `PWD=/tmp/q; cd .; cp -R x/.
 // $PWD` copies into the real cwd (cd resets PWD; measured in bash and zsh, Dani 71554), `cd /` resets OLDPWD, and $_,
 // RANDOM, SECONDS, LINENO ... change on their own. zsh's lower-case twins (dirstack, cdpath, ...) are listed too; any
-// BASH* / ZSH* name is excluded by prefix.
-const SHELL_MANAGED_NAMES = new Set(['PWD', 'OLDPWD', 'DIRSTACK', 'dirstack', 'CDPATH', 'cdpath', 'IFS', 'RANDOM', 'SRANDOM',
-  'SECONDS', 'LINENO', 'EPOCHSECONDS', 'EPOCHREALTIME', 'HISTCMD', 'PPID', 'UID', 'EUID', 'GROUPS', 'SHLVL', 'OPTIND', 'OPTARG',
-  'REPLY', 'PIPESTATUS', 'pipestatus', 'FUNCNAME', 'COLUMNS', 'LINES', 'HOME', 'PATH', 'path', 'argv', 'status', 'psvar',
-  'TMOUT', 'HOSTNAME', 'MACHTYPE', 'OSTYPE', 'HOSTTYPE', 'COPROC', 'MAPFILE', '_'])
+// BASH* / ZSH* / COMP_* / READLINE_* / LC_* name is excluded by prefix.
+//
+// The list is NOT grown name by name: every name either shell treats as special stays unresolved. Some zsh special
+// parameters accept an assignment, keep running and hold ANOTHER value (KEYBOARD_HACK keeps one character, HISTCHARS /
+// histchars three, USERNAME its old value), so the gate would read `$NAME<install>` as a place the shell never writes to.
+// zsh: the special parameters of zsh 5.9 (112 names), generated with
+//   for k in ${(ko)parameters}; do [[ ${parameters[$k]} == *special* ]] && print -r -- $k; done
+// A test compares this list with the running zsh's own list (skipped where there is no zsh), so a newer zsh that adds
+// a special parameter turns it red on a machine that has one.
+export const ZSH_SPECIAL_NAMES = Object.freeze([
+  '!', '#', '$', '*', '-', '0', '?', '@', 'ARGC', 'CDPATH', 'COLUMNS', 'EGID', 'EUID', 'FIGNORE', 'FPATH', 'FUNCNEST', 'GID',
+  'HISTCHARS', 'HISTCMD', 'HISTSIZE', 'HOME', 'IFS', 'KEYBOARD_HACK', 'LINENO', 'LINES', 'MAILPATH', 'MANPATH', 'MODULE_PATH',
+  'NULLCMD', 'OPTARG', 'OPTIND', 'PATH', 'PPID', 'PROMPT', 'PROMPT2', 'PROMPT3', 'PROMPT4', 'PS1', 'PS2', 'PS3', 'PS4',
+  'PSVAR', 'RANDOM', 'READNULLCMD', 'SAVEHIST', 'SECONDS', 'SHLVL', 'SPROMPT', 'TERM', 'TRY_BLOCK_ERROR',
+  'TRY_BLOCK_INTERRUPT', 'TTYIDLE', 'UID', 'USERNAME', 'WATCH', 'WORDCHARS', 'ZSH_EVAL_CONTEXT', 'ZSH_SUBSHELL', '_',
+  'aliases', 'argv', 'builtins', 'cdpath', 'commands', 'dirstack', 'dis_aliases', 'dis_builtins', 'dis_functions',
+  'dis_functions_source', 'dis_galiases', 'dis_patchars', 'dis_reswords', 'dis_saliases', 'fignore', 'fpath', 'funcfiletrace',
+  'funcsourcetrace', 'funcstack', 'functions', 'functions_source', 'functrace', 'galiases', 'histchars', 'history',
+  'historywords', 'jobdirs', 'jobstates', 'jobtexts', 'keymaps', 'mailpath', 'manpath', 'module_path', 'modules', 'nameddirs',
+  'options', 'parameters', 'patchars', 'path', 'pipestatus', 'prompt', 'psvar', 'reswords', 'saliases', 'status', 'termcap',
+  'terminfo', 'userdirs', 'usergroups', 'watch', 'widgets', 'zsh_eval_context', 'zsh_scheduled_events',
+])
+// bash: the variables the shell sets, rewrites or reads for its own behaviour (the "Shell Variables" chapter of the bash
+// manual). BASH* / COMP_* / READLINE_* / LC_* names are excluded by prefix below.
+export const BASH_SPECIAL_NAMES = Object.freeze([
+  'CDPATH', 'CHILD_MAX', 'COLUMNS', 'COMPREPLY', 'COPROC', 'DIRSTACK', 'EMACS', 'ENV', 'EPOCHREALTIME', 'EPOCHSECONDS', 'EUID',
+  'EXECIGNORE', 'FCEDIT', 'FIGNORE', 'FUNCNAME', 'FUNCNEST', 'GLOBIGNORE', 'GLOBSORT', 'GROUPS', 'HISTCMD', 'HISTCONTROL',
+  'HISTFILE', 'HISTFILESIZE', 'HISTIGNORE', 'HISTSIZE', 'HISTTIMEFORMAT', 'HOME', 'HOSTFILE', 'HOSTNAME', 'HOSTTYPE', 'IFS',
+  'IGNOREEOF', 'INPUTRC', 'INSIDE_EMACS', 'LANG', 'LINENO', 'LINES', 'MACHTYPE', 'MAIL', 'MAILCHECK', 'MAILPATH', 'MAPFILE',
+  'OLDPWD', 'OPTARG', 'OPTERR', 'OPTIND', 'OSTYPE', 'PATH', 'PIPESTATUS', 'POSIXLY_CORRECT', 'PPID', 'PROMPT_COMMAND',
+  'PROMPT_DIRTRIM', 'PS0', 'PS1', 'PS2', 'PS3', 'PS4', 'PWD', 'RANDOM', 'REPLY', 'SECONDS', 'SHELL', 'SHELLOPTS', 'SHLVL',
+  'SRANDOM', 'TERM', 'TIMEFORMAT', 'TMOUT', 'TMPDIR', 'UID', '_', 'auto_resume', 'histchars',
+])
+const SHELL_MANAGED_NAMES = new Set([...ZSH_SPECIAL_NAMES, ...BASH_SPECIAL_NAMES, 'PWD', 'OLDPWD', 'DIRSTACK', 'dirstack', 'CDPATH',
+  'cdpath', 'IFS', 'RANDOM', 'SRANDOM', 'SECONDS', 'LINENO', 'EPOCHSECONDS', 'EPOCHREALTIME', 'HISTCMD', 'PPID', 'UID', 'EUID',
+  'GROUPS', 'SHLVL', 'OPTIND', 'OPTARG', 'REPLY', 'PIPESTATUS', 'pipestatus', 'FUNCNAME', 'COLUMNS', 'LINES', 'HOME', 'PATH', 'path',
+  'argv', 'status', 'psvar', 'TMOUT', 'HOSTNAME', 'MACHTYPE', 'OSTYPE', 'HOSTTYPE', 'COPROC', 'MAPFILE', '_'])
+const SHELL_MANAGED_PREFIX_RX = /^(?:BASH|ZSH|COMP_|READLINE_|LC_)/
 const VAR_SETTERS = new Set(['source', '.', 'eval', 'read', 'mapfile', 'readarray', 'getopts', 'unset', 'export', 'local', 'declare', 'typeset', 'readonly', 'let'])
 export function definiteAssignments(split) {
   const none = split.segs.map(() => new Map())
@@ -641,7 +674,7 @@ export function definiteAssignments(split) {
       if (/[$`\u0000]/.test(v)) return
       pairs.push([m[1], v])
     }
-    for (const [name, value] of pairs) if (counts.get(name) === 1 && !SHELL_MANAGED_NAMES.has(name) && !/^(?:BASH|ZSH)_?/.test(name)) defs.push({ at, name, value })
+    for (const [name, value] of pairs) if (counts.get(name) === 1 && !SHELL_MANAGED_NAMES.has(name) && !SHELL_MANAGED_PREFIX_RX.test(name)) defs.push({ at, name, value })
   })
   const out = split.segs.map(() => new Map())
   for (const d of defs) {
