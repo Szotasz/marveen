@@ -11,7 +11,7 @@
 // reaches the sandbox. The spool lives under store/, which the relay profile
 // hides from the sandbox. Plain node, no npm dependencies.
 
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const AGENT = process.env.MARVEEN_AGENT_NAME ?? ''
@@ -286,12 +286,21 @@ async function callRelay(method, path, body) {
   const responsePath = join(RELAY_DIR, 'responses', `${id}.json`)
   // The daemon only picks up names ending in .json, so it never sees a partly written request.
   const tmpPath = `${requestPath}.tmp.${process.pid}`
+  // Only a successful exclusive open makes the temp file ours; no error code is trusted to say so.
+  let owned = false
   try {
-    writeFileSync(tmpPath, JSON.stringify({ id, method, path, body }), { flag: 'wx' })
+    const fd = openSync(tmpPath, 'wx')
+    owned = true
+    try {
+      writeFileSync(fd, JSON.stringify({ id, method, path, body }))
+    } catch (error) {
+      try { closeSync(fd) } catch { /* The write error is the one to report. */ }
+      throw error
+    }
+    closeSync(fd)
     renameSync(tmpPath, requestPath)
   } catch (error) {
-    // EEXIST means the temp file was already there and is not ours to remove.
-    if (error?.code !== 'EEXIST') {
+    if (owned) {
       try { unlinkSync(tmpPath) } catch { /* Best-effort cleanup. */ }
     }
     throw error

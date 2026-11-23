@@ -381,10 +381,10 @@ describe('relay.mjs integration', () => {
 // ---- mcp-shim.mjs ------------------------------------------------------------
 
 describe('mcp-shim.mjs integration', () => {
-  type FsLogEntry = { op: 'writeFileSync'; path: string } | { op: 'renameSync'; from: string; to: string }
+  type FsLogEntry = { op: 'writeFileSync'; path: string } | { op: 'renameSync'; from: string; to: string } | { op: 'openSync'; path: string; flags: string }
 
   async function withP3279Shim(
-    mode: 'preexisting' | 'renamefail' | undefined,
+    mode: 'preexisting' | 'emfile' | 'renamefail' | undefined,
     run: (shim: {
       requestsDir: string
       responsesDir: string
@@ -403,24 +403,32 @@ describe('mcp-shim.mjs integration', () => {
     writeFileSync(preloadPath, String.raw`
       import fs from 'node:fs'
       import { syncBuiltinESMExports } from 'node:module'
-      const { writeFileSync, renameSync, appendFileSync } = fs
+      const { writeFileSync, renameSync, appendFileSync, openSync, writeSync, closeSync } = fs
       const logPath = process.env.P3279_FS_LOG
       const mode = process.env.P3279_MODE
       const log = entry => appendFileSync(logPath, JSON.stringify(entry) + '\n')
+      fs.openSync = (path, flags, ...rest) => {
+        if (path === logPath) return openSync(path, flags, ...rest)
+        log({ op: 'openSync', path: String(path), flags: String(flags) })
+        if (String(path).includes('.tmp.') && (mode === 'preexisting' || mode === 'emfile')) {
+          const m = openSync(path, 'w'); writeSync(m, 'P3279-MARKER'); closeSync(m)
+          if (mode === 'emfile') {
+            throw Object.assign(new Error('EMFILE: P3279 injected, too many open files'), { code: 'EMFILE' })
+          }
+        }
+        return openSync(path, flags, ...rest)
+      }
       fs.writeFileSync = (path, ...args) => {
         // appendFileSync delegates to fs.writeFileSync; don't log the log itself.
         if (path !== logPath) {
           log({ op: 'writeFileSync', path: String(path) })
-          if (mode === 'preexisting' && String(path).includes('.tmp.')) {
-            writeFileSync(path, 'P3279-MARKER')
-          }
         }
         return writeFileSync(path, ...args)
       }
       fs.renameSync = (from, to) => {
         log({ op: 'renameSync', from: String(from), to: String(to) })
         if (mode === 'renamefail' && String(from).includes('.tmp.')) {
-          throw new Error('P3279 injected rename failure')
+          throw Object.assign(new Error('P3279 injected rename failure'), { code: 'EEXIST' })
         }
         return renameSync(from, to)
       }
@@ -478,10 +486,15 @@ describe('mcp-shim.mjs integration', () => {
 
       const entries = readFileSync(logPath, 'utf-8').trim().split('\n').map(line => JSON.parse(line)) as FsLogEntry[]
       expect(entries.filter(entry => entry.op === 'writeFileSync' && dirname(entry.path) === requestsDir && entry.path.endsWith('.json'))).toEqual([])
+      const requestOpens = entries.filter(entry => entry.op === 'openSync' && dirname(entry.path) === requestsDir)
+      expect(requestOpens).toHaveLength(1)
+      expect(requestOpens[0]).toMatchObject({ flags: 'wx' })
+      expect((requestOpens[0] as { path: string }).path.endsWith('.json')).toBe(false)
       const requestRenames = entries.filter(entry => entry.op === 'renameSync'
         && dirname(entry.from) === requestsDir && !entry.from.endsWith('.json')
         && dirname(entry.to) === requestsDir && entry.to.endsWith('.json'))
       expect(requestRenames).toHaveLength(1)
+      expect(requestRenames[0]).toMatchObject({ from: (requestOpens[0] as { path: string }).path })
       expect(readdirSync(requestsDir).filter(file => file.includes('.tmp.'))).toEqual([])
     })
   }, 30_000)
@@ -498,13 +511,25 @@ describe('mcp-shim.mjs integration', () => {
     })
   }, 30_000)
 
-  it('P3279 removes its own temp file when the rename fails', async () => {
+  it('P3279 leaves a foreign temp file alone when the open fails before the existence check (EMFILE)', async () => {
+    await withP3279Shim('emfile', async ({ requestsDir, nextMessage }) => {
+      const callResult = await nextMessage()
+      expect(callResult).toMatchObject({ jsonrpc: '2.0', id: 2, error: { code: -32603, message: expect.stringMatching(/EMFILE/) } })
+      const files = readdirSync(requestsDir)
+      expect(files).toHaveLength(1)
+      expect(files[0]).toContain('.tmp.')
+      expect(readFileSync(join(requestsDir, files[0]), 'utf-8')).toBe('P3279-MARKER')
+      expect(files.filter(file => file.endsWith('.json'))).toEqual([])
+    })
+  }, 30_000)
+
+  it('P3279 removes its own temp file when the rename fails, whatever the error code', async () => {
     await withP3279Shim('renamefail', async ({ requestsDir, logPath, nextMessage }) => {
       const callResult = await nextMessage()
       expect(callResult).toMatchObject({ jsonrpc: '2.0', id: 2, error: { code: -32603, message: expect.stringContaining('P3279 injected rename failure') } })
       expect(readdirSync(requestsDir)).toEqual([])
       const entries = readFileSync(logPath, 'utf-8').trim().split('\n').map(line => JSON.parse(line)) as FsLogEntry[]
-      expect(entries.filter(entry => entry.op === 'writeFileSync'
+      expect(entries.filter(entry => entry.op === 'openSync'
         && dirname(entry.path) === requestsDir && entry.path.includes('.tmp.'))).toHaveLength(1)
     })
   }, 30_000)
