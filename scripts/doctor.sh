@@ -21,7 +21,8 @@ WEB_PORT="${WEB_PORT:-3420}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 # Active channel provider (telegram default) -- the progress-watchdog section
 # below compares the live hook/timer plumbing against it.
-CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')"
+# CHANPIDPROVIDER1123: the same stripping as verify-channels-health.sh, so a quoted or CRLF value names the same provider.
+CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'\r ')"
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 
 echo -e "\n${BOLD}Marveen Doctor${RESET}: $(date '+%Y-%m-%d %H:%M:%S')\n"

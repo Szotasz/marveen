@@ -104,6 +104,10 @@ if [ -z "$PANE_PID" ]; then
   note "(a) FAIL: tmux session $SESSION not found"; fail=1
 else
   BUN_CHILD=""
+  # CHANPIDPROVIDER1123: the Slack plugin is a Node (tsx) child of the channels claude, never a bun process, so the
+  # bun pattern can never see it. Same rule as the channels.sh watchdog (SLACKWATCHDOGNODE1113): a pane descendant
+  # whose command contains /slack-channel/.
+  if [ "$_vch_bp_provider" = "slack" ]; then _a_pat='*/slack-channel/*'; _a_what='slack-channel plugin'; else _a_pat='*bun*server.ts*'; _a_what='bun bridge'; fi
   _parents="$PANE_PID"
   for _depth in 1 2 3 4; do
     _children=""
@@ -116,22 +120,26 @@ else
       [ -z "$_c" ] && continue
       _cmd="$(ps -p "$_c" -o args= 2>/dev/null)" || continue
       case "$_cmd" in
-        *bun*server.ts*) BUN_CHILD="$_c"; break 2 ;;
+        $_a_pat) BUN_CHILD="$_c"; break 2 ;;
       esac
     done
     _parents="$_children"
   done
   if [ -n "$BUN_CHILD" ]; then
-    note "(a) OK: bun bridge pid=$BUN_CHILD under pane pid=$PANE_PID"
+    note "(a) OK: $_a_what pid=$BUN_CHILD under pane pid=$PANE_PID"
+  elif [ "$_vch_bp_provider" = "slack" ]; then
+    note "(a) FAIL: no slack-channel plugin descendant of pane pid=$PANE_PID"; fail=1
   else
     note "(a) FAIL: no bun server.ts descendant of pane pid=$PANE_PID"; fail=1
   fi
+  unset _a_pat _a_what
 fi
 
 # (b) bot.pid alive
 # CHANPIDPROVIDER1123: only the Telegram plugin writes bot.pid (and TG_CHAN_DIR is its dir). On a Discord install the
 # check read the Telegram path and failed on a healthy channel (measured 2026-11-23: discord@0.0.6, (a) OK, (b) FAIL
-# "telegram/bot.pid missing"). Other providers are judged by (a), the same as the channels.sh watchdog fallback.
+# "telegram/bot.pid missing"). Other providers are judged by (a) alone: a bun server.ts descendant for discord and
+# teams, a /slack-channel/ descendant for slack (gromzo returned above), as the channels.sh watchdog judges them.
 if [ "$_vch_bp_provider" != "telegram" ]; then
   note "(b) SKIP: the $_vch_bp_provider plugin writes no bot.pid (liveness is check (a))"
 elif [ -f "$BOT_PID_FILE" ]; then

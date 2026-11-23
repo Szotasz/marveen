@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from 'node:fs'
+import { describe, it, expect, afterEach } from 'vitest'
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, chmodSync, cpSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -97,9 +97,90 @@ describe('doctor.sh .env keys follow the channel provider', () => {
     expect(out).toContain('FAIL DISCORD_BOT_TOKEN: MISSING (.claude/channels/discord/.env)')
   })
 
-  it('Telegram: the Telegram keys are still checked in .env', () => {
-    const out = runKeys('MAIN_AGENT_ID=dojo\nBOT_NAME=dojo\nTELEGRAM_BOT_TOKEN=x\n')
+  it('Telegram: the Telegram keys are still checked in .env, and the channel-token line is not added', () => {
+    const out = runKeys('MAIN_AGENT_ID=dojo\nBOT_NAME=dojo\nTELEGRAM_BOT_TOKEN=x\n',
+      { provider: 'telegram', body: 'TELEGRAM_BOT_TOKEN=x\n' })
     expect(out).toContain('OK TELEGRAM_BOT_TOKEN: present')
     expect(out).toContain('FAIL ALLOWED_CHAT_ID: MISSING')
+    expect(out).not.toContain('(channel .env)')
+    expect(out.match(/TELEGRAM_BOT_TOKEN/g)).toHaveLength(1)
+  })
+})
+
+// Review #3088: the WHOLE script from a fixture install, so the .env -> provider -> (a)/(b) wiring is pinned, not
+// just the sliced blocks. A fake `tmux` on PATH names a real pane pid: a shell whose child carries the plugin's
+// command line (a bun server.ts for Discord, a /slack-channel/ path for Slack).
+describe('verify-channels-health.sh end to end, from a fixture install', () => {
+  const kids: ChildProcess[] = []
+  afterEach(() => { for (const k of kids.splice(0)) { try { process.kill(-k.pid!, 'SIGKILL') } catch { /* gone */ } } })
+
+  function fixture(provider: string, plugin: 'bun' | 'slack' | 'none') {
+    const dir = mkdtempSync(join(tmpdir(), 'vch-e2e-'))
+    cpSync(join(ROOT, 'scripts'), join(dir, 'scripts'), { recursive: true })
+    writeFileSync(join(dir, '.env'), `MAIN_AGENT_ID=vche2e\nCHANNEL_PROVIDER=${provider}\n`)
+    mkdirSync(join(dir, '.claude', 'channels', provider), { recursive: true })
+    writeFileSync(join(dir, '.claude', 'channels', provider, '.env'), `${provider.toUpperCase()}_BOT_TOKEN=x\nTEAMS_BOT_APP_ID=x\n`)
+    let pane = ''
+    if (plugin !== 'none') {
+      const argv0 = plugin === 'bun' ? 'bun server.ts' : '/fake/slack-channel/node_modules/.bin/tsx server.ts'
+      const k = spawn('/bin/bash', ['-c', `/bin/bash -c "sleep 30; :" ${argv0} & wait`], { detached: true, stdio: 'ignore' })
+      kids.push(k)
+      pane = String(k.pid)
+      spawnSync('/bin/sleep', ['0.5'])
+    }
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'tmux'), pane ? `#!/bin/bash\necho ${pane}\n` : '#!/bin/bash\nexit 1\n')
+    chmodSync(join(bin, 'tmux'), 0o755)
+    const r = spawnSync('/bin/bash', [join(dir, 'scripts', 'verify-channels-health.sh')], {
+      encoding: 'utf-8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: join(dir, 'home') },
+    })
+    return { out: r.stdout + r.stderr, code: r.status }
+  }
+
+  it('Discord with its bun bridge: (a) OK, (b) skipped, HEALTHY', () => {
+    const { out, code } = fixture('discord', 'bun')
+    expect(out).toMatch(/\(a\) OK: bun bridge pid=\d+/)
+    expect(out).toContain('(b) SKIP: the discord plugin writes no bot.pid')
+    expect(out).toContain('verify-channels-health: HEALTHY')
+    expect(code).toBe(0)
+  })
+
+  it('Slack with its Node plugin: (a) OK on the /slack-channel/ child, HEALTHY', () => {
+    const { out, code } = fixture('slack', 'slack')
+    expect(out).toMatch(/\(a\) OK: slack-channel plugin pid=\d+/)
+    expect(out).toContain('(b) SKIP: the slack plugin writes no bot.pid')
+    expect(code).toBe(0)
+  })
+
+  it('Slack with only a bun process under the pane: (a) FAIL (the bun pattern is not Slack\'s)', () => {
+    const { out, code } = fixture('slack', 'bun')
+    expect(out).toContain('(a) FAIL: no slack-channel plugin descendant')
+    expect(code).toBe(1)
+  })
+
+  it('no session: (a) fails, but (b) still follows the provider from .env', () => {
+    expect(fixture('discord', 'none').out).toContain('(b) SKIP: the discord plugin writes no bot.pid')
+    expect(fixture('telegram', 'none').out).toMatch(/\(b\) FAIL: .*telegram\/bot\.pid missing/)
+  })
+})
+
+describe('doctor.sh: provider parsing, header, and no channel-token line on Telegram', () => {
+  const doctor = read('scripts/doctor.sh')
+
+  it('a quoted or CRLF CHANNEL_PROVIDER names the same provider as verify-channels-health.sh does', () => {
+    const end = 'CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"'
+    const block = slice(doctor, 'CHANNEL_PROVIDER="$(grep', end) + end
+    for (const line of ["CHANNEL_PROVIDER='telegram'", 'CHANNEL_PROVIDER=telegram\r', 'CHANNEL_PROVIDER="discord"']) {
+      const dir = mkdtempSync(join(tmpdir(), 'doctor-prov-'))
+      writeFileSync(join(dir, '.env'), `${line}\n`)
+      const out = bash(`${block}\nprintf '%s' "$CHANNEL_PROVIDER"`, dir)
+      expect(out).toBe(line.includes('discord') ? 'discord' : 'telegram')
+    }
+  })
+
+  it('the bridge header names the provider', () => {
+    expect(doctor).toContain('echo -e "\\n${BOLD}Channel bridge ($CHANNEL_PROVIDER)${RESET}"')
+    expect(doctor).not.toContain('Telegram bridge')
   })
 })
