@@ -3537,6 +3537,10 @@
             <input type="checkbox" id="scheduleForceSend"> <span data-i18n="tasks.modal.force_send">Mindig küldje (a foglaltság ellenére is)</span>
           </label>
           <input type="text" id="scheduleTargetSession" placeholder="Cél tmux session (opcionális, felülírja az alapértelmezettet)" data-i18n-placeholder="schedules.modal.target_ph" style="margin-top:8px">
+          <div id="schedulePreCheckGroup" hidden>
+            <input type="text" id="schedulePreCheck" placeholder="Előszűrő szkript útja, preCheck (opcionális; csak a gazda belépésével menthető)" data-i18n-placeholder="schedules.modal.precheck_ph" style="margin-top:8px">
+            <input type="number" id="schedulePreCheckTimeout" min="1" max="60" placeholder="Előszűrő időkorlátja mp-ben, preCheckTimeoutSeconds (1-60, alap 10)" data-i18n-placeholder="schedules.modal.precheck_timeout_ph" style="margin-top:8px">
+          </div>
         </div>
         <input type="hidden" id="scheduleEditName">
         <button class="btn-primary" id="saveScheduleBtn">

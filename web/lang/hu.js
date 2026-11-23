@@ -2691,6 +2691,8 @@ window._i18n.hu = {
   'schedules.modal.desc_ph': 'Mit csinál ez a feladat',
   'schedules.modal.prompt_ph': 'Röviden írd le mit csináljon (pl. nézd meg az emailjeimet és foglald össze)',
   'schedules.modal.target_ph': 'Cél tmux session (opcionális, felülírja az alapértelmezettet)',
+  'schedules.modal.precheck_ph': 'Előszűrő szkript útja, preCheck (opcionális; csak a gazda belépésével menthető)',
+  'schedules.modal.precheck_timeout_ph': 'Előszűrő időkorlátja mp-ben, preCheckTimeoutSeconds (1-60, alap 10)',
   'connectors.builtin.dedup_html': 'Az itt listázott MCP szerverek a te Claude Code előfizetésedben bekapcsoltak (claude.ai OAuth connectorok, marketplace pluginok, lokális konfig). A claude.ai-on bekapcsolt connectorokat csak az az ügynök látja, amelyik claude.ai-fiókkal van bejelentkezve (alapbeállításban a fő ügynök). A csapat-ügynökök saját tokennel futnak, ezért <strong>ők nem látják a claude.ai connectorokat</strong>: ha nekik kell egy, vedd fel itt az "Új connector" gombbal, és állítsd be a "Hozzárendelés ügynökökhöz" mezőt. Amelyik ügynök a claude.ai-n át már látja, annak nem kell lokálisan is felvenni (a Claude CLI ilyenkor "local wins" üzenetet ad). A lista a dashboard indulásakor töltődik be, explicit frissítés a "Frissítés" gombbal.',
   'channel.tg_howto.start_li': 'Az illető indítsa el a botot a Telegramban (<code>/start</code>) és írjon neki egy üzenetet.',
   'channel.tg_howto.group_li': 'Hívd meg a botot egy meglévő Telegram csoportba (csoport beállítások &rarr; Tagok &rarr; Hozzáadás).',

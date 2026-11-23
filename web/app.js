@@ -8293,6 +8293,11 @@ function resetScheduleForm() {
   document.getElementById('scheduleSkipIfBusy').checked = false
   document.getElementById('scheduleForceSend').checked = false
   document.getElementById('scheduleTargetSession').value = ''
+  for (const id of ['schedulePreCheck', 'schedulePreCheckTimeout']) {
+    const el = document.getElementById(id)
+    el.value = el.defaultValue = ''
+  }
+  document.getElementById('schedulePreCheckGroup').hidden = true
   scheduleFrequency.value = 'daily'
   document.getElementById('scheduleTime').value = '09:00'
   document.getElementById('scheduleCustomCron').value = ''
@@ -8976,6 +8981,12 @@ function openEditSchedule(task) {
     document.getElementById('scheduleSkipIfBusy').checked = !!task.skipIfBusy
     document.getElementById('scheduleForceSend').checked = !!task.forceSend
     document.getElementById('scheduleTargetSession').value = task.targetSession || ''
+    // edit only: the loaded list carries both fields; defaultValue is what the save compares against
+    const preCheckEl = document.getElementById('schedulePreCheck')
+    preCheckEl.value = preCheckEl.defaultValue = typeof task.preCheck === 'string' ? task.preCheck : ''
+    const preCheckTimeoutEl = document.getElementById('schedulePreCheckTimeout')
+    preCheckTimeoutEl.value = preCheckTimeoutEl.defaultValue = task.preCheckTimeoutSeconds ?? ''
+    document.getElementById('schedulePreCheckGroup').hidden = false
 
     // Set type (heartbeat or task; custom types fall back to task)
     const typeEl = document.getElementById('scheduleType')
@@ -9109,6 +9120,14 @@ saveScheduleBtn.addEventListener('click', async () => {
   const targetSession = document.getElementById('scheduleTargetSession').value.trim()
   const advanced = { skipIfBusy, forceSend }
   if (targetSession) advanced.targetSession = targetSession
+  // preCheck / preCheckTimeoutSeconds are owner fields (OWNEREXEC1109): sent only when changed, so a plain edit
+  // needs no owner session; an emptied field sends null, which clears it. The server makes the owner check.
+  const preCheckEl = document.getElementById('schedulePreCheck')
+  if (preCheckEl.value.trim() !== preCheckEl.defaultValue) advanced.preCheck = preCheckEl.value.trim() || null
+  const preCheckTimeoutEl = document.getElementById('schedulePreCheckTimeout')
+  if (preCheckTimeoutEl.value.trim() !== preCheckTimeoutEl.defaultValue) {
+    advanced.preCheckTimeoutSeconds = preCheckTimeoutEl.value.trim() ? Number(preCheckTimeoutEl.value) : null
+  }
 
   if (!name) { document.getElementById('scheduleName').focus(); return }
   if (!prompt) { document.getElementById('schedulePrompt').focus(); return }

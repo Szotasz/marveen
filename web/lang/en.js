@@ -2689,6 +2689,8 @@ window._i18n.en = {
   'schedules.modal.desc_ph': 'What this task does',
   'schedules.modal.prompt_ph': 'Briefly describe what it should do (e.g. check my emails and summarize them)',
   'schedules.modal.target_ph': 'Target tmux session (optional, overrides the default)',
+  'schedules.modal.precheck_ph': 'Pre-check script path, preCheck (optional; saving needs the owner login)',
+  'schedules.modal.precheck_timeout_ph': 'Pre-check time limit in seconds, preCheckTimeoutSeconds (1-60, default 10)',
   'connectors.builtin.dedup_html': 'The MCP servers listed here are enabled in your Claude Code subscription (claude.ai OAuth connectors, marketplace plugins, local config). claude.ai connectors are visible only to an agent signed in with a claude.ai account (by default, the main agent). Team agents run with their own token, so <strong>they do not see claude.ai connectors</strong>: if one needs a connector, add it here with "New connector" and set "Assign to Agents". An agent that already sees it through claude.ai does not need it locally as well (the Claude CLI reports "local wins" then). The list loads at dashboard startup; refresh explicitly with the "Refresh" button.',
   'channel.tg_howto.start_li': 'Have the person start the bot in Telegram (<code>/start</code>) and send it a message.',
   'channel.tg_howto.group_li': 'Invite the bot to an existing Telegram group (group settings &rarr; Members &rarr; Add).',
