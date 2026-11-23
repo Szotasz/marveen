@@ -5968,6 +5968,7 @@ const AGENT_PKG_ERR_KEYS = {
   package_rejected: 'package_rejected', invalid_slug: 'invalid_slug', name_reserved: 'name_reserved',
   name_taken: 'name_taken', stale_install: 'stale_install', already_installed: 'already_installed',
   unsupported_layout: 'unsupported_layout', own_version_unknown: 'own_version_unknown', install_failed: 'install_failed',
+  invalid_display_name: 'invalid_display_name',
 }
 function agentPkgErrorText(d) {
   const owner = ownerSessionText(d)
@@ -5982,6 +5983,8 @@ function agentPkgErrorText(d) {
 const AGENT_PKG_ERR_STEP = {
   not_connected: 1, credential_rejected: 1, not_entitled: 1, package_not_found: 1, rate_limited: 1,
   temporarily_unavailable: 1, download_failed: 1, unknown_kid: 2, incompatible: 2,
+  // A refused name is a local refusal before any download: the first step carries it, nothing is marked done.
+  invalid_display_name: 1,
 }
 function agentPkgErrorStep(d) {
   if (d && d.error === 'package_rejected') return d.step === 5 ? 3 : 2
@@ -6228,7 +6231,18 @@ function agentCatalogConfirm(pkg, state, panel) {
   const ul = acEl('ul', 'ac-files')
   for (const [path, what] of agentPkgFileRows(pkg)) ul.append(acEl('li', null, `${path} · ${what}`))
   box.append(ul)
-  const go = acBtn('btn-primary', t('agentCatalog.install'), () => agentCatalogInstall(pkg, panel, go))
+  // MIOAGENTB4-1122 (Samu 83718): the name the dashboard shows for the agent. Empty keeps the package's own name;
+  // the agent's id and folder stay the package's slug whatever is typed here.
+  const nameLab = acEl('label', 'ac-name')
+  nameLab.append(acEl('span', null, t('agentCatalog.confirm.name')))
+  const nameInput = acEl('input')
+  nameInput.type = 'text'
+  nameInput.maxLength = 60
+  nameInput.autocomplete = 'off'
+  nameInput.className = 'input ac-name-input'
+  nameLab.append(nameInput)
+  box.append(nameLab, acEl('p', 'ac-muted', t('agentCatalog.confirm.name_hint')))
+  const go = acBtn('btn-primary', t('agentCatalog.install'), () => agentCatalogInstall(pkg, panel, go, nameInput.value))
   if (state.trialPick) {
     box.append(acEl('p', 'ac-warn', t('agentCatalog.confirm.trial')))
     const lab = acEl('label', 'ac-check')
@@ -6260,7 +6274,7 @@ async function agentCatalogInstalledName(slug) {
   }
 }
 
-async function agentCatalogInstall(pkg, panel, btn) {
+async function agentCatalogInstall(pkg, panel, btn, displayName = '') {
   if (agentCatalogState.busy) return
   agentCatalogState.busy = true
   btn.disabled = true
@@ -6281,7 +6295,8 @@ async function agentCatalogInstall(pkg, panel, btn) {
     let r = null
     try {
       r = await readActionReply(await fetch('/api/agents/install-package', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug: pkg.slug }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(displayName.trim() ? { slug: pkg.slug, display_name: displayName } : { slug: pkg.slug }),
       }))
     } catch {
       // The answer was lost (a proxy or the network cut it): the install may have finished. Measure, do not guess.
