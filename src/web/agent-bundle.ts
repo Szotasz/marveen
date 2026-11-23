@@ -57,9 +57,11 @@ export interface BundleManifest {
   /**
    * ISSUE3056 (#3056): Claude Code's file memory. 'included' = file-memory/ is in the archive; 'shared' = the agent
    * writes to a folder the main agent or another agent shares, so it travels with the fleet export, never in one
-   * agent's bundle; 'over_cap' = too large, left out; 'none' = the agent has none. Absent in older bundles.
+   * agent's bundle; 'over_cap' = too large, left out; 'none' = the agent has none; 'not_requested' = an export
+   * without secrets (Samu's decision on Dani N2: the memory carries free text about the owner, and a bundle without
+   * secrets is the one the owner treats as shareable). Absent in older bundles.
    */
-  fileMemory?: 'included' | 'shared' | 'over_cap' | 'none'
+  fileMemory?: 'included' | 'shared' | 'over_cap' | 'none' | 'not_requested'
 }
 
 // Files/dirs that make up a portable agent, RELATIVE to agents/<name>/.
@@ -187,6 +189,11 @@ export function stageFileMemoryForExport(fm: FileMemory | undefined, stage: stri
   return 'included'
 }
 
+/** #3086 N2 (Samu): the file memory follows includeSecrets, no switch of its own; without secrets it is not looked up. */
+export function fileMemoryForExport(includeSecrets: boolean, lookup: () => FileMemory | undefined, stage: string): NonNullable<BundleManifest['fileMemory']> {
+  return includeSecrets ? stageFileMemoryForExport(lookup(), stage) : 'not_requested'
+}
+
 // Build a .tar.gz bundle of agent <name> at <outPath>. Returns the manifest
 // that was embedded. The archive layout is:
 //   manifest.json
@@ -201,7 +208,7 @@ export function exportAgentBundle(
   try {
     const stageAgentDir = join(stage, 'agent')
     stageAgentForExport(name, stageAgentDir, includeSecrets)
-    const fileMemory = stageFileMemoryForExport((opts.fileMemoryOf ?? ((n: string) => liveFleetFileMemory().get(n)))(name), stage)
+    const fileMemory = fileMemoryForExport(includeSecrets, () => (opts.fileMemoryOf ?? ((n: string) => liveFleetFileMemory().get(n)))(name), stage)
 
     const manifest: BundleManifest = {
       schemaVersion: BUNDLE_SCHEMA_VERSION,

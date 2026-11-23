@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import {
   FILE_MEMORY_LIMITS, FS_IO, fleetFileMemory, memoryDirAt, memoryKeyRoot, readMemoryFiles, slugOf, targetIsShared, writeImportedMemory,
 } from '../web/agent-file-memory.js'
-import { BUNDLE_SCHEMA_VERSION, importAgentBundle, stageFileMemoryForExport, type BundleManifest } from '../web/agent-bundle.js'
+import { BUNDLE_SCHEMA_VERSION, fileMemoryForExport, importAgentBundle, stageFileMemoryForExport, type BundleManifest } from '../web/agent-bundle.js'
 import { encodeClaudeProjectDir, projectDirHasSession } from '../claude-project-dir.js'
 
 const tmp = (p: string) => realpathSync(mkdtempSync(join(tmpdir(), p)))
@@ -321,5 +321,22 @@ describe('#3086 Dani B1, N1: the index append', () => {
     const index = readFileSync(join(mem, 'MEMORY.md'), 'utf8')
     expect(index).not.toMatch(/^# SYSTEM/m)
     expect(index).toContain(`## Imported 2026-11-23 from ${r.name}\n`)
+  })
+})
+
+describe('#3086 N2 (Samu): the file memory follows includeSecrets', () => {
+  it('without secrets: not_requested, nothing staged, the memory not even looked up', () => {
+    const { fleet } = install()
+    const s1 = tmp('marveen-fm-n2-')
+    let looked = 0
+    expect(fileMemoryForExport(false, () => { looked++; return fleet.get('abel') }, s1)).toBe('not_requested')
+    expect([looked, readdirSync(s1)]).toEqual([0, []])
+    const s2 = tmp('marveen-fm-n2-')
+    expect(fileMemoryForExport(true, () => fleet.get('abel'), s2)).toBe('included')
+    expect(readdirSync(join(s2, 'file-memory'))).toEqual(['own_fact.md'])
+  })
+  it('the export route says it in one header', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents.ts'), 'utf8')
+    expect(src).toMatch(/'X-Marveen-File-Memory': data\.fileMemory,/)
   })
 })
