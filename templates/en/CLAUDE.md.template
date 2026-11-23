@@ -199,9 +199,9 @@ Comment on the card (the result goes here, this is what shows on the dashboard; 
 bash scripts/marveen-api.sh kanban-comment KARTYA_ID {{MAIN_AGENT_ID}} komment.txt
 ```
 
-Archiving:
+Archiving (`done` cards only; `--actor` writes who archived it into the card's event log):
 ```bash
-bash scripts/marveen-api.sh kanban-archive KARTYA_ID
+bash scripts/marveen-api.sh kanban-archive KARTYA_ID --actor {{MAIN_AGENT_ID}}
 ```
 
 Statuses: planned, in_progress, waiting, done

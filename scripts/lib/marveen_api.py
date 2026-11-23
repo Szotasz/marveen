@@ -76,7 +76,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-claim <card-id> <agent> [--ttl <seconds>]
   kanban-release <card-id> <agent>
   kanban-comment <card-id> <author> <content-file>
-  kanban-archive <card-id>
+  kanban-archive <card-id> [--actor <name>]
   kanban-assign <card-id> <assignee> [--actor <name>]
   agents-list
   agent-restart <agent> [--fresh]
@@ -564,9 +564,14 @@ def build_request(verb, args):
     if verb == 'kanban-archive':
         # KANBANARCHIVEVERB1122: the audit's archive step (POST /api/kanban/<id>/archive, empty body).
         # Without a verb the level-3 archive could only go through a raw token curl, so it did not run.
+        # KANBANARCHIVEACTOR1122: --actor names who archived, so the card's field-event row is not anonymous.
+        actor = take_opt(args, '--actor')
         (card,) = positional(args, 1, verb)
         check(card, CARD_ID_RE, 'card id')
-        return 'POST', f'/api/kanban/{card}/archive', {}, headers, {}
+        body = {}
+        if actor is not None:
+            body['actor'] = check(actor, NAME_RE, 'agent name')
+        return 'POST', f'/api/kanban/{card}/archive', body, headers, {}
     fail_usage(f'unknown verb: {verb!r}')
 
 

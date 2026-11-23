@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { IncomingMessage } from 'node:http'
 import { join } from 'node:path'
 import {
   listKanbanCards, kanbanAssigneeExists, createKanbanCard, writeKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
@@ -230,10 +231,26 @@ export function kanbanMoveInstructions(id: string, target: string): string {
 // PUT, X16 on /move). An empty or blank string names nobody, so it counts as no actor (X15). With no actor, a browser
 // session's user made the change (the dashboard's own edits may send none), so the rows name them; a token caller
 // without one stays anonymous (NULL), as before.
+// KANBANSYSACTOR1123 (review N1 on #3044): the `system:` prefix is reserved for the server's own writers (the done-card
+// sweep's KANBAN_SWEEP_ACTOR). An API caller asserting it is refused, so an archive an agent or a person made can never
+// read as the sweep. The check ignores case and leading blanks, as a reader of the rows would.
 function kanbanWriteActor(actor: unknown, auth: RouteContext['auth']): { error: string } | { actor: string | undefined } {
   if (actor !== undefined && actor !== null && typeof actor !== 'string') return { error: 'actor must be a string or null' }
+  if (typeof actor === 'string' && /^\s*system:/i.test(actor)) return { error: 'actor must not start with "system:" (reserved for the server)' }
   if (typeof actor === 'string' && actor.trim() !== '') return { actor }
   return { actor: auth?.kind === 'session' && auth.user ? auth.user : undefined }
+}
+
+// KANBANARCHIVEACTOR1122: the archive / unarchive body is optional and carries at most an actor. An empty
+// body, or one with only whitespace, is no actor (then a browser session's user, as kanbanWriteActor does);
+// malformed JSON or a body that is not an object is a 400, not a silent "nobody".
+async function archiveActorFromBody(req: IncomingMessage, ctx: RouteContext): Promise<{ error: string } | { actor: string | undefined }> {
+  const raw = (await readBody(req)).toString().trim()
+  if (raw === '') return kanbanWriteActor(undefined, ctx.auth)
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) } catch { return { error: 'invalid JSON body' } }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { error: 'body must be a JSON object' }
+  return kanbanWriteActor((parsed as { actor?: unknown }).actor, ctx.auth)
 }
 
 // KANBANASSIGNFRAME1008 (SECSZIVEK1007 follow-up): the dispatch goes out in the
@@ -1401,8 +1418,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanArchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/archive$/)
   if (kanbanArchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanArchiveMatch[1])
+    // KANBANARCHIVEACTOR1122: an optional {actor} body, under the same rule as the PUT and /move
+    // (kanbanWriteActor). An empty body stays valid: the dashboard's button and older callers send none.
+    const who = await archiveActorFromBody(req, ctx)
+    if ('error' in who) { json(res, { error: who.error }, 400); return true }
     revertIdeaFromKanban(id)
-    if (archiveKanbanCard(id)) { json(res, { ok: true }); return true }
+    if (archiveKanbanCard(id, who.actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -1425,7 +1446,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanUnarchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/unarchive$/)
   if (kanbanUnarchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanUnarchiveMatch[1])
-    if (unarchiveKanbanCard(id)) { json(res, { ok: true }); return true }
+    const who = await archiveActorFromBody(req, ctx)
+    if ('error' in who) { json(res, { error: who.error }, 400); return true }
+    if (unarchiveKanbanCard(id, who.actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található vagy nincs archiválva' }, 404)
     return true
   }
