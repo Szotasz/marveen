@@ -221,7 +221,7 @@ describe('validation', () => {
     [{ loginUrl: 'https://evil.example.net/login' }, 'a login page on another origin'],
     [{ allowedAgents: ['nobody'] }, 'an unknown agent'],
     [{ password: '' }, 'an empty password'],
-  ])('refuses %j (%s)', async (extra) => {
+  ] as Array<[Record<string, unknown>, string]>)('refuses %j (%s)', async (extra, _why) => {
     const r = await call('POST', '/api/vault/web-logins', SESSION, { origin: 'https://shop.example.com', username: 'u', password: 'p', ...extra })
     expect(r.status).toBe(400)
     expect(h.vault.size).toBe(0)
