@@ -32,7 +32,8 @@ import {
 } from '../hostinger-router.js'
 import { writeAgentAuthMode } from '../agent-config.js'
 import { deleteSecret } from '../vault.js'
-import { isFleetTokenSwap, restartFleetAfterTokenSwap } from '../fleet-token-swap-restart.js'
+import { isFleetTokenSwap, restartFleetAfterTokenSwap, UNVERIFIED_SWAP_NOTICE } from '../fleet-token-swap-restart.js'
+import { notifyOwner } from '../../notify.js'
 
 // DOCKERUX1118: one language switch at a time.
 let langSwitchBusy = false
@@ -745,10 +746,17 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     // install that already had auth is a swap. The sub-agents on the shared fleet token keep the old token in their
     // running process, so they are restarted one at a time, in the background (the answer does not wait), and the
     // owner is told how many. Only when the file really holds the new token: a failed write must not bounce anyone.
+    // Only a token the live probe PROVED good restarts the fleet (Dani #3077 F1): an inconclusive probe (no claude
+    // binary, a network error) saves the token unverified, and bouncing every shared-token agent onto a possibly
+    // mistyped token would take the whole fleet to 401 at once. Then the owner is told instead.
     let fleetRestart = false
     if (token && hadAuthBefore && isFleetTokenSwap(previousFleetToken, token) && readFleetTokenFile()?.trim() === token.trim()) {
-      fleetRestart = true
-      void restartFleetAfterTokenSwap()
+      if (verified) {
+        fleetRestart = true
+        void restartFleetAfterTokenSwap()
+      } else {
+        void notifyOwner(UNVERIFIED_SWAP_NOTICE).catch(() => undefined)
+      }
     }
     logger.info({ verified, restarted, fleetRestart, mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth stored')
     json(res, restartError ? { ok: true, verified, restarted, fleetRestart, restartError, restartCommand: channelsRestartCommand() } : { ok: true, verified, restarted, fleetRestart })

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 // ---- the route: POST /api/onboarding/claude-auth --------------------------------------------------------------------
-const H = vi.hoisted(() => ({ root: '', swaps: 0 }))
+const H = vi.hoisted(() => ({ root: '', swaps: 0, probe: 'ok' as 'ok' | 'inconclusive', notices: [] as string[] }))
 vi.mock('../config.js', async (orig) => {
   const a = await orig<typeof import('../config.js')>()
   return { ...a, PROJECT_ROOT: H.root, STORE_DIR: `${H.root}/store-dir`, CHANNEL_PROVIDER: 'telegram' as const }
@@ -18,11 +18,15 @@ vi.mock('node:os', async (orig) => {
 })
 vi.mock('../web/claude-credentials-guard.js', async (orig) => {
   const a = await orig<typeof import('../web/claude-credentials-guard.js')>()
-  return { ...a, liveProbeAuth: async () => 'ok' as const, stampTokenVerified: () => undefined }
+  return { ...a, liveProbeAuth: async () => H.probe, stampTokenVerified: () => undefined }
 })
 vi.mock('../web/fleet-token-swap-restart.js', async (orig) => {
   const a = await orig<typeof import('../web/fleet-token-swap-restart.js')>()
   return { ...a, restartFleetAfterTokenSwap: async () => { H.swaps++; return null } }
+})
+vi.mock('../notify.js', async (orig) => {
+  const a = await orig<typeof import('../notify.js')>()
+  return { ...a, notifyOwner: async (t: string) => { H.notices.push(t); return true } }
 })
 vi.mock('../web/channel-monitor.js', async (orig) => {
   const a = await orig<typeof import('../web/channel-monitor.js')>()
@@ -40,7 +44,7 @@ const { tryHandleOnboarding } = await import('../web/routes/onboarding.js')
 const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
 beforeAll(() => { Object.defineProperty(process, 'platform', { ...realPlatform, value: 'linux' }) })
 afterAll(() => { Object.defineProperty(process, 'platform', realPlatform); rmSync(tmpRoot, { recursive: true, force: true }) })
-beforeEach(() => { H.swaps = 0 })
+beforeEach(() => { H.swaps = 0; H.probe = 'ok'; H.notices.length = 0 })
 
 async function save(token: string): Promise<{ status: number; body: Record<string, unknown> }> {
   let status = 0
@@ -75,5 +79,16 @@ describe('POST /api/onboarding/claude-auth and the fleet restart', () => {
     const r = await save('sk-ant-oat01-first')
     expect(r.body.fleetRestart).toBe(false)
     expect(H.swaps).toBe(0)
+  })
+  it('a new token the probe could NOT verify: no fleet restart, the owner is told instead (Dani F1)', async () => {
+    writeFileSync(ENV, 'MAIN_AGENT_ID=marveen\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-old\n')
+    writeFileSync(FLEET, 'sk-ant-oat01-old')
+    H.probe = 'inconclusive'
+    const r = await save('sk-ant-oat01-unproven')
+    expect(r.body.ok, JSON.stringify(r.body)).toBe(true)
+    expect(r.body.fleetRestart).toBe(false)
+    expect(H.swaps).toBe(0)
+    await new Promise((res) => setTimeout(res, 0))
+    expect(H.notices.some((n) => n.includes('NEM indítottam újra'))).toBe(true)
   })
 })

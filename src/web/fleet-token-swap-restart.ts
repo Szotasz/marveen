@@ -15,6 +15,11 @@ export function isFleetTokenSwap(previous: string | null, next: string): boolean
   return prev !== '' && prev !== next.trim()
 }
 
+/** Sent instead of the restart when the new token could not be live-verified (Dani #3077 F1). */
+export const UNVERIFIED_SWAP_NOTICE =
+  'Flotta-token csere: az új tokent elmentettem, de élőben nem tudtam ellenőrizni (a próba nem adott választ), ezért a kollégákat NEM indítottam újra. ' +
+  'Ha a token jó, a dashboardon indítsd újra a kollégákat; ha elírás volt, illeszd be újra.'
+
 /** The owner's message, Hungarian (the dashboard's language for owner alerts). */
 export function swapRestartMessage(r: SwapRestartResult): string {
   const parts = [`Flotta-token csere: ${r.restarted.length} kolléga újraindult az új tokennel${r.restarted.length ? ` (${r.restarted.join(', ')})` : ''}.`]
