@@ -88,8 +88,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
                 (without --date: today on this machine's clock; the server's own default is the UTC day)
   memory-backfill
   password-reset-request [<dashboard-username>]
-                (a forgotten dashboard password: the server sends a one-time code to the owner's private chat;
-                 you never see it. Without a name: the only dashboard user)
+                (a forgotten dashboard password, when the owner asked: the server sends a one-time code to the owner's
+                 private chat, and the answer never carries it. Without a name: the only dashboard user)
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
 

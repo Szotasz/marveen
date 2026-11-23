@@ -31,8 +31,16 @@ bash scripts/marveen-api.sh password-reset-request [<felhasznalo>]   # név nél
 - **Napló** (`config_change_log`): `security.password_reset_requested` (ki kérte), `..._not_delivered`,
   `..._code_expired`, `..._code_locked`, `security.password_reset_by_code`.
 
-Ismert, vállalt rés: a Slack-bekötésnél az ügynök a saját bot-eszközével vissza tudja olvasni a DM-előzményt, így elvben
-a kódot is láthatná. A rést a kétlépcsős belépés zárja be, és a 15 perces, egyszeri élettartam szűkíti.
+Ismert, vállalt rés (a gazda a folyamat jóváhagyásakor elfogadta), **Slacken**: a kód ugyanabba a DM-be megy, ahol a gazda
+a fő ügynökkel beszél, ugyanazzal a bot-tokennel, és a Slack-plugin `fetch_messages` eszköze ennek a DM-nek az előzményét
+szűrés nélkül visszaadja, a bot saját üzeneteivel együtt (forrásból és a telepítés állapotfájljaiból mérve, 2026-11-23).
+A fő ügynök tehát Slacken kérhet kódot, és vissza is olvashatja. A kérés válasza a kódot sosem tartalmazza, de Slacken ez
+nem jelenti azt, hogy az ügynök nem láthatja. A rést a kétlépcsős belépés zárja be (a kód mellé a telefonos kód is kell):
+Slackes telepítésen ezért kapcsold be. A 15 perces, egyszeri élettartam csak szűkíti. Telegramon ez a rés nincs: a bot
+nem olvashat előzményt.
+
+Egy új kérés az élő kódot érvényteleníti, így bárki, aki kérni tud (a flotta tokenjével), óránként legfeljebb háromszor
+megszakíthat egy folyamatban lévő visszaállítást. Ilyenkor a legutolsó kóddal kell befejezni.
 
 ## `npm run dashboard-user` -- a break-glass eszköz
 
