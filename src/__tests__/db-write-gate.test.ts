@@ -72,10 +72,10 @@ const ALLOW = { deny: false }
 describe('1. SQL writes on the security tables', () => {
   // APPROVALSLACK1030 (2): approval_slack_posts joins (the posted Slack request the owner's reaction is checked against).
   // SUPPORTKULCS1109 D5: the two support tables joined the list.
-  it('the table list is the decided thirteen (approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119; colleague_sessions: #2929 B1)', () => {
-    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state'])
+  it('the table list is the decided fourteen (approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119; colleague_sessions: #2929 B1; owner_action_requests: OWNERACTION1123)', () => {
+    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'owner_action_requests', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state'])
   })
-  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']) {
+  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'owner_action_requests', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']) {
     it.each([
       `UPDATE ${t} SET x=1`,
       `INSERT INTO ${t} VALUES (1)`,

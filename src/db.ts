@@ -1857,6 +1857,23 @@ export function initDatabase(dbPathOverride?: string): void {
       outcome_at INTEGER
     )
   `)
+  // OWNERACTION1123: the stored request behind an owner_action approval (an owner-only action an agent asked for: a
+  // channel setup or a pairing approve). request_json is the canonical JSON the owner was shown (the text is rendered
+  // from it) and content_hash its sha256, equal to the approvals row's. The consumer stamps consumed_at in the same
+  // transaction as the approval's consume, then the outcome. A security table, like agent_create_specs.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS owner_action_requests (
+      approval_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      request_json TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      requested_by TEXT NOT NULL,
+      requested_at INTEGER NOT NULL,
+      consumed_at INTEGER,
+      outcome TEXT,
+      outcome_at INTEGER
+    )
+  `)
   // A security table: the db-write-gate denies an agent's write on it, like approvals.
   db.exec(`
     CREATE TABLE IF NOT EXISTS approval_teams_cards (
@@ -8249,7 +8266,7 @@ export type ApprovalDecideOutcome = 'decided' | 'not_pending' | 'content_changed
  * request is approved only when it carries a content hash AND the adapter showed the owner exactly that hash; a missing
  * hash on either side is never an approval. A rejection needs neither.
  */
-export const HASH_BOUND_APPROVAL_CATEGORIES: ReadonlySet<string> = new Set(['agent_create'])
+export const HASH_BOUND_APPROVAL_CATEGORIES: ReadonlySet<string> = new Set(['agent_create', 'owner_action'])
 
 function decideApprovalInTx(p: {
   approvalId: string; status: 'approved' | 'rejected'; resolvedBy: string; expectedContentHash?: string; now: number

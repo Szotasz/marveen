@@ -859,6 +859,72 @@ export function applyAgentTeam(name: string, data: any): { ok: true; team: TeamC
   return { ok: true, team: next, tagline: readAgentTagline(name), warnings, cycleRejected }
 }
 
+/** OWNERACTION1123: the channel directory a pairing is approved in (the main agent's lives under ~/.claude/channels). */
+export function pairingChannelDir(name: string, provider: ChannelProviderType): string {
+  return name === MAIN_AGENT_ID ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
+}
+
+/** OWNERACTION1123: one pending pairing as the channel's access.json holds it right now, or null (no such code). */
+export function readPendingPairing(name: string, provider: ChannelProviderType, code: string): { senderId: string; chatId: string | null } | null {
+  try {
+    const access = readJsonObjectForWrite(join(pairingChannelDir(name, provider), 'access.json')) as Record<string, any>
+    const entry = access.pending?.[code.trim()]
+    if (!entry || typeof entry.senderId !== 'string' || !entry.senderId) return null
+    return { senderId: entry.senderId, chatId: entry.chatId == null ? null : String(entry.chatId) }
+  } catch {
+    return null
+  }
+}
+
+/** OWNERACTION1123: the pairing approve of POST .../channels/:provider/approve after its owner gate, lifted out
+ *  unchanged so that an approved owner_action runs the SAME code. `expectedSenderId` (the approved request's binding):
+ *  a code that now names another sender is refused, nothing written. */
+export function approveChannelPairing(name: string, provider: ChannelProviderType, code: string, expectedSenderId?: string): { status: number; body: Record<string, unknown> } {
+  if (!code?.trim()) return { status: 400, body: { error: 'Code is required' } }
+  const chDir = pairingChannelDir(name, provider)
+  const accessPath = join(chDir, 'access.json')
+  let access: Record<string, any>
+  try {
+    access = readJsonObjectForWrite(accessPath)
+  } catch (err) {
+    return { status: 500, body: { error: 'access.json exists but cannot be read or is not valid JSON; nothing was changed', detail: err instanceof Error ? err.message : String(err) } }
+  }
+  try {
+    const pending = access.pending || {}
+    const entry = pending[code.trim()]
+
+    if (!entry) return { status: 404, body: { error: 'Invalid or expired code' } }
+    if (expectedSenderId !== undefined && entry.senderId !== expectedSenderId) {
+      return { status: 409, body: { error: 'The code now names another sender than the approved one; nothing was changed' } }
+    }
+
+    if (!access.allowFrom) access.allowFrom = []
+    if (!access.allowFrom.includes(entry.senderId)) {
+      access.allowFrom.push(entry.senderId)
+    }
+
+    delete access.pending[code.trim()]
+
+    access.dmPolicy = 'allowlist'
+
+    atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
+
+    const approvedDir = join(chDir, 'approved')
+    mkdirSync(approvedDir, { recursive: true })
+    // Marker contents = chatId, per the plugin's /telegram:access pair
+    // contract (the channel server polls approved/ to send the "Paired!"
+    // confirmation; current server keys off the filename, the chatId
+    // contents keep us aligned with the documented format).
+    writeFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
+
+    logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
+    return { status: 200, body: { ok: true, senderId: entry.senderId } }
+  } catch (err) {
+    logger.error({ err }, 'Failed to approve pairing')
+    return { status: 500, body: { error: 'Failed to approve pairing' } }
+  }
+}
+
 /** AGENTCREATEPR2B-1119: the invite issue of POST .../channels/:provider/invites after its owner gate, lifted out
  *  unchanged (the agent-create consumer issues the invite of an approved spec through it). The token is in the
  *  returned body; the caller decides who sees it. */
@@ -2063,43 +2129,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     const body = await readBody(req)
     const { code } = JSON.parse(body.toString()) as { code: string }
-    if (!code?.trim()) { json(res, { error: 'Code is required' }, 400); return true }
-
-    const accessPath = join(chDir, 'access.json')
-    const access = readChannelAccessForWrite(res, accessPath)
-    if (!access) return true
-
-    try {
-      const pending = access.pending || {}
-      const entry = pending[code.trim()]
-
-      if (!entry) { json(res, { error: 'Invalid or expired code' }, 404); return true }
-
-      if (!access.allowFrom) access.allowFrom = []
-      if (!access.allowFrom.includes(entry.senderId)) {
-        access.allowFrom.push(entry.senderId)
-      }
-
-      delete access.pending[code.trim()]
-
-      access.dmPolicy = 'allowlist'
-
-      atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
-
-      const approvedDir = join(chDir, 'approved')
-      mkdirSync(approvedDir, { recursive: true })
-      // Marker contents = chatId, per the plugin's /telegram:access pair
-      // contract (the channel server polls approved/ to send the "Paired!"
-      // confirmation; current server keys off the filename, the chatId
-      // contents keep us aligned with the documented format).
-      writeFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
-
-      logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
-      json(res, { ok: true, senderId: entry.senderId })
-    } catch (err) {
-      logger.error({ err }, 'Failed to approve pairing')
-      json(res, { error: 'Failed to approve pairing' }, 500)
-    }
+    // OWNERACTION1123: the body below is approveChannelPairing, lifted out unchanged (an approved owner_action runs it too)
+    const r = approveChannelPairing(name, provider, code)
+    json(res, r.body, r.status)
     return true
   }
 

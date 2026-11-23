@@ -1225,6 +1225,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
   },
   {
+    // OWNERACTION1123: a new way to run an owner-only action (a request the owner approves), so off by default and
+    // switching it on needs the owner's session.
+    key: 'OWNER_ACTION_VIA_APPROVAL',
+    type: 'string',
+    default: 'off',
+    description: 'Tulajdonosi művelet jóváhagyással (OWNERACTION1123): bekapcsolva (on) egy ügynök a közös tokennel is KÉRHET két tulajdonosi műveletet (POST /api/owner-actions): egy ügynök csatornájának beállítását (bot-token és app-token vault-hivatkozással, extra csatorna, allowFrom) és egy párosítás jóváhagyását. Végrehajtani nem tud. A szerver ellenőrzi és eltárolja a kérést, és jóváhagyást kér a gazdától; a gazdának mutatott szöveget a szerver állítja össze. Csak a gazda jóváhagyása után, egyszer, a szerver hajtja végre, ugyanazon a kódon, mint a dashboard. Az azonos OS-felhasználóként parancsot futtató ügynök ellen nem határ. Alapból KI.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
+  },
+  {
     // TEAMSAPPROVECARD1118 (Samu D3): one more way to approve, so off by default and switching it on needs the owner.
     key: 'APPROVAL_TEAMS_CARDS',
     type: 'string',

@@ -125,7 +125,7 @@ const isBad = (v: unknown): v is Bad => isObj(v) && v.ok === false
 export type VaultReadable = (id: string) => boolean
 
 /** A { vault_ref } field -> its SecretRef (the value's sha256 at this moment), or the refusal. */
-function secretRef(field: string, v: unknown, vaultReadable: VaultReadable): SecretRef | Bad {
+export function secretRef(field: string, v: unknown, vaultReadable: VaultReadable): SecretRef | Bad {
   if (!isObj(v)) return { ok: false, status: 400, error: `${field} must be { vault_ref }: a secret is never sent as a value` }
   const te = unknownKey(v, VAULT_REF_KEYS)
   if (te !== undefined) return { ok: false, status: 400, error: `unknown field: ${field}.${te}` }
