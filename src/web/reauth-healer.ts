@@ -584,6 +584,24 @@ export function _setFleetTokenRuleForTest(rule: ((name: string) => boolean) | nu
   fleetTokenRule = rule
 }
 
+/**
+ * Load the fleet-token rule (startReauthHealer calls it). Returns whether it loaded; a failed load is logged and keeps
+ * the old behaviour (no fleet-token agent known, so the /login path stays). The importer is a test seam (Geri #3074).
+ */
+export async function loadFleetTokenRule(
+  importer: () => Promise<{ usesFleetToken: (name: string) => boolean }> = () => import('./claude-plan-fleet-wiring.js'),
+): Promise<boolean> {
+  try {
+    const m = await importer()
+    if (typeof m.usesFleetToken !== 'function') throw new Error('usesFleetToken is not a function')
+    fleetTokenRule = m.usesFleetToken
+    return true
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'reauth-healer: fleet-token rule not loaded; fleet-token agents keep the /login path')
+    return false
+  }
+}
+
 // A fresh process re-reads the fleet token file. --continue keeps the conversation; the wake tells the agent why.
 async function restartFleetTokenAgent(name: string): Promise<void> {
   if (isRestartInFlight(name)) {
@@ -607,9 +625,7 @@ export function startReauthHealer(): NodeJS.Timeout | null {
     return null
   }
   // TOKENSWAPRESTART1123 (a): the fleet-token rule, loaded lazily (see agentUsesFleetTokenNow).
-  import('./claude-plan-fleet-wiring.js')
-    .then((m) => { fleetTokenRule = m.usesFleetToken })
-    .catch((err) => logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'reauth-healer: fleet-token rule not loaded; fleet-token agents keep the /login path'))
+  void loadFleetTokenRule()
 
   function sweep(): void {
     const quiet = isQuietHour(localHour(Date.now()))

@@ -33,7 +33,9 @@ vi.mock('../web/restart-lock.js', () => ({ isRestartInFlight: () => false }))
 vi.mock('../web/session-send-lock.js', () => ({ withSessionSendLock: async (_s: string, _h: unknown, _m: string, fn: () => Promise<unknown>) => { await fn(); return { ran: true } } }))
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
 
-import { decideReauthAction, checkSession, _setFleetTokenRuleForTest, NO_REAUTH_STATE } from '../web/reauth-healer.js'
+import { decideReauthAction, checkSession, _setFleetTokenRuleForTest, loadFleetTokenRule, agentUsesFleetTokenNow, NO_REAUTH_STATE } from '../web/reauth-healer.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const T = { threshold: 1, cooldownMs: 0 }
 const input = (over: Record<string, unknown> = {}) => ({
@@ -105,5 +107,28 @@ describe('checkSession: the restart waits for a healthy fleet token', () => {
     if (process.platform === 'darwin') {
       expect(fx.execCalls.some((c) => Array.isArray(c[1]) && (c[1] as string[]).includes(KEYS_VERB))).toBe(true)
     }
+  })
+})
+
+describe('loadFleetTokenRule (the production wiring of the rule)', () => {
+  it('a loaded rule is what agentUsesFleetTokenNow answers', async () => {
+    _setFleetTokenRuleForTest(null)
+    expect(agentUsesFleetTokenNow('fleetbot')).toBe(false)
+    expect(await loadFleetTokenRule(async () => ({ usesFleetToken: (n: string) => n === 'fleetbot' }))).toBe(true)
+    expect(agentUsesFleetTokenNow('fleetbot')).toBe(true)
+    expect(agentUsesFleetTokenNow('ownbot')).toBe(false)
+  })
+  it('a failed load keeps the old behaviour (no fleet-token agent), and says so', async () => {
+    _setFleetTokenRuleForTest(null)
+    expect(await loadFleetTokenRule(async () => { throw new Error('boom') })).toBe(false)
+    expect(await loadFleetTokenRule(async () => ({}) as never)).toBe(false)
+    expect(agentUsesFleetTokenNow('fleetbot')).toBe(false)
+  })
+  it('the default importer names the module that exports usesFleetToken, and startReauthHealer calls the loader', () => {
+    const healer = readFileSync(join(__dirname, '..', 'web', 'reauth-healer.ts'), 'utf-8')
+    expect(healer).toContain("() => import('./claude-plan-fleet-wiring.js')")
+    expect(healer).toMatch(/startReauthHealer[\s\S]*void loadFleetTokenRule\(\)/)
+    const wiring = readFileSync(join(__dirname, '..', 'web', 'claude-plan-fleet-wiring.ts'), 'utf-8')
+    expect(wiring).toMatch(/export function usesFleetToken\(name: string\): boolean/)
   })
 })
