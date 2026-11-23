@@ -290,7 +290,10 @@ async function callRelay(method, path, body) {
     writeFileSync(tmpPath, JSON.stringify({ id, method, path, body }), { flag: 'wx' })
     renameSync(tmpPath, requestPath)
   } catch (error) {
-    try { unlinkSync(tmpPath) } catch { /* Best-effort cleanup. */ }
+    // EEXIST means the temp file was already there and is not ours to remove.
+    if (error?.code !== 'EEXIST') {
+      try { unlinkSync(tmpPath) } catch { /* Best-effort cleanup. */ }
+    }
     throw error
   }
   const deadline = Date.now() + RELAY_DEADLINE_MS

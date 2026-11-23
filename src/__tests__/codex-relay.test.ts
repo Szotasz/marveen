@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:http'
 import { type AddressInfo } from 'node:net'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -381,7 +381,17 @@ describe('relay.mjs integration', () => {
 // ---- mcp-shim.mjs ------------------------------------------------------------
 
 describe('mcp-shim.mjs integration', () => {
-  it('P3279 publishes a complete request atomically before the daemon can pick it up', async () => {
+  type FsLogEntry = { op: 'writeFileSync'; path: string } | { op: 'renameSync'; from: string; to: string }
+
+  async function withP3279Shim(
+    mode: 'preexisting' | 'renamefail' | undefined,
+    run: (shim: {
+      requestsDir: string
+      responsesDir: string
+      logPath: string
+      nextMessage: () => Promise<Record<string, unknown>>
+    }) => Promise<void>,
+  ) {
     const work = mkdtempSync(join(tmpdir(), 'marveen-shim-atomic-'))
     const relayDir = join(work, 'relay')
     const requestsDir = join(relayDir, 'requests')
@@ -395,28 +405,33 @@ describe('mcp-shim.mjs integration', () => {
       import { syncBuiltinESMExports } from 'node:module'
       const { writeFileSync, renameSync, appendFileSync } = fs
       const logPath = process.env.P3279_FS_LOG
+      const mode = process.env.P3279_MODE
       const log = entry => appendFileSync(logPath, JSON.stringify(entry) + '\n')
       fs.writeFileSync = (path, ...args) => {
         // appendFileSync delegates to fs.writeFileSync; don't log the log itself.
-        if (path !== logPath) log({ op: 'writeFileSync', path: String(path) })
+        if (path !== logPath) {
+          log({ op: 'writeFileSync', path: String(path) })
+          if (mode === 'preexisting' && String(path).includes('.tmp.')) {
+            writeFileSync(path, 'P3279-MARKER')
+          }
+        }
         return writeFileSync(path, ...args)
       }
       fs.renameSync = (from, to) => {
         log({ op: 'renameSync', from: String(from), to: String(to) })
+        if (mode === 'renamefail' && String(from).includes('.tmp.')) {
+          throw new Error('P3279 injected rename failure')
+        }
         return renameSync(from, to)
       }
       syncBuiltinESMExports()
     `)
 
     const child = spawn(process.execPath, ['--import', pathToFileURL(preloadPath).href, MCP_SHIM_MJS], {
-      env: { MARVEEN_AGENT_NAME: 'shim-agent', MARVEEN_RELAY_DIR: relayDir, P3279_FS_LOG: logPath },
+      env: { MARVEEN_AGENT_NAME: 'shim-agent', MARVEEN_RELAY_DIR: relayDir, P3279_FS_LOG: logPath, P3279_MODE: mode },
     })
     let stdoutBuffer = ''
-    const queue: unknown[] = []
-    const waiters: Array<(message: unknown) => void> = []
-    const drain = () => {
-      while (queue.length && waiters.length) waiters.shift()!(queue.shift())
-    }
+    const queue: Record<string, unknown>[] = []
     child.stdout.on('data', chunk => {
       stdoutBuffer += chunk
       let newline
@@ -425,46 +440,73 @@ describe('mcp-shim.mjs integration', () => {
         stdoutBuffer = stdoutBuffer.slice(newline + 1)
         if (line) {
           queue.push(JSON.parse(line))
-          drain()
         }
       }
     })
-    const nextMessage = () => new Promise<Record<string, unknown>>(resolve => {
-      waiters.push(resolve as (message: unknown) => void)
-      drain()
-    })
+    const nextMessage = () => waitFor(() => queue.shift())
     const send = (message: unknown) => { child.stdin.write(`${JSON.stringify(message)}\n`) }
 
     try {
       send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
       await nextMessage()
       send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'marveen_kanban_query', arguments: {} } })
+      await run({ requestsDir, responsesDir, logPath, nextMessage })
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill()
+        await exited(child)
+      }
+      rmSync(work, { recursive: true, force: true })
+    }
+  }
+
+  it('P3279 publishes a complete request atomically before the daemon can pick it up', async () => {
+    await withP3279Shim(undefined, async ({ requestsDir, responsesDir, logPath, nextMessage }) => {
       const requestFile = await waitFor(() => {
         const files = readdirSync(requestsDir).filter(file => file.endsWith('.json'))
         return files.length ? join(requestsDir, files[0]) : null
       })
       const request = readJson(requestFile) as { id: string }
       const responseBody = { ok: true, marker: 'P3279' }
-      writeFileSync(join(responsesDir, `${request.id}.json`), JSON.stringify({ id: request.id, status: 200, body: responseBody }))
+      const responsePath = join(responsesDir, `${request.id}.json`)
+      writeFileSync(`${responsePath}.tmp`, JSON.stringify({ id: request.id, status: 200, body: responseBody }))
+      renameSync(`${responsePath}.tmp`, responsePath)
       const callResult = await nextMessage()
       expect(callResult.id).toBe(2)
       const result = (callResult as { result: { content: Array<{ type: string; text: string }> } }).result
       expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(responseBody) }])
 
-      const entries = readFileSync(logPath, 'utf-8').trim().split('\n').map(line => JSON.parse(line)) as Array<
-        { op: 'writeFileSync'; path: string } | { op: 'renameSync'; from: string; to: string }
-      >
+      const entries = readFileSync(logPath, 'utf-8').trim().split('\n').map(line => JSON.parse(line)) as FsLogEntry[]
       expect(entries.filter(entry => entry.op === 'writeFileSync' && dirname(entry.path) === requestsDir && entry.path.endsWith('.json'))).toEqual([])
       const requestRenames = entries.filter(entry => entry.op === 'renameSync'
         && dirname(entry.from) === requestsDir && !entry.from.endsWith('.json')
         && dirname(entry.to) === requestsDir && entry.to.endsWith('.json'))
       expect(requestRenames).toHaveLength(1)
       expect(readdirSync(requestsDir).filter(file => file.includes('.tmp.'))).toEqual([])
-    } finally {
-      child.kill()
-      await exited(child)
-      rmSync(work, { recursive: true, force: true })
-    }
+    })
+  }, 30_000)
+
+  it('P3279 leaves a pre-existing temp file alone and reports the original error', async () => {
+    await withP3279Shim('preexisting', async ({ requestsDir, nextMessage }) => {
+      const callResult = await nextMessage()
+      expect(callResult).toMatchObject({ jsonrpc: '2.0', id: 2, error: { code: -32603, message: expect.stringMatching(/EEXIST/) } })
+      const files = readdirSync(requestsDir)
+      expect(files).toHaveLength(1)
+      expect(files[0]).toContain('.tmp.')
+      expect(readFileSync(join(requestsDir, files[0]), 'utf-8')).toBe('P3279-MARKER')
+      expect(files.filter(file => file.endsWith('.json'))).toEqual([])
+    })
+  }, 30_000)
+
+  it('P3279 removes its own temp file when the rename fails', async () => {
+    await withP3279Shim('renamefail', async ({ requestsDir, logPath, nextMessage }) => {
+      const callResult = await nextMessage()
+      expect(callResult).toMatchObject({ jsonrpc: '2.0', id: 2, error: { code: -32603, message: expect.stringContaining('P3279 injected rename failure') } })
+      expect(readdirSync(requestsDir)).toEqual([])
+      const entries = readFileSync(logPath, 'utf-8').trim().split('\n').map(line => JSON.parse(line)) as FsLogEntry[]
+      expect(entries.filter(entry => entry.op === 'writeFileSync'
+        && dirname(entry.path) === requestsDir && entry.path.includes('.tmp.'))).toHaveLength(1)
+    })
   }, 30_000)
 
   it('lists the 8 tools and bridges a call through the relay files', async () => {
