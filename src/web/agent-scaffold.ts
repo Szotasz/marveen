@@ -1305,6 +1305,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   }
   if (!denyList.includes(SUBAGENT_TOTP_STORE_DENY)) denyList.push(SUBAGENT_TOTP_STORE_DENY)
   for (const rule of SUBAGENT_VAULT_KEY_DENY) if (!denyList.includes(rule)) denyList.push(rule)
+  if (!denyList.includes(AGENT_BROWSER_RUN_CODE_DENY)) denyList.push(AGENT_BROWSER_RUN_CODE_DENY)
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
   // on EVERY spawn, because this function replaces the deny list wholesale --
   // a name written straight into settings.json disappears at the next respawn
@@ -2020,6 +2021,13 @@ export const SUBAGENT_TOTP_STORE_DENY = 'Read(//**/store/.dashboard-totp.json)'
 // fence on the Read tool, not an OS boundary (same OS user; a Bash read is not covered). Exact names, no glob: only
 // the exact `//**/store/<file>` form is measured.
 export const SUBAGENT_VAULT_KEY_DENY = ['Read(//**/store/.vault-key)', 'Read(//**/store/.vault-key.migrated)']
+
+// VAULTLOGINFOLLOW1123 N1 (Dani #3071): the agent browser's Playwright MCP has a tool that runs arbitrary code in the
+// MCP server process (its own words: "RCE-equivalent"), and the package cannot switch it off. With it the agent could
+// read a page's password field in another tab deterministically. A whole-tool-name deny drops it from every agent;
+// the name is Claude Code's mcp__<server>__<tool> (the server name keeps its hyphen, as in mcp__remote-devices__...).
+// It closes the ready-made tool, not the class: the agents run as the same OS user (vault-login plan point 7).
+export const AGENT_BROWSER_RUN_CODE_DENY = 'mcp__marveen-browser__browser_run_code_unsafe'
 
 // The floor's sudo pair, named so the per-agent opt-out (SUDO_AGENTS) lifts
 // exactly these two rules and nothing else of the floor.

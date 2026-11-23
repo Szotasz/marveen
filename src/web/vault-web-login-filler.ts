@@ -185,13 +185,22 @@ export async function fillWebLogin(req: FillRequest, connect?: (endpoint: string
     }
     // The last check before the password goes in: the field's frame is still on the entry's origin.
     if (originOf(pw.frame.url()) !== req.origin || originOf(page.url()) !== req.origin) return { outcome: 'origin-mismatch' }
-    await pw.field.fill(req.password, { timeout: left() })
+    // The submit is bound to THIS field of THIS document (an element handle, not a locator that would find a field again
+    // in whatever document the frame holds next), and the origin is checked once more AFTER the fill: a page that
+    // navigates on input could otherwise take the Enter to another origin (VAULTLOGINFOLLOW1123 N3, Dani #3071).
+    const field = await pw.field.elementHandle({ timeout: left() })
+    if (!field) return { outcome: 'no-form' }
+    await field.fill(req.password, { timeout: left() })
+    if (originOf(pw.frame.url()) !== req.origin || originOf(page.url()) !== req.origin) {
+      await clearPasswordFields(page)
+      return { outcome: 'origin-mismatch' }
+    }
     // The field is emptied right after the submit, before any settling (Samu #3071 M1): a submit that does not
     // navigate (a wrong password on a script-driven page, client validation, an XHR login) would otherwise leave the
     // value in the page for the whole settle. A native submit and a script handler have sent the value by the time the
     // submit's request leaves (isSubmitRequest); without one, SUBMIT_GRACE_MS bounds the wait.
     const firstRequest = page.waitForEvent('request', { predicate: (r) => isSubmitRequest(r.resourceType(), r.method()), timeout: SUBMIT_GRACE_MS }).catch(() => null)
-    await pw.field.press('Enter', { timeout: left() })
+    await field.press('Enter', { timeout: left() })
     await firstRequest
     if (!page.isClosed()) await clearPasswordFields(page)
     await settle(page, Math.min(left(), 8000))

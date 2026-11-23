@@ -77,6 +77,7 @@ beforeEach(() => {
   webLoginDeps.fill = async (req) => { fills.push({ ...req }); duringFill?.(); return { outcome: nextOutcome as never } }
   webLoginDeps.outputDir = () => outDir
   webLoginDeps.syncMcp = async () => []
+  webLoginDeps.secondSweepDelayMs = 60
 })
 
 async function create(extra: Record<string, unknown> = {}) {
@@ -210,6 +211,49 @@ describe('the MCP output folder after a login', () => {
     expect(r.json()).toEqual({ outcome: 'unknown' })
     expect(existsSync(during)).toBe(false)
     expect(r.text + h.logs.join('\n')).not.toContain(SECRET)
+  })
+})
+
+describe('the list: the owner sees all, an agent only its own entries, without the account (N2)', () => {
+  it('the owner sees every entry with its username', async () => {
+    await create({ allowedAgents: ['geri'] })
+    await create({ origin: 'https://other.example.com', allowedAgents: ['dani'] })
+    const r = (await call('GET', '/api/vault/web-logins', SESSION)).json().logins as Array<Record<string, unknown>>
+    expect(r.map((e) => e.origin).sort()).toEqual(['https://other.example.com', 'https://shop.example.com'])
+    expect(r.every((e) => e.username === 'owner@example.com')).toBe(true)
+  })
+
+  it.each([['its own token', ownToken('geri')], ['an X-Agent-Id claim', claims('geri')]])('an agent (%s) sees only the entries that allow it, with no username or selectors', async (_l, auth) => {
+    const mine = await create({ allowedAgents: ['geri'], userSelector: '#u' })
+    await create({ origin: 'https://other.example.com', allowedAgents: ['dani'] })
+    await create({ origin: 'https://nobody.example.com' })
+    const r = await call('GET', '/api/vault/web-logins', auth)
+    const logins = r.json().logins as Array<Record<string, unknown>>
+    expect(logins.map((e) => e.id)).toEqual([mine.id])
+    expect(Object.keys(logins[0]!).sort()).toEqual(['id', 'lastAttemptAt', 'lastResult', 'locked', 'loginUrl', 'origin'])
+    expect(r.text).not.toContain('owner@example.com')
+  })
+
+  it('a caller that names no agent and is not the owner gets an empty list', async () => {
+    await create({ allowedAgents: ['geri'] })
+    expect((await call('GET', '/api/vault/web-logins', TOKEN)).json().logins).toEqual([])
+  })
+})
+
+describe('the second sweep of the output folder (N4)', () => {
+  it('a file written just after the answer is gone after the delay; one written later stays', async () => {
+    const e = await create({ allowedAgents: ['geri'] })
+    await call('POST', `/api/vault/web-logins/${e.id}/login`, claims('geri'))
+    // Both exist BEFORE the second sweep runs: one written inside its window, one stamped after the window ends.
+    const late = join(outDir, 'page-late.yml')
+    writeFileSync(late, 'a snapshot from inside the window, written late')
+    const after = join(outDir, 'page-after.yml')
+    writeFileSync(after, 'the agent\'s own snapshot, after the window')
+    const future = new Date(Date.now() + 60_000)
+    utimesSync(after, future, future)
+    await new Promise((r) => setTimeout(r, 200))
+    expect(existsSync(late)).toBe(false)
+    expect(existsSync(after)).toBe(true)
   })
 })
 

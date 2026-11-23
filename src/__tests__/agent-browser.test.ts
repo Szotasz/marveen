@@ -26,6 +26,13 @@ beforeEach(() => {
   for (const a of h.agents) mkdirSync(join(h.agentsDir, a), { recursive: true })
 })
 
+describe('the run-code deny names this server\'s tool (VAULTLOGINFOLLOW1123 N1)', () => {
+  it('AGENT_BROWSER_RUN_CODE_DENY is mcp__<AGENT_BROWSER_MCP_NAME>__browser_run_code_unsafe', async () => {
+    const { AGENT_BROWSER_RUN_CODE_DENY } = await import('../web/agent-scaffold.js')
+    expect(AGENT_BROWSER_RUN_CODE_DENY).toBe(`mcp__${ab.AGENT_BROWSER_MCP_NAME}__browser_run_code_unsafe`)
+  })
+})
+
 describe('launch arguments', () => {
   it('own profile, CDP on 127.0.0.1 only, the given port', () => {
     const args = ab.agentBrowserArgs('/p/profile', 9401, {}, 'darwin')

@@ -41,6 +41,8 @@ export const webLoginDeps = {
   fill: (req: FillRequest): Promise<FillResult> => fillWebLogin(req),
   outputDir: (agent: string): string => agentBrowserOutputDir(agent),
   syncMcp: (): Promise<string[]> => syncAgentBrowserMcp(),
+  /** VAULTLOGINFOLLOW1123 N4: when the second sweep of the output folder runs after the answer. */
+  secondSweepDelayMs: 3000,
 }
 
 function toApi(e: WebLogin) {
@@ -57,6 +59,23 @@ function toApi(e: WebLogin) {
     lastAttemptAt: e.lastAttemptAt ? new Date(e.lastAttemptAt * 1000).toISOString() : null,
     lastAgent: e.lastAgent,
   }
+}
+
+/** What an agent may see of an entry that allows it: what vault-login needs and what tells it why a login was refused. */
+function toAgentApi(e: WebLogin) {
+  return {
+    id: e.id,
+    origin: e.origin,
+    loginUrl: e.loginUrl,
+    locked: e.lockedAt !== null,
+    lastResult: e.lastResult,
+    lastAttemptAt: e.lastAttemptAt ? new Date(e.lastAttemptAt * 1000).toISOString() : null,
+  }
+}
+
+/** The agent a caller speaks for: a sub-agent's own token, or the name the shared token claims (self-asserted). */
+function callerAgent(ctx: RouteContext): string | null {
+  return ctx.auth?.kind === 'token' && ctx.auth.tokenAgent ? ctx.auth.tokenAgent : claimedAgentOf(ctx.auth)
 }
 
 async function readJson(ctx: RouteContext): Promise<Record<string, unknown> | null> {
@@ -89,7 +108,13 @@ export async function tryHandleVaultWebLogins(ctx: RouteContext): Promise<boolea
   if (!path.startsWith('/api/vault/web-logins')) return false
 
   if (path === '/api/vault/web-logins' && method === 'GET') {
-    json(res, { logins: listWebLogins().map(toApi) })
+    // VAULTLOGINFOLLOW1123 N2: the owner sees every entry in full. Anyone else sees only the entries that allow the
+    // agent it names (its own token, or the X-Agent-Id claim), without the username and the selectors: enough to call
+    // vault-login with the id, nothing about the account. A caller that names no agent gets an empty list.
+    if (mayActAsOwner(ctx.auth, ctx.req)) { json(res, { logins: listWebLogins().map(toApi) }); return true }
+    const agent = callerAgent(ctx)
+    const own = agent ? listWebLogins().filter((e) => e.allowedAgents.includes(agent)) : []
+    json(res, { logins: own.map(toAgentApi) })
     return true
   }
 
@@ -140,7 +165,7 @@ export async function tryHandleVaultWebLogins(ctx: RouteContext): Promise<boolea
   }
 
   if (action === 'login' && method === 'POST') {
-    const agent = ctx.auth?.kind === 'token' && ctx.auth.tokenAgent ? ctx.auth.tokenAgent : claimedAgentOf(ctx.auth)
+    const agent = callerAgent(ctx)
     const entry = getWebLogin(id)
     const logRow = (outcome: string): void => {
       // One line per call: who, which entry, which origin, the outcome. Never the username, a URL query or the password.
@@ -179,7 +204,13 @@ export async function tryHandleVaultWebLogins(ctx: RouteContext): Promise<boolea
       outcome = 'unknown'
     } finally {
       // Whatever the agent's browser tool wrote while the password could be in the page goes before the answer.
-      cleanOutputDirSince(webLoginDeps.outputDir(agent), startedMs)
+      const dir = webLoginDeps.outputDir(agent)
+      cleanOutputDirSince(dir, startedMs)
+      // A snapshot the agent asked for inside the window can be written to disk after the answer: a second sweep takes
+      // what lands within the delay, and nothing written later than that (the agent's own work after the login stays).
+      const endedMs = Date.now()
+      const delay = webLoginDeps.secondSweepDelayMs
+      setTimeout(() => { cleanOutputDirSince(dir, startedMs, endedMs + delay) }, delay).unref?.()
       busy.delete(agent)
     }
     recordAttempt(id, agent, outcome, nowSec)

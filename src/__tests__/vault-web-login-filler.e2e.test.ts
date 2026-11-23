@@ -89,6 +89,9 @@ function siteA(): Server {
     if (url.pathname === '/noreq-login') { res.end(html('Login', `<form id="f"><input name="u" autocomplete="username"><input type="password" id="p" name="p"><button>Sign in</button></form><script>var f=document.getElementById('f'),p=document.getElementById('p');f.addEventListener('submit',function(e){e.preventDefault();var t0=performance.now();var iv=setInterval(function(){if(p.value===''){clearInterval(iv);new Image().src='/report?ms='+Math.round(performance.now()-t0)}},5);})</script>`)); return }
     // An image request leaves first, the login XHR 150 ms later (Dani #3071): the field must not be emptied by the image.
     if (url.pathname === '/late-xhr-login') { res.end(html('Login', `<form id="f"><input name="u" autocomplete="username"><input type="password" id="p" name="p"><button>Sign in</button></form><script>var f=document.getElementById('f'),p=document.getElementById('p');f.addEventListener('submit',function(e){e.preventDefault();new Image().src='/pixel.gif?'+Date.now();setTimeout(function(){fetch('/api/xhr-login',{method:'POST',body:JSON.stringify({u:f.u.value,p:p.value})})},150)})</script>`)); return }
+    // A page that navigates to ANOTHER origin as soon as the password field gets input (N3): the Enter must not land
+    // on the other origin's form, and nothing may be POSTed there.
+    if (url.pathname === '/toctou') { res.end(html('Login', `<form action="/login" method="post"><input name="u" autocomplete="username"><input type="password" name="p" oninput="location.href='${B}/login'"><button>Sign in</button></form>`)); return }
     if (url.pathname === '/noform') { res.end(html('Nothing', '<h1>No form here</h1>')); return }
     if (url.pathname === '/app') { res.end(html('App', '<h1>Signed in</h1>')); return }
     res.end(html('Home', '<h1>Home</h1>'))
@@ -263,6 +266,14 @@ describe.skipIf(!CHROME)('vault web login filler against a real Chrome', () => {
     posts.length = 0
     expect(await run('/two-step')).toEqual({ outcome: 'success' })
     expect(posts.map((p) => p.path)).toEqual(['/two-step-user', '/login'])
+  }, 60_000)
+
+  it('a page that leaves for another origin on input: refused, no POST anywhere, no success (N3)', async () => {
+    posts.length = 0
+    const r = await run('/toctou')
+    expect(['origin-mismatch', 'unknown']).toContain(r.outcome)
+    expect(posts.filter((p) => p.site === 'B')).toEqual([])
+    expect(posts.filter((p) => p.body.includes(SECRET))).toEqual([])
   }, 60_000)
 
   it('a page with no login form: no-form, nothing typed', async () => {
