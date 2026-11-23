@@ -33,6 +33,9 @@
 // (/api/embeddings-x, /v1/embeddings, /api/tags) are not matched and reach
 // the network untouched, which is what the positive control in the test file
 // proves; /v1/embeddings is not matched because this codebase never calls it.
+// Also match the raw URL suffix: EMBED_URL ending in a query or fragment puts
+// the appended embedding path outside the pathname. A redirecting server could
+// otherwise send fetch to the embedding path without re-entering this wrapper.
 //
 // A test's own stub still wins: vi.stubGlobal('fetch', ...) replaces this
 // whole wrapper (vi.unstubAllGlobals() puts it back), so tests that provide
@@ -61,11 +64,14 @@ export function isEmbeddingEndpoint(url: string): boolean {
     return false
   }
   const normalized = pathname.replace(/\/{2,}/g, '/').replace(/\/+$/, '')
+  const raw = url.replace(/\/+$/, '')
   return (
     normalized === '/api/embeddings' ||
     normalized === '/api/embed' ||
     normalized.endsWith('/api/embeddings') ||
-    normalized.endsWith('/api/embed')
+    normalized.endsWith('/api/embed') ||
+    raw.endsWith('/api/embeddings') ||
+    raw.endsWith('/api/embed')
   )
 }
 

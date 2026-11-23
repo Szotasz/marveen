@@ -20,11 +20,16 @@ import type { AddressInfo } from 'node:net'
 const SEAM_MARKER = Symbol.for('marveen.embedEndpointSeam')
 const seamedAtLoad = (globalThis.fetch as any)[SEAM_MARKER] === true
 
-// Every request the server receives is counted; the answer is deliberately
-// boring (200 'ok') so the assertions below only ever read the count.
+// Every request the server receives is counted; /redirect leads to the embedding
+// path, and other requests get 200 'ok'. The assertions below read the count.
 let requestCount = 0
-const server = http.createServer((_req, res) => {
+const server = http.createServer((req, res) => {
   requestCount++
+  if (req.url?.startsWith('/redirect')) {
+    res.writeHead(307, { Location: '/api/embeddings' })
+    res.end()
+    return
+  }
   res.writeHead(200, { 'content-type': 'text/plain' })
   res.end('ok')
 })
@@ -85,6 +90,8 @@ describe('embed-endpoint-seam (EMBEDSEAM1123)', () => {
     expect(isEmbeddingEndpoint('http://h:1/ollama/api/embeddings')).toBe(true)
     expect(isEmbeddingEndpoint('http://h:1/a/b/api/embed/')).toBe(true)
     expect(isEmbeddingEndpoint('http://h:1/api//embeddings')).toBe(true)
+    expect(isEmbeddingEndpoint('http://h/redirect?next=/api/embeddings')).toBe(true)
+    expect(isEmbeddingEndpoint('http://h/x#/api/embed')).toBe(true)
 
     expect(isEmbeddingEndpoint('http://localhost:11434/api/tags')).toBe(false)
     expect(isEmbeddingEndpoint('http://localhost:11434/api/embeddings-x')).toBe(false)
@@ -98,6 +105,7 @@ describe('embed-endpoint-seam (EMBEDSEAM1123)', () => {
     expect(isEmbeddingEndpoint('http://h:1/v1/embeddings')).toBe(false)
     expect(isEmbeddingEndpoint('http://h:1/api/tags')).toBe(false)
     expect(isEmbeddingEndpoint('http://h:1/')).toBe(false)
+    expect(isEmbeddingEndpoint('http://h/search?q=/api/embeddings-x')).toBe(false)
     expect(isEmbeddingEndpoint('not a url')).toBe(false)
   })
 
@@ -133,6 +141,17 @@ describe('embed-endpoint-seam (EMBEDSEAM1123)', () => {
     )
     await expectDeadPortRejection(
       fetch(`http://127.0.0.1:${port}/ollama/api/embeddings`, { method: 'POST', body: '{}' }),
+    )
+    expect(requestCount - before).toBe(0)
+  })
+
+  it('an EMBED_URL ending in a query or fragment cannot reach the embedding path through a redirect', async () => {
+    const before = requestCount
+    await expectDeadPortRejection(
+      fetch(`http://127.0.0.1:${port}/redirect?next=/api/embeddings`, { method: 'POST', body: '{}' }),
+    )
+    await expectDeadPortRejection(
+      fetch(`http://127.0.0.1:${port}/redirect#/api/embeddings`, { method: 'POST', body: '{}' }),
     )
     expect(requestCount - before).toBe(0)
   })
