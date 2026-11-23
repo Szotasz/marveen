@@ -13,7 +13,7 @@ import { join } from 'node:path'
 //   (A) sub-agents  -> the code-level floor in writeAgentSettingsFromProfile
 //   (B) main agent  -> the repo's tracked project settings (.claude/settings.json),
 //       which the scaffold deliberately never writes (#1305).
-import { writeAgentSettingsFromProfile, agentSettingsPath, FLEET_BASELINE_DENY, BASH_EGRESS_DENY, SUBAGENT_TOTP_STORE_DENY, SUBAGENT_VAULT_KEY_DENY } from '../web/agent-scaffold.js'
+import { writeAgentSettingsFromProfile, agentSettingsPath, FLEET_BASELINE_DENY, BASH_EGRESS_DENY, SUBAGENT_TOTP_STORE_DENY, SUBAGENT_VAULT_KEY_DENY, AGENT_BROWSER_RUN_CODE_DENY } from '../web/agent-scaffold.js'
 import { agentDir } from '../web/agent-config.js'
 import { listProfileTemplates, loadProfileTemplate, resolveProfilePlaceholders } from '../web/profiles.js'
 import { PROJECT_ROOT } from '../config.js'
@@ -81,6 +81,15 @@ describe('(A) the baseline reaches EVERY profile, including ones added later', (
       writeAgentSettingsFromProfile(NAME, loadProfileTemplate(profile.id))
       writeAgentSettingsFromProfile(NAME, loadProfileTemplate(profile.id))
       for (const rule of SUBAGENT_VAULT_KEY_DENY) expect(readDeny().filter(r => r === rule)).toHaveLength(1)
+    }
+  })
+
+  it('VAULTLOGINFOLLOW1123: every profile denies the agent browser\'s run-code tool, exactly once, across a respawn', () => {
+    expect(AGENT_BROWSER_RUN_CODE_DENY).toBe('mcp__marveen-browser__browser_run_code_unsafe')
+    for (const profile of profiles) {
+      writeAgentSettingsFromProfile(NAME, loadProfileTemplate(profile.id))
+      writeAgentSettingsFromProfile(NAME, loadProfileTemplate(profile.id))
+      expect(readDeny().filter(r => r === AGENT_BROWSER_RUN_CODE_DENY)).toHaveLength(1)
     }
   })
 

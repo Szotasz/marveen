@@ -192,7 +192,7 @@ export async function syncAgentBrowserMcp(): Promise<string[]> {
  * The vault-login cleanup of the MCP output folder: every file written since `sinceMs` (a snapshot taken while the
  * password was in the page would be one) is deleted. Returns how many were removed.
  */
-export function cleanOutputDirSince(dir: string, sinceMs: number): number {
+export function cleanOutputDirSince(dir: string, sinceMs: number, untilMs = Number.POSITIVE_INFINITY): number {
   let removed = 0
   let names: string[]
   try { names = readdirSync(dir) } catch { return 0 }
@@ -200,7 +200,7 @@ export function cleanOutputDirSince(dir: string, sinceMs: number): number {
     const p = join(dir, name)
     try {
       const st = statSync(p)
-      if (st.mtimeMs >= sinceMs - 1000) {
+      if (st.mtimeMs >= sinceMs - 1000 && st.mtimeMs <= untilMs) {
         rmSync(p, { recursive: true, force: true })
         removed++
       }
