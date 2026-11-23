@@ -5,8 +5,8 @@
 // the agent's process.
 //
 // The limit, stated (owner decision A, Samu 83561): the agent's own browser tool can read the page while the password
-// is in the field, for the few milliseconds between the fill and the submit (or the clearing). The guarantee is that
-// the model does not get the password through its own path; it is not absolute.
+// is in the field: from the fill to the clearing right after the submit (the first request the submit sends, at most
+// SUBMIT_GRACE_MS). The guarantee is that the model does not get the password through its own path; it is not absolute.
 //
 // Errors are never passed on: a Playwright error message can quote what it was doing, so every failure is reduced to
 // an outcome here, and only the outcome leaves this module.
@@ -29,6 +29,8 @@ export interface FillResult {
   outcome: LoginOutcome
 }
 
+/** How long the filler waits after the submit for the first request before it empties the field. */
+export const SUBMIT_GRACE_MS = 300
 const PASSWORD_SELECTOR = 'input[type="password"]'
 const USERNAME_SELECTOR = [
   'input[autocomplete="username"]',
@@ -167,10 +169,15 @@ export async function fillWebLogin(req: FillRequest, connect?: (endpoint: string
     // The last check before the password goes in: the field's frame is still on the entry's origin.
     if (originOf(pw.frame.url()) !== req.origin || originOf(page.url()) !== req.origin) return { outcome: 'origin-mismatch' }
     await pw.field.fill(req.password, { timeout: left() })
+    // The field is emptied right after the submit, before any settling (Samu #3071 M1): a submit that does not
+    // navigate (a wrong password on a script-driven page, client validation, an XHR login) would otherwise leave the
+    // value in the page for the whole settle. A native submit and a script handler have sent the value by the time the
+    // first request leaves; without one, SUBMIT_GRACE_MS bounds the wait.
+    const firstRequest = page.waitForEvent('request', { timeout: SUBMIT_GRACE_MS }).catch(() => null)
     await pw.field.press('Enter', { timeout: left() })
-    await settle(page, Math.min(left(), 8000))
-    // The value leaves the page BEFORE the classification reads it (that read takes seconds, the window must not).
+    await firstRequest
     if (!page.isClosed()) await clearPasswordFields(page)
+    await settle(page, Math.min(left(), 8000))
     const outcome = await classifyAfterSubmit(page, req.origin, passSelector)
     if (outcome === '2fa') keepOpen = true
     return { outcome }

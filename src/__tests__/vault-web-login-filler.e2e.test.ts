@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { createServer as netServer } from 'node:net'
 import { chromium, type Browser } from 'playwright-core'
 import { chromeExecutable, agentBrowserArgs, writePasswordManagerOff } from '../web/agent-browser.js'
-import { fillWebLogin } from '../web/vault-web-login-filler.js'
+import { fillWebLogin, SUBMIT_GRACE_MS } from '../web/vault-web-login-filler.js'
 
 const CHROME = chromeExecutable()
 const SECRET = 'pw-' + Math.random().toString(36).slice(2) + '-Zq9'
@@ -36,12 +36,21 @@ const form = (action: string, extra = ''): string =>
   `<form action="${action}" method="post"><label>User <input name="u" autocomplete="username"></label><label>Password <input type="password" name="p"></label><button>Sign in</button></form>${extra}`
 
 const posts: Array<{ site: 'A' | 'B'; path: string; body: string }> = []
+/** Milliseconds from the submit event to the moment the page saw its password field empty (reported by the page). */
+const clearedAfter: number[] = []
 let A = '', B = ''
 
 function siteA(): Server {
   return createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
     res.setHeader('content-type', 'text/html')
+    if (url.pathname === '/report') { clearedAfter.push(Number(url.searchParams.get('ms'))); res.end('ok'); return }
+    if (req.method === 'POST' && url.pathname === '/api/xhr-login') {
+      let body = ''
+      req.on('data', (d) => (body += d))
+      req.on('end', () => { posts.push({ site: 'A', path: url.pathname, body }); setTimeout(() => { res.writeHead(401); res.end('{}') }, 1500) })
+      return
+    }
     if (req.method === 'POST') {
       let body = ''
       req.on('data', (d) => (body += d))
@@ -74,6 +83,10 @@ function siteA(): Server {
 <script>document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); document.getElementById('cap').innerHTML = '<iframe src="${B}/recaptcha/frame"></iframe>' })</script>`))
       return
     }
+    // Script-driven logins that do NOT navigate (Samu #3071 M1): the page reports how long after its submit event the
+    // password field became empty. One sends the value with a slow XHR, one sends nothing (client validation).
+    if (url.pathname === '/xhr-login') { res.end(html('Login', `<form id="f"><input name="u" autocomplete="username"><input type="password" id="p" name="p"><button>Sign in</button></form><script>var f=document.getElementById('f'),p=document.getElementById('p');f.addEventListener('submit',function(e){e.preventDefault();var t0=performance.now();var iv=setInterval(function(){if(p.value===''){clearInterval(iv);new Image().src='/report?ms='+Math.round(performance.now()-t0)}},5);fetch('/api/xhr-login',{method:'POST',body:JSON.stringify({u:f.u.value,p:p.value})}).then(function(){var a=document.createElement('p');a.setAttribute('role','alert');a.textContent='Wrong password';document.body.appendChild(a)})})</script>`)); return }
+    if (url.pathname === '/noreq-login') { res.end(html('Login', `<form id="f"><input name="u" autocomplete="username"><input type="password" id="p" name="p"><button>Sign in</button></form><script>var f=document.getElementById('f'),p=document.getElementById('p');f.addEventListener('submit',function(e){e.preventDefault();var t0=performance.now();var iv=setInterval(function(){if(p.value===''){clearInterval(iv);new Image().src='/report?ms='+Math.round(performance.now()-t0)}},5);})</script>`)); return }
     if (url.pathname === '/noform') { res.end(html('Nothing', '<h1>No form here</h1>')); return }
     if (url.pathname === '/app') { res.end(html('App', '<h1>Signed in</h1>')); return }
     res.end(html('Home', '<h1>Home</h1>'))
@@ -212,6 +225,21 @@ describe.skipIf(!CHROME)('vault web login filler against a real Chrome', () => {
       expect(p.passwordValues.length).toBeGreaterThan(0)
       expect(p.passwordValues.every((v) => v === '')).toBe(true)
     }
+  }, 60_000)
+
+  it('a submit that does not navigate (XHR): the value reaches the site, and the field is empty within the grace', async () => {
+    posts.length = 0; clearedAfter.length = 0
+    await run('/xhr-login')
+    expect(posts.filter((p) => p.path === '/api/xhr-login' && p.body.includes(SECRET))).toHaveLength(1)
+    expect(clearedAfter).toHaveLength(1)
+    expect(clearedAfter[0]).toBeLessThanOrEqual(SUBMIT_GRACE_MS + 150)
+  }, 60_000)
+
+  it('a submit that sends nothing (client validation): the field is empty within the grace, not after the settle', async () => {
+    clearedAfter.length = 0
+    await run('/noreq-login')
+    expect(clearedAfter).toHaveLength(1)
+    expect(clearedAfter[0]).toBeLessThanOrEqual(SUBMIT_GRACE_MS + 150)
   }, 60_000)
 
   it('a wrong password: the outcome is wrong, the tab is closed, nothing left in a field', async () => {
