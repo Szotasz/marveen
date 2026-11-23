@@ -11,7 +11,7 @@
 // reaches the sandbox. The spool lives under store/, which the relay profile
 // hides from the sandbox. Plain node, no npm dependencies.
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const AGENT = process.env.MARVEEN_AGENT_NAME ?? ''
@@ -284,7 +284,15 @@ async function callRelay(method, path, body) {
   const id = `shim-${Date.now()}-${++relaySequence}`
   const requestPath = join(RELAY_DIR, 'requests', `${id}.json`)
   const responsePath = join(RELAY_DIR, 'responses', `${id}.json`)
-  writeFileSync(requestPath, JSON.stringify({ id, method, path, body }))
+  // The daemon only picks up names ending in .json, so it never sees a partly written request.
+  const tmpPath = `${requestPath}.tmp.${process.pid}`
+  try {
+    writeFileSync(tmpPath, JSON.stringify({ id, method, path, body }), { flag: 'wx' })
+    renameSync(tmpPath, requestPath)
+  } catch (error) {
+    try { unlinkSync(tmpPath) } catch { /* Best-effort cleanup. */ }
+    throw error
+  }
   const deadline = Date.now() + RELAY_DEADLINE_MS
   for (;;) {
     if (existsSync(responsePath)) {

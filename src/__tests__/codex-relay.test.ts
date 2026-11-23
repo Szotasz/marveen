@@ -5,8 +5,8 @@ import { type AddressInfo } from 'node:net'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { codexRelayDir, codexRelayFilesystemEntries, renderCodexConfig, renderCodexOverrides, scaffoldCodexHome } from '../web/agent-engine.js'
 import { readAgentEngineConfig, AGENTS_BASE_DIR } from '../web/agent-config.js'
 
@@ -381,6 +381,92 @@ describe('relay.mjs integration', () => {
 // ---- mcp-shim.mjs ------------------------------------------------------------
 
 describe('mcp-shim.mjs integration', () => {
+  it('P3279 publishes a complete request atomically before the daemon can pick it up', async () => {
+    const work = mkdtempSync(join(tmpdir(), 'marveen-shim-atomic-'))
+    const relayDir = join(work, 'relay')
+    const requestsDir = join(relayDir, 'requests')
+    const responsesDir = join(relayDir, 'responses')
+    const preloadPath = join(work, 'preload.mjs')
+    const logPath = join(work, 'fs.jsonl')
+    mkdirSync(requestsDir, { recursive: true })
+    mkdirSync(responsesDir, { recursive: true })
+    writeFileSync(preloadPath, String.raw`
+      import fs from 'node:fs'
+      import { syncBuiltinESMExports } from 'node:module'
+      const { writeFileSync, renameSync, appendFileSync } = fs
+      const logPath = process.env.P3279_FS_LOG
+      const log = entry => appendFileSync(logPath, JSON.stringify(entry) + '\n')
+      fs.writeFileSync = (path, ...args) => {
+        // appendFileSync delegates to fs.writeFileSync; don't log the log itself.
+        if (path !== logPath) log({ op: 'writeFileSync', path: String(path) })
+        return writeFileSync(path, ...args)
+      }
+      fs.renameSync = (from, to) => {
+        log({ op: 'renameSync', from: String(from), to: String(to) })
+        return renameSync(from, to)
+      }
+      syncBuiltinESMExports()
+    `)
+
+    const child = spawn(process.execPath, ['--import', pathToFileURL(preloadPath).href, MCP_SHIM_MJS], {
+      env: { MARVEEN_AGENT_NAME: 'shim-agent', MARVEEN_RELAY_DIR: relayDir, P3279_FS_LOG: logPath },
+    })
+    let stdoutBuffer = ''
+    const queue: unknown[] = []
+    const waiters: Array<(message: unknown) => void> = []
+    const drain = () => {
+      while (queue.length && waiters.length) waiters.shift()!(queue.shift())
+    }
+    child.stdout.on('data', chunk => {
+      stdoutBuffer += chunk
+      let newline
+      while ((newline = stdoutBuffer.indexOf('\n')) !== -1) {
+        const line = stdoutBuffer.slice(0, newline).trim()
+        stdoutBuffer = stdoutBuffer.slice(newline + 1)
+        if (line) {
+          queue.push(JSON.parse(line))
+          drain()
+        }
+      }
+    })
+    const nextMessage = () => new Promise<Record<string, unknown>>(resolve => {
+      waiters.push(resolve as (message: unknown) => void)
+      drain()
+    })
+    const send = (message: unknown) => { child.stdin.write(`${JSON.stringify(message)}\n`) }
+
+    try {
+      send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      await nextMessage()
+      send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'marveen_kanban_query', arguments: {} } })
+      const requestFile = await waitFor(() => {
+        const files = readdirSync(requestsDir).filter(file => file.endsWith('.json'))
+        return files.length ? join(requestsDir, files[0]) : null
+      })
+      const request = readJson(requestFile) as { id: string }
+      const responseBody = { ok: true, marker: 'P3279' }
+      writeFileSync(join(responsesDir, `${request.id}.json`), JSON.stringify({ id: request.id, status: 200, body: responseBody }))
+      const callResult = await nextMessage()
+      expect(callResult.id).toBe(2)
+      const result = (callResult as { result: { content: Array<{ type: string; text: string }> } }).result
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(responseBody) }])
+
+      const entries = readFileSync(logPath, 'utf-8').trim().split('\n').map(line => JSON.parse(line)) as Array<
+        { op: 'writeFileSync'; path: string } | { op: 'renameSync'; from: string; to: string }
+      >
+      expect(entries.filter(entry => entry.op === 'writeFileSync' && dirname(entry.path) === requestsDir && entry.path.endsWith('.json'))).toEqual([])
+      const requestRenames = entries.filter(entry => entry.op === 'renameSync'
+        && dirname(entry.from) === requestsDir && !entry.from.endsWith('.json')
+        && dirname(entry.to) === requestsDir && entry.to.endsWith('.json'))
+      expect(requestRenames).toHaveLength(1)
+      expect(readdirSync(requestsDir).filter(file => file.includes('.tmp.'))).toEqual([])
+    } finally {
+      child.kill()
+      await exited(child)
+      rmSync(work, { recursive: true, force: true })
+    }
+  }, 30_000)
+
   it('lists the 8 tools and bridges a call through the relay files', async () => {
     const work = mkdtempSync(join(tmpdir(), 'marveen-shim-test-'))
     const relayDir = join(work, 'relay')
