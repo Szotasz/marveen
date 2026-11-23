@@ -150,14 +150,18 @@ export function resolveProfileTemplate(id: string): ProfileResolution {
   return { profile: HARDCODED_DEFAULT_PROFILE, requested: id, effective: 'default', fallbackReason: null }
 }
 
-export function loadProfileTemplate(id: string): ProfileTemplate {
-  const resolution = resolveProfileTemplate(id)
+function warnProfileFallback(resolution: ProfileResolution): void {
   if (resolution.fallbackReason) {
     logger.warn(
       { requested: resolution.requested, effective: resolution.effective, reason: resolution.fallbackReason },
       `Security profile "${resolution.requested}" is ${resolution.fallbackReason}; the agent gets "${resolution.effective}" instead -- a fallback can WIDEN its permissions`,
     )
   }
+}
+
+export function loadProfileTemplate(id: string): ProfileTemplate {
+  const resolution = resolveProfileTemplate(id)
+  warnProfileFallback(resolution)
   return resolution.profile
 }
 
@@ -174,15 +178,22 @@ export type ProfileStartDecision =
   | { ok: true; profile: ProfileTemplate }
   | { ok: false; error: string }
 
-export function decideStartProfile(requested: string, explicitlyConfigured: boolean): ProfileStartDecision {
-  const resolution = resolveProfileTemplate(requested)
+// Exactly ONE read of the profile file: the decision and the settings come from the same resolution, so a file that
+// disappears after the check cannot turn into a silent `default` (Dani N2). `resolve` is a test seam.
+export function decideStartProfile(
+  requested: string,
+  explicitlyConfigured: boolean,
+  resolve: (id: string) => ProfileResolution = resolveProfileTemplate,
+): ProfileStartDecision {
+  const resolution = resolve(requested)
   if (resolution.fallbackReason && explicitlyConfigured) {
     return {
       ok: false,
       error: `security profile "${requested}" is ${resolution.fallbackReason} (templates/profiles/${requested}.json); the agent is NOT started -- fix the file or change the agent's securityProfile`,
     }
   }
-  return { ok: true, profile: loadProfileTemplate(requested) }
+  warnProfileFallback(resolution)
+  return { ok: true, profile: resolution.profile }
 }
 
 export function resolveProfilePlaceholders(value: string, ctx: { HOME: string; AGENT_DIR: string }): string {

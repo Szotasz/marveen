@@ -30,7 +30,7 @@ vi.mock('../notify.js', async (orig) => ({
   deliverWithSlack: vi.fn(async () => true),
 }))
 
-import { PROFILES_DIR, decideStartProfile, loadProfileTemplate, type ProfileTemplate } from '../web/profiles.js'
+import { PROFILES_DIR, decideStartProfile, loadProfileTemplate, type ProfileTemplate, type ProfileResolution } from '../web/profiles.js'
 import { writeAgentSettingsFromProfile, agentSettingsPath, sanitizeAgentLocalSettings, strictSelfProtectDeny } from '../web/agent-scaffold.js'
 import { AGENTS_BASE_DIR } from '../web/agent-config.js'
 import { PROJECT_ROOT, STORE_DIR } from '../config.js'
@@ -93,6 +93,25 @@ describe('decideStartProfile (pure-ish: reads templates/profiles)', () => {
     const d = decideStartProfile('developer-junior', true)
     expect(d.ok).toBe(true)
     if (d.ok) expect(d.profile.id).toBe('developer-junior')
+  })
+
+  it('N2: one read -- a resolver that succeeds once then fails: the decision carries the FIRST resolution', () => {
+    const strict = loadProfileTemplate('developer-junior')
+    const fallback = loadProfileTemplate('default')
+    let calls = 0
+    const flaky = (id: string): ProfileResolution => {
+      calls += 1
+      return calls === 1
+        ? { profile: strict, requested: id, effective: id, fallbackReason: null }
+        : { profile: fallback, requested: id, effective: 'default', fallbackReason: 'missing' }
+    }
+    const d = decideStartProfile('developer-junior', true, flaky)
+    expect(calls).toBe(1)
+    expect(d.ok).toBe(true)
+    if (d.ok) {
+      expect(d.profile).toBe(strict)
+      expect(d.profile.permissionMode).toBe('strict')
+    }
   })
 
   it('CONTROL: default, not configured, starts with default', () => {
@@ -164,36 +183,64 @@ describe('settings.local.json: permissions dropped for a strict profile', () => 
 })
 
 describe('strict deny list covers the agent\'s own limit-defining files (S3)', () => {
-  const expected = (root: string) => [
-    `Edit(/${join(root, '.claude', 'settings.json')})`,
-    `Edit(/${join(root, '.claude', 'settings.local.json')})`,
-    `Edit(/${join(root, '.claude-config', 'settings.json')})`,
-    `Edit(/${join(root, '.claude-config', 'settings.local.json')})`,
-    `Edit(/${join(root, '.claude-config', '.claude.json')})`,
-    `Edit(/${join(root, '.claude-config', 'plugins')}/**)`,
-    `Edit(/${join(root, '.claude-config', 'skills')}/**)`,
-    `Edit(/${join(root, '.claude-config', 'hooks')}/**)`,
-    `Edit(/${join(root, '.claude-config', 'agents')}/**)`,
-    `Edit(/${join(root, '.claude-config', 'commands')}/**)`,
-    `Edit(/${join(PROJECT_ROOT, 'scripts')}/**)`,
-    `Edit(/${join(homedir(), '.claude', 'hooks')}/**)`,
-    `Edit(/${join(STORE_DIR, 'bash-sandbox')}/**)`,
-    `Edit(/${join(STORE_DIR, 'egress-vendor-hosts.json')})`,
-    `Edit(/${join(STORE_DIR, 'bash-sandbox-write-paths.json')})`,
+  // The paths, each written once; every one must come out as an Edit rule AND its Write twin (Dani N1).
+  const paths = (root: string) => [
+    join(root, '.claude', 'settings.json'),
+    join(root, '.claude', 'settings.local.json'),
+    join(root, '.claude-config', 'settings.json'),
+    join(root, '.claude-config', 'settings.local.json'),
+    join(root, '.claude-config', '.claude.json'),
+    `${join(root, '.claude-config', 'plugins')}/**`,
+    `${join(root, '.claude-config', 'skills')}/**`,
+    `${join(root, '.claude-config', 'hooks')}/**`,
+    `${join(root, '.claude-config', 'agents')}/**`,
+    `${join(root, '.claude-config', 'commands')}/**`,
+    `${join(PROJECT_ROOT, 'scripts')}/**`,
+    `${join(homedir(), '.claude', 'hooks')}/**`,
+    `${join(STORE_DIR, 'bash-sandbox')}/**`,
+    join(STORE_DIR, 'egress-vendor-hosts.json'),
+    join(STORE_DIR, 'bash-sandbox-write-paths.json'),
+    // Dani B1: what selects or defines the profile and the gates.
+    join(root, 'agent-config.json'),
+    join(root, '.mcp.json'),
+    `${join(PROJECT_ROOT, 'templates', 'profiles')}/**`,
+    join(PROJECT_ROOT, '.env'),
+    `${join(PROJECT_ROOT, 'local-hooks')}/**`,
+    join(STORE_DIR, 'extra-hooks.json'),
+    join(STORE_DIR, 'autonomy-config.json'),
+    join(STORE_DIR, 'agent-sender-role-gates.json'),
+    join(STORE_DIR, 'config-overrides.json'),
   ]
+  const expected = (root: string) => paths(root).flatMap(p => [`Edit(/${p})`, `Write(/${p})`])
 
-  it('every rule is an absolute `//` Edit rule', () => {
+  it('every rule is an absolute `//` Edit or Write rule, in the expected set', () => {
     const rules = strictSelfProtectDeny(agentRoot)
     expect(rules).toEqual(expected(agentRoot))
-    for (const r of rules) expect(r.startsWith('Edit(//')).toBe(true)
+    for (const r of rules) expect(/^(Edit|Write)\(\/\//.test(r)).toBe(true)
+  })
+
+  it('every Edit rule has its Write twin and vice versa (N1)', () => {
+    const rules = strictSelfProtectDeny(agentRoot)
+    const edits = rules.filter(r => r.startsWith('Edit(')).map(r => r.slice('Edit'.length))
+    const writes = rules.filter(r => r.startsWith('Write(')).map(r => r.slice('Write'.length))
+    expect(edits.length).toBe(paths(agentRoot).length)
+    expect([...writes].sort()).toEqual([...edits].sort())
+  })
+
+  it('B1: the agent-config.json (securityProfile) rule is present for this agent', () => {
+    const rules = strictSelfProtectDeny(agentRoot)
+    expect(rules).toContain(`Edit(/${join(agentRoot, 'agent-config.json')})`)
+    expect(rules).toContain(`Write(/${join(agentRoot, 'agent-config.json')})`)
   })
 
   it('the agent\'s file memory (.claude-config/projects) is NOT denied, nor the config dir as a whole', () => {
     const cfg = join(agentRoot, '.claude-config')
     for (const r of strictSelfProtectDeny(agentRoot)) {
-      expect(r.startsWith(`Edit(/${join(cfg, 'projects')}`)).toBe(false)
-      expect(r).not.toBe(`Edit(/${cfg}/**)`)
-      expect(r).not.toBe(`Edit(/${cfg})`)
+      for (const tool of ['Edit', 'Write']) {
+        expect(r.startsWith(`${tool}(/${join(cfg, 'projects')}`)).toBe(false)
+        expect(r).not.toBe(`${tool}(/${cfg}/**)`)
+        expect(r).not.toBe(`${tool}(/${cfg})`)
+      }
     }
   })
 

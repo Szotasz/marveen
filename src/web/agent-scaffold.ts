@@ -30,7 +30,8 @@ import {
   buildSoulPromptEn, buildSkillPromptEn, PRECOMPACT_PROMPT_EN_TPL, fleetBaseRulesEn,
 } from './agent-scaffold-en.js'
 import { FLEET_ROSTER_BEGIN, PACKAGE_SHELL_PREFIX_TEXT, hasPackageManifestFile } from './agent-package/marker.js'
-import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps, type ExtraHookEntry } from './extra-hook-entries.js'
+import { EXTRA_HOOKS_DIR, EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps, type ExtraHookEntry } from './extra-hook-entries.js'
+import { SENDER_ROLE_GATES_FILE } from './sender-role-gate-store.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -2040,9 +2041,12 @@ export const SUBAGENT_VAULT_KEY_DENY = ['Read(//**/store/.vault-key)', 'Read(//*
 // its own .claude/settings.json + settings.local.json, the limit-defining entries of its isolated config dir (not
 // projects/, its file memory), the hook scripts its settings run
 // (scripts/ and scripts/hooks/ of this install, plus the shared ~/.claude/hooks its config dir links to), and the Bash
-// sandbox inputs bash-sandbox.ts writes or reads (store/bash-sandbox/*, the vendor-host and write-path lists).
-// Only `Edit(...)` rules: per code.claude.com/docs/en/permissions (read 2026-11-23) Edit rules apply to every built-in
-// file-editing tool (Write, NotebookEdit, legacy MultiEdit), while a `Write(path)` rule is accepted but never matches.
+// sandbox inputs bash-sandbox.ts writes or reads (store/bash-sandbox/*, the vendor-host and write-path lists), and the
+// files that select or define its profile and gates (agent-config.json, .mcp.json, templates/profiles, the install
+// .env, store/extra-hooks.json + local-hooks/, store/autonomy-config.json, the sender-role gates, config-overrides).
+// Per code.claude.com/docs/en/permissions (read 2026-11-23) Edit rules apply to every built-in file-editing tool
+// (Write, NotebookEdit, legacy MultiEdit), while a `Write(path)` rule is accepted but never matches. Each Edit rule
+// still gets a Write twin until that is measured live (WRITERULENOOP1123, Dani N1): a no-op if the docs are right.
 // Absolute paths in the `//` form, the form absolutizeFileRule produces (a single leading `/` is settings-relative).
 export function strictSelfProtectDeny(
   agentRoot: string,
@@ -2069,7 +2073,18 @@ export function strictSelfProtectDeny(
     join(storeDir, 'bash-sandbox', '**'),
     join(storeDir, 'egress-vendor-hosts.json'),
     join(storeDir, 'bash-sandbox-write-paths.json'),
-  ].map(p => absolutizeFileRule(`Edit(${p})`))
+    // Dani B1: the files that SELECT or DEFINE the profile and the gates. securityProfile lives in agent-config.json:
+    // a strict agent that rewrote or deleted it would come up in bypass at its next start.
+    join(agentRoot, 'agent-config.json'),
+    join(agentRoot, '.mcp.json'),
+    join(projectRoot, 'templates', 'profiles', '**'),
+    join(projectRoot, '.env'),
+    join(projectRoot, EXTRA_HOOKS_DIR, '**'),
+    join(storeDir, EXTRA_HOOKS_FILE),
+    join(storeDir, 'autonomy-config.json'),
+    join(storeDir, SENDER_ROLE_GATES_FILE),
+    join(storeDir, 'config-overrides.json'),
+  ].flatMap(p => [absolutizeFileRule(`Edit(${p})`), absolutizeFileRule(`Write(${p})`)])
 }
 
 // The floor's sudo pair, named so the per-agent opt-out (SUDO_AGENTS) lifts
