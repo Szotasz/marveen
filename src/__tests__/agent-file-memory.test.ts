@@ -1,0 +1,201 @@
+// Claude Code file memory in the agent bundle (ISSUE3056FLEETMEM1122, #3056).
+//
+// On temp trees: the slug rule on the names measured on the owner's install, the git-root key (a stub .git agent has
+// its own slug), the fleet-wide shared calculation (the leak's negative control: a root-slug agent whose projects is
+// the shared tree exports no file-memory/), the cap and the link rules, and the import that never overwrites.
+import { describe, it, expect } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  FILE_MEMORY_LIMITS, FS_IO, fleetFileMemory, memoryDirAt, memoryKeyRoot, readMemoryFiles, slugOf, targetIsShared, writeImportedMemory,
+} from '../web/agent-file-memory.js'
+import { BUNDLE_SCHEMA_VERSION, importAgentBundle, stageFileMemoryForExport, type BundleManifest } from '../web/agent-bundle.js'
+
+const tmp = (p: string) => realpathSync(mkdtempSync(join(tmpdir(), p)))
+const put = (p: string, s: string) => { mkdirSync(join(p, '..'), { recursive: true }); writeFileSync(p, s) }
+
+describe('slug and key root', () => {
+  it('the slug rule on the measured names', () => {
+    expect(slugOf('/Users/marvin/.marveen-worker')).toBe('-Users-marvin--marveen-worker')
+    expect(slugOf('/Users/marvin/ClaudeClaw')).toBe('-Users-marvin-ClaudeClaw')
+    expect(slugOf('/private/tmp/claude-501/x_y')).toBe('-private-tmp-claude-501-x-y')
+  })
+  it('the key root is the first ancestor with .git; a stub .git makes the agent its own root; the real path counts', () => {
+    const root = tmp('marveen-fm-root-')
+    mkdirSync(join(root, '.git'))
+    mkdirSync(join(root, 'agents', 'plain'), { recursive: true })
+    mkdirSync(join(root, 'agents', 'stub'), { recursive: true })
+    writeFileSync(join(root, 'agents', 'stub', '.git'), 'gitdir: x\n')
+    expect(memoryKeyRoot(join(root, 'agents', 'plain'))).toBe(root)
+    expect(memoryKeyRoot(join(root, 'agents', 'stub'))).toBe(join(root, 'agents', 'stub'))
+    const loose = tmp('marveen-fm-loose-')
+    expect(memoryKeyRoot(loose)).toBe(loose)
+  })
+})
+
+/** An install: the main agent's config is HOME/.claude; `shared` agents link projects to it; others have their own. */
+function install() {
+  const home = tmp('marveen-fm-home-')
+  const root = join(home, 'ClaudeClaw')
+  mkdirSync(join(root, '.git'), { recursive: true })
+  const rootSlug = slugOf(root)
+  const sharedProjects = join(home, '.claude', 'projects')
+  put(join(sharedProjects, rootSlug, 'memory', 'MEMORY.md'), '- main index\n')
+  put(join(sharedProjects, rootSlug, 'memory', 'owner_private.md'), 'OWNER-PRIVATE-FACT\n')
+  const agent = (name: string, kind: 'own' | 'shared' | 'stub') => {
+    const dir = join(root, 'agents', name)
+    const cfg = join(dir, '.claude-config')
+    mkdirSync(cfg, { recursive: true })
+    if (kind === 'stub') writeFileSync(join(dir, '.git'), 'gitdir: x\n')
+    if (kind === 'own') put(join(cfg, 'projects', rootSlug, 'memory', 'own_fact.md'), `${name} fact\n`)
+    else symlinkSync(sharedProjects, join(cfg, 'projects'))
+    if (kind === 'stub') put(join(sharedProjects, slugOf(dir), 'memory', 'stub_fact.md'), `${name} fact\n`)
+    return { workingDir: dir, configDir: cfg }
+  }
+  const locs: Record<string, { workingDir: string; configDir: string | undefined }> = {
+    main: { workingDir: root, configDir: undefined },
+    abel: agent('abel', 'own'),
+    samu: agent('samu', 'shared'),
+    geri: agent('geri', 'shared'),
+    stubby: agent('stubby', 'stub'),
+  }
+  const fleet = fleetFileMemory(['abel', 'samu', 'geri', 'stubby'], 'main', (n) => locs[n], home)
+  return { home, root, rootSlug, sharedProjects, fleet }
+}
+
+describe('fleetFileMemory: shared = the main agent\'s folder, or held by 2+ agents', () => {
+  it('own projects: private; linked projects + root slug: shared (the main one); linked projects + stub .git: private', () => {
+    const { fleet, sharedProjects, rootSlug } = install()
+    expect(fleet.get('main')).toEqual({ dir: join(sharedProjects, rootSlug, 'memory'), shared: true })
+    expect(fleet.get('abel')).toMatchObject({ shared: false })
+    expect(fleet.get('samu')).toEqual({ dir: join(sharedProjects, rootSlug, 'memory'), shared: true })
+    expect(fleet.get('geri')?.shared).toBe(true)
+    expect(fleet.get('stubby')).toMatchObject({ shared: false })
+    expect(fleet.get('stubby')?.dir).toContain('-agents-stubby')
+  })
+  it('two agents on one folder are shared even when the main agent is elsewhere', () => {
+    const home = tmp('marveen-fm-two-')
+    const cfg = join(home, 'cfg')
+    put(join(cfg, 'projects', slugOf(home), 'memory', 'x.md'), 'x')
+    const f = fleetFileMemory(['a', 'b'], 'main', (n) => (n === 'main' ? { workingDir: home, configDir: join(home, 'none') } : { workingDir: home, configDir: cfg }), home)
+    expect([f.get('a')?.shared, f.get('b')?.shared, f.get('main')?.dir]).toEqual([true, true, null])
+  })
+  it('memoryDirAt: no folder there is null', () => {
+    const home = tmp('marveen-fm-none-')
+    expect(memoryDirAt(join(home, 'cfg'), home)).toBeNull()
+  })
+})
+
+describe('export: stageFileMemoryForExport', () => {
+  it('a private memory is staged; the leak control: a shared one is NOT, and its files are nowhere in the stage', () => {
+    const { fleet } = install()
+    const s1 = tmp('marveen-fm-stage-')
+    expect(stageFileMemoryForExport(fleet.get('abel'), s1)).toBe('included')
+    expect(readFileSync(join(s1, 'file-memory', 'own_fact.md'), 'utf8')).toBe('abel fact\n')
+    const s2 = tmp('marveen-fm-stage-')
+    expect(stageFileMemoryForExport(fleet.get('samu'), s2)).toBe('shared')
+    expect(existsSync(join(s2, 'file-memory'))).toBe(false)
+    // Nothing at all was staged, so the main agent's OWNER-PRIVATE-FACT cannot be in the bundle.
+    expect(readdirSync(s2)).toEqual([])
+  })
+  it('a stub .git agent on the linked tree exports its own folder', () => {
+    const { fleet } = install()
+    const s = tmp('marveen-fm-stage-')
+    expect(stageFileMemoryForExport(fleet.get('stubby'), s)).toBe('included')
+    expect(readdirSync(join(s, 'file-memory'))).toEqual(['stub_fact.md'])
+  })
+  it('none: no folder', () => {
+    expect(stageFileMemoryForExport({ dir: null, shared: false }, tmp('marveen-fm-stage-'))).toBe('none')
+  })
+})
+
+describe('readMemoryFiles: plain *.md only, the cap', () => {
+  it('a link, a subfolder and a non-.md file are left out', () => {
+    const d = tmp('marveen-fm-read-')
+    writeFileSync(join(d, 'a.md'), 'a')
+    writeFileSync(join(d, 'MEMORY.md.bak-1'), 'old')
+    mkdirSync(join(d, 'sub.md'))
+    const outside = tmp('marveen-fm-out-')
+    writeFileSync(join(outside, 'secret.md'), 'S')
+    symlinkSync(join(outside, 'secret.md'), join(d, 'link.md'))
+    const r = readMemoryFiles(d)
+    expect(r.ok && r.files.map((f) => f.name)).toEqual(['a.md'])
+  })
+  it('over the cap: nothing, never half', () => {
+    const d = tmp('marveen-fm-cap-')
+    writeFileSync(join(d, 'a.md'), 'aaaa')
+    writeFileSync(join(d, 'b.md'), 'bbbb')
+    expect(readMemoryFiles(d, { ...FILE_MEMORY_LIMITS, files: 1 })).toEqual({ ok: false, reason: 'over_cap' })
+    expect(readMemoryFiles(d, { ...FILE_MEMORY_LIMITS, totalBytes: 6 })).toEqual({ ok: false, reason: 'over_cap' })
+    expect(readMemoryFiles(d, { ...FILE_MEMORY_LIMITS, fileBytes: 3 })).toEqual({ ok: false, reason: 'over_cap' })
+  })
+})
+
+describe('import', () => {
+  const NOW = new Date('2026-11-23T17:00:00.000Z')
+  it('writeImportedMemory: never overwrites; a taken name gets .imported-<n>; MEMORY.md lines appended under a dated heading', () => {
+    // Its own parent, so an escaping name would land where the test can see it (not in the shared tmp).
+    const parent = tmp('marveen-fm-imp-')
+    const d = join(parent, 'memory')
+    mkdirSync(d)
+    writeFileSync(join(d, 'MEMORY.md'), '- target index\n')
+    writeFileSync(join(d, 'fact.md'), 'target fact\n')
+    const r = writeImportedMemory(d, [
+      { name: 'MEMORY.md', bytes: Buffer.from('- source line\n') },
+      { name: 'fact.md', bytes: Buffer.from('source fact\n') },
+      { name: 'new.md', bytes: Buffer.from('new\n') },
+      { name: '../escape.md', bytes: Buffer.from('x') },
+    ], 'abel', NOW, FS_IO)
+    expect(r).toEqual({ written: ['new.md'], renamed: [{ from: 'fact.md', to: 'fact.imported-1.md' }], indexAppended: true })
+    expect(readFileSync(join(d, 'fact.md'), 'utf8')).toBe('target fact\n')
+    expect(readFileSync(join(d, 'fact.imported-1.md'), 'utf8')).toBe('source fact\n')
+    expect(readFileSync(join(d, 'MEMORY.md'), 'utf8')).toBe('- target index\n\n\n## Imported 2026-11-23 from abel\n\n- source line\n')
+    expect(readdirSync(parent)).toEqual(['memory'])
+  })
+  it('targetIsShared: another agent\'s or the main agent\'s exact folder, through links; a fresh own folder is not', () => {
+    const { fleet, sharedProjects, rootSlug, home } = install()
+    const viaLink = join(home, 'ClaudeClaw', 'agents', 'geri', '.claude-config', 'projects', rootSlug, 'memory')
+    expect(targetIsShared(viaLink, 'newbie', fleet)).toBe(true)
+    expect(targetIsShared(join(sharedProjects, 'someone-else', 'memory'), 'newbie', fleet)).toBe(false)
+    expect(targetIsShared(join(home, 'ClaudeClaw', 'agents', 'newbie', '.claude-config', 'projects', rootSlug, 'memory'), 'newbie', fleet)).toBe(false)
+  })
+
+  function bundleWithMemory(files: Record<string, string>): Buffer {
+    const stage = tmp('marveen-fm-bundle-')
+    put(join(stage, 'agent', 'CLAUDE.md'), '# imported\n')
+    for (const [n, t] of Object.entries(files)) put(join(stage, 'file-memory', n), t)
+    const manifest: BundleManifest = { schemaVersion: BUNDLE_SCHEMA_VERSION, agentName: 'abel', includesSecrets: false, fileMemory: 'included' }
+    writeFileSync(join(stage, 'manifest.json'), JSON.stringify(manifest))
+    const out = join(stage, '..', `b-${Date.now()}-${Math.random()}.tar.gz`)
+    execFileSync('tar', ['-czf', out, '-C', stage, 'manifest.json', 'agent', 'file-memory'])
+    return readFileSync(out)
+  }
+  it('a bundle round trip lands under the TARGET slug, on another root', () => {
+    const target = tmp('marveen-fm-target-')
+    const memDir = join(target, 'cfg', 'projects', slugOf(target), 'memory')
+    const r = importAgentBundle(bundleWithMemory({ 'own_fact.md': 'abel fact\n', 'MEMORY.md': '- abel index\n' }), {
+      resolveDest: (n) => join(target, 'agents', n), memoryTarget: () => ({ dir: memDir, shared: false }), now: () => NOW,
+    })
+    expect(r.fileMemory).toEqual({ state: 'imported', written: 2, renamed: 0, indexAppended: false })
+    expect(readFileSync(join(memDir, 'own_fact.md'), 'utf8')).toBe('abel fact\n')
+  })
+  it('a shared target: nothing written, the result says so', () => {
+    const target = tmp('marveen-fm-target-')
+    const memDir = join(target, 'shared', 'memory')
+    const r = importAgentBundle(bundleWithMemory({ 'x.md': 'x' }), { resolveDest: (n) => join(target, 'agents', n), memoryTarget: () => ({ dir: memDir, shared: true }) })
+    expect(r.fileMemory?.state).toBe('skipped_shared_target')
+    expect(existsSync(memDir)).toBe(false)
+  })
+  it('a bundle without file-memory/ reports nothing', () => {
+    const stage = tmp('marveen-fm-old-')
+    put(join(stage, 'agent', 'CLAUDE.md'), '# old\n')
+    writeFileSync(join(stage, 'manifest.json'), JSON.stringify({ schemaVersion: BUNDLE_SCHEMA_VERSION, agentName: 'old', includesSecrets: false }))
+    const out = join(stage, '..', `old-${Date.now()}.tar.gz`)
+    execFileSync('tar', ['-czf', out, '-C', stage, 'manifest.json', 'agent'])
+    const target = tmp('marveen-fm-target-')
+    const r = importAgentBundle(readFileSync(out), { resolveDest: (n) => join(target, 'agents', n), memoryTarget: () => { throw new Error('not called') } })
+    expect('fileMemory' in r).toBe(false)
+  })
+})
