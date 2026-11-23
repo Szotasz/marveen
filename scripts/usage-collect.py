@@ -505,6 +505,18 @@ def _claude_cli_version():
         return "unknown"
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is an error here, never followed: urllib would re-send the Authorization header to the new host
+    (Dani, #3073 review, measured with a 302). The usage endpoint has no reason to redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# urlopen goes through the installed opener: this script's only network call never follows a redirect.
+urllib.request.install_opener(urllib.request.build_opener(_NoRedirect))
+
+
 def _collect_claude_authoritative():
     """Return (windows_dict, None, None) on success.
     On failure: (None, error_str, error_kind) where error_kind is one of:
@@ -555,7 +567,13 @@ def _collect_claude_authoritative():
             # would mask the auth problem. 401 (above) needs a token refresh,
             # 403 a scope fix -- the HTTP code below tells them apart.
             kind = "permanent" if e.code == 403 else "transient"
-            return None, f"HTTP {e.code} ({token_source} token)", kind
+            err = f"HTTP {e.code} ({token_source} token)"
+            # A 401 earlier in this run is the actionable one (Geri #3073): the .env setup-token answers this endpoint
+            # 403 by design, so "403" alone after a stale file's 401 would send the owner to fix a scope, not to
+            # refresh the token. Report both, the 401 first, and keep it a permanent (token) failure.
+            if last_401 is not None:
+                return None, f"{last_401}; then {err}", "permanent"
+            return None, err, kind
         except Exception as e:
             return None, f"{type(e).__name__}: {e}", "transient"
 

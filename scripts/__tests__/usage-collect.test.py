@@ -285,6 +285,50 @@ class TestCollectClaudeAuthoritative(unittest.TestCase):
         self.assertIn("HTTP 403", err)
         self.assertEqual(seen, ["a"])
 
+    def test_401_then_403_reports_the_401_first(self):
+        # Geri #3073: a stale file (401) and a .env setup-token (403 by design) must not read as a scope problem.
+        opener, seen = self._urlopen_by_token({"stale": 401, "setup": 403})
+        with patch.object(uc, "_read_claude_token", side_effect=self._sources({"credentials_file": "stale", "env_file": "setup"})), \
+             patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+             patch("urllib.request.urlopen", side_effect=opener):
+            windows, err, err_kind = uc._collect_claude_authoritative()
+        self.assertIsNone(windows)
+        self.assertEqual(err_kind, "permanent")
+        self.assertTrue(err.startswith("HTTP 401 (credentials_file token)"), err)
+        self.assertIn("then HTTP 403 (env_file token)", err)
+
+    def test_a_redirect_is_not_followed(self):
+        # Dani #3073 N1: the bearer must never follow a redirect to another host.
+        import http.server, threading
+        hits = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/start":
+                    self.send_response(302)
+                    self.send_header("Location", "http://127.0.0.1:%d/landed" % srv.server_address[1])
+                    self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            import urllib.request, urllib.error
+            req = urllib.request.Request("http://127.0.0.1:%d/start" % srv.server_address[1], headers={"Authorization": "Bearer x"})
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(ctx.exception.code, 302)
+            self.assertEqual([p for p, _ in hits], ["/start"])
+        finally:
+            srv.shutdown()
+
     def test_read_claude_token_skips_named_sources(self):
         with patch.object(uc, "_read_keychain_token", return_value="kc"), \
              patch("os.path.exists", return_value=False):
