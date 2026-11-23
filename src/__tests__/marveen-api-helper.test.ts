@@ -534,7 +534,7 @@ describe('marveen-api.sh: schedules are read only', () => {
     '        "memory-update": ["5", "dani", f], "daily-log": ["dani", f], "taskstate-save": ["dani", j],',
     '        "approval-request": ["dani", "memory_maintenance", "60", f], "approval-status": ["ap-1"],',
     '        "approval-consume": ["ap-1", "memory_maintenance", "dani"], "skill-propose": ["my-skill", f],',
-    '        "kanban-list": [], "schedules-list": [], "kanban-create": ["dani", "normal", f],',
+    '        "kanban-list": [], "schedules-list": [], "memory-get": ["12"], "messages-list": ["dani"], "kanban-create": ["dani", "normal", f],',
     '        "kanban-move": ["c-1", "done"], "kanban-claim": ["c-1", "dani"], "kanban-release": ["c-1", "dani"],',
     '        "kanban-comment": ["c-1", "dani", f], "kanban-assign": ["c-1", "dani"], "kanban-archive": ["c-1"],',
     '        "agents-list": [], "vault-login": ["dani", "shop-example-com"], "vault-logins": [],',

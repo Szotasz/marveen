@@ -384,10 +384,12 @@ describe('the api-helper block (VOICETOKENLEAK1101 PR-A2): an existing agent bod
       `${HELPER_CMD} memory-save plain-h warm "kulcsszo1, kulcsszo2" ${join(own, 'api-memoria.txt')}`,
       `${HELPER_CMD} memory-search plain-h KULCSSZO --category warm`,
       `${HELPER_CMD} memory-list plain-h hot`,
+      `${HELPER_CMD} memory-get <ID>`,
       `${HELPER_CMD} memory-move <ID> cold plain-h`,
       `${HELPER_CMD} daily-log plain-h ${join(own, 'api-naplo.txt')}`,
       `${HELPER_CMD} message plain-h agent-a ${join(own, 'api-uzenet.txt')}`,
       `${HELPER_CMD} schedules-list`,
+      `${HELPER_CMD} messages-list plain-h --status pending`,
     ])
     expect(once.startsWith('# plain-h\n\nkézi törzs curl-lel\n')).toBe(true)
   })

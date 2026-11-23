@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""marveen-api.sh: agent-restart, federation-directory, daily-log-read, memory-backfill.
+"""marveen-api.sh: agent-restart, federation-directory, daily-log-read, memory-backfill, memory-get, messages-list.
 
 Before these verbs the main agent made each of these calls by hand: a restart after an update, the federation
 catalog the onboarding block asks for before every substantive request, the day's log for the evening summary, and
@@ -169,6 +169,26 @@ ok(rc == 1 and 'locked' in err, 'R13 vault-login: a locked entry exits 1 with th
 rc, out, err, seen = run('vault-logins', body='{"logins":[]}')
 g, d = one(seen, 'GET', '/api/vault/web-logins', None)
 ok(rc == 0 and g, 'R14 vault-logins: GET the list', 'rc=%d %s %s' % (rc, d, err[:160]))
+
+# --- R15-R19: memory-get and messages-list (APIVERBS1123) --------------------------------------------------
+rc, out, err, seen = run('memory-get', '5131', body='{"id":5131,"content":"x"}')
+g, d = one(seen, 'GET', '/api/memories/5131', None)
+ok(rc == 0 and g and '"id":5131' in out, 'R15 memory-get: GET /api/memories/<id>, the row on stdout', 'rc=%d %s %s' % (rc, d, err[:160]))
+res = [run(*a) for a in (('memory-get',), ('memory-get', 'abc'), ('memory-get', '1', '2'))]
+ok(all(r[0] == 2 and not r[3] for r in res), 'R16 memory-get: a missing, non-numeric or extra id sends nothing', str([(r[0], len(r[3])) for r in res]))
+rc, out, err, seen = run('messages-list', 'dani', '--status', 'pending', '--limit', '5', body='[]')
+g, d = one(seen, 'GET', '/api/messages?agent=dani&limit=5&status=pending', None)
+ok(rc == 0 and g, 'R17 messages-list --status pending: the route filters it', 'rc=%d %s %s' % (rc, d, err[:160]))
+rows = '[{"id":1,"status":"pending"},{"id":2,"status":"done"},{"id":3,"status":"failed"},{"id":4,"status":"done"}]'
+rc, out, err, seen = run('messages-list', 'dani', '--status', 'done', body=rows)
+g, d = one(seen, 'GET', '/api/messages?agent=dani&limit=50', None)
+ok(rc == 0 and g and [r['id'] for r in json.loads(out)] == [2, 4],
+   'R18 messages-list --status done: the last 50 asked, the done rows kept on this side', 'rc=%d %s out=%s %s' % (rc, d, out[:120], err[:160]))
+res = [run(*a) for a in (('messages-list',), ('messages-list', 'dani', '--status', 'failed'), ('messages-list', '../x'),
+                          ('messages-list', 'dani', '--limit', '5x'), ('messages-list', 'dani', 'extra'))]
+ok(all(r[0] == 2 and not r[3] for r in res), 'R19 messages-list: a bad call sends nothing', str([(r[0], len(r[3])) for r in res]))
+rc, out, err, seen = run('messages-list', 'dani', '--status', 'done', body='{"error":"x"}')
+ok(rc == 1 and 'unexpected body' in err, 'R19b messages-list --status done: a non-list answer is a failure, not an empty list', 'rc=%d err=%s' % (rc, err[:160]))
 
 SRV.shutdown()
 print('\n%d failed' % len(FAILS) if FAILS else '\nall passed')

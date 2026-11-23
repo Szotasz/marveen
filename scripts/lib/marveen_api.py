@@ -60,6 +60,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   memory-retract <memory-id> <agent>
                 (takes back your own memory: it leaves the lists and the search, it is not deleted)
   memory-list <agent> <hot|warm|cold|shared> [--limit <n>]
+  memory-get <memory-id>
+                (read only: one memory by its id, the full text)
   memory-move <memory-id> <hot|warm|cold|shared> <updated-by>
   memory-update <memory-id> <updated-by> <content-file>
   daily-log <agent> <content-file>
@@ -71,6 +73,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
                 (each --ref-file goes as references/<its file name>, markdown only)
   kanban-list
   schedules-list
+  messages-list <agent> [--status pending|done] [--limit <n>]
+                (read only: the agent's message queue, newest first; --status done filters the last <n> on this side)
   kanban-create <assignee> <low|normal|high|urgent> <title-file>
   kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--actor <name>]
   kanban-claim <card-id> <agent> [--ttl <seconds>]
@@ -369,6 +373,11 @@ def build_request(verb, args):
         check(agent, NAME_RE, 'agent name')
         q = {'agent': agent, 'category': check_category(category), 'limit': check(limit or '40', ID_RE, 'limit')}
         return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {}
+    if verb == 'memory-get':
+        # APIVERBS1123: follow a memory pointer by id (GET /api/memories/:id), read only.
+        (mem_id,) = positional(args, 1, verb)
+        check(mem_id, ID_RE, 'memory id')
+        return 'GET', f'/api/memories/{mem_id}', None, headers, {}
     if verb == 'memory-move':
         mem_id, category, updated_by = positional(args, 3, verb)
         check(mem_id, ID_RE, 'memory id')
@@ -476,6 +485,20 @@ def build_request(verb, args):
         # agent; schedule_write_refused stops any non-GET under the schedule route before it is sent).
         positional(args, 0, verb)
         return 'GET', '/api/schedules', None, headers, {}
+    if verb == 'messages-list':
+        # APIVERBS1123: an agent's own queue, read only. The route filters pending itself; done is filtered here, over
+        # the last <limit> messages the route returns (it has no done filter).
+        status = take_opt(args, '--status')
+        limit = take_opt(args, '--limit')
+        (agent,) = positional(args, 1, verb)
+        check(agent, NAME_RE, 'agent name')
+        if status is not None and status not in ('pending', 'done'):
+            fail_usage(f'{verb}: --status is pending or done, not {status!r}')
+        q = {'agent': agent, 'limit': check(limit or '50', ID_RE, 'limit')}
+        if status == 'pending':
+            q['status'] = 'pending'
+        flags = {'status_filter': 'done'} if status == 'done' else {}
+        return 'GET', '/api/messages?' + urllib.parse.urlencode(q), None, headers, flags
     if verb == 'agents-list':
         positional(args, 0, verb)
         return 'GET', '/api/agents', None, headers, {}
@@ -672,6 +695,18 @@ def main(argv):
         label = resp_headers.get('X-Memory-Search') if resp_headers else None
         print(f'X-Memory-Search: {label}' if label else 'X-Memory-Search: MISSING (the search did not run as asked)')
     if 200 <= status < 300:
+        if flags.get('status_filter'):
+            # APIVERBS1123: messages-list --status done, filtered on this side.
+            try:
+                rows = json.loads(text)
+            except ValueError:
+                rows = None
+            if not isinstance(rows, list):
+                print(f'FAIL: messages-list: unexpected body from /api/messages: {text[:200]!r}', file=sys.stderr)
+                return 1
+            empty_sent_payloads()
+            print(json.dumps([r for r in rows if isinstance(r, dict) and r.get('status') == flags['status_filter']], ensure_ascii=False))
+            return 0
         empty_sent_payloads()
         print(text)
         return 0
