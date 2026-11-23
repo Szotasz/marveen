@@ -1409,15 +1409,20 @@ function stripLooseningKeys(settings: Record<string, unknown>, name: string, fil
   return dropped
 }
 
+// AGENTISO1123: the permission sub-keys that WIDEN a strict agent (see sanitizeAgentLocalSettings).
+export const STRICT_LOCAL_LOOSENING_PERMISSION_KEYS = ['allow', 'defaultMode', 'additionalDirectories'] as const
+
 /**
  * The agent's .claude/settings.local.json, which Claude Code merges over settings.json: the same keys are dropped. The
  * file is NEVER deleted; one that holds none of them is not rewritten; one that does not parse as an object is left as
  * it is (logged), since rewriting it would lose what it holds.
  *
- * AGENTISO1123 (PR-A): for a STRICT profile the `permissions` key is dropped too, on every spawn. Claude Code merges
- * the local file's allow list and defaultMode over the dashboard-written settings.json, so a strict agent (or anything
- * writing as its user) could otherwise widen its own permissions locally. Non-strict profiles keep the key: they run
- * with --dangerously-skip-permissions and the key is the operator's.
+ * AGENTISO1123 (PR-A): for a STRICT profile the LOOSENING permission keys are dropped too, on every spawn
+ * (permissions.allow, defaultMode, additionalDirectories). Claude Code merges the local file over the dashboard-written
+ * settings.json, so a strict agent (or anything writing as its user) could otherwise widen its own permissions locally.
+ * The narrowing keys (deny, ask, disableBypassPermissionsMode) stay: they only restrict (Abel, #3092 review).
+ * `permissions` itself goes only when nothing is left in it. Non-strict profiles keep the whole key: they run with
+ * --dangerously-skip-permissions and the key is the operator's.
  */
 export function sanitizeAgentLocalSettings(name: string, permissionMode?: string): 'absent' | 'clean' | 'stripped' | 'unparseable' {
   const p = join(agentDir(name), '.claude', 'settings.local.json')
@@ -1431,9 +1436,21 @@ export function sanitizeAgentLocalSettings(name: string, permissionMode?: string
   const obj = parsed as Record<string, unknown>
   const dropped = stripLooseningKeys(obj, name, 'settings.local.json')
   if (permissionMode === 'strict' && Object.prototype.hasOwnProperty.call(obj, 'permissions')) {
-    delete obj.permissions
-    dropped.push('permissions')
-    logger.warn({ agent: name }, 'agent settings.local.json: permissions dropped on spawn (strict profile)')
+    const perms = obj.permissions
+    if (perms && typeof perms === 'object' && !Array.isArray(perms)) {
+      const rec = perms as Record<string, unknown>
+      for (const k of STRICT_LOCAL_LOOSENING_PERMISSION_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(rec, k)) { delete rec[k]; dropped.push(`permissions.${k}`) }
+      }
+      if (!Object.keys(rec).length) delete obj.permissions
+    } else {
+      // Not an object: nothing in it can narrow, and Claude Code's reading of it is not ours to guess.
+      delete obj.permissions
+      dropped.push('permissions')
+    }
+    if (dropped.some(k => k.startsWith('permissions'))) {
+      logger.warn({ agent: name, dropped }, 'agent settings.local.json: loosening permission keys dropped on spawn (strict profile)')
+    }
   }
   if (!dropped.length) return 'clean'
   atomicWriteFileSync(p, JSON.stringify(obj, null, 2))

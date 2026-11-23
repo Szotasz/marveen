@@ -154,8 +154,8 @@ describe('startAgentProcess refuses a broken configured profile before anything 
 const localPath = () => join(agentRoot, '.claude', 'settings.local.json')
 const LOCAL = { permissions: { allow: ['Bash(*)'], defaultMode: 'bypassPermissions' }, effortLevel: 'high' }
 
-describe('settings.local.json: permissions dropped for a strict profile', () => {
-  it('strict spawn drops permissions and keeps every other key', () => {
+describe('settings.local.json: loosening permission keys dropped for a strict profile', () => {
+  it('strict spawn: only loosening permission keys -> the emptied permissions key goes, other keys stay', () => {
     writeAgentConfig({})
     writeFileSync(localPath(), JSON.stringify(LOCAL))
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
@@ -163,6 +163,37 @@ describe('settings.local.json: permissions dropped for a strict profile', () => 
     const after = JSON.parse(readFileSync(localPath(), 'utf-8')) as Record<string, unknown>
     expect('permissions' in after).toBe(false)
     expect(after.effortLevel).toBe('high')
+  })
+
+  const MIXED = {
+    permissions: {
+      allow: ['Bash(*)'],
+      defaultMode: 'bypassPermissions',
+      additionalDirectories: ['/'],
+      deny: ['Bash(curl:*)', 'Read(//etc/**)'],
+      ask: ['Bash(git push:*)'],
+      disableBypassPermissionsMode: 'disable',
+    },
+  }
+
+  it('strict spawn drops ONLY allow, defaultMode and additionalDirectories', () => {
+    writeAgentConfig({})
+    writeFileSync(localPath(), JSON.stringify(MIXED))
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    writeAgentSettingsFromProfile(TEST_AGENT, loadProfileTemplate('developer-junior'))
+    const perms = (JSON.parse(readFileSync(localPath(), 'utf-8')) as { permissions: Record<string, unknown> }).permissions
+    for (const k of ['allow', 'defaultMode', 'additionalDirectories']) expect(k in perms).toBe(false)
+  })
+
+  it('strict spawn KEEPS the narrowing keys: deny, ask, disableBypassPermissionsMode', () => {
+    writeAgentConfig({})
+    writeFileSync(localPath(), JSON.stringify(MIXED))
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    writeAgentSettingsFromProfile(TEST_AGENT, loadProfileTemplate('developer-junior'))
+    const after = JSON.parse(readFileSync(localPath(), 'utf-8')) as { permissions?: Record<string, unknown> }
+    expect(after.permissions?.deny).toEqual(MIXED.permissions.deny)
+    expect(after.permissions?.ask).toEqual(MIXED.permissions.ask)
+    expect(after.permissions?.disableBypassPermissionsMode).toBe('disable')
   })
 
   it('CONTROL: a permissive spawn leaves the local permissions alone', () => {
