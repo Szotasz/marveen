@@ -4,7 +4,7 @@
 // its own slug), the fleet-wide shared calculation (the leak's negative control: a root-slug agent whose projects is
 // the shared tree exports no file-memory/), the cap and the link rules, and the import that never overwrites.
 import { describe, it, expect } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -294,6 +294,17 @@ describe('#3086 Dani B1, N1: the index append', () => {
     expect(readFileSync(victim, 'utf8')).toBe('{"keep":true}\n')
     expect(r).toEqual({ written: [], renamed: [{ from: 'MEMORY.md', to: 'MEMORY.imported-1.md' }], indexAppended: false })
     expect(readFileSync(join(d, 'MEMORY.imported-1.md'), 'utf8')).toBe('- agent line\n')
+  })
+  it('B1b: a MEMORY.md that is a HARD link to another index: that index is NOT written; the index goes beside it', () => {
+    const parent = tmp('marveen-fm-b1b-')
+    const d = join(parent, 'memory')
+    mkdirSync(d)
+    const mainIndex = join(parent, 'main-MEMORY.md')
+    writeFileSync(mainIndex, '- main index\n')
+    linkSync(mainIndex, join(d, 'MEMORY.md'))
+    const r = writeImportedMemory(d, [{ name: 'MEMORY.md', bytes: Buffer.from('- agent line\n') }], 'nora', NOW, FS_IO)
+    expect(readFileSync(mainIndex, 'utf8')).toBe('- main index\n')
+    expect(r).toEqual({ written: [], renamed: [{ from: 'MEMORY.md', to: 'MEMORY.imported-1.md' }], indexAppended: false })
   })
   it('FS_IO.append: a plain file yes; a link or a folder no', () => {
     const d = tmp('marveen-fm-app-')

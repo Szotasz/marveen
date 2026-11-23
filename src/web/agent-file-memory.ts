@@ -195,7 +195,7 @@ export const FS_IO = {
       throw err
     }
   },
-  /** Appends to a PLAIN file only: O_NOFOLLOW refuses a link at the path, fstat refuses anything but a file. */
+  /** Appends to a PLAIN file only: O_NOFOLLOW refuses a symlink, fstat refuses anything but a file with one link. */
   append: (p: string, s: string): boolean => {
     let fd: number
     try {
@@ -204,7 +204,10 @@ export const FS_IO = {
       return false
     }
     try {
-      if (!fstatSync(fd).isFile()) return false
+      // Dani B1b (#3086): a hard link is a plain file to fstat too; one more name elsewhere (the main agent's index)
+      // would take the append out. Only a file with exactly one link is appended to.
+      const st = fstatSync(fd)
+      if (!st.isFile() || st.nlink !== 1) return false
       writeSync(fd, s)
       return true
     } finally {
