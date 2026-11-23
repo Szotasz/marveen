@@ -24,8 +24,8 @@ import { notifyOwner } from '../../notify.js'
 import { json, methodNotAllowed, readBodyOrRefuse } from '../http-helpers.js'
 import { RELEASED_KEYS } from '../agent-package/keys.js'
 import { PACKAGE_ORIGIN, deleteCredential, hasCredential, makeRemote, readCredentialView, type Remote } from '../agent-package/remote.js'
-import { meetsMinMarveenVersion, parseVersion, verifyDelivery, type Jwk } from '../agent-package/verify.js'
-import { STRICT_SLUG_RE, agentsBaseDir, isReservedName, markerPathOf } from '../agent-package/marker.js'
+import { SLUG_RE, meetsMinMarveenVersion, parseVersion, verifyDelivery, type Jwk } from '../agent-package/verify.js'
+import { agentsBaseDir, isReservedName, markerPathOf } from '../agent-package/marker.js'
 import {
   flushPendingPackageNotices, packageSkillReport, readPackageManifest, reapInterruptedPackageInstalls, runInstallBlock, sameDeviceLayout,
 } from '../agent-package/install.js'
@@ -163,7 +163,7 @@ async function installPackage(ctx: RouteContext, deps: PackageDeps): Promise<voi
   if (raw === null) return
   const slug = slugFromBody(raw)
   if (slug === null) { json(res, BAD_REQUEST, 400); return }
-  if (!STRICT_SLUG_RE.test(slug) || sanitizeAgentName(slug) !== slug) { json(res, { error: 'invalid_slug' }, 400); return }
+  if (!SLUG_RE.test(slug) || sanitizeAgentName(slug) !== slug) { json(res, { error: 'invalid_slug' }, 400); return }
   // 3. a reserved name.
   if (isReservedName(slug)) { json(res, { error: 'name_reserved' }, 409); return }
   // 4. the layout (a set-aside must be one rename), then the name's state, in the skills-dir queue.
