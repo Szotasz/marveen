@@ -5,7 +5,7 @@
 // plan_changed re-read, the interrupted run and its re-run, the repair's shell, and the trace's life.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
-  copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync,
+  copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync,
   unlinkSync, writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
@@ -20,7 +20,18 @@ vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<object>()), PROJECT_ROOT: tmpRoot, STORE_DIR: join(tmpRoot, 'store'), MAIN_AGENT_ID: 'agent-a',
   OWNER_NAME: 'TestOwner', BOT_NAME: 'Botty',
 }))
-const h = vi.hoisted(() => ({ rosterWithoutMarker: false }))
+const h = vi.hoisted(() => ({ rosterWithoutMarker: false, onTrace: null as null | (() => void) }))
+vi.mock('../web/atomic-write.js', async (orig) => {
+  const real = await orig<typeof import('../web/atomic-write.js')>()
+  return {
+    ...real,
+    atomicWriteFileSync: (p: string, d: string | Buffer, o?: { mode?: number }) => {
+      real.atomicWriteFileSync(p, d, o)
+      // Dani P1 (#3085 B1): the agent swaps .package/backup for a link right after the trace write.
+      if (h.onTrace && p.includes('agent-package-updating')) { const f = h.onTrace; h.onTrace = null; f() }
+    },
+  }
+})
 vi.mock('../web/agent-scaffold.js', async (orig) => {
   const real = await orig<typeof import('../web/agent-scaffold.js')>()
   return { ...real, fleetRosterBlock: (n: string) => (h.rosterWithoutMarker ? 'no marker here' : real.fleetRosterBlock(n)) }
@@ -92,7 +103,7 @@ function update(files: Record<string, string>, version: string, decisions: Recor
   return { list, decided: d, result, pkg }
 }
 
-beforeEach(() => { h.rosterWithoutMarker = false; install() })
+beforeEach(() => { h.rosterWithoutMarker = false; h.onTrace = null; install() })
 
 describe('upgrade without decisions', () => {
   it('writes the changed files, adds the new skill, removes the dropped one and its emptied folders, record last', () => {
@@ -175,6 +186,34 @@ describe('decisions and backups', () => {
     writeFileSync(at('PACKAGE.md'), 'owner B\n')
     expect(update(V2, '1.1.0', { 'CLAUDE.md': 'take-package' }).result?.ok).toBe(true)
     expect(readdirSync(b).sort()).toEqual(['PACKAGE.md', 'PACKAGE.md.2'])
+  })
+  it('B1 (#3085, Dani P1): .package/backup swapped for a link after the trace write: the outside folder stays intact', () => {
+    const victim = mkdtempSync(join(tmpdir(), 'marveen-victim-'))
+    mkdirSync(join(victim, 'ffffffffffffffff'), { recursive: true })
+    writeFileSync(join(victim, 'ffffffffffffffff', 'PACKAGE.md'), 'victim text\n')
+    writeFileSync(join(victim, 'keep.txt'), 'victim\n')
+    mkdirSync(join(dir, '.package', 'backup', 'eeeeeeeeeeeeeeee'), { recursive: true })
+    h.onTrace = () => {
+      renameSync(join(dir, '.package', 'backup'), join(dir, '.package', 'backup.x'))
+      symlinkSync(victim, join(dir, '.package', 'backup'))
+    }
+    const r = update(V2, '1.1.0')
+    expect(r.result).toMatchObject({ ok: false, status: 409, body: { error: 'path_blocked' } })
+    expect(readFileSync(join(victim, 'ffffffffffffffff', 'PACKAGE.md'), 'utf8')).toBe('victim text\n')
+    expect(readFileSync(join(victim, 'keep.txt'), 'utf8')).toBe('victim\n')
+  })
+  it('IR11 bounded: only backup-shaped plain files go; an odd file and a link inside another key stay', () => {
+    const b = join(dir, '.package', 'backup', 'dddddddddddddddd')
+    mkdirSync(join(b, '.claude', 'skills', 'x', 'references'), { recursive: true })
+    writeFileSync(join(b, 'PACKAGE.md'), 'a'); writeFileSync(join(b, 'PACKAGE.md.2'), 'b'); writeFileSync(join(b, 'SOUL.md'), 'c')
+    writeFileSync(join(b, '.claude', 'skills', 'x', 'references', 'r.md'), 'd')
+    writeFileSync(join(b, 'notes.txt'), 'odd')
+    const outside = mkdtempSync(join(tmpdir(), 'marveen-outside-'))
+    writeFileSync(join(outside, 'SOUL.md'), 'outside')
+    symlinkSync(outside, join(b, 'linked'))
+    expect(update(V2, '1.1.0').result?.ok).toBe(true)
+    expect(readdirSync(b).sort()).toEqual(['linked', 'notes.txt'])
+    expect(readFileSync(join(outside, 'SOUL.md'), 'utf8')).toBe('outside')
   })
   it('a link at .package/backup: path_blocked, nothing written', () => {
     const outside = mkdtempSync(join(tmpdir(), 'marveen-outside-'))

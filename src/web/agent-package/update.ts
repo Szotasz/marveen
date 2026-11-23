@@ -4,7 +4,7 @@
 // verified package (N) and the disk (D). Only the package layer's text files are items (PACKAGE.md, SOUL.md, the skill
 // files): the shell, LOCAL.md, the record and the avatar never are (plan 8.3). The disk is read with lstat on every
 // path component first, so a link never makes the server read or write outside the agent directory (8.3 "blocked").
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { STORE_DIR } from '../../config.js'
@@ -486,6 +486,56 @@ function mkdirChain(base: string, rel: string, mode: number): void {
   }
 }
 
+/** A path under `.package/backup/<key>/` that a backup can have: a package text file's disk path, maybe `.<n>` (M1). */
+function isBackupShaped(rel: string): boolean {
+  const disk = rel.split(sep).join('/').replace(/\.[0-9]+$/, '')
+  if (disk === 'PACKAGE.md') return true
+  if (disk.startsWith('.claude/skills/')) return TEXT_PATH_RE.test(disk.slice('.claude/'.length))
+  // The rest of the contract's text paths stand at the agent root (SOUL.md); CLAUDE.md there is the shell, never a backup.
+  return disk !== 'CLAUDE.md' && !disk.startsWith('skills/') && TEXT_PATH_RE.test(disk)
+}
+
+/**
+ * IR11 without a recursive delete (Dani B1, #3085): the agent can swap `.package/backup` for a link at any time, so
+ * the other targets' backups are walked with lstat (a link is never followed), only backup-shaped plain files are
+ * unlinked, the emptied folders go with a non-recursive rmdir, and the folders are checked again before EVERY unlink.
+ * A swap that wins a race costs at most one fixed-name file, the bound of the rest of the block.
+ */
+function dropOtherBackups(agentReal: string, agentDir: string, keep: string): void {
+  const pkgDir = join(agentDir, '.package')
+  const root = join(pkgDir, 'backup')
+  const guard = (parent: string): void => {
+    if (!isRealDirOrAbsent(pkgDir) || !isRealDirOrAbsent(root) || !insideAgent(agentReal, parent)) throw blockedAt('.package/backup')
+  }
+  guard(root)
+  let keys: string[]
+  try {
+    keys = readdirSync(root)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return
+    throw err
+  }
+  const walk = (dir: string, rel: string): void => {
+    guard(dir)
+    let st
+    try { st = lstatSync(dir) } catch { return }
+    if (!st.isDirectory()) return
+    for (const e of readdirSync(dir)) {
+      const p = join(dir, e)
+      const r = rel === '' ? e : join(rel, e)
+      const est = lstatSync(p)
+      if (est.isDirectory()) walk(p, r)
+      else if (est.isFile() && isBackupShaped(r)) {
+        guard(dir)
+        unlinkSync(p)
+      }
+    }
+    guard(dirname(dir))
+    try { rmdirSync(dir) } catch { /* not empty: it stays */ }
+  }
+  for (const k of keys) if (k !== keep) walk(join(root, k), '')
+}
+
 /** Removes the empty folders under `dir` bottom-up, `dir` itself last; a link or a non-empty folder stays. */
 function removeEmptyFolders(agentReal: string, dir: string, item: string): void {
   let entries: string[]
@@ -527,11 +577,7 @@ export function runApplyBlock(c: ApplyInput): ApplyResult {
     mkdirSync(updatingDir(), { recursive: true, mode: 0o700 })
     atomicWriteFileSync(tracePath, JSON.stringify({ from: c.manifest.payload.version, to: c.pkg.version, startedAt: c.now.toISOString() }) + '\n', { mode: 0o600 })
     // IR11: the backups of OTHER targets go; this target's stay (an interrupted run's only copy of a replaced file).
-    try {
-      for (const k of readdirSync(backupRoot)) if (k !== backupKey) rmSync(join(backupRoot, k), { recursive: true, force: true })
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
-    }
+    dropOtherBackups(agentReal, c.agentDir, backupKey)
 
     const backup = (item: ChangeItem): void => {
       const now = readDiskEntry(c.agentDir, item.disk)
