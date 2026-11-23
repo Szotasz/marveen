@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer as netServer } from 'node:net'
 import { chromium, type Browser } from 'playwright-core'
-import { chromeExecutable, agentBrowserArgs } from '../web/agent-browser.js'
+import { chromeExecutable, agentBrowserArgs, writePasswordManagerOff } from '../web/agent-browser.js'
 import { fillWebLogin } from '../web/vault-web-login-filler.js'
 
 const CHROME = chromeExecutable()
@@ -66,6 +66,13 @@ function siteA(): Server {
     if (url.pathname === '/redirect') { res.writeHead(302, { location: `${B}/login` }); res.end(); return }
     if (url.pathname === '/framed') { res.end(html('Framed', `<h1>Shop</h1><iframe src="${B}/login" width="600" height="300"></iframe>`)); return }
     if (url.pathname === '/two-step') { res.end(html('User', '<form action="/two-step-user" method="post"><input name="u" autocomplete="username"><button>Next</button></form>')); return }
+    // A script-driven form: the submit is intercepted, the page does not navigate, and the field KEEPS its value,
+    // then a captcha frame appears. Only the filler's own clearing can empty it.
+    if (url.pathname === '/spa-captcha') {
+      res.end(html('Login', `<form id="f"><input name="u" autocomplete="username"><input type="password" id="p"><button>Sign in</button></form><div id="cap"></div>
+<script>document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); document.getElementById('cap').innerHTML = '<iframe src="${B}/recaptcha/frame"></iframe>' })</script>`))
+      return
+    }
     if (url.pathname === '/noform') { res.end(html('Nothing', '<h1>No form here</h1>')); return }
     if (url.pathname === '/app') { res.end(html('App', '<h1>Signed in</h1>')); return }
     res.end(html('Home', '<h1>Home</h1>'))
@@ -116,6 +123,7 @@ describe.skipIf(!CHROME)('vault web login filler against a real Chrome', () => {
     B = `http://localhost:${pb}`
     servers = [siteA().listen(pa, '127.0.0.1'), siteB().listen(pb, '127.0.0.1')]
     profile = mkdtempSync(join(tmpdir(), 'vl-filler-profile-'))
+    writePasswordManagerOff(profile)
     // The product's own launch arguments, headless here and without the sandbox (CI runners).
     const args = agentBrowserArgs(profile, pc, {}, 'darwin').filter((a) => a !== 'about:blank')
     chrome = spawn(CHROME!, [...args, '--headless=new', '--no-sandbox', 'about:blank'], { stdio: 'ignore' })
@@ -181,6 +189,16 @@ describe.skipIf(!CHROME)('vault web login filler against a real Chrome', () => {
     const r = await run('/captcha')
     expect(r).toEqual({ outcome: '2fa' })
     const open = (await openPages()).filter((p) => p.url === `${A}/login-captcha`)
+    expect(open.length).toBeGreaterThan(0)
+    for (const p of open) {
+      expect(p.passwordValues.length).toBeGreaterThan(0)
+      expect(p.passwordValues.every((v) => v === '')).toBe(true)
+    }
+  }, 60_000)
+
+  it('a script-driven form that keeps the value, then shows a captcha: 2fa, the tab stays open, the field is EMPTY', async () => {
+    expect(await run('/spa-captcha')).toEqual({ outcome: '2fa' })
+    const open = (await openPages()).filter((p) => p.url === `${A}/spa-captcha`)
     expect(open.length).toBeGreaterThan(0)
     for (const p of open) {
       expect(p.passwordValues.length).toBeGreaterThan(0)

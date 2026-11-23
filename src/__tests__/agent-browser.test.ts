@@ -3,7 +3,7 @@
 // the marveen-browser MCP entry added for an allowed agent and removed for every other one (their other servers
 // kept), the output-folder cleanup by time, and the CDP port kept per agent.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -107,5 +107,61 @@ describe('the output-folder cleanup', () => {
   })
   it('a missing folder is not an error', () => {
     expect(ab.cleanOutputDirSince(join(h.store, 'nope'), Date.now())).toBe(0)
+  })
+})
+
+describe('ensureAgentBrowser: the start path', () => {
+  // A fake "Chrome": records its argv and what the profile's preferences said at ITS start, then answers
+  // /json/version on the CDP port for a few seconds. It proves the order: preferences written BEFORE the launch.
+  function fakeChrome(): { exe: string; record: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'ab-fake-chrome-'))
+    const record = join(dir, 'record.json')
+    const exe = join(dir, 'chrome')
+    writeFileSync(exe, `#!${process.execPath}
+const fs = require('fs'), http = require('http'), path = require('path')
+const argv = process.argv.slice(2)
+const prof = (argv.find(a => a.startsWith('--user-data-dir=')) || '').slice(16)
+let prefs = null
+try { prefs = JSON.parse(fs.readFileSync(path.join(prof, 'Default', 'Preferences'), 'utf8')) } catch (e) {}
+fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, prefs }))
+const port = Number((argv.find(a => a.startsWith('--remote-debugging-port=')) || '').split('=')[1])
+const srv = http.createServer((q, r) => { r.end('{"Browser":"Fake/1"}') }).listen(port, '127.0.0.1')
+setTimeout(() => { srv.close(); process.exit(0) }, 4000)
+`)
+    chmodSync(exe, 0o755)
+    return { exe, record }
+  }
+
+  it('starts the configured browser with the product arguments, the password manager already off in its profile', async () => {
+    const { exe, record } = fakeChrome()
+    const saved = process.env.AGENT_BROWSER_CHROME
+    process.env.AGENT_BROWSER_CHROME = exe
+    try {
+      const endpoint = await ab.ensureAgentBrowser('geri')
+      const port = await ab.agentBrowserPort('geri')
+      expect(endpoint).toBe(`http://127.0.0.1:${port}`)
+      const rec = JSON.parse(readFileSync(record, 'utf-8')) as { argv: string[]; prefs: any }
+      expect(rec.argv).toEqual(ab.agentBrowserArgs(ab.agentBrowserProfileDir('geri'), port))
+      expect(rec.prefs).toMatchObject({ credentials_enable_service: false, profile: { password_manager_enabled: false } })
+      expect(existsSync(ab.agentBrowserOutputDir('geri'))).toBe(true)
+      // Already up: no second start.
+      writeFileSync(record, 'untouched')
+      expect(await ab.ensureAgentBrowser('geri')).toBe(endpoint)
+      expect(readFileSync(record, 'utf-8')).toBe('untouched')
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_BROWSER_CHROME
+      else process.env.AGENT_BROWSER_CHROME = saved
+    }
+  }, 20_000)
+
+  it('no browser installed: null, nothing started', async () => {
+    const saved = process.env.AGENT_BROWSER_CHROME
+    process.env.AGENT_BROWSER_CHROME = join(h.store, 'no-such-chrome')
+    try {
+      expect(await ab.ensureAgentBrowser('dani')).toBeNull()
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_BROWSER_CHROME
+      else process.env.AGENT_BROWSER_CHROME = saved
+    }
   })
 })
