@@ -29,7 +29,24 @@ export interface FillResult {
   outcome: LoginOutcome
 }
 
-/** How long the filler waits after the submit for the first request before it empties the field. */
+/**
+ * Whether DEBUG turns on any of Playwright's debug namespaces (pw:api, pw:protocol, pw:channel, ...), read the way the
+ * debug package reads it: pieces split on commas and white space, a leading '-' is an exclusion (ignored here, so the
+ * answer errs on the side of refusing), '*' matches anything. On when a piece is '*' or starts with 'pw' (Dani #3071 B2).
+ */
+export function playwrightDebugOn(debug: string | undefined): boolean {
+  return (debug ?? '').split(/[\s,]+/).some((piece) => piece !== '' && !piece.startsWith('-') && (piece.startsWith('*') || piece.startsWith('pw')))
+}
+
+/**
+ * The request a submit sends: a page load, or a non-GET XHR/fetch (a form POST, an XHR login). A favicon, an image or a
+ * beacon is not one (Dani #3071): emptying the field on those would hand a slower script handler an empty password.
+ */
+export function isSubmitRequest(resourceType: string, method: string): boolean {
+  return resourceType === 'document' || ((resourceType === 'xhr' || resourceType === 'fetch') && method !== 'GET')
+}
+
+/** How long the filler waits after the submit for the submit's request before it empties the field. */
 export const SUBMIT_GRACE_MS = 300
 const PASSWORD_SELECTOR = 'input[type="password"]'
 const USERNAME_SELECTOR = [
@@ -127,8 +144,8 @@ export async function fillWebLogin(req: FillRequest, connect?: (endpoint: string
   const passSelector = req.passSelector || PASSWORD_SELECTOR
   const userSelector = req.userSelector || USERNAME_SELECTOR
 
-  // Playwright's own debug log (DEBUG=pw:protocol / pw:api) would write the typed text to the dashboard's stderr.
-  if (/(^|,)\s*pw:/.test(process.env.DEBUG ?? '')) return { outcome: 'browser-unavailable' }
+  // Playwright's own debug log would write the typed text to the dashboard's stderr.
+  if (playwrightDebugOn(process.env.DEBUG)) return { outcome: 'browser-unavailable' }
 
   let browser: Browser
   try {
@@ -172,8 +189,8 @@ export async function fillWebLogin(req: FillRequest, connect?: (endpoint: string
     // The field is emptied right after the submit, before any settling (Samu #3071 M1): a submit that does not
     // navigate (a wrong password on a script-driven page, client validation, an XHR login) would otherwise leave the
     // value in the page for the whole settle. A native submit and a script handler have sent the value by the time the
-    // first request leaves; without one, SUBMIT_GRACE_MS bounds the wait.
-    const firstRequest = page.waitForEvent('request', { timeout: SUBMIT_GRACE_MS }).catch(() => null)
+    // submit's request leaves (isSubmitRequest); without one, SUBMIT_GRACE_MS bounds the wait.
+    const firstRequest = page.waitForEvent('request', { predicate: (r) => isSubmitRequest(r.resourceType(), r.method()), timeout: SUBMIT_GRACE_MS }).catch(() => null)
     await pw.field.press('Enter', { timeout: left() })
     await firstRequest
     if (!page.isClosed()) await clearPasswordFields(page)

@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { createServer as netServer } from 'node:net'
 import { chromium, type Browser } from 'playwright-core'
 import { chromeExecutable, agentBrowserArgs, writePasswordManagerOff } from '../web/agent-browser.js'
-import { fillWebLogin, SUBMIT_GRACE_MS } from '../web/vault-web-login-filler.js'
+import { fillWebLogin, isSubmitRequest, playwrightDebugOn, SUBMIT_GRACE_MS } from '../web/vault-web-login-filler.js'
 
 const CHROME = chromeExecutable()
 const SECRET = 'pw-' + Math.random().toString(36).slice(2) + '-Zq9'
@@ -87,6 +87,8 @@ function siteA(): Server {
     // password field became empty. One sends the value with a slow XHR, one sends nothing (client validation).
     if (url.pathname === '/xhr-login') { res.end(html('Login', `<form id="f"><input name="u" autocomplete="username"><input type="password" id="p" name="p"><button>Sign in</button></form><script>var f=document.getElementById('f'),p=document.getElementById('p');f.addEventListener('submit',function(e){e.preventDefault();var t0=performance.now();var iv=setInterval(function(){if(p.value===''){clearInterval(iv);new Image().src='/report?ms='+Math.round(performance.now()-t0)}},5);fetch('/api/xhr-login',{method:'POST',body:JSON.stringify({u:f.u.value,p:p.value})}).then(function(){var a=document.createElement('p');a.setAttribute('role','alert');a.textContent='Wrong password';document.body.appendChild(a)})})</script>`)); return }
     if (url.pathname === '/noreq-login') { res.end(html('Login', `<form id="f"><input name="u" autocomplete="username"><input type="password" id="p" name="p"><button>Sign in</button></form><script>var f=document.getElementById('f'),p=document.getElementById('p');f.addEventListener('submit',function(e){e.preventDefault();var t0=performance.now();var iv=setInterval(function(){if(p.value===''){clearInterval(iv);new Image().src='/report?ms='+Math.round(performance.now()-t0)}},5);})</script>`)); return }
+    // An image request leaves first, the login XHR 150 ms later (Dani #3071): the field must not be emptied by the image.
+    if (url.pathname === '/late-xhr-login') { res.end(html('Login', `<form id="f"><input name="u" autocomplete="username"><input type="password" id="p" name="p"><button>Sign in</button></form><script>var f=document.getElementById('f'),p=document.getElementById('p');f.addEventListener('submit',function(e){e.preventDefault();new Image().src='/pixel.gif?'+Date.now();setTimeout(function(){fetch('/api/xhr-login',{method:'POST',body:JSON.stringify({u:f.u.value,p:p.value})})},150)})</script>`)); return }
     if (url.pathname === '/noform') { res.end(html('Nothing', '<h1>No form here</h1>')); return }
     if (url.pathname === '/app') { res.end(html('App', '<h1>Signed in</h1>')); return }
     res.end(html('Home', '<h1>Home</h1>'))
@@ -235,6 +237,12 @@ describe.skipIf(!CHROME)('vault web login filler against a real Chrome', () => {
     expect(clearedAfter[0]).toBeLessThanOrEqual(SUBMIT_GRACE_MS + 150)
   }, 60_000)
 
+  it('an image request before the login XHR does not empty the field early: the password still reaches the site', async () => {
+    posts.length = 0
+    await run('/late-xhr-login')
+    expect(posts.filter((p) => p.path === '/api/xhr-login' && p.body.includes(SECRET))).toHaveLength(1)
+  }, 60_000)
+
   it('a submit that sends nothing (client validation): the field is empty within the grace, not after the settle', async () => {
     clearedAfter.length = 0
     await run('/noreq-login')
@@ -271,7 +279,7 @@ describe.skipIf(!CHROME)('vault web login filler against a real Chrome', () => {
 })
 
 describe('the filler refuses to run under Playwright\'s debug log', () => {
-  it.each(['pw:api', 'pw:protocol', 'x,pw:*'])('DEBUG=%s: browser-unavailable, no connection attempted', async (dbg) => {
+  it.each(['pw:api', 'pw:protocol', 'x,pw:*', '*', 'pw*', 'pw:*', 'app:*, pw:channel', '*,-pw:*'])('DEBUG=%s: browser-unavailable, no connection attempted', async (dbg) => {
     const saved = process.env.DEBUG
     process.env.DEBUG = dbg
     let connected = 0
@@ -286,5 +294,18 @@ describe('the filler refuses to run under Playwright\'s debug log', () => {
       if (saved === undefined) delete process.env.DEBUG
       else process.env.DEBUG = saved
     }
+  })
+})
+
+describe('the debug and submit-request rules (pure)', () => {
+  it('debug off for other namespaces, an exclusion alone, or nothing', () => {
+    for (const d of [undefined, '', 'express:*', 'app:db,app:http', '-pw:*', 'xpw:api']) expect(playwrightDebugOn(d), String(d)).toBe(false)
+  })
+  it('a submit request is a page load or a non-GET XHR/fetch; never an image, a favicon or a beacon', () => {
+    expect(isSubmitRequest('document', 'GET')).toBe(true)
+    expect(isSubmitRequest('document', 'POST')).toBe(true)
+    expect(isSubmitRequest('xhr', 'POST')).toBe(true)
+    expect(isSubmitRequest('fetch', 'PUT')).toBe(true)
+    for (const [t, m] of [['image', 'GET'], ['ping', 'POST'], ['fetch', 'GET'], ['other', 'GET'], ['stylesheet', 'GET']]) expect(isSubmitRequest(t!, m!), `${t} ${m}`).toBe(false)
   })
 })
