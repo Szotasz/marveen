@@ -34,6 +34,19 @@ describe('sendOwnerPrivate', () => {
     expect(telegram).not.toHaveBeenCalled()
   })
 
+  it('a DM channel id (D...) as the target is posted to directly: no conversations.open needed', async () => {
+    Object.assign(settings, { NOTIFY_SLACK_TARGET: 'D0C74N9SAF6' })
+    const send = ok()
+    expect(await sendOwnerPrivate('code', { send: send as never })).toEqual({ sent: true, via: 'slack' })
+    expect((send.mock.calls[0] as unknown[])[0]).toBe('D0C74N9SAF6')
+    for (const channelish of ['C0123456789', 'G0123456789', '#alerts']) {
+      settings.NOTIFY_SLACK_TARGET = channelish
+      const s2 = ok()
+      await sendOwnerPrivate('code', { send: s2 as never })
+      expect((s2.mock.calls[0] as unknown[])[0]).toBe('dm')
+    }
+  })
+
   it('a failed Slack DM falls back to the private Telegram chat, unless the Telegram fallback is off', async () => {
     settings.NOTIFY_SLACK_TARGET = 'dm'
     const telegram = vi.fn(async () => true)

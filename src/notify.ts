@@ -508,7 +508,8 @@ export async function notifySecurityEvent(text: string): Promise<void> {
 /**
  * DASHUSERGATE1123: a message that carries a secret meant for the owner alone (the password reset code). Unlike
  * notifyOwner it goes ONLY to a private one-to-one chat with the owner and has no other way out:
- *   - Slack: always the owner's DM ('dm', the owner's user id), never NOTIFY_SLACK_TARGET, which may name a channel;
+ *   - Slack: the owner's DM only: NOTIFY_SLACK_TARGET when it is a DM channel id (D...), else the DM opened by the
+ *     owner's user id ('dm'); a channel target is never used;
  *   - Telegram: only the resolved owner chat, and only a private one (a positive chat id; groups are negative);
  *   - never the Gromzo relay (it hands the text to the main agent's inbox) and never the "undelivered" signal (it
  *     quotes the text to an agent sink).
@@ -521,7 +522,12 @@ export async function sendOwnerPrivate(
 ): Promise<{ sent: true; via: 'slack' | 'telegram' } | { sent: false; reason: 'no_private_channel' | 'failed' }> {
   let setting: SettingFn
   try { setting = await loadSetting() } catch { return { sent: false, reason: 'failed' } }
-  const slackFirst = !!(await slackTargetFor('owner', setting))
+  const configured = (await slackTargetFor('owner', setting)).trim().replace(/^#/, '')
+  const slackFirst = !!configured
+  // A D... id is a one-to-one DM channel (the owner's notification DM on most installs): posted to directly. Opening
+  // the DM by user id instead needs conversations.open (im:write), which a bot may lack (measured on this host:
+  // missing_scope). Any other target (a channel name or C/G id) is never used: the DM by user id is.
+  const slackTarget = /^D[A-Z0-9]{6,}$/.test(configured) ? configured : 'dm'
   const noTelegramAfterSlack = slackFirst && setting('NOTIFY_TELEGRAM_FALLBACK') === '0'
   const ownerChat = resolveAlertDeliveryChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER).chatId
   const telegramChat = CHANNEL_PROVIDER === 'telegram' && CHANNEL_TOKEN && ownerChat && /^[1-9]\d*$/.test(ownerChat) ? ownerChat : ''
@@ -529,7 +535,7 @@ export async function sendOwnerPrivate(
   const viaSlack = async (): Promise<boolean> => {
     try {
       const send = deps.send ?? (await import('./slack-notify.js')).sendSlackNotification
-      const r = await send('dm', markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID'), raw: true })
+      const r = await send(slackTarget, markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID'), raw: true })
       if (r.ok) return true
       // no_slack_token / unresolved_target: Slack is not set up for a DM here, which is not a failed try.
       if (!/^(no_slack_token|unresolved_target)/.test(r.error ?? '')) tried = true

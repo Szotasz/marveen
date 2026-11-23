@@ -461,6 +461,9 @@ function mainAgentId() {
         const c = data && typeof data.code === 'string' ? data.code : ''
         if (r.ok) {
           form.innerHTML = ''
+          const title = document.createElement('h2')
+          title.textContent = tr('auth.reset.title', 'Set a new password')
+          form.appendChild(title)
           const done = document.createElement('p')
           done.className = 'mv-auth-desc'
           done.textContent = tr('auth.reset.done', 'Done: your new password works, and every earlier sign-in was logged out. Sign in with the new password.')
