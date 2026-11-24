@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { noteQuotaBlindness, quotaWorkClass, resetQuotaBlindStateForTest } from '../web/schedule-runner.js'
+import { blindAlertFileStore, noteQuotaBlindness, quotaWorkClass, resetQuotaBlindStateForTest, type BlindAlert } from '../web/schedule-runner.js'
 import { logger } from '../logger.js'
 import { parseQuotaSnapshot } from '../quota-snapshot.js'
 import { getSettingDefinition } from '../config-registry.js'
@@ -96,8 +97,10 @@ describe('noteQuotaBlindness -- the blind gate is never silent, and never noisy'
   const fresh = { source: 'ratelimit_headers', generatedAtMs: NOW - 60_000, windows: { seven_day: { used_percent: 22, resets_at: NOW / 1000 + 3600 } } }
   const old = { ...fresh, generatedAtMs: NOW - 3 * 60 * 60_000 }
 
-  let saved: string | null = null
-  const store = { read: () => saved, write: (k: string) => { saved = k || null } }
+  let saved: BlindAlert | null = null
+  const store = { read: () => saved, write: (a: BlindAlert | null) => { saved = a } }
+  const MIN = 60_000
+  const HOUR = 60 * MIN
   const note = (s: Parameters<typeof noteQuotaBlindness>[0], t: number, n: (x: string) => void) => noteQuotaBlindness(s, t, n, store)
   beforeEach(() => { resetQuotaBlindStateForTest(); saved = null })
   afterEach(() => vi.restoreAllMocks())
@@ -123,16 +126,93 @@ describe('noteQuotaBlindness -- the blind gate is never silent, and never noisy'
     expect(notify).toHaveBeenCalledTimes(1)
   })
 
-  it('recovers with one info line, and a new blind spell alerts again', () => {
+  // A snapshot that is fresh at time t (the collector keeps rewriting it).
+  const freshAt = (t: number) => ({ ...fresh, generatedAtMs: t - MIN })
+
+  it('recovers with one info line; a new blind spell alerts again only after 2 h of steady sight', () => {
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never)
     const notify = vi.fn()
     note(estimate, NOW, notify)
-    note(fresh, NOW, notify)
-    note(fresh, NOW + 60_000, notify)
+    for (let t = NOW + MIN; t <= NOW + 2 * HOUR; t += MIN) note(freshAt(t), t, notify) // 1 min .. 2 h of sight
     expect(info).toHaveBeenCalledTimes(1)
-    note(estimate, NOW + 120_000, notify)
+    expect(saved).not.toBeNull() // seen for 1 h 59 min of steady sight only: key kept
+    note(freshAt(NOW + 2 * HOUR + MIN), NOW + 2 * HOUR + MIN, notify)
+    expect(saved).toBeNull()
+    note(estimate, NOW + 2 * HOUR + 2 * MIN, notify)
     expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('a source that flaps every half hour for 24 h alerts once (QUOTABLINDFLAP1124)', () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    vi.spyOn(logger, 'info').mockImplementation(() => undefined as never)
+    const notify = vi.fn()
+    for (let t = NOW; t < NOW + 24 * HOUR; t += MIN) {
+      const blind = Math.floor((t - NOW) / (30 * MIN)) % 2 === 0
+      note(blind ? { ...estimate, generatedAtMs: t - MIN } : freshAt(t), t, notify)
+    }
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('flapping with dashboard restarts in between still alerts once', () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    vi.spyOn(logger, 'info').mockImplementation(() => undefined as never)
+    const notify = vi.fn()
+    for (let t = NOW; t < NOW + 24 * HOUR; t += MIN) {
+      if ((t - NOW) % (45 * MIN) === 0) resetQuotaBlindStateForTest() // restart: memory lost, store kept
+      const blind = Math.floor((t - NOW) / (30 * MIN)) % 2 === 0
+      note(blind ? { ...estimate, generatedAtMs: t - MIN } : freshAt(t), t, notify)
+    }
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('the steady-sight clock survives a restart, and a blind dip starts it over', () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    vi.spyOn(logger, 'info').mockImplementation(() => undefined as never)
+    const notify = vi.fn()
+    note(estimate, NOW, notify)
+    for (let t = NOW + MIN; t <= NOW + HOUR; t += MIN) note(freshAt(t), t, notify)
+    resetQuotaBlindStateForTest() // restart one hour into the recovery
+    for (let t = NOW + HOUR + MIN; t <= NOW + 2 * HOUR + MIN; t += MIN) note(freshAt(t), t, notify)
+    expect(saved).toBeNull() // 2 h of sight counted across the restart
+    note(estimate, NOW + 3 * HOUR, notify)
+    expect(notify).toHaveBeenCalledTimes(2)
+
+    // A dip 90 min into the next recovery: the clock starts over, the key stays.
+    for (let t = NOW + 3 * HOUR + MIN; t <= NOW + 4 * HOUR + 30 * MIN; t += MIN) note(freshAt(t), t, notify)
+    note(estimate, NOW + 4 * HOUR + 31 * MIN, notify)
+    for (let t = NOW + 4 * HOUR + 32 * MIN; t <= NOW + 5 * HOUR + 32 * MIN; t += MIN) note(freshAt(t), t, notify)
+    expect(saved?.key).toBe('untrusted-source|estimate')
+    note(estimate, NOW + 5 * HOUR + 33 * MIN, notify)
+    expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('a steady-sight start in the future (the clock went back) starts over instead of holding the key', () => {
+    vi.spyOn(logger, 'info').mockImplementation(() => undefined as never)
+    saved = { key: 'untrusted-source|estimate', seeingSinceMs: NOW + 24 * HOUR }
+    for (let t = NOW; t <= NOW + 2 * HOUR; t += MIN) note(freshAt(t), t, vi.fn())
+    expect(saved).toBeNull()
+  })
+
+  it('the file store keeps the key and the steady-sight start, and reads the old key-only file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'quota-blind-'))
+    try {
+      const path = join(dir, 'quota-blind-alert.json')
+      const fileStore = blindAlertFileStore(path)
+      expect(fileStore.read()).toBeNull()
+      fileStore.write({ key: 'untrusted-source|estimate', seeingSinceMs: NOW })
+      expect(blindAlertFileStore(path).read()).toEqual({ key: 'untrusted-source|estimate', seeingSinceMs: NOW })
+      fileStore.write(null)
+      expect(fileStore.read()).toBeNull()
+      writeFileSync(path, JSON.stringify({ key: 'stale-snapshot|ratelimit_headers' }) + '\n') // before this change
+      expect(fileStore.read()).toEqual({ key: 'stale-snapshot|ratelimit_headers', seeingSinceMs: null })
+      writeFileSync(path, JSON.stringify({ key: 'untrusted-source|estimate', seeingSinceMs: '123' }) + '\n') // a non-number start would never clear
+      expect(fileStore.read()).toEqual({ key: 'untrusted-source|estimate', seeingSinceMs: null })
+      writeFileSync(path, JSON.stringify({ key: '' }) + '\n')
+      expect(fileStore.read()).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('restarts while the same blindness lasts do not alert again, even on rewritten snapshots; another source does', () => {
