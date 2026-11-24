@@ -759,14 +759,17 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
   })
   // APPROVALDBGATE1030 scope (Marveen 60242, Dani 60251, measured through the install's hook: probes/dbgate-git-scope.sh):
   // an own worktree OUTSIDE the install is free, also from an agent's dir inside it, when the target is a literal path;
-  // a variable, a substitution or a cd chained with ";" leaves the target unknown, and that is the install.
+  // a variable, a substitution or a cd chained with ";" leaves the target unknown, and that is the install -- except a
+  // variable the same command gives one unconditional literal value first (VARDEFDB1121).
   it('an own worktree outside the install, from an agent\'s dir: a literal target passes, an unknown one is the install', () => {
     gitScaffold()
     const agent = join(root, 'agents', 'dani')
     expect(bash('git -C @WT@ checkout -q --detach 0123abc', agent)).toEqual(ALLOW)
     expect(bash('cd @WT@ && git checkout -q --detach 0123abc', agent)).toEqual(ALLOW)
     expect(bash('cd @WT@ && git fetch -q origin main && git merge-tree --write-tree origin/main HEAD', agent)).toEqual(ALLOW)
-    expect(bash('W=@WT@; git -C $W checkout -q --detach 0123abc', agent)).toEqual(DENY_GIT)
+    expect(bash('W=@WT@; git -C $W checkout -q --detach 0123abc', agent)).toEqual(ALLOW)
+    expect(bash('W=@WT@; x=$(date); git -C $W checkout -q --detach 0123abc', agent)).toEqual(DENY_GIT)
+    expect(bash('W=@WT@; W=/tmp/other; git -C $W checkout -q --detach 0123abc', agent)).toEqual(DENY_GIT)
     expect(bash('git -C $(echo @WT@) checkout -q --detach 0123abc', agent).deny).toBe(true)
     expect(GIT_GATE_MSG).toContain('de a celt LITERALIS abszolut uttal add meg: "git -C /Users/marvin/<worktree> ..." vagy "cd /Users/marvin/<worktree> && git ..."')
   })
