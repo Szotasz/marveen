@@ -451,7 +451,9 @@ export async function tryHandleAgentPackages(ctx: RouteContext, deps: PackageDep
 
   if (path === CREDENTIAL_PATH && method === 'GET') {
     if (!mayActAsOwner(ctx.auth, req)) { refuseOwner(res); return true }
-    json(res, readCredentialView())
+    // MIOAGENTB4-1122 (Marveen 84855): `configured` is the condition every outgoing call answers not_configured on.
+    // While it is false the dashboard shows neither the menu item nor the connect box.
+    json(res, { ...readCredentialView(), configured: deps.remote.configured() })
     return true
   }
 

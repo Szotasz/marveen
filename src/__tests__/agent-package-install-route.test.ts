@@ -335,7 +335,7 @@ describe('Dani, #2826 review 79824 (2): the credential file is not read through 
     rmSync(CRED)
     symlinkSync(real, CRED)
     const get = await callRoute((ctx) => tryHandleAgentPackages(ctx, deps), 'GET', '/api/agent-packages/credential', SESSION)
-    expect(get.out.body).toEqual({ connected: false })
+    expect(get.out.body).toEqual({ connected: false, configured: true })
     fake.answer({ status: 200, body: delivery() })
     expect(await install({ slug: 'invoice-helper' })).toMatchObject({ status: 409, body: { error: 'not_connected' } })
     expect(fake.requests).toHaveLength(0)

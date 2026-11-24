@@ -6082,6 +6082,19 @@ function acBtn(cls, text, onClick) {
 
 const agentCatalogState = { busy: false }
 
+// MIOAGENTB4-1122 (Marveen 84855): the menu item stays hidden until the server says the publishing origin is set.
+// Failure-proof like VIDEOREVIEW1002: an error, a refusal or an older backend leaves it hidden.
+async function revealAgentCatalogNav(fetchImpl, link) {
+  if (!link) return
+  try {
+    const r = await fetchImpl('/api/agent-packages/credential')
+    const cred = r.ok ? await r.json() : null
+    link.hidden = !(cred && cred.configured === true)
+  } catch {
+    link.hidden = true
+  }
+}
+
 async function loadAgentCatalogPage() {
   const root = document.getElementById('agentCatalogRoot')
   if (!root) return
@@ -6095,6 +6108,8 @@ async function loadAgentCatalogPage() {
     root.replaceChildren(acEl('p', 'ac-error', t('agentCatalog.err.generic')))
     return
   }
+  // MIOAGENTB4-1122 (Marveen 84855): no publishing origin yet, so no connect box (a deep link lands here).
+  if (cred.configured !== true) { root.replaceChildren(acEl('p', 'ac-muted', t('agentCatalog.not_available'))); return }
   if (!cred.connected) { root.replaceChildren(agentCatalogConnectForm()); return }
   const head = acEl('div', 'ac-connected')
   head.append(acEl('span', null, t('agentCatalog.connected_as', { label: cred.label })))
@@ -25116,6 +25131,8 @@ function gromzoScheduleStatusRefresh(isConnected, reload, setT) {
   // Timeline / Archived buttons stayed dead. Catch up if the board is showing.
   if (document.getElementById('kanbanPage')?.hidden === false) initGanttViewSwitcher()
 })()
+
+revealAgentCatalogNav(fetch, document.getElementById('sbAgentCatalog'))
 
 // VIDEOREVIEW1002: reveal the sidebar link to the review page only when the
 // install has a video root configured. Failure-proof like the other optional
