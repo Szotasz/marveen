@@ -3656,8 +3656,10 @@ def _bound_is_plain(bound: str, expected=None) -> bool:
 # exist (see above), so the run finds no file and nothing is sent; if it holds, the body is what runs. So only when:
 #   - the chain opens the command and is nothing but `mkdir [-p] WORD` / `cd WORD` joined by `&&`, each WORD plain
 #     characters (no substitution, glob, brace, redirect, variable): none of it can create a file;
-#   - the first command after the body is `python3|python|node P`, with P spelled as in the write: nothing can put a
-#     file at P between the skipped write and the run.
+#   - the first command after the body is `python3|python P`, with P spelled as in the write: nothing can put a
+#     file at P between the skipped write and the run. Not `node P` (Dani, review of #3090): with P missing, node
+#     goes on to P.js, P.json, P.node and P/index.js, so a skipped write can run a file the command never names.
+#     python stops ("can't open file"); a directory the chain's mkdir makes at P has no __main__ and stops too.
 _WRITTEN_AND_CHAIN = re.compile(r"(?:(?:mkdir(?:[ \t]+-p)?|cd)[ \t]+[A-Za-z0-9_./-]+[ \t]*&&[ \t]*)+")
 
 
@@ -3665,7 +3667,7 @@ def _written_and_chain_ok(pre: str, line_start: int, rest: str, path: str) -> bo
     """MAILGATEWRITTENAND1123: `rest` is what follows the heredoc's closing tag."""
     if line_start != 0 or not _WRITTEN_AND_CHAIN.fullmatch(pre):
         return False
-    return bool(re.match(r"[ \t]*\n[ \t]*(?:python3?|node)[ \t]+" + re.escape(path) + r"(?=[ \t\n;&|]|$)", rest))
+    return bool(re.match(r"[ \t]*\n[ \t]*python3?[ \t]+" + re.escape(path) + r"(?=[ \t\n;&|]|$)", rest))
 
 
 _WRITTEN_OPENER = re.compile(
