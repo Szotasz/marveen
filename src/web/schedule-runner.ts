@@ -2694,6 +2694,15 @@ async function attemptFireTask(
           // Host-aware so a remote agent's post-send stuck-check + recovery
           // Enter hit the laptop session, not a (nonexistent) local one.
           const pane = capturePane(session, host)
+          // The session died after the send (a placeholder clear's Ctrl-C quit the TUI, measured 2026-11-24 03:30):
+          // the prompt never ran, and a null pane reads "not parked" below. The run is an error, and the
+          // occurrence is retried once the session is back, like 'giveup'.
+          if (pane == null && !sessionExistsOnHost(host, session)) {
+            logger.warn({ task: task.name, session, attempt }, 'Scheduled prompt: the session is gone after the send -- run marked error, retried once the session is back')
+            if (firedRunId != null) markTaskRunFireError(firedRunId)
+            insertPendingTaskRetryIfNew(task.name, agentName, now, 'session-gone')
+            return 'done'
+          }
           const stuck = isScheduledPromptStuck(pane, marker)
             || isOwnPromptParkedOverfull(pane, getInjectedPrompt(session))
           const action = decideScheduledResubmitAction(attempt, stuck)

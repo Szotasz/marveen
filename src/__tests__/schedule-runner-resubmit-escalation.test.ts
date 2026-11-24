@@ -111,4 +111,16 @@ describe('schedule-runner: resubmit dead ends are compensated, never silent', ()
     const after = SRC.slice(busyIdx, busyIdx + 800)
     expect(after).toMatch(/insertPendingTaskRetryIfNew\(task\.name, agentName, now, 'lane-busy'\)/)
   })
+
+  it('a session gone after the send marks the run error and enqueues a pending retry, before the stuck probe', () => {
+    // 2026-11-24 03:30: a placeholder clear quit the TUI right after the send; the null pane read "not parked",
+    // the chain ended 'done', and the run stayed 'fired' for a task that never ran.
+    const goneIdx = SRC.indexOf('if (pane == null && !sessionExistsOnHost(host, session))', SRC.indexOf('const resubmit'))
+    expect(goneIdx).toBeGreaterThan(-1)
+    expect(goneIdx).toBeLessThan(SRC.indexOf('const stuck = isScheduledPromptStuck(pane, marker)'))
+    const after = SRC.slice(goneIdx, goneIdx + 600)
+    expect(after).toMatch(/markTaskRunFireError\(firedRunId\)/)
+    expect(after).toMatch(/insertPendingTaskRetryIfNew\(task\.name, agentName, now, 'session-gone'\)/)
+    expect(after).toMatch(/return 'done'/)
+  })
 })
