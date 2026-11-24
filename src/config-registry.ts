@@ -1132,7 +1132,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       v.split(/[\s,]+/).filter(Boolean).every((n) => n === '*' || AGENT_NAME_RE.test(n))
         ? null
         : 'Ügynöknevek vesszővel elválasztva (pl. pm,reviewer), vagy * minden al-ügynökre.',
-    description: 'Al-ügynökök, akik NEM töltik be a telepítés gyökerében álló CLAUDE.md-t (a fő ágens személyiségét és a közös szabályokat), csak a sajátjukat: így egy hívás kb. 50 KB-tal kisebb. Vesszővel elválasztott ügynöknevek, vagy * minden al-ügynökre, a később létrehozottakra is. A fő ágensre nem hat. FIGYELEM: a kizárt ügynök a gyökér közös szabályait sem kapja meg, ezért előbb a saját CLAUDE.md-jébe kell kerülniük. Ügynököt felvenni csak bejelentkezett gazda-session tud (a közös tokennel és eszközkulccsal nem), levenni bárki. A .env ROOT_CLAUDEMD_EXCLUDE_AGENTS sora (a korábbi út) ettől függetlenül érvényes marad, a kettő összeadódik. A módosítás az ügynök következő indításakor lép életbe.',
+    description: 'Al-ügynökök, akik NEM töltik be a telepítés gyökerében álló CLAUDE.md-t (a fő ágens személyiségét és a közös szabályokat), csak a sajátjukat: így egy hívás a gyökér CLAUDE.md méretével kisebb. Vesszővel elválasztott ügynöknevek, vagy * minden al-ügynökre, a később létrehozottakra is. A fő ágensre nem hat. FIGYELEM: a kizárt ügynök a gyökér közös szabályait sem kapja meg, ezért előbb a saját CLAUDE.md-jébe kell kerülniük. Ügynököt felvenni csak bejelentkezett gazda-session tud (a közös tokennel és eszközkulccsal nem), levenni bárki. A .env ROOT_CLAUDEMD_EXCLUDE_AGENTS sora (a korábbi út) ettől függetlenül érvényes marad, a kettő összeadódik. A módosítás az ügynök következő indításakor lép életbe.',
     module: 'system',
     secret: false,
     requiresRestart: true,
