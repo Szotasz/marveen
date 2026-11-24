@@ -206,6 +206,8 @@ describe('noteQuotaBlindness -- the blind gate is never silent, and never noisy'
       expect(fileStore.read()).toBeNull()
       writeFileSync(path, JSON.stringify({ key: 'stale-snapshot|ratelimit_headers' }) + '\n') // before this change
       expect(fileStore.read()).toEqual({ key: 'stale-snapshot|ratelimit_headers', seeingSinceMs: null })
+      writeFileSync(path, JSON.stringify({ key: 'untrusted-source|estimate', seeingSinceMs: '123' }) + '\n') // a non-number start would never clear
+      expect(fileStore.read()).toEqual({ key: 'untrusted-source|estimate', seeingSinceMs: null })
       writeFileSync(path, JSON.stringify({ key: '' }) + '\n')
       expect(fileStore.read()).toBeNull()
     } finally {
