@@ -15,6 +15,7 @@
 //   4. SSE pane-stream ?token=<device key>        -> { kind: 'device' } (path-scoped)
 //   5. Federation inbound token, endpoint-scoped  -> { kind: 'federation', peer }
 //   6. mv_session cookie                          -> { kind: 'session', user }
+//                                                    (an approver login's: { kind: 'approver', user }, DELEGAPPROVER1123)
 //   6b. mv_operator cookie                        -> { kind: 'device', scope: 'operator' }
 //   6c. mv_colleague cookie                       -> { kind: 'colleague', colleague, person }  (colleague-sessions.ts)
 //   7. none of the above                          -> { kind: 'none' }
@@ -45,7 +46,7 @@ import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { isKnownAgent } from './agent-config.js'
 import type { AgentTokenResolver } from './agent-tokens.js'
 import { logger } from '../logger.js'
-import { countDashboardUsers, getAgentMessage, getApproval, getDb } from '../db.js'
+import { countDashboardUsers, getAgentMessage, getApproval, getDashboardUserAccess, getDb } from '../db.js'
 import { SETUP_COOKIE_NAME, isSetupSession } from './public-access.js'
 import { readBody, stashPreReadBody, RequestBodyTooLargeError } from './http-helpers.js'
 import { OWNER_NAME, VOICE_CHANNEL_ID, DEFAULT_VOICE_CHANNEL_ID } from '../config.js'
@@ -62,6 +63,10 @@ export type AuthResult =
   // A colleague board login (colleague-sessions.ts). Its own kind on purpose: every owner check trusts 'session', and
   // the colleague gate (colleague-gate.ts) keeps this kind on /api/board and /api/colleague only.
   | { kind: 'colleague'; colleague: string; person: string }
+  // DELEGAPPROVER1123: a password+TOTP session of a login with role 'approver' (approver-access.ts). Its own kind on
+  // purpose, like 'colleague': every owner check trusts 'session', and the approver gate (approver-gate.ts) keeps this
+  // kind on its sign-in routes and the approval decide route.
+  | { kind: 'approver'; user: string }
   | { kind: 'none' }
 
 export const SESSION_COOKIE_NAME = 'mv_session'
@@ -261,7 +266,15 @@ function resolveCookieAuth(req: http.IncomingMessage, publicListener: boolean): 
   const cookieValue = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   if (cookieValue) {
     const session = resolveSession(cookieValue)
-    if (session) return { kind: 'session', user: session.username }
+    if (session) {
+      // DELEGAPPROVER1123: an approver's session is never the owner's. Read on every request, so a disable or a
+      // missing second factor ends it at once (the revocation also deletes the session rows, routes/auth.ts).
+      const access = getDashboardUserAccess(session.userId)
+      if (access?.role === 'approver') {
+        return access.disabled || !access.totp_enabled ? { kind: 'none' } : { kind: 'approver', user: session.username }
+      }
+      return { kind: 'session', user: session.username }
+    }
   }
 
   // 6. Operator browser session (DASHOPERATOR1005). Resolves to the operator

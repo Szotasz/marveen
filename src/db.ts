@@ -162,6 +162,48 @@ export function getEmbeddingCacheSize(): number { return embeddingCache.size }
 // STILL gets pre-create + tighten -- this lets the permission tests exercise the
 // tightening logic on a throwaway file instead of touching the prod DB. The
 // STORE_DIR mkdir stays prod-only; a temp-file override owns its own directory.
+/** Test seam (DELEGAPPROVER1123): runs inside the approval_events rebuild, after the old table is dropped and before
+ *  the new one takes its name, so a test can fail the rebuild at its most dangerous point. */
+let approvalEventsRebuildHookForTest: (() => void) | null = null
+export function _setApprovalEventsRebuildHookForTest(fn: (() => void) | null): void { approvalEventsRebuildHookForTest = fn }
+
+/**
+ * DELEGAPPROVER1123: rebuilds approval_events so its CHECK accepts 'decided'. The whole rebuild (new table, copy, drop,
+ * rename, index) is ONE transaction (BEGIN IMMEDIATE ... COMMIT, ROLLBACK on any error): a failure or a crash midway
+ * leaves the original audit table and every row of it as they were, and the next start runs it again. Idempotent: a
+ * table that already accepts 'decided' (or a fresh one) is left alone. Throws after the rollback.
+ */
+function migrateApprovalEventsDecided(): void {
+  const aeSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='approval_events'").get() as { sql: string } | undefined
+  if (!aeSchema?.sql || aeSchema.sql.includes("'decided'")) return
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.exec(`
+      CREATE TABLE approval_events_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        approval_id TEXT NOT NULL,
+        event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill','decided')),
+        reason TEXT,
+        actor TEXT,
+        ref TEXT,
+        created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+      )
+    `)
+    db.exec(`
+      INSERT INTO approval_events_new (id, approval_id, event, reason, actor, ref, created_at)
+        SELECT id, approval_id, event, reason, actor, ref, created_at FROM approval_events
+    `)
+    db.exec('DROP TABLE approval_events')
+    approvalEventsRebuildHookForTest?.()
+    db.exec('ALTER TABLE approval_events_new RENAME TO approval_events')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)')
+    db.exec('COMMIT')
+  } catch (err) {
+    if (db.inTransaction) db.exec('ROLLBACK')
+    throw err
+  }
+}
+
 export function initDatabase(dbPathOverride?: string): void {
   embeddingCache.clear() // ids are per database: a re-init (tests, ':memory:') must not reuse vectors
   const useOverride = dbPathOverride !== undefined
@@ -1898,13 +1940,20 @@ export function initDatabase(dbPathOverride?: string): void {
     CREATE TABLE IF NOT EXISTS approval_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       approval_id TEXT NOT NULL,
-      event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill')),
+      event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill','decided')),
       reason TEXT,
       actor TEXT,
       ref TEXT,
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     )
   `)
+  // DELEGAPPROVER1123: 'decided' is an approver's decision (who, on which scope, on which content hash). SQLite cannot
+  // alter a CHECK, so a table created before it is rebuilt once, rows and ids kept (migrateApprovalEventsDecided).
+  try {
+    migrateApprovalEventsDecided()
+  } catch (err) {
+    logger.warn({ err }, 'approval_events decided-event migration failed and was rolled back -- continuing')
+  }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)`)
 
   // --- Control-bot custom commands (CMD920 3.12) ---
@@ -1964,6 +2013,28 @@ export function initDatabase(dbPathOverride?: string): void {
   // emptying that file cannot turn the second factor off: the login fails closed (503) instead.
   const dashUserCols = (db.prepare('PRAGMA table_info(dashboard_users)').all() as { name: string }[]).map((c) => c.name)
   if (!dashUserCols.includes('totp_enabled')) db.exec('ALTER TABLE dashboard_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0')
+  // DELEGAPPROVER1123: the login's role. 'owner' is every login that existed before (the column's default), and every
+  // login created the old ways (POST /api/auth/users, the dashboard-user CLI). 'approver' is a human the owner lets
+  // decide approval requests within approver_scopes, and nothing else: it is never the owner (routes/auth.ts
+  // mayActAsOwner refuses it), it signs in only with TOTP, and its session is fenced to the approval routes
+  // (approver-gate.ts).
+  if (!dashUserCols.includes('role')) {
+    db.exec("ALTER TABLE dashboard_users ADD COLUMN role TEXT NOT NULL DEFAULT 'owner' CHECK(role IN ('owner','approver'))")
+  }
+  // DELEGAPPROVER1123: what an approver may decide: one row per (login, category, agent), agent '*' for every agent.
+  // Only the owner writes it (routes/auth.ts /api/auth/approvers); a removed row is gone (the approver's sessions go
+  // with it, auth-sessions.ts revokeAllForUser), so a live scope is simply an existing row.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approver_scopes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      agent TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      created_by TEXT,
+      UNIQUE(user_id, category, agent)
+    )
+  `)
   // Browser login sessions. NOT named `sessions` -- that table already maps
   // Telegram chats to Claude session ids. Only sha256(session_id) is stored, so
   // a DB leak does not hand out live sessions. Rows survive dashboard restarts;
@@ -2156,16 +2227,20 @@ export interface DashboardUser {
   disabled: number
   /** DOCKERHTTPS1119: 1 while the TOTP second factor is on (the secret itself is in store/.dashboard-totp.json). */
   totp_enabled: number
+  /** DELEGAPPROVER1123: 'owner' (every login before it, and the default) or 'approver'. */
+  role: DashboardUserRole
 }
+
+export type DashboardUserRole = 'owner' | 'approver'
 
 export type DashboardUserPublic = Omit<DashboardUser, 'password_hash' | 'totp_enabled'>
 
-export function createDashboardUser(username: string, passwordHash: string): DashboardUser {
+export function createDashboardUser(username: string, passwordHash: string, role: DashboardUserRole = 'owner'): DashboardUser {
   const now = Math.floor(Date.now() / 1000)
   const info = db
-    .prepare('INSERT INTO dashboard_users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)')
-    .run(username, passwordHash, now, now)
-  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, created_at: now, updated_at: now, disabled: 0, totp_enabled: 0 }
+    .prepare('INSERT INTO dashboard_users (username, password_hash, created_at, updated_at, role) VALUES (?, ?, ?, ?, ?)')
+    .run(username, passwordHash, now, now, role)
+  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, created_at: now, updated_at: now, disabled: 0, totp_enabled: 0, role }
 }
 
 export function getDashboardUser(username: string): DashboardUser | undefined {
@@ -2176,7 +2251,7 @@ export function getDashboardUser(username: string): DashboardUser | undefined {
 
 export function listDashboardUsers(): DashboardUserPublic[] {
   return db
-    .prepare('SELECT id, username, created_at, updated_at, disabled FROM dashboard_users ORDER BY username COLLATE NOCASE')
+    .prepare('SELECT id, username, created_at, updated_at, disabled, role FROM dashboard_users ORDER BY username COLLATE NOCASE')
     .all() as DashboardUserPublic[]
 }
 
@@ -2197,6 +2272,46 @@ export function updateDashboardUserPassword(userId: number, passwordHash: string
 export function setDashboardUserTotpEnabled(userId: number, enabled: boolean): void {
   db.prepare('UPDATE dashboard_users SET totp_enabled = ?, updated_at = ? WHERE id = ?')
     .run(enabled ? 1 : 0, Math.floor(Date.now() / 1000), userId)
+}
+
+/** DELEGAPPROVER1123: the role of a session's login, read on every request that carries a session cookie (so a role or
+ *  a disable takes effect at once). undefined when the login row is gone. */
+export function getDashboardUserAccess(userId: number): Pick<DashboardUser, 'role' | 'disabled' | 'totp_enabled'> | undefined {
+  return db.prepare('SELECT role, disabled, totp_enabled FROM dashboard_users WHERE id = ?').get(userId) as
+    Pick<DashboardUser, 'role' | 'disabled' | 'totp_enabled'> | undefined
+}
+
+/** DELEGAPPROVER1123: turn an approver login off (the caller revokes its sessions in the same step). */
+export function disableApproverUser(userId: number): boolean {
+  return db.prepare("UPDATE dashboard_users SET disabled = 1, updated_at = ? WHERE id = ? AND role = 'approver'")
+    .run(Math.floor(Date.now() / 1000), userId).changes > 0
+}
+
+export interface ApproverScope {
+  id: number
+  user_id: number
+  category: string
+  /** The requesting agent's id, or '*' for every agent. */
+  agent: string
+  created_at: number
+  created_by: string | null
+}
+
+export function listApproverScopes(userId?: number): ApproverScope[] {
+  return (userId === undefined
+    ? db.prepare('SELECT * FROM approver_scopes ORDER BY user_id, category, agent').all()
+    : db.prepare('SELECT * FROM approver_scopes WHERE user_id = ? ORDER BY category, agent').all(userId)) as ApproverScope[]
+}
+
+/** Adds a scope; false when the same (login, category, agent) row already exists. */
+export function addApproverScope(userId: number, category: string, agent: string, createdBy: string | null): boolean {
+  return db.prepare('INSERT OR IGNORE INTO approver_scopes (user_id, category, agent, created_at, created_by) VALUES (?, ?, ?, ?, ?)')
+    .run(userId, category, agent, Math.floor(Date.now() / 1000), createdBy).changes > 0
+}
+
+export function removeApproverScope(userId: number, category: string, agent: string): boolean {
+  return db.prepare('DELETE FROM approver_scopes WHERE user_id = ? AND category = ? AND agent = ?')
+    .run(userId, category, agent).changes > 0
 }
 
 export function deleteDashboardUser(username: string): boolean {
@@ -8306,11 +8421,21 @@ function runApprovalConsumer(approvalId: string): void {
  */
 export function decideApproval(p: {
   approvalId: string; status: 'approved' | 'rejected'; evidence: ApprovalEvidence; expectedContentHash?: string
+  /** DELEGAPPROVER1123: an approval_events 'decided' row, written in the same transaction, only when the core decided. */
+  decidedEvent?: { actor: string; reason: string; ref: string | null }
 }): { outcome: ApprovalDecideOutcome; approval: Approval | undefined } {
-  const outcome = db.transaction(() => decideApprovalInTx({
-    approvalId: p.approvalId, status: p.status, resolvedBy: approvalResolvedBy(p.evidence),
-    expectedContentHash: p.expectedContentHash, now: Math.floor(Date.now() / 1000),
-  }))()
+  const outcome = db.transaction(() => {
+    const now = Math.floor(Date.now() / 1000)
+    const o = decideApprovalInTx({
+      approvalId: p.approvalId, status: p.status, resolvedBy: approvalResolvedBy(p.evidence),
+      expectedContentHash: p.expectedContentHash, now,
+    })
+    if (o === 'decided' && p.decidedEvent) {
+      db.prepare('INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(p.approvalId, 'decided', p.decidedEvent.reason, p.decidedEvent.actor, p.decidedEvent.ref, now)
+    }
+    return o
+  })()
   if (outcome === 'decided') runApprovalConsumer(p.approvalId)
   return { outcome, approval: getApproval(p.approvalId) }
 }
@@ -8683,7 +8808,7 @@ export function consumeCategoryApproval(params: {
 export interface ApprovalEvent {
   id: number
   approval_id: string
-  event: 'consumed' | 'consume_refused' | 'consumed_backfill'
+  event: 'consumed' | 'consume_refused' | 'consumed_backfill' | 'decided'
   reason: string | null
   actor: string | null
   ref: string | null
