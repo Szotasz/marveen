@@ -2,8 +2,8 @@ import http from 'node:http'
 import { existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
+import { readPortHolder, selectReclaimVictims } from './port-reclaim.js'
 import { PROJECT_ROOT, WEB_HOST, WEB_PUBLIC_PORT, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
@@ -405,33 +405,18 @@ export function startWebServer(port = 3420): http.Server {
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      // Try to reclaim the port only if the listener is another node/dashboard
-      // process owned by us. Blind `lsof -ti | xargs kill -9` would take down
-      // whatever happens to be on the port (e.g. an unrelated dev server),
-      // and under launchd it also race-kills the not-yet-dead predecessor.
+      // Try to reclaim the port only from THIS install's own dashboard (a predecessor that has not exited yet).
+      // Blind `lsof -ti | xargs kill -9` would take down whatever happens to be on the port, and "any same-user
+      // node process" took down the live CRM when a dashboard was started on its port (PORTRECLAIM1123).
       logger.warn({ port }, 'Web port foglalt, probalok felszabaditani...')
       try {
         const pidsRaw = (runLsof(['-ti', `:${port}`], 3000) ?? '').trim()
         const pids = pidsRaw.split('\n').map(s => s.trim()).filter(Boolean).map(Number).filter(n => Number.isFinite(n) && n > 0)
         const uid = typeof process.getuid === 'function' ? process.getuid() : null
-        const victims: number[] = []
-        for (const pid of pids) {
-          if (pid === process.pid) continue
-          let cmd = ''
-          try {
-            cmd = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], { timeout: 2000, encoding: 'utf-8' }).trim()
-          } catch { continue }
-          if (uid !== null) {
-            try {
-              const ownerUid = parseInt(execFileSync('/bin/ps', ['-p', String(pid), '-o', 'uid='], { timeout: 2000, encoding: 'utf-8' }).trim(), 10)
-              if (Number.isFinite(ownerUid) && ownerUid !== uid) continue
-            } catch { continue }
-          }
-          if (!/node|tsx/i.test(cmd)) {
-            logger.warn({ port, pid, cmd }, 'Port held by non-node process -- refusing to kill')
-            continue
-          }
-          victims.push(pid)
+        const { victims, foreign } = selectReclaimVictims(pids, process.pid, readPortHolder, PROJECT_ROOT, uid)
+        for (const { pid, holder } of foreign) {
+          // The command line can carry secrets in its arguments: only its first word goes into the log.
+          logger.warn({ port, pid, cmd: holder.command.split(/\s+/)[0] ?? '' }, 'Port held by a process that is not this install\'s dashboard -- refusing to stop it')
         }
         for (const pid of victims) {
           try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
