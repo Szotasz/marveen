@@ -14,6 +14,7 @@ import {
   shouldClearTruncatedPreamble,
   detectsPastePlaceholder,
   pastePlaceholderLocation,
+  inputBoxText,
   detectPaneState,
   parkedInputText,
   parkedInputRowCount,
@@ -4692,6 +4693,10 @@ export async function clearInputBuffer(session: string, host: string | null = nu
 const PLACEHOLDER_DISCARD_MAX = 3
 // Settle window after a Ctrl-C so the next capture reflects the cleared box.
 const PLACEHOLDER_DISCARD_SETTLE_MS = 450
+// How long a press waits for the input box to be redrawn before the clear stops pressing. Measured 2026-11-24
+// 03:30 on a loaded host: the box still showed the stub 450 ms after each press, so presses 2 and 3 went on a
+// box the TUI had already emptied, and the session quit. A frame identical to the pressed one proves nothing.
+const PLACEHOLDER_REDRAW_WAIT_MS = 3000
 
 // Card 71263d15 (a2): the pane's process as tmux reports it ("<pane_pid> <pane_current_command>"),
 // or null when the pane cannot be read (a pane whose process exited is gone: no remain-on-exit).
@@ -4739,8 +4744,8 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
   let lastPane: string | null = null
   let presses = 0
   try {
+    let pane = capturePane(session, host)
     for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
-      const pane = capturePane(session, host)
       if (pane == null) {
         logger.warn({ session, presses }, 'discardPlaceholderBuffer: pane capture failed; stopping (presses so far in the field)')
         return { outcome: 'failed', lastPane }
@@ -4763,11 +4768,21 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
         return { outcome: 'failed', lastPane }
       }
       presses++
-      await delay(PLACEHOLDER_DISCARD_SETTLE_MS)
+      // Another press only on a box redrawn SINCE this press that still holds the stub (checked at the loop top).
+      const pressedBox = inputBoxText(pane)
+      const deadline = Date.now() + PLACEHOLDER_REDRAW_WAIT_MS
+      do {
+        await delay(PLACEHOLDER_DISCARD_SETTLE_MS)
+        pane = capturePane(session, host)
+      } while (pane != null && inputBoxText(pane) === pressedBox && Date.now() < deadline)
+      if (pane != null && inputBoxText(pane) === pressedBox) {
+        lastPane = pane
+        logger.warn({ session, presses, waitedMs: PLACEHOLDER_REDRAW_WAIT_MS }, 'discardPlaceholderBuffer: input box not redrawn since the press; no further Ctrl-C')
+        return { outcome: 'failed', lastPane }
+      }
     }
-    const finalPane = capturePane(session, host)
-    if (finalPane != null) lastPane = finalPane
-    return { outcome: finalPane != null && pastePlaceholderLocation(finalPane) == null ? 'cleared' : 'failed', lastPane }
+    if (pane != null) lastPane = pane
+    return { outcome: pane != null && pastePlaceholderLocation(pane) == null ? 'cleared' : 'failed', lastPane }
   } finally {
     if (presses > 0) {
       const after = paneProcessOf(session, host)
