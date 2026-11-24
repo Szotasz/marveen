@@ -268,6 +268,13 @@ describe('POST /api/schedules: an owner field the create does not write is refus
   it('null or an empty value is no request: the create passes (control)', async () => {
     expect((await create(TOKEN, { name: 'new-empty', preCheck: null, command: '' })).status).toBe(200)
   })
+
+  it("telegramChatId 'none' is no delivery instruction, as on PUT: the create passes; a real chat id is refused (control)", async () => {
+    expect((await create(TOKEN, { name: 'new-chat-none', telegramChatId: 'none' })).status).toBe(200)
+    const r = await create(TOKEN, { name: 'new-chat-id', telegramChatId: '12345' })
+    expect(r.status).toBe(400)
+    expect(r.json().fields).toEqual(['telegramChatId'])
+  })
 })
 
 describe('/api/migrate/scan and /run are owner-only, refused before the body is read', () => {

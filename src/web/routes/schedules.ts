@@ -261,8 +261,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (data.once !== undefined && typeof data.once !== 'boolean') { json(res, { error: 'once must be true or false' }, 400); return true }
     // The create below writes only type and targetSession of the owner fields; any other one with a value used to be
     // dropped behind a 200. Refuse it by name, so the caller sets it after creation instead of believing it is set.
-    const unwritten = SCHEDULE_OWNER_FIELDS.filter((k) => k !== 'type' && k !== 'targetSession' &&
-      (data as Record<string, unknown>)[k] != null && (data as Record<string, unknown>)[k] !== '')
+    // telegramChatId 'none' is no delivery instruction, not a value: skipped here as in changedScheduleOwnerFields.
+    const unwritten = SCHEDULE_OWNER_FIELDS.filter((k) => {
+      const v = (data as Record<string, unknown>)[k]
+      return k !== 'type' && k !== 'targetSession' && v != null && v !== '' && !(k === 'telegramChatId' && v === 'none')
+    })
     if (unwritten.length > 0) {
       json(res, {
         error: `Creating a task does not set ${unwritten.join(', ')}. Create it without, then set it with PUT /api/schedules/${name} (an owner session).`,
