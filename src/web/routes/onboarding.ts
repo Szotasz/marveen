@@ -32,6 +32,8 @@ import {
 } from '../hostinger-router.js'
 import { writeAgentAuthMode } from '../agent-config.js'
 import { deleteSecret } from '../vault.js'
+import { isFleetTokenSwap, restartFleetAfterTokenSwap, UNVERIFIED_SWAP_NOTICE } from '../fleet-token-swap-restart.js'
+import { notifyOwner } from '../../notify.js'
 
 // DOCKERUX1118: one language switch at a time.
 let langSwitchBusy = false
@@ -58,6 +60,10 @@ const execFileAsync = promisify(execFile)
 const ENV_FILE = join(PROJECT_ROOT, '.env')
 const HOME_CREDENTIALS = join(homedir(), '.claude', '.credentials.json')
 const FLEET_TOKEN_FILE = join(STORE_DIR, '.claude-oauth-token')
+
+function readFleetTokenFile(): string | null {
+  try { return readFileSync(FLEET_TOKEN_FILE, 'utf-8') } catch { return null }
+}
 
 function readEnvValue(key: string): string | null {
   try {
@@ -701,6 +707,8 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const verified = probe === 'ok'
+    // TOKENSWAPRESTART1123 (b): the fleet token BEFORE this save, to tell a swap from a first save or a re-paste.
+    const previousFleetToken = readFleetTokenFile()
 
     try {
       if (token) {
@@ -724,7 +732,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     // needed and safe: the install had NO auth before this save, so the
     // running session cannot be an authenticated live agent -- bouncing it
     // loses nothing. Re-pasting a token on an already-authenticated install
-    // keeps today's behaviour (no implicit restart of a working fleet).
+    // keeps this restart out; a DIFFERENT fleet token restarts the shared-token sub-agents (below), not the main session.
     let restarted = false
     let restartError: string | null = null
     if (!hadAuthBefore && agentsRunning()) {
@@ -734,8 +742,24 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       if (r.ok) logger.info('onboarding: channels restarted so the fresh auth is picked up')
       else logger.error({ error: restartError }, 'onboarding: channels restart after first auth FAILED')
     }
-    logger.info({ verified, restarted, mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth stored')
-    json(res, restartError ? { ok: true, verified, restarted, restartError, restartCommand: channelsRestartCommand() } : { ok: true, verified, restarted })
+    // TOKENSWAPRESTART1123 (b), owner decision 2026-11-23 ("Magától indítsa újra"): a NEW fleet token on an
+    // install that already had auth is a swap. The sub-agents on the shared fleet token keep the old token in their
+    // running process, so they are restarted one at a time, in the background (the answer does not wait), and the
+    // owner is told how many. Only when the file really holds the new token: a failed write must not bounce anyone.
+    // Only a token the live probe PROVED good restarts the fleet (Dani #3077 F1): an inconclusive probe (no claude
+    // binary, a network error) saves the token unverified, and bouncing every shared-token agent onto a possibly
+    // mistyped token would take the whole fleet to 401 at once. Then the owner is told instead.
+    let fleetRestart = false
+    if (token && hadAuthBefore && isFleetTokenSwap(previousFleetToken, token) && readFleetTokenFile()?.trim() === token.trim()) {
+      if (verified) {
+        fleetRestart = true
+        void restartFleetAfterTokenSwap()
+      } else {
+        void notifyOwner(UNVERIFIED_SWAP_NOTICE).catch(() => undefined)
+      }
+    }
+    logger.info({ verified, restarted, fleetRestart, mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth stored')
+    json(res, restartError ? { ok: true, verified, restarted, fleetRestart, restartError, restartCommand: channelsRestartCommand() } : { ok: true, verified, restarted, fleetRestart })
     return true
   }
 

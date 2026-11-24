@@ -165,6 +165,22 @@ export async function performFleetRotation(target: ClaudePlan, deps: FleetRotati
   if (!written.ok) return finish({ ...base, outcome: 'failed', reason: written.error.replace(/\s+/g, '-') })
   if (!written.changed) return finish({ ...base, outcome: 'rotated', reason: 'token-unchanged' })
 
+  const r = await restartSharedTokenAgents(deps)
+  base.restarted.push(...r.restarted)
+  base.failed.push(...r.failed)
+  base.notRunning.push(...r.notRunning)
+  return finish({ ...base, outcome: 'rotated' })
+}
+
+export type SharedRestartDeps = Pick<FleetRotationDeps, 'listAgents' | 'usesFleetToken' | 'isRunning' | 'restart' | 'sleep' | 'gapMs'>
+
+/**
+ * Restart every RUNNING sub-agent on the shared fleet token, one at a time with a gap, so each re-reads the fleet
+ * token file. A failing (or throwing) restart is recorded and the loop goes on. Used by the plan rotation's fleet leg
+ * and by a fleet-token save on the dashboard (TOKENSWAPRESTART1123 b).
+ */
+export async function restartSharedTokenAgents(deps: SharedRestartDeps): Promise<{ restarted: string[]; failed: Array<{ agent: string; error: string }>; notRunning: string[] }> {
+  const out = { restarted: [] as string[], failed: [] as Array<{ agent: string; error: string }>, notRunning: [] as string[] }
   const shared = deps.listAgents().filter((n) => {
     try { return deps.usesFleetToken(n) } catch { return false }
   })
@@ -174,18 +190,18 @@ export async function performFleetRotation(target: ClaudePlan, deps: FleetRotati
     let running = false
     try { running = deps.isRunning(name) } catch { running = false }
     if (!running) {
-      base.notRunning.push(name)
+      out.notRunning.push(name)
       continue
     }
     if (!first) await deps.sleep(gap)
     first = false
     try {
       const r = await deps.restart(name)
-      if (r.ok) base.restarted.push(name)
-      else base.failed.push({ agent: name, error: r.error || 'restart failed' })
+      if (r.ok) out.restarted.push(name)
+      else out.failed.push({ agent: name, error: r.error || 'restart failed' })
     } catch (err) {
-      base.failed.push({ agent: name, error: err instanceof Error ? err.name : 'restart threw' })
+      out.failed.push({ agent: name, error: err instanceof Error ? err.name : 'restart threw' })
     }
   }
-  return finish({ ...base, outcome: 'rotated' })
+  return out
 }
