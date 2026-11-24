@@ -18,7 +18,7 @@
  * against a base without the feature and shows which cases are new.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,6 +28,10 @@ import { loadProfileTemplate, type ProfileTemplate } from '../web/profiles.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { AGENTS_BASE_DIR } from '../web/agent-config.js'
 import { logger } from '../logger.js'
+import * as notify from '../notify.js'
+
+// MAINEXTRAHOOKS1123 (c): a sync announces a new extras content to the owner. Here no notice may leave the test.
+vi.mock('../notify.js', async (orig) => ({ ...(await orig<typeof import('../notify.js')>()), notifySecurityEvent: vi.fn(async () => {}) }))
 
 const TEST_AGENT = 'extra-hooks-probe'
 const MARK = ': extra-hook;'
@@ -291,6 +295,50 @@ describe('the sync logs a sha256 fingerprint of the extras', () => {
     const second = digestLines(spy)
     expect(second).toHaveLength(2)
     expect((second[1][0] as { scripts: Record<string, string> }).scripts[gateRel]).not.toBe(fields.scripts[gateRel])
+  })
+})
+
+// Review condition (c) of #3064: the owner is told, not only dashboard.log. The record sits next to the config file
+// (store/.extra-hooks-digest.json in production; here the probe agent's directory, removed with it).
+describe('(c) the sync announces a change to the owner through notifySecurityEvent', () => {
+  const sent = () => vi.mocked(notify.notifySecurityEvent).mock.calls.map((c) => String(c[0]))
+  const flush = () => new Promise((r) => setTimeout(r, 50))
+  const statePath = join(agentRoot, '.extra-hooks-digest.json')
+  // Forgets the in-process digest the way a dashboard restart does; its own (absent) record dir is elsewhere.
+  const restart = () => (scaffold as unknown as { logExtraHooksDigest: (p?: string) => void })
+    .logExtraHooksDigest(join(agentRoot, 'elsewhere', 'none.json'))
+  beforeEach(() => { vi.mocked(notify.notifySecurityEvent).mockClear() })
+
+  it('first sync: one notice and a 0600 record; many spawns and a restart with the same files: none; a changed script: one more', async () => {
+    restart()
+    render(config([GATE]))
+    ensureExtra(TEST_AGENT, configPath)
+    render(config([GATE]))
+    await flush()
+    expect(sent()).toHaveLength(1)
+    expect(sent()[0]).toContain('[Biztonság]')
+    expect(sent()[0]).toContain(`${gateRel} új`)
+    expect(statSync(statePath).mode & 0o777).toBe(0o600)
+    restart()
+    render(config([GATE]))
+    ensureExtra(TEST_AGENT, configPath)
+    await flush()
+    expect(sent()).toHaveLength(1)
+    writeFileSync(join(PROJECT_ROOT, gateRel), 'import sys\nsys.exit(0)  # changed\n')
+    ensureExtra(TEST_AGENT, configPath)
+    ensureExtra(TEST_AGENT, configPath)
+    await flush()
+    expect(sent()).toHaveLength(2)
+    expect(sent()[1]).toContain(`${gateRel} módosult`)
+  })
+
+  it('the main-scope sync at dashboard start announces too', async () => {
+    restart()
+    const ensureMain = (scaffold as unknown as { ensureMainScopeExtraHookEntries: (p?: string, s?: string) => boolean }).ensureMainScopeExtraHookEntries
+    ensureMain(config([GATE]), join(agentRoot, 'main-settings.local.json'))
+    await flush()
+    expect(sent()).toHaveLength(1)
+    expect(existsSync(statePath)).toBe(true)
   })
 })
 

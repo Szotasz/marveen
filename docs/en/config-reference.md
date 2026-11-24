@@ -24,7 +24,8 @@ These files are managed by the dashboard and change at runtime. They are not che
 | `store/config-overrides.json` | dashboard UI | Settings-page overrides (plain values only, never contains secrets) |
 | `store/update.pid` | automatic | Update process PID file (concurrency lock) |
 | `store/telegram-topics.json` | `/topic new <name>` (Telegram) | The named topics of the main chat: `{ "chatId", "topics": { "<name>": <message_thread_id> } }` (0600); written only while `TELEGRAM_TOPICS_ENABLED` is on |
-| `store/extra-hooks.json` | by hand or the main agent (optional) | Install-local extra hooks for every sub-agent's generated `settings.json`, after the built-in gates -- see below |
+| `store/extra-hooks.json` | by hand; the main agent only with `EXTRA_HOOKS_MAIN_AGENT_WRITE=on` (optional) | Install-local extra hooks for every sub-agent's generated `settings.json`, after the built-in gates -- see below |
+| `store/.extra-hooks-digest.json` | automatic (the dashboard) | The extras' digest last announced to the owner (0600): the sync compares `store/extra-hooks.json` and the files of `local-hooks/` against it and sends a security notice on a difference. No agent may write it (db-write-gate) |
 
 ### Dashboard language
 
@@ -441,12 +442,12 @@ start (so existing agents get it without a respawn).
 
 | Field | Required | Meaning |
 |-------|----------|---------|
-| `event` | yes | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact` or `Notification` |
+| `event` | yes | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact` or `Notification`. With `EXTRA_HOOKS_MAIN_AGENT_WRITE` on, `PreToolUse` and `PostToolUse` only (see below) |
 | `matcher` | no | Claude Code matcher (regex), at most 500 characters; without it the hook runs on every call |
 | `script` | yes | Path relative to the project root, inside `local-hooks/` (gitignored), `.py`, `.mjs` or `.js`; letters, digits and `_ . / @ + -` only, no `..` |
 | `timeout` | no | Seconds, 1..600, default 10 |
 | `failClosed` | yes | `true`: the same wrapper as the built-in gates (a missing interpreter or any exit other than 0 and 2 = deny, deadline 2 s before the timeout). Allowed on `PreToolUse` only, because on `UserPromptSubmit` a crash would block every prompt. `false`: a plain call, a crash does not block |
-| `scope` | no | `"subagents"` (the default): every sub-agent's generated settings. `"main"`: the main agent's project-local `.claude/settings.local.json`, the file the main session loads (the `--main-scope` egress parser uses it too), each command behind `[ "$CLAUDE_PROJECT_DIR" = '<root>' ] \|\| exit 0;`: a sub-agent session loads that file as well, and there the hook does nothing. Only the marked extra entries are replaced; the owner's own keys in the file stay. Any other value skips the entry |
+| `scope` | no | `"subagents"` (the default): every sub-agent's generated settings. `"main"`: the main agent's project-local `.claude/settings.local.json`, the file the main session loads (the `--main-scope` egress parser uses it too), each command behind `[ "$CLAUDE_PROJECT_DIR" = '<root>' ] \|\| exit 0;`: a sub-agent session loads that file as well, and there the hook does nothing. Only the marked extra entries are replaced; the owner's own keys in the file stay. Any other value skips the entry. With `EXTRA_HOOKS_MAIN_AGENT_WRITE` on, `"main"` is skipped too |
 | `description` | no | Free text, not used by the scaffold |
 
 What an entry can NOT do: replace, remove or reorder a built-in hook (an extra is appended AFTER
@@ -458,13 +459,61 @@ contains a file name of `scripts/` or `scripts/hooks/`, where the built-in gates
 built-in injectors find their own entries by script name); rename a script whose name collides.
 
 Who may write it: `store/extra-hooks.json` and `local-hooks/` decide what runs in EVERY
-sub-agent's session. The writers are the operator and the main agent (MAINEXTRAHOOKS1123: the
-main agent installs the entry and the script itself on the owner's request, with its native tools
-or Bash). Neither runs the sub-agents' self-pace gate, and the `db-write-gate` denies the pair to
-sub-agents only, by real path (file tools, MCP file tools, Bash). Every other install gate file
-(`.claude/settings*.json`, `scripts/hooks/`, `store/autonomy-config.json`, ...) stays denied to the
-main agent as well. What the self-pace gate guarantees is narrower than "a sub-agent cannot write
-them", so here is exactly what it does:
+sub-agent's session, with no gate in front of it. By default only the operator, by hand. The main
+agent only once the owner has switched `EXTRA_HOOKS_MAIN_AGENT_WRITE` on for this install
+(MAINEXTRAHOOKS1123):
+
+| Key | Value | Default | Where |
+|-----|-------|---------|-------|
+| `EXTRA_HOOKS_MAIN_AGENT_WRITE` | `on` / `off` | `off` | Settings, Agents tab, or `store/config-overrides.json` by hand |
+
+- Overrides-only: a `.env` line does not switch it on. Switching it on needs a logged-in owner
+  session or a full-scope device key, not the shared token.
+- The `db-write-gate` reads the switch straight from `store/config-overrides.json` on every call,
+  and only the literal `"on"` (trimmed, any case) opens it. A missing or unparsable file, a missing
+  key, `"off"`, `true`, `"1"`, `"yes"`: OFF.
+- OFF, the main agent is denied the pair exactly like a sub-agent: the `db-write-gate` denies it by
+  real path (file tools, MCP file tools, Bash). ON, the main agent installs the entry and the script
+  itself on the owner's request, with its native tools or Bash.
+- A sub-agent writes neither in either state.
+- No agent writes the switch itself: `store/config-overrides.json` is denied to every agent (since
+  APPROVALSLACK1030), so the main agent cannot flip its own switch. The announced digest
+  (`store/.extra-hooks-digest.json`) is denied the same way, so a pre-written digest cannot hide a
+  change.
+- Every other install gate file (`.claude/settings*.json`, `scripts/hooks/`,
+  `store/autonomy-config.json`, ...) stays denied to the main agent in both states.
+
+While the switch is ON the file may be agent-written, so the dashboard loads only gate-shaped
+entries from it:
+
+- `PreToolUse` and `PostToolUse` events. The rest (`UserPromptSubmit`, `SessionStart`,
+  `PreCompact`, `Notification`, `Stop`, `SubagentStop`, `SessionEnd`, `PostToolUseFailure`) is
+  skipped: a context injector's output lands in the session as hook feedback the harness reads as
+  the user's, not as a message to judge, and the others are no gate.
+- No `"scope": "main"` entry either: it would write the main agent's own
+  `.claude/settings.local.json`, which no agent may change. One an earlier sync wrote is taken out
+  by the next one.
+- A skipped entry gets an error-level log line (`extra-hooks.json: invalid entries IGNORED`, the
+  reason reads `refused while EXTRA_HOOKS_MAIN_AGENT_WRITE is on`); the other entries load.
+- OFF, the file is the operator's own and the full event set is available.
+- Limit: switching it off does not vet what the main agent wrote while it was on. Read the file and
+  `local-hooks/` before switching off.
+- A `PreToolUse` or `PostToolUse` hook can still answer the model (a deny reason,
+  `additionalContext`), but only tied to one tool call.
+
+The owner is told of every change, whatever the switch says. On every sync (dashboard start,
+sub-agent spawn) the dashboard compares the sha256 of the file, of each script it names and of
+every other file under `local-hooks/` (a named script has `local-hooks/` on its import path, so a
+helper is code too) with the digest last announced (`store/.extra-hooks-digest.json`). On a
+difference a security notice goes to the owner (`notifySecurityEvent`, the Telegram or Slack alert
+channel): what is new, what changed, what went, and the switch state. A restart with unchanged
+files sends nothing; the first sync with a non-blank file announces it once; a deleted file is
+announced too. A lost or unparsable record can only cause a notice, never suppress one.
+`__pycache__`, `*.pyc` and `.DS_Store` do not count.
+
+The operator and the main agent do not run the sub-agents' self-pace gate. What that gate
+guarantees for a sub-agent is narrower than "a sub-agent cannot write them", so here is exactly
+what it does:
 
 - It denies a sub-agent's native file-tool write (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`)
   to either, by name and by resolved real path.
@@ -487,10 +536,11 @@ them", so here is exactly what it does:
   run as one OS user, so these files are in the same trust domain as every agent's own
   `settings.json`, which a sub-agent can also edit.
 - To make up for that limit, a change is made visible. Every time the extras are synced
-  (dashboard start, sub-agent spawn), the dashboard logs the sha256 of the file and of each
-  `local-hooks/` script it names (`extra-hooks.json: sha256 of the file and of each script it
-  names`). It logs once per distinct content: the first sync after a start always logs, later
-  ones only on a change. Compare the line across starts in `dashboard.log`.
+  (dashboard start, sub-agent spawn), the dashboard logs the sha256 of the file, of each
+  `local-hooks/` script it names and of the directory's other files (`extra-hooks.json: sha256 of
+  the file, of each script it names and of every other local-hooks/ file`). It logs once per
+  distinct content: the first sync after a start always logs, later ones only on a change. A
+  content the owner was not told about yet also goes to the owner as a notice (above).
 
 For the same reason a script may not live in an agent's own directory (`agents/<name>/`): there
 the agent writes with no gate at all.

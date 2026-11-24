@@ -25,7 +25,8 @@ Ezek a fájlok a dashboard által kezelt, futásidőben módosuló konfiguráci�
 | `store/config-overrides.json` | dashboard UI | Beállítások-oldal által mentett felülbírálatok (plain értékek, sosem tartalmaz titkokat) |
 | `store/update.pid` | automatikus | Frissítési folyamat PID fájl (concurrency lock) |
 | `store/telegram-topics.json` | `/topic new <név>` (Telegram) | A fő chat elnevezett témái: `{ "chatId", "topics": { "<név>": <message_thread_id> } }` (0600); csak `TELEGRAM_TOPICS_ENABLED` mellett íródik |
-| `store/extra-hooks.json` | kézzel vagy a fő ágens (opcionális) | Telepítés-helyi plusz hookok minden sub-ágens generált `settings.json`-jába, a beépített kapuk után -- ld. lent |
+| `store/extra-hooks.json` | kézzel; a fő ágens csak `EXTRA_HOOKS_MAIN_AGENT_WRITE=on` mellett (opcionális) | Telepítés-helyi plusz hookok minden sub-ágens generált `settings.json`-jába, a beépített kapuk után -- ld. lent |
+| `store/.extra-hooks-digest.json` | automatikus (a dashboard) | A plusz hookok legutóbb a gazdának bejelentett lenyomata (0600): a szinkron ehhez méri a `store/extra-hooks.json`-t és a `local-hooks/` fájljait, eltérésnél biztonsági értesítést küld. Egyik ágens sem írhatja (db-write-gate) |
 
 ### A dashboard nyelve
 
@@ -496,12 +497,12 @@ dashboard indulásakor is (ilyenkor a meglévő ágensekre is, újraindítás n�
 
 | Mező | Kötelező | Jelentés |
 |------|----------|----------|
-| `event` | igen | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact` vagy `Notification` |
+| `event` | igen | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact` vagy `Notification`. Bekapcsolt `EXTRA_HOOKS_MAIN_AGENT_WRITE` mellett csak `PreToolUse` és `PostToolUse` (ld. lent) |
 | `matcher` | nem | A Claude Code matcher-e (regex), legfeljebb 500 karakter; hiányában minden hívásra fut |
 | `script` | igen | Relatív út a projekt gyökeréhez képest, a `local-hooks/` mappán belül (gitignore-olt), `.py`, `.mjs` vagy `.js`; csak betű, szám és `_ . / @ + -`, `..` nélkül |
 | `timeout` | nem | Másodperc, 1..600, alapból 10 |
 | `failClosed` | igen | `true`: a beépített kapukkal azonos burok (hiányzó interpreter vagy a 0-tól és 2-től eltérő kilépés = tiltás, a határidő 2 mp-cel a timeout előtt). Csak `PreToolUse`-on engedett, mert `UserPromptSubmit`-en egy összeomlás minden promptot blokkolna. `false`: sima hívás, egy összeomlás nem blokkol |
-| `scope` | nem | `"subagents"` (az alapértelmezés): minden sub-ügynök generált beállítása. `"main"`: a fő ügynök projekt-helyi `.claude/settings.local.json`-ja, amit a fő session betölt (a `--main-scope` egress-parser is ezt használja), minden parancs előtt `[ "$CLAUDE_PROJECT_DIR" = '<gyökér>' ] \|\| exit 0;`: egy sub-ügynök sessionje is betölti ezt a fájlt, és ott a hook nem csinál semmit. Csak a megjelölt extra bejegyzések cserélődnek, a fájl többi kulcsa marad. Más érték esetén a bejegyzés kimarad |
+| `scope` | nem | `"subagents"` (az alapértelmezés): minden sub-ügynök generált beállítása. `"main"`: a fő ügynök projekt-helyi `.claude/settings.local.json`-ja, amit a fő session betölt (a `--main-scope` egress-parser is ezt használja), minden parancs előtt `[ "$CLAUDE_PROJECT_DIR" = '<gyökér>' ] \|\| exit 0;`: egy sub-ügynök sessionje is betölti ezt a fájlt, és ott a hook nem csinál semmit. Csak a megjelölt extra bejegyzések cserélődnek, a fájl többi kulcsa marad. Más érték esetén a bejegyzés kimarad. Bekapcsolt `EXTRA_HOOKS_MAIN_AGENT_WRITE` mellett a `"main"` is kimarad |
 | `description` | nem | Szabad szöveg, a scaffold nem használja |
 
 Amit egy bejegyzés NEM tud: beépített hookot cserélni, törölni vagy átrendezni (a plusz hook az
@@ -514,12 +515,58 @@ beépített injektorok fájlnév alapján találják meg a saját bejegyzésüke
 át kell nevezni.
 
 Ki írhatja: a `store/extra-hooks.json` és a `local-hooks/` dönti el, mi fut MINDEN sub-ágens
-sessionjében. Az írók a gazda és a fő ágens (MAINEXTRAHOOKS1123: a fő ágens a gazda kérésére
-maga teszi be a bejegyzést és a szkriptet, natív eszközzel vagy Bash-sel); ezeken a sub-ágensek
-self-pace kapuja nem fut, a `db-write-gate` pedig a párt csak sub-ágensre tiltja, valódi útvonal
-szerint (fájleszköz, MCP-fájleszköz, Bash). A többi telepítési kapu-fájl (`.claude/settings*.json`,
-`scripts/hooks/`, `store/autonomy-config.json`, ...) a fő ágensre is tiltott marad. Amit a self-pace
-kapu garantál, az szűkebb annál, hogy „a sub-ágens nem írhatja”, ezért pontosan:
+sessionjében, kapu nélkül. Alapból csak a gazda, kézzel. A fő ágens csak akkor, ha a gazda ezen a
+telepítésen bekapcsolta az `EXTRA_HOOKS_MAIN_AGENT_WRITE` kapcsolót (MAINEXTRAHOOKS1123):
+
+| Kulcs | Érték | Alapérték | Hol |
+|-------|-------|-----------|-----|
+| `EXTRA_HOOKS_MAIN_AGENT_WRITE` | `on` / `off` | `off` | Beállítások, Agents fül, vagy a `store/config-overrides.json` kézzel |
+
+- Csak felülírásból él (overrides-only): egy `.env` sor nem kapcsolja be. Bekapcsolni csak
+  bejelentkezett gazda-session vagy teljes jogú eszközkulcs tudja, a közös tokennel nem.
+- A `db-write-gate` a kapcsolót közvetlenül a `store/config-overrides.json`-ból olvassa, minden
+  hívásnál, és csak az `"on"` szöveg nyitja meg (a szélső szóköz és a kis- vagy nagybetű nem számít).
+  Hiányzó vagy hibás JSON-ú fájl, hiányzó kulcs, `"off"`, `true`, `"1"`, `"yes"`: KI.
+- KI állásban a fő ágens a párt ugyanúgy nem írhatja, mint egy sub-ágens: a `db-write-gate`
+  valódi útvonal szerint tiltja (fájleszköz, MCP-fájleszköz, Bash). BE állásban a fő ágens a gazda
+  kérésére maga teszi be a bejegyzést és a szkriptet, natív eszközzel vagy Bash-sel.
+- Sub-ágens egyik állásban sem írhatja a párt.
+- Magát a kapcsolót egyik ágens sem írhatja: a `store/config-overrides.json` minden ágensre tiltott
+  (APPROVALSLACK1030 óta), így a fő ágens a saját kapcsolóját nem tudja átállítani. Ugyanígy tiltott a
+  bejelentett lenyomat (`store/.extra-hooks-digest.json`), hogy egy előre beírt lenyomat ne rejtsen el
+  egy változást.
+- A többi telepítési kapu-fájl (`.claude/settings*.json`, `scripts/hooks/`,
+  `store/autonomy-config.json`, ...) mindkét állásban tiltott marad a fő ágensre is.
+
+BE állásban a fájlt ágens is írhatja, ezért a dashboard csak kapu jellegű bejegyzést tölt be belőle:
+
+- `PreToolUse` és `PostToolUse` eseményt. A többi (`UserPromptSubmit`, `SessionStart`,
+  `PreCompact`, `Notification`, `Stop`, `SubagentStop`, `SessionEnd`, `PostToolUseFailure`) kimarad:
+  a kontextusba író hook kimenete a sessionben gazdai visszajelzésként jelenik meg, nem egy
+  megítélendő üzenetként, a többi pedig nem kapu.
+- `"scope": "main"` bejegyzést sem: az a fő ágens saját `.claude/settings.local.json`-jába írna, amit
+  egyik ágens sem változtathat. Ha egy korábbi szinkron írt be ilyet, a következő kiveszi.
+- A kihagyott bejegyzés `error` szintű naplósort kap (`extra-hooks.json: invalid entries IGNORED`,
+  az ok: `refused while EXTRA_HOOKS_MAIN_AGENT_WRITE is on`); a többi bejegyzés betöltődik.
+- KI állásban a fájl a gazdáé, és a teljes eseménykészlet használható.
+- Korlát: a kikapcsolás nem vizsgálja át, amit a fő ágens BE állásban írt. Kikapcsolás előtt nézd át
+  a fájlt és a `local-hooks/` mappát.
+- Egy `PreToolUse` vagy `PostToolUse` hook is szólhat a modellhez (tiltási ok, `additionalContext`),
+  de csak egy eszközhíváshoz kötve.
+
+A gazda minden változásról értesítést kap, a kapcsoló állásától függetlenül. Minden szinkronnál
+(dashboard-indulás, sub-ágens spawn) a dashboard összeveti a fájl, az általa megnevezett szkriptek
+és a `local-hooks/` minden további fájljának sha256-át (egy megnevezett szkript a `local-hooks/`
+mappát az import-útján látja, így egy segédfájl is kód) a legutóbb bejelentett lenyomattal
+(`store/.extra-hooks-digest.json`). Eltérésnél biztonsági értesítés megy a gazdának
+(`notifySecurityEvent`, a Telegram vagy Slack riasztási csatornán): mi lett új, mi módosult, mi
+tűnt el, és a kapcsoló állása. Változatlan fájlokkal egy újraindítás nem küld semmit; az első
+szinkron egy nem üres fájllal egyszer bejelenti; egy törölt fájlt is bejelent. Elveszett vagy
+olvashatatlan lenyomat csak értesítést okozhat, elhallgatni nem tud. A `__pycache__`, a `*.pyc` és
+a `.DS_Store` nem számít.
+
+A gazdán és a fő ágensen a sub-ágensek self-pace kapuja nem fut. Amit ez a kapu a sub-ágensre
+garantál, az szűkebb annál, hogy „a sub-ágens nem írhatja”, ezért pontosan:
 
 - Tiltja a sub-ágens natív fájleszközös írását (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`)
   bármelyikre, név és feloldott valódi útvonal szerint.
@@ -545,10 +592,11 @@ kapu garantál, az szűkebb annál, hogy „a sub-ágens nem írhatja”, ezért
   fájlok ugyanabban a bizalmi körben vannak, mint bármelyik ágens saját `settings.json`-ja,
   amelyet egy sub-ágens szintén szerkeszthet.
 - A korlátot a változás láthatóvá tétele ellensúlyozza. A dashboard minden szinkronnál
-  (dashboard-indulás, sub-ágens spawn) naplózza a fájl és az általa megnevezett összes
-  `local-hooks/` szkript sha256-át (`extra-hooks.json: sha256 of the file and of each script it
-  names`). Egy tartalmat egyszer naplóz: az indulás utáni első szinkron mindig ír, a későbbiek
-  csak változáskor. Vesd össze a sort az indulások között a `dashboard.log`-ban.
+  (dashboard-indulás, sub-ágens spawn) naplózza a fájl, az általa megnevezett összes
+  `local-hooks/` szkript és a mappa többi fájljának sha256-át (`extra-hooks.json: sha256 of the
+  file, of each script it names and of every other local-hooks/ file`). Egy tartalmat egyszer
+  naplóz: az indulás utáni első szinkron mindig ír, a későbbiek csak változáskor. Egy még be nem
+  jelentett tartalomról a gazda értesítést is kap (fent).
 
 Ugyanezért nem lehet a szkript egy ágens saját könyvtárában (`agents/<név>/`): azt az ágens
 semmilyen kapu nélkül írja.

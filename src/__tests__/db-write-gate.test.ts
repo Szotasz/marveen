@@ -221,7 +221,8 @@ describe('2. file-level writes of the database', () => {
 
 describe('3. this install\'s gate wiring and autonomy levels', () => {
   const REL = ['.claude/settings.json', '.claude/settings.local.json', 'scripts/hooks/gate.py', 'scripts/hooks/new.py',
-    // MAINEXTRAHOOKS1123: store/extra-hooks.json moved to the sub-agent list (db-write-gate-main-extra-hooks.test.ts)
+    // MAINEXTRAHOOKS1123: store/extra-hooks.json left this list: on the sub-agent list always, on the main agent's while
+    // the owner's switch is off (EXTRA_HOOKS_PAIR, db-write-gate-main-extra-hooks.test.ts)
     'scripts/self-pace-gate.mjs', 'store/autonomy-config.json',
     // GROMZOGATECONF1030 (c), Samu 59516: the sub-agents' sender-role gates, only the dashboard writes them.
     'store/agent-sender-role-gates.json',
@@ -231,6 +232,8 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     'store/.owner-slack-target',
     // NETTARGETENV1104, Dani 68849: the network-target origins recorded at the last boot.
     'store/.net-target-hosts.json',
+    // MAINEXTRAHOOKS1123 (c): the extras' digest last announced to the owner (a pre-written one would hide a change)
+    'store/.extra-hooks-digest.json',
     // GATEFILES1110: the owner-gated agent settings (a provider's baseUrl, the context-guard values)
     'store/custom-providers.json', 'store/context-guard.json',
     // DOCKERHTTPS1119 (Dani 81107 B2): the dashboard login's TOTP secrets and replay state
@@ -248,7 +251,7 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
       '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/autonomy-config.json',
-      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.inbound-sig-key', 'store/.dashboard-node', 'store/.platform', 'store/bash-sandbox', 'store/code-mode', 'store/board-access.json', 'store/colleague-accounts.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
+      'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/.extra-hooks-digest.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.inbound-sig-key', 'store/.dashboard-node', 'store/.platform', 'store/bash-sandbox', 'store/code-mode', 'store/board-access.json', 'store/colleague-accounts.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json',
       // SUPPORTKULCS1109 D5: the support state of this machine, one folder

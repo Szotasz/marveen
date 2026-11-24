@@ -24,11 +24,22 @@
  *     isUnsafeHookCommand).
  *
  * Trust: store/extra-hooks.json and local-hooks/ decide what runs in EVERY
- * sub-agent's session, and the writers are the operator and the main agent
- * (MAINEXTRAHOOKS1123: the main agent installs an extra on the owner's word,
- * with its native tools or Bash; the db-write-gate lists the pair for
- * sub-agents only). What is actually enforced is narrower than "a sub-agent
- * cannot write them", and it is stated here so nobody reads more into it:
+ * sub-agent's session. The writer is the operator; the main agent too, but
+ * only while the owner has switched EXTRA_HOOKS_MAIN_AGENT_WRITE on in
+ * store/config-overrides.json (MAINEXTRAHOOKS1123, fleet review of #3064):
+ *   (a) the db-write-gate denies the pair to the main agent unless the switch
+ *       is on, and to every sub-agent always (EXTRA_HOOKS_PAIR there; the
+ *       switch file itself is denied to every agent);
+ *   (b) while the switch is on, the file is agent-writable, so only
+ *       AGENT_WRITABLE_EXTRA_HOOK_EVENTS (PreToolUse, PostToolUse) load and no
+ *       "scope": "main" entry does; the rest is skipped and logged. Off, the
+ *       file is the operator's and keeps the full set. Stated limit: switching
+ *       it off does not vet what was written while it was on;
+ *   (c) every sync compares the digest with the one last announced
+ *       (store/.extra-hooks-digest.json, also denied to every agent) and tells
+ *       the owner on a difference (checkExtraHooksDigestState).
+ * What is actually enforced is narrower than "a sub-agent cannot write them",
+ * and it is stated here so nobody reads more into it:
  *   - the db-write-gate (every agent) denies a sub-agent's write of either by
  *     resolved real path (its SUBAGENT_PROTECTED_INSTALL_PATHS), in the file
  *     tools, MCP file tools and Bash;
@@ -47,9 +58,10 @@
  *     hook survives a respawn);
  *   - what the gate misses is made visible, not prevented: every time the
  *     extras are synced (dashboard start, sub-agent spawn), the sha256 of the
- *     file and of every script it names is logged once per content
- *     (logExtraHooksDigest in agent-scaffold.ts), so an unexpected change shows
- *     up in dashboard.log.
+ *     file, of every script it names and of every other local-hooks/ file is
+ *     logged once per content (logExtraHooksDigest in agent-scaffold.ts), and
+ *     a content the owner was not yet told about goes to the owner as a
+ *     security notice (c).
  * A script may not live in an agent's own directory (agents/<name>/) for the
  * same reason: that one the agent writes with no gate at all.
  *
@@ -64,7 +76,7 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
-import { extname, isAbsolute, join, relative } from 'node:path'
+import { dirname, extname, isAbsolute, join, relative } from 'node:path'
 
 export const EXTRA_HOOKS_FILE = 'extra-hooks.json'
 /** The only directory an extra's script may live in, relative to the project root. */
@@ -80,6 +92,18 @@ export const EXTRA_HOOK_EVENTS = [
   'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit',
   'Stop', 'SubagentStop', 'SessionStart', 'SessionEnd', 'PreCompact', 'Notification',
 ] as const
+
+/**
+ * The events an AGENT-WRITABLE file may use (MAINEXTRAHOOKS1123, fleet review of #3064 (b)): while the owner's
+ * EXTRA_HOOKS_MAIN_AGENT_WRITE switch is on, the main agent may write store/extra-hooks.json, so the file only gets
+ * gate-shaped extras. Every other event of EXTRA_HOOK_EVENTS is refused there: UserPromptSubmit, SessionStart and
+ * PreCompact put their output into the session as hook context (which the harness reads as user feedback, outside the
+ * trusted-peer envelope), and Stop, SubagentStop, Notification, SessionEnd and PostToolUseFailure are not a gate. A
+ * PreToolUse or PostToolUse hook can still answer the model (a deny reason, additionalContext), but only tied to one
+ * tool call (stated limit). With the switch off the file is the operator's own and keeps the full set.
+ */
+export const AGENT_WRITABLE_EXTRA_HOOK_EVENTS = ['PreToolUse', 'PostToolUse'] as const
+export const EXTRA_HOOKS_SWITCH_KEY = 'EXTRA_HOOKS_MAIN_AGENT_WRITE'
 
 const ENTRY_KEYS = new Set(['event', 'matcher', 'script', 'timeout', 'failClosed', 'scope', 'description'])
 const SCRIPT_RE = /^[A-Za-z0-9_][A-Za-z0-9_./@+-]*$/
@@ -99,6 +123,9 @@ export interface ExtraHookDeps {
   nodeGateCommand: (scriptPath: string, timeoutSec: number) => string
   pythonGateCommand: (scriptPath: string, timeoutSec: number) => string
   isUnsafe: (command: string) => boolean
+  /** MAINEXTRAHOOKS1123 (b): the owner's EXTRA_HOOKS_MAIN_AGENT_WRITE switch is on, so the file may be agent-written:
+   *  only AGENT_WRITABLE_EXTRA_HOOK_EVENTS and no "scope": "main". Unset/false: the operator's file, the full set. */
+  agentWritable?: boolean
 }
 
 export interface ExtraHookEntry {
@@ -156,6 +183,17 @@ function validateEntry(raw: unknown, i: number, deps: ExtraHookDeps, reserved: s
   }
   if (e.scope !== undefined && e.scope !== 'subagents' && e.scope !== 'main') return `${at}: scope must be "subagents" or "main"`
   const scope: ExtraHookEntry['scope'] = e.scope === 'main' ? 'main' : 'subagents'
+  // MAINEXTRAHOOKS1123 (b): an agent-writable file gets gate-shaped extras only
+  if (deps.agentWritable) {
+    if (!(AGENT_WRITABLE_EXTRA_HOOK_EVENTS as readonly string[]).includes(event)) {
+      return `${at}: event ${event} is refused while ${EXTRA_HOOKS_SWITCH_KEY} is on (the main agent may write this file): ` +
+        `only ${AGENT_WRITABLE_EXTRA_HOOK_EVENTS.join(' and ')}, no context injector or non-gate event`
+    }
+    if (scope === 'main') {
+      return `${at}: "scope": "main" is refused while ${EXTRA_HOOKS_SWITCH_KEY} is on ` +
+        '(it would write the main agent\'s own .claude/settings.local.json, which no agent may change)'
+    }
+  }
   let matcher: string | undefined
   if (e.matcher !== undefined) {
     if (typeof e.matcher !== 'string' || e.matcher.length === 0 || e.matcher.length > MAX_MATCHER) {
@@ -287,9 +325,51 @@ export interface ExtraHooksDigest {
   sha256: string
   /** sha256 of each local-hooks/ script the file names (null: not readable). */
   scripts: Record<string, string | null>
+  /** sha256 of every OTHER file under local-hooks/ (MAINEXTRAHOOKS1123 (c)): a named script runs with local-hooks/
+   *  on its import path, so a helper it imports changes what runs without changing the script. By path from the
+   *  project root, sorted; null: not readable. */
+  files: Record<string, string | null>
+  /** Present (true) only when local-hooks/ held more than MAX_DIGEST_FILES files and the rest went unhashed. */
+  filesTruncated?: true
 }
 
 const sha256Hex = (b: Buffer): string => createHash('sha256').update(b).digest('hex')
+
+const MAX_DIGEST_FILES = 500
+// Byproducts a run leaves, not code anyone wrote: hashing them would announce a change on every first import.
+const DIGEST_SKIP = (name: string): boolean => name === '__pycache__' || name === '.DS_Store' || name.endsWith('.pyc')
+
+// Every file reachable under <root>/local-hooks/, by path from the root, sorted. A symlink is followed (a helper
+// directory linked in from elsewhere, an agent's own directory included, is code a named script can import), each real
+// directory once (no loop); a dangling link is listed and hashes to null. At most MAX_DIGEST_FILES files.
+function localHookFiles(projectRoot: string): { files: string[]; truncated: boolean } {
+  const files: string[] = []
+  const seen = new Set<string>()
+  let truncated = false
+  const walk = (dir: string, rel: string): void => {
+    let real: string
+    try { real = realpathSync(dir) } catch { return }
+    if (seen.has(real)) return
+    seen.add(real)
+    let ents
+    try { ents = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const d of ents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      if (DIGEST_SKIP(d.name)) continue
+      if (files.length >= MAX_DIGEST_FILES) { truncated = true; return }
+      const abs = join(dir, d.name)
+      const r = `${rel}/${d.name}`
+      let isDir = d.isDirectory()
+      let isFile = d.isFile()
+      if (d.isSymbolicLink()) {
+        try { const st = statSync(abs); isDir = st.isDirectory(); isFile = st.isFile() } catch { isFile = true }
+      }
+      if (isDir) walk(abs, r)
+      else if (isFile) files.push(r)
+    }
+  }
+  walk(join(projectRoot, EXTRA_HOOKS_DIR), EXTRA_HOOKS_DIR)
+  return { files, truncated }
+}
 
 /**
  * The file names of the scripts the config names under local-hooks/, valid entry or not. The boot prune
@@ -317,13 +397,14 @@ export function extraHookScriptNames(path: string): string[] {
  * The fingerprint the dashboard logs when it syncs the extras: the file, and
  * every script it names under <projectRoot>/local-hooks/, whether or not the
  * entry is valid (a rejected entry today can be a valid one after the next
- * edit). Null when the file does not exist: then nothing is logged, as nothing
- * is wired. A file that does not parse still gets its own hash.
+ * edit), and every other file under local-hooks/ (`files`). Null when the file
+ * does not exist: then nothing is logged, as nothing is wired. A file that
+ * does not parse still gets its own hash.
  */
 export function extraHooksDigest(path: string, projectRoot: string): ExtraHooksDigest | null {
   if (!existsSync(path)) return null
   let bytes: Buffer
-  try { bytes = readFileSync(path) } catch { return { sha256: 'unreadable', scripts: {} } }
+  try { bytes = readFileSync(path) } catch { return { sha256: 'unreadable', scripts: {}, files: {} } }
   let raw: unknown = null
   try { raw = JSON.parse(bytes.toString('utf-8')) } catch { /* the file hash alone */ }
   const list = raw && typeof raw === 'object' && Array.isArray((raw as { entries?: unknown }).entries)
@@ -335,5 +416,135 @@ export function extraHooksDigest(path: string, projectRoot: string): ExtraHooksD
     if (script.split('/')[0] !== EXTRA_HOOKS_DIR || script.split('/').some((x) => x === '..' || x === '.' || x === '')) continue
     try { scripts[script] = sha256Hex(readFileSync(join(projectRoot, script))) } catch { scripts[script] = null }
   }
-  return { sha256: sha256Hex(bytes), scripts }
+  const files: Record<string, string | null> = {}
+  const walked = localHookFiles(projectRoot)
+  for (const rel of walked.files) {
+    if (rel in scripts) continue
+    try { files[rel] = sha256Hex(readFileSync(join(projectRoot, rel))) } catch { files[rel] = null }
+  }
+  return { sha256: sha256Hex(bytes), scripts, files, ...(walked.truncated ? { filesTruncated: true as const } : {}) }
+}
+
+export type ExtraHooksChangeKind = 'new' | 'changed' | 'removed'
+export interface ExtraHooksChange {
+  /** The config file itself; null when its bytes are the same. */
+  file: ExtraHooksChangeKind | null
+  /** Each local-hooks/ file (named script or helper) that appeared, changed or went, sorted by path. */
+  paths: Array<{ path: string; change: ExtraHooksChangeKind }>
+}
+
+// A named script that is missing hashes to null: for the comparison that is the same as not being there.
+function digestPaths(d: ExtraHooksDigest | null): Map<string, string> {
+  const m = new Map<string, string>()
+  if (!d) return m
+  for (const src of [d.files ?? {}, d.scripts ?? {}]) for (const [p, h] of Object.entries(src)) if (typeof h === 'string') m.set(p, h)
+  return m
+}
+
+/** Pure: what differs between two digests (null: no file). No change at all: null. */
+export function diffExtraHooksDigest(prev: ExtraHooksDigest | null, cur: ExtraHooksDigest | null): ExtraHooksChange | null {
+  const file: ExtraHooksChangeKind | null = !prev && !cur ? null : !prev ? 'new' : !cur ? 'removed'
+    : prev.sha256 !== cur.sha256 ? 'changed' : null
+  // No file now: nothing is wired, and its scripts are not "removed" from the disk, so only the file is reported.
+  if (!cur) return file ? { file, paths: [] } : null
+  const a = digestPaths(prev)
+  const b = digestPaths(cur)
+  const paths: ExtraHooksChange['paths'] = []
+  for (const p of [...new Set([...a.keys(), ...b.keys()])].sort()) {
+    const x = a.get(p); const y = b.get(p)
+    if (x === y) continue
+    paths.push({ path: p, change: x === undefined ? 'new' : y === undefined ? 'removed' : 'changed' })
+  }
+  if (!file && !paths.length && !!prev?.filesTruncated === !!cur?.filesTruncated) return null
+  return { file, paths }
+}
+
+const CHANGE_WORD: Record<ExtraHooksChangeKind, string> = { new: 'új', changed: 'módosult', removed: 'törölve' }
+const NOTICE_MAX_PATHS = 10
+
+/**
+ * The owner's security notice for a change of the extras (MAINEXTRAHOOKS1123 (c)), in the Hungarian of the other
+ * notifySecurityEvent texts. `first`: no digest was recorded yet (the first sync of this install, or a lost record).
+ */
+export function extraHooksChangeNotice(change: ExtraHooksChange, opts: { switchOn: boolean; first: boolean; before: string | null; after: string | null }): string {
+  const parts: string[] = []
+  if (opts.first) parts.push('store/extra-hooks.json: első rögzítés (eddig nem volt mentett lenyomat)')
+  else if (change.file) parts.push(`store/extra-hooks.json ${CHANGE_WORD[change.file]}`)
+  const shown = change.paths.slice(0, NOTICE_MAX_PATHS).map((p) => `${p.path} ${CHANGE_WORD[p.change]}`)
+  if (change.paths.length > NOTICE_MAX_PATHS) shown.push(`és még ${change.paths.length - NOTICE_MAX_PATHS} fájl`)
+  if (shown.length) parts.push(shown.join(', '))
+  const short = (h: string | null) => (h ? h.slice(0, 12) : 'nincs')
+  return `🪝 [Biztonság] Változtak a telepítés-helyi plusz hookok (MAINEXTRAHOOKS1123): ${parts.join('; ')}. ` +
+    'Ezek minden sub-ügynök sessionjében futnak, kapu nélkül. ' +
+    (opts.switchOn
+      ? `${EXTRA_HOOKS_SWITCH_KEY}: BE, tehát a fő ügynök is írhatja őket. `
+      : `${EXTRA_HOOKS_SWITCH_KEY}: KI, tehát csak kézzel írhatók. `) +
+    'Ha nem te kérted, nézd át a store/extra-hooks.json-t és a local-hooks/ mappát' +
+    (opts.switchOn ? ', és kapcsold ki a kapcsolót a Beállításokban. ' : '. ') +
+    `sha256: ${short(opts.before)} -> ${short(opts.after)}.`
+}
+
+/** Where the last announced digest is kept: next to the config file (store/.extra-hooks-digest.json in production). */
+export const EXTRA_HOOKS_DIGEST_STATE = '.extra-hooks-digest.json'
+export function extraHooksDigestStatePath(configPath: string): string {
+  return join(dirname(configPath), EXTRA_HOOKS_DIGEST_STATE)
+}
+
+interface DigestState { digest: ExtraHooksDigest | null }
+function readDigestState(p: string): DigestState | null {
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf-8')) as unknown
+    if (!raw || typeof raw !== 'object' || !('digest' in raw)) return null
+    const d = (raw as { digest: unknown }).digest
+    if (d === null) return { digest: null }
+    if (!d || typeof d !== 'object' || typeof (d as ExtraHooksDigest).sha256 !== 'string') return null
+    return { digest: d as ExtraHooksDigest }
+  } catch {
+    return null
+  }
+}
+
+export interface ExtraHooksDigestCheck {
+  /** The notice sent to the owner, or null (nothing changed, the very first sight of a blank file, or no file). */
+  notice: string | null
+  /** The record was (re)written. */
+  recorded: boolean
+}
+
+/**
+ * MAINEXTRAHOOKS1123 (c): compare the extras' digest with the one last announced (the state file), tell the owner on
+ * a difference and record the new one. The record is behind the db-write-gate for every agent, so an agent cannot
+ * pre-write the next digest to hide its change. A missing or unparsable record counts as "never announced", so it
+ * can only cause a notice, never suppress one: the first sync with a non-blank file announces it once. A file that
+ * went away is announced too. Never throws; a failed write is logged by the caller's `onError`.
+ */
+export function checkExtraHooksDigestState(
+  configPath: string,
+  digest: ExtraHooksDigest | null,
+  opts: { statePath?: string; switchOn: boolean; notify: (text: string) => void; write: (p: string, data: string) => void; onError?: (err: unknown) => void },
+): ExtraHooksDigestCheck {
+  const statePath = opts.statePath ?? extraHooksDigestStatePath(configPath)
+  // The notice goes first: a record that cannot be written means the next start announces again, never silence.
+  const announce = (notice: string | null): ExtraHooksDigestCheck => {
+    if (notice) { try { opts.notify(notice) } catch (err) { opts.onError?.(err) } }
+    try {
+      opts.write(statePath, JSON.stringify({ digest }, null, 2))
+      return { notice, recorded: true }
+    } catch (err) {
+      opts.onError?.(err)
+      return { notice, recorded: false }
+    }
+  }
+  const state = readDigestState(statePath)
+  if (!state) {
+    if (!digest) return { notice: null, recorded: false }
+    let blank = false
+    try { blank = readFileSync(configPath, 'utf-8').trim() === '' } catch { /* unreadable: announce it */ }
+    return announce(blank ? null : extraHooksChangeNotice(diffExtraHooksDigest(null, digest) ?? { file: 'new', paths: [] },
+      { switchOn: opts.switchOn, first: true, before: null, after: digest.sha256 }))
+  }
+  const change = diffExtraHooksDigest(state.digest, digest)
+  if (!change) return { notice: null, recorded: false }
+  return announce(extraHooksChangeNotice(change,
+    { switchOn: opts.switchOn, first: false, before: state.digest?.sha256 ?? null, after: digest?.sha256 ?? null }))
 }
