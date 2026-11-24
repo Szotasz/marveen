@@ -2642,21 +2642,24 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const data = await serializeSkillsDir(() => {
         // Checked again on the queue: a delete queued before this export may have removed the agent.
         if (!existsSync(agentDir(name))) return null
-        exportAgentBundle(name, outPath, {
+        const m = exportAgentBundle(name, outPath, {
           includeSecrets,
           exportedBy: MAIN_AGENT_ID,
           exportedAt: new Date().toISOString(),
         })
-        return readFileSync(outPath)
+        return { bytes: readFileSync(outPath), fileMemory: m?.fileMemory ?? 'none' }
       })
       if (!data) { json(res, { error: 'Agent not found' }, 404); return true }
       res.writeHead(200, {
+        // ISSUE3056 (#3086): one line on the agent's Claude Code file memory (included | shared | over_cap | none |
+        // not_requested), so the dashboard can say whether it travelled.
+        'X-Marveen-File-Memory': data.fileMemory,
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${bundleFilename(name)}"`,
-        'Content-Length': String(data.length),
+        'Content-Length': String(data.bytes.length),
         'Cache-Control': 'private, no-store',
       })
-      res.end(data)
+      res.end(data.bytes)
     } catch (err) {
       // MIOAGENTINSTALL1114 (plan 4.2): a package agent is not exported; the answer says what to do instead.
       if (err instanceof PackageAgentExportError) { json(res, { error: 'package_agent_not_exportable', message: err.message }, 409); return true }
