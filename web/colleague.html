@@ -44,6 +44,18 @@
   .cb-task-title { display: block; font-weight: 500; font-size: 0.9rem; line-height: 1.3; overflow-wrap: anywhere; margin-bottom: 6px; }
   .cb-task-meta { margin-bottom: 8px; }
   .cb-task-actions .cb-input { flex: 1 1 110px; min-width: 0; }
+  /* The view switch: the column board or the status-grouped list, the colleague's choice. */
+  .cb-view { display: inline-flex; }
+  .cb-view .cb-btn { border-radius: 0; }
+  .cb-view .cb-btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+  .cb-view .cb-btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; border-left: 0; }
+  .cb-view .cb-btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+  /* The list view: one section per status that has cards, the cards stacked under each other. */
+  .cb-board.cb-list { display: block; }
+  .cb-list .cb-group h2 .cb-count { margin-left: 6px; }
+  .cb-list .cb-task { background: none; border: 0; border-top: 1px solid var(--border); border-radius: 0; box-shadow: none; padding: 8px 0; }
+  .cb-list .cb-task:first-of-type { border-top: 0; }
+  .cb-list .cb-task:hover { border-color: var(--border); }
   .cb-badge { display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 0.75rem; background: var(--bg-input); color: var(--text-muted); }
   .cb-badge.high, .cb-badge.urgent { background: var(--danger-soft); color: var(--danger); }
   .cb-detail { margin-top: 8px; padding: 8px 10px; background: var(--bg-input); border-radius: var(--radius-sm); }
@@ -73,6 +85,10 @@
       <h1 data-i18n="colleague.title">Feladataim</h1>
       <span class="cb-muted" id="cb-who"></span>
       <span class="spacer"></span>
+      <div class="cb-view" role="group" data-i18n-aria="colleague.view.label">
+        <button class="cb-btn" id="cb-view-columns" type="button" aria-pressed="true" data-i18n="colleague.view.columns">Oszlopok</button>
+        <button class="cb-btn" id="cb-view-list" type="button" aria-pressed="false" data-i18n="colleague.view.list">Lista</button>
+      </div>
       <button class="cb-btn" id="cb-refresh" type="button" data-i18n="colleague.refresh">Frissítés</button>
       <button class="cb-btn" id="cb-logout" type="button" data-i18n="colleague.logout">Kilépés</button>
     </div>

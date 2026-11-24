@@ -1,8 +1,9 @@
 // The colleague board page (docs/board-access.md, "Colleague login").
 // Talks to /api/colleague/* and /api/board/* only, and relies on the HttpOnly
 // colleague cookie the login sets; nothing is kept in browser storage except the
-// dashboard's language choice (marveen.lang), read, never written. Every value
-// from the server goes in through textContent.
+// dashboard's language choice (marveen.lang), read, never written, and this
+// page's view choice (marveen.colleague.view: 'columns' or 'list'), a per-browser
+// convenience. Every value from the server goes in through textContent.
 (function () {
   'use strict'
 
@@ -109,14 +110,50 @@
   // The card being dragged: its record and its status select, so a drop goes through the same move() as the select.
   let dragged = null
 
-  /** One column per status, side by side, the empty ones too: an empty column is still a drop target. */
+  // The view: 'columns' (the kanban, with drag) or 'list' (one section per status that has cards, select only).
+  // An unreadable or unknown stored value is the column view.
+  const VIEW_KEY = 'marveen.colleague.view'
+  let view = 'columns'
+  try { if (localStorage.getItem(VIEW_KEY) === 'list') view = 'list' } catch { /* storage blocked */ }
+  let lastCards = []
+
+  function setView(v) {
+    view = v === 'list' ? 'list' : 'columns'
+    try { localStorage.setItem(VIEW_KEY, view) } catch { /* storage blocked: the choice lasts for this page only */ }
+    render(lastCards)
+  }
+
   function render(cards) {
+    lastCards = cards
+    $('cb-view-columns').setAttribute('aria-pressed', String(view === 'columns'))
+    $('cb-view-list').setAttribute('aria-pressed', String(view === 'list'))
     const root = $('cb-groups')
     root.replaceChildren()
+    root.classList.toggle('cb-list', view === 'list')
     const statuses = (me && me.statuses) || ['planned', 'in_progress', 'testing', 'waiting', 'done']
     const empty = $('cb-empty')
     empty.textContent = t('colleague.empty')
     empty.hidden = cards.length > 0
+    if (view === 'list') renderList(root, cards, statuses)
+    else renderColumns(root, cards, statuses)
+  }
+
+  /** The list view: a section per status that has cards; moving is the select's job, there is no drag. */
+  function renderList(root, cards, statuses) {
+    for (const s of statuses) {
+      const list = cards.filter((c) => c.status === s)
+      if (list.length === 0) continue
+      const sec = el('section', null, 'cb-card cb-group')
+      const h = el('h2', statusLabel(s))
+      h.append(el('span', String(list.length), 'cb-count'))
+      sec.append(h)
+      for (const c of list) sec.append(renderCard(c, statuses, false))
+      root.append(sec)
+    }
+  }
+
+  /** One column per status, side by side, the empty ones too: an empty column is still a drop target. */
+  function renderColumns(root, cards, statuses) {
     for (const s of statuses) {
       const list = cards.filter((c) => c.status === s)
       const col = el('section', null, 'cb-col')
@@ -125,7 +162,7 @@
       const body = el('div', null, 'cb-col-body')
       body.dataset.status = s
       wireDrop(body, s)
-      for (const c of list) body.append(renderCard(c, statuses))
+      for (const c of list) body.append(renderCard(c, statuses, true))
       col.append(head, body)
       root.append(col)
     }
@@ -153,7 +190,7 @@
     })
   }
 
-  function renderCard(c, statuses) {
+  function renderCard(c, statuses, canDrag) {
     const box = el('div', null, 'cb-task')
     box.append(el('span', c.title, 'cb-task-title'))
     const meta = el('div', null, 'cb-row cb-task-meta')
@@ -185,6 +222,11 @@
       showDetail(c.id, detail)
     })
     if (openCard === c.id) showDetail(c.id, detail)
+    if (canDrag) wireDrag(box, c, sel)
+    return box
+  }
+
+  function wireDrag(box, c, sel) {
     // Drag by the card itself, but not from its controls: a draggable ancestor stops a select from opening and
     // text from being selected in the comment box in some browsers, so dragging is off while the pointer is on one.
     box.draggable = true
@@ -203,7 +245,6 @@
       dragged = null
       for (const b of document.querySelectorAll('.cb-col-body.drag-over')) b.classList.remove('drag-over')
     })
-    return box
   }
 
   async function showDetail(id, detail) {
@@ -286,6 +327,8 @@
   })
 
   $('cb-refresh').addEventListener('click', () => load())
+  $('cb-view-columns').addEventListener('click', () => setView('columns'))
+  $('cb-view-list').addEventListener('click', () => setView('list'))
 
   $('cb-new-form').addEventListener('submit', async (e) => {
     e.preventDefault()
