@@ -136,7 +136,11 @@ Report to the user/caller:
 
 - Do NOT include secrets, tokens, or .env values in the handoff
 - Do NOT include full file contents -- use paths and line numbers
-- Keep it under 3000 words -- the receiving session needs room to work
+- Size budget: aim for 4000 characters, hard stop at 8000. The handoff stays in the next session's context on
+  EVERY turn and is rewritten at every context-guard restart, so its size is paid twice (measured 2026-11-24 on a
+  7-agent fleet: handoffs of 3.4k-15.8k bytes, 8-33 restarts per agent in 36 h). Carry state, not history: closed
+  work goes to the daily log in one line, not here; cite card, comment and message IDs instead of repeating their
+  content; list only the finished items the next session could otherwise redo.
 - If `target=` agent is not running (check tmux), warn and fall back to file mode
 - The handoff is a snapshot -- it goes stale. Include the timestamp prominently
 
