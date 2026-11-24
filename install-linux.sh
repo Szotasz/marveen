@@ -3291,7 +3291,8 @@ case "$DO_MIGRATE" in
     if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
       "$INSTALL_DIR/scripts/migrate.sh" || warn "$(_t macos.migrate_failed | sed 's/^ *//')"
     else
-      warn "A migrate.sh nem talalhato. Hasznald a dashboardot: http://localhost:${WEB_PORT:-3420} -> Koltoztes"
+      # MIGRATEMISSINGI18N1123: the same translated text as install-macos.sh, so an English install reads English.
+      warn "$(_t macos.migrate_missing | sed 's/^ *//')"
     fi
     ;;
 esac

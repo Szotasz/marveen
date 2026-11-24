@@ -29,14 +29,16 @@ function migrationBlock(installer: string): string {
   return src.slice(start, end + '\nesac'.length)
 }
 
-function runBlock(installer: string, opts: { answer: string; migrateRc: number; lang?: 'hu' | 'en' }) {
+function runBlock(installer: string, opts: { answer: string; migrateRc: number; lang?: 'hu' | 'en'; noStub?: boolean }) {
   const dir = mkdtempSync(join(tmpdir(), 'marveen-migrate-block-'))
   // A space in the install path: the hint must stay copy-pasteable.
   const installDir = join(dir, 'my install')
   mkdirSync(join(installDir, 'scripts'), { recursive: true })
   const stub = join(installDir, 'scripts', 'migrate.sh')
-  writeFileSync(stub, `#!/bin/bash\necho MIGRATE_STUB_RAN\nexit ${opts.migrateRc}\n`)
-  chmodSync(stub, 0o755)
+  if (!opts.noStub) {
+    writeFileSync(stub, `#!/bin/bash\necho MIGRATE_STUB_RAN\nexit ${opts.migrateRc}\n`)
+    chmodSync(stub, 0o755)
+  }
 
   const script = [
     'set -e',
@@ -97,5 +99,19 @@ describe.each(INSTALLERS)('%s: the optional migration step is non-fatal (MIGRATE
     expect(skipped.out).not.toContain('MIGRATE_STUB_RAN')
     expect(skipped.out).toContain('REACHED_THE_END')
     expect(skipped.code).toBe(0)
+  })
+
+  // MIGRATEMISSINGI18N1123: the "migrate.sh not found" branch speaks the install language too.
+  it.each([
+    ['en', 'migrate.sh not found', '-> Migration'],
+    ['hu', 'A migrate.sh nem található', '-> Költöztetés'],
+  ] as const)('a missing migrate.sh is reported in the install language (%s)', (lang, text, menu) => {
+    const { code, out } = runBlock(installer, { answer: 'y', migrateRc: 0, lang, noStub: true })
+    expect(out).toContain(text)
+    expect(out).toContain(menu)
+    expect(out).not.toContain('Koltoztes')
+    expect(out).not.toContain('TRAP_FIRED')
+    expect(out).toContain('REACHED_THE_END')
+    expect(code).toBe(0)
   })
 })
