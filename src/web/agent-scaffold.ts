@@ -8,7 +8,7 @@ import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync, writeMcpJsonFile } from './atomic-write.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { isAbsoluteHttpUrl } from '../config-registry.js'
+import { isAbsoluteHttpUrl, skillListingBudgetFraction } from '../config-registry.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
@@ -1392,6 +1392,15 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     existing.claudeMdExcludes = [join(PROJECT_ROOT, 'CLAUDE.md')]
     logger.info({ agent: name, lost: ROOT_ONLY_RULE_GROUPS }, `root CLAUDE.md excluded for this agent (ROOT_CLAUDEMD_EXCLUDE_AGENTS); it no longer gets: ${ROOT_ONLY_RULE_GROUPS.join('; ')}`)
   } else if (name !== MAIN_AGENT_ID) delete existing.claudeMdExcludes
+  // skillListingBudgetFraction is dashboard-owned the same way (SKILL_LISTING_BUDGET_FRACTION): every sub-agent gets the
+  // setting's value, and clearing the setting drops the key at the next respawn, so Claude Code's own default is back.
+  // An unreadable or invalid setting counts as cleared. Not the main agent's tracked settings, not settings.local.json.
+  if (name !== MAIN_AGENT_ID) {
+    let fraction: number | null = null
+    try { fraction = skillListingBudgetFraction(String(getEffectiveSettingValue('SKILL_LISTING_BUDGET_FRACTION'))) } catch { /* cleared */ }
+    if (fraction !== null) existing.skillListingBudgetFraction = fraction
+    else delete existing.skillListingBudgetFraction
+  }
   // ENVRELAXGATE1104 (Samu 67797 (b)): keys that switch the gate hooks off or rewrite their environment are dropped on
   // every spawn; every other key the file carries (effortLevel, emojiCompletionEnabled, enabledPlugins: measured on the
   // live fleet) stays. The gate hooks themselves are put back by the inject* calls above.
