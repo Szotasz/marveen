@@ -184,8 +184,9 @@ Every dashboard-editable setting is a registry entry with the following fields:
 |-----|------|---------|----------|---------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (off) | macOS only | yes |
 | `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (off) | all | yes (channel start) |
+| `TELEGRAM_REACTIONS_ENABLED` | boolean | `0` (off) | all | yes (channel start) |
 | `TELEGRAM_REPLY_BUTTONS` | boolean | `1` (on) | all | yes (channel start) |
-| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (0–8760) | `0` (never expire) | all | yes (channel start) |
+| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` | int (min 0, max 8760) | `0` (never expire) | all | yes (channel start) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- main-agent config isolation (macOS)
 
@@ -324,17 +325,49 @@ session brings it to them.
 
 **What it is for.** A button on an old question can still be tapped long after the conversation
 moved on. With a max age set (say `24`), a tap on a question older than that does not reach the
-agent: the toast asks to type the answer, and the question's buttons give way to a single "⏱ Lejárt, írd be a
-választ" ("expired, type the answer") button, as an answered question keeps its "✓ <label>". The
-age counts from the question's send time (the Telegram message's own timestamp), so it holds
-across a plugin restart. An answered question still gets "Erre már válaszoltál." ("already
-answered"). The buttons change on a tap only, never by themselves.
+agent: the toast asks to type the answer, and the question's buttons give way to a single "⏱ Expired,
+type your answer" button, as an answered question keeps its "✓ <label>". The age counts from the
+question's send time (the Telegram message's own timestamp), so it holds across a plugin restart.
+An answered question still gets "You already answered this." The buttons change on a tap only,
+never by themselves. The toasts and that label follow `AGENT_TEXT_LANG` (`en` as quoted here;
+any other value or unset: Hungarian, "⏱ Lejárt, írd be a választ"), like every toast of the button
+branch.
 
 **Setting it.** Dashboard: *Settings → Channels → `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`*, or for
 example `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24` in `.env`. Whole hours from 0 to 8760; `0` (the
 default) turns it off, and the plugin source is then exactly what it is today. An invalid value
 means no expiry, logged in one line in `store/channels-failures.log`. It takes effect at the next
 channel start, for running agents when their session restarts.
+
+#### `TELEGRAM_REACTIONS_ENABLED`: Telegram reactions reach the agent
+
+**What it is for.** An emoji reaction the owner puts on a message never reached the agent: the
+plugin asks Telegram for its default update types, and reactions are not among them. With the
+switch on, the plugin asks for grammY's own default list plus `message_reaction`. A reaction goes
+on only from the paired owner in their private chat, through the plugin's own gate. The agent
+gets it as `(reaction 👍)` (like a sticker: `(sticker 😀)`), with the message it is on in
+`reply_to_message_id`. When the agent sent that message since the plugin started, `reply_to_text`
+carries a single-line excerpt of it (at most 300 characters, from the last 500 sent messages;
+after a restart only the id is left). Only an added reaction goes on, not a removed one; a custom
+emoji shows as `(custom emoji)`.
+
+A reaction has no message id of its own, so it is not written to the inbound evidence log: it can
+never be the evidence for an owner write command (such as `/model`), the inbound replay does not
+see it, and the conversation ledger does not record it. Nothing waits for an answer to it either:
+no "Dolgozom rajta…" placeholder, the Stop hook does not demand a Telegram reply, and instead of
+the mandatory-reply directive the agent gets a short note that this is a reaction, not a question.
+
+A reaction is not an approval either. The note says so, and also when a reaction arrives together
+with a message: if a step needs the owner's explicit go-ahead (an approval, something outward-facing
+or irreversible), the agent asks for it in writing and waits for a text answer. A thumbs-up on a
+"Mehet?" is one tap with no evidence row, and it does not say what it approves. The formal approval
+paths go through the approvals API, which a reaction never reaches.
+
+**Setting it.** Dashboard: *Settings → Channels → `TELEGRAM_REACTIONS_ENABLED`*, or
+`TELEGRAM_REACTIONS_ENABLED=1` in `.env`. Every reaction is one more turn for the agent, so it is
+off by default; off, the plugin source is exactly what it is today, and Telegram goes back to the
+default update types at the next start. It takes effect at the next channel start, for running
+agents when their session restarts.
 
 **API endpoints:**
 
@@ -413,7 +446,7 @@ start (so existing agents get it without a respawn).
 | `script` | yes | Path relative to the project root, inside `local-hooks/` (gitignored), `.py`, `.mjs` or `.js`; letters, digits and `_ . / @ + -` only, no `..` |
 | `timeout` | no | Seconds, 1..600, default 10 |
 | `failClosed` | yes | `true`: the same wrapper as the built-in gates (a missing interpreter or any exit other than 0 and 2 = deny, deadline 2 s before the timeout). Allowed on `PreToolUse` only, because on `UserPromptSubmit` a crash would block every prompt. `false`: a plain call, a crash does not block |
-| `scope` | no | Only `"subagents"` (the default); any other value skips the entry |
+| `scope` | no | `"subagents"` (the default): every sub-agent's generated settings. `"main"`: the main agent's project-local `.claude/settings.local.json`, the file the main session loads (the `--main-scope` egress parser uses it too), each command behind `[ "$CLAUDE_PROJECT_DIR" = '<root>' ] \|\| exit 0;`: a sub-agent session loads that file as well, and there the hook does nothing. Only the marked extra entries are replaced; the owner's own keys in the file stay. Any other value skips the entry |
 | `description` | no | Free text, not used by the scaffold |
 
 What an entry can NOT do: replace, remove or reorder a built-in hook (an extra is appended AFTER
@@ -616,8 +649,10 @@ Key configuration variables live in the launchd plist (`~/Library/LaunchAgents/c
 | `OWNER_NAME` | Owner name (e.g. "Jónás Gergő") |
 | `BOT_NAME` | Main agent name (e.g. "Jarvis") |
 | `VOICE_TRANSCRIBE_INBOUND` | `1` = transcribe inbound voice notes for text-mode agents too (default off; per-agent `voice.transcribeInbound` overrides). See `voice.md` |
+| `USAGE_LIMIT_NOTICE_ROUTE` | Where the scheduler's usage-limit notice goes: `both` (default) = the owner's private chat (with the screen line) AND the main agent's message queue (without any screen text), `owner` = the owner's chat only, `main` = the main agent only (the owner's chat if the message cannot be written). When the main agent itself is out of usage, it goes to the owner's chat. Takes effect immediately. Only the owner can set `main` (an override key); a `.env` line `main` is ignored, `owner` still counts. |
 | `WEB_ONLY` | `true` = every background service off (schedule runner, router, monitors, worker pre-start). **Read from the process environment only** (`WEB_ONLY=true node dist/index.js`); a `.env` line has no effect, there is no dotenv |
 | `MARVEEN_ALLOW_SECOND_INSTANCE_SERVICES` | A second instance (git worktree, a clone under a temp dir) runs no background services even without WEB_ONLY, because its schedule runner would fire the global scheduled tasks into the live sessions. `1` = run them anyway (a deliberate test instance), logged as a warning at start. **Process environment only**, as `WEB_ONLY`. A second instance is a git worktree or a clone under a temp dir (`/tmp`, `/private/tmp`, `/var/folders`, the OS tmpdir): a plain `git clone` OUTSIDE those counts as an install and runs the services, so there `WEB_ONLY=true` is the guard |
+| `MARVEEN_SPAWN_BROKER` | The dashboard routes its four central tmux helper calls through a small spawn broker process, so the dashboard's main process does not start each tmux child itself. `off` = the broker does not start, every such call runs directly from the dashboard process, as before the broker (useful for troubleshooting or stepping back). Any other value or unset = the broker is used. **Read from the process environment only**, like `WEB_ONLY`; a `.env` line has no effect, there is no dotenv. It is read when the broker starts, so a change needs a dashboard restart |
 | `MXD_DASH_SOCK` | marveen-mxd's dash.sock path. **The other way round: read from the `.env` file only** (per call), never from the process environment; without it the platform default, the live socket. A test instance sets it in its own `.env` |
 
 ---

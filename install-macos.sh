@@ -42,6 +42,29 @@ source "$(dirname "$0")/install-lang.sh"
 # for a password. The text lives in install-lang.sh; the function stays here, so a
 # standalone run that fetched an older install-lang.sh still has it (an unknown
 # _t key just prints nothing).
+# AUTHSHHIDDEN1122: a secret (token, key) is typed without echo, so neither the screen nor a screen recording shows it.
+# The read lines stay plain `read -rp` / `read -p` (the Bridge's headless derive wraps exactly those, a `read -rsp`
+# would stop it); only the terminal echo is switched off around them, and only when stdin is a terminal. The traps set
+# before (INT, TERM, EXIT) are saved and put back, also on Ctrl+C, the same way as the Teams app password (EE2392D3).
+_secret_tty() { [ -t 0 ]; } # a terminal on stdin: only there is echo switched off
+_secret_echo_off() {
+  _secret_tty || return 0
+  _secret_prev_traps="$(trap -p INT TERM EXIT)"
+  _secret_prev_exit=""
+  eval "_secret_prev_exit=$(trap -p EXIT | sed -e 's/^trap -- //' -e 's/ EXIT$//')"
+  trap 'stty echo 2>/dev/null || true; trap - INT TERM EXIT; eval "$_secret_prev_traps"; exit 130' INT TERM
+  trap 'stty echo 2>/dev/null || true; eval "$_secret_prev_exit"' EXIT
+  stty -echo 2>/dev/null || true
+}
+_secret_echo_on() {
+  _secret_tty || return 0
+  stty echo 2>/dev/null || true
+  trap - INT TERM EXIT
+  eval "$_secret_prev_traps"
+  unset _secret_prev_traps _secret_prev_exit
+  echo ""
+}
+
 managed_settings_notice() {
   if [ -n "${MANAGED_NOTICE_SHOWN:-}" ]; then
     return 0
@@ -212,6 +235,27 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 MSW_PY
 }
+# MANAGEDUMASK1119: an EXISTING managed dir keeps its mode under `mkdir -p -m 0755`, and an older install made it
+# 0700 under a 077 umask: the session cannot read the policy inside, and even the checks below, which read as the
+# user, see no file there. If $1 is a real directory (not a symlink), owned by root and not 0755, set it to 0755 as
+# root, loudly, after the notice. 0755 never adds a group/other write bit; a dir owned by anyone else, or a symlink,
+# is left alone (the writer refuses those anyway). The check reads as the user (stat on the dir itself needs no
+# access inside it), so an already-correct host asks for no password. Called at the start of each managed block.
+managed_dir_repair() { # $1 = the managed dir
+  [ -d "$1" ] && [ ! -L "$1" ] || return 0
+  local om owner mode
+  om="$(/usr/bin/stat -f '%u %Lp' "$1" 2>/dev/null)" || return 0
+  owner="${om%% *}"; mode="${om##* }"
+  [ "$owner" = "0" ] && [ "$mode" != "755" ] || return 0
+  managed_settings_notice
+  if /usr/bin/sudo /bin/chmod 0755 "$1" 2>/dev/null; then
+    echo -e "  ${ORANGE}!${NC} A $1 mappa joga $mode volt (a session nem latott bele) -- 0755-re allitva."
+  else
+    echo -e "  ${RED}✗${NC} A $1 mappa joga $mode, es nem sikerult 0755-re allitani -- kezi root-lepes:"
+    echo -e "  ${DIM}  sudo chmod 0755 \"$1\"${NC}"
+  fi
+}
+
 # Read as the user, nothing written: 0 when the file already has every wanted entry (NAME@MARKETPLACE, or
 # --channels for channelsEnabled), so an already-correct host asks for no password (the gate's old rule).
 # A wrong answer only means a needless or skipped write, never code run as root.
@@ -456,12 +500,32 @@ check_cmd() {
 # mar meglevo Homebrew-t. Ezert a meres ELOTT betoltjuk a brew kornyezetet,
 # ha a binaris letezik -- ugyanaz a ket sor, amit a telepito ag a sajat
 # telepitese utan mar hasznal.
+# BREWPREFIXREST1107: a Homebrew in a custom prefix is in neither default place, so a non-interactive install
+# decided "no brew" and ran the Homebrew installer (measured: MEASURE-C). An explicit MARVEEN_BREW_PREFIX is honoured
+# first; after the defaults, the #2578 rule (scripts/channels.sh, src/platform.ts): the <prefix> of the first
+# <prefix>/opt/node@NN/bin entry on PATH that has an executable <prefix>/bin/brew.
 if ! command -v brew &>/dev/null; then
-  if [ -x /opt/homebrew/bin/brew ]; then
+  _bp_brew=""
+  while IFS= read -r -d : _bp_dir; do
+    case "$_bp_dir" in
+      /?*/opt/node@[0-9]/bin|/?*/opt/node@[0-9][0-9]/bin) ;;
+      *) continue ;;
+    esac
+    if [ -x "${_bp_dir%/opt/node@*/bin}/bin/brew" ]; then
+      _bp_brew="${_bp_dir%/opt/node@*/bin}/bin/brew"
+      break
+    fi
+  done <<< "${PATH:-}:"
+  if [ -n "${MARVEEN_BREW_PREFIX:-}" ] && [ -x "$MARVEEN_BREW_PREFIX/bin/brew" ]; then
+    eval "$("$MARVEEN_BREW_PREFIX/bin/brew" shellenv)"
+  elif [ -x /opt/homebrew/bin/brew ]; then
     eval "$(/opt/homebrew/bin/brew shellenv)"
   elif [ -x /usr/local/bin/brew ]; then
     eval "$(/usr/local/bin/brew shellenv)"
+  elif [ -n "$_bp_brew" ]; then
+    eval "$("$_bp_brew" shellenv)"
   fi
+  unset _bp_dir _bp_brew
 fi
 
 MISSING=0
@@ -743,7 +807,9 @@ else
   echo -e "  ${DIM}a hatterszolgaltatasok ahhoz nem ferenek hozza.${NC}"
   echo -e "  ${BOLD}1.${NC} Futtasd egy terminalban: ${BLUE}claude setup-token${NC}"
   echo -e "  ${BOLD}2.${NC} Masold ide a kiirt tokent (Enter = kihagyas):"
+  _secret_echo_off
   read -rp "  OAuth token: " MACOS_OAUTH_TOKEN_INPUT
+  _secret_echo_on
   if [ -n "$MACOS_OAUTH_TOKEN_INPUT" ]; then
     if printf '%s' "$MACOS_OAUTH_TOKEN_INPUT" | grep -Eq '^sk-ant-oat01-[A-Za-z0-9_-]{40,}$'; then
       ok "Token formailag rendben, elmentjuk a szolgaltatasoknak"
@@ -871,7 +937,9 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  3. Adj nevet a botodnak${NC}"
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
+  _secret_echo_off
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
+  _secret_echo_on
   probe_telegram_token "$BOT_TOKEN"
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo ""
@@ -883,7 +951,9 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
   echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
   echo ""
+  _secret_echo_off
   read -rp "$(_t prompt_discord_bot_token)" DISCORD_BOT_TOKEN
+  _secret_echo_on
   read -rp "$(_t prompt_discord_channel_id)" DISCORD_CHANNEL_ID
   echo ""
   echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
@@ -898,6 +968,7 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   # file and the official-marketplace plugin runs fine without it, so we only
   # MERGE when the file already exists -- never create it here.
   MANAGED_FILE="/Library/Application Support/ClaudeCode/managed-settings.json"
+  managed_dir_repair "$(dirname "$MANAGED_FILE")" # MANAGEDUMASK1119: before the -f check, which reads as the user
   if [ -f "$MANAGED_FILE" ]; then
     managed_settings_notice
     # Read as the user (MACROOTFROMCLONE1106): an already-allowed discord needs no password.
@@ -938,8 +1009,12 @@ else
   echo -e "${DIM}     app_mention, message.channels, message.groups, message.im${NC}"
   echo -e "${DIM}  5. Installald a workspace-be${NC}"
   echo ""
+  _secret_echo_off
   read -rp "$(_t prompt_slack_bot_token)" SLACK_BOT_TOKEN
+  _secret_echo_on
+  _secret_echo_off
   read -rp "$(_t prompt_slack_app_token)" SLACK_APP_TOKEN
+  _secret_echo_on
 
   # Managed settings: Claude Code requires allowedChannelPlugins at system level
   MANAGED_DIR="/Library/Application Support/ClaudeCode"
@@ -951,6 +1026,7 @@ else
   REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY,$TEAMS_ENTRY,$DISCORD_ENTRY]}"
 
   managed_settings_notice
+  managed_dir_repair "$MANAGED_DIR" # MANAGEDUMASK1119: before the -f check, which reads as the user
   if [ -f "$MANAGED_FILE" ]; then
     # Gate on ALL required plugins being present (not just slack) -- otherwise an
     # install that already has slack/telegram but not teams skips the merge and
@@ -986,7 +1062,11 @@ else
     fi
   else
     echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_create)"
-    /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR"
+    # explicit 0755 (8628c640): never group- or other-writable (the writer refuses such a dir)
+    # AND always traversable by the unprivileged session, which must read the policy inside;
+    # a root-owned 0700 dir (umask 077) hid the policy. macOS twin of the Linux Teams fix.
+    # -m only applies to a dir mkdir creates now; an existing dir keeps its mode.
+    /usr/bin/sudo /bin/mkdir -p -m 0755 "$MANAGED_DIR"
     # Fresh file through the same shared writer (--create): a fresh mkstemp file
     # and os.replace, so an interrupted install can never leave a truncated or
     # empty org-policy file that a later run would then refuse to touch (the
@@ -1021,13 +1101,15 @@ fi
 CHANNELS_GATE_STATE="manual"
 MANAGED_DIR="/Library/Application Support/ClaudeCode"
 MANAGED_FILE="$MANAGED_DIR/managed-settings.json"
+managed_dir_repair "$MANAGED_DIR" # MANAGEDUMASK1119: before managed_has, which reads as the user
 if managed_has "$MANAGED_FILE" --channels; then
   echo "  channelsEnabled: mar be van kapcsolva ($MANAGED_FILE)"
   CHANNELS_GATE_STATE="ok"
 else
   managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
-  if /usr/bin/sudo /bin/mkdir -p "$MANAGED_DIR" 2>/dev/null && managed_write "$MANAGED_FILE" --create --channels-enabled; then
+  # explicit 0755, same as the Slack create above (8628c640)
+  if /usr/bin/sudo /bin/mkdir -p -m 0755 "$MANAGED_DIR" 2>/dev/null && managed_write "$MANAGED_FILE" --create --channels-enabled; then
     echo "  channelsEnabled=true beallitva a managed-settings-ben ($MANAGED_FILE)"
     echo "    (a bejovo channel-uzenetek team/enterprise orgnal is celba ernek; restart utan lep eletbe.)"
     CHANNELS_GATE_STATE="ok"
@@ -2232,15 +2314,21 @@ fi
 echo ""
 echo -e "${BOLD}$(_t macos.migration_title)${NC}"
 echo -e "${DIM}$(_t macos.migration_hint)${NC}"
+# MIGRATENONFATAL1122: the migration is optional and runs after every service is up, so its failure
+# (a mistyped source path exits 1) must not report the whole install as failed. Its own step name keeps
+# the error report from blaming the step before it. The English prompt asks (y/n): "y" is accepted too.
+INSTALL_STEP="migration"
 read -rp "$(_t prompt_migrate)" DO_MIGRATE
 DO_MIGRATE=${DO_MIGRATE:-n}
-if [ "$DO_MIGRATE" = "i" ]; then
-  if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
-    "$INSTALL_DIR/scripts/migrate.sh"
-  else
-    echo -e "  ${ORANGE}$(_t macos.migrate_missing)${NC}"
-  fi
-fi
+case "$DO_MIGRATE" in
+  i|I|y|Y)
+    if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
+      "$INSTALL_DIR/scripts/migrate.sh" || warn "$(_t macos.migrate_failed | sed 's/^ *//')"
+    else
+      echo -e "  ${ORANGE}$(_t macos.migrate_missing)${NC}"
+    fi
+    ;;
+esac
 
 # Warn if Telegram pairing was skipped
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then

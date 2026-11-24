@@ -418,6 +418,14 @@
         "gate": false,
         "purpose": "Slash-command bookkeeping at turn end (--stop).",
         "fingerprint": "aa25f7fe40defbe59ed2604249a067c1ba4bfeabbe4f4b5adf9cfcd0208138e4"
+      },
+      {
+        "index": 4,
+        "id": "stop/login-lost-alert",
+        "hook": "login-lost-alert",
+        "gate": false,
+        "purpose": "Stop / StopFailure hook: tell the owner at once when an agent's Claude login is gone (LOGINKIESES1119).",
+        "fingerprint": "606eca0eac2b1f07146ac316c8750ded2aa4a14e3cd73649b9849b5dc3525702"
       }
     ],
     "StopFailure": [
@@ -428,6 +436,14 @@
         "gate": true,
         "purpose": "StopFailure hook: leave a trace when a turn that owed a channel reply died on an API error.",
         "fingerprint": "72c49e0bbe60a63c975bd34ed2470088d575555d8bc7e823ad9e3fc631b14e73"
+      },
+      {
+        "index": 1,
+        "id": "stop-failure/login-lost-alert",
+        "hook": "login-lost-alert",
+        "gate": false,
+        "purpose": "Stop / StopFailure hook: tell the owner at once when an agent's Claude login is gone (LOGINKIESES1119).",
+        "fingerprint": "8d939560a312db181c7c68b70f658790c28739d7a9ee275da30466c17a4a67fb"
       }
     ],
     "SessionStart": [

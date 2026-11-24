@@ -39,14 +39,14 @@ vi.mock('node:fs', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs')>()
   return { ...real, existsSync: () => false, mkdirSync: () => undefined, unlinkSync: () => undefined, rmSync: () => undefined, readdirSync: () => [] }
 })
-vi.mock('../web/atomic-write.js', () => ({ atomicWriteFileSync: vi.fn() }))
+vi.mock('../web/atomic-write.js', () => ({ atomicWriteFileSync: vi.fn(), MCP_JSON_MODE: 0o600 }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: '/mock/tasks' }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/mock/project', STORE_DIR: '/mock/store', MAIN_AGENT_ID: 'marveen', BOT_NAME: 'Marveen',
   BRAND_NAME: 'Marveen', OWNER_NAME: 'Owner', CHANNEL_PROVIDER: 'telegram',
 }))
 vi.mock('../web/vault-bindings.js', () => ({ getBindings: () => [] }))
-vi.mock('../env.js', () => ({ updateEnvFile: vi.fn() }))
+vi.mock('../env.js', () => ({ updateEnvFile: vi.fn(), readEnvFile: () => ({}) }))
 vi.mock('../logger.js', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
 
 const NOTE = { id: 'abc123', assignee: 'cody', content: 'check the build', due_date: '2026-10-20', created_at: 1791700000, created_by: 'margo', deleted_at: null, deleted_by: null, delete_reason: null }

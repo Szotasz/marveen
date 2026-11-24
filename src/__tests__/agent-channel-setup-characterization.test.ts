@@ -109,8 +109,11 @@ describe('POST /api/agents/:name/channels/telegram: the refusals, before any wri
     expect(await setup(a, { botToken: TOKEN })).toEqual({ status: 409, body: { error: 'busy: webhook set' } })
     mkdirSync(chDir(a), { recursive: true }); writeFileSync(join(chDir(a), '.env'), `TELEGRAM_BOT_TOKEN=${TOKEN}\n`)
     h.calls.length = 0
-    expect((await setup(a, { botToken: TOKEN })).status).toBe(200)
+    const same = await setup(a, { botToken: TOKEN })
+    expect(same.status).toBe(200)
     expect(names()).not.toContain('checkTelegramTokenBusy')
+    // INSTTGPOLLWARN1119: the note rides only with a new token
+    expect((same.body as Record<string, unknown>).pollerNote).toBeUndefined()
   })
 })
 
@@ -118,7 +121,8 @@ describe('POST /api/agents/:name/channels/telegram: the writes and the answer', 
   it('a stopped agent: .env (0600) and a pairing access.json, the provider and the plugin, the welcome, no restart', async () => {
     const a = agent()
     const r = await setup(a, { botToken: ` ${TOKEN} ` })
-    expect(r).toEqual({ status: 200, body: { ok: true, botName: 'TesztBot', restarted: false, wasRunning: false } })
+    // INSTTGPOLLWARN1119: a new Telegram token's save carries the "cannot be checked" note
+    expect(r).toEqual({ status: 200, body: { ok: true, botName: 'TesztBot', restarted: false, wasRunning: false, pollerNote: true } })
     expect(readFileSync(join(chDir(a), '.env'), 'utf-8')).toBe(`TELEGRAM_BOT_TOKEN=${TOKEN}\n`)
     expect(statSync(join(chDir(a), '.env')).mode & 0o777).toBe(0o600)
     expect(JSON.parse(readFileSync(join(chDir(a), 'access.json'), 'utf-8'))).toEqual({ dmPolicy: 'pairing', allowFrom: [], groups: {}, pending: {} })
@@ -132,7 +136,7 @@ describe('POST /api/agents/:name/channels/telegram: the writes and the answer', 
     const a = agent()
     h.running = new Set([a])
     const r = await setup(a, { botToken: TOKEN })
-    expect(r).toEqual({ status: 200, body: { ok: true, botName: 'TesztBot', restarted: true, wasRunning: true } })
+    expect(r).toEqual({ status: 200, body: { ok: true, botName: 'TesztBot', restarted: true, wasRunning: true, pollerNote: true } })
     expect(names().filter((x) => x === 'stopAgentProcess' || x === 'startAgentProcess')).toEqual(['stopAgentProcess', 'startAgentProcess'])
   })
   it('an explicit allowFrom writes an allowlist, deduplicated', async () => {

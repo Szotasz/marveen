@@ -74,11 +74,36 @@ hasnt "an empty path never matches" ""
 : > "$TMP/empty.txt"
 if archive_list_has "$TMP/empty.txt" "repo/store"; then fail "an empty listing holds nothing"; else pass "an empty listing holds nothing"; fi
 
+# Accented names (2026-11-22): the 03:35 backup reported 25 files under
+# hmke-ugyintezés MISSING although all were in the archive. The listing held the
+# name decomposed (NFD), the manifest composed (NFC); under launchd's C locale
+# bsdtar even printed octal escapes instead of the bytes.
+NFC_NAME="$(printf 'repo/skills/hmke-ugyintez\303\251s/SKILL.md')"
+NFD_NAME="$(printf 'repo/skills/hmke-ugyintez\145\314\201s/SKILL.md')"
+printf '%s\n' "$NFD_NAME" > "$TMP/nfd.txt"
+if archive_list_has "$TMP/nfd.txt" "$NFC_NAME"; then fail "control: a raw NFD listing should MISS the NFC name (the defect)"; else pass "control: a raw NFD listing misses the NFC name (the defect)"; fi
+nfc_lines < "$TMP/nfd.txt" > "$TMP/nfd-norm.txt"
+if archive_list_has "$TMP/nfd-norm.txt" "$(printf '%s\n' "$NFC_NAME" | nfc_lines)"; then pass "after nfc_lines the NFD listing holds the NFC name"; else fail "after nfc_lines the NFD listing still misses the NFC name"; fi
+if archive_list_has "$TMP/nfd-norm.txt" "$(printf '%s\n' "$NFD_NAME" | nfc_lines)"; then pass "an NFD wanted name matches too once both sides are normalized"; else fail "an NFD wanted name does not match after normalization"; fi
+printf 'repo/a\377b\n' | nfc_lines > "$TMP/bad.txt"
+if [ "$(od -An -tx1 "$TMP/bad.txt" | tr -d ' \n')" = "7265706f2f61ff620a" ]; then pass "invalid UTF-8 passes nfc_lines byte for byte"; else fail "invalid UTF-8 was altered by nfc_lines"; fi
+# End to end through tar, under the C locale launchd gives the job: an archive
+# with an accented directory, listed the way backup.sh lists it.
+mkdir -p "$TMP/tarsrc/repo/skills/hmke-ugyintez$(printf '\303\251')s"
+: > "$TMP/tarsrc/$NFC_NAME"
+( cd "$TMP/tarsrc" && tar -czf "$TMP/a.tgz" repo )
+LC_ALL=C tar -tzf "$TMP/a.tgz" > "$TMP/c-raw.txt"
+if archive_list_has "$TMP/c-raw.txt" "$NFC_NAME"; then pass "control: the C-locale raw listing happens to match on this platform"; else pass "control: the C-locale raw listing misses the accented name (the defect)"; fi
+( export LC_ALL=C; LC_ALL=C.UTF-8 tar -tzf "$TMP/a.tgz" ) | nfc_lines > "$TMP/fixed.txt"
+if archive_list_has "$TMP/fixed.txt" "$(printf '%s\n' "$NFC_NAME" | nfc_lines)"; then pass "the backup.sh listing form (C.UTF-8 + nfc_lines) finds the accented file under a C-locale parent"; else fail "the backup.sh listing form misses the accented file"; fi
+
 # Wiring: backup.sh must use the helper for the manifest and the markers, and
 # must not carry a fixed alert recipient.
 B="$REPO/scripts/backup.sh"
 n=$(grep -c 'archive_list_has "${ARCHIVE_LIST}"' "$B")
 if [ "$n" -eq 2 ]; then pass "backup.sh checks the manifest and the markers through the helper"; else fail "backup.sh helper call sites: expected 2, got $n"; fi
+if grep -q 'LC_ALL=C.UTF-8 tar -tzf "${ARCHIVE}"' "$B" && grep -q 'nfc_lines < "${ARCHIVE_LIST}.raw" > "${ARCHIVE_LIST}"' "$B"; then pass "backup.sh lists the archive under UTF-8 and normalizes it"; else fail "backup.sh does not list under UTF-8 + nfc_lines"; fi
+if grep -q '"${MANIFEST}" | nfc_lines)' "$B"; then pass "backup.sh normalizes the manifest side too"; else fail "backup.sh does not normalize the manifest side"; fi
 if grep -qE 'grep -qE "\^\$\{(want|marker)\}' "$B"; then fail "backup.sh still matches a manifest path as a regex"; else pass "no regex match on manifest paths is left"; fi
 if grep -q 'agent-msg.sh" "${MAIN_AGENT_ID}" "${MAIN_AGENT_ID}"' "$B"; then pass "the alert is addressed to MAIN_AGENT_ID, not a fixed id"; else fail "the alert is not addressed to MAIN_AGENT_ID"; fi
 # The recipient is the MAIN_AGENT_ID resolved once near the top: exactly two

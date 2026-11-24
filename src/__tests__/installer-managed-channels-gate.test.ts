@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, readFileSync, rmSync, statSync, writeFileSync, mkdtempSync, mkdirSync, symlinkSync, readdirSync } from 'node:fs'
+import { chmodSync, lchmodSync, readFileSync, rmSync, statSync, writeFileSync, mkdtempSync, mkdirSync, symlinkSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -216,5 +216,120 @@ describe('ensure-managed-channels-enabled: report what is true, not what is reac
   it('still reports manual when the key is present but false and there is no privilege', () => {
     expect(runGate({ managed: JSON.stringify({ channelsEnabled: false }), sudo: 'hidden' }).out)
       .toContain('MARVEEN_CHANNELS_GATE=manual')
+  })
+})
+
+// MANAGEDUMASK1119: the managed DIRECTORY. A root umask of 077 made a fresh one 0700 (the session could not read the
+// policy inside, and the gate silently did nothing), and an older install left exactly such a dir behind. The dir is
+// a subfolder of the fixture here, so the script's own mkdir has something to create. Root ownership is modelled:
+// `stat` reports owner 0 for the dir, and `id -u` says 0 as root or under the sudo stub, so "owned by the privileged
+// user" holds the way it does in an install.
+function runDirGate(o: {
+  as: 'root' | 'sudo'
+  umask?: string
+  existing?: number | 'symlink' | 'other-owner'
+  managed?: string
+}): { out: string; dir: string; target?: string; sudoLog: string } {
+  const base = mkdtempSync(join(tmpdir(), 'marveen-gate-dir-'))
+  dirs.push(base)
+  const dir = join(base, 'ClaudeCode')
+  let target: string | undefined
+  if (o.existing === 'symlink') {
+    target = join(base, 'elsewhere')
+    mkdirSync(target, { mode: 0o700 })
+    chmodSync(target, 0o700)
+    symlinkSync(target, dir)
+    // A symlink's own mode reads 0777 on Linux; BSD gives 0755, which would let the repair skip it for the wrong
+    // reason. Set it like Linux where the platform can (lchmod exists on macOS), so the symlink guard is what decides.
+    try { lchmodSync(dir, 0o777) } catch { /* no lchmod on this platform: Linux already reports 0777 */ }
+  } else if (o.existing !== undefined) {
+    mkdirSync(dir)
+    chmodSync(dir, o.existing === 'other-owner' ? 0o700 : o.existing)
+  }
+  if (o.managed !== undefined && o.existing !== 'symlink') {
+    writeFileSync(join(dir, 'managed-settings.json'), o.managed)
+    // Not root: the session cannot read inside a root dir. Modelled as the existing harness does: the policy is 000
+    // for the caller, and only the privileged (sudo) call may read it.
+    if (o.as === 'sudo') chmodSync(join(dir, 'managed-settings.json'), 0o000)
+  }
+  const owner = o.existing === 'other-owner' ? '1234' : '0'
+  const stubs = [
+    `stat() { local r; r="$(command stat "$@")" || return $?; echo "${owner} \${r##* }"; }`,
+    ...(o.as === 'root'
+      ? ['id() { echo 0; }']
+      : ['id() { echo "${FAKE_ID:-1000}"; }',
+        'sudo() { echo "$*" >> "$SUDO_LOG"; chmod u+r "$MANAGED_FILE" 2>/dev/null; FAKE_ID=0 "$@"; }']),
+  ]
+  const sudoLog = join(base, 'sudo.log')
+  writeFileSync(sudoLog, '')
+  const script = ['set -u', ...(o.umask ? [`umask ${o.umask}`] : []), `MANAGED_FILE=${JSON.stringify(join(dir, 'managed-settings.json'))}`,
+    `SUDO_LOG=${JSON.stringify(sudoLog)}`,
+    ...stubs, scriptBody(SCRIPT)].join('\n')
+  const bin = join(base, 'bin')
+  mkdirSync(bin)
+  symlinkSync(join(ROOT, 'scripts', 'lib'), join(bin, 'lib'))
+  const scriptFile = join(bin, 'ensure-managed-channels-enabled.sh')
+  writeFileSync(scriptFile, script)
+  const out = execFileSync('bash', [scriptFile], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  return { out, dir, target, sudoLog: readFileSync(sudoLog, 'utf-8') }
+}
+
+describe('ensure-managed-channels-enabled: the managed directory is 0755 (MANAGEDUMASK1119)', () => {
+  for (const umask of ['077', '022', '002']) {
+    it(`a fresh dir is 0755 under umask ${umask}, the policy 0644 inside`, () => {
+      const { out, dir } = runDirGate({ as: 'sudo', umask })
+      expect(out).toContain('MARVEEN_CHANNELS_GATE=ok')
+      expect(mode(dir)).toBe(0o755)
+      expect(mode(join(dir, 'managed-settings.json'))).toBe(0o644)
+      expect(out).not.toContain('0755-re allitva') // nothing to repair on a fresh dir
+    })
+  }
+
+  it('an existing 0700 dir with an ENABLED policy is repaired before the early exit (not root, via sudo)', () => {
+    const { out, dir } = runDirGate({ as: 'sudo', existing: 0o700, managed: ENABLED })
+    expect(mode(dir)).toBe(0o755)
+    expect(out).toContain('700 volt')
+    expect(out).toContain('0755-re allitva')
+    expect(out).toContain('MARVEEN_CHANNELS_GATE=ok')
+    chmodSync(join(dir, 'managed-settings.json'), 0o644)
+    expect(readFileSync(join(dir, 'managed-settings.json'), 'utf-8')).toBe(ENABLED) // the early exit, no rewrite
+  })
+
+  it('the same as root: repaired before the unprivileged check that root passes through a 0700 dir', () => {
+    const { out, dir } = runDirGate({ as: 'root', existing: 0o700, managed: ENABLED })
+    expect(mode(dir)).toBe(0o755)
+    expect(out).toContain('0755-re allitva')
+    expect(out).toContain('MARVEEN_CHANNELS_GATE=ok')
+  })
+
+  it('an existing 0700 dir without the key: repaired and written', () => {
+    const { out, dir } = runDirGate({ as: 'sudo', existing: 0o700 })
+    expect(mode(dir)).toBe(0o755)
+    expect(out).toContain('MARVEEN_CHANNELS_GATE=ok')
+    expect(JSON.parse(readFileSync(join(dir, 'managed-settings.json'), 'utf-8')).channelsEnabled).toBe(true)
+  })
+
+  it('a group/other-writable dir is narrowed to 0755, never widened', () => {
+    const { dir } = runDirGate({ as: 'sudo', existing: 0o777, managed: ENABLED })
+    expect(mode(dir)).toBe(0o755)
+  })
+
+  it('a 0755 dir is left alone and nothing is said, with no privileged id -u (review: no needless sudo call)', () => {
+    const { out, dir, sudoLog } = runDirGate({ as: 'sudo', existing: 0o755, managed: ENABLED })
+    expect(mode(dir)).toBe(0o755)
+    expect(out).not.toContain('allitva')
+    expect(sudoLog).not.toMatch(/^id -u$/m)
+  })
+
+  it('a dir owned by someone else is not touched', () => {
+    const { out, dir } = runDirGate({ as: 'sudo', existing: 'other-owner' })
+    expect(mode(dir)).toBe(0o700)
+    expect(out).not.toContain('0755-re allitva')
+  })
+
+  it('a symlink at the dir path is not followed: its target keeps its mode', () => {
+    const { out, target } = runDirGate({ as: 'sudo', existing: 'symlink' })
+    expect(mode(target!)).toBe(0o700)
+    expect(out).not.toContain('0755-re allitva')
   })
 })

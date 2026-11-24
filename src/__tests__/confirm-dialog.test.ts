@@ -855,8 +855,8 @@ describe('the pending retry cancel and the background task stop use it', () => {
   })
 
   it('a failed cancel says so in a translated toast instead of only the console, and the list is reloaded', () => {
-    expect(PENDING).toContain("if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'))")
-    expect(PENDING).toContain("catch {\n        showToast(t('tasks.toast.cancel_pending_error'))")
+    expect(PENDING).toContain("if (!res.ok) showToast(t('tasks.toast.cancel_pending_error'), 'error')")
+    expect(PENDING).toContain("catch {\n        showToast(t('tasks.toast.cancel_pending_error'), 'error')")
     expect(PENDING).not.toContain('console.error')
   })
 
@@ -907,8 +907,8 @@ describe('the pending retry cancel and the background task stop use it', () => {
   it('the hard-coded "Hiba" toasts are gone from the background task section', () => {
     expect(BG).not.toContain("showToast('Hiba')")
     expect(VIEW).not.toContain("showToast('Hiba')")
-    expect(BG).toContain("showToast(t('bgTasks.toast.stop_error'))")
-    expect(VIEW).toContain("showToast(t('bgTasks.load_error'))")
+    expect(BG).toContain("showToast(t('bgTasks.toast.stop_error'), 'error')")
+    expect(VIEW).toContain("showToast(t('bgTasks.load_error'), 'error')")
   })
 
   it('the keys are in both languages, with their placeholders', () => {
@@ -1109,7 +1109,7 @@ describe('the custom provider delete uses it', () => {
   const anchor = "tbody.querySelectorAll('[data-provider-delete]').forEach"
   const handler = (() => {
     const i = APP.indexOf(anchor)
-    const end = "catch { showToast(t('providers.toast.delete_error')) }"
+    const end = "catch { showToast(t('providers.toast.delete_error'), 'error') }"
     const j = i < 0 ? -1 : APP.indexOf(end, i)
     return i < 0 || j < 0 ? '' : APP.slice(i, j + end.length)
   })()
@@ -1138,7 +1138,7 @@ describe('the custom provider delete uses it', () => {
   })
 
   it('a failed delete shows a translated toast, or the server\'s reason', () => {
-    expect(handler).toContain("showToast(err.error || t('providers.toast.delete_error'))")
+    expect(handler).toContain("showToast(err.error || t('providers.toast.delete_error'), 'error')")
     expect(handler).toContain('loadAvailableModels()')
   })
 

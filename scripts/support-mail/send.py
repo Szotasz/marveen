@@ -19,7 +19,8 @@ the checks of scripts/hooks/sender_check.py on the exact letter this run
 delivers -- the email_send level (level 1; level 2 without a matching unused
 approval or a live standing recipient), and, when the install turned the
 recipient ledger on for the main agent, an address not in
-store/verified-recipients.json. Checked before the vault or SMTP is touched.
+store/verified-recipients.json. Checked (without consuming) before the vault
+or SMTP is touched, and once more, consuming, after the SMTP login.
 """
 import sys, os, ssl, smtplib, argparse, imaplib, time, hashlib, mimetypes, stat
 from email.message import EmailMessage
@@ -27,7 +28,7 @@ from email.utils import getaddresses
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib
 
-# The checks this sender runs itself, before the vault or SMTP (see the
+# The checks this sender runs itself, around the vault and SMTP (see the
 # docstring). A missing or broken module is a refusal like every other one:
 # exit 3, never a traceback with exit 1.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
@@ -239,25 +240,34 @@ def main():
     seen_to = {t.lower() for t in to_addrs}
     cc_addrs = [r for r in rcpts if r.lower() not in seen_to]
     # The level (and, when it is on, the ledger) on the exact envelope this run
-    # delivers, before the vault or SMTP. The render mode is part of the
+    # delivers. The render mode is part of the
     # approved letter: an approved plain letter cannot go out as HTML. The
     # standing list sees what the caller typed: the configured owner CC is not
     # part of that view, as it never was for the hook.
     explicit_cc = [a.cc] if a.cc and not (a.cc == OWNER_CC and not cc_given) else []
-    try:
-        notes = sender_check.check({
-            "to": to_addrs, "cc": cc_addrs, "text": f"{a.subject}\n{body}",
-            "render": "--html-wrap" if a.html_wrap else ("--html" if a.html else ""),
-            "attachments": att_env,
-            "raw_to": a.to, "raw_cc": a.cc,
-            "explicit_to": [a.to], "explicit_cc": explicit_cc,
-            "default_cc": envelope_recipients(OWNER_CC) if (OWNER_CC and a.cc == OWNER_CC and not cc_given) else [],
-        })
-    except Exception as exc:  # noqa: BLE001 -- sender_check.Refused, or anything: refuse
-        print(f"KULDES MEGTAGADVA: {exc}", file=sys.stderr)
-        sys.exit(3)
-    for line in notes:
-        print(line, file=sys.stderr)
+    letter = {
+        "to": to_addrs, "cc": cc_addrs, "text": f"{a.subject}\n{body}",
+        "render": "--html-wrap" if a.html_wrap else ("--html" if a.html else ""),
+        "attachments": att_env,
+        "raw_to": a.to, "raw_cc": a.cc,
+        "explicit_to": [a.to], "explicit_cc": explicit_cc,
+        "default_cc": envelope_recipients(OWNER_CC) if (OWNER_CC and a.cc == OWNER_CC and not cc_given) else [],
+    }
+
+    def checked(phase):
+        try:
+            notes = sender_check.check(letter, phase=phase)
+        except Exception as exc:  # noqa: BLE001 -- sender_check.Refused, or anything: refuse
+            print(f"KULDES MEGTAGADVA: {exc}", file=sys.stderr)
+            sys.exit(3)
+        for line in notes:
+            print(line, file=sys.stderr)
+
+    # APPROVALPRECHECK1122: the pre phase decides without consuming, before the
+    # vault or SMTP; the full check (which consumes a level-2 approval or
+    # records a standing send) runs only once the connection is logged in, right
+    # before delivery. A vault or SMTP failure no longer burns the approval.
+    checked("pre")
     # FQDN EHLO name is REQUIRED: some SMTP providers reject EHLO with a private/bare
     # IP ([192.168.x.x]) -> "421 4.4.2 timeout exceeded". local_hostname forces a
     # proper FQDN; derive it from the mailbox domain.
@@ -267,6 +277,7 @@ def main():
                           local_hostname=ehlo_host,
                           context=ssl.create_default_context(), timeout=45) as s:
         s.login(lib.EMAIL, pw)
+        checked("full")  # a refusal exits 3 here; leaving the with-block closes the connection
         s.send_message(msg, to_addrs=rcpts)
     print(f"SENT from {lib.FROM_ADDRESS} to {a.to}" + (f" cc {a.cc}" if a.cc else " CC NELKUL (--no-owner-cc)"))
 

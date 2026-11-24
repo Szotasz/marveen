@@ -59,6 +59,7 @@ import { createAgentMessage, countRestartQueueState, listKanbanCards, hasOpenInb
 import {
   decideGuard,
   contextLimitForModel,
+  isKnownContextModel,
   calibrateLimit,
   handoffStaleMinutes,
   applyDailyHandoffSkipSweep,
@@ -794,6 +795,24 @@ export function measureIdleMs(name: string, nowMs: number): number | null {
   return Math.max(0, nowMs - mtime)
 }
 
+/** The model id the guard sizes the window for. Same root as the token read: the model decides the context LIMIT, so a
+ *  model read from a stale root produces a wrong pct from a right token count -- and pct is what the handoff threshold
+ *  compares. */
+function guardModelFor(name: string): string {
+  return (name === MAIN_AGENT_ID
+    ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
+    : readAgentModel(name)) ?? ''
+}
+
+/** CTXUNKNOWNMODEL1122: true when the pct is measured against the 200k fallback of a model id the guard does not know
+ *  (no limitTokens pinned). The dashboard badge says so. */
+export function contextWindowAssumed(name: string, cfgLimit: number | null): boolean {
+  return !cfgLimit && !isKnownContextModel(guardModelFor(name))
+}
+
+/** Agent -> model already warned about, so the unknown-model WARN is logged once per agent and model. */
+const unknownModelWarned = new Map<string, string>()
+
 export function measurePct(name: string, cfgLimit: number | null, opts: { learn?: boolean } = {}): number | null {
   const workingDir = workingDirFor(name)
   const configDir = configDirFor(name)
@@ -803,12 +822,14 @@ export function measurePct(name: string, cfgLimit: number | null, opts: { learn?
   if (cfgLimit) {
     limit = cfgLimit
   } else {
-    const model = (name === MAIN_AGENT_ID
-      // Same root as the token read above: the model decides the context LIMIT,
-      // so a model read from a stale root produces a wrong pct from a right
-      // token count -- and pct is what the handoff threshold compares.
-      ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
-      : readAgentModel(name)) ?? ''
+    const model = guardModelFor(name)
+    if (!isKnownContextModel(model) && unknownModelWarned.get(name) !== model) {
+      unknownModelWarned.set(name, model)
+      logger.warn({ name, model, assumedLimit: contextLimitForModel(model) },
+        'context-guard: unknown model, the context window is ASSUMED (200k fallback); a smaller real window makes the ' +
+        'handoff tiers late. Pin it with limitTokens in the agent\'s context-guard config; the guard does not read ' +
+        'CLAUDE_CODE_MAX_CONTEXT_TOKENS')
+    }
     // Calibrate against the persisted per-(agent, model) maximum, not just
     // the live reading: a fresh post-restart session must not un-learn a
     // window the previous session already proved (see HighwaterMap above).
@@ -1671,6 +1692,7 @@ export function getContextGuardStatus(): Array<{
   agent: string
   phase: string
   pct: number | null
+  assumedWindow?: boolean
   enabled: boolean
   saturationRestart: boolean
   cooldownUntilMs?: number
@@ -1684,6 +1706,7 @@ export function getContextGuardStatus(): Array<{
       agent: name,
       phase: state?.phase ?? 'idle',
       pct: cfg.enabled && !remote ? measurePct(name, cfg.limitTokens, { learn: false }) : null,
+      ...(cfg.enabled && !remote && contextWindowAssumed(name, cfg.limitTokens) ? { assumedWindow: true } : {}),
       enabled: cfg.enabled,
       saturationRestart: cfg.saturationRestart,
       ...cooldownStatusExtra(state),

@@ -995,11 +995,13 @@ const ALLOWLIST_SAMPLES: Array<[string, string]> = [
   ['POST', '/api/kanban/abc123/claim'], ['POST', '/api/kanban/abc123/release'], ['POST', '/api/kanban/abc123/move'],
   ['POST', '/api/kanban/abc123/comments'], ['POST', '/api/kanban/abc123/archive'], ['POST', '/api/kanban/abc123/unarchive'],
   ['POST', '/api/kanban/abc123/labels'], ['POST', '/api/kanban/abc123/blockers'],
+  ['GET', '/api/board/cards'], ['POST', '/api/board/cards'], ['GET', '/api/board/cards/abc123'],
+  ['POST', '/api/board/cards/abc123/comments'], ['POST', '/api/board/cards/abc123/move'], ['GET', '/api/board/report'],
   ['GET', '/api/memories'], ['GET', '/api/memories/42'], ['POST', '/api/memories'], ['PATCH', '/api/memories/42'], ['PUT', '/api/memories/42'],
   ['GET', '/api/daily-log'], ['GET', '/api/daily-log/dates'], ['POST', '/api/daily-log'],
   ['GET', '/api/approvals'], ['GET', '/api/approvals/abc-123'], ['POST', '/api/approvals'], ['POST', '/api/approvals/abc-123/consume'],
   ['GET', '/api/agents'],
-  ['GET', '/api/vault'], ['GET', '/api/vault/teszt-sajat'], ['POST', '/api/vault/resolve'],
+  ['GET', '/api/vault'], ['GET', '/api/vault/teszt-sajat'], ['POST', '/api/vault/resolve'], ['GET', '/api/vault/web-logins'], ['POST', '/api/vault/web-logins/shop-example-com/login'],
   ['POST', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa/replay'], ['POST', '/api/agent-taskstate/alfa/consume'],
   ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'],
   ['POST', '/api/skills/propose'], ['GET', '/api/updates'],
@@ -1210,7 +1212,7 @@ describe('gate invariants: identity lookup failure and the SSE pane stream', () 
 
   it('an identity lookup that throws fails CLOSED: 403 agent-identity-binding, the route never runs', async () => {
     const boom = () => { throw new Error('database is locked') }
-    const lookups = { messageRecipient: boom, memoryOwner: boom, approvalOwner: boom, approvalGrantee: boom }
+    const lookups = { messageRecipient: boom, messageParties: boom, memoryOwner: boom, approvalOwner: boom, approvalGrantee: boom }
     const cases: Array<[string, string, unknown]> = [
       ['PUT', '/api/messages/7', { status: 'done' }],
       ['PUT', '/api/memories/7', { content: 'x' }],

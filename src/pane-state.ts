@@ -75,7 +75,28 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // scrollback still will not match; it needs the shift+tab hint or a `·`
 // separated idle action, which is UI chrome that prose does not carry.
 // `← for agents` is the FleetView tail on current builds; older tails kept.
-const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
+// THE TAIL IS NOT ALWAYS THERE, AND A FOOTER WITHOUT ONE IS STILL A FOOTER
+// (measured 2026-10-24 on agent-helga, a strict-profile agent). Her live footer
+// read exactly `  ⏸ manual mode on` -- no shift+tab hint, no `·`-separated
+// action -- so every branch above missed it, the pane read 'unknown', and the
+// router refused to deliver. The hole is not cosmetic and not transient: the
+// agent launches without `--dangerously-skip-permissions` BECAUSE its security
+// profile is strict (agent-process.ts: `permissionMode === 'strict'` drops the
+// flag), so this footer shape is what that agent renders ALWAYS. A restart does
+// not fix it; her last successful delivery was 2026-09-23.
+// The fix keeps the anti-prose guard but moves the anchor from the TAIL to the
+// MODE GLYPH: `⏸` / `⏵` is UI chrome that scrollback prose does not carry, and
+// Claude Code renders it immediately before the mode phrase. A quoted
+// "bypass permissions on" in a log line still does not match, because it has no
+// glyph. Same reasoning as the tails, different piece of chrome.
+// The glyph branch requires the mode to END THE LINE. Without that it also
+// swallowed the half-rendered shells footer (`⏵⏵ bypass permissions on · 1 shell`),
+// which the suite pins as 'unknown' on purpose: a truncated tail is a mid-render
+// frame, not an idle surface. Caught by that very test on the first run of this
+// change. So: glyph + mode + end of line = tail-less footer; glyph + mode + a
+// PARTIAL tail stays rejected, and a COMPLETE tail is matched by the branches above.
+const IDLE_FOOTER_GLYPH_MODE_RX = /[⏸⏵]+ ((?:[A-Za-z][\w-]* ){1,3})on[ \t]*(?:\r?\n|$)/
+const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|[⏸⏵]+ (?:[A-Za-z][\w-]* ){1,3}on[ \t]*(?:\r?\n|$)|\? for shortcuts/
 
 // tmux clips the footer to the pane width and marks the cut with `…`, so on a
 // narrow pane the required tail arrives as `← for agen…` and IDLE_FOOTER_RX
@@ -1617,6 +1638,11 @@ export function detectPermissionMode(pane: string): string | null {
     /((?:[A-Za-z][\w'-]* ){1,3})on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents|\? for shortcuts))/,
   )
   if (m) return m[1].trim()
+  // Tail-less footer (strict-profile agents, see IDLE_FOOTER_GLYPH_MODE_RX):
+  // the mode is still named, just without a trailing action area. Read from the
+  // live footer line only (PANEFOOTERQUOTE1114).
+  const g = footer.match(IDLE_FOOTER_GLYPH_MODE_RX)
+  if (g) return g[1].trim()
   return /\? for shortcuts/.test(footer) ? 'default' : null
 }
 

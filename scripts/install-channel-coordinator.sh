@@ -69,6 +69,10 @@ fi
 # 3. launchd plist (env block mirrors com.marveen.channels.plist)
 mkdir -p "$HOME/Library/LaunchAgents"
 retire_legacy_helper_label "$PROJECT_DIR" channel-coordinator "$LABEL" "$HOME/Library/LaunchAgents"
+# The PATH the helper runs with: the fixed list, plus the dir tmux was found in and
+# a custom Homebrew prefix bin (scripts/lib/helper-path.sh, ISSUE1968BREWPREFIX).
+. "$SCRIPT_DIR/lib/helper-path.sh"
+HELPER_PATH="$(helper_launchd_path)"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -94,7 +98,7 @@ cat > "$PLIST" <<PLIST_EOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>$HELPER_PATH</string>
     <key>HOME</key>
     <string>$HOME</string>
     <key>USER</key>

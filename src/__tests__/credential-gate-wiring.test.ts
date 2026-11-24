@@ -23,7 +23,12 @@ import { listProfileTemplates, loadProfileTemplate, type ProfileTemplate } from 
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { AGENTS_BASE_DIR } from '../web/agent-config.js'
 
-const TEST_AGENT = 'credential-gate-probe'
+// Renamed from 'credential-gate-probe' (f2ccb0bb): the send-gate hook command
+// now carries --agent <name>, so an agent NAME containing 'credential-gate'
+// trips the byte-level no-trace assertion below without the credential gate
+// itself being present. The fixture name is arbitrary; the assertion keeps
+// its full strength against real gate traces.
+const TEST_AGENT = 'cg-wiring-probe'
 const settingsFor = (n: string) => agentSettingsPath(n)
 // NEVER render MAIN_AGENT_ID: its settings path is the owner's live file.
 const agentRoot = (n: string) => join(AGENTS_BASE_DIR, n)

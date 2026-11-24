@@ -129,6 +129,13 @@ rc, out, err, seen = run('kanban-comment', 'abcd1234', 'dani', fpath('c.txt', 'e
 g, d = one(seen, 'POST', '/api/kanban/abcd1234/comments', {'author': 'dani', 'content': 'eredmeny `backtick` es $(nem fut)\nmasodik sor\n'})
 ok(rc == 0 and g, 'P6 kanban-comment: the file content byte for byte, author', 'rc=%d %s %s' % (rc, d, err[:160]))
 
+rc, out, err, seen = run('kanban-archive', 'abcd1234')
+g, d = one(seen, 'POST', '/api/kanban/abcd1234/archive', {})
+ok(rc == 0 and g, 'P6b kanban-archive: POST to /archive with an empty body', 'rc=%d %s %s' % (rc, d, err[:160]))
+res = [run(*a) for a in (('kanban-archive', 'ab/../x'), ('kanban-archive',), ('kanban-archive', 'abcd1234', 'extra'))]
+ok(all(r[0] == 2 and not r[3] for r in res), 'P6c kanban-archive: a bad id or a wrong argument count sends nothing',
+   str([(r[0], len(r[3])) for r in res]))
+
 rc, out, err, seen = run('agents-list', body='[{"name":"dani"}]')
 g, d = one(seen, 'GET', '/api/agents', None)
 ok(rc == 0 and g and '"dani"' in out, 'P7 agents-list: GET /api/agents', 'rc=%d %s %s' % (rc, d, err[:160]))

@@ -255,6 +255,9 @@ _t() {
     hu:macos.migration_hint) echo "  Ha volt korábbi AI asszisztensed (OpenClaw, egyéni bot), átmigrálhatod a memóriáját." ;;
     en:macos.migrate_missing) echo "  migrate.sh not found. Use the dashboard: http://localhost:${WEB_PORT:-3420} -> Migration" ;;
     hu:macos.migrate_missing) echo "  A migrate.sh nem található. Használd a dashboardot: http://localhost:${WEB_PORT:-3420} -> Költöztetés" ;;
+    # MIGRATEHINTPATH1122: the full path, since after the install the shell is not necessarily in the install folder.
+    en:macos.migrate_failed) echo "  The migration did not finish (the install itself is complete). Run it again any time: bash \"${INSTALL_DIR}/scripts/migrate.sh\", or use the dashboard: http://localhost:${WEB_PORT:-3420} -> Migration" ;;
+    hu:macos.migrate_failed) echo "  A költöztetés nem futott végig (maga a telepítés kész). Bármikor újrafuttathatod: bash \"${INSTALL_DIR}/scripts/migrate.sh\", vagy a dashboardon: http://localhost:${WEB_PORT:-3420} -> Költöztetés" ;;
     # ── Done section ──────────────────────────────────────────────────
     en:dash.token_hint) echo "  (Open once; the browser will remember the token)" ;;
     hu:dash.token_hint) echo "  (Nyisd meg egyszer, utana a bongeszo megjegyzi a tokent)" ;;

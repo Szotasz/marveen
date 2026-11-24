@@ -213,6 +213,28 @@ describe('applyFederationBlock (line-exact surgery)', () => {
     expect(doc).toBe(PERSONA)
   })
 
+  // FEDBLOCKEOL1121: a persona without the inter-agent heading gets the block appended at EOF (every sub-agent
+  // CLAUDE.md). Disable must give back the same bytes, final newline included.
+  it('restores an EOF-appended persona byte for byte, final newline included', () => {
+    const custom = '# Custom persona\nno sections here\n'
+    const withBlock = applyFederationBlock(custom, block)!
+    expect(applyFederationBlock(withBlock, null)).toBe(custom)
+    let doc = custom
+    for (let i = 0; i < 3; i++) {
+      doc = applyFederationBlock(doc, block) ?? doc
+      doc = applyFederationBlock(doc, null) ?? doc
+    }
+    expect(doc).toBe(custom)
+  })
+
+  // The append strips the original's trailing newlines before the block, so the blocked text cannot tell whether
+  // the original had one: removal gives back a single final newline (the POSIX form), never none.
+  it('a persona that had no final newline comes back with one (the append cannot remember it)', () => {
+    const noEol = '# Custom persona\nno sections here'
+    const withBlock = applyFederationBlock(noEol, block)!
+    expect(applyFederationBlock(withBlock, null)).toBe(`${noEol}\n`)
+  })
+
   it('treats BEGIN without END as corruption: throws, never deletes to EOF', () => {
     const corrupted = `${PERSONA}\n${FEDERATION_BLOCK_BEGIN}\nno end marker`
     expect(() => applyFederationBlock(corrupted, block)).toThrow(/corrupted/)

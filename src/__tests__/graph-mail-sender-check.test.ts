@@ -57,7 +57,21 @@ beforeAll(() => {
   cpSync(join(ROOT, 'scripts', 'hooks'), join(dir, 'scripts', 'hooks'), { recursive: true })
   cpSync(join(ROOT, 'scripts', 'lib'), join(dir, 'scripts', 'lib'), { recursive: true })
   writeFileSync(join(dir, 'src', 'graph-mail.ts'), [
+    "import Database from 'better-sqlite3'",
+    "import { fileURLToPath } from 'node:url'",
+    // How many email_send approvals are consumed at this moment (APPROVALPRECHECK1122 order).
+    'function consumedNow(): number {',
+    "  const d = new Database(fileURLToPath(new URL('../store/claudeclaw.db', import.meta.url)))",
+    "  const r = d.prepare(\"SELECT COUNT(*) AS n FROM approvals WHERE category='email_send' AND consumed_at IS NOT NULL\").get() as { n: number }",
+    '  d.close()',
+    '  return r.n',
+    '}',
+    'export async function ensureToken() {',
+    "  console.log('STUB-TOKEN consumed=' + consumedNow())",
+    "  if (process.env.STUB_TOKEN_FAIL) throw new Error('graph-mail: token request failed (401 invalid_client)')",
+    '}',
     'export async function sendMail(o: { to: string[]; cc?: string[]; subject: string; body: string }) {',
+    "  console.log('STUB-SEND consumed=' + consumedNow())",
     "  console.log('STUB-SENT ' + JSON.stringify({ to: o.to, cc: o.cc }))",
     '}',
     'export async function listMessages() { return [] }',
@@ -199,6 +213,43 @@ describe('graph-mail.ts enforces the email_send level itself', () => {
     const r = send([...LETTER, '--cc=c@example.com'])
     expect(r.status, r.stderr).toBe(0)
     expect(stubSent(r.stdout)).toEqual({ to: ['a@example.com'], cc: ['c@example.com'] })
+  })
+
+  // APPROVALPRECHECK1122: the precheck runs before the token, the consuming
+  // full check after it and before sendMail, so a token failure leaves the
+  // owner's approval unused.
+  const marks = (out: string) => out.split('\n').filter((l) => l.startsWith('STUB-TOKEN') || l.startsWith('STUB-SEND '))
+
+  it('level 2: token before the consume, the consume before sendMail', () => {
+    writeLevel(2)
+    approve(anchorOf(send(LETTER).stderr)!)
+    const r = send(LETTER)
+    expect(r.status, r.stderr).toBe(0)
+    expect(marks(r.stdout)).toEqual(['STUB-TOKEN consumed=0', 'STUB-SEND consumed=1'])
+    expect(consumed()).toBe(true)
+  })
+
+  it('level 2: a token failure sends nothing and leaves the approval UNCONSUMED', () => {
+    writeLevel(2)
+    approve(anchorOf(send(LETTER).stderr)!)
+    const r = send(LETTER, { ...process.env, STUB_TOKEN_FAIL: '1' })
+    expect(r.status).not.toBe(0)
+    expect(stubSent(r.stdout)).toBe(null)
+    expect(consumed()).toBe(false)
+    expect(send(LETTER).status).toBe(0)
+    expect(consumed()).toBe(true)
+  })
+
+  it('a refusal (level 1, or level 2 without an approval) comes before the token', () => {
+    writeLevel(1)
+    const l1 = send(LETTER)
+    expect(l1.status).toBe(3)
+    expect(marks(l1.stdout)).toEqual([])
+    writeLevel(2)
+    const l2 = send(LETTER)
+    expect(l2.status).toBe(3)
+    expect(anchorOf(l2.stderr)).not.toBe(null)
+    expect(marks(l2.stdout)).toEqual([])
   })
 
   it('a missing sender_check.py refuses (exit 3)', () => {

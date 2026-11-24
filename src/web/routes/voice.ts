@@ -48,6 +48,7 @@ const VENV_PY = join(VOICE_DIR, 'venv', 'bin', 'python')
 // the caller sees a bare socket/hook timeout instead of the server's own
 // transcript=null -- the same "vanished with no reason" failure this change
 // exists to remove, just later. Raising one of the three alone changes nothing.
+// The budget is per CALLER, not per whisper run: queue wait + run share it (see runSttSingleFlight).
 const STT_TIMEOUT_MS = 160_000
 
 // Telegram file_ids are base64url + some punctuation; reject anything else.
@@ -86,30 +87,292 @@ function isVoiceInstalled(): boolean {
   return existsSync(VENV_PY) && existsSync(VTOOLS_PY)
 }
 
+// Settle grace for runProc's timeout path when opts.onTimeout fired: the
+// cleanup child spawned from there (the systemctl unit kill) is itself capped
+// at 5_000 ms -- see runSttWhisper's onTimeout -- so allow that full cap plus
+// 3s margin for the expected 'close' before settling anyway. If the cleanup
+// fails, the killed child's inherited descriptors stay open for as long as
+// the transient service lives, 'close' never arrives, and without this grace
+// neither would the resolution (BLOCKER A1, measured 2026-11-18).
+const RUNPROC_SETTLE_GRACE_MS = 8_000
+
 function runProc(
   cmd: string,
   args: string[],
-  opts: { stdinData?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
-): Promise<{ stdout: string; stderr: string; code: number }> {
+  opts: {
+    stdinData?: string
+    timeoutMs?: number
+    env?: NodeJS.ProcessEnv
+    /** Opt-in for the STT isolation path only: see the listener below. */
+    spawnErrorAsFailure?: boolean
+    /**
+     * Opt-in for the STT isolation path only: fired from inside the timeout
+     * callback, right after the SIGKILL, for cleanup that must NOT wait for
+     * the process's own 'close' -- with --pipe that close can be held hostage
+     * by descriptors the child handed to a still-living service (see
+     * runSttWhisper). Best-effort by contract: any throw is swallowed here,
+     * never let it escape the timer.
+     */
+    onTimeout?: () => void
+  } = {},
+): Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }> {
   return new Promise((resolve) => {
     const proc = spawn(cmd, args, { shell: false, ...(opts.env ? { env: opts.env } : {}) })
     let stdout = ''
     let stderr = ''
+    let timedOut = false
+    let settleTimer: NodeJS.Timeout | null = null
     const timer = opts.timeoutMs
-      ? setTimeout(() => { proc.kill('SIGKILL') }, opts.timeoutMs)
+      ? setTimeout(() => {
+          timedOut = true
+          proc.kill('SIGKILL')
+          if (opts.onTimeout) {
+            try { opts.onTimeout() } catch { /* best-effort by contract */ }
+            // After the kill + cleanup, 'close' is deliverable ONLY through the
+            // cleanup succeeding: if it fails, the descriptors the child handed
+            // to a still-living service never close and this promise would hang
+            // forever. Bound that wait and settle with the same failure shape a
+            // killed child produces; resolving an already-resolved promise (a
+            // late 'close') is a no-op, so no extra guard flag is needed.
+            settleTimer = setTimeout(() => {
+              resolve({ stdout, stderr, code: 1, timedOut: true })
+            }, RUNPROC_SETTLE_GRACE_MS)
+          }
+        }, opts.timeoutMs)
       : null
+    // Only the STT isolation spawns opt in: they run systemd-run/systemctl,
+    // binaries that may legitimately be absent (container, no user systemd),
+    // and there a missing binary must mean "fall back / swallow", not an
+    // unhandled 'error' event taking the dashboard down. Every pre-existing
+    // caller keeps the exact old behavior of no listener at all.
+    if (opts.spawnErrorAsFailure) {
+      proc.on('error', () => {
+        if (timer) clearTimeout(timer)
+        if (settleTimer) clearTimeout(settleTimer)
+        resolve({ stdout, stderr, code: 127, timedOut })
+      })
+    }
     proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
     proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
     if (opts.stdinData != null) { proc.stdin.write(opts.stdinData, 'utf-8'); proc.stdin.end() }
     proc.on('close', (code) => {
       if (timer) clearTimeout(timer)
-      resolve({ stdout, stderr, code: code ?? 1 })
+      if (settleTimer) clearTimeout(settleTimer)
+      resolve({ stdout, stderr, code: code ?? 1, timedOut })
     })
   })
 }
 
 // Concurrency guard: prevents parallel installs racing on the same venv/DEST.
 let _installInProgress = false
+
+// --- STT subprocess isolation (incident 2026-11-18) -------------------------
+//
+// The whisper python used to run as a DIRECT child of the dashboard process,
+// i.e. inside the dashboard's own systemd user-service cgroup (MemoryHigh=3G,
+// MemoryMax=4G). Two transcriptions at once (each peaking well over a GiB with
+// faster-whisper small/int8) pushed the whole service into
+// mem_cgroup_handle_over_high and stalled the fleet's message traffic, while
+// the host sat on ~134G free -- the constraint was never the machine, only the
+// dashboard's slice. Two independent defenses live below, and both are needed:
+//   1. single-flight: one transcription at a time, process-wide, callers queue;
+//   2. cgroup isolation: on Linux each transcription runs in its own transient
+//      systemd unit with its own MemoryHigh/MemoryMax, so whisper's memory
+//      pressure throttles (and, at the ceiling, kills) only that unit.
+
+// Per-transcription cgroup budget, in bytes (the -p properties take bytes):
+// 1.5 GiB soft throttle / 3 GiB hard ceiling. Comfortably above one
+// small/int8 run so the transcription itself is not throttled to death, yet
+// small enough that the dashboard's own 3G/4G slice no longer carries the
+// load at all. Overridable for ops tuning via MARVEEN_STT_MEMORY_HIGH/MAX.
+const STT_UNIT_MEMORY_HIGH_B = 1_610_612_736
+const STT_UNIT_MEMORY_MAX_B = 3_221_225_472
+
+function sttMemoryLimitBytes(envName: string, fallback: number): number {
+  const raw = process.env[envName]
+  if (raw == null) return fallback
+  // Strict digits-only: a lenient parse (parseInt, trimming, unit suffixes)
+  // would silently accept "1.5G" or "4096x" and pin a wrong cgroup limit on
+  // exactly the host someone was trying to tune. Digits alone are still not
+  // a byte count: Number() maps a long-enough digit string to Infinity, and
+  // past 2^53 it silently rounds (9007199254740993 comes back as ...992) --
+  // either would pin a limit the operator never wrote. Only a safe positive
+  // integer is accepted.
+  const n = /^\d+$/.test(raw) ? Number(raw) : NaN
+  if (!(Number.isSafeInteger(n) && n > 0)) {
+    logger.warn({ envName, raw, fallback }, 'STT memory override invalid (need positive integer bytes), using default')
+    return fallback
+  }
+  return n
+}
+
+// Ops escape hatch: MARVEEN_STT_MODE pins the spawn strategy without probing,
+// so an on-call can react to a systemd regression without shipping code.
+//   'direct'  -> always a plain child process (pre-incident behavior);
+//   'systemd' -> always the transient unit;
+//   unset/anything else -> auto: probe once, remember for the process lifetime.
+let _sttIsolatedCache: boolean | null = null
+
+async function sttUseIsolatedSpawn(): Promise<boolean> {
+  // Non-Linux hosts have no systemd to talk to: never probe (the probe would
+  // only burn 10s failing), keep the macOS path exactly as it always was.
+  if (process.platform !== 'linux') return false
+  const forced = process.env.MARVEEN_STT_MODE
+  if (forced === 'direct') return false
+  if (forced === 'systemd') return true
+  if (_sttIsolatedCache != null) return _sttIsolatedCache
+  // Capability probe: a host without a user systemd (container, odd distro)
+  // must keep transcribing, not fail. /bin/true is the cheapest thing a unit
+  // can run; --collect leaves no dead unit behind, --wait/--pipe make the rc
+  // observable. 10s so a wedged user manager cannot add minutes to the first
+  // voice note after boot. The answer is cached: one failed probe must not
+  // re-pay 10s on every transcription for the rest of the process's life.
+  const probe = await runProc(
+    'systemd-run',
+    ['--user', '--quiet', '--pipe', '--collect', '--wait', '/bin/true'],
+    { timeoutMs: 10_000, spawnErrorAsFailure: true },
+  )
+  _sttIsolatedCache = probe.code === 0
+  if (_sttIsolatedCache) {
+    logger.info('STT: systemd-run transient unit available (probe ok; memory cap not verified)')
+  } else {
+    logger.warn({ code: probe.code }, 'STT: systemd-run probe failed, whisper stays in the dashboard cgroup (isolation off)')
+  }
+  return _sttIsolatedCache
+}
+
+// Single-flight lock for STT, process-wide. Concurrent callers queue FIFO
+// through a promise chain; nobody is rejected, because every caller is a real
+// inbound voice note -- racing two whispers into one cgroup is what started the
+// incident. The chain is built from the task (never from the caller-facing
+// race), so a caller that gives up does NOT release the queue: the next whisper
+// starts only after the previous one's runProc settled. The chain remembers
+// settlement only, never values, so one failed task cannot poison the rest.
+//
+// Each caller has a deadline (call time + STT_TIMEOUT_MS): queue wait and run
+// share ONE budget, so the 160 s < 170 s < 180 s chain holds for queued callers
+// too. A caller whose deadline passes while queued gets null at its deadline
+// and its whisper is skipped without spawning when its turn comes.
+//
+// Same-file merge: the directive route and the router usually ask for the SAME
+// voice note. A second call for the same key while the first is queued or
+// running gets the same promise: one whisper, both get the transcript.
+let _sttChain: Promise<unknown> = Promise.resolve()
+// The running transcription plus everyone queued behind it; >1 after the
+// increment means "this caller had to wait", at queue position count-1.
+let _sttInOut = 0
+// Same-file merge: key -> the promise of the caller that is already queued or running for that file.
+const _sttInflight = new Map<string, Promise<string | null>>()
+
+function runSttSingleFlight(
+  key: string,
+  fileId: string,
+  deadline: number,
+  fn: (deadline: number) => Promise<string | null>,
+): Promise<string | null> {
+  const existing = _sttInflight.get(key)
+  if (existing) return existing
+  _sttInOut++
+  if (_sttInOut > 1) {
+    logger.warn({ fileId, queuePosition: _sttInOut - 1 }, 'transcribeVoiceFile: STT busy, caller queued behind in-flight transcription')
+  }
+  let abandoned = false
+  const task = _sttChain.then(() => {
+    if (abandoned || Date.now() >= deadline) return null
+    return fn(deadline)
+  })
+  _sttChain = task.then(() => undefined, () => undefined)
+  void task.then(() => { _sttInOut-- }, () => { _sttInOut-- })
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined
+  const expiry = new Promise<null>((resolve) => {
+    expiryTimer = setTimeout(() => {
+      abandoned = true
+      resolve(null)
+    }, Math.max(0, deadline - Date.now()))
+  })
+  const result: Promise<string | null> = Promise.race([task, expiry]).finally(() => {
+    clearTimeout(expiryTimer)
+    if (_sttInflight.get(key) === result) _sttInflight.delete(key)
+  })
+  _sttInflight.set(key, result)
+  return result
+}
+
+// Monotonic counter for transient unit names: two calls must never share a
+// unit, or the second systemd-run would collide with the first's unit.
+let _sttUnitSeq = 0
+
+async function runSttWhisper(fileId: string, stateDir: string, deadline: number): Promise<string | null> {
+  let result: { stdout: string; stderr: string; code: number; timedOut: boolean }
+  const isolated = await sttUseIsolatedSpawn()
+  // Remaining budget, measured after the probe (which may take time).
+  const budgetMs = deadline - Date.now()
+  if (budgetMs <= 0) return null
+  if (isolated) {
+    const unit = `marveen-stt-${process.pid}-${++_sttUnitSeq}`
+    // NOTE on environment: a transient unit starts from the user manager's
+    // environment, NOT the dashboard's. The variables _vtools.py reads on the
+    // transcribe path (MARVEEN_WHISPER_MODEL) and the proxy variables for the
+    // Telegram download are forwarded by NAME with --setenv=NAME: systemd-run
+    // copies the value from its own environment (it is our child), so the
+    // value never reaches argv (a proxy URL can hold a password, and argv is
+    // visible in /proc and ps).
+    // The STT_TIMEOUT_MS budget now guards systemd-run itself (--wait makes
+    // it forward the unit's exit), so the wall-clock contract is unchanged.
+    //
+    // WHY the unit kill fires from the timeout path and NOT after the await:
+    // measured on the target host (2026-11-18) -- with --pipe the transient
+    // service holds the supervisor's inherited stdout/stderr descriptors, so
+    // the timer's SIGKILL only beheads systemd-run and leaves the service
+    // alive; Node's 'close' then waits on those descriptors, and the awaited
+    // result NEVER resolves while the service lives. A cleanup placed after
+    // `await runProc(...)` would sit behind that blocked close: caller hung,
+    // single-flight queue head blocked forever. Firing the kill here ends
+    // the unit's processes, their inherited descriptors close, 'close' fires,
+    // and the caller gets the same null failure as any other whisper death
+    // (the unit's cgroup is not left burning CPU/RAM after everyone gave up,
+    // either). Fire-and-forget, NOT awaited: best-effort by contract (5s cap,
+    // rc and spawn errors swallowed), and the STT call must settle when its
+    // descriptors close, not after systemctl finishes.
+    const unitArgs: string[] = [
+      '--user', '--quiet', '--pipe', '--collect', '--wait',
+      '-p', `MemoryHigh=${sttMemoryLimitBytes('MARVEEN_STT_MEMORY_HIGH', STT_UNIT_MEMORY_HIGH_B)}`,
+      '-p', `MemoryMax=${sttMemoryLimitBytes('MARVEEN_STT_MEMORY_MAX', STT_UNIT_MEMORY_MAX_B)}`,
+      // Unit-side time limit: a unit outlives a dashboard restart by at most ~10 s beyond the budget.
+      '-p', `RuntimeMaxSec=${Math.ceil(budgetMs / 1000) + 10}`,
+    ]
+    for (const name of ['MARVEEN_WHISPER_MODEL', 'HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy']) {
+      if (process.env[name] !== undefined) unitArgs.push(`--setenv=${name}`)
+    }
+    unitArgs.push(`--unit=${unit}`, VENV_PY, VTOOLS_PY, 'transcribe', fileId, stateDir)
+    result = await runProc(
+      'systemd-run',
+      unitArgs,
+      {
+        timeoutMs: budgetMs,
+        spawnErrorAsFailure: true,
+        onTimeout: () => {
+          void runProc(
+            'systemctl', ['--user', 'kill', '--signal=SIGKILL', unit],
+            { timeoutMs: 5_000, spawnErrorAsFailure: true },
+          )
+        },
+      },
+    )
+  } else {
+    // Direct spawn (non-Linux, MARVEEN_STT_MODE=direct, or failed probe): the
+    // exact pre-incident call, semantics untouched.
+    result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: budgetMs })
+  }
+  // Exit-code semantics shared by both spawn modes, unchanged from before
+  // isolation existed: non-zero (incl. killed-on-timeout) -> warn with the
+  // stderr head, null; success -> trimmed stdout.
+  if (result.code !== 0) {
+    logger.warn({ fileId, stderr: result.stderr.slice(0, 200) }, 'transcribeVoiceFile: whisper failed')
+    return null
+  }
+  return result.stdout.trim()
+}
 
 // Transcribe a Telegram voice file via the local whisper toolkit. This is the
 // single in-process entry point for STT -- both the /api/voice/stt route AND
@@ -118,19 +381,19 @@ let _installInProgress = false
 // coupled message delivery to the HTTP server and, under sustained voice
 // traffic, threw the event loop (progressive /api/agents latency 73ms -> 12s ->
 // timeout). Returns the transcript, or null on any failure (toolkit missing,
-// invalid input, whisper non-zero). The whisper subprocess keeps its own
-// STT_TIMEOUT_MS budget inside runProc, so a slow transcription can never hang
-// the caller.
+// invalid input, whisper non-zero). Each caller has one
+// STT_TIMEOUT_MS budget measured from its own call, covering both the wait in
+// the queue and the whisper run, so a slow transcription can never hang the
+// caller. Calls are serialized process-wide (one whisper at a time, see
+// runSttSingleFlight) and on Linux run in an isolated transient systemd unit
+// (see runSttWhisper), so STT can no longer drag the dashboard's cgroup into
+// reclaim while it transcribes.
 export async function transcribeVoiceFile(fileId: string, stateDir: string): Promise<string | null> {
   if (!isVoiceInstalled()) return null
   if (!SAFE_FILE_ID_RE.test(fileId)) return null
   if (!isSafeStateDir(stateDir)) return null
-  const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: STT_TIMEOUT_MS })
-  if (result.code !== 0) {
-    logger.warn({ fileId, stderr: result.stderr.slice(0, 200) }, 'transcribeVoiceFile: whisper failed')
-    return null
-  }
-  return result.stdout.trim()
+  const deadline = Date.now() + STT_TIMEOUT_MS
+  return runSttSingleFlight(`${stateDir}\u0000${fileId}`, fileId, deadline, (dl) => runSttWhisper(fileId, stateDir, dl))
 }
 
 /**
@@ -181,12 +444,14 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
 
     let transcript: string | null = null
     if (inboundWasAudio && isVoiceInstalled()) {
-      const sttResult = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileParam, stateDir], { timeoutMs: STT_TIMEOUT_MS })
-      if (sttResult.code === 0) {
-        transcript = sttResult.stdout.trim() || null
-      } else {
-        logger.warn({ fileParam, stderr: sttResult.stderr }, '/api/voice/directive: STT failed (non-fatal)')
-      }
+      // Through transcribeVoiceFile, not a private runProc: this used to be a
+      // SECOND whisper spawn site, and it ran outside any serialization -- the
+      // directive endpoint could race the router's transcription and put two
+      // whisper processes in the dashboard cgroup at once (incident
+      // 2026-11-18). One entry point means one queue and one isolation unit.
+      // `|| null` keeps this route's own contract: a failed STT AND an empty
+      // transcript both report transcript=null (non-fatal either way).
+      transcript = (await transcribeVoiceFile(fileParam, stateDir)) || null
     }
 
     json(res, { directive, transcript })

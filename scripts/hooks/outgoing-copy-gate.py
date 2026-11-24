@@ -119,7 +119,13 @@ _PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
 # felismeres-szemantikat visel, es ezt kozos eset-lista orzi
 # (send-invocation-cases.json + konformancia-teszt): a divergencia
 # teszt-hibakent jelenjen meg, ne incidenskent (Marveen, msg 14289).
-_NODEISH = re.compile(r"^(node|tsx|ts-node|deno|bun|npx)$", re.I)
+# F2CCB0BB R5 (maintainer decision): 'nodejs' is node-ish. The ordinary Bash
+# analysis must recognize a nodejs-basename interpreter -- the bare `nodejs` on PATH,
+# /usr/bin/nodejs, /usr/local/bin/nodejs, any absolute path -- so a script send run that
+# way gets the script-send deny instead of passing ungated (measured R4 gap). This is the
+# ORDINARY analysis only; the exception matcher's exact interpreter allowlist
+# (_NODE_INTERPRETERS, maintainer decision) is unchanged on purpose.
+_NODEISH = re.compile(r"^(node|nodejs|tsx|ts-node|deno|bun|npx)$", re.I)
 _GRAPHMAIL = re.compile(r"^graph-mail(\.ts|\.js)?$", re.I)
 _WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
 _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
@@ -534,6 +540,12 @@ def _segments_tokens(cmd: str):
     lex.whitespace_split = True
     lex.commenters = ""  # MAINGATENLCOMMENT1104: the mask drops comments as bash does; shlex's would not
     segments, cur = [], []
+    # ISSUE3049: a process substitution (`<(...)`, `>(...)`, zsh `=(...)`) is ONE WORD of the command around it. Its
+    # command is a segment of its own (so a send inside it is still seen), and the outer command goes on after its `)`
+    # with the undecidable word in its place. Before, the words after the `)` started a new segment, so in
+    # `cmp <(curl ...) web/app.js` the file became a command head, was read as a script, and a file over the script
+    # read limit made a read-only line a send. Each entry: [the outer segment so far, the open plain ( inside].
+    procs = []
     for tok in lex:
         # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
         # characters as ONE token, so `$(date); sendmail ...` (after the
@@ -544,6 +556,25 @@ def _segments_tokens(cmd: str):
         # the conformance list covered it. A token made ONLY of operator
         # characters is always an operator sequence, so it separates.
         if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&") or (tok and set(tok) <= set("();|&")):
+            if procs or (tok.startswith("(") and cur and cur[-1] in _PROC_SUBST_OPENERS):
+                for c in tok:
+                    if c == "(" and cur and cur[-1] in _PROC_SUBST_OPENERS:
+                        procs.append([cur[:-1] + [_PROC_SUBST_WORD], 0])
+                        cur = []
+                        continue
+                    if procs and c == ")" and procs[-1][1] == 0:
+                        if cur:
+                            segments.append(cur)
+                        cur = procs.pop()[0]
+                        continue
+                    if procs and c == "(":
+                        procs[-1][1] += 1
+                    elif procs and c == ")":
+                        procs[-1][1] -= 1
+                    if cur:
+                        segments.append(cur)
+                    cur = []
+                continue
             if cur:
                 segments.append(cur)
             cur = []
@@ -551,7 +582,13 @@ def _segments_tokens(cmd: str):
             cur.append(tok)
     if cur:
         segments.append(cur)
+    # an unclosed substitution: its outer command is still judged, as a segment of its own
+    segments.extend(outer for outer, _ in reversed(procs) if outer)
     return segments
+
+
+_PROC_SUBST_OPENERS = ("<", ">", "=")
+_PROC_SUBST_WORD = "$__SUBST__"   # the undecidable word flatten_substitutions writes for a substitution
 
 
 # SENDWRAP924: a wrapper in front of the sender -- `sudo sendmail x`,
@@ -2361,8 +2398,9 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
     if addressed and _relative_under_undecidable_cd(script, cwd, cmd_words):
         return True  # MAILGATESCRIPT1027 R1: a relative script after a cd that cannot be resolved: fail-closed
     paths = _resolve_script_paths(script, cwd, cmd_words)
-    if prog == "node" and not re.search(r"\.[^/]*$", _basename(script)):
+    if prog in ("node", "nodejs") and not re.search(r"\.[^/]*$", _basename(script)):
         # Samu 69538: node loads an extensionless script as X, X.js or X.json; a native X.node addon cannot be read here
+        # nodejs is the same runtime as node, so the extensionless-load rule applies to it too.
         if addressed and any(read_script(p + ".node", _SHEBANG_READ_LIMIT) is not None for p in paths):
             return True
         paths = [c for p in paths for c in (p, p + ".js", p + ".json")]

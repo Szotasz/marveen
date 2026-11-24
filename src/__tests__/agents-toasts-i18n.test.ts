@@ -67,7 +67,7 @@ describe('the Agents page toasts come from the language files', () => {
 
   it('an error is shown as "<common.error>: <message>" at all five places', () => {
     for (const src of [WIZARD_NEXT, WIZARD_CREATE, RESTART_MAIN, START, STOP]) {
-      expect(src).toContain("showToast(`${t('common.error')}: ${err.message}`)")
+      expect(src).toContain("showToast(`${t('common.error')}: ${err.message}`, 'error')")
     }
   })
 

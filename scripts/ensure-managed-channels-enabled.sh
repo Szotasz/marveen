@@ -58,6 +58,31 @@ report_enabled() {
   echo "MARVEEN_CHANNELS_GATE=ok"
 }
 
+# MANAGEDUMASK1119: an EXISTING managed dir keeps its mode under `mkdir -p -m 0755` (below), and an older install made
+# it 0700 under a 077 umask: the session cannot read the policy inside, and the gate silently does nothing. If it is a
+# real directory (not a symlink), owned by the privileged user (root in an install), and not 0755, set it to 0755,
+# loudly. 0755 never adds a group/other write bit; a dir owned by anyone else, or a symlink, is left alone (the writer
+# refuses those anyway). $1 is the privilege prefix. It runs BEFORE each "already enabled" check that could see an
+# enabled policy through that 0700 dir (as root), since those checks exit early.
+MANAGED_DIR="$(dirname "$MANAGED_FILE")"
+repair_managed_dir() {
+  [ -d "$MANAGED_DIR" ] && [ ! -L "$MANAGED_DIR" ] || return 0
+  local om owner mode
+  om="$(stat -c '%u %a' "$MANAGED_DIR" 2>/dev/null || stat -f '%u %Lp' "$MANAGED_DIR" 2>/dev/null)"
+  owner="${om%% *}"; mode="${om##* }"
+  # the mode first: a 0755 dir needs no privileged `id -u` (no sudo call, no password) on every run
+  [ -n "$om" ] && [ "$mode" != "755" ] && [ "$owner" = "$($1 id -u)" ] || return 0
+  if $1 chmod 0755 "$MANAGED_DIR" 2>/dev/null; then
+    echo "  ! channelsEnabled: a $MANAGED_DIR mappa joga $mode volt (a session nem latott bele) -- 0755-re allitva."
+  else
+    echo "  ! channelsEnabled: a $MANAGED_DIR mappa joga $mode, es nem sikerult 0755-re allitani -- kezi root-lepes:"
+    echo "      sudo chmod 0755 \"$MANAGED_DIR\""
+  fi
+}
+
+# As root, the unprivileged check below already reads through a 0700 dir: repair first.
+[ "$(id -u)" -eq 0 ] && repair_managed_dir ""
+
 if channels_enabled ""; then
   report_enabled
   exit 0
@@ -78,6 +103,9 @@ if [ "$(id -u)" -ne 0 ]; then
   fi
 fi
 
+# Not root: the privileged check below reads through a 0700 dir: repair first (MANAGEDUMASK1119).
+[ -n "$SUDO" ] && repair_managed_dir "$SUDO"
+
 # Same question, now with the privilege we just resolved. An admin who locked
 # the managed file down still gets the early exit instead of a pointless
 # privileged rewrite on every install -- the old order got that right by reading
@@ -87,8 +115,11 @@ if [ -n "$SUDO" ] && channels_enabled "$SUDO"; then
   exit 0
 fi
 
-if ! $SUDO mkdir -p "$(dirname "$MANAGED_FILE")" 2>/dev/null; then
-  echo "  ! channelsEnabled: nem sikerult letrehozni $(dirname "$MANAGED_FILE") -- kezi root-lepes szukseges:"
+# MANAGEDUMASK1119: -m 0755 whatever the umask (as #2816 and #2955 do for the installers' own mkdirs). Without it a
+# root umask of 077 made the dir 0700, the user's session could not read the policy inside, and the gate silently did
+# nothing; on Linux this script runs before the installer's Teams block, so that -m 0755 found the dir already there.
+if ! $SUDO mkdir -p -m 0755 "$MANAGED_DIR" 2>/dev/null; then
+  echo "  ! channelsEnabled: nem sikerult letrehozni $MANAGED_DIR -- kezi root-lepes szukseges:"
   echo "      sudo bash $0"
   echo "MARVEEN_CHANNELS_GATE=manual"
   exit 0

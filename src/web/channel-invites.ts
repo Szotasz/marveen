@@ -8,11 +8,23 @@
 // 2. The invitee opens the deep-link (Telegram: t.me/<bot>?start=invite-TOKEN, Slack: CLI pair),
 //    the plugin creates a pending entry in access.json (standard pairing behaviour).
 // 3. This monitor (started in src/index.ts) polls both files every few seconds.
-//    When it sees a pending entry in access.json while at least one non-used,
-//    non-expired invite token exists in invites.json, it auto-approves the entry:
-//    marks the token used (in invites.json), moves the senderId into allowFrom
-//    (in access.json), drops the pending row, restores allowlist policy if no
-//    other invites are still active.
+//    Telegram (INVITETOKENBIND1120): it approves ONLY a pending entry whose sender
+//    came with a live invite's own token. The patched plugin (invitetext patch,
+//    scripts/patch-telegram-plugin.py) checks the /start invite-<token> payload
+//    against invites.json and leaves a claim: invite-claims/<senderId> holding
+//    sha256(token). A pending entry without a matching claim is never approved
+//    here (before this, ANY sender who messaged the bot while an invite was live
+//    took it); it stays an ordinary pairing request for the dashboard code.
+//    On a match: marks that token used (in invites.json), moves the senderId into
+//    allowFrom (in access.json), drops the pending row and the claim, restores
+//    allowlist policy if no other invites are still active.
+//    Slack (SLACKINVBIND1120): nothing is approved automatically. The Slack
+//    plugin answers an unknown DM with a pairing code and never passes the
+//    message on, and a Slack link cannot carry the token, so the token cannot
+//    reach a claim without patching that third-party plugin. A Slack invite
+//    still opens pairing mode for its lifetime; the code is approved by the
+//    owner (dashboard or /slack-channel:access pair). The old rule (the oldest
+//    pending entry while an invite is live) let in whoever wrote first.
 //
 // Why a sidecar file: access.json is co-owned by the channel plugin (e.g.
 // telegram@claude-plugins-official). That plugin rewrites access.json from its
@@ -23,9 +35,9 @@
 //
 // The invite-token is a "shared secret" that grants exactly one auto-approve.
 // Tokens are 16 random bytes (base64url, ~22 chars), unguessable in practice.
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import { logger } from '../logger.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir, readJsonObjectForWrite } from './agent-config.js'
@@ -193,6 +205,42 @@ export function revokeInvite(accessPath: string, token: string): boolean {
   return true
 }
 
+// invite-claims/ sits next to access.json; the patched plugin writes one file per sender (INVITETOKENBIND1120).
+const CLAIMS_DIR = 'invite-claims'
+const CLAIM_TTL_MS = 60 * 60 * 1000 // the plugin's own pending TTL: a claim never outlives the pending entry it vouches for
+
+function sha256Hex(s: string): string {
+  return createHash('sha256').update(s, 'utf8').digest('hex')
+}
+
+function sameHex(a: string, b: string): boolean {
+  if (!/^[0-9a-f]{64}$/.test(a) || !/^[0-9a-f]{64}$/.test(b)) return false
+  return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'))
+}
+
+/** The sha256 the plugin left for this sender, or null (no claim, unreadable, malformed, or older than the pending TTL). */
+function readClaim(claimsDir: string, senderId: string, now: number): string | null {
+  if (!/^-?[0-9]{1,20}$/.test(senderId)) return null
+  const p = join(claimsDir, senderId)
+  try {
+    if (now - statSync(p).mtimeMs > CLAIM_TTL_MS) return null
+    const v = readFileSync(p, 'utf-8').trim()
+    return /^[0-9a-f]{64}$/.test(v) ? v : null
+  } catch {
+    return null
+  }
+}
+
+function pruneClaims(claimsDir: string, now: number): void {
+  let names: string[]
+  try { names = readdirSync(claimsDir) } catch { return }
+  for (const n of names) {
+    try {
+      if (now - statSync(join(claimsDir, n)).mtimeMs > CLAIM_TTL_MS) rmSync(join(claimsDir, n), { force: true })
+    } catch { /* gone meanwhile */ }
+  }
+}
+
 export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): void {
   const providerTypes: ChannelProviderType[] = ['telegram', 'slack']
 
@@ -231,32 +279,53 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
 
       const pendingEntries = Object.entries(access.pending || {})
         .sort((a, b) => a[1].createdAt - b[1].createdAt)
+      const claimsDir = join(accessPath, '..', CLAIMS_DIR)
+      if (provider === 'telegram') pruneClaims(claimsDir, now)
       if (pendingEntries.length === 0) continue
 
-      const [pCode, pEntry] = pendingEntries[0]
-      const [tToken, tEntry] = live[0]
+      // Which pending entry takes which invite. Telegram: only a sender whose claim is a live invite's sha256.
+      const matches: Array<{ pCode: string; senderId: string; token: string; entry: InviteEntry }> = []
+      if (provider === 'telegram') {
+        const taken = new Set<string>()
+        for (const [pCode, pEntry] of pendingEntries) {
+          const claim = readClaim(claimsDir, String(pEntry.senderId), now)
+          if (!claim) continue
+          const hit = live.find(([tok]) => !taken.has(tok) && sameHex(sha256Hex(tok), claim))
+          if (!hit) continue
+          taken.add(hit[0])
+          matches.push({ pCode, senderId: String(pEntry.senderId), token: hit[0], entry: hit[1] })
+        }
+      }
+      // Slack: no claim can exist (see the header), so no match: the pending entry waits for the owner's approval.
+      if (matches.length === 0) continue
 
       if (!access.allowFrom) access.allowFrom = []
-      if (!access.allowFrom.includes(pEntry.senderId)) access.allowFrom.push(pEntry.senderId)
-      if (access.pending) delete access.pending[pCode]
-
-      tEntry.used = true
-      tEntry.usedBy = pEntry.senderId
-      tEntry.usedAt = now
+      for (const m of matches) {
+        if (!access.allowFrom.includes(m.senderId)) access.allowFrom.push(m.senderId)
+        if (access.pending) delete access.pending[m.pCode]
+        m.entry.used = true
+        m.entry.usedBy = m.senderId
+        m.entry.usedAt = now
+      }
 
       if (activeInviteCount(store, now) === 0) access.dmPolicy = 'allowlist'
 
-      try {
-        const approvedDir = join(accessPath, '..', 'approved')
-        mkdirSync(approvedDir, { recursive: true })
-        writeFileSync(join(approvedDir, pEntry.senderId), '')
-      } catch (err) {
-        logger.warn({ err, name, senderId: pEntry.senderId }, 'invite-monitor: failed to write approved marker')
+      for (const m of matches) {
+        try {
+          const approvedDir = join(accessPath, '..', 'approved')
+          mkdirSync(approvedDir, { recursive: true })
+          writeFileSync(join(approvedDir, m.senderId), '')
+        } catch (err) {
+          logger.warn({ err, name, senderId: m.senderId }, 'invite-monitor: failed to write approved marker')
+        }
       }
 
       writeAccess(accessPath, access)
       writeInvites(invitesPath, store)
-      logger.info({ name, provider, senderId: pEntry.senderId, token: tToken }, 'Channel invite auto-approved')
+      for (const m of matches) {
+        if (provider === 'telegram') rmSync(join(claimsDir, m.senderId), { force: true })
+        logger.info({ name, provider, senderId: m.senderId }, 'Channel invite auto-approved')
+      }
     }
   }
 }

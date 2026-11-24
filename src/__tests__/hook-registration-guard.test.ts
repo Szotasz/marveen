@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -9,7 +9,9 @@ import {
   pruneStaleHookEntries,
   pruneStaleHooksFromSettingsFile,
   KNOWN_HOOK_SCRIPTS,
+  FAIL_CLOSED_MARK,
 } from '../web/hook-registration-guard.js'
+import { GATE_FAIL_CLOSED_TAG, failClosedGateRun } from '../web/agent-scaffold.js'
 
 // 2026-07-11 incident: a WEB_ONLY smoke instance running from a git worktree
 // registered UserPromptSubmit/SessionStart hooks into the user-global
@@ -130,6 +132,18 @@ function settingsFixture(): Record<string, unknown> {
 describe('pruneStaleHookEntries', () => {
   const liveFiles = new Set(['/opt/app/scripts/hooks/staleness-guard.py'])
   const fileExists = (p: string) => liveFiles.has(p)
+
+  it('reads the path out of the fail-closed wrapper form (`"<path>"; else ...`), live or stale', () => {
+    const wrap = (p: string) => `if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 "/usr/bin/node" "${p}"; else "/usr/bin/node" "${p}"; fi; rc=$?; exit "$rc"`
+    const settings: Record<string, unknown> = { hooks: { PreToolUse: [
+      { matcher: 'Bash', hooks: [{ type: 'command', command: wrap('/opt/gone/scripts/self-pace-gate.mjs') }] },
+      { matcher: 'Bash', hooks: [{ type: 'command', command: wrap('/opt/app/scripts/hooks/staleness-guard.py') }] },
+    ] } }
+    const { removed } = pruneStaleHookEntries(settings, { fileExists })
+    expect(removed).toHaveLength(1)
+    expect(removed[0]).toContain('/opt/gone/scripts/self-pace-gate.mjs')
+    expect(JSON.stringify(settings.hooks)).toContain('staleness-guard.py')
+  })
 
   it('prunes stale worktree entries and keeps valid + foreign entries', () => {
     const settings = settingsFixture()
@@ -281,6 +295,68 @@ describe('pruneStaleHooksFromSettingsFile', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it('extraKnownScripts: a moved hook\'s old entry on a deleted path is pruned, a live one and a foreign one stay', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hook-guard-test-'))
+    try {
+      const live = join(dir, 'local-hooks', 'post-gate.py')
+      mkdirSync(join(dir, 'local-hooks'))
+      writeFileSync(live, '# live')
+      const gone = join(dir, 'scripts', 'hooks', 'post-gate.py') // the old place, deleted
+      const foreign = join(dir, 'elsewhere', 'their-gate.py') // missing too, but not a name we know
+      const settings = {
+        hooks: {
+          PreToolUse: [
+            { matcher: 'Bash', hooks: [{ type: 'command', command: `timeout 118 python3 -I -S "${gone}"; exit 2`, timeout: 120 }] },
+            { matcher: 'Bash', hooks: [{ type: 'command', command: `: extra-hook; python3 -I -S "${live}"`, timeout: 120 }] },
+            { matcher: 'Bash', hooks: [{ type: 'command', command: `python3 "${foreign}"` }] },
+          ],
+        },
+      }
+      const settingsPath = join(dir, 'settings.json')
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
+
+      // Without the extra names nothing is ours: today's behaviour.
+      expect(pruneStaleHooksFromSettingsFile(settingsPath)).toEqual([])
+
+      const removed = pruneStaleHooksFromSettingsFile(settingsPath, ['post-gate.py'])
+      expect(removed).toHaveLength(1)
+      expect(removed[0]).toContain(gone)
+      const after = JSON.stringify(JSON.parse(readFileSync(settingsPath, 'utf-8')).hooks)
+      expect(after).not.toContain(gone)
+      expect(after).toContain(live)
+      expect(after).toContain(foreign)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // #2874 B1: a shipped fail-closed gate missing at the live root is a broken gate that must keep denying, not a stale
+  // entry. The same gate on a gone root, or a moved extra-hook name on the live root, is still pruned.
+  it('keeps a fail-closed gate missing at <live root>/scripts/hooks, prunes it on another root or when moved', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hook-guard-test-'))
+    try {
+      const gate = (path: string, name: string) => `test -x "/usr/bin/node" || { echo "x" >&2; exit 2; }; ${failClosedGateRun(`/usr/bin/node "${path}"`, name, 15)}`
+      const atLive = gate(join(dir, 'scripts', 'hooks', 'db-write-gate.mjs'), 'db-write-gate.mjs')
+      const goneRoot = gate(join(dir, 'gone-worktree', 'scripts', 'hooks', 'db-write-gate.mjs'), 'db-write-gate.mjs')
+      const moved = gate(join(dir, 'scripts', 'hooks', 'post-gate.py'), 'post-gate.py')
+      const settingsPath = join(dir, 'settings.json')
+      writeFileSync(settingsPath, JSON.stringify({
+        hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [atLive, goneRoot, moved].map((command) => ({ type: 'command', command, timeout: 15 })) }] },
+      }, null, 2))
+
+      const removed = pruneStaleHooksFromSettingsFile(settingsPath, ['post-gate.py'], dir)
+      expect(removed).toEqual([goneRoot, moved])
+      const after = JSON.parse(readFileSync(settingsPath, 'utf-8')).hooks.PreToolUse[0].hooks.map((h: { command: string }) => h.command)
+      expect(after).toEqual([atLive])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('the fail-closed mark is the one the scaffold writes', () => {
+    expect(FAIL_CLOSED_MARK).toBe(GATE_FAIL_CLOSED_TAG)
   })
 
   it('leaves a missing or unparseable file untouched', () => {

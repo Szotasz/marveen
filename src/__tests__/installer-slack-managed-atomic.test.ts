@@ -184,3 +184,58 @@ describe('install-macos.sh managed-settings writes go through the one shared wri
     })
   })
 })
+
+describe('the managed-settings dir is created 0755 whatever the umask (8628c640)', () => {
+  const sites = MAC.split('\n').filter(
+    (l) => !l.trimStart().startsWith('#') && l.includes('/bin/mkdir -p') && l.includes('"$MANAGED_DIR"'),
+  )
+
+  function mkdirSlice(line: string): string {
+    let s = line.trimStart()
+    if (s.startsWith('if ')) s = s.slice(3)
+    s = s.split('2>/dev/null')[0]!
+    return s.replace('/usr/bin/sudo ', '').trimEnd()
+  }
+
+  function runMkdir(line: string, umask: string): string {
+    const { dir: parent } = fixture(null)
+    const dir = join(parent, 'ClaudeCode')
+    const r = spawnSync('bash', ['-c', `umask ${umask}; MANAGED_DIR="$1"; ${mkdirSlice(line)}`, 'bash', dir], {
+      encoding: 'utf8',
+    })
+    expect(r.status, r.stderr).toBe(0)
+    return dir
+  }
+
+  it('exactly two mkdir sites, both with an explicit -m 0755', () => {
+    expect(sites).toHaveLength(2)
+    for (const s of sites) expect(s).toContain('/usr/bin/sudo /bin/mkdir -p -m 0755 "$MANAGED_DIR"')
+  })
+
+  for (const n of [1, 2]) {
+    for (const umask of ['002', '022', '077']) {
+      it(`mkdir site ${n}: umask ${umask} gives a 0755 dir`, () => {
+        expect(statSync(runMkdir(sites[n - 1]!, umask)).mode & 0o777).toBe(0o755)
+      })
+    }
+  }
+
+  it('under umask 077 the Slack create writes into the fresh site 1 dir a policy the session can read', () => {
+    const dir = runMkdir(sites[0]!, '077')
+    const target = join(dir, 'managed-settings.json')
+    expect(runCall(target, slackCreate, '077')).toBe(0)
+    expect(existsSync(target)).toBe(true)
+    expect(statSync(target).mode & 0o777).toBe(0o644)
+    const parsed = JSON.parse(readFileSync(target, 'utf-8'))
+    expect(parsed.allowedChannelPlugins.map((p: { plugin: string; marketplace: string }) => `${p.plugin}@${p.marketplace}`)).toEqual(ALL_FOUR)
+  })
+
+  it('under umask 077 the channels gate writes into the fresh site 2 dir', () => {
+    const dir = runMkdir(sites[1]!, '077')
+    const target = join(dir, 'managed-settings.json')
+    expect(runCall(target, channelsGate, '077')).toBe(0)
+    const parsed = JSON.parse(readFileSync(target, 'utf-8'))
+    expect(parsed.channelsEnabled).toBe(true)
+    expect(statSync(target).mode & 0o777).toBe(0o644)
+  })
+})

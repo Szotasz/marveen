@@ -45,7 +45,7 @@ vi.mock('../db.js', async (orig) => {
 })
 
 const db = await import('../db.js')
-const { tryHandleApprovals } = await import('../web/routes/approvals.js')
+const { tryHandleApprovals, _setAgentCreateNotifierForTest } = await import('../web/routes/approvals.js')
 const { registerAgentCreateConsumer, sweepAgentCreateOnStart, consumeAgentCreate } = await import('../web/agent-create-approval.js')
 registerAgentCreateConsumer()
 
@@ -92,7 +92,8 @@ describe('POST /api/agent-specs files a request, never an agent', () => {
     expect(r.status).toBe(201)
     const a = db.getApproval(r.body.approvalId)!
     expect([a.category, a.status, a.content_hash, a.agent_id]).toEqual(['agent_create', 'pending', r.body.contentHash, 'samu'])
-    expect(a.action_description).toBe(r.body.text)
+    // Dani #2940 B1: the owner's text stays with the approval, the requester gets the id and the hash only
+    expect(Object.keys(r.body).sort()).toEqual(['approvalId', 'contentHash', 'ok'])
     expect(a.action_description).toContain('bot-token: beállítva (vault: TG-KUTATO)')
     expect(a.action_description).not.toContain(TOKEN)
     expect(specRow(a.id)!.content_hash).toBe(a.content_hash)
@@ -380,5 +381,39 @@ describe('the dashboard button (source contract)', () => {
       const L = readFileSync(new URL(`../../web/lang/${lang}.js`, import.meta.url), 'utf-8')
       for (const k of ['confirm_title', 'confirm_message', 'confirm_ok']) expect(L).toContain(`'approvals.agent_create.${k}':`)
     }
+  })
+})
+
+// AGENTCREATEPR3-1119 (Samu 81756, 1): a filed request asks the owner on the channels, with the server's text; a delivery
+// that fails does not undo the filing.
+describe('the owner is asked on the channels after the filing', () => {
+  it('a filed request: the notifier gets the pending approval once, with the server-rendered text', async () => {
+    const seen: Array<{ id: string; status: string; text: string }> = []
+    _setAgentCreateNotifierForTest((a) => { seen.push({ id: a.id, status: a.status, text: a.action_description }) })
+    try {
+      const r = await file()
+      expect(r.status).toBe(201)
+      expect(seen).toEqual([{ id: r.body.approvalId, status: 'pending', text: db.getApproval(r.body.approvalId)!.action_description }])
+      expect(seen[0].text).toContain('bot-token: beállítva (vault: TG-KUTATO)')
+    } finally { _setAgentCreateNotifierForTest(null) }
+  })
+  it('a notifier that throws: still 201, the request pending on the dashboard, nothing created', async () => {
+    _setAgentCreateNotifierForTest(() => { throw new Error('channel down') })
+    try {
+      const r = await file()
+      expect(r.status).toBe(201)
+      expect(db.getApproval(r.body.approvalId)!.status).toBe('pending')
+      await settle()
+      expect(h.creates).toEqual([])
+    } finally { _setAgentCreateNotifierForTest(null) }
+  })
+  it('a refused spec asks nobody', async () => {
+    const seen: string[] = []
+    _setAgentCreateNotifierForTest((a) => { seen.push(a.id) })
+    try {
+      const r = await call('POST', '/api/agent-specs', { ...SPEC, profile: 'nincs-ilyen' })
+      expect(r.status).toBe(400)
+      expect(seen).toEqual([])
+    } finally { _setAgentCreateNotifierForTest(null) }
   })
 })

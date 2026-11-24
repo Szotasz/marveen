@@ -102,13 +102,17 @@ EVERY malformed input (unparseable stdin included) blocks: unlike the copy
 gate, which audits and stays alive on harness faults, this gate authorizes,
 so "cannot decide" is always a deny.
 """
+import ctypes
 import email.utils
+import errno
 import hashlib
 import importlib.util
 import json
 import os
 import re
 import sqlite3
+import stat
+import subprocess
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -127,6 +131,381 @@ CONFIG_PATH = os.path.join(STORE_DIR, "autonomy-config.json")
 # what raising the level to 3 would do, because the level knows nothing about
 # who the letter goes to.
 STANDING_PATH = os.path.join(STORE_DIR, "email-standing-recipients.json")
+
+
+EXCEPTIONS_PATH = os.path.join(STORE_DIR, "agent-send-exceptions.json")
+_EXCEPTION_KEYS = ("scripts", "modes", "valueArgs", "repeatableArgs", "booleanArgs", "readFiles")
+# REPEATENVELOPE (card f2ccb0bb, round 2): the parser returns only the FIRST value of a
+# repeatable flag, so an entry that makes an envelope flag repeatable would let the
+# recipient verification (and this gate's envelope hash) see only the first recipient.
+# Such an entry is invalid in ALL THREE validators: this one, validAgentSendException in
+# email-send-gate.mjs, and readAgentSendExceptions in agent-scaffold.ts.
+_NON_REPEATABLE_FLAGS = frozenset({"--to", "--cc", "--subject", "--body-file"})
+# C1 (PR #2843 review): the gates verify and hash only --to and --cc as recipients,
+# so an entry naming --bcc, --reply-to, --from, --sender or --return-path in ANY
+# of valueArgs, repeatableArgs or booleanArgs is invalid in ALL THREE validators:
+# this one,
+# validAgentSendException in email-send-gate.mjs, and readAgentSendExceptions
+# in agent-scaffold.ts. --envelope-sha256 is reserved for the gate itself.
+_RESERVED_FLAGS = frozenset({"--envelope-sha256", "--bcc", "--reply-to", "--from", "--sender", "--return-path"})
+
+# SCRIPTBIND (card f2ccb0bb, round 3): the grant binds the script CONTENT, not only its
+# path. "scripts" is an array of {"path", "sha256"} objects -- at least one entry, no
+# duplicate paths, an absolute path and a sha256 of exactly 64 lowercase hex characters --
+# and on EVERY invocation the matcher hashes and scans one read, and refuses a
+# writable file or ancestor directory; the path must be its own real path (no
+# symlink anywhere in it), and a path that cannot be resolved fails closed.
+# A read-only file system (EROFS) counts as unwritable, as EACCES/EPERM do; any other
+# probe error fails closed. A gate running as effective uid 0 never grants. Keep in sync with
+# validAgentSendException in email-send-gate.mjs and readAgentSendExceptions in agent-scaffold.ts.
+_SCRIPT_SHA256_RX = re.compile(r"[0-9a-f]{64}")
+
+# B2 (card f2ccb0bb R4, maintainer decision): the interpreter prefix is
+# an EXACT allowlist, not a path shape. Only the bare node/nodejs (on PATH),
+# /usr/bin/node and /usr/local/bin/node strip the interpreter (plus the two-token
+# "/usr/bin/env" + "node" handled in the matcher): every other absolute interpreter
+# path -- a writable fake "node" at an arbitrary path (/tmp/x/node), /usr/bin/nodejs,
+# /usr/local/bin/nodejs, ... -- leaves the command WITHOUT an exception, so the script
+# token cannot match a granted path. This narrows shapes, not the user trust boundary:
+# NODE_OPTIONS and shell start-up files are trusted as by the agent process, while the
+# resolved interpreter must be unwritable and symlink-free.
+# Keep in sync with
+# agentScriptException in email-send-gate.mjs.
+_NODE_INTERPRETERS = frozenset({"node", "nodejs", "/usr/bin/node", "/usr/local/bin/node"})
+
+
+def _valid_exception_scripts(scripts):
+    if not isinstance(scripts, list) or not scripts:
+        return False
+    paths = set()
+    for item in scripts:
+        if (not isinstance(item, dict) or set(item) != {"path", "sha256"}
+                or not isinstance(item["path"], str) or not os.path.isabs(item["path"])
+                or not isinstance(item["sha256"], str)
+                or not _SCRIPT_SHA256_RX.fullmatch(item["sha256"])
+                or item["path"] in paths):
+            return False
+        paths.add(item["path"])
+    return True
+
+
+def valid_agent_send_exception(entry):
+    if not isinstance(entry, dict) or any(k not in _EXCEPTION_KEYS for k in entry):
+        return False
+    for key in ("modes", "valueArgs", "repeatableArgs", "booleanArgs"):
+        values = entry.get(key)
+        if (not isinstance(values, list) or not all(isinstance(v, str) and v for v in values)
+                or len(set(values)) != len(values)):
+            return False
+    if "readFiles" in entry:
+        reads = entry["readFiles"]
+        if (not isinstance(reads, list)
+                or not all(isinstance(v, str) and v and os.path.isabs(v) for v in reads)
+                or len(set(reads)) != len(reads)):
+            return False
+    flags = entry["valueArgs"] + entry["repeatableArgs"] + entry["booleanArgs"]
+    # B1 (card f2ccb0bb R4): .get, not ["scripts"] -- an entry whose other four keys
+    # are valid but which has NO "scripts" key raised KeyError here, and
+    # read_agent_send_exceptions catches only (OSError, ValueError), so the hook
+    # crashed on every gated command while such an entry sat in the store. The mjs
+    # twin and the TS reader return false/null for the same shape; _valid_exception_scripts
+    # already returns False for a non-list (None included).
+    return (_valid_exception_scripts(entry.get("scripts"))
+            and bool(entry["modes"]) and all(m in ("draft", "send") for m in entry["modes"])
+            and not any(f in _NON_REPEATABLE_FLAGS for f in entry["repeatableArgs"])
+            and not any(f in _RESERVED_FLAGS for f in flags)
+            and all(re.fullmatch(r"--[a-z][a-z0-9-]*", f) for f in flags)
+            and len(set(flags)) == len(flags))
+
+
+def read_agent_send_exceptions():
+    try:
+        with open(EXCEPTIONS_PATH, encoding="utf-8") as fh:
+            config = json.load(fh)
+        agents = config.get("agents") if isinstance(config, dict) else None
+        if not isinstance(agents, dict):
+            return {}
+        return {"agents": {n: e for n, e in agents.items() if valid_agent_send_exception(e)}}
+    except (OSError, ValueError):
+        return {}
+
+
+def script_source_loads_only_builtins(data):
+    """Conservative text scan; comments and strings count. Twin of the JS scan."""
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return False
+    if "\\u" in text:
+        return False
+    if any(s in text for s in (
+            "node:module", "node:vm", "node:worker_threads", "node:child_process", "node:inspector",
+            "node:wasi", "node:repl", "child_process", "worker_threads", "--require", "--import",
+            "--loader", "--experimental-loader")):
+        return False
+    word_start, word_end = r"(?<![A-Za-z0-9_$])", r"(?![A-Za-z0-9_$])"
+    if re.search(word_start + r"(?:createRequire|dlopen|eval|Function|arguments|mainModule|binding|WebAssembly|constructor)" + word_end, text):
+        return False
+    ws = r"[ \t\r\n]"
+    spec = r"(?:'node:[a-z0-9_/]+'|\"node:[a-z0-9_/]+\")"
+    call = ws + r"*\(" + ws + "*" + spec + ws + r"*\)"
+    forms = {
+        "require": re.compile("require" + call),
+        "import": re.compile("import(?:" + call + "|" + ws + "*" + spec + "|" + ws
+                             + r"+[^'\"`;()]+?" + word_start + "from" + word_end + ws + "*" + spec + ")"),
+        "from": re.compile("from" + ws + "*" + spec),
+    }
+    for match in re.finditer(word_start + r"(require|import|from)" + word_end, text):
+        word = match[1]
+        if word == "from" and not re.match(r"[ \t\r\n]*['\"`]", text[match.end():]):
+            continue
+        if not forms[word].match(text, match.start()):
+            return False
+    return True
+
+
+_ACCESS_LIBC = None
+
+
+def _access_w_errno(p):
+    """0 when p is writable for the effective probe, else the errno of access(2) (W_OK).
+    os.access hides the errno, so call libc access(2) directly. Any failure to make the call
+    raises, and the callers treat that as writable (fail closed)."""
+    global _ACCESS_LIBC
+    if _ACCESS_LIBC is None:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.access.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        libc.access.restype = ctypes.c_int
+        _ACCESS_LIBC = libc
+    ctypes.set_errno(0)
+    rc = _ACCESS_LIBC.access(os.fsencode(p), os.W_OK)
+    return 0 if rc == 0 else (ctypes.get_errno() or errno.EIO)
+
+
+def _any_path_component_writable(p):
+    while True:
+        err = _access_w_errno(p)
+        if err == 0:
+            return True
+        if err not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            return True
+        parent = os.path.dirname(p)
+        if parent == p:
+            return False
+        p = parent
+
+
+def script_path_writable(path):
+    geteuid = getattr(os, 'geteuid', None)
+    if geteuid is not None and geteuid() == 0:
+        return True
+    try:
+        p = os.fspath(path)
+        if os.path.realpath(p, strict=True) != p:
+            return True
+        return _any_path_component_writable(p)
+    except Exception:
+        return True
+
+
+def _script_content_matches(path, sha256):
+    """SCRIPTBIND: read ONCE; hash and scan the same bytes on every invocation.
+    Unknown/unreadable content fails closed; path writability is checked separately.
+    Twin of scriptContentMatches in email-send-gate.mjs.
+    """
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return hashlib.sha256(data).hexdigest() == sha256 and script_source_loads_only_builtins(data)
+    except (OSError, ValueError):
+        return False
+
+
+def node_permission_version_ok(version_text):
+    if not isinstance(version_text, str):
+        return False
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", version_text.strip(), flags=re.ASCII)
+    if not match:
+        return False
+    major, minor, _ = map(int, match.groups())
+    return major >= 24 or (major == 23 and minor >= 5) or (major == 22 and minor >= 13)
+
+
+def _read_grant_path_acceptable(path):
+    if any(s in ("", ".", "..") for s in path.split("/")[1:]):
+        return False
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError as err:
+        return err.errno == errno.ENOENT
+
+
+def resolve_node_interpreter(interp):
+    """The interpreter the shell would run for a bare `node`/`nodejs` (or '/usr/bin/env
+    node'): the first executable regular file on PATH, or an absolute interp as is.
+    Plain string join -- the candidate is never resolved or normalized, so a symlinked
+    parent stays visible to the writability check in probe_node_version. A relative or
+    empty PATH entry aborts the walk (None): the gate never guesses a directory."""
+    if interp == "/usr/bin/env node":
+        interp = "node"
+    if os.path.isabs(interp):
+        return interp
+    for directory in os.environ.get("PATH", "").split(":"):
+        if not directory.startswith("/"):
+            return None
+        candidate = directory + "/" + interp
+        try:
+            if os.access(candidate, os.X_OK) and stat.S_ISREG(os.stat(candidate).st_mode):
+                return candidate
+        except OSError:
+            pass
+    return None
+
+
+def probe_node_version(interp):
+    try:
+        resolved = resolve_node_interpreter(interp)
+        # #2843 review B1: an untrusted interpreter (writable path component, symlink, root) is
+        # refused BEFORE it is ever executed -- the same rule as the script itself.
+        if not resolved or script_path_writable(resolved):
+            return None
+        result = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=2, check=False)
+        return result.stdout.strip() if result.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def agent_script_exception(cmd, agent_name, config, *, check_paths=True):
+    """Literal whole-word shell subset; interpreter, --permission, exact read list, script, mode, args.
+    The script is hash-bound; the text scanner is an early refusal only.
+    A belt against ACCIDENTAL loading: Node refuses reads outside the list, writes and child processes.
+    NOT a sandbox against malicious code: network is open; NODE_OPTIONS trust is unchanged. The interpreter the
+    shell would run (PATH resolved at gate time) must pass the same rule as the script: no symlink, no writable
+    path component, not root -- or there is no exception, and it is never executed.
+    macOS fails closed because the permission model was not measured there.
+    Twin of agentScriptException in scripts/email-send-gate.mjs.
+    check_paths=False is used only to DENY a recognized invocation with relative files;
+    the content, path and version checks run on EVERY invocation, on both paths.
+    """
+    if sys.platform == "darwin":
+        return None
+    agents = config.get("agents", {}) if isinstance(config, dict) else {}
+    if not agent_name or not isinstance(agents, dict) or agent_name not in agents:
+        return None
+    entry = agents[agent_name]
+    if (not valid_agent_send_exception(entry) or not isinstance(cmd, str)
+            or re.search(r"[;&|<>$()`\\\n\r\0#*?{}\[\]~]", cmd)):
+        return None
+    tokens, offset = [], 0
+    word = re.compile(r"(?:^|[ \t]+)(?:'([^']*)'|\"([^\"]*)\"|([^ \t'\"\n\r]+))(?=[ \t]|$)")
+    while offset < len(cmd):
+        if re.fullmatch(r"[ \t]*", cmd[offset:]):
+            break
+        match = word.match(cmd, offset)
+        if not match:
+            return None
+        tokens.append(next(g for g in match.groups() if g is not None))
+        offset = match.end()
+    if tokens[:2] == ["/usr/bin/env", "node"]:
+        interp, tokens = "node", tokens[2:]
+    elif tokens and tokens[0] in _NODE_INTERPRETERS:
+        interp, tokens = tokens[0], tokens[1:]
+    else:
+        return None
+    if not tokens or tokens.pop(0) != "--permission":
+        return None
+    reads = set()
+    while tokens and tokens[0].startswith("--allow-fs-read="):
+        path = tokens.pop(0)[len("--allow-fs-read="):]
+        if not path or not os.path.isabs(path) or path in reads:
+            return None
+        reads.add(path)
+    if not reads:
+        return None
+    if len(tokens) < 2:
+        return None
+    script, mode, *args = tokens
+    grant = next((s for s in entry["scripts"] if s["path"] == script), None)
+    # SCRIPTBIND: hash and scan the same bytes, and refuse writable path components
+    # on every invocation (also with check_paths=False).
+    if (grant is None or mode not in entry["modes"]
+            or not _script_content_matches(grant["path"], grant["sha256"])
+            or script_path_writable(grant["path"])):
+        return None
+    envelope_sha256 = None
+    values, i = {}, 0
+    while i < len(args):
+        flag = args[i]
+        i += 1
+        if flag == "--envelope-sha256":
+            if (mode != "send" or envelope_sha256 is not None or i >= len(args)
+                    or not _SCRIPT_SHA256_RX.fullmatch(args[i])):
+                return None
+            envelope_sha256 = args[i]
+            i += 1
+            continue
+        if flag in entry["booleanArgs"]:
+            values[flag] = True
+            continue
+        repeat = flag in entry["repeatableArgs"]
+        if not repeat and flag not in entry["valueArgs"]:
+            return None
+        if not repeat and flag in values:
+            return None
+        if i >= len(args) or not args[i] or args[i].startswith("-"):
+            return None
+        value = args[i]
+        i += 1
+        if check_paths and flag in ("--body-file", "--attach") and not os.path.isabs(value):
+            return None
+        values.setdefault(flag, []).append(value)
+    if mode == "send" and envelope_sha256 is None:
+        return None
+    required = {script, *values.get("--body-file", []), *values.get("--attach", [])}
+    allowed = required | set(entry.get("readFiles", []))
+    if not required <= reads or not reads <= allowed:
+        return None
+    # A directory, symlink or non-canonical grant (Node resolves it lexically) opens more than itself; checked at gate time only (a concurrent swap is out of scope).
+    if check_paths and not all(_read_grant_path_acceptable(p) for p in reads):
+        return None
+    # Probe last: all shape, content and path checks pass before spawning a process.
+    if not node_permission_version_ok(probe_node_version(interp)):
+        return None
+    return {"script": script, "mode": mode, **({"envelopeSha256": envelope_sha256} if mode == "send" else {}), "to": values.get("--to", [""])[0],
+            "cc": values.get("--cc", [""])[0], "subject": values.get("--subject", [""])[0],
+            "bodyFile": values.get("--body-file", [""])[0], "attach": values.get("--attach", [])}
+
+
+def script_exception_envelope(ex):
+    try:
+        # Decode and hash the SAME bytes, preserving CRLF in the approval anchor.
+        with open(ex["bodyFile"], "rb") as fh:
+            body_data = fh.read()
+        body = body_data.decode("utf-8", errors="strict")
+        digest_lines = ["marveen-script-envelope-v1", "to=" + ex["to"], "cc=" + ex["cc"],
+                        "subject=" + ex["subject"], "body=" + hashlib.sha256(body_data).hexdigest()]
+        env = _load_collect_email_envelope()("send_email", {
+            "to": ex["to"], "cc": ex["cc"], "subject": ex["subject"], "body": body})
+        attachments = []
+        for path in ex["attach"]:
+            with open(path, "rb") as fh:
+                data = fh.read()
+            sha256 = hashlib.sha256(data).hexdigest()
+            digest_lines.append("attach=" + sha256)
+            attachments.append({"name": os.path.basename(path), "sha256": sha256, "size": len(data)})
+        digest = hashlib.sha256(("\n".join(digest_lines) + "\n").encode("utf-8")).hexdigest()
+        if digest != ex["envelopeSha256"]:
+            deny("Named-script send: --envelope-sha256 does not match the body and attachments as they are now. "
+                 "Compute the digest over the files you will send (docs/agent-send-exceptions.md, "
+                 "\"Envelope digest\") and run the command again.")
+        attachments.sort(key=lambda a: (a["name"], a["sha256"]))
+        if attachments:
+            env["attachments"] = attachments
+        return env
+    except (OSError, UnicodeError) as exc:
+        deny(f"Named-script send: unreadable body/attachment ({exc}). Use the sanctioned form: "
+             "<absolute-script> send --to <address> --subject <subject> --body-file <absolute-file> "
+             "[--attach <absolute-file>].")
 
 
 # The window from approval (resolved_at) to send: a fixed 1800 s, the SAME
@@ -821,10 +1200,15 @@ def content_anchor(env: dict) -> str:
 NOW_S = "CAST(strftime('%s','now') AS INTEGER)"
 
 
-def find_and_consume(anchor: str):
+def find_and_consume(anchor: str, consume: bool = True):
     """Return (verdict, detail). verdict: 'allowed' (consumed approval id),
     'pending', 'consumed', 'expired', 'none', 'race'. Raises on any DB problem
-    -- the caller turns that into a fail-closed deny."""
+    -- the caller turns that into a fail-closed deny.
+
+    consume=False only LOOKS (APPROVALPRECHECK1122): 'allowed' then means a
+    live, unused approval exists and was left unused. A sender runs this before
+    its own fallible steps (vault, SMTP login, Graph token), so a missing
+    approval is refused early, and consumes only once delivery can follow."""
     if not os.path.exists(DB_PATH):
         raise OSError(f"approvals DB hianyzik ({DB_PATH})")
     con = sqlite3.connect(DB_PATH, timeout=5)
@@ -834,6 +1218,8 @@ def find_and_consume(anchor: str):
             "SELECT id FROM approvals WHERE category='email_send' AND status='approved'"
             f" AND content_hash=? AND consumed_at IS NULL AND resolved_at >= {NOW_S}-?"
             " ORDER BY resolved_at DESC LIMIT 1", (anchor, WINDOW_S)).fetchone()
+        if row and not consume:
+            return ("allowed", row[0])
         if row:
             # Atomic one-shot: only the UPDATE that flips NULL->now wins.
             cur = con.execute(
@@ -1265,6 +1651,46 @@ def _load_collect_email_envelope():
     return _load_email_extract().collect_email_envelope
 
 
+def copy_audit(tool: str, tool_input: dict, env: dict):
+    """APPROVALPRECHECK1122: the outgoing-copy audit of THIS letter, run here
+    BEFORE an approval is consumed. Return a warning line or None; deny (exit 2,
+    nothing consumed) when the copy gate would refuse the letter.
+
+    Why here and not only in outgoing-copy-gate.py: Claude Code starts every
+    matching PreToolUse hook in parallel, and one hook's deny does not stop the
+    other's side effect (measured 2026-11-22). A letter the copy gate refused
+    had already used up its approval in this gate, so the owner had to approve
+    the corrected letter AND pay for the refused one. The copy hook stays as
+    is: it also audits drafts and level 3.
+
+    The check is the senders' own (sender_check._copy_check: the copy gate's
+    audit(), loaded by path, its rules file, the email-path policy: a problem,
+    an empty letter or an INVALID rules file refuses, a missing or empty rules
+    file passes with a warning). The text is the one the copy gate audits: the
+    envelope text, except a formatted harder-mail letter, which the copy gate
+    audits on its rendered text."""
+    try:
+        sys.path.insert(0, _HERE)
+        import sender_check
+        text, unreadable = env["text"], None
+        if (tool != "Bash" and tool_input.get("body_format") not in (None, "")
+                and _load_email_extract().is_harder_mail_tool(tool)):
+            text, unreadable = _load_email_extract().collect_harder_mail_text(tool_input)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- SyntaxError, ImportError, anything: fail-closed
+        deny(f"A kapu fuggosege (scripts/hooks/sender_check.py) nem toltheto be ({exc!r}) "
+             "-- fail-closed: a level szovege nem ellenorizheto, a jovahagyas NEM lett felhasznalva.")
+    if unreadable:
+        deny(f"KIMENO-SZOVEG ELLENORZES: a level szovege nem vizsgalhato ({unreadable}). "
+             "A jovahagyas NEM lett felhasznalva.")
+    try:
+        return sender_check._copy_check(text)
+    except sender_check.Refused as exc:
+        deny(f"{exc}\nA jovahagyas NEM lett felhasznalva: a javitott level uj horgonyt kap, "
+             "arra kell jovahagyas.")
+
+
 def classify_tool(tool: str):
     """The tool's mail kind (email_extract.classify_mail_tool), or
     "unclassified" when the extractor does not load. Levels 1 and 3 never read
@@ -1327,16 +1753,36 @@ def main():
 
     kind = None
     cmd = ""
+    script_ex = None
+    script_env = None
     if tool == "Bash":
         cmd = str(tool_input.get("command") or "")
-        unverifiable, unverifiable_msg = _load_unverifiable_construction()
-        if unverifiable(cmd, payload.get("cwd")):
-            deny(unverifiable_msg)
-        if not (_load_is_send_invocation()(cmd, cwd=payload.get("cwd"))   # MAILURLFILE1118: the URL file's cwd
+        # This hook checks approval, not agent identity: the separate send gate
+        # grants only the --agent entry wired by the scaffold. Recognize every
+        # sanctioned shape here so none can miss the envelope approval check.
+        config = read_agent_send_exceptions()
+        for agent_name in config.get("agents", {}):
+            script_ex = agent_script_exception(cmd, agent_name, config)
+            if script_ex:
+                break
+            if agent_script_exception(cmd, agent_name, config, check_paths=False):
+                deny("Named-script send: use the sanctioned form with absolute --body-file and --attach paths that are regular files.")
+        if script_ex and script_ex["mode"] == "draft":
+            sys.exit(0)
+        if script_ex:
+            script_env = script_exception_envelope(script_ex)
+        if not script_ex:
+            unverifiable, unverifiable_msg = _load_unverifiable_construction()
+            if unverifiable(cmd, payload.get("cwd")):
+                deny(unverifiable_msg)
+        if not (script_ex or _load_is_send_invocation()(cmd, cwd=payload.get("cwd"))   # MAILURLFILE1118: the URL file's cwd
                 or _load_script_run_sends()(cmd, payload.get("cwd"))):
             sys.exit(0)
         if ledger_enabled():
-            ledger_gate("bash", tool_input, cmd)
+            if script_ex:
+                ledger_gate("send_email", {"to": script_ex["to"], "cc": script_ex["cc"]}, "")
+            else:
+                ledger_gate("bash", tool_input, cmd)
     else:
         if not _MAYBE_MAIL_TOOL.search(tool):
             sys.exit(0)  # no mail kind is possible: the extractor is not needed
@@ -1372,7 +1818,7 @@ def main():
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"
              "Jelezd a gazdanak inter-agent uzenettel vagy a dashboardon; a szint "
              "emelese a store/autonomy-config.json-ban a gazda dontese.")
-    if tool == "Bash" and canonical_sender_send(cmd, payload.get("cwd")):
+    if tool == "Bash" and not script_ex and canonical_sender_send(cmd, payload.get("cwd")):
         # This project's own sender, called literally: it enforces level 2
         # itself (sender_check.py) on the envelope it delivers, standing list
         # included, and consumes the approval there. Not consuming here keeps
@@ -1381,7 +1827,7 @@ def main():
             "email-approval-gate: email_send level 2 -- a kuldo maga ellenorzi a jovahagyast "
             "(vagy az allando cimzett-listat), es elutasitaskor kiirja a level horgonyat."))
         sys.exit(0)
-    if tool == "Bash" and names_own_sender(cmd, payload.get("cwd")):
+    if tool == "Bash" and not script_ex and names_own_sender(cmd, payload.get("cwd")):
         deny(prefix +
              "email_send level 2: ez a parancs a projekt SAJAT kuldojet futtatja, de nem a "
              "kanonikus alakban. A kuldo maga ellenorzi es hasznalja fel a jovahagyast a sajat "
@@ -1401,7 +1847,7 @@ def main():
              "azzal kerj jovahagyast, es a jovahagyas utan ugyanaz a hivas atmegy.")
 
     # level 2: CHECK-BEFORE-SEND
-    env = _load_collect_email_envelope()(tool, tool_input)
+    env = script_env if script_ex else _load_collect_email_envelope()(tool, tool_input)
     if env["unreadable_reason"]:
         deny(prefix +
              f"A level nem horgonyozhato: {env['unreadable_reason']}.\n"
@@ -1414,6 +1860,12 @@ def main():
         deny(prefix +
              "A hivasbol nem nyerheto ki cimzett (a horgony a cimzettet is fedi).\n"
              "Hasznalj explicit --to flaget vagy MCP to-mezot, aztan kuldd ujra.")
+
+    # APPROVALPRECHECK1122: the copy audit before anything is consumed or
+    # recorded (the standing trace included): a letter the copy gate refuses
+    # must leave its approval unused.
+    copy_warning = copy_audit(tool, tool_input, env)
+    copy_warning = f" {copy_warning}" if copy_warning else ""
 
     # The standing list is checked BEFORE the anchor, and only here -- i.e.
     # only at level 2. Level 1 stays a hard deny: "signal only" must not have a
@@ -1428,7 +1880,7 @@ def main():
     # none of which this gate read. The envelope only shows the messageId as a
     # `to` token when `to` is empty, so this is decided on the call itself
     # (PR #2098 review: messageId + a listed `to` -> exit 0 at level 2).
-    hit = None if tool_input.get("messageId") else standing_match(env, standing)
+    hit = None if script_ex or tool_input.get("messageId") else standing_match(env, standing)
     if hit:
         # The list makes the address a CANDIDATE; only the owner's one-time
         # approval makes it live. Checked before the trace, because an address
@@ -1472,7 +1924,7 @@ def main():
                 "szolj neki a csatornan.")
         print(pass_with_warning(
             f"email-approval-gate: {hit} allando cimzett, a kuldes jovahagyas nelkul "
-            f"mehet. Minden mas cimzett tovabbra is jovahagyas-koteles. {note}"))
+            f"mehet. Minden mas cimzett tovabbra is jovahagyas-koteles. {note}" + copy_warning))
         sys.exit(0)
 
     anchor = content_anchor(env)
@@ -1491,7 +1943,7 @@ def main():
     if verdict == "allowed":
         print(pass_with_warning(
             f"email-approval-gate: jovahagyas {detail} felhasznalva (egyszer-hasznalatos), a kuldes mehet."
-            + copy_note))
+            + copy_note + copy_warning))
         sys.exit(0)
 
     reasons = {

@@ -98,7 +98,7 @@ describe('securityReset', () => {
     expect(resolveSession(cookie)).not.toBeNull()
 
     const r = securityReset('test')
-    expect(r).toEqual({ deviceKeysRevoked: 1, sessionsCleared: 1 })
+    expect(r).toEqual({ deviceKeysRevoked: 1, sessionsCleared: 1, colleagueSessionsCleared: 0 })
     expect(resolveDeviceKey(key.key)).toBeNull()
     expect(resolveSession(cookie)).toBeNull()
     expect(listDeviceKeys()).toHaveLength(0)
@@ -108,11 +108,11 @@ describe('securityReset', () => {
     const rows = auditRows('security.reset')
     expect(rows).toHaveLength(1)
     expect(rows[0]!.actor).toBe('test')
-    expect(rows[0]!.new_value).toBe('device_keys=1 sessions=1')
+    expect(rows[0]!.new_value).toBe('device_keys=1 sessions=1 colleague_sessions=0')
   })
 
   it('is a safe no-op on an empty install', () => {
-    expect(securityReset('test')).toEqual({ deviceKeysRevoked: 0, sessionsCleared: 0 })
+    expect(securityReset('test')).toEqual({ deviceKeysRevoked: 0, sessionsCleared: 0, colleagueSessionsCleared: 0 })
   })
 })
 

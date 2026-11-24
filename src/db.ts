@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_API_KEY, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID } from './config.js'
 import { isSearchStopword } from './memory-search-stopwords.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
@@ -1716,6 +1716,28 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_name ON vault_ssh_servers(name)`)
+
+  // --- Vault web logins (VAULTLOGIN1112) ---
+  // The password lives in the AES-256-GCM vault as web-login-<id>; this row holds only what is not secret. An empty
+  // allowed_agents list ('[]', the default) means no agent may log in with it. locked_at is set after a wrong password
+  // and cleared only by the owner (the unlock route).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vault_web_logins (
+      id TEXT PRIMARY KEY,
+      origin TEXT NOT NULL,
+      username TEXT NOT NULL,
+      login_url TEXT,
+      user_selector TEXT,
+      pass_selector TEXT,
+      allowed_agents TEXT NOT NULL DEFAULT '[]',
+      locked_at INTEGER,
+      last_result TEXT,
+      last_attempt_at INTEGER,
+      last_agent TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
   // Migrations for installs that ran earlier schema versions. MUST run before
   // the ssh_key_id index below: on an install where vault_ssh_servers already
   // existed (pre-dating this column), CREATE TABLE IF NOT EXISTS above is a
@@ -1807,6 +1829,9 @@ export function initDatabase(dbPathOverride?: string): void {
     'decided_by_ts TEXT', 'binding TEXT', 'notice_ts TEXT',
     // APPROVALTAGEN1108: the language the post was made in (its words decide); NULL = hu, as every older row.
     'lang TEXT',
+    // AGENTCREATEPR3-1119: the content hash of a hash-bound request (agent_create) the post showed; the reply decides
+    // against it. NULL for every other category and every older row (they bind the posted text only).
+    'content_hash TEXT',
   ]) {
     try { db.exec(`ALTER TABLE approval_slack_posts ADD COLUMN ${col}`) } catch { /* already exists */ }
   }
@@ -1848,6 +1873,21 @@ export function initDatabase(dbPathOverride?: string): void {
       decision TEXT,
       decided_activity_id TEXT,
       decided_by_aad TEXT
+    )
+  `)
+  // AGENTCREATEPR3-1119: an approval posted to the owner's Gromzo app through mxd's decisions verbs. mxd_hash is the hash
+  // mxd computed over the posted row (the one its consume is spent against); spec_hash is the approval's content hash the
+  // posted row showed (the core decides against it, never the approval's current hash). state: pending (waiting for the owner's
+  // answer), consuming (the answer was approve and mxd's consume is under way), done, failed. A security table.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_gromzo_posts (
+      approval_id TEXT PRIMARY KEY,
+      mxd_hash TEXT NOT NULL,
+      spec_hash TEXT NOT NULL,
+      state TEXT NOT NULL,
+      posted_at INTEGER NOT NULL,
+      updated_at INTEGER,
+      note TEXT
     )
   `)
   // Every consume call leaves a row here, the refused ones too: a second send
@@ -6180,6 +6220,15 @@ export function setTaskRunDelivery(runId: number, verdict: string): boolean {
   return info.changes > 0
 }
 
+/**
+ * TASKRUNERRDUP1109: an attempt that opened its run row and then failed: that row becomes the 'error' run and is closed
+ * now (an already-closed row keeps its completed_at). No second row. Returns true when the row was updated.
+ */
+export function markTaskRunFireError(runId: number, now = Date.now()): boolean {
+  const info = db.prepare("UPDATE task_runs SET status = 'error', completed_at = COALESCE(completed_at, ?) WHERE id = ?").run(now, runId)
+  return info.changes > 0
+}
+
 export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, completedAt = Date.now()): boolean {
   const info = db.prepare(
     'UPDATE task_runs SET completed_at = ?, outcome = ? WHERE id = ? AND completed_at IS NULL'
@@ -6284,10 +6333,9 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
 // not counted until someone decides it opens a run.
 //   fired, fired_late, fired_busy: the scheduler's typed and queued fires
 //   sent-direct: the direct heartbeat digest (DIRECT_DIGEST_RUN_STATUS)
-//   error: a fire that failed. Kept as before: when the send throws after the
-//     'fired' row was written, this is a second row for the same attempt, and
-//     the row alone cannot tell that case apart from a fire that failed before
-//     any row was opened.
+//   error: a fire that failed. One row per failed attempt: when the throw comes
+//     after the run row was written, that row is turned into the error
+//     (markTaskRunFireError, TASKRUNERRDUP1109) instead of a second row.
 const RUN_OPENING_STATUSES = ['fired', 'fired_late', 'fired_busy', 'sent-direct', 'error'] as const
 const RAN_STATUS_SQL = `status IN (${RUN_OPENING_STATUSES.map(s => `'${s}'`).join(', ')})`
 
@@ -6444,6 +6492,14 @@ export function clearPendingTaskRetryOwnerAlert(taskName: string, agentName: str
 // the same outage stay at debug so a machine without Ollama does not fill
 // the log; a success re-arms the warning for the next outage.
 let embeddingBackendWarned = false
+// The structured fields of the latest embedding failure, for the backfill warning (null after a success).
+let lastEmbedFailure: EmbedFailureFields | null = null
+
+// The error code of the latest failure. Read through a function: inside backfillEmbeddings TypeScript narrows the
+// module-level variable to null after its reset and would not see the assignments the embedding calls make.
+function lastEmbedErrCode(): string | undefined {
+  return lastEmbedFailure?.errCode
+}
 
 // Pure: which level the next embedding failure is logged at.
 export function decideEmbeddingFailureLevel(alreadyWarned: boolean): 'warn' | 'debug' {
@@ -6488,22 +6544,108 @@ function embedKeepAlive(): string | number | undefined {
   try { return parseEmbedKeepAlive(String(getEffectiveSettingValue('EMBED_KEEP_ALIVE') ?? '')) } catch { return undefined }
 }
 
+// #3023: a CPU-only host embeds about 40 ms per character, so a 2000-character chunk can overrun the deadline, and the
+// abandoned calls pile up behind Ollama's single slot. Both limits are settings, read per call; the defaults are the
+// previous fixed values. A value that is not a positive integer (set outside the settings UI) falls back to the default.
+export const DEFAULT_EMBED_MAX_CHARS = 2000
+function positiveIntSetting(key: string): number | undefined {
+  try {
+    const n = Number(getEffectiveSettingValue(key))
+    return Number.isSafeInteger(n) && n > 0 ? n : undefined
+  } catch { return undefined }
+}
+export function embedMaxChars(): number {
+  return positiveIntSetting('EMBED_MAX_CHARS') ?? DEFAULT_EMBED_MAX_CHARS
+}
+export function embedTimeoutMs(): number {
+  const s = positiveIntSetting('EMBED_TIMEOUT_SECONDS')
+  return s !== undefined ? s * 1000 : TOOL_TIMEOUTS['ollama-embedding']
+}
+
+// The embedding key must never reach a log line, so an embedding failure is logged as STRUCTURED fields only: the
+// error name, its code (ECONNREFUSED, ENOTFOUND, ...) and the HTTP status. Neither the error text (fetch can quote
+// the request URL or a rejected header value) nor the EMBED_URL content is ever logged: the key belongs in
+// EMBED_API_KEY, and whatever else is in EMBED_URL does not appear in the error log. This removes the whole class of
+// spellings (raw, percent-encoded, double-encoded, in the host, port, userinfo, path or query) instead of chasing them.
+class EmbedHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`embedding backend answered HTTP ${status}`)
+    this.name = 'EmbedHttpError'
+  }
+}
+
+// The key is a bearer secret, so it only ever travels over TLS or to this very host. Pure: whether `url` may
+// carry the EMBED_API_KEY, i.e. it is https, or http to a loopback host (localhost, 127.0.0.0/8, ::1). Anything
+// else is refused, and so is a string that does not parse: nothing proves it is safe. `url` is the exact string
+// fetch is about to be given. WHATWG URL normalises the host (numeric IPv4 spellings, IPv6 zeros, case), and an
+// anchored test keeps look-alikes such as 127.0.0.1.example.com or localhost.example.com out.
+export function embedUrlMayCarryKey(url: string): boolean {
+  let parsed: URL
+  try { parsed = new URL(url) } catch { return false }
+  if (parsed.protocol === 'https:') return true
+  if (parsed.protocol !== 'http:') return false
+  const host = parsed.hostname
+  return host === 'localhost' || host === '[::1]' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+}
+
+// Thrown BEFORE any request when a key is set and the URL is not allowed to carry it: the call never leaves
+// the process, and the failure takes the same warn-once path as an unreachable backend.
+class EmbedInsecureUrlError extends Error {
+  readonly code = 'EMBED_INSECURE_URL'
+  constructor() {
+    super('EMBED_API_KEY is set but EMBED_URL is neither https nor loopback; the key is not sent')
+    this.name = 'EmbedInsecureUrlError'
+  }
+}
+
+type EmbedFailureFields = { errName?: string; errCode?: string; httpStatus?: number }
+
+// A name or code is only logged when it is a short plain token, so no free text can ride along in it.
+const SAFE_LOG_TOKEN = /^[A-Za-z0-9_.-]{1,64}$/
+
+function embedFailureFields(err: unknown): EmbedFailureFields {
+  const e = err as { name?: unknown; code?: unknown; cause?: { code?: unknown } } | null | undefined
+  const token = (v: unknown): string | undefined => (typeof v === 'string' && SAFE_LOG_TOKEN.test(v) ? v : undefined)
+  const out: EmbedFailureFields = {}
+  const errName = token(e?.name)
+  const errCode = token(e?.code) ?? token(e?.cause?.code)
+  if (errName) out.errName = errName
+  if (errCode) out.errCode = errCode
+  if (err instanceof EmbedHttpError) out.httpStatus = err.status
+  return out
+}
+
 export async function generateEmbedding(text: string, kind: 'query' | 'document' = 'document'): Promise<number[] | null> {
   try {
     const keepAlive = embedKeepAlive()
-    const resp = await fetch(`${EMBED_URL}/api/embeddings`, {
+    const embedEndpoint = `${EMBED_URL}/api/embeddings`
+    // No request, and no Authorization header, to a plain-http remote host: the key would cross the network in clear.
+    if (EMBED_API_KEY && !embedUrlMayCarryKey(embedEndpoint)) throw new EmbedInsecureUrlError()
+    const resp = await fetch(embedEndpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(EMBED_API_KEY ? { Authorization: `Bearer ${EMBED_API_KEY}` } : {}),
+      },
+      // With a key set, a redirect is an error: the Authorization header must never follow a 3xx to
+      // another host. An Ollama-compatible /api/embeddings endpoint has no reason to redirect.
+      ...(EMBED_API_KEY ? { redirect: 'error' as const } : {}),
       body: JSON.stringify({
         model: EMBED_MODEL,
-        prompt: embedPrefix(kind) + text.slice(0, 2000),
+        prompt: embedPrefix(kind) + text.slice(0, embedMaxChars()),
         ...(keepAlive !== undefined ? { keep_alive: keepAlive } : {}),
       }),
-      signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
+      signal: AbortSignal.timeout(embedTimeoutMs()),
     })
+    // An explicit HTTP error (401 from a wrong or missing EMBED_API_KEY, 404 for a missing model) must
+    // surface through the same warn-once path as an unreachable backend; before, its JSON body had no
+    // `embedding` and the call returned null without a trace. `=== false` keeps a bare stub without `ok`
+    // working.
+    if (resp.ok === false) throw new EmbedHttpError(Number(resp.status))
     const data = await resp.json() as { embedding?: number[] }
     if (!data.embedding || data.embedding.length === 0) return null
     embeddingBackendWarned = false
+    lastEmbedFailure = null
     // Matryoshka truncation. Only ever CUT, never pad: slicing a vector that is
     // already shorter than EMBED_DIMS would silently store a dimension that
     // does not match what the model produces.
@@ -6517,11 +6659,17 @@ export async function generateEmbedding(text: string, kind: 'query' | 'document'
     // diagnosable.
     const level = decideEmbeddingFailureLevel(embeddingBackendWarned)
     embeddingBackendWarned = true
+    // Structured fields only: no error text and no EMBED_URL content (see embedFailureFields).
+    lastEmbedFailure = embedFailureFields(err)
     logger[level](
-      { err: (err as Error)?.message ?? String(err), embedUrl: EMBED_URL, embedModel: EMBED_MODEL },
-      level === 'warn'
-        ? 'Embedding generation failed -- embedding backend unreachable or model missing (Ollama not installed/running at EMBED_URL?). Memory search runs FTS-only until it recovers; further failures are logged at debug.'
-        : 'Embedding generation failed (backend still unavailable)',
+      { ...lastEmbedFailure, embedModel: EMBED_MODEL },
+      err instanceof EmbedInsecureUrlError
+        ? (level === 'warn'
+            ? 'Embedding not sent -- EMBED_API_KEY is set but EMBED_URL is neither https nor a loopback address, so the key is never sent over plain http. Use an https EMBED_URL (or drop the key). Memory search runs FTS-only until then; further failures are logged at debug.'
+            : 'Embedding not sent (EMBED_API_KEY with a non-https, non-loopback EMBED_URL)')
+        : level === 'warn'
+          ? 'Embedding generation failed -- embedding backend unreachable or model missing (Ollama not installed/running at EMBED_URL?). Memory search runs FTS-only until it recovers; further failures are logged at debug.'
+          : 'Embedding generation failed (backend still unavailable)',
     )
     return null
   }
@@ -6842,6 +6990,9 @@ export interface BackfillResult {
 export async function backfillEmbeddings(): Promise<BackfillResult> {
   const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE (embedding IS NULL OR (embedding_model IS NOT NULL AND embedding_model != ?)) AND retracted_at IS NULL').all(embedIdentity()) as { id: number; content: string; keywords: string | null }[]
   let count = 0
+  // The failure fields of an EARLIER run must not decorate this run's warning: an empty 200 answer returns null
+  // without touching them, so without the reset a stale errName / httpStatus would be reported as the cause.
+  lastEmbedFailure = null
   for (const row of rows) {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
     const emb = await generateEmbedding(text)
@@ -6859,8 +7010,10 @@ export async function backfillEmbeddings(): Promise<BackfillResult> {
     // The 2026-09-24/25 signature: work pending, nothing embedded, no error
     // surfaced. One WARN per run names it.
     logger.warn(
-      { pending: rows.length, embedUrl: EMBED_URL, embedModel: EMBED_MODEL },
-      'Embedding backfill embedded 0 of the pending memories -- the embedding backend answered none of them (Ollama not installed/running, or EMBED_MODEL missing); the backlog stays until it does',
+      { pending: rows.length, ...(lastEmbedFailure ?? {}), embedModel: EMBED_MODEL },
+      lastEmbedErrCode() === 'EMBED_INSECURE_URL'
+        ? 'Embedding backfill embedded 0 of the pending memories -- no request was sent: EMBED_API_KEY is set but EMBED_URL is neither https nor loopback; the backlog stays until EMBED_URL is https (or the key is dropped)'
+        : 'Embedding backfill embedded 0 of the pending memories -- the embedding backend answered none of them (Ollama not installed/running, or EMBED_MODEL missing); the backlog stays until it does',
     )
   }
   return { attempted: rows.length, embedded: count, failed: rows.length - count }
@@ -8181,17 +8334,18 @@ export interface ApprovalSlackPostRow {
   binding: string | null
   notice_ts: string | null
   lang: string | null
+  content_hash?: string | null
 }
 
 export function recordApprovalSlackPost(p: {
   approvalId: string; channel: string; ts: string; textSha256: string; ownerUserId: string; botUserId: string
-  contentBasis?: string; reactionMode?: boolean; replyMode?: boolean; lang?: 'hu' | 'en'
+  contentBasis?: string; reactionMode?: boolean; replyMode?: boolean; lang?: 'hu' | 'en'; contentHash?: string | null
 }): boolean {
   return db.prepare(`
-    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at, content_basis, reaction_mode, reply_mode, lang)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO approval_slack_posts (approval_id, channel, ts, text_sha256, owner_user_id, bot_user_id, posted_at, content_basis, reaction_mode, reply_mode, lang, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(p.approvalId, p.channel, p.ts, p.textSha256, p.ownerUserId, p.botUserId, Math.floor(Date.now() / 1000),
-    p.contentBasis ?? null, p.reactionMode === false ? 0 : 1, p.replyMode === true ? 1 : 0, p.lang === 'en' ? 'en' : null).changes > 0
+    p.contentBasis ?? null, p.reactionMode === false ? 0 : 1, p.replyMode === true ? 1 : 0, p.lang === 'en' ? 'en' : null, p.contentHash ?? null).changes > 0
 }
 
 /**
@@ -8244,8 +8398,11 @@ export function decideApprovalFromSlack(p: {
         WHERE approval_id = ? AND decided_at IS NULL
       `).run(now, p.decision, p.decidedByTs ?? null, p.binding ?? null, p.approvalId).changes > 0
       if (!closed) return { outcome: 'already_decided' as const, changed: false }
-      // The Slack post binds the message text (checked before this call), not the request's content_hash: no hash here.
-      const core = decideApprovalInTx({ approvalId: p.approvalId, status: p.status, resolvedBy: p.resolvedBy, now })
+      // The Slack post binds the message text (checked before this call). AGENTCREATEPR3-1119: a hash-bound request's
+      // post also recorded the content hash it showed, and the decision is bound to it (agent_create).
+      const post = db.prepare('SELECT content_hash FROM approval_slack_posts WHERE approval_id = ?').get(p.approvalId) as { content_hash: string | null } | undefined
+      const core = decideApprovalInTx({ approvalId: p.approvalId, status: p.status, resolvedBy: p.resolvedBy, now,
+        ...(post?.content_hash ? { expectedContentHash: post.content_hash } : {}) })
       return { outcome: 'recorded' as const, changed: core === 'decided' }
     })()
   } catch (err) {
@@ -8254,6 +8411,32 @@ export function decideApprovalFromSlack(p: {
   }
   if (res.changed) runApprovalConsumer(p.approvalId)
   return res
+}
+
+// AGENTCREATEPR3-1119: the Gromzo approval rows (see the table's comment).
+export interface ApprovalGromzoPost { approval_id: string; mxd_hash: string; spec_hash: string; state: string; posted_at: number; updated_at: number | null; note: string | null }
+export function recordApprovalGromzoPost(approvalId: string, mxdHash: string, specHash: string): boolean {
+  return db.prepare('INSERT OR IGNORE INTO approval_gromzo_posts (approval_id, mxd_hash, spec_hash, state, posted_at) VALUES (?, ?, ?, ?, ?)')
+    .run(approvalId, mxdHash, specHash, 'pending', Math.floor(Date.now() / 1000)).changes > 0
+}
+/** The rows waiting for the owner's answer, their approval still pending. */
+export function pendingApprovalGromzoPosts(limit = 50): ApprovalGromzoPost[] {
+  return db.prepare(`
+    SELECT g.* FROM approval_gromzo_posts g JOIN approvals a ON a.id = g.approval_id
+    WHERE g.state = 'pending' AND a.status = 'pending' ORDER BY g.posted_at ASC LIMIT ?
+  `).all(limit) as ApprovalGromzoPost[]
+}
+/** Rows a stopped server left between mxd's consume and the commit (swept at the watcher's start). */
+export function consumingApprovalGromzoPosts(): ApprovalGromzoPost[] {
+  return db.prepare("SELECT * FROM approval_gromzo_posts WHERE state = 'consuming' ORDER BY posted_at ASC").all() as ApprovalGromzoPost[]
+}
+export function getApprovalGromzoPost(approvalId: string): ApprovalGromzoPost | undefined {
+  return db.prepare('SELECT * FROM approval_gromzo_posts WHERE approval_id = ?').get(approvalId) as ApprovalGromzoPost | undefined
+}
+/** Moves the row from [from] to [to] (one step, compare-and-set): true when it moved. */
+export function moveApprovalGromzoPost(approvalId: string, from: string, to: string, note: string | null = null): boolean {
+  return db.prepare('UPDATE approval_gromzo_posts SET state = ?, updated_at = ?, note = COALESCE(?, note) WHERE approval_id = ? AND state = ?')
+    .run(to, Math.floor(Date.now() / 1000), note, approvalId, from).changes > 0
 }
 
 // TEAMSAPPROVECARD1118: the Teams approval card rows (see the table's comment).

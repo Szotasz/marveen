@@ -18,7 +18,7 @@ import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
 import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
+import { atomicWriteFileSync, writeMcpJsonFile } from '../atomic-write.js'
 import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from '../code-mode-caveats.js'
 
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
@@ -142,6 +142,7 @@ import {
   resolveMainAgentRotatedTokenSecretId,
   explicitConfigDirLacksOwnLogin,
   FLEET_OAUTH_TOKEN_PATH,
+  readSubAgentAuthAdvice,
 } from '../agent-process.js'
 import { checkMainAuthSwitch, MAIN_AUTH_SWITCH_FIELDS } from '../main-auth-switch.js'
 import {
@@ -199,10 +200,13 @@ import {
   contextAvgPerCallMap,
   kanbanLoadMap,
   KANBAN_LOAD_SQL,
+  deliveredRunsPerDayMap,
+  DELIVERED_RUNS_SQL,
+  DELIVERED_RUNS_WINDOW_DAYS,
   type KanbanLoadRow,
+  type DeliveredRunsRow,
 } from '../model-suggest-signals.js'
 import { getTokenSummary } from '../token-usage.js'
-import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND, mayActAsOwner, mayActAsOwnerOrFirstRun, refuseOwner, OWNER_SESSION_REQUIRED } from './auth.js'
@@ -816,6 +820,74 @@ function paneActivityLabel(running: boolean, pane: string | null, paneCommand: s
 export { refuseIfCliCannotLaunch }
 
 
+/** AGENTCREATEPR2B-1119: the team block write of PUT /api/agents/:name/team, callable without a request (the route keeps
+ *  the owner gate; the agent-create consumer calls it after the owner's approval). Every field is optional and falls
+ *  back to the current value; unknown names and the agent itself are dropped with warnings; a reportsTo that would make
+ *  a reporting cycle keeps the current one (cycleRejected). The tagline is written only when given. */
+export function applyAgentTeam(name: string, data: any): { ok: true; team: TeamConfig; tagline: string; warnings: ReturnType<typeof sanitizeTeamConfig>['warnings']; cycleRejected: boolean } {
+  const current = readAgentTeam(name)
+  const proposed: TeamConfig = {
+    role: data.role === 'leader' ? 'leader' : (data.role === 'member' ? 'member' : current.role),
+    reportsTo: typeof data.reportsTo === 'string'
+      ? (data.reportsTo.trim() || null)
+      : (data.reportsTo === null ? null : current.reportsTo),
+    delegatesTo: Array.isArray(data.delegatesTo)
+      ? data.delegatesTo.filter((x: unknown) => typeof x === 'string')
+      : current.delegatesTo,
+    autoDelegation: typeof data.autoDelegation === 'boolean' ? data.autoDelegation : current.autoDelegation,
+    trustFrom: Array.isArray(data.trustFrom)
+      ? data.trustFrom.filter((x: unknown) => typeof x === 'string')
+      : (current.trustFrom ?? []),
+  }
+  // Reject a reportsTo that would create a reporting cycle (e.g. dragging a
+  // manager under its own report in the Team graph). Keep the current parent
+  // and flag it so the UI can explain why the drop was ignored.
+  let cycleRejected = false
+  if (
+    proposed.reportsTo &&
+    proposed.reportsTo !== current.reportsTo &&
+    reportsToCreatesCycle(name, proposed.reportsTo, readAgentTeam, MAIN_AGENT_ID)
+  ) {
+    proposed.reportsTo = current.reportsTo
+    cycleRejected = true
+  }
+  const { team: next, warnings } = sanitizeTeamConfig(name, proposed)
+  writeAgentTeam(name, next)
+  // The tagline lives beside the team block (a top-level config key, like
+  // displayName); only touched when the request carries it.
+  if (typeof data.tagline === 'string') writeAgentTagline(name, data.tagline)
+  return { ok: true, team: next, tagline: readAgentTagline(name), warnings, cycleRejected }
+}
+
+/** AGENTCREATEPR2B-1119: the invite issue of POST .../channels/:provider/invites after its owner gate, lifted out
+ *  unchanged (the agent-create consumer issues the invite of an approved spec through it). The token is in the
+ *  returned body; the caller decides who sees it. */
+export async function issueAgentChannelInvite(name: string, provider: ChannelProviderType): Promise<{ status: number; body: Record<string, unknown> }> {
+  let botName: string | undefined
+  if (provider === 'telegram') {
+    botName = name === MAIN_AGENT_ID
+      ? readMarveenTelegramConfig().botUsername
+      : readAgentTelegramConfig(name).botUsername
+    if (!botName) {
+      const stateDir = name === MAIN_AGENT_ID ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
+      const token = readChannelToken(provider, join(stateDir, '.env'))
+      if (token) {
+        const r = await getProvider(provider).validateToken(token)
+        if (r.ok) botName = r.botName
+      }
+    }
+  }
+  const accessPath = resolveAccessPath(name, provider)
+  try {
+    return { status: 200, body: createInvite(accessPath, botName, provider) as unknown as Record<string, unknown> }
+  } catch (err) {
+    logger.error({ err }, 'Failed to create invite')
+    // The detail names a refused unreadable/invalid access.json or
+    // invites.json (ACCESSREADFAIL1030) -- path only, never contents.
+    return { status: 500, body: { error: 'Failed to create invite', detail: err instanceof Error ? err.message : String(err) } }
+  }
+}
+
 // AGENTCREATEPR2-1119: the channel setup after its owner gate, lifted out of the route unchanged so that the approved
 // agent_create consumer sets a channel up through the SAME code (agent-channel-setup-characterization.test.ts pins it).
 export async function setupAgentChannel(name: string, provider: ChannelProviderType, data: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -944,12 +1016,16 @@ export async function setupAgentChannel(name: string, provider: ChannelProviderT
   // then kills the plugin at runtime with an opaque -32000. Probe at save
   // time and answer with the remedy. Skipped when re-saving the token this
   // agent already runs with -- its OWN live poller would read as busy.
+  // INSTTGPOLLWARN1119: whether another install polls this bot cannot be checked from here; a new Telegram token's
+  // save says so (pollerNote), and is not blocked by it.
+  let pollerNote = false
   if (provider === 'telegram') {
     const preEnvPath = join(isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name)), '.env')
     const currentToken = readChannelToken(provider, preEnvPath)
     if (botToken.trim() !== currentToken) {
       const busyCheck = await checkTelegramTokenBusy(botToken.trim())
       if (busyCheck.busy) { return { status: 409, body: { error: busyCheck.error } } }
+      pollerNote = true
     }
   }
 
@@ -1030,7 +1106,7 @@ export async function setupAgentChannel(name: string, provider: ChannelProviderT
     }
   }
 
-  return { status: 200, body: { ok: true, botName: validation.botName, restarted, wasRunning, ...(restartError ? { restartError, restartCommand: channelsRestartCommand() } : {}), ...(asExtra ? { extra: true } : {}) } }
+  return { status: 200, body: { ok: true, botName: validation.botName, restarted, wasRunning, ...(restartError ? { restartError, restartCommand: channelsRestartCommand() } : {}), ...(asExtra ? { extra: true } : {}), ...(pollerNote ? { pollerNote: true } : {}) } }
 }
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
@@ -1113,6 +1189,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       openrouterConfigured: hasOpenRouter,
       // Custom Anthropic-compatible providers defined in store/custom-providers.json.
       customProviders: listCustomProviders(),
+      // HOSTINGERSUBAGENTAUTH1122: the create form's warning and router preselection.
+      subAgentAuth: readSubAgentAuthAdvice(),
     })
     return true
   }
@@ -1368,34 +1446,33 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const kanbanRows = db.prepare(KANBAN_LOAD_SQL).all() as KanbanLoadRow[]
     const kanbanMap = kanbanLoadMap(kanbanRows)
 
-    // Scheduled-task frequency: total estimated runs/day per agent (cron-derived)
-    function cronFreqPerDay(cron: string): number {
-      const parts = cron.trim().split(/\s+/)
-      if (parts.length < 5) return 1
-      const [min, hour] = parts
-      if (min.startsWith('*/')) {
-        const n = parseInt(min.slice(2), 10)
-        if (!isNaN(n) && n > 0) return Math.round((60 / n) * 24)
+    // Scheduled-round frequency: rounds that ACTUALLY REACHED THE MODEL, per
+    // day, averaged over a window. The cron sum this replaces counted intent,
+    // and a precheck-style task that skips without invoking the model inflated
+    // it by more than an order of magnitude -- see DELIVERED_RUNS_SQL for the
+    // measurement. The classifier reads this as "how busy is the agent", so an
+    // inflated value argues for a smaller model on the strength of free rounds.
+    const deliveredSince = Date.now() - DELIVERED_RUNS_WINDOW_DAYS * 24 * 60 * 60 * 1000
+    const schedFreqMap = (() => {
+      try {
+        const rows = db.prepare(DELIVERED_RUNS_SQL).all(deliveredSince) as DeliveredRunsRow[]
+        return deliveredRunsPerDayMap(rows)
+      } catch {
+        // task_runs may be empty or mid-migration; no signal beats a wrong one
+        return new Map<string, number>()
       }
-      if (hour === '*') return 24
-      if (hour.startsWith('*/')) {
-        const n = parseInt(hour.slice(2), 10)
-        if (!isNaN(n) && n > 0) return Math.round(24 / n)
-      }
-      return 1
-    }
-    const schedFreqMap = new Map<string, number>()
-    try {
-      for (const task of listScheduledTasks()) {
-        if (!task.enabled) continue
-        const freq = cronFreqPerDay(task.schedule)
-        schedFreqMap.set(task.agent, (schedFreqMap.get(task.agent) ?? 0) + freq)
-      }
-    } catch { /* scheduled-tasks dir may not exist yet */ }
+    })()
 
-    // MCP server count: read agents/<name>/.mcp.json
+    // MCP server count: read the agent's own .mcp.json. agentConfigRoot, not
+    // agentDir: the MAIN agent runs in PROJECT_ROOT, not agents/<name>, so the
+    // bare agentDir read returned a structural 0 for it (measured 2026-10-05:
+    // panel said "0 MCP szerver -- minimalis integracio" while three servers
+    // were loaded and two declared in the project .mcp.json). Same blind spot
+    // GATECTX910 fixed for contextTokens a few lines below; this field was
+    // simply left out of that fix. 0 MCP servers is a Haiku signal, so the
+    // false zero argued for a downgrade.
     function mcpServerCount(agentName: string): number {
-      const mcpPath = join(agentDir(agentName), '.mcp.json')
+      const mcpPath = join(agentConfigRoot(agentName), '.mcp.json')
       if (!existsSync(mcpPath)) return 0
       try {
         const cfg = JSON.parse(readFileSync(mcpPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
@@ -1931,39 +2008,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    const current = readAgentTeam(name)
-    const proposed: TeamConfig = {
-      role: data.role === 'leader' ? 'leader' : (data.role === 'member' ? 'member' : current.role),
-      reportsTo: typeof data.reportsTo === 'string'
-        ? (data.reportsTo.trim() || null)
-        : (data.reportsTo === null ? null : current.reportsTo),
-      delegatesTo: Array.isArray(data.delegatesTo)
-        ? data.delegatesTo.filter((x: unknown) => typeof x === 'string')
-        : current.delegatesTo,
-      autoDelegation: typeof data.autoDelegation === 'boolean' ? data.autoDelegation : current.autoDelegation,
-      trustFrom: Array.isArray(data.trustFrom)
-        ? data.trustFrom.filter((x: unknown) => typeof x === 'string')
-        : (current.trustFrom ?? []),
-    }
-    // Reject a reportsTo that would create a reporting cycle (e.g. dragging a
-    // manager under its own report in the Team graph). Keep the current parent
-    // and flag it so the UI can explain why the drop was ignored.
-    let cycleRejected = false
-    if (
-      proposed.reportsTo &&
-      proposed.reportsTo !== current.reportsTo &&
-      reportsToCreatesCycle(name, proposed.reportsTo, readAgentTeam, MAIN_AGENT_ID)
-    ) {
-      proposed.reportsTo = current.reportsTo
-      cycleRejected = true
-    }
-    const { team: next, warnings } = sanitizeTeamConfig(name, proposed)
-    writeAgentTeam(name, next)
-    // The tagline lives beside the team block (a top-level config key, like
-    // displayName); only touched when the request carries it.
-    if (typeof data.tagline === 'string') writeAgentTagline(name, data.tagline)
-    json(res, { ok: true, team: next, tagline: readAgentTagline(name), warnings, cycleRejected })
+    json(res, applyAgentTeam(name, JSON.parse(body.toString())))
     return true
   }
 
@@ -2093,30 +2138,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       refuseOwner(res, 'Creating a channel invite needs the dashboard login (an owner session).')
       return true
     }
-    let botName: string | undefined
-    if (provider === 'telegram') {
-      botName = name === MAIN_AGENT_ID
-        ? readMarveenTelegramConfig().botUsername
-        : readAgentTelegramConfig(name).botUsername
-      if (!botName) {
-        const stateDir = name === MAIN_AGENT_ID ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
-        const token = readChannelToken(provider, join(stateDir, '.env'))
-        if (token) {
-          const r = await getProvider(provider).validateToken(token)
-          if (r.ok) botName = r.botName
-        }
-      }
-    }
-    const accessPath = resolveAccessPath(name, provider)
-    try {
-      const result = createInvite(accessPath, botName, provider)
-      json(res, result)
-    } catch (err) {
-      logger.error({ err }, 'Failed to create invite')
-      // The detail names a refused unreadable/invalid access.json or
-      // invites.json (ACCESSREADFAIL1030) -- path only, never contents.
-      json(res, { error: 'Failed to create invite', detail: err instanceof Error ? err.message : String(err) }, 500)
-    }
+    const r = await issueAgentChannelInvite(name, provider)
+    json(res, r.body, r.status)
     return true
   }
 
@@ -2938,7 +2961,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (name === MAIN_AGENT_ID) ensureFederationClaudeMdSection()
     }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
-    if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
+    if (data.mcpJson !== undefined) writeMcpJsonFile(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) {
       // PICKERCLIKAPU923: same gate as the picker and the POST, fresh probe.
       const cliGate = await refuseIfCliCannotLaunch(String(data.model))

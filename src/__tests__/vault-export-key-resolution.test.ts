@@ -57,7 +57,7 @@ vi.mock('../web/agent-config.js', () => ({
   readJsonObjectForWrite: () => ({}),
 }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: '/mock/tasks' }))
-vi.mock('../env.js', () => ({ updateEnvFile: vi.fn() }))
+vi.mock('../env.js', () => ({ updateEnvFile: vi.fn(), readEnvFile: () => ({}) }))
 vi.mock('../logger.js', () => ({ logger: { info: () => {}, warn: () => {}, error: () => {} } }))
 
 const { _exportVaultForTest } = await import('../web/fleet-transfer.js')

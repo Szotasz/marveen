@@ -46,7 +46,8 @@ const PRELUDE = [
   'dump() { local v; for v in "$@"; do if declare -p "$v" >/dev/null 2>&1; then declare -p "$v"; else echo "unset $v"; fi; done; }',
 ].join('\n')
 // The flag's own helpers (INSTALL_NONINTERACTIVE=0 .. ni_answer), the start-of-run check, service_auth_present.
-const NI_HELPERS = between(SCRIPT, 'INSTALL_NONINTERACTIVE=0\n', '\n}\n')
+// AUTHSHHIDDEN1122: the secret reads are wrapped in _secret_echo_off/_secret_echo_on, defined right after ni_answer.
+const NI_HELPERS = between(SCRIPT, 'INSTALL_NONINTERACTIVE=0\n', '\n}\n') + '\n' + between(SCRIPT, '_secret_tty() {', '  echo ""\n}\n')
 const NI_CHECK = between(SCRIPT, 'if ni_on; then\n  ni_stop()', '\n  unset __s __need __files __v\nfi\n')
 const AUTH_FN = between(SCRIPT, 'service_auth_present() {', '\n}\n')
 

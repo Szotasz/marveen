@@ -7,11 +7,39 @@
 // there; the plugin's own lines, without Marveen's). Test input for
 // scripts/patch-telegram-plugin.py (ELSOKOR922 spec D-4, the answer-buttons
 // patch (c67f5f34) and the topics patch); the declarations and the loop's
-// closing lines only make the excerpt parse on its own.
+// closing lines only make the excerpt parse on its own. The approval poller
+// checkApprovals (server.ts lines 339-359, the invitetext patch hooks in
+// there) follows the declarations.
 declare const bot: any
 declare function dmCommandGate(ctx: any): any
+declare function readdirSync(p: string): string[]
+declare function rmSync(p: string, o: any): void
+declare function join(...p: string[]): string
+declare const APPROVED_DIR: string
 let botUsername = ''
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
+
+function checkApprovals(): void {
+  let files: string[]
+  try {
+    files = readdirSync(APPROVED_DIR)
+  } catch {
+    return
+  }
+  if (files.length === 0) return
+
+  for (const senderId of files) {
+    const file = join(APPROVED_DIR, senderId)
+    void bot.api.sendMessage(senderId, "Paired! Say hi to Claude.").then(
+      () => rmSync(file, { force: true }),
+      err => {
+        process.stderr.write(`telegram channel: failed to send approval confirm: ${err}\n`)
+        // Remove anyway — don't loop on a broken send.
+        rmSync(file, { force: true })
+      },
+    )
+  }
+}
 
 bot.command('start', async ctx => {
   if (!dmCommandGate(ctx)) return

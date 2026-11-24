@@ -30,7 +30,7 @@ describe('the new-skill form', () => {
     expect(check).toBeGreaterThan(-1)
     const block = HANDLER.slice(check, HANDLER.indexOf('return', check))
     expect(block).toContain(`document.getElementById('${id}').focus()`)
-    expect(block).toContain(`showToast(t('${key}'))`)
+    expect(block).toContain(`showToast(t('${key}'), 'warn')`)
     expect(HANDLER.slice(0, check)).not.toMatch(/\bfetch\(/)
     expect(HANDLER.indexOf('fetch(')).toBeGreaterThan(check)
     expect(HU).toContain(`'${key}':`)
@@ -42,7 +42,7 @@ describe('the new-skill form', () => {
   })
 
   it('the error toast is translated, not a hard-coded "Hiba"', () => {
-    expect(HANDLER).toContain("showToast(`${t('common.error')}: ${err.message}`)")
+    expect(HANDLER).toContain("showToast(`${t('common.error')}: ${err.message}`, 'error')")
     expect(HANDLER).not.toContain('Hiba')
   })
 })

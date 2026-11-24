@@ -76,6 +76,11 @@ function status(state, reason) {
 
 // Dynamic import from compiled dist, same pattern as vault-resolve.mjs and
 // main-agent-isolated-config.mjs: a single source of truth for vault access.
+// stdout IS the token: the vault and logger modules must stay quiet and must not
+// migrate the vault key here, or a "Keychain migration failed" warn line lands
+// after the token and CLAUDE_CODE_OAUTH_TOKEN gets a line break (same fix as #2074).
+process.env.LOG_LEVEL = 'silent'
+process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION = '1'
 const { getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js'))
 
 let planToken = null

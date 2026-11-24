@@ -10,14 +10,14 @@ import {
   catalogMatchesConfigured,
   type McpListEntry,
 } from '../../mcp-list-parser.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
+import { atomicWriteFileSync, writeMcpJsonFile } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
 import { mayActAsOwner, refuseOwner } from './auth.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret, updateSecretLabel, normalizeVaultLabel, VAULT_LABEL_MAX_LENGTH } from '../vault.js'
-import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
+import { logVaultRead, isSshPrivateKeyId, isWebLoginSecretId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -157,6 +157,56 @@ export function vaultAndBindEnvSecrets(
       )
     }
   }
+}
+
+/** AGENTCREATEPR2B-1119: the config of an MCP server already on this install, by name, looked up in the order the
+ *  assign route always used (the project's server list, ~/.claude.json, every agent's and its projects' server list,
+ *  the external project paths); null when none has it. The agent-create consumer reads it the same way. */
+export function findConnectorConfig(connectorName: string): any | null {
+  return findConnectorConfigWithSource(connectorName)?.config ?? null
+}
+
+/** findConnectorConfig with the file it came from (relative to the install, or ~/.claude.json, or the external path)
+ *  and whether an agent can write that file: an agent's projects/<p> server list and an external project's are not
+ *  behind the install-file gate (Dani #2940 n1), the install's, ~/.claude.json and agents/<n>/.mcp.json are. */
+export function findConnectorConfigWithSource(connectorName: string): { config: any; source: string; agentWritable: boolean } | null {
+  const configSources: Array<{ path: string; label: string; agentWritable: boolean }> = [
+    { path: join(PROJECT_ROOT, '.mcp.json'), label: '.mcp.json', agentWritable: false },
+    { path: join(homedir(), '.claude.json'), label: '~/.claude.json', agentWritable: false },
+  ]
+  for (const agentName of listAgentNames()) {
+    configSources.push({ path: join(AGENTS_BASE_DIR, agentName, '.mcp.json'), label: `agents/${agentName}/.mcp.json`, agentWritable: false })
+    const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
+    if (existsSync(projectsDir)) {
+      try {
+        for (const proj of readdirSync(projectsDir)) {
+          if (statSync(join(projectsDir, proj)).isDirectory()) {
+            configSources.push({ path: join(projectsDir, proj, '.mcp.json'), label: `agents/${agentName}/projects/${proj}/.mcp.json`, agentWritable: true })
+          }
+        }
+      } catch { /* ignore */ }
+    }
+  }
+  for (const extPath of getExternalProjectPaths()) {
+    configSources.push({ path: join(extPath, '.mcp.json'), label: join(extPath, '.mcp.json'), agentWritable: true })
+  }
+  for (const src of configSources) {
+    try {
+      const parsed = JSON.parse(readFileOr(src.path, '{}'))
+      if (parsed.mcpServers && parsed.mcpServers[connectorName]) return { config: parsed.mcpServers[connectorName], source: src.label, agentWritable: src.agentWritable }
+    } catch { /* fall through */ }
+  }
+  return null
+}
+
+/** AGENTCREATEPR2B-1119: one server config into an agent's server list, its other servers kept (the assign route's
+ *  per-target write). The caller has checked the agent name against the known agents. */
+export function writeConnectorIntoAgent(agentName: string, connectorName: string, connectorConfig: unknown): void {
+  const mcpPath = join(AGENTS_BASE_DIR, agentName, '.mcp.json')
+  const mcpConfig = readJsonObjectForWrite(mcpPath) as any
+  if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {}
+  mcpConfig.mcpServers[connectorName] = connectorConfig
+  writeMcpJsonFile(mcpPath, JSON.stringify(mcpConfig, null, 2))
 }
 
 export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
@@ -622,47 +672,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    let connectorConfig: any = null
-    const configSources = [
-      join(PROJECT_ROOT, '.mcp.json'),
-      join(homedir(), '.claude.json'),
-    ]
-    for (const agentName of listAgentNames()) {
-      configSources.push(join(AGENTS_BASE_DIR, agentName, '.mcp.json'))
-      const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
-      if (existsSync(projectsDir)) {
-        try {
-          for (const proj of readdirSync(projectsDir)) {
-            if (statSync(join(projectsDir, proj)).isDirectory()) {
-              configSources.push(join(projectsDir, proj, '.mcp.json'))
-            }
-          }
-        } catch { /* ignore */ }
-      }
-    }
-    for (const extPath of getExternalProjectPaths()) {
-      configSources.push(join(extPath, '.mcp.json'))
-    }
-    for (const src of configSources) {
-      try {
-        const parsed = JSON.parse(readFileOr(src, '{}'))
-        if (parsed.mcpServers && parsed.mcpServers[connectorName]) {
-          connectorConfig = parsed.mcpServers[connectorName]
-          break
-        }
-      } catch { /* fall through */ }
-    }
+    const connectorConfig = findConnectorConfig(connectorName)
     if (!connectorConfig) { json(res, { error: 'Connector not found' }, 404); return true }
 
     const targetSet = new Set(targetAgents)
-    for (const agentName of targetAgents) {
-      const mcpPath = join(AGENTS_BASE_DIR, agentName, '.mcp.json')
-      let mcpConfig: any = {}
-      mcpConfig = readJsonObjectForWrite(mcpPath) as any
-      if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {}
-      mcpConfig.mcpServers[connectorName] = connectorConfig
-      atomicWriteFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
-    }
+    for (const agentName of targetAgents) writeConnectorIntoAgent(agentName, connectorName, connectorConfig)
 
     if (visibleAgents) {
       for (const agentName of visibleAgents) {
@@ -672,7 +686,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
           const mcpConfig = JSON.parse(readFileOr(mcpPath, '{}'))
           if (mcpConfig.mcpServers && mcpConfig.mcpServers[connectorName]) {
             delete mcpConfig.mcpServers[connectorName]
-            atomicWriteFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
+            writeMcpJsonFile(mcpPath, JSON.stringify(mcpConfig, null, 2))
           }
         } catch { /* skip */ }
       }
@@ -832,7 +846,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/vault' && method === 'GET') {
     // ssh-key-* entries are managed exclusively via the SSH key pool
     // (/api/vault/ssh-keys) and must not appear as generic secret cards too.
-    json(res, { secrets: listSecrets().filter(s => !s.id.startsWith('ssh-key-')) })
+    // web-login-* passwords are managed by /api/vault/web-logins (VAULTLOGIN1112), the same way.
+    json(res, { secrets: listSecrets().filter(s => !s.id.startsWith('ssh-key-') && !isWebLoginSecretId(s.id)) })
     return true
   }
 
@@ -840,6 +855,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
     if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
+    if (isWebLoginSecretId(id)) { json(res, { error: 'A web login password is managed by /api/vault/web-logins' }, 403); return true }
     if (agentApiKeyWriteRefused(id.trim())) {
       refuseOwner(res, 'Storing an agent API key needs the dashboard login (an owner session): it decides which Console account the agent runs on.')
       return true
@@ -873,12 +889,17 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const acl = readVaultAcl()
     const values: Record<string, string> = Object.create(null)
     const missing: string[] = []
-    const refused: Array<{ id: string; reason: 'ssh-key' | 'acl' }> = []
+    const refused: Array<{ id: string; reason: 'ssh-key' | 'web-login' | 'acl' }> = []
     for (const raw of ids as string[]) {
       const id = raw.trim()
       if (isSshPrivateKeyId(id)) {
         logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'resolve', refused: true })
         refused.push({ id, reason: 'ssh-key' })
+        continue
+      }
+      if (isWebLoginSecretId(id)) {
+        logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'resolve', refused: true })
+        refused.push({ id, reason: 'web-login' })
         continue
       }
       if (vaultReadRefused(id, ctx.auth, acl)) {
@@ -901,7 +922,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   // /api/vault/ssh-servers matches THIS generic secret-store route first
   // (id="ssh-servers"), finds no such secret, and returns 404 before
   // tryHandleVaultSsh ever runs (2026-07-01, frontend/backend Vault epic).
-  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys', 'resolve'].includes(vaultMatch[1])
+  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys', 'resolve', 'web-logins'].includes(vaultMatch[1])
   if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
     // VAULTSZELES826: SSH private keys are NEVER served by this generic value route.
@@ -915,6 +936,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     if (isSshPrivateKeyId(id)) {
       logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), readVaultAcl(), { channel: 'value', refused: true })
       json(res, { error: 'SSH private keys are not served by this route' }, 403)
+      return true
+    }
+    // VAULTLOGIN1112: a web login's password is typed by the filler only; it is never served.
+    if (isWebLoginSecretId(id)) {
+      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), readVaultAcl(), { channel: 'value', refused: true })
+      json(res, { error: 'Web login passwords are not served by this route' }, 403)
       return true
     }
     const acl = readVaultAcl()
@@ -942,6 +969,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'SSH private keys are managed by the SSH key pool' }, 403)
       return true
     }
+    if (isWebLoginSecretId(id)) { json(res, { error: 'A web login password is managed by /api/vault/web-logins' }, 403); return true }
     let body: { label?: unknown } | null
     try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
     if (!body || typeof body !== 'object' || typeof body.label !== 'string') {
@@ -963,6 +991,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       refuseOwner(res, 'Deleting an agent API key needs the dashboard login (an owner session).')
       return true
     }
+    if (isWebLoginSecretId(id)) { json(res, { error: 'A web login password is managed by /api/vault/web-logins' }, 403); return true }
     if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
     removeBindingsForSecret(id)
     json(res, { ok: true })
@@ -1005,6 +1034,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       logger.warn({ event: 'vault-binding-refused', vaultSecretId: data.vaultSecretId, kind, principal,
         via: data.headerName?.trim() ? 'header' : 'env' }, 'vault: SSH private key binding refused')
       json(res, { error: 'SSH private keys cannot be bound to an env var or a header' }, 400)
+      return true
+    }
+    // VAULTLOGIN1112: nor a web login password (the filler types it; it never goes into a process env or a header).
+    if (isWebLoginSecretId(data.vaultSecretId)) {
+      const { kind, principal } = principalOf(ctx.auth)
+      logger.warn({ event: 'vault-binding-refused', vaultSecretId: data.vaultSecretId, kind, principal,
+        via: data.headerName?.trim() ? 'header' : 'env' }, 'vault: web login password binding refused')
+      json(res, { error: 'Web login passwords cannot be bound to an env var or a header' }, 400)
       return true
     }
 

@@ -78,6 +78,15 @@ jobs:
       # MIOAGENTINSTALL1114 (plan 10.3, Dani C5): the watchdog's half-scaffold and package start guard. Here it
       # measures the Linux shell tools (head -c, cmp, tr under LC_ALL=C) on the shared case list.
       - run: bash scripts/__tests__/watchdog-scaffold-guard.test.sh
+      # CIUPDFIN1121: the update finalizer (update.sh, the customer update path) is pinned by these two shell
+      # suites, which only ran by hand. The detach cases that need setsid and python3 (5 and up) are Linux-only, so
+      # this runner is the place where they actually execute.
+      - run: bash scripts/__tests__/update-finalize-stages.test.sh
+      # A SKIP here would mean the Linux-only cases did not run, which is exactly what this step exists to prevent.
+      - run: |
+          set -o pipefail
+          bash scripts/__tests__/update-finalize-detach.test.sh | tee /tmp/update-finalize-detach.out
+          if grep -q '^SKIP' /tmp/update-finalize-detach.out; then echo "update-finalize-detach skipped cases on Linux" >&2; exit 1; fi
       # TASKEGRESSDRIFT913: the egress-drift scan is a gate instrument; a guard that
       # only runs by hand rots (the #1316 class), so its tests run here too.
       - run: python3 scripts/__tests__/egress-drift-scan.test.py

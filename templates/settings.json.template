@@ -289,6 +289,26 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/login-lost-alert.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/login-lost-alert.py; exit 0'",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/login-lost-alert.py ] && exec python3 -I -S {{PROJECT_ROOT}}/scripts/hooks/login-lost-alert.py; exit 0'",
+            "timeout": 30
+          }
+        ]
       }
     ]
   }

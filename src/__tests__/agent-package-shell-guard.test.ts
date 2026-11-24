@@ -186,10 +186,104 @@ describe('the EPERM fallback (plan 4.4; mutant 33)', () => {
     writeFileSync(join(d, 'LOCAL.md'), 'run !`id` now\n')
     start()
     expect(count()).toBe(before + 2)
-    // a different finding (an import line instead of the command) is a new notice
-    writeFileSync(join(d, 'LOCAL.md'), '@../../x.md\n')
+    // a different finding (an import line in PACKAGE.md instead of the command) is a new notice
+    writeFileSync(join(d, 'LOCAL.md'), 'notes\n')
+    writeFileSync(join(d, 'PACKAGE.md'), '# Package\n@../../x.md\n')
     start(); start()
     expect(count()).toBe(before + 3)
+  })
+  it('the normal start path runs the same report scan, once per finding, shared with the fallback (PRI3HARDEN1118 point 2)', () => {
+    const kinds = (name: string) => (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])
+      .map((f) => JSON.parse(readFileSync(join(I.pendingNoticesDir(), f), 'utf8')))
+      .filter((n) => n.name === name && (n.kind === 'start_scan_finding' || n.kind === 'fallback_scan_finding'))
+      .map((n) => n.kind)
+    const d = agent({ 'CLAUDE.md': I.packageShellText('both1', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': 'run !`id` now\n' })
+    I.reportPackageLayersAtStart('both1', d)
+    I.reportPackageLayersAtStart('both1', d)
+    expect(kinds('both1')).toEqual(['start_scan_finding'])
+    // the fallback after a normal start: the same finding is not told again
+    const fb = mkdtempSync(join(tmpdir(), 'marveen-fallback-test-'))
+    try { expect(I.prepareFallbackClaudeMd('both1', d, fb)).toBe('expanded') } finally { rmSync(fb, { recursive: true, force: true }) }
+    expect(kinds('both1')).toEqual(['start_scan_finding'])
+    // a clean start resets; the finding coming back is told again
+    writeFileSync(join(d, 'LOCAL.md'), 'notes\n')
+    I.reportPackageLayersAtStart('both1', d)
+    writeFileSync(join(d, 'LOCAL.md'), 'run !`id` now\n')
+    I.reportPackageLayersAtStart('both1', d)
+    expect(kinds('both1')).toEqual(['start_scan_finding', 'start_scan_finding'])
+    expect(I.noticeText({ kind: 'start_scan_finding', name: 'both1', path: '/p' })).toMatch(/^Agent "both1" started, and/)
+  })
+  it('a LOCAL.md import is silent only inside the agent folder; absolute, ~, .. and a symlink out are reported (Samu 81392)', () => {
+    const mine = (name: string) => (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])
+      .map((f) => JSON.parse(readFileSync(join(I.pendingNoticesDir(), f), 'utf8'))).filter((n) => n.name === name).length
+    const run = (name: string, local: string, extra: Record<string, string> = {}) => {
+      const d = agent({ 'CLAUDE.md': I.packageShellText(name, ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': local, ...extra })
+      I.reportPackageLayersAtStart(name, d)
+      return { d, told: mine(name) }
+    }
+    // silent: relative inside the folder, existing or not yet written, with ./ too
+    expect(run('in1', '@notes/team.md\n', { 'notes/team.md': 'x\n' }).told).toBe(0)
+    expect(run('in2', '@notes/later.md\n').told).toBe(0)
+    expect(run('in3', '@./notes/team.md\n', { 'notes/team.md': 'x\n' }).told).toBe(0)
+    // reported: absolute, ~, .. (also in the middle), and a bare at-sign (nothing to tell)
+    expect(run('out1', '@/etc/hosts\n').told).toBe(1)
+    expect(run('out2', '@~/notes/team.md\n').told).toBe(1)
+    expect(run('out3', '@../other-agent/LOCAL.md\n').told).toBe(1)
+    expect(run('out4', '@notes/../../x.md\n').told).toBe(1)
+    expect(run('out5', 'see @ here\n').told).toBe(1)
+    // .. is reported even when it resolves back inside the folder (the rule is on the path, not only where it lands)
+    expect(run('out6', '@notes/../team.md\n', { 'team.md': 'x\n' }).told).toBe(1)
+    // reported: a symlink inside the folder that points out, to a file and through a folder
+    const outside = mkdtempSync(join(tmpdir(), 'marveen-local-import-out-'))
+    try {
+      writeFileSync(join(outside, 'secret.md'), 'x\n')
+      const f = agent({ 'CLAUDE.md': I.packageShellText('lnk1', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': '@notes.md\n' })
+      symlinkSync(join(outside, 'secret.md'), join(f, 'notes.md'))
+      I.reportPackageLayersAtStart('lnk1', f)
+      expect(mine('lnk1')).toBe(1)
+      const g = agent({ 'CLAUDE.md': I.packageShellText('lnk2', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': '@shared/secret.md\n' })
+      symlinkSync(outside, join(g, 'shared'))
+      I.reportPackageLayersAtStart('lnk2', g)
+      expect(mine('lnk2')).toBe(1)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+    // reported: a symlink into a sibling folder whose name starts with this folder's name (agents/a1 -> agents/a1-sib)
+    const h = agent({ 'CLAUDE.md': I.packageShellText('lnk3', ''), 'PACKAGE.md': '# Package\n', 'LOCAL.md': '@peer/x.md\n' })
+    const sib = `${h}-sib`
+    try {
+      mkdirSync(sib, { recursive: true })
+      writeFileSync(join(sib, 'x.md'), 'x\n')
+      symlinkSync(sib, join(h, 'peer'))
+      I.reportPackageLayersAtStart('lnk3', h)
+      expect(mine('lnk3')).toBe(1)
+    } finally {
+      rmSync(sib, { recursive: true, force: true })
+    }
+    // a silent import does not hide a command after it, on the next line or the same line
+    expect(run('cmd1', '@notes/team.md\nrun !`id` now\n').told).toBe(1)
+    expect(run('cmd2', '@notes/team.md then !`id`\n').told).toBe(1)
+    // an import in PACKAGE.md is reported even when relative
+    const p = agent({ 'CLAUDE.md': I.packageShellText('pkg1', ''), 'PACKAGE.md': '# Package\n@notes/team.md\n', 'LOCAL.md': 'notes\n' })
+    I.reportPackageLayersAtStart('pkg1', p)
+    expect(mine('pkg1')).toBe(1)
+  })
+  it('a hand-made agent (no package shell) is not scanned at start, even with a stray PACKAGE.md', () => {
+    const d = agent({ 'CLAUDE.md': '# hand-made\nrun !`id` now\n', 'PACKAGE.md': 'run !`id` now\n', 'LOCAL.md': 'run !`id` now\n' })
+    const name = d.split('/').pop()!
+    I.reportPackageLayersAtStart(name, d)
+    const mine = (existsSync(I.pendingNoticesDir()) ? readdirSync(I.pendingNoticesDir()) : [])
+      .map((f) => JSON.parse(readFileSync(join(I.pendingNoticesDir(), f), 'utf8'))).filter((n) => n.name === name)
+    expect(mine).toEqual([])
+  })
+  it('startAgentProcess runs the report scan right after the package guard', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf8')
+    const start = src.slice(src.indexOf('export async function startAgentProcess'))
+    const guard = start.indexOf('packageStartRefusal(name, dir)')
+    const report = start.indexOf('reportPackageLayersAtStart(name, dir)')
+    expect(guard).toBeGreaterThan(0)
+    expect(report).toBeGreaterThan(guard)
+    expect(report).toBeLessThan(start.indexOf('readAgentRemoteConfig(name)'))
   })
   it('the report scan ignores the product-generated sections of the started CLAUDE.md, but still sees a forbidden token in PACKAGE.md', async () => {
     const S = await import('../web/agent-scaffold.js')

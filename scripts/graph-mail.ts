@@ -16,14 +16,17 @@
 // email-send-gate hook still applies to any programmatic use elsewhere.
 //
 // `send` runs scripts/hooks/sender_check.py on the exact letter it delivers
-// (recipients, subject + body, render mode, the attachment's sha256) before
-// any network call: the email_send level (level 1 refuses, level 2 needs the
+// (recipients, subject + body, render mode, the attachment's sha256) twice:
+// `--precheck` before any network call (decides, consumes nothing), then,
+// once ensureToken() has minted the Graph token, the full check right before
+// sendMail (APPROVALPRECHECK1122: a token failure no longer burns a level-2
+// approval). The checks: the email_send level (level 1 refuses, level 2 needs the
 // approval of THIS envelope or a live standing recipient, level 3 sends) and,
 // when the install turned it on, the verified-recipient ledger. A refusal is
 // exit 3 with the reason on stderr. `--flag value` and `--flag=value` are both
 // read.
 
-import { listMessages, sendMail, verifyAccess } from '../src/graph-mail.js'
+import { ensureToken, listMessages, sendMail, verifyAccess } from '../src/graph-mail.js'
 import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -98,15 +101,19 @@ function envWithoutPython(): NodeJS.ProcessEnv {
   return env
 }
 
-/** Run scripts/hooks/sender_check.py on the letter; exit 3 unless it says send. */
-function senderCheckOrExit(letter: Record<string, unknown>): void {
+/**
+ * Run scripts/hooks/sender_check.py on the letter; exit 3 unless it says send.
+ * precheck: the pre phase (`--precheck`), which consumes nothing.
+ */
+function senderCheckOrExit(letter: Record<string, unknown>, precheck = false): void {
   const python = trustedPython()
   if (!python) {
     console.error('graph-mail: KULDES MEGTAGADVA -- nincs megbizhato python3 a kuldo-oldali ellenorzeshez ' +
       `(keresve: ${TRUSTED_PYTHONS.join(', ')}); a PATH-bol nem keresunk, fail-closed.`)
     process.exit(3)
   }
-  const r = spawnSync(python, ['-I', resolve(REPO_ROOT, 'scripts', 'hooks', 'sender_check.py')],
+  const args = ['-I', resolve(REPO_ROOT, 'scripts', 'hooks', 'sender_check.py'), ...(precheck ? ['--precheck'] : [])]
+  const r = spawnSync(python, args,
     { input: JSON.stringify(letter), encoding: 'utf-8', timeout: 60_000, env: envWithoutPython() })
   const said = (r.stderr || '').trim()
   if (r.status !== 0) {
@@ -155,7 +162,7 @@ async function main(): Promise<void> {
       const toList = to.split(',').map((a) => a.trim()).filter(Boolean)
       const ccRaw = flag('cc')
       const ccList = ccRaw?.split(',').map((a) => a.trim()).filter(Boolean) ?? []
-      senderCheckOrExit({
+      const letter = {
         to: toList,
         cc: ccList,
         text: `${subject}\n${body}`,
@@ -168,7 +175,11 @@ async function main(): Promise<void> {
         raw_cc: ccRaw ?? null,
         explicit_to: [to],
         explicit_cc: ccRaw ? [ccRaw] : [],
-      })
+      }
+      senderCheckOrExit(letter, true)
+      // A working token before the approval is used; sendMail reuses it.
+      await ensureToken()
+      senderCheckOrExit(letter)
       await sendMail({
         attachments,
         to: toList,

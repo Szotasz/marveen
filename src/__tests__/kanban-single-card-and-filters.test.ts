@@ -134,9 +134,16 @@ describe('GET /api/kanban filters: status, ids, fields (card 12b0f698)', () => {
   beforeEach(() => { initDatabase(':memory:'); seed() })
 
   it('without a new parameter the answer is byte for byte the old one (plain, includeArchived, agent)', async () => {
-    expect((await call('/api/kanban')).raw).toBe(legacyList())
-    expect((await call('/api/kanban?includeArchived=1')).raw).toBe(legacyList({ includeArchived: true }))
-    expect((await call('/api/kanban?agent=teszt-ugynok')).raw).toBe(legacyList({ agent: 'teszt-ugynok' }))
+    // FLAKYTESTS1119: active_seconds is counted up to Date.now() (sumInProgressSeconds), so a second boundary between
+    // the route read and legacyList() gave 1 vs 0 on CI. Frozen as in the single-card case above; only Date is faked.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      expect((await call('/api/kanban')).raw).toBe(legacyList())
+      expect((await call('/api/kanban?includeArchived=1')).raw).toBe(legacyList({ includeArchived: true }))
+      expect((await call('/api/kanban?agent=teszt-ugynok')).raw).toBe(legacyList({ agent: 'teszt-ugynok' }))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('status takes one value or a comma list, testing included', async () => {

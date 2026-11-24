@@ -48,15 +48,18 @@ EOF
   CALLS="$(grep -c . "$d/argv" 2>/dev/null || echo 0)"
 }
 
-echo "1. valid token, no webhook, another poller (409): all three calls, token never in argv"
+echo "1. valid token, no webhook: two calls, no getUpdates probe, the honest note, token never in argv"
+# INSTTGPOLLWARN1119: a second poller is not detectable from here (getUpdates?timeout=0 answers 200 next to a live
+# poller), so the installer no longer probes it and says plainly that it cannot tell. The stub would answer 409.
 run_case '{"ok":true}' '{"ok":true,"result":{"url":""}}' 409
 assert_contains "finished" "$OUT" "RC=0"
-assert_eq "three curl calls" 3 "$CALLS"
+assert_eq "two curl calls" 2 "$CALLS"
 assert_not_contains "the token is not in any curl argv" "$ARGV" "$TOKEN"
 assert_contains "getMe went via stdin config" "$STDIN" "url = \"https://api.telegram.org/bot${TOKEN}/getMe\""
 assert_contains "getWebhookInfo went via stdin config" "$STDIN" "/bot${TOKEN}/getWebhookInfo\""
-assert_contains "getUpdates went via stdin config" "$STDIN" "/bot${TOKEN}/getUpdates?timeout=0&limit=1\""
-assert_contains "the 409 warning still fires" "$OUT" "409 Conflict"
+assert_not_contains "no getUpdates call" "$STDIN$ARGV" "getUpdates"
+assert_contains "the honest note" "$OUT" "Nem ellenorizheto, hogy mas gep hasznalja-e ezt a botot"
+assert_not_contains "no claim about another poller" "$OUT" "409 Conflict"
 assert_not_contains "the token is not printed" "$OUT" "$TOKEN"
 
 echo "2. invalid token: one call, the invalid-token warning"

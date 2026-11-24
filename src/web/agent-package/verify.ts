@@ -94,7 +94,7 @@ export function isForbiddenCodePoint(cp: number): boolean {
 }
 
 /** S10: an at sign not IMMEDIATELY preceded by an ASCII letter or digit. No code-block exception. */
-const IMPORT_TOKEN_RE = /(?<![A-Za-z0-9])@/gu
+export const IMPORT_TOKEN_RE = /(?<![A-Za-z0-9])@/gu
 /** S17 (1): the inline pre-run shape, a bang right before a backtick. */
 const EXEC_TOKEN_RE = /!`/gu
 /** S17 (1): the fenced pre-run shape, three backticks and a bang, anywhere. */

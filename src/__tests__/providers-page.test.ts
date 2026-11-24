@@ -37,14 +37,14 @@ describe('the provider form says which field is missing', () => {
       last = at
     }
     expect(SAVE).toContain("(authHeader !== 'none' && !vaultKey) ? ['#cpVaultKey'")
-    const stop = SAVE.indexOf('if (missing) { overlay.querySelector(missing[0]).focus(); showToast(t(missing[1])); return }')
+    const stop = SAVE.indexOf('if (missing) { overlay.querySelector(missing[0]).focus(); showToast(t(missing[1]), \'warn\'); return }')
     expect(stop).toBeGreaterThan(last)
     expect(SAVE.slice(0, stop)).not.toMatch(/\bfetch\(/)
   })
 
   it('a failed save shows the server\'s reason or a translated toast', () => {
-    expect(SAVE).toContain("showToast(err.error || t('providers.toast.save_error'))")
-    expect(SAVE).toContain("catch { showToast(t('providers.toast.save_error')) }")
+    expect(SAVE).toContain("showToast(err.error || t('providers.toast.save_error'), 'error')")
+    expect(SAVE).toContain("catch { showToast(t('providers.toast.save_error'), 'error') }")
   })
 
   it('the keys are in both languages', () => {

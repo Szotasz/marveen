@@ -487,6 +487,22 @@ describe('marveen-commands.py', () => {
     rmSync(join(stateDir, 'progress', 'sid-4.json'), { force: true })
   })
 
+  // TELEGRAM_REACTIONS_ENABLED: an owner reaction arrives as a channel block tagged reaction="..." with no message_id.
+  // It is no message to answer: no placeholder, and no pending entry for the Stop hook to demand a reply for.
+  it('an owner reaction: no placeholder and no pending entry; next to a message in the same batch, only the message gets one', async () => {
+    const REACTION_ATTRS = 'source="plugin:telegram:telegram" chat_id="42" user="owner" user_id="42" reaction="👍" reply_to_message_id="40" ts="2026-11-19T16:08:31.000Z"'
+    calls = []
+    await runProgress(channel('(reaction 👍)', REACTION_ATTRS), 'sid-5')
+    expect(calls.filter(c => c.path === '/botbot-tok/sendMessage')).toEqual([])
+    expect(existsSync(join(stateDir, 'progress', 'sid-5.json'))).toBe(false)
+    calls = []
+    await runProgress(channel('(reaction 👍)', REACTION_ATTRS) + '\n' + channel('és még valami', 'source="plugin:telegram:telegram" chat_id="42" message_id="41" user="owner"'), 'sid-6')
+    expect(calls.filter(c => c.path === '/botbot-tok/sendMessage').map(c => c.body))
+      .toEqual([{ chat_id: '42', text: '✍️ Dolgozom rajta…', disable_notification: true }])
+    expect(JSON.parse(readFileSync(join(stateDir, 'progress', 'sid-6.json'), 'utf-8'))).toEqual([{ chat_id: '42', message_id: 555, src_mid: '41' }])
+    rmSync(join(stateDir, 'progress', 'sid-6.json'), { force: true })
+  })
+
   it('a command from a topic: the dispatch is unchanged, the answer goes back into the topic', async () => {
     dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['minden rendben'] } })
     const r = await runHook(channel('/status', TOPIC_ATTRS))

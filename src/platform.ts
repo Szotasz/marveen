@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, lstatSync, realpathSync, type Stats } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 
 export type PlatformType = 'macos' | 'linux-server' | 'linux-gui'
@@ -41,6 +41,79 @@ export function brewPrefixBin(pathEnv: string | undefined, isDir: (p: string) =>
     const bin = `${m[1]}/bin`
     if (FIXED_BIN_DIRS.includes(bin)) continue
     if (isDir(bin)) return bin
+  }
+  return null
+}
+
+// BREWPREFIXREST1107: a dir that goes into a plist <string> PATH value must not carry a PATH separator or XML markup:
+// the same set scripts/lib/helper-path.sh _helper_path_learn refuses (empty, : < > & " ' and control characters).
+// False = leave the dir out (brewPrefixBin's regex accepts any character in the prefix).
+export function plistPathDirOk(dir: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return dir !== '' && !/[:<>&"'\x00-\x1f\x7f]/.test(dir)
+}
+
+// The owner/mode rule for one directory (scripts/lib/helper-path.sh _helper_path_dir_bad): owned by the installing
+// user or root, writable by neither the group nor others; an ancestor may be writable when its sticky bit is set
+// (/private/tmp, /tmp: there only an entry's owner can rename the entry). On macOS write access for the admin group
+// (gid 80) does not count: its members can sudo anyway (Homebrew keeps its bin drwxrwxr-x <user>:admin).
+// A dir that passes only through the admin exception is named in notes (helper-path.sh prints the same line).
+function dirOwnerModeProblem(
+  dir: string, st: Stats, uid: number | undefined, ancestor: boolean, os: NodeJS.Platform, notes?: string[],
+): string | null {
+  if (st.uid !== uid && st.uid !== 0) return 'is owned by neither the installing user nor root'
+  if (ancestor && st.mode & 0o1000) return null
+  const admin = !!(st.mode & 0o020) && os === 'darwin' && st.gid === 80
+  if (st.mode & 0o020 && !admin) return 'is group-writable'
+  if (st.mode & 0o002) return 'is writable by others'
+  if (admin) notes?.push(`HELPER-PATH-ADMIN: ${dir} is writable by the admin group (gid 80); allowed on macOS, its members can sudo`)
+  return null
+}
+
+// PATHDIROWNER1120: a learned dir goes in FRONT of a launchd PATH, so whoever can write it decides what the job runs.
+// The rule of scripts/lib/helper-path.sh _helper_path_unsafe: a real directory (not a symlink) that passes
+// dirOwnerModeProblem, and so does every ancestor up to / (whoever can write a parent can put their own dir in its
+// place), for the path as given (a symlinked ancestor is skipped, its parent is checked) and its real path. Returns
+// why the dir is refused, null when it may be learned. uid: the installing user (process.getuid()); os: the platform;
+// notes: gets a line for each dir that passed only through the macOS admin exception.
+export function learnedPathDirProblem(
+  dir: string,
+  uid: number | undefined = process.getuid?.(),
+  os: NodeJS.Platform = process.platform,
+  notes?: string[],
+): string | null {
+  // a relative path would never reach / in the ancestor walk below
+  if (!dir.startsWith('/')) return 'is not an absolute path'
+  let st: Stats
+  try {
+    st = lstatSync(dir)
+  } catch {
+    return 'is not a directory'
+  }
+  if (st.isSymbolicLink()) return 'is a symlink'
+  if (!st.isDirectory()) return 'is not a directory'
+  const own = dirOwnerModeProblem(dir, st, uid, false, os, notes)
+  if (own) return own
+  let phys: string
+  try {
+    phys = realpathSync(dir)
+  } catch {
+    return 'cannot be resolved'
+  }
+  // the real path only when it differs (one walk, one note per dir, in the common case)
+  for (let a of phys === dir ? [dir] : [dir, phys]) {
+    while (a !== '/') {
+      a = dirname(a)
+      let ast: Stats
+      try {
+        ast = lstatSync(a)
+      } catch {
+        return `has a parent ${a} that cannot be read`
+      }
+      if (ast.isSymbolicLink()) continue
+      const why = dirOwnerModeProblem(a, ast, uid, true, os, notes)
+      if (why) return `has a parent ${a} that ${why}`
+    }
   }
   return null
 }

@@ -3,7 +3,7 @@
 `scripts/hooks/db-write-gate.mjs` is a PreToolUse gate for every agent, the main agent included. It denies:
 
 1. an SQL write on the dashboard database's security tables (`approvals`, `approval_events`, `approval_slack_posts`,
-   `approval_teams_cards`, `agent_create_specs`, `auth_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
+   `approval_teams_cards`, `agent_create_specs`, `auth_sessions`, `colleague_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
    `support_consents` and `support_password_state`), `PRAGMA writable_schema`, and any write on `sqlite_master` /
    `sqlite_schema`;
 2. a file-level write of `store/claudeclaw.db` (and its `-wal`, `-shm`, `-journal`);
@@ -38,6 +38,13 @@ argument of a python/node script file is data, its glob no pattern (GATESCRIPTAR
 `python3 scripts/supabase-logs.py <ref> "select count(*) ..."` passes, like `sqlite3 x.db "select count(*) ..."`.
 Inline code (`-c`, `-e`, `-m`, stdin), a heredoc a script reads, bun/deno and the shell family stay strict, and a
 protected path handed to a script is still denied.
+The same list holds the instruction surfaces a session loads at its start (INSTRSURFACE1118): the CLAUDE.md,
+CLAUDE.local.md and .claude/CLAUDE.md files and the .claude/{rules,skills,commands,agents,output-styles} trees of
+the install root and of each ancestor of it the user may write, ~/.claude/CLAUDE.md and
+~/.claude/{rules,commands,output-styles}, and every OTHER agent's, its .claude-config files included. The caller's
+own agent directory stays free: an agent writes its own skills, rules and CLAUDE.md, and proposes a shared skill
+through the skill proposal. The caller is read from CLAUDE_PROJECT_DIR; without it every agent directory counts as
+another's.
 
 **A file the command writes and then runs** (INSTRWRITEEXEC1105) is judged as the commands it holds. GATEOPENFORMS1118
 widened what counts as running it: a copy of it under another name (a copier, a link, a redirect or a pipe that takes
@@ -60,6 +67,37 @@ a brace or glob source and a symlink to its directory. A variable that holds the
 `export X=$(<f)`, `read`/`mapfile`) is code wherever a shell takes it as code: `eval`, a shell's `-c`, a here-string
 to a shell, the command word. A spelling built from the command's own literal assignments (`S=/abs; ... $S/a.sh`)
 counts as well. All of this acts only when the written text names a protected path.
+
+The caller's own script (a path or a `.sh` name) is no own code when the same command made that program. That covers
+a copy, a link, `install`, `tee`, or a redirect of another file's content such as `cat /bin/sh > m`. Its run is judged
+like any program's. A script whose text the command writes itself (a heredoc, `echo`/`printf`) keeps the exception:
+the run rules read its text, and the data handed to it stays data. On a case-insensitive file system (macOS, Windows)
+a case variant of the written file's path is the same file. `$PWD` and `${PWD}` stand for the directory the segment
+runs in.
+
+There is one exception to "the data stays data": a wrapper written here whose text runs a positional parameter. That
+means `$1`, `"$@"`, `${1}` or `$*` as the command, or after `exec`, `eval`, a shell with its options, `source` or `.`
+(for example `exec sh "$@"`). Its arguments are run positions, so handing it the written file runs that file. A
+wrapper that only reads or prints its argument (`wc -l "$1"`, `echo "$1"`) does not count. A braced positional with a
+modifier (`${1:-x}`, `${1-x}`, `${@}`, `${1#p}`) is the same parameter; a length (`${#1}`) is not. A shell function the
+command defines (`f() { ...; }`, `function g { ...; }`) is such a wrapper, its body read as its text. A wrapper that
+runs `"$@"` as the command, handed `sh FILE`, is a shell run of FILE and is judged as `sh FILE` directly; handed
+`sh -c FILE`, it is not. The braced form may also be two digits (`${10}`) or hold one nested expansion
+(`${1:-${2}}`). A function that hands a positional argument to another function the command defines runs what that
+function runs (`g() { "$@"; }; f() { g "$@"; }`). A shell option that takes an argument (`-o NAME`, `+o NAME`,
+`-O NAME`, `+O NAME`) is not the script word, so `sh -o errexit FILE` runs FILE, as `sh FILE` does. A braced
+positional is read however deep its modifier nests (`${1:-${2:-${3}}}`), and a function chain has no depth limit.
+bash's `--rcfile RC` and `--init-file RC` take an argument, so the next word is the script; the rc file they name is a
+run too (an interactive shell runs it).
+
+**Shell code is a command of its own** (Refs #2974, #2975). The code a command hands to a shell (`sh`/`bash -c`, also
+behind a wrapper such as `timeout`, `eval`, `trap`, a nested `-c`, a shell reading a heredoc or a here-string on stdin)
+is judged as a command by every rule above, in the caller's own context (its cwd, main agent or sub-agent), down to
+eight levels; deeper nesting is denied. So a file-level database write (`bash -c 'rm store/claudeclaw.db'`) is denied
+like the same write at the top level, and a `cd` to an unknown directory counts as the install inside the code too
+(`bash -c 'cd $X && echo x > scripts/hooks/f'`). A shell with a script operand reads its stdin as the script's data,
+not as code (`bash x.sh <<'E' ... E`), unless `-s` is given. The inner code is judged in the cwd the command started
+in, not the one an earlier `cd` of the same command moved to.
 
 **The limit.** This is a text-based brake, not an OS boundary: it reads the command text, and a program that builds a
 statement or a path at run time (a script file written earlier, a string assembled in an interpreter) passes. A file

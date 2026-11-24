@@ -170,6 +170,16 @@ function validUnitFraction(v: string): string | null {
 // A '' (nobody) or a comma-separated list of agent names, e.g. "pm,reviewer".
 // Exported for the sub-agent rotation stage (claude-plan-subagent-rotation.ts), which puts a name into a heartbeat line.
 export const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$/
+
+/** AGENT_DISALLOWED_TOOLS may only name these: built-in tools whose schema rides in every call and that no fleet
+ *  workflow depends on. A closed list, so the shared token cannot take Bash or Edit away from an agent.
+ *  scripts/main-extra-plugins-settings.sh repeats it for the main agent's launch (a test pins the two). */
+export const DISABLEABLE_TOOLS = ['Artifact', 'Workflow', 'SendFeedback', 'ReportFindings', 'ScheduleWakeup'] as const
+
+/** The AGENT_DISALLOWED_TOOLS entries that are on DISABLEABLE_TOOLS, in order, without repeats. */
+export function disallowedToolList(v: string): string[] {
+  return [...new Set(v.split(/[\s,]+/).filter((t) => (DISABLEABLE_TOOLS as readonly string[]).includes(t)))]
+}
 function validAgentNameList(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -694,6 +704,28 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     validate: (v) => validKeepAlive(v),
   },
   {
+    key: 'EMBED_MAX_CHARS',
+    type: 'int',
+    default: 2000,
+    min: 100,
+    max: 100000,
+    description: 'Egy embedding-hívásba küldött szöveg legfeljebb ennyi karakter (a hosszabb emléknek csak az eleje kerül a vektorba). Alapérték 2000. Csak GPU nélküli, lassú gépen érdemes csökkenteni: ott egy karakter kb. 40 ms, így a 2000 karakter túllépheti az időkorlátot (EMBED_TIMEOUT_SECONDS), és a félbehagyott hívások feltorlódnak. Váltás után nem kell újra embeddelni, a meglévő vektorok összehasonlíthatók maradnak.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'EMBED_TIMEOUT_SECONDS',
+    type: 'int',
+    default: 90,
+    min: 5,
+    max: 3600,
+    description: 'Egy embedding-hívás időkorlátja másodpercben. Alapérték 90. Ennyi után a hívást eldobjuk, és az emlék vektor nélkül marad (a memória-keresés addig csak kulcsszóval talál). Lassú gépen az EMBED_MAX_CHARS csökkentése a jobb első lépés: a hosszabb korlát nem gyorsít, az Ollama ugyanannyi ideig számol, csak tovább várunk rá.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'MEMORY_RRF_FTS_WEIGHT',
     type: 'string',
     default: '1',
@@ -896,6 +928,23 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== 'audit' && newValue.trim() === 'audit',
   },
   {
+    // COLLANLOCK1120 (Refs #2929, Samu 82467): the precondition of turning the colleague login on with an open bind.
+    // auto (default) locks only while the colleague login is actually in use; existing installs that open WEB_HOST
+    // for their own remote access (Docker, VPS) change nothing until a colleague account exists.
+    key: 'COLLEAGUE_LAN_LOCK',
+    type: 'string',
+    default: 'auto',
+    valueSet: ['auto', 'on', 'off'],
+    description: 'Kolléga-zár nyitott hálózati címnél. Ha aktív, egy másik gépről (a LAN-ról, egy konténer-hálózatról) érkező kérés a sima HTTP-listeneren: a kolléga-felület (kolléga-belépés, a hatókörös tábla, a kolléga-oldal) változatlanul elérhető; a böngészős belépés (gazda-jelszó, TOTP, setup-kód, operátor-kulcs) tiltott; minden más kérésnél a zár minden böngésző-cookie-t eldob, így csak fejlécben vagy query-ben hozott gépi hitelesítés (ügynök- vagy dashboard-token, eszközkulcs, föderáció, Teams bot-token) érvényesül. A gazda böngészővel a LAN-ról nem tud belépni: a gépről, Tailscale Serve-en, SSH-tunnelen vagy a HTTPS nyilvános listeneren (WEB_PUBLIC_PORT) jön be. A gépi tokenek sima HTTP-n továbbra is titkosítatlanul utaznak (ez a TLS-kérdés, gazda-döntés). auto (alapértelmezés): akkor aktív, ha a WEB_HOST nem loopback, van legalább egy engedélyezett kolléga-fiók, és a hatókörös tábla be van kapcsolva; különben semmi nem változik. on: mindig aktív. off: soha. Az off megnyitja a LAN felé a gazda belépését és munkamenetét titkosítatlan HTTP-n, és a LAN-ról bárki kimerítheti a gazda belépési keretét; ezért az off és az on -> auto lazítás: csak dashboard-belépéssel állítható, a .env-ben álló lazító érték nem hat.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => {
+      const rank = (v: string) => ({ on: 2, auto: 1, off: 0 } as Record<string, number>)[v.trim().toLowerCase()] ?? 1
+      return rank(newValue) < rank(oldValue)
+    },
+  },
+  {
     // SKILLAPPROVALOFF1101 (owner, Slack 2026-11-01 22:35): switchable, OFF by default. The scan, the hash binding and
     // an audit line run in both positions; only the hold for the owner's approval is what the switch turns on.
     // SKILLQUARANTINEDEF1109 (owner, Slack 2026-11-18, "Vevőknél is KI"; overrides Rec0CGYNBMRL0 = A of 2026-11-16):
@@ -1025,6 +1074,30 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       return [...ids(oldValue)].some((id) => !next.has(id))
     },
     description: 'Bash-sandbox ágensenként (Claude Code beépített sandboxa, macOS). Az itt felsorolt ágensek (azonosító, vesszővel vagy szóközzel elválasztva, pl. "soma") minden Bash-parancsa és annak minden gyerekfolyamata, a fájlba írt és úgy futtatott szkript is (python3 crawl.py), csak a store/egress-vendor-hosts.json listáján szereplő hosztot éri el (a "domains" bejegyzés aldomainjeivel együtt), a localhostot és a helyi hálózatot. Minden más hoszt kérdés nélkül tiltva, nyers sockettel is. Írni a saját mappájába, a ~/worktrees/<azonosító> alá, a temp-mappába és a store/bash-sandbox-write-paths.json-ban neki megadott helyekre tud. A beállítást a dashboard minden indításkor a store/bash-sandbox/<azonosító>.settings.json fájlba írja, és --settings kapcsolóval adja át; ha nem tudja megírni, vagy az ágens távoli gépen fut, az ágens NEM indul el. Üresen (alapértelmezés) senki nincs sandboxban. A fő ágensre nem hat. Ágenst felvenni bármely hívó tud, LEVENNI csak bejelentkezett gazda-session vagy teljes jogú eszközkulcs (a közös tokennel nem, mert azt minden ágens is birtokolja), illetve a store/config-overrides.json kézi szerkesztése. NEM fedi: a hookok és az MCP-szerverek hálózatát (azok a sandboxon kívül futnak), a Write/Edit eszközt, és a headless Chrome-ot (a sandboxban nem indul el). A módosítás az ágens következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'INBOX_NUDGE_BATCH_MINUTES',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 120,
+    description: 'A fő ágenst a neki jött, NEM sürgős ügynök-üzenetek csak akkor ébresztik, ha a legrégebbi már ennyi perce vár: addig gyűlnek, és egy körben dolgozza fel őket (kevesebb kör, kevesebb token). A sürgős, a rendszer- és a gazda-üzenet, valamint a magas prioritású sor azonnal ébreszt. A gazda bármely üzenete közben is mindent felvesz. 0 = kikapcsolva (a korábbi viselkedés: kb. 10 másodperc után ébreszt).',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'AGENT_DISALLOWED_TOOLS',
+    type: 'string',
+    default: '',
+    validate: (v) =>
+      v.split(/[\s,]+/).filter(Boolean).every((t) => (DISABLEABLE_TOOLS as readonly string[]).includes(t))
+        ? null
+        : `Csak ezek közül, vesszővel elválasztva: ${DISABLEABLE_TOOLS.join(', ')}.`,
+    description: 'Beépített Claude Code eszközök, amelyeket egyik ügynök (a fő ágens is) NEM kap meg: a leírásuk így nem utazik minden hívásban (kevesebb token). Csak a nem használt eszközök közül választható: Artifact, Workflow, SendFeedback, ReportFindings, ScheduleWakeup. Vesszővel elválasztva; üres = mind megmarad. Az ügynök következő indításakor lép életbe.',
     module: 'system',
     secret: false,
     requiresRestart: true,
@@ -1191,6 +1264,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
+    key: 'USAGE_LIMIT_NOTICE_ROUTE',
+    type: 'string',
+    default: 'both',
+    valueSet: ['both', 'owner', 'main'],
+    description: 'Hová menjen az ütemező jelzése, ha egy ügynök sessionje kifogyott a keretből (usage-limit). both (alapértelmezés): a gazda privát chatje ÉS a fő ágens is megkapja; a fő ágens példányában nincs képernyő-szöveg, csak az ügynök neve és a tény. owner: csak a gazda chatje (a régi út). main: csak a fő ágens; ha az üzenet nem írható be, a gazda chatje kapja. Ha maga a fő ágens fogyott ki, mindig a gazda chatje kapja. Azonnal hat, újraindítás nélkül. A main értéket csak a gazda állíthatja be (felülírás-kulcs); a .env-ben álló main nem hat.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    // Moving to 'main' takes the notice away from the owner, so only the owner may do it and a .env line 'main'
+    // is ignored (overrides-only, ENVRELAXGATE1104).
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'main' && newValue.trim().toLowerCase() === 'main',
+  },
+  {
     // ISSUE2556X (marveen#2556): with two paired DMs and the installer's ALLOWED_CHAT_ID=0 the alert resolver refuses
     // to guess, and every system alert was lost. This names the chat outright. Delivery only: it never makes anyone
     // the owner (the command gate and the ledger keep ALLOWED_CHAT_ID / the sole DM entry), and the memory key stays
@@ -1291,6 +1377,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     min: 0,
     max: 8760,
     description: 'Válasz-gombok lejárata órában. Ha be van állítva (például 24), egy ennél régebbi kérdés gombjára koppintás nem jut el az ügynökhöz: a felugró üzenet azt kéri, hogy a választ írd be, és a kérdés gombjai helyére egyetlen „⏱ Lejárt, írd be a választ” gomb kerül. A kor a kérdés elküldési idejétől számít, így a plugin újraindítása után is érvényes. 0 = a gombok nem járnak le (a mai működés). A beállítást a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: 0. A módosítás a csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    // TELEGRAM_REACTIONS_ENABLED (owner request, 2026-11-09): the owner's emoji reactions reach the agent. Baked into
+    // the plugin source by scripts/patch-telegram-plugin.py at the channel start (the tgreact1119 patch).
+    key: 'TELEGRAM_REACTIONS_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Telegram-reakciók továbbítása: bekapcsolva ha a párosított tulajdonos a privát chatben egy üzenetre emoji-reakciót tesz, az ügynök megkapja „(reaction 👍)” alakban, a reagált üzenet azonosítójával, és ha az ügynök küldte a plugin indulása óta, egy rövid kivonatával. Csak a hozzáadott reakció megy tovább, a levétel nem. Minden reakció egy újabb kör az ügynöknek, ezért alapból ki van kapcsolva. A kapcsolót a csatorna-indítás a Telegram plugin forrására teszi (scripts/patch-telegram-plugin.py). Alapértelmezés: kikapcsolva. A módosítás a csatorna következő indításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,

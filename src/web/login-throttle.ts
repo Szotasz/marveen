@@ -30,57 +30,93 @@ interface UserThrottle {
   lockedUntil: number
 }
 
-const perUser = new Map<string, UserThrottle>()
-let globalFailures: number[] = []
-
 export interface ThrottleState {
   locked: boolean
   retryAfterS: number
   global: boolean
 }
 
-function pruneGlobal(now: number): void {
-  const cutoff = now - GLOBAL_WINDOW_MS
-  if (globalFailures.length && globalFailures[0] < cutoff) {
-    globalFailures = globalFailures.filter((t) => t >= cutoff)
+export interface LoginThrottle {
+  checkThrottle(usernameLc: string, now?: number): ThrottleState
+  recordFailure(usernameLc: string, now?: number): void
+  recordSuccess(usernameLc: string): void
+  isGlobalLimited(now?: number): boolean
+  reset(): void
+}
+
+// One independent throttle: its own per-user map and its own global window.
+// The owner login (and the operator login) use the default instance behind the
+// function exports below; another login surface (the colleague board login,
+// routes/colleague.ts) takes its own instance, so its failures can never lock
+// the owner out through the shared global cap.
+export function createLoginThrottle(): LoginThrottle {
+  const perUser = new Map<string, UserThrottle>()
+  let globalFailures: number[] = []
+
+  function pruneGlobal(now: number): void {
+    const cutoff = now - GLOBAL_WINDOW_MS
+    if (globalFailures.length && globalFailures[0] < cutoff) {
+      globalFailures = globalFailures.filter((t) => t >= cutoff)
+    }
+  }
+
+  return {
+    checkThrottle(usernameLc: string, now: number = Date.now()): ThrottleState {
+      pruneGlobal(now)
+      if (globalFailures.length >= GLOBAL_MAX_FAILURES) {
+        const retry = Math.ceil((globalFailures[0] + GLOBAL_WINDOW_MS - now) / 1000)
+        return { locked: true, retryAfterS: Math.max(1, retry), global: true }
+      }
+      const u = perUser.get(usernameLc)
+      if (u && u.lockedUntil > now) {
+        return { locked: true, retryAfterS: Math.max(1, Math.ceil((u.lockedUntil - now) / 1000)), global: false }
+      }
+      return { locked: false, retryAfterS: 0, global: false }
+    },
+    recordFailure(usernameLc: string, now: number = Date.now()): void {
+      globalFailures.push(now)
+      const u = perUser.get(usernameLc) ?? { failures: 0, lockedUntil: 0 }
+      u.failures += 1
+      if (u.failures >= MAX_CONSECUTIVE_BEFORE_LOCK) {
+        const over = u.failures - MAX_CONSECUTIVE_BEFORE_LOCK // 0 at the 5th failure
+        const lockMs = Math.min(BASE_LOCK_MS * 2 ** over, MAX_LOCK_MS)
+        u.lockedUntil = now + lockMs
+      }
+      perUser.set(usernameLc, u)
+    },
+    recordSuccess(usernameLc: string): void {
+      perUser.delete(usernameLc)
+    },
+    isGlobalLimited(now: number = Date.now()): boolean {
+      pruneGlobal(now)
+      return globalFailures.length >= GLOBAL_MAX_FAILURES
+    },
+    reset(): void {
+      perUser.clear()
+      globalFailures = []
+    },
   }
 }
+
+const ownerThrottle = createLoginThrottle()
 
 // Is this login currently blocked? Checked BEFORE any password verification so a
 // locked account never even reaches the KDF.
 export function checkThrottle(usernameLc: string, now: number = Date.now()): ThrottleState {
-  pruneGlobal(now)
-  if (globalFailures.length >= GLOBAL_MAX_FAILURES) {
-    const retry = Math.ceil((globalFailures[0] + GLOBAL_WINDOW_MS - now) / 1000)
-    return { locked: true, retryAfterS: Math.max(1, retry), global: true }
-  }
-  const u = perUser.get(usernameLc)
-  if (u && u.lockedUntil > now) {
-    return { locked: true, retryAfterS: Math.max(1, Math.ceil((u.lockedUntil - now) / 1000)), global: false }
-  }
-  return { locked: false, retryAfterS: 0, global: false }
+  return ownerThrottle.checkThrottle(usernameLc, now)
 }
 
 export function recordFailure(usernameLc: string, now: number = Date.now()): void {
-  globalFailures.push(now)
-  const u = perUser.get(usernameLc) ?? { failures: 0, lockedUntil: 0 }
-  u.failures += 1
-  if (u.failures >= MAX_CONSECUTIVE_BEFORE_LOCK) {
-    const over = u.failures - MAX_CONSECUTIVE_BEFORE_LOCK // 0 at the 5th failure
-    const lockMs = Math.min(BASE_LOCK_MS * 2 ** over, MAX_LOCK_MS)
-    u.lockedUntil = now + lockMs
-  }
-  perUser.set(usernameLc, u)
+  ownerThrottle.recordFailure(usernameLc, now)
 }
 
 export function recordSuccess(usernameLc: string): void {
-  perUser.delete(usernameLc)
+  ownerThrottle.recordSuccess(usernameLc)
 }
 
 // True once the global rolling-hour failure cap is hit -- the caller logs it.
 export function isGlobalLimited(now: number = Date.now()): boolean {
-  pruneGlobal(now)
-  return globalFailures.length >= GLOBAL_MAX_FAILURES
+  return ownerThrottle.isGlobalLimited(now)
 }
 
 // Timing equalizer: verify the presented password against a stable per-process
@@ -101,6 +137,5 @@ export async function runDummyVerify(password: string): Promise<void> {
 
 // Test seam.
 export function _resetThrottleForTest(): void {
-  perUser.clear()
-  globalFailures = []
+  ownerThrottle.reset()
 }

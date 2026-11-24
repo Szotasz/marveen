@@ -43,6 +43,29 @@ ni_answer() {
   esac
 }
 
+# AUTHSHHIDDEN1122: a secret (token, key) is typed without echo, so neither the screen nor a screen recording shows it.
+# The read lines stay plain `read -rp` / `read -p` (the Bridge's headless derive wraps exactly those, a `read -rsp`
+# would stop it); only the terminal echo is switched off around them, and only when stdin is a terminal. The traps set
+# before (INT, TERM, EXIT) are saved and put back, also on Ctrl+C, the same way as the Teams app password (EE2392D3).
+_secret_tty() { [ -t 0 ]; } # a terminal on stdin: only there is echo switched off
+_secret_echo_off() {
+  _secret_tty || return 0
+  _secret_prev_traps="$(trap -p INT TERM EXIT)"
+  _secret_prev_exit=""
+  eval "_secret_prev_exit=$(trap -p EXIT | sed -e 's/^trap -- //' -e 's/ EXIT$//')"
+  trap 'stty echo 2>/dev/null || true; trap - INT TERM EXIT; eval "$_secret_prev_traps"; exit 130' INT TERM
+  trap 'stty echo 2>/dev/null || true; eval "$_secret_prev_exit"' EXIT
+  stty -echo 2>/dev/null || true
+}
+_secret_echo_on() {
+  _secret_tty || return 0
+  stty echo 2>/dev/null || true
+  trap - INT TERM EXIT
+  eval "$_secret_prev_traps"
+  unset _secret_prev_traps _secret_prev_exit
+  echo ""
+}
+
 INSTALL_STEP="init"
 
 # ADMINPREREQTRUST1104 (Samu 69561): --admin-prereq runs as ROOT, so it may only run code that the
@@ -1260,7 +1283,9 @@ else
   if [ "$AUTH_MODE" = "1" ]; then
     echo ""
     echo -e "  ${DIM}API kulcsot itt talalod: https://console.anthropic.com/settings/keys${NC}"
+    _secret_echo_off
     read -p "  ANTHROPIC_API_KEY (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
+    _secret_echo_on
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
       remove_secret_export_from_rc ANTHROPIC_API_KEY
@@ -1290,7 +1315,9 @@ else
     for _try in 1 2 3; do
       # Read into OAUTH_TOKEN_INPUT (not a new name): the desktop installer
       # derives its prompts from this file by variable name.
+      _secret_echo_off
       read -p "  OAuth token: " OAUTH_TOKEN_INPUT
+      _secret_echo_on
       _tok="$(printf '%s' "$OAUTH_TOKEN_INPUT" | tr -d '[:space:]')"
       OAUTH_TOKEN_INPUT=""
       [ -z "$_tok" ] && break
@@ -1482,7 +1509,10 @@ ok "Csatorna: $CHANNEL_PROVIDER"
 # the install, and the headless derive contract (Bridge payload) forbids new
 # interactive reads here -- so we say it loudly and let the install continue.
 # The dashboard save path hard-rejects the same states (#926); this is the
-# installer-side voice for the same three findings, each with its remedy.
+# installer-side voice for the same two findings, each with its remedy. A second running poller on the same
+# token is NOT detectable from here: getUpdates?timeout=0 answers 200 even while another poller is live (measured
+# 2026-11-18), and a long poll would disturb that poller. So the installer says plainly that it cannot tell
+# (INSTTGPOLLWARN1119).
 # set -e safe: every path ends in return 0; curl failures are guarded.
 # The token value itself is NEVER printed, and never put on a command line: each URL reaches
 # curl as a config line on stdin (-K -), so ps does not show it (INSTTGTOKENARGV1118).
@@ -1519,12 +1549,8 @@ probe_telegram_token() {
       echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot azzal.${NC}"
       return 0 ;;
   esac
-  _ptt_up="$(printf 'url = "%s"\n' "https://api.telegram.org/bot${_ptt_t}/getUpdates?timeout=0&limit=1" | curl -s -o /dev/null -w '%{http_code}' --max-time 8 -K - 2>/dev/null)" || return 0
-  if [ "$_ptt_up" = "409" ]; then
-    warn "A bot token ervenyes, de egy MASIK futo rendszer mar hasznalja (Telegram 409 Conflict)."
-    echo -e "    ${DIM}Egy tokent egyszerre csak egy telepites hasznalhat. Teendo: allitsd le a korabbi telepitest,${NC}"
-    echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot az uj tokennel.${NC}"
-  fi
+  echo -e "    ${DIM}Nem ellenorizheto, hogy mas gep hasznalja-e ezt a botot; ha igen, a ket poller utkozni fog.${NC}"
+  echo -e "    ${DIM}Egy tokent egyszerre csak egy telepites hasznalhat: ha a bot mashol is fut, allitsd le ott, vagy keszits uj botot.${NC}"
   return 0
 }
 
@@ -1551,8 +1577,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  3. Adj nevet a botodnak${NC}"
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
+  _secret_echo_off
   ni_answer BOT_TOKEN file MARVEEN_TELEGRAM_TOKEN_FILE ||
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
+  _secret_echo_on
   probe_telegram_token "$BOT_TOKEN"
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo ""
@@ -1564,8 +1592,10 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
   echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
   echo ""
+  _secret_echo_off
   ni_answer DISCORD_BOT_TOKEN file MARVEEN_DISCORD_BOT_TOKEN_FILE ||
   read -rp "$(_t prompt_discord_bot_token)" DISCORD_BOT_TOKEN
+  _secret_echo_on
   ni_answer DISCORD_CHANNEL_ID value MARVEEN_DISCORD_CHANNEL_ID ||
   read -rp "$(_t prompt_discord_channel_id)" DISCORD_CHANNEL_ID
   echo ""
@@ -1638,10 +1668,14 @@ else
   echo -e "${DIM}     app_mention, message.channels, message.groups, message.im${NC}"
   echo -e "${DIM}  5. Installald a workspace-be${NC}"
   echo ""
+  _secret_echo_off
   ni_answer SLACK_BOT_TOKEN file MARVEEN_SLACK_BOT_TOKEN_FILE ||
   read -rp "$(_t prompt_slack_bot_token)" SLACK_BOT_TOKEN
+  _secret_echo_on
+  _secret_echo_off
   ni_answer SLACK_APP_TOKEN file MARVEEN_SLACK_APP_TOKEN_FILE ||
   read -rp "$(_t prompt_slack_app_token)" SLACK_APP_TOKEN
+  _secret_echo_on
 fi
 
 ni_answer BOT_NAME value MARVEEN_BOT_NAME ||
@@ -3245,16 +3279,22 @@ fi
 echo ""
 echo -e "${BOLD}Korabbi rendszer koltoztetese${NC}"
 echo -e "${DIM}  Ha volt korabbi AI asszisztensed (OpenClaw, egyeni bot), atmigralhato a memoriai.${NC}"
+# MIGRATENONFATAL1122: the migration is optional and runs after every service is up, so its failure
+# (a mistyped source path exits 1) must not report the whole install as failed. Its own step name keeps
+# the error report from blaming the step before it. The English prompt asks (y/n): "y" is accepted too.
+INSTALL_STEP="migration"
 ni_answer DO_MIGRATE fixed "" n ||
 read -rp "$(_t prompt_migrate)" DO_MIGRATE
 DO_MIGRATE=${DO_MIGRATE:-n}
-if [ "$DO_MIGRATE" = "i" ]; then
-  if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
-    "$INSTALL_DIR/scripts/migrate.sh"
-  else
-    warn "A migrate.sh nem talalhato. Hasznald a dashboardot: http://localhost:${WEB_PORT:-3420} -> Koltoztes"
-  fi
-fi
+case "$DO_MIGRATE" in
+  i|I|y|Y)
+    if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
+      "$INSTALL_DIR/scripts/migrate.sh" || warn "$(_t macos.migrate_failed | sed 's/^ *//')"
+    else
+      warn "A migrate.sh nem talalhato. Hasznald a dashboardot: http://localhost:${WEB_PORT:-3420} -> Koltoztes"
+    fi
+    ;;
+esac
 
 # Warn if Telegram pairing was skipped
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then

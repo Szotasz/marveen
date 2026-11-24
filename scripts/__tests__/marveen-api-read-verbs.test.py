@@ -156,6 +156,20 @@ rc, out, err, _ = run('--help')
 missing = [v for v in ('agent-restart', 'federation-directory', 'daily-log-read', 'memory-backfill') if '\n  %s' % v not in out]
 ok(rc == 0 and not missing, 'R10 --help lists every new verb', 'missing=%s' % missing)
 
+# --- R11-R13: vault-login / vault-logins (VAULTLOGIN1112) ---------------------------------------------------------
+rc, out, err, seen = run('vault-login', 'dani', 'shop-example-com', body='{"outcome":"success"}')
+g, d = one(seen, 'POST', '/api/vault/web-logins/shop-example-com/login', {})
+ok(rc == 0 and g and seen[0]['headers'].get('X-Agent-Id') == 'dani' and '"outcome":"success"' in out,
+   'R11 vault-login: POST to the entry, the agent in X-Agent-Id, only the id goes out', 'rc=%d %s %s' % (rc, d, err[:160]))
+res = [run(*a) for a in (('vault-login', 'dani', 'x/../y'), ('vault-login', 'Dani!', 'x'), ('vault-login', 'dani'))]
+ok(all(r[0] == 2 and not r[3] for r in res), 'R12 vault-login: a bad id, a bad agent or a missing argument sends nothing',
+   str([(r[0], len(r[3])) for r in res]))
+rc, out, err, seen = run('vault-login', 'dani', 'shop-example-com', status=423, body='{"outcome":"locked"}')
+ok(rc == 1 and 'locked' in err, 'R13 vault-login: a locked entry exits 1 with the outcome on stderr', 'rc=%d err=%s' % (rc, err[:160]))
+rc, out, err, seen = run('vault-logins', body='{"logins":[]}')
+g, d = one(seen, 'GET', '/api/vault/web-logins', None)
+ok(rc == 0 and g, 'R14 vault-logins: GET the list', 'rc=%d %s %s' % (rc, d, err[:160]))
+
 SRV.shutdown()
 print('\n%d failed' % len(FAILS) if FAILS else '\nall passed')
 sys.exit(1 if FAILS else 0)

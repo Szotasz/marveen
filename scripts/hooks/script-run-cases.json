@@ -327,6 +327,14 @@
     {"name": "COPYSUBST1116 (Revizor 4138 L7): a locale $\"--to\" flag name", "cmd": "python3 tool.py $\"--to\" a@example.com", "main": true, "sub": true},
     {"name": "COPYSUBST1116 (Revizor 4138 L8): builtin command eval of an addressed run", "cmd": "builtin command eval 'python3 tool.py --to a@example.com'", "main": true, "sub": true},
     {"name": "COPYSUBST1116 (Revizor 4138 L8): command -p eval of an addressed run", "cmd": "command -p eval 'python3 tool.py --to a@example.com'", "main": true, "sub": true},
-    {"name": "COPYSUBST1116 control: a locale $\"..\" word with no address", "cmd": "python3 plain.py $\"--text\" x", "main": false, "sub": false}
+    {"name": "COPYSUBST1116 control: a locale $\"..\" word with no address", "cmd": "python3 plain.py $\"--text\" x", "main": false, "sub": false},
+    {"name": "nodejs-basename interpreter runs a sending script", "cmd": "nodejs nm.mjs", "main": true, "sub": true},
+    {"name": "control: nodejs-basename interpreter, harmless script", "cmd": "nodejs plain.mjs", "main": false, "sub": false},
+    {"name": "an absolute nodejs path, addressed", "cmd": "/usr/bin/nodejs nm.mjs --to a@example.invalid", "main": true, "sub": true},
+    {"name": "ISSUE3049: a file after a process substitution is an operand of cat, not a script run", "cmd": "cat <(echo x) send.py", "main": false, "sub": false},
+    {"name": "ISSUE3049: the same with cmp (the reported read-only check)", "cmd": "cmp <(curl -s http://localhost:3420/app.js) send.py", "main": false, "sub": false},
+    {"name": "ISSUE3049: two substitutions, then the file", "cmd": "diff <(sort a) <(sort b) send.py", "main": false, "sub": false},
+    {"name": "ISSUE3049 negative twin: the script operand before a substitution still runs", "cmd": "python3 send.py <(echo x)", "main": true, "sub": true},
+    {"name": "ISSUE3049 negative twin: a send inside the substitution is still seen", "cmd": "cat <(python3 send.py) plain.py", "main": true, "sub": true}
   ]
 }

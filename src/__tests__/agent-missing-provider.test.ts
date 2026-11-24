@@ -61,7 +61,7 @@ describe('the agent editor says the provider is gone, and needs a model id', () 
   })
 
   it('a save with a custom provider and no model id stops with the focus and a toast; the picker value is never the model', () => {
-    expect(SAVE).toContain("if (isCustom && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required')); return }")
+    expect(SAVE).toContain("if (isCustom && !customModelId) { customModelInput.focus(); showToast(t('agents.model.custom_model_required'), 'warn'); return }")
     expect(SAVE).toContain('const newModel = isCustom ? customModelId : selectVal')
     expect(SAVE).not.toContain('|| selectVal)')
   })

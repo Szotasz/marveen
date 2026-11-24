@@ -27,7 +27,8 @@
  * and the clicker a "Not accepted" card (Samu's decision D6).
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { recordApprovalTeamsCard, getApprovalTeamsCard, decideApprovalFromTeams, type Approval } from '../db.js'
+import { recordApprovalTeamsCard, getApprovalTeamsCard, decideApprovalFromTeams, getApproval, getDb, type Approval } from '../db.js'
+import { renderAgentSpec, type AgentSpec } from './agent-create-spec.js'
 import { logger } from '../logger.js'
 import { verifiedEnvelope, type MailEnvelope } from '../approval-envelope.js'
 import { createChannelTokenVerifier, type ChannelTokenVerifier } from '../bot-channel-token.js'
@@ -63,25 +64,44 @@ export function teamsCardOwner(setting: TeamsCardDeps['setting']): string | null
 }
 
 export type CardRoute =
-  | { ok: true; owner: string; creds: TeamsCreds; envelope: MailEnvelope; contentHash: string }
+  | { ok: true; owner: string; creds: TeamsCreds; envelope: MailEnvelope | null; spec?: AgentSpec; contentHash: string }
   | { ok: false; reason: string }
 
-/** May [approval] go out as a Teams card? Only an email_send whose envelope the server can verify. */
+/** AGENTCREATEPR3-1119: the stored spec of an agent_create approval, only when its canonical JSON still hashes to the
+ *  approval's content hash (the hash the card binds and the owner's click is decided against). */
+export function verifiedAgentSpec(approval: Approval): AgentSpec | null {
+  if (approval.category !== 'agent_create' || !approval.content_hash) return null
+  const row = getDb().prepare('SELECT spec_json FROM agent_create_specs WHERE approval_id = ?').get(approval.id) as { spec_json: string } | undefined
+  if (!row || sha256(row.spec_json) !== approval.content_hash) return null
+  try { return JSON.parse(row.spec_json) as AgentSpec } catch { return null }
+}
+
+/** May [approval] go out as a Teams card? An email_send whose envelope the server can verify, or (AGENTCREATEPR3-1119)
+ *  an agent_create whose stored spec still hashes to the approval's hash. */
 export function teamsCardRoute(approval: Approval, deps: Pick<TeamsCardDeps, 'setting' | 'creds'>): CardRoute {
   if (!teamsCardsOn(deps.setting)) return { ok: false, reason: 'switch_off' }
   const owner = teamsCardOwner(deps.setting)
   if (!owner) return { ok: false, reason: 'no_explicit_owner' }
-  if (approval.category !== 'email_send') return { ok: false, reason: 'not_email_send' }
-  const envelope = verifiedEnvelope(approval)
-  if (!envelope || !approval.content_hash) return { ok: false, reason: 'content_not_verifiable' }
+  let envelope: MailEnvelope | null = null
+  let spec: AgentSpec | undefined
+  if (approval.category === 'email_send') {
+    envelope = verifiedEnvelope(approval)
+    if (!envelope || !approval.content_hash) return { ok: false, reason: 'content_not_verifiable' }
+  } else if (approval.category === 'agent_create') {
+    spec = verifiedAgentSpec(approval) ?? undefined
+    if (!spec) return { ok: false, reason: 'content_not_verifiable' }
+  } else return { ok: false, reason: 'not_email_send' }
   const creds = deps.creds()
   if (!creds || !creds.appId || !creds.secret || !creds.tenant) return { ok: false, reason: 'no_teams_credentials' }
-  return { ok: true, owner, creds, envelope, contentHash: approval.content_hash }
+  return { ok: true, owner, creds, envelope, ...(spec ? { spec } : {}), contentHash: approval.content_hash! }
 }
 
 const T = {
   hu: {
     title: 'Jóváhagyás kell: levélküldés',
+    agentTitle: 'Jóváhagyás kell: új ügynök létrehozása',
+    agentFallback: (id: string) => `Jóváhagyás kell: új ügynök létrehozása (${id}). Ha a kártya nem látszik, a dashboardon dönts.`,
+    agentApproved: (w: string) => `Jóváhagyva (${w}). Az ügynök a jóváhagyott leírás szerint jön létre.`,
     agent: 'Kérő ügynök', to: 'Címzett', cc: 'Másolat', bcc: 'Titkos másolat', account: 'Fiók', replyTo: 'Válasz erre', render: 'Megjelenítés', format: 'Formátum',
     attachment: 'Csatolmány', expires: 'Lejár', text: 'A levél szövege', anchor: 'Horgony (sha256)', none: '(nincs)',
     more: (n: number) => `(+${n} karakter: a teljes szöveg a dashboardon)`,
@@ -101,6 +121,9 @@ const T = {
   },
   en: {
     title: 'Approval needed: sending an email',
+    agentTitle: 'Approval needed: creating a new agent',
+    agentFallback: (id: string) => `Approval needed: creating a new agent (${id}). If the card does not show, decide on the dashboard.`,
+    agentApproved: (w: string) => `Approved (${w}). The agent is created as approved.`,
     agent: 'Requesting agent', to: 'To', cc: 'Cc', bcc: 'Bcc', account: 'Account', replyTo: 'Reply to', render: 'Rendering', format: 'Format',
     attachment: 'Attachment', expires: 'Expires', text: 'The email text', anchor: 'Anchor (sha256)', none: '(none)',
     more: (n: number) => `(+${n} characters: the full text is on the dashboard)`,
@@ -121,11 +144,29 @@ const T = {
 }
 
 type Card = Record<string, unknown>
+const CARD_SCHEMA = 'http://adaptivecards.io/schemas/adaptive-card.json'
 const textBlock = (text: string, extra: Record<string, unknown> = {}) => ({ type: 'TextBlock', text, wrap: true, ...extra })
 
-/** The approval card, rendered from the verified envelope. Pure. */
-export function renderApprovalCard(approval: Approval, env: MailEnvelope, contentHash: string, expires: string, nonce: string, lang: ApprovalLang): Card {
+/** The approval card, rendered from the verified envelope, or (AGENTCREATEPR3-1119) from the verified agent spec: the
+ *  server's own text of the spec, whole (it is what the hash binds). Pure. */
+export function renderApprovalCard(approval: Approval, env: MailEnvelope | null, contentHash: string, expires: string, nonce: string, lang: ApprovalLang, spec?: AgentSpec): Card {
   const t = T[lang]
+  const action = (decision: 'approve' | 'reject', title: string, style: string) => ({
+    type: 'Action.Execute', title, verb: APPROVAL_CARD_VERB, style, data: { approvalId: approval.id, decision, nonce },
+  })
+  const card = (body: unknown[]): Card => ({
+    type: 'AdaptiveCard', $schema: CARD_SCHEMA, version: '1.4', body,
+    actions: [action('approve', t.approve, 'positive'), action('reject', t.reject, 'destructive')],
+  })
+  if (spec) {
+    return card([
+      textBlock(t.agentTitle, { weight: 'Bolder', size: 'Medium' }),
+      { type: 'FactSet', facts: [{ title: t.agent, value: approval.agent_id }, { title: t.expires, value: expires }] },
+      textBlock(renderAgentSpec(spec, contentHash, lang), { fontType: 'Monospace' }),
+      textBlock(`${t.anchor}: ${contentHash}`, { isSubtle: true, size: 'Small' }),
+    ])
+  }
+  if (!env) throw new Error('renderApprovalCard: neither an envelope nor a spec')
   const facts: Array<{ title: string; value: string }> = [
     { title: t.agent, value: approval.agent_id },
     { title: t.to, value: env.to.join(', ') || t.none },
@@ -148,22 +189,17 @@ export function renderApprovalCard(approval: Approval, env: MailEnvelope, conten
   ]
   if (env.text.length > CARD_TEXT_PREVIEW) body.push(textBlock(t.more(env.text.length - CARD_TEXT_PREVIEW), { isSubtle: true }))
   body.push(textBlock(`${t.anchor}: ${contentHash}`, { isSubtle: true, size: 'Small' }))
-  const action = (decision: 'approve' | 'reject', title: string, style: string) => ({
-    type: 'Action.Execute', title, verb: APPROVAL_CARD_VERB, style, data: { approvalId: approval.id, decision, nonce },
-  })
-  return {
-    type: 'AdaptiveCard', $schema: 'http://adaptivecards.io/schemas/adaptive-card.json', version: '1.4', body,
-    actions: [action('approve', t.approve, 'positive'), action('reject', t.reject, 'destructive')],
-  }
+  return card(body)
 }
 
 export type ResultKind = 'approved' | 'rejected' | 'expired' | 'already' | 'changed' | 'notAccepted' | 'unavailable'
 
 /** The card the click is answered with (it replaces the approval card). Pure. */
-export function renderResultCard(kind: ResultKind, lang: ApprovalLang, when: string, approvalId?: string): Card {
+export function renderResultCard(kind: ResultKind, lang: ApprovalLang, when: string, approvalId?: string, category?: string): Card {
   const t = T[lang].result
-  const line = kind === 'approved' ? t.approved(when) : kind === 'rejected' ? t.rejected(when) : t[kind]
-  const body: unknown[] = [textBlock(T[lang].title, { weight: 'Bolder' }), textBlock(line)]
+  const agent = category === 'agent_create'
+  const line = kind === 'approved' ? (agent ? T[lang].agentApproved(when) : t.approved(when)) : kind === 'rejected' ? t.rejected(when) : t[kind]
+  const body: unknown[] = [textBlock(agent ? T[lang].agentTitle : T[lang].title, { weight: 'Bolder' }), textBlock(line)]
   if (approvalId) body.push(textBlock(approvalId, { isSubtle: true, size: 'Small' }))
   return { type: 'AdaptiveCard', $schema: 'http://adaptivecards.io/schemas/adaptive-card.json', version: '1.4', body }
 }
@@ -174,7 +210,7 @@ const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex
 export async function postApprovalCard(approval: Approval, route: Extract<CardRoute, { ok: true }>, expires: string, lang: ApprovalLang,
   deps: Pick<TeamsCardDeps, 'send' | 'stateDir' | 'resolveTarget'>): Promise<boolean> {
   const nonce = randomBytes(32).toString('hex')
-  const card = renderApprovalCard(approval, route.envelope, route.contentHash, expires, nonce, lang)
+  const card = renderApprovalCard(approval, route.envelope, route.contentHash, expires, nonce, lang, route.spec)
   // The owner's 1:1 chat with the bot, resolved here with the same rule sendTeamsMessage applies (resolveTeamsTarget),
   // and sent to by its conversation id, so the conversation the card is bound to is the one it went to.
   const stateDir = deps.stateDir()
@@ -184,7 +220,7 @@ export async function postApprovalCard(approval: Approval, route: Extract<CardRo
     return false
   }
   try {
-    const r = await deps.send(route.creds, stateDir, target.conversationId, T[lang].fallback(approval.id), { card })
+    const r = await deps.send(route.creds, stateDir, target.conversationId, (route.spec ? T[lang].agentFallback : T[lang].fallback)(approval.id), { card })
     if (!r.messageId) {
       logger.warn({ approvalId: approval.id, status: r.status }, 'approval Teams card sent without an activity id: it cannot be bound, the decision stays on the dashboard')
       return false
@@ -242,10 +278,11 @@ export async function handleTeamsCardAction(authHeader: string | undefined, acti
   const approvalId = data.approvalId
   const row = getApprovalTeamsCard(approvalId)
   const lang: ApprovalLang = row?.lang === 'en' ? 'en' : 'hu'
+  const category = getApproval(approvalId)?.category
   const refuse = (reason: string): CardActionAnswer => {
     logger.warn({ approvalId, reason }, 'approval Teams card action REFUSED: nothing decided')
     try { deps.alert(T[lang].alertRefused(reason, approvalId)) } catch { /* the log line stands */ }
-    return { status: 200, body: { card: renderResultCard('notAccepted', lang, '', approvalId) } }
+    return { status: 200, body: { card: renderResultCard('notAccepted', lang, '', approvalId, category) } }
   }
   const tenant = creds.tenant.toLowerCase()
   const convTenant = typeof a.conversation?.tenantId === 'string' ? a.conversation.tenantId.toLowerCase() : ''
@@ -264,14 +301,14 @@ export async function handleTeamsCardAction(authHeader: string | undefined, acti
   switch (res.outcome) {
     case 'decided':
       logger.info({ approvalId, status }, 'approval decided by the owner on the Teams card')
-      return { status: 200, body: { card: renderResultCard(status, lang, when, approvalId) } }
+      return { status: 200, body: { card: renderResultCard(status, lang, when, approvalId, category) } }
     case 'expired':
-      return { status: 200, body: { card: renderResultCard('expired', lang, when, approvalId) } }
+      return { status: 200, body: { card: renderResultCard('expired', lang, when, approvalId, category) } }
     case 'content_changed':
       logger.warn({ approvalId }, 'approval Teams card action: the request changed after the card; nothing decided')
       try { deps.alert(T[lang].alertChanged(approvalId)) } catch { /* the log line stands */ }
-      return { status: 200, body: { card: renderResultCard('changed', lang, when, approvalId) } }
+      return { status: 200, body: { card: renderResultCard('changed', lang, when, approvalId, category) } }
     default:
-      return { status: 200, body: { card: renderResultCard(res.approval?.status === 'timeout' ? 'expired' : 'already', lang, when, approvalId) } }
+      return { status: 200, body: { card: renderResultCard(res.approval?.status === 'timeout' ? 'expired' : 'already', lang, when, approvalId, category) } }
   }
 }

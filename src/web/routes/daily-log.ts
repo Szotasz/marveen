@@ -1,5 +1,5 @@
 import { appendDailyLog, getDailyLog, getDailyLogDates } from '../../db.js'
-import { MAIN_AGENT_ID } from '../../config.js'
+import { MAIN_AGENT_ID, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
@@ -37,7 +37,9 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/daily-log' && method === 'GET') {
     const agent = url.searchParams.get('agent') || MAIN_AGENT_ID
-    const date = url.searchParams.get('date') || new Date().toISOString().split('T')[0]
+    // Budapest calendar day, not UTC -- matches appendDailyLog's write side (db.ts),
+    // otherwise a no-date query between 00:00-02:00 local time missed today's entries.
+    const date = url.searchParams.get('date') || new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
     json(res, getDailyLog(agent, date))
     return true
   }

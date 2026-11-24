@@ -2,17 +2,21 @@
 // /help away from the Telegram channel plugin so the command hook can answer
 // them. Run for real on a copy of the 0.0.7 plugin excerpt (verbatim blocks,
 // fixtures/telegram-plugin-0.0.7/server.ts.txt) in a scratch plugins cache.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, existsSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { scratchPatcher } from './helpers/scratch-patcher.js'
 import ts from 'typescript'
 import { checkWriteEvidence, findEvidence, readEvidenceLines } from '../web/write-evidence.js'
 import { telegramPluginPatchStatus } from '../web/system-status.js'
 
 const ROOT = join(__dirname, '..', '..')
-const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
+// A copy in an empty scratch install (helpers/scratch-patcher.ts): the checkout's own .env never decides a test.
+const PATCHER = scratchPatcher()
+const SCRIPT = PATCHER.script
+afterAll(() => PATCHER.remove())
 const FIXTURE = join(__dirname, 'fixtures', 'telegram-plugin-0.0.7', 'server.ts.txt')
 
 let cache = ''
@@ -42,6 +46,13 @@ function syntaxErrors(text: string): string[] {
 }
 
 describe('patch-telegram-plugin.py', () => {
+  it('runs from a copy in an empty scratch install, so the checkout\'s own .env never decides a test', () => {
+    expect(SCRIPT.startsWith(ROOT)).toBe(false)
+    expect(existsSync(join(PATCHER.install, '.env'))).toBe(false)
+    expect(existsSync(join(PATCHER.install, 'store'))).toBe(false)
+    expect(readFileSync(SCRIPT, 'utf-8')).toBe(readFileSync(join(ROOT, 'scripts', 'patch-telegram-plugin.py'), 'utf-8'))
+  })
+
   it('1st run patches: /help, /status handlers and the plugin menu gone, /start kept, still parses', () => {
     const r = run()
     expect(r.status).toBe(0)
@@ -61,13 +72,13 @@ describe('patch-telegram-plugin.py', () => {
   it('2nd run is a no-op: returns `already`, byte-identical, silent', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'patched' } }])
     const once = readFileSync(server, 'utf-8')
     const r = run(['--state', state])
     expect(r.status).toBe(0)
     expect(r.stderr).toBe('')
     expect(readFileSync(server, 'utf-8')).toBe(once)
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', silent: 'already', kbd: 'already', invis: 'already', pairtext: 'already' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', silent: 'already', kbd: 'already', invis: 'already', pairtext: 'already', invitetext: 'already' } }])
   })
 
   it('a changed anchor (plugin update): loud line, THAT patch left out, the other still applied, exit 0', () => {
@@ -82,7 +93,7 @@ describe('patch-telegram-plugin.py', () => {
     expect(text).toContain("bot.command('help', async ctx => {")
     expect(text).toContain('elsokor922-fwd')
     expect(syntaxErrors(text)).toEqual([])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'patched' })
   })
 
   // #1530 review: owner write commands need evidence the owner's chat sent
@@ -415,7 +426,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(r.stderr).toMatch(/LOUD: reply send options not found exactly once.*the kbd patch left out, the reply tool has no buttons/)
     expect(readFileSync(server, 'utf-8')).not.toContain(KBD)
     // silent anchors on the same send-options line, so it is left out with kbd
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched', pairtext: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched', pairtext: 'patched', invitetext: 'patched' })
   })
 
   it('each of the three new anchors, when moved, leaves every kbd line out on a fresh file', () => {
@@ -1445,7 +1456,7 @@ describe('invis: invisible characters (invis1024)', () => {
     expect(text).toContain('MARVEEN-PATCH(cmd920-evid)')
     expect(text).toContain('MARVEEN-PATCH(c67f5f34-kbd)')
     expect(syntaxErrors(text)).toEqual([])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'anchor-missing:channel content', pairtext: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'anchor-missing:channel content', pairtext: 'patched', invitetext: 'patched' })
     const once = readFileSync(server, 'utf-8')
     expect(run(['--state', state]).status).toBe(0)
     expect(readFileSync(server, 'utf-8')).toBe(once)
@@ -1454,7 +1465,7 @@ describe('invis: invisible characters (invis1024)', () => {
   it('the --state JSON names the invis patch like the others', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'patched' })
   })
 
   it('system-status measures the invis patch on its own, with this marker', () => {
@@ -1462,10 +1473,10 @@ describe('invis: invisible characters (invis1024)', () => {
     try {
       const d = join(dir, 'cache', 'claude-plugins-official', 'telegram', '0.0.7')
       mkdirSync(d, { recursive: true })
-      writeFileSync(join(d, 'server.ts'), ['elsokor922-d4', 'elsokor922-fwd', 'cmd920-evid', 'quote1101', 'tgsilent', 'c67f5f34-kbd', 'pairtext'].map(m => `// MARVEEN-PATCH(${m}): x`).join('\n'))
+      writeFileSync(join(d, 'server.ts'), ['elsokor922-d4', 'elsokor922-fwd', 'cmd920-evid', 'quote1101', 'tgsilent', 'c67f5f34-kbd', 'pairtext', 'invitetext'].map(m => `// MARVEEN-PATCH(${m}): x`).join('\n'))
       const state = join(dir, 'state.json')
       writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-        { version: '0.0.7', status: 'patched', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', kbd: 'already', invis: 'anchor-missing:channel content', pairtext: 'already' } },
+        { version: '0.0.7', status: 'patched', patches: { d4: 'already', fwd: 'already', evid: 'already', quote: 'already', kbd: 'already', invis: 'anchor-missing:channel content', pairtext: 'already', invitetext: 'already' } },
       ] }))
       expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (láthatatlan karakterek): 0.0.7 (anchor-missing:channel content) · a bejövő szövegben maradnak a láthatatlan karakterek, a modell látja őket')
     } finally { rmSync(dir, { recursive: true, force: true }) }
@@ -1783,7 +1794,197 @@ describe('kbd: answer buttons expire (TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS)', ()
     expect(entry.slice(0, 200)).toMatch(/type: 'int',\s+default: 0,\s+min: 0,\s+max: 8760,/)
     expect(readFileSync(SCRIPT, 'utf-8')).toContain('KBD_MAX_AGE_HOURS_MAX = 8760')
     for (const doc of ['docs/config-reference.md', 'docs/en/config-reference.md']) {
-      expect(readFileSync(join(ROOT, doc), 'utf-8'), doc).toContain('#### `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`')
+      const text = readFileSync(join(ROOT, doc), 'utf-8')
+      expect(text, doc).toContain('#### `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS`')
+      // the table row writes the bounds the way the rest of both files does for an int
+      const row = text.split('\n').find(l => l.startsWith('| `TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS` |')) ?? ''
+      expect(row, doc).toContain('int (min 0, max 8760)')
+      expect(row, doc).not.toMatch(/\d\u2013\d/)
+    }
+  })
+})
+
+// channels.sh runs the patcher with no switch at all, so the install's own settings are the path every real install
+// takes: main() reads them from <install>/store/config-overrides.json, then <install>/.env, where <install> is the
+// folder above scripts/. Run here from a copy of the script in a scratch install, and compared byte for byte with
+// the run that passes the same value as an explicit switch (Geri on #2897: with the setting line in main() replaced
+// by a constant, every other test stayed green).
+describe("the install's own settings reach the patch (no switch, as channels.sh runs it)", () => {
+  let install = ''
+  beforeEach(() => {
+    install = mkdtempSync(join(tmpdir(), 'tg-install-'))
+    mkdirSync(join(install, 'scripts'))
+    mkdirSync(join(install, 'store'))
+    copyFileSync(SCRIPT, join(install, 'scripts', 'patch-telegram-plugin.py'))
+  })
+  afterEach(() => rmSync(install, { recursive: true, force: true }))
+
+  function runInstall(env: string | null, overrides: Record<string, unknown> | null) {
+    if (env !== null) writeFileSync(join(install, '.env'), env)
+    if (overrides !== null) writeFileSync(join(install, 'store', 'config-overrides.json'), JSON.stringify(overrides))
+    copyFileSync(FIXTURE, server)
+    const state = join(install, 'store', 'telegram-plugin-patch.json')
+    const r = spawnSync('python3', [join(install, 'scripts', 'patch-telegram-plugin.py'), '--state', state, cache],
+      { encoding: 'utf-8', timeout: 30_000 })
+    expect(r.status, r.stderr).toBe(0)
+    return { text: readFileSync(server, 'utf-8'), state: JSON.parse(readFileSync(state, 'utf-8')) }
+  }
+  // The explicit-switch run, all three switches given. SCRIPT is the copy in an empty scratch install, so
+  // AGENT_TEXT_LANG (no switch) is unset on both sides too, and no .env decides anything.
+  function withSwitches({ topics = 'off', buttons = 'on', maxAge = '0' } = {}) {
+    copyFileSync(FIXTURE, server)
+    expect(run(['--topics', topics, '--buttons', buttons, '--buttons-max-age', maxAge]).status).toBe(0)
+    return readFileSync(server, 'utf-8')
+  }
+
+  it('nothing set: the registry defaults (topics off, buttons on, no expiry)', () => {
+    const got = runInstall(null, null)
+    expect(got.text).toBe(withSwitches())
+    expect(got.state).toMatchObject({ topics: 'off', buttons: 'on', buttons_max_age_hours: 0 })
+  })
+
+  it('TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS from .env, and config-overrides.json winning over it', () => {
+    const fromEnv = runInstall('TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24\n', null)
+    expect(fromEnv.text).toBe(withSwitches({ maxAge: '24' }))
+    expect(fromEnv.text).toContain('kbdMsg.date > 86400)')
+    expect(fromEnv.state.buttons_max_age_hours).toBe(24)
+    const fromStore = runInstall('TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS=24\n', { TELEGRAM_REPLY_BUTTONS_MAX_AGE_HOURS: '48' })
+    expect(fromStore.text).toBe(withSwitches({ maxAge: '48' }))
+    expect(fromStore.state.buttons_max_age_hours).toBe(48)
+  })
+
+  it('TELEGRAM_REPLY_BUTTONS off from .env, and config-overrides.json turning it back on', () => {
+    const off = runInstall('TELEGRAM_REPLY_BUTTONS=0\n', null)
+    expect(off.text).toBe(withSwitches({ buttons: 'off' }))
+    expect(off.text).not.toBe(withSwitches())
+    expect(off.state.buttons).toBe('off')
+    const on = runInstall('TELEGRAM_REPLY_BUTTONS=0\n', { TELEGRAM_REPLY_BUTTONS: '1' })
+    expect(on.text).toBe(withSwitches())
+    expect(on.state.buttons).toBe('on')
+  })
+
+  it('TELEGRAM_TOPICS_ENABLED on from .env', () => {
+    const got = runInstall('TELEGRAM_TOPICS_ENABLED=1\n', null)
+    expect(got.text).toBe(withSwitches({ topics: 'on' }))
+    expect(got.text).not.toBe(withSwitches())
+    expect(got.state.topics).toBe('on')
+  })
+})
+
+// Geri on #2897 (note 3): the toasts and the "expired" label of the button branch were Hungarian on every install.
+// They follow AGENT_TEXT_LANG now, read the way the pairtext patch reads it (en or hu, anything else hu); Hungarian is
+// the text the branch always had, so an hu install's file does not change.
+describe('kbd: the button toasts follow AGENT_TEXT_LANG', () => {
+  const EN = {
+    notAllowed: 'Not allowed.',
+    answered: 'You already answered this.',
+    dead: 'This button no longer works, type your answer.',
+    failed: 'Could not record it, type your answer.',
+    expired: 'This question has expired, type your answer.',
+    expiredButton: '⏱ Expired, type your answer',
+  }
+  const now = () => Math.floor(Date.now() / 1000)
+  // patch_text on the given text; lang null = the call without a language (the default)
+  function patchText(text: string, lang: string | null, maxAge = 0, buttons = true): string {
+    const code = [
+      'import importlib.util, sys',
+      "spec = importlib.util.spec_from_file_location('ptp', sys.argv[1])",
+      'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      "kw = {} if sys.argv[2] == '-' else {'lang': sys.argv[2]}",
+      "sys.stdout.write(m.patch_text(sys.stdin.read(), False, sys.argv[4] == 'on', max_age_hours=int(sys.argv[3]), **kw)[0])",
+    ].join('\n')
+    const r = spawnSync('python3', ['-c', code, SCRIPT, lang ?? '-', String(maxAge), buttons ? 'on' : 'off'],
+      { input: text, encoding: 'utf-8', timeout: 30_000 })
+    expect(r.status, r.stderr).toBe(0)
+    return r.stdout
+  }
+  const fixture = () => readFileSync(FIXTURE, 'utf-8')
+
+  it('hu, and any value but en, gives the file patched without a language, byte for byte', () => {
+    for (const maxAge of [0, 24]) {
+      const plain = patchText(fixture(), null, maxAge)
+      expect(plain).toContain("await kbdToast('Erre már válaszoltál.')")
+      for (const lang of ['hu', 'de', '']) expect(patchText(fixture(), lang, maxAge), `${lang}/${maxAge}`).toBe(plain)
+    }
+  })
+
+  it('en: no Hungarian left in the kbd lines, with and without a max age, on either side of TELEGRAM_REPLY_BUTTONS; the file parses', () => {
+    for (const maxAge of [0, 24]) {
+      for (const buttons of [true, false]) {
+        const text = patchText(fixture(), 'en', maxAge, buttons)
+        const kbd = kbdLines(text).join('\n')
+        expect(kbd, `${maxAge}/${buttons}`).not.toMatch(/[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/)
+        expect(kbd, `${maxAge}/${buttons}`).toContain(`await kbdToast('${EN.notAllowed}')`)
+        expect(kbd.includes(EN.expiredButton), `${maxAge}/${buttons}`).toBe(maxAge > 0)
+        expect(syntaxErrors(text)).toEqual([])
+      }
+    }
+  })
+
+  it('en, through the real callback branch: every toast and the expired label', async () => {
+    const patched = patchText(fixture(), 'en', 24)
+    const h = callbackHarness(patched)
+    expect((await h.press({ data: 'kbd:0', fromId: 7 })).answers).toEqual([{ text: EN.notAllowed }])
+    expect((await h.press({ data: 'kbd:9' })).answers).toEqual([{ text: EN.dead }])
+    expect((await h.press({ data: 'kbd:x' })).answers).toEqual([{ text: EN.dead }])
+    expect((await h.press({ data: 'kbd:-' })).answers).toEqual([{ text: EN.answered }])
+    const old = await h.press({ data: 'kbd:1', messageId: 903, extra: { date: now() - 25 * 3600 } })
+    expect(old.answers).toEqual([{ text: EN.expired }])
+    expect(old.edits).toEqual([{ reply_markup: { inline_keyboard: [[{ text: EN.expiredButton, callback_data: 'kbd:x' }]] } }])
+    const failed = await h.press({ data: 'kbd:1', messageId: 904, edit: 'fail' })
+    expect(failed.answers).toEqual([{ text: EN.failed }])
+    const ok = await h.press({ data: 'kbd:1', messageId: 905 })
+    expect(ok.answers).toEqual([{ text: '✓ Béta' }])
+    expect((await h.press({ data: 'kbd:1', messageId: 905 })).answers).toEqual([{ text: EN.answered }])
+    expect(h.delivered.map(d => d.text)).toEqual(['Béta'])
+  })
+
+  it('switching the language is the in-place rebuild: hu -> en -> hu gives the fresh file each time', () => {
+    for (const [maxAge, buttons] of [[0, true], [24, true], [24, false]] as const) {
+      const hu = patchText(fixture(), 'hu', maxAge, buttons)
+      const en = patchText(fixture(), 'en', maxAge, buttons)
+      // the kbd lines themselves differ (the pairtext lines differ anyway)
+      expect(kbdLines(en)).not.toEqual(kbdLines(hu))
+      expect(patchText(hu, 'en', maxAge, buttons)).toBe(en)
+      expect(patchText(en, 'hu', maxAge, buttons)).toBe(hu)
+      expect(patchText(en, 'en', maxAge, buttons)).toBe(en)
+    }
+  })
+
+  it('both languages have the same texts, each safe between single quotes in the plugin source', () => {
+    const code = [
+      'import importlib.util, json, sys',
+      "spec = importlib.util.spec_from_file_location('ptp', sys.argv[1])",
+      'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      'print(json.dumps(m.KBD_TEXT))',
+    ].join('\n')
+    const r = spawnSync('python3', ['-c', code, SCRIPT], { encoding: 'utf-8' })
+    const texts = JSON.parse(r.stdout) as Record<string, Record<string, string>>
+    expect(Object.keys(texts).sort()).toEqual(['en', 'hu'])
+    expect(Object.keys(texts.en).sort()).toEqual(Object.keys(texts.hu).sort())
+    expect(texts.en).toEqual({ not_allowed: EN.notAllowed, answered: EN.answered, dead: EN.dead, failed: EN.failed,
+      expired: EN.expired, expired_button: EN.expiredButton })
+    for (const t of [...Object.values(texts.hu), ...Object.values(texts.en)]) {
+      expect(t, t).not.toMatch(/['\\\n]/)
+      expect(t.trim(), t).not.toBe('')
+    }
+  })
+
+  it("the install's AGENT_TEXT_LANG=en reaches the toasts with no switch, as channels.sh runs it", () => {
+    const install = mkdtempSync(join(tmpdir(), 'tg-install-lang-'))
+    try {
+      mkdirSync(join(install, 'scripts'))
+      mkdirSync(join(install, 'store'))
+      copyFileSync(SCRIPT, join(install, 'scripts', 'patch-telegram-plugin.py'))
+      writeFileSync(join(install, '.env'), 'AGENT_TEXT_LANG=en\n')
+      const state = join(install, 'store', 'telegram-plugin-patch.json')
+      const r = spawnSync('python3', [join(install, 'scripts', 'patch-telegram-plugin.py'), '--state', state, cache],
+        { encoding: 'utf-8', timeout: 30_000 })
+      expect(r.status, r.stderr).toBe(0)
+      expect(readFileSync(server, 'utf-8')).toBe(patchText(fixture(), 'en'))
+      expect(JSON.parse(readFileSync(state, 'utf-8')).lang).toBe('en')
+    } finally {
+      rmSync(install, { recursive: true, force: true })
     }
   })
 })

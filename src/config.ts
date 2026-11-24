@@ -709,6 +709,17 @@ export const HEARTBEAT_CALENDAR_ID = (cfg('HEARTBEAT_CALENDAR_ID') ?? '').trim()
 // Empty EMBED_URL = use OLLAMA_URL and EMBED_DIMS 0 = no truncation, so an
 // install that sets nothing keeps exactly the previous behaviour.
 export const EMBED_URL = cfg('EMBED_URL') || OLLAMA_URL
+// Optional Bearer key for an embedding backend that sits behind auth (a gateway or hub in front of
+// an Ollama-compatible /api/embeddings). A SECRET, so it is not a registry key: never shown in or
+// written through the Settings page, and never logged. It is read from .env first, then from the
+// process environment (an installation that configures its services through the environment, such as
+// a unit file or a container, has no .env line to put it on); an EMPTY .env line does not shadow the
+// environment. Empty = no Authorization header, exactly the previous behaviour. The key belongs in
+// EMBED_API_KEY, never in EMBED_URL (that one is an ordinary, non-secret setting), and the content of EMBED_URL
+// does not appear in the embedding error log. The key is sent only to EMBED_URL, which is owner-gated on the
+// settings route, so a fleet-token caller cannot repoint it, and only over https or to a loopback host: with a key
+// set, generateEmbedding refuses a plain-http remote URL before any request (see embedUrlMayCarryKey in db.ts).
+export const EMBED_API_KEY = (env['EMBED_API_KEY'] ?? '').trim() || (process.env['EMBED_API_KEY'] ?? '').trim()
 export const EMBED_MODEL = cfg('EMBED_MODEL') ?? 'nomic-embed-text'
 const rawEmbedDims = parseInt(cfg('EMBED_DIMS') ?? '0', 10)
 export const EMBED_DIMS = Number.isFinite(rawEmbedDims) && rawEmbedDims > 0 ? rawEmbedDims : 0

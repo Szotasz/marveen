@@ -87,8 +87,10 @@ describe('probeClaudeLaunches (rule 3: a real -p, auth-free, isolated, cleaned u
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'leak-oauth'
     process.env.ANTHROPIC_API_KEY = 'leak-key'
     try {
-      const r = await probeClaudeLaunches(mockClaude('healthy', log), 5000)
-      expect(r.ok).toBe(true)
+      // The probe returns on the mock's exit; the timeout is only the net. 5 s was hit twice in full-suite logs, so
+      // the net is wide, and a failure prints the probe result (TIMEOUT or another cause).
+      const r = await probeClaudeLaunches(mockClaude('healthy', log), 30_000)
+      expect(r.ok, JSON.stringify(r)).toBe(true)
       expect(r.exitCode).toBe(1)
       const seen = Object.fromEntries(readFileSync(log, 'utf-8').trim().split('\n').map((l) => l.split('=', 2)))
       expect(seen.OAUTH).toBe('unset')
@@ -290,23 +292,35 @@ describe('rule 5: the global npm dirs are measured before an npm install', () =>
   it('npm prefix -g that ignores SIGTERM is SIGKILLed at the timeout and reads as unmeasured', async () => {
     // The stub marks that it ignores SIGTERM before it sleeps: a SIGTERM that landed before the trap would end it
     // early and pass the test without SIGKILL, so the marker must exist.
-    await withStubNpm('#!/bin/sh\ntrap \'\' TERM\ntouch "$(dirname "$0")/ready"\nexec sleep 10\n', async (dir) => {
-      const t0 = Date.now()
-      const p = await readNpmGlobalPrefix(1000)
-      const elapsed = Date.now() - t0
-      expect(existsSync(join(dir, 'ready'))).toBe(true)
-      expect(p).toBeNull()
-      expect(elapsed).toBeGreaterThanOrEqual(900)
-      expect(elapsed).toBeLessThan(5000)
-    })
-  }, 15_000)
+    // On a loaded host the shell can need longer than the kill timeout just to reach its trap (measured 2026-11-19:
+    // 190-1329 ms from execFile to the marker with 8 runs in parallel; this line failed 26 times in full-suite logs).
+    // Such a run proves nothing either way, so it is repeated in a fresh stub dir with a doubled timeout until the
+    // stub was ready before the kill. The sleep is long so that "killed" and "slept to the end" stay apart.
+    for (let timeoutMs = 1000; ; timeoutMs *= 2) {
+      let ready = false
+      await withStubNpm('#!/bin/sh\ntrap \'\' TERM\ntouch "$(dirname "$0")/ready"\nexec sleep 120\n', async (dir) => {
+        const t0 = Date.now()
+        const p = await readNpmGlobalPrefix(timeoutMs)
+        const elapsed = Date.now() - t0
+        ready = existsSync(join(dir, 'ready'))
+        expect(p).toBeNull()
+        expect(elapsed).toBeGreaterThanOrEqual(timeoutMs - 100)
+        expect(elapsed).toBeLessThan(timeoutMs + 4000)
+      })
+      if (ready) break
+      expect(timeoutMs, 'the stub never reached its trap before the kill').toBeLessThan(16_000)
+    }
+  }, 60_000)
   it('a prefix that is not an absolute path reads as unmeasured: null, so the install runs the old way', async () => {
+    // The call returns when the stub exits; the timeout is only the net. 5 s was hit 3 times in full-suite logs
+    // (the stub did not even get to echo), so the net is wide: it costs nothing while the stub answers.
+    const NET_MS = 30_000
     await withStubNpm('#!/bin/sh\necho /stub/abs/prefix\n', async () => {
-      expect(await readNpmGlobalPrefix(5000)).toBe('/stub/abs/prefix')
+      expect(await readNpmGlobalPrefix(NET_MS)).toBe('/stub/abs/prefix')
     })
     await withStubNpm('#!/bin/sh\necho relative/prefix\n', async () => {
-      expect(await readNpmGlobalPrefix(5000)).toBeNull()
-      expect(await npmGlobalDirsNotWritable({ npmPrefix: () => readNpmGlobalPrefix(5000), access: () => 'not-writable' })).toBeNull()
+      expect(await readNpmGlobalPrefix(NET_MS)).toBeNull()
+      expect(await npmGlobalDirsNotWritable({ npmPrefix: () => readNpmGlobalPrefix(NET_MS), access: () => 'not-writable' })).toBeNull()
     })
   })
 })

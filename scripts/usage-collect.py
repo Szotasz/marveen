@@ -111,6 +111,7 @@ LATEST_PATH = os.path.join(STORE_DIR, "usage-latest.json")
 STATE_PATH = os.path.join(STORE_DIR, "usage-alert-state.json")
 STATUSLINE_PATH = os.path.join(STORE_DIR, ".claude-rate-limits.json")
 ENV_PATH = os.path.join(REPO_ROOT, ".env")
+SETUP_TOKEN_PATH = os.path.join(STORE_DIR, ".claude-oauth-token")
 
 # Display timezone for reset stamps: MARVEEN_TZ when set, else the install zone
 # (SCHEDULER_TZ, config-overrides.json over .env, the same rule as APP_TZ in
@@ -477,6 +478,19 @@ def _read_claude_token():
     return None, None
 
 
+def _read_setup_token(path=None):
+    """The fleet's `claude setup-token` value (store/.claude-oauth-token), or None.
+    The oauth/usage endpoint refuses this token, so only the rate-limit header
+    probe uses it: it keeps the quota gate seeing when the main agent runs on an
+    isolated config dir (no credentials file) and its statusLine has gone quiet."""
+    try:
+        with open(path or SETUP_TOKEN_PATH, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+    except OSError:
+        return None
+    return token or None
+
+
 def _claude_cli_version():
     try:
         out = subprocess.run(
@@ -669,6 +683,8 @@ def _collect_claude_ratelimit_headers():
     """Return (windows_dict, None) or (None, reason). The token travels to the
     entry in its environment only, never in argv; no reason string contains it."""
     token, token_source = _read_claude_token()
+    if not token:
+        token, token_source = _read_setup_token(), "setup_token_file"
     if not token:
         return None, "no oauth token available"
     if not os.path.isfile(RATELIMIT_ENTRY):

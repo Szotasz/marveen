@@ -5,13 +5,14 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { foldName, gateDecision, nameForms, protectedMention } from '../../scripts/self-pace-gate.mjs'
 import {
-  EXTRA_HOOK_MARK, applyExtraHookEntries, extraHooksDigest, isExtraHookGroup, loadExtraHookEntries, parseExtraHookEntries,
+  EXTRA_HOOK_MARK, applyExtraHookEntries, extraHookScriptNames, extraHooksDigest, mainScopeGuard, isExtraHookGroup, loadExtraHookEntries, parseExtraHookEntries,
   type ExtraHookDeps, type ExtraHookEntry,
 } from '../web/extra-hook-entries.js'
 
@@ -66,7 +67,7 @@ describe('rendering', () => {
     const r = one({ ...ok, timeout: 30 })
     expect(r.errors).toEqual([])
     expect(r.entries).toEqual([{
-      event: 'PreToolUse', matcher: 'Bash', timeout: 30,
+      event: 'PreToolUse', matcher: 'Bash', timeout: 30, scope: 'subagents',
       command: `${EXTRA_HOOK_MARK} PYGATE(${join(root, 'local-hooks', 'gate.py')},30)`,
     }])
   })
@@ -79,9 +80,49 @@ describe('rendering', () => {
 
   it('a non-fail-closed entry is a plain interpreter call; matcher is optional', () => {
     const py = one({ event: 'Stop', script: 'local-hooks/gate.py', failClosed: false })
-    expect(py.entries[0]).toEqual({ event: 'Stop', timeout: 10, command: `${EXTRA_HOOK_MARK} python3 "${join(root, 'local-hooks', 'gate.py')}"` })
+    expect(py.entries[0]).toEqual({ event: 'Stop', timeout: 10, scope: 'subagents', command: `${EXTRA_HOOK_MARK} python3 "${join(root, 'local-hooks', 'gate.py')}"` })
     const js = one({ event: 'PostToolUse', script: 'local-hooks/log.mjs', failClosed: false })
     expect(js.entries[0].command).toBe(`${EXTRA_HOOK_MARK} "/opt/node/bin/node" "${join(root, 'local-hooks', 'log.mjs')}"`)
+  })
+})
+
+describe('scope "main": the main agent\'s project-local settings, behind a guard', () => {
+  it('renders behind the marker and the main-session guard, and says its scope', () => {
+    const r = one({ ...ok, scope: 'main' })
+    expect(r.errors).toEqual([])
+    expect(r.entries[0].scope).toBe('main')
+    expect(r.entries[0].command).toBe(`${EXTRA_HOOK_MARK} ${mainScopeGuard(root)} PYGATE(${join(root, 'local-hooks', 'gate.py')},10)`)
+    expect(isExtraHookGroup({ hooks: [{ command: r.entries[0].command }] })).toBe(true)
+    expect(one(ok).entries[0].scope).toBe('subagents')
+  })
+
+  it('the guard runs the hook in the main session only, and quotes a root with a quote in it', () => {
+    const run = (guardRoot: string, projectDir: string) => spawnSync('bash', ['-c', `${mainScopeGuard(guardRoot)} echo RAN`],
+      { env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir }, encoding: 'utf-8' })
+    expect(run('/srv/app', '/srv/app')).toMatchObject({ status: 0, stdout: 'RAN\n' })
+    expect(run('/srv/app', '/srv/app/agents/alice')).toMatchObject({ status: 0, stdout: '' })
+    expect(run("/srv/it's app", "/srv/it's app")).toMatchObject({ status: 0, stdout: 'RAN\n' })
+    expect(run("/srv/it's app", '/srv/it')).toMatchObject({ status: 0, stdout: '' })
+  })
+
+  it('the sub-agent injection takes the subagents entries only, the boot syncs the main ones', () => {
+    const scaffold = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
+    expect(scaffold).toContain("applyExtraHookEntries(existing, entries.filter((e) => e.scope === 'subagents'))")
+    expect(scaffold).toContain(".entries.filter((e) => e.scope === 'main')")
+    expect(readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')).toContain('if (ensureMainScopeExtraHookEntries())')
+  })
+
+  it('applying the main entries keeps the owner\'s own keys and hooks in the local file', () => {
+    const main = one({ ...ok, scope: 'main' }).entries
+    const own = { matcher: 'Bash', hooks: [{ type: 'command', command: 'python3 /owner/own.py' }] }
+    const settings: Record<string, unknown> = { permissions: { deny: ['X'] }, hooks: { PreToolUse: [own] } }
+    expect(applyExtraHookEntries(settings, main)).toBe(true)
+    expect(settings.permissions).toEqual({ deny: ['X'] })
+    const pre = (settings.hooks as Record<string, unknown[]>).PreToolUse
+    expect(pre[0]).toEqual(own)
+    expect((pre[1] as { hooks: Array<{ command: string }> }).hooks[0].command).toContain(mainScopeGuard(root))
+    expect(applyExtraHookEntries(settings, [])).toBe(true) // a removed entry leaves only the owner's group
+    expect((settings.hooks as Record<string, unknown[]>).PreToolUse).toEqual([own])
   })
 })
 
@@ -103,7 +144,7 @@ describe('validation: every rejection names the entry and adds nothing', () => {
     ['failClosed missing', { event: 'PreToolUse', script: 'local-hooks/gate.py' }, /failClosed must be set/],
     ['failClosed outside PreToolUse', { ...ok, event: 'UserPromptSubmit' }, /only allowed on PreToolUse/],
     ['an unknown event', { ...ok, event: 'PreToolUsee' }, /event must be one of/],
-    ['a scope this version does not wire', { ...ok, scope: 'main' }, /scope must be "subagents"/],
+    ['a scope this version does not wire', { ...ok, scope: 'everyone' }, /scope must be "subagents" or "main"/],
     ['a timeout out of range', { ...ok, timeout: 0 }, /timeout must be/],
     ['a fractional timeout', { ...ok, timeout: 1.5 }, /timeout must be/],
     ['an invalid regular expression', { ...ok, matcher: '(' }, /not a valid regular expression/],
@@ -195,7 +236,7 @@ describe('merging into a settings object', () => {
     },
   })
   const e = (event: string, command: string, matcher?: string): ExtraHookEntry =>
-    ({ event, command: `${EXTRA_HOOK_MARK} ${command}`, timeout: 10, ...(matcher ? { matcher } : {}) })
+    ({ event, command: `${EXTRA_HOOK_MARK} ${command}`, timeout: 10, scope: 'subagents', ...(matcher ? { matcher } : {}) })
 
   it('no entries and no earlier extras: unchanged, not even re-serialized differently', () => {
     const s = builtin()
@@ -580,6 +621,35 @@ describe('the gate reads the protected names in every spelling of the name (revi
   ])('stated limit, not covered: %s', (cmd) => {
     const b64 = Buffer.from(join(root, 'store', 'extra-hooks.json')).toString('base64')
     expect(decide(cmd.replace('<B64>', b64)).deny).toBe(false)
+  })
+})
+
+describe('extraHookScriptNames: the names the boot prune counts as ours', () => {
+  it('the file names of the scripts under local-hooks/, valid entry or not; nothing else', () => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    const file = join(root, 'store', 'extra-hooks.json')
+    writeFileSync(file, JSON.stringify({ entries: [
+      ok,
+      { event: 'Bogus', script: 'local-hooks/sub/log.mjs', failClosed: false },
+      { event: 'PreToolUse', script: 'local-hooks/gate.py', failClosed: true }, // a duplicate name
+      { event: 'PreToolUse', script: 'scripts/lib/local.py', failClosed: false },
+      { event: 'PreToolUse', script: 'local-hooks/../x.py', failClosed: false },
+      { event: 'PreToolUse', script: 42, failClosed: false },
+    ] }))
+    expect(extraHookScriptNames(file).sort()).toEqual(['gate.py', 'log.mjs'])
+  })
+
+  it('a missing or unparseable file gives none', () => {
+    expect(extraHookScriptNames(join(root, 'store', 'nope.json'))).toEqual([])
+    mkdirSync(join(root, 'store'), { recursive: true })
+    writeFileSync(join(root, 'store', 'bad.json'), '{ not json')
+    expect(extraHookScriptNames(join(root, 'store', 'bad.json'))).toEqual([])
+  })
+
+  it('the boot backfill passes them and the live root to the prune', () => {
+    const web = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
+    expect(web).toContain('const extraHookNames = extraHookScriptNames(extraHooksConfigPath())')
+    expect(web).toContain('pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName), extraHookNames, PROJECT_ROOT)')
   })
 })
 

@@ -94,6 +94,7 @@ vi.mock('../channel-provider.js', async (importOriginal) => ({
 
 vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: vi.fn(),
+  MCP_JSON_MODE: 0o600,
 }))
 
 vi.mock('../web/scheduled-tasks-io.js', () => ({
@@ -118,6 +119,7 @@ vi.mock('../web/vault-bindings.js', () => ({
 
 vi.mock('../env.js', () => ({
   updateEnvFile: vi.fn(),
+  readEnvFile: () => ({}),
 }))
 
 vi.mock('../logger.js', () => ({

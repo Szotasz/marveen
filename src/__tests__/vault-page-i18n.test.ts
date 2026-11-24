@@ -172,7 +172,7 @@ describe('the add-server form says which field is missing', () => {
       expect(i, step).toBeGreaterThan(at)
       at = i
     }
-    expect(save).toContain('if (missing) { document.getElementById(missing[0]).focus(); showToast(t(missing[1])); return }')
+    expect(save).toContain('if (missing) { document.getElementById(missing[0]).focus(); showToast(t(missing[1]), \'warn\'); return }')
     expect(save).not.toMatch(/\bfetch\(/)
     for (const key of ['name_required', 'host_required', 'user_required']) {
       expect(value(HU, `vault.ssh.form.${key}`)).not.toBeNull()

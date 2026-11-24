@@ -80,7 +80,8 @@ describe('no toast in app.js is a hardcoded string any more', () => {
 
   it('the seven error toasts use the "<common.error>: <message>" pattern', () => {
     for (const [name, src] of Object.entries(ERROR_SITES)) {
-      expect(src, name).toContain("showToast(`${t('common.error')}: ${err.message}`)")
+      // the kind (toast-kinds.test.ts) may follow; the text is what this pins
+      expect(src, name).toMatch(/showToast\(`\$\{t\('common\.error'\)\}: \$\{err\.message\}`(, 'error')?\)/)
       expect(src, name).not.toContain('Hiba')
     }
   })
@@ -177,7 +178,7 @@ describe('the handlers speak the dashboard language', () => {
     ['hu', 'Hiba: Ismeretlen'],
     ['en', 'Error: Unknown'],
   ] as const)('the memory import refused without a server error (%s)', async (lang, want) => {
-    expect(MEM_IMPORT).toContain("showToast(`${t('common.error')}: ${data.error || t('common.unknown')}`)")
+    expect(MEM_IMPORT).toContain("showToast(`${t('common.error')}: ${data.error || t('common.unknown')}`, 'error')")
     const t = makeT(lang)
     // Without a server error the toast is the two keys joined, as the line above builds it.
     expect(`${t('common.error')}: ${t('common.unknown')}`).toBe(want)
@@ -211,13 +212,13 @@ describe('the handlers speak the dashboard language', () => {
 
   it('the terminal keystroke with the input off says so through its key', () => {
     const i = APP.indexOf('if (!terminalInputEnabled) {')
-    expect(APP.slice(i, i + 400)).toContain("showToast(t('terminal.input_off'))")
+    expect(APP.slice(i, i + 400)).toContain("showToast(t('terminal.input_off'), 'warn')")
   })
 
   it('the auth URL copy, the .mcp.json save and the voice install error use their keys', () => {
     expect(APP).toContain("navigator.clipboard.writeText(url).then(() => showToast(t('common.toast.copied')))")
     const mcp = APP.slice(APP.indexOf("document.getElementById('saveMcpJsonBtn')"))
     expect(mcp.slice(0, mcp.indexOf('\n})\n'))).toContain("showToast(t('agents.mcp_json_saved'))")
-    expect(APP).toContain("showToast(t('agents.voice.install_error'))")
+    expect(APP).toContain("showToast(t('agents.voice.install_error'), 'error')")
   })
 })

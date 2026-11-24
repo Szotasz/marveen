@@ -76,6 +76,9 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-claim <card-id> <agent> [--ttl <seconds>]
   kanban-release <card-id> <agent>
   kanban-comment <card-id> <author> <content-file>
+  kanban-archive <card-id>
+  vault-login <agent> <web-login-id>   (logs in, in the agent's own browser; prints the outcome only)
+  vault-logins                         (the web logins: id, origin, username, allowed agents; never a password)
   kanban-assign <card-id> <assignee> [--actor <name>]
   agents-list
   agent-restart <agent> [--fresh]
@@ -560,6 +563,22 @@ def build_request(verb, args):
         if not content.strip():
             fail_usage('kanban-comment: the content is empty')
         return 'POST', f'/api/kanban/{card}/comments', {'author': author, 'content': content}, headers, {}
+    if verb == 'kanban-archive':
+        # KANBANARCHIVEVERB1122: the audit's archive step (POST /api/kanban/<id>/archive, empty body).
+        # Without a verb the level-3 archive could only go through a raw token curl, so it did not run.
+        (card,) = positional(args, 1, verb)
+        check(card, CARD_ID_RE, 'card id')
+        return 'POST', f'/api/kanban/{card}/archive', {}, headers, {}
+    if verb == 'vault-login':
+        # VAULTLOGIN1112: the dashboard types the vault password into the agent's own browser; only the entry id goes
+        # out and only the outcome comes back (success, 2fa, wrong, unknown, origin-mismatch, no-form, ...).
+        agent, entry = positional(args, 2, verb)
+        check(agent, NAME_RE, 'agent name')
+        check(entry, NAME_RE, 'web login id')
+        return 'POST', f'/api/vault/web-logins/{entry}/login', {}, {'X-Agent-Id': agent}, {}
+    if verb == 'vault-logins':
+        positional(args, 0, verb)
+        return 'GET', '/api/vault/web-logins', None, headers, {}
     fail_usage(f'unknown verb: {verb!r}')
 
 

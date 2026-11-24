@@ -12,11 +12,12 @@
 // The channel adapters that ask the owner and decide (Teams, Telegram, Slack, Gromzo) come in PR-3.
 import { createHash, randomUUID } from 'node:crypto'
 import { getSecret } from './vault.js'
-import { setupAgentChannel } from './routes/agents.js'
+import { applyAgentTeam, issueAgentChannelInvite, setupAgentChannel } from './routes/agents.js'
+import { findConnectorConfig, writeConnectorIntoAgent } from './routes/connectors.js'
 import { getDb, createApproval, consumeApproval, registerApprovalConsumer, createAgentMessage, type Approval } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { logger } from '../logger.js'
-import { canonicalAgentSpec, canonicalJson, specHash, renderAgentSpec, recheckStoredSpec, type AgentSpecV1, type VaultReadable } from './agent-create-spec.js'
+import { canonicalAgentSpec, canonicalJson, specHash, renderAgentSpec, recheckStoredSpec, type AgentSpec, type SecretRef, type VaultReadable } from './agent-create-spec.js'
 import { createAgentFromSpec } from './agent-create.js'
 
 export const AGENT_CREATE_CATEGORY = 'agent_create'
@@ -61,7 +62,8 @@ export async function fileAgentSpecRequest(body: unknown, requestedBy: string, d
   })()
   if (!filed) return { status: 429, body: { error: 'Too many open agent_create requests; wait for the owner to decide the open ones.' } }
   logger.info({ approvalId: id, requestedBy, name: r.spec.name }, 'agent_create request filed; waiting for the owner')
-  return { status: 201, body: { ok: true, approvalId: id, contentHash: hash, text } }
+  // Dani #2940 B1: the owner's text is not returned to the requester (it is the owner's view; the approval holds it)
+  return { status: 201, body: { ok: true, approvalId: id, contentHash: hash } }
 }
 
 interface SpecRow { approval_id: string; spec_json: string; content_hash: string; consumed_at: number | null; outcome: string | null }
@@ -75,7 +77,7 @@ function alertMain(text: string): void {
   try { createAgentMessage('system', MAIN_AGENT_ID, text) } catch (err) { logger.error({ err }, 'agent_create alert to the main agent failed') }
 }
 
-export type ConsumeStep = { go: true; spec: AgentSpecV1 } | { go: false; reason: string }
+export type ConsumeStep = { go: true; spec: AgentSpec } | { go: false; reason: string }
 
 /** The transaction: consume, stamp, re-check. Exported for the tests; the consumer and the sweep call it. */
 export function consumeAgentCreateStep(approvalId: string): ConsumeStep {
@@ -96,8 +98,21 @@ export function consumeAgentCreateStep(approvalId: string): ConsumeStep {
   })()
 }
 
-/** After the consume: the create itself, through the dashboard's own code. Resolves when the outcome is written. */
-export async function createFromConsumed(approvalId: string, spec: AgentSpecV1): Promise<void> {
+const sha256hex = (v: string): string => createHash('sha256').update(v, 'utf8').digest('hex')
+/** A secret read from the vault at this moment, or null when it is not the value the owner approved (its sha256 is in
+ *  the hash): a value swapped since the consume is refused. */
+const approvedSecret = (r: SecretRef): string | null => {
+  const value = getSecret(r.vault_ref)?.trim() ?? null
+  return value !== null && sha256hex(value) === r.value_sha256 ? value : null
+}
+
+/** After the consume: the create itself, through the dashboard's own code, then (spec version 2) the team block, the
+ *  MCP servers, the channel and the invite, each through the code its owner-session route uses. The team and the
+ *  servers come before the channel (the channel setup restarts the agent). A step that cannot run as approved stops
+ *  there: the agent exists, the outcome names the step, and the main agent is alerted. An invite's link is never in
+ *  an alert or a log line: the owner sees it on the dashboard (Samu 81360, F). Resolves when the outcome is written. */
+export async function createFromConsumed(approvalId: string, spec: AgentSpec): Promise<void> {
+  const partial = (outcome: string, alert: string) => { setOutcome(approvalId, outcome, spec.name); alertMain(alert) }
   try {
     const r = await createAgentFromSpec({ name: spec.display_name, description: spec.description, model: spec.model, profile: spec.profile, customProvider: spec.custom_provider })
     if (r.status !== 200 || r.body.ok !== true) {
@@ -105,20 +120,51 @@ export async function createFromConsumed(approvalId: string, spec: AgentSpecV1):
       alertMain(`Az ügynök-létrehozás jóváhagyott kérése (${approvalId}, ${spec.name}) NEM hozta létre az ügynököt: ${r.status} ${String(r.body.error ?? '')}. Semmi nem jött létre.`)
       return
     }
-    if (spec.channel) {
-      // The bot token is read from the vault at this moment and must still be the value the owner approved (its sha256
-      // is in the hash); a value swapped since the consume is refused, and the agent is left without a channel.
-      const value = getSecret(spec.channel.bot_token.vault_ref)?.trim() ?? null
-      if (value === null || createHash('sha256').update(value, 'utf8').digest('hex') !== spec.channel.bot_token.value_sha256) {
-        setOutcome(approvalId, 'created_channel_refused:vault_value_changed', spec.name)
-        alertMain(`Az ügynök (${spec.name}) létrejött, de a csatornáját NEM állítottam be: a bot-token értéke a vaultban (${spec.channel.bot_token.vault_ref}) megváltozott a jóváhagyás óta (${approvalId}).`)
+    if (spec.spec_version === 2 && spec.team) {
+      const t = spec.team
+      const tr = applyAgentTeam(spec.name, { role: t.role, reportsTo: t.reports_to, delegatesTo: t.delegates_to, autoDelegation: t.auto_delegation, trustFrom: t.trust_from, ...(t.tagline !== null ? { tagline: t.tagline } : {}) })
+      if (tr.cycleRejected || tr.warnings.droppedSelf.length || tr.warnings.droppedUnknown.length) {
+        partial('created_team_changed', `Az ügynök (${spec.name}) létrejött, de a csapat-beállítása nem a jóváhagyott lett (egy név kiesett vagy ciklus lett belőle a jóváhagyás óta), ezért a többit (MCP, csatorna, meghívó) NEM állítottam be (${approvalId}). Nézd meg a dashboardon.`)
         return
       }
-      const ch = await setupAgentChannel(spec.name, spec.channel.provider, { botToken: value })
-      if (ch.status !== 200 || ch.body.ok !== true) {
-        setOutcome(approvalId, `created_channel_failed:${ch.status}:${String(ch.body.error ?? '')}`, spec.name)
-        alertMain(`Az ügynök (${spec.name}) létrejött, de a csatornája (${spec.channel.provider}) nem állt be: ${ch.status} ${String(ch.body.error ?? '')} (${approvalId}).`)
+    }
+    if (spec.spec_version === 2) {
+      for (const m of spec.mcp) {
+        const cfg = findConnectorConfig(m.name)
+        if (!cfg || sha256hex(canonicalJson(cfg)) !== m.config_sha256) {
+          partial(`created_mcp_refused:${m.name}`, `Az ügynök (${spec.name}) létrejött, de a(z) ${m.name} MCP-szervert NEM rendeltem hozzá: a konfigja megváltozott a jóváhagyás óta (${approvalId}). A csatornát és a meghívót sem állítottam be.`)
+          return
+        }
+        writeConnectorIntoAgent(spec.name, m.name, cfg)
+      }
+    }
+    if (spec.channel) {
+      const botToken = approvedSecret(spec.channel.bot_token)
+      const appRef = spec.spec_version === 2 ? spec.channel.app_token : null
+      const appToken = appRef ? approvedSecret(appRef) : null
+      if (botToken === null || (appRef && appToken === null)) {
+        const ref = botToken === null ? spec.channel.bot_token.vault_ref : appRef!.vault_ref
+        partial('created_channel_refused:vault_value_changed', `Az ügynök (${spec.name}) létrejött, de a csatornáját NEM állítottam be: a token értéke a vaultban (${ref}) megváltozott a jóváhagyás óta (${approvalId}).`)
         return
+      }
+      const input: Record<string, unknown> = { botToken }
+      if (spec.spec_version === 2) {
+        if (appToken !== null) input.appToken = appToken
+        if (spec.channel.channel_id) input.channelId = spec.channel.channel_id
+        if (spec.channel.allow_from.length) input.allowFrom = spec.channel.allow_from
+      }
+      const ch = await setupAgentChannel(spec.name, spec.channel.provider, input)
+      if (ch.status !== 200 || ch.body.ok !== true) {
+        partial(`created_channel_failed:${ch.status}:${String(ch.body.error ?? '')}`, `Az ügynök (${spec.name}) létrejött, de a csatornája (${spec.channel.provider}) nem állt be: ${ch.status} ${String(ch.body.error ?? '')} (${approvalId}).`)
+        return
+      }
+      if (spec.spec_version === 2 && spec.invite) {
+        const inv = await issueAgentChannelInvite(spec.name, spec.channel.provider)
+        if (inv.status !== 200) {
+          partial(`created_invite_failed:${inv.status}`, `Az ügynök (${spec.name}) létrejött a csatornájával, de a meghívót nem tudtam kiállítani (${inv.status}, ${approvalId}). A dashboardon kiállítható.`)
+          return
+        }
+        logger.info({ approvalId, name: spec.name, provider: spec.channel.provider }, 'agent_create: the approved invite was issued (its link is on the dashboard)')
       }
     }
     setOutcome(approvalId, 'created', spec.name)

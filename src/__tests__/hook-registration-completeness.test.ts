@@ -132,8 +132,10 @@ function registrationCorpus(): string {
 // every agent. Keep every reason concrete and sourced (docstring, docs, PR):
 // a "misc" entry here would re-open exactly the blind spot this split closes.
 const CHECKOUT_ONLY: Record<string, string> = {
-  'email-approval-gate.py':
-    'level-aware email gate for the MAIN agent (EMAILKAPU901 PR2, #1149): its docstring scopes it to sessions rooted at PROJECT_ROOT, and sub-agents keep their unconditional hard-deny (email-send-gate.mjs), behind which this gate would be a no-op',
+  // email-approval-gate.py REMOVED (f2ccb0bb): the owner-approved per-agent send
+  // exception now binds this gate into a sub-agent's own settings (the scaffold
+  // seeds it when a grant is enabled), so it is on a seeding surface and this
+  // exemption is stale by the guard's own rule.
   'inbox-drain.py':
     'main-agent inbox PULL (#506): sub-agents are fed by the message router\'s tmux-push path, and draining them here too would double-deliver (docstring: "Main-agent ONLY")',
   'ledger-capture.py':

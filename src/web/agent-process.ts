@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync, openSync, fstatSync, readSync, closeSync, fchmodSync, constants as fsConstants } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
+import { brokerExecFile, brokerExecFileSync, isReadOnlyTmuxChain, spawnBrokerActive } from './spawn-broker.js'
 import { randomBytes } from 'node:crypto'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
@@ -48,6 +49,7 @@ import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, resolveOauthTokenFileSetting } from './agent-oauth-token-file.js'
+import { routerAvailable, routerAuthPresent, subAgentClaudeAuthMissing, HOSTINGER_ROUTER_PROVIDER_ID, HOSTINGER_ROUTER_DEFAULT_MODEL } from './hostinger-router.js'
 import { inheritedAuthUnset } from './inherited-auth-unset.js'
 import { copyProjectsOnce, currentAuthKeyMode, hostApiKey, isolatedDirReady, stampAllowed } from './auth-key-mode.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -60,7 +62,7 @@ import {
 import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
-import { atomicWriteFileSync } from './atomic-write.js'
+import { atomicWriteFileSync, writeMcpJsonFile, tightenMcpJsonMode } from './atomic-write.js'
 import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from './code-mode-caveats.js'
 import { paneTyped } from './pane-text.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
@@ -110,7 +112,7 @@ import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { agentVendorHostsEnv } from './agent-egress-env.js'
 import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetBaseRulesSection, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSkillSectionCurrent, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureMemoryFactChangeSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureApiHelperSection, ensureBackgroundCheckpointSection, ensurePaneAtEscapeSection } from './agent-scaffold.js'
-import { packageStartRefusal, prepareFallbackClaudeMd } from './agent-package/install.js'
+import { packageStartRefusal, reportPackageLayersAtStart, prepareFallbackClaudeMd } from './agent-package/install.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -126,6 +128,13 @@ import { notifyChannel, alertIsRedirected } from '../notify.js'
 const tmuxBin = makeLazyBinResolver('tmux')
 const claudeBin = makeLazyBinResolver('claude')
 
+/** AGENT_DISALLOWED_TOOLS as a launch flag (leading space), or '' when none is set. */
+export function disallowedToolsFlag(): string {
+  let tools: string[] = []
+  try { tools = disallowedToolList(String(getEffectiveSettingValue('AGENT_DISALLOWED_TOOLS') ?? '')) } catch { return '' }
+  return tools.length > 0 ? ` --disallowedTools ${shSingleQuote(tools.join(','))}` : ''
+}
+
 // Shared async pacing helper. Replaces the blocking synchronous `/bin/sleep`
 // (execFileSync) pauses in the tmux-driving injection hot-path so a pacing wait
 // no longer parks the libuv event loop (the dashboard-accepts-TCP-but-never-
@@ -139,6 +148,7 @@ import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget, sessionOfTmuxTarget } from '../tmux-target.js'
 import { expandAndValidateConfigDir } from '../config-dir-path.js'
 import { isOpenRouterOneMillionModel } from '../context-guard.js'
+import { disallowedToolList } from '../config-registry.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -338,6 +348,49 @@ export function hasFleetOauthToken(): boolean {
   }
 }
 
+// HOSTINGERSUBAGENTAUTH1122 (Geri #3045 B1): a key-only install (no fleet token, a non-empty ANTHROPIC_API_KEY in
+// .env). The launcher runs a shared-mode Claude sub-agent on that host key, so the agent does have auth.
+function hostKeyOnlyInstall(): boolean {
+  const env = join(PROJECT_ROOT, '.env')
+  return currentAuthKeyMode(env, FLEET_OAUTH_TOKEN_PATH) === 'keyonly' && hostApiKey(env).trim() !== ''
+}
+
+// HOSTINGERSUBAGENTAUTH1122: the shared ~/.claude holds a Claude login of its own (explicitConfigDirLacksOwnLogin's
+// rules: answers true on macOS, where the login is in the Keychain and a file check proves nothing). Without a
+// CLAUDE_CONFIG_DIR, Claude Code keeps its user state in <home>/.claude.json, not in ~/.claude/.claude.json, so a
+// Console login's primaryApiKey is read from there too (Dani #3045 F1).
+export function sharedClaudeLoginPresent(home: string = homedir(), platform: NodeJS.Platform = process.platform): boolean {
+  if (!explicitConfigDirLacksOwnLogin(join(home, '.claude'), platform)) return true
+  try {
+    const state: unknown = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))
+    const key = state && typeof state === 'object' ? (state as Record<string, unknown>).primaryApiKey : undefined
+    return typeof key === 'string' && key.trim() !== ''
+  } catch { return false }
+}
+
+/**
+ * HOSTINGERSUBAGENTAUTH1122: what the create form needs to know before a new sub-agent is made. On a router install
+ * with no Claude login, a new Claude agent could not sign in: the form warns, and when the main agent already runs on
+ * the router it preselects the router (the user can still change it). Elsewhere both are false and nothing changes.
+ */
+export function readSubAgentAuthAdvice(): { claudeAuthMissing: boolean; routerSuggested: boolean; routerProviderId: string; routerModel: string } {
+  const claudeAuthMissing = subAgentClaudeAuthMissing({
+    routerInstall: routerAvailable(PROJECT_ROOT),
+    isMainAgent: false,
+    needsClaudeLogin: true,
+    tokenExported: hasFleetOauthToken(),
+    hostKeyLaunch: hostKeyOnlyInstall(),
+    configuredConfigDir: false,
+    sharedLoginPresent: sharedClaudeLoginPresent(),
+  })
+  return {
+    claudeAuthMissing,
+    routerSuggested: claudeAuthMissing && routerAuthPresent(MAIN_AGENT_ID),
+    routerProviderId: HOSTINGER_ROUTER_PROVIDER_ID,
+    routerModel: HOSTINGER_ROUTER_DEFAULT_MODEL,
+  }
+}
+
 // H1 silent-degradation hardening (2026-06-30, refined 2026-07-10).
 //
 // When the fleet OAuth token is absent, channel sub-agents skip isolation and
@@ -534,6 +587,74 @@ function maybeAlertSharedConfigCollision(name: string): void {
 // Consequence for a fresh agent: no `projects` entry is provisioned, and Claude Code
 // creates its own inside the isolated config dir. That is the intended end state.
 const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json', 'projects'])
+
+// The isolated dir must carry no Anthropic credential, but on Linux Claude Code
+// also keeps remote MCP servers' OAuth tokens in that same .credentials.json.
+// Only these keys survive a spawn (MCPOAUTHWIPE1119).
+const ISOLATED_CREDENTIALS_KEEP_KEYS = ['mcpOAuth', 'mcpOAuthClientConfig'] as const
+const ISOLATED_CREDENTIALS_MAX_BYTES = 1024 * 1024
+
+// Drop everything but the MCP OAuth keys from an isolated .credentials.json.
+// A symlink is unlinked, never followed (its target may be the shared
+// ~/.claude/.credentials.json). Anything unreadable, or holding no MCP key, is
+// removed as before. A failed rewrite removes the file too: a credential that
+// should have been dropped must never survive.
+function scrubIsolatedCredentialsFile(path: string, name: string): void {
+  // rmSync removes a symlink itself, never its target.
+  const remove = (): void => { try { rmSync(path, { force: true }) } catch { /* absent */ } }
+  // Opened ONCE without following a link, every check made on that descriptor,
+  // so the file cannot be swapped for a link between the check and the read.
+  let fd: number
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    remove() // ELOOP (a symlink) or unopenable
+    return
+  }
+  let raw: string | null = null
+  try {
+    const st = fstatSync(fd)
+    // A clean file is now kept across spawns (before, every spawn deleted it), and it holds refresh tokens:
+    // narrow a wider mode here, on the descriptor, which cannot follow a link swapped in at the path.
+    if (st.isFile() && (st.mode & 0o077)) fchmodSync(fd, 0o600)
+    if (st.isFile() && st.size <= ISOLATED_CREDENTIALS_MAX_BYTES) {
+      const buf = Buffer.alloc(ISOLATED_CREDENTIALS_MAX_BYTES + 1)
+      let n = 0
+      for (;;) {
+        const got = readSync(fd, buf, n, buf.length - n, null)
+        if (got === 0) break
+        n += got
+        if (n > ISOLATED_CREDENTIALS_MAX_BYTES) break
+      }
+      if (n <= ISOLATED_CREDENTIALS_MAX_BYTES) raw = buf.subarray(0, n).toString('utf-8')
+    }
+  } catch { raw = null } finally { closeSync(fd) }
+  if (raw === null) { remove(); return }
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) } catch { remove(); return }
+  if (!isPlainObject(parsed)) { remove(); return }
+  const kept: Record<string, unknown> = {}
+  for (const key of ISOLATED_CREDENTIALS_KEEP_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(parsed, key) && isPlainObject(parsed[key])) kept[key] = parsed[key]
+  }
+  const keptKeys = Object.keys(kept)
+  if (keptKeys.length === 0) { remove(); return }
+  if (Object.keys(parsed).length === keptKeys.length) return // already clean: no rewrite, mtime kept
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`
+  try {
+    // Created 0600 (the umask can only narrow it); no chmod after the rename,
+    // since chmod would follow a link swapped in at `path`.
+    writeFileSync(tmp, JSON.stringify(kept), { mode: 0o600, flag: 'wx' })
+    renameSync(tmp, path)
+  } catch {
+    try { unlinkSync(tmp) } catch { /* never created */ }
+    remove()
+    logger.warn({ name }, 'isolated-config: could not rewrite .credentials.json, removed it')
+    return
+  }
+  logger.info({ name, kept: keptKeys }, 'isolated-config: dropped the Anthropic credential from .credentials.json, kept MCP OAuth tokens')
+}
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
@@ -1220,19 +1341,31 @@ function provisionIsolatedConfigDir(
     // an otherwise correctly authenticated agent lands on the login picker
     // (measured on korall, 2026-08-19). It needs a REAL file of its own here.
     const perUserAgent = readAgentRunAsUser(name) != null
-    for (const entry of readdirSync(realClaude)) {
-      if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) {
-        // Defensively drop a real .credentials.json that an older build may have
-        // symlinked/copied here, so the env-var token is the only auth source.
-        // An own_team agent is the exception: its .credentials.json IS its own
-        // /login credential, written here by `claude auth login`, and deleting it
-        // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
-        const stale = join(cfg, entry)
-        if (entry === '.credentials.json' && readAgentAuthMode(name) !== 'own_team') {
-          try { rmSync(stale, { force: true }) } catch { /* absent */ }
-        }
-        continue
+    // Defensively drop the Anthropic credential from a .credentials.json that
+    // an older build may have symlinked/copied here, so the env-var token is
+    // the only auth source. Claude Code also keeps remote MCP servers' OAuth
+    // tokens (mcpOAuth) in this file, so only those keys survive: deleting
+    // the whole file logged an agent out of its OAuth MCP servers on every
+    // spawn (MCPOAUTHWIPE1119).
+    // An own_team agent is the exception: its .credentials.json IS its own
+    // /login credential, written here by `claude auth login`, and deleting it
+    // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
+    // This runs whether or not the shared dir holds a .credentials.json: the
+    // Linux credentials-guard renames that file, and a macOS host never has one
+    // (ISOCREDSCRUB1119).
+    if (readAgentAuthMode(name) !== 'own_team') {
+      const stale = join(cfg, '.credentials.json')
+      // A per-user agent runs as another OS user: a rewrite by the router
+      // would hand the file to the router's user at 0600 and lock the agent
+      // out of it (see writeJsonAtomic), so it keeps the whole-file removal.
+      if (perUserAgent) {
+        try { rmSync(stale, { force: true }) } catch { /* absent */ }
+      } else {
+        scrubIsolatedCredentialsFile(stale, name)
       }
+    }
+    for (const entry of readdirSync(realClaude)) {
+      if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) continue
       const link = join(cfg, entry)
       let needsLink = true
       try {
@@ -2085,7 +2218,11 @@ function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: {
   // makes tmux emit `can't find session: agent-X` / `no server running`; without
   // this those leaked as ~450 bare (non-pino) lines into store/dashboard.log.
   // Callers that care read err.stderr via logger.warn({ err }).
+  if (!spawnBrokerActive()) {
   execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] })
+  } else {
+    brokerExecFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] }, { readOnly: isReadOnlyTmuxChain(tmuxArgs) })
+  }
 }
 
 let tmuxBatch: Map<string, { out?: string; err?: unknown }> | null = null
@@ -2141,10 +2278,17 @@ export function prefetchPaneCaptures(sessions: string[]): void {
     let positionalFailure = false
     let error: unknown
     try {
+      if (!spawnBrokerActive()) {
       out = execFileSync(inv.file, inv.args, {
         timeout: 3000 + 200 * eligible.length,
         encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
       })
+      } else {
+        out = brokerExecFileSync(inv.file, inv.args, {
+          timeout: 3000 + 200 * eligible.length,
+          encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+        }, { readOnly: isReadOnlyTmuxChain(args) })
+      }
     } catch (err) {
       failed = true
       error = err
@@ -2202,9 +2346,15 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
       return hit.out as string
     }
     try {
+      if (!spawnBrokerActive()) {
       const out = execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
       tmuxBatch.set(key, { out })
       return out
+      } else {
+        const out = brokerExecFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }, { readOnly: isReadOnlyTmuxChain(tmuxArgs) })
+        tmuxBatch.set(key, { out })
+        return out
+      }
     } catch (err) {
       tmuxBatch.set(key, { err })
       if (host == null && runAsUser == null) batchListSessionsFailed = true
@@ -2213,7 +2363,11 @@ function captureTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opt
   }
   // stdout piped (we return it); stderr piped too so tmux's `can't find session`
   // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
+  if (!spawnBrokerActive()) {
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } else {
+    return brokerExecFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }, { readOnly: isReadOnlyTmuxChain(tmuxArgs) })
+  }
 }
 
 // Extra time after the execFile timeout before the fallback timer gives up on the child.
@@ -2225,6 +2379,7 @@ function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[]
   const { host } = resolveTarget(target, tmuxArgs)
   const inv = tmuxInvocationFor(tmuxArgs, target)
   const timeout = opts.timeout ?? (host ? 8000 : 3000)
+  if (!spawnBrokerActive()) {
   return new Promise<string>((resolve, reject) => {
     let settled = false
     let fallback: ReturnType<typeof setTimeout> | undefined
@@ -2249,6 +2404,14 @@ function captureTmuxAsync(target: string | null | TmuxTarget, tmuxArgs: string[]
     // The sync twin runs with stdin 'ignore'; close ours so an ssh-routed call never waits on it.
     child?.stdin?.end()
   })
+  } else {
+    return brokerExecFile(inv.file, inv.args, { timeout, killSignal: 'SIGKILL', encoding: 'utf-8' }, { readOnly: isReadOnlyTmuxChain(tmuxArgs) })
+      .then(({ stdout }) => stdout)
+      .catch(err => {
+        if (err.timedOut) err.code = 'ETIMEDOUT'
+        throw Object.assign(err, { stdout: err.stdout ?? '', stderr: err.stderr ?? '' })
+      })
+  }
 }
 
 // Tri-state run state. For a remote agent a failed list-sessions query is
@@ -2301,10 +2464,22 @@ export function sessionExistsOnHost(host: string | null, session: string): boole
 export function getAgentRunningSince(name: string, session: string = agentSessionName(name)): number | null {
   try {
     const target = agentTmuxTarget(name)
-    const host = target.host
-    const out = captureTmux(target, ['display-message', '-p', '-t', exactTmuxTarget(session), '#{session_created}']).trim()
-    const ts = parseInt(out, 10)
-    return Number.isFinite(ts) ? ts : null
+    // Never `display-message -t <session> '#{session_created}'` here. On tmux
+    // 3.2a (the Ubuntu 22.04 package) a time-key format (session_created,
+    // session_activity, window_activity, ...) expanded for a -t target that does
+    // not exist dereferences a NULL session and the tmux SERVER segfaults --
+    // every agent session on the host dies with it (fixed in tmux 3.3). The
+    // session can vanish between the caller's running-check and this read (the
+    // roster's run state is cached), and that race took a whole fleet down
+    // twice. `list-sessions` takes no target, so read it and match the name here.
+    const out = captureTmux(target, ['list-sessions', '-F', '#{session_created} #{session_name}'])
+    for (const line of out.split('\n')) {
+      const sp = line.indexOf(' ')
+      if (sp <= 0 || line.slice(sp + 1) !== session) continue
+      const ts = parseInt(line.slice(0, sp), 10)
+      return Number.isFinite(ts) ? ts : null
+    }
+    return null
   } catch {
     return null
   }
@@ -2542,6 +2717,9 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     logger.warn({ name, refusal: packageRefusal }, 'agent start refused by the package guard')
     return { ok: false, error: packageRefusal }
   }
+  // PRI3HARDEN1118 point 2 (Samu 81355): PACKAGE.md + LOCAL.md scanned in report mode on every start, as the EPERM
+  // fallback does; nothing is blocked here.
+  reportPackageLayersAtStart(name, dir)
 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
@@ -2883,12 +3061,20 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         // loads as project-scope MCP config. An empty .mcp.json already present would
         // override .claude/mcp.json, so write to the same file Claude Code reads.
         const mcpJsonPath = join(agentDir(name), '.mcp.json')
-        const mcpConfig = {
-          mcpServers: {
-            'plugin:telegram:telegram': buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir),
-          },
-        }
-        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        // JSONCLOBBER926B (same risk as the worksource block below): a rewrite from
+        // scratch here would destroy any OTHER MCP server the agent has configured in
+        // this file (e.g. gmail/google-calendar for a secretary-role agent) on every
+        // single respawn -- not a hypothetical, measured live on garagizike 2026-11-21:
+        // a restart wiped 4 Google MCP servers down to just the telegram entry. Read
+        // the existing file first and keep every entry that is not this one; an
+        // existing but corrupt .mcp.json is refused (readJsonObjectForWrite throws),
+        // same as the worksource block, so the agent starts without the tee wiring
+        // rather than silently destroying an unreadable file.
+        let mcpConfig: { mcpServers: Record<string, unknown> } = { mcpServers: {} }
+        const existingMcpConfig = readJsonObjectForWrite(mcpJsonPath)
+        if (isPlainObject(existingMcpConfig.mcpServers)) mcpConfig = { mcpServers: existingMcpConfig.mcpServers }
+        mcpConfig.mcpServers['plugin:telegram:telegram'] = buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir)
+        writeMcpJsonFile(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
         useMcpJsonForChannel = true
         logger.info({ name, pluginVersion, pluginDir }, 'Wrote per-agent mcp.json for telegram plugin')
       } catch (err) {
@@ -2960,7 +3146,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
           // string entirely, so there is nothing to quote and nothing to escape.
           env: { WORKSOURCE_AGENT_ID: name, WORKSOURCE_DIR: worksourceRootFor(name) },
         }
-        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        writeMcpJsonFile(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
         // The dev-channels flag takes a TAGGED LIST (`server:<name>` for a manually
         // configured MCP server, `plugin:<name>@<marketplace>` for a plugin one).
         // Measured by the reviewer on the PR head: without the value the CLI exits
@@ -3000,10 +3186,14 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
         const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
         if (existing?.mcpServers?.worksource) {
           delete existing.mcpServers.worksource
-          writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2))
+          writeMcpJsonFile(mcpJsonPath, JSON.stringify(existing, null, 2))
           logger.info({ name }, 'worksource channel unwired for agent (opted out)')
         }
       } catch { /* absent or unreadable -> nothing to unwire */ }
+    }
+    // MCPJSON0600-1121: a .mcp.json from before this fix (0644) is narrowed to 0600 at the next spawn.
+    if (name !== MAIN_AGENT_ID && tightenMcpJsonMode(join(agentDir(name), '.mcp.json'))) {
+      logger.info({ name }, '.mcp.json narrowed to 0600')
     }
 
     if (name !== MAIN_AGENT_ID) {
@@ -3248,6 +3438,22 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     if (planToken && !oauthTokenEnv.includes(`--strict --status ${shSingleQuote(planToken.statusPath)}`)) {
       return refusePlanTokenLaunch(name, planToken.secretId, readAgentClaudePlan(name) ?? undefined, 'plan-token-not-in-launch-env')
     }
+    // HOSTINGERSUBAGENTAUTH1122: a Claude agent with no way to sign in on a router install is refused, loudly, instead
+    // of starting on the login screen of a shared ~/.claude that holds no login.
+    if (subAgentClaudeAuthMissing({
+      routerInstall: routerAvailable(PROJECT_ROOT),
+      isMainAgent: name === MAIN_AGENT_ID,
+      needsClaudeLogin: isClaude && authMode !== 'api' && authMode !== 'own_team',
+      tokenExported: oauthTokenEnv !== '',
+      // The same condition the host-key branch below uses to export ANTHROPIC_API_KEY (keep the two in step).
+      hostKeyLaunch: keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile && !planToken
+        && hostApiKey(join(PROJECT_ROOT, '.env')).trim() !== '',
+      configuredConfigDir,
+      sharedLoginPresent: sharedClaudeLoginPresent(),
+    })) {
+      logger.error({ name, model }, 'no-claude-auth: router install without a Claude login -- agent NOT started; switch it to the Hostinger AI Router or add a Claude login')
+      return { ok: false, error: 'no-claude-auth: this install has no Claude subscription login. Switch the agent to the Hostinger AI Router (agent settings, Model), add a Claude login, or give the agent its own auth.' }
+    }
     if (ownLaunch.kind === 'own') {
       logger.info(
         { name, path: ownLaunch.path, fingerprint: ownLaunch.fingerprint },
@@ -3478,7 +3684,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // FLEETVENV923: the fleet venv's bin/ goes FIRST so its python3 beats the
     // Homebrew one that carries no packages.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${helperTokenEnvPiece}${agentEgressEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}${codeModeEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${helperTokenEnvPiece}${agentEgressEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}${codeModeEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)}${disallowedToolsFlag()} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
