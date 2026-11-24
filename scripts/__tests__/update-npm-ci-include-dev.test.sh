@@ -19,7 +19,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 CEL="${UPDATE_SH:-$ROOT/update.sh}"
-MIN_HIVAS=5
+# ISSUE3103: since #3103 every install goes through npm_ci_deps, defined twice (update.sh and its finalizer
+# heredoc), so there are exactly two npm ci calls; the five call sites of the helper are pinned in
+# src/__tests__/update-npm-ci-ignore-scripts.test.ts.
+MIN_HIVAS=2
 FAILS=0
 
 hivasok() {  # prints "<line>:<original text>" for every npm ci CALL in $1
