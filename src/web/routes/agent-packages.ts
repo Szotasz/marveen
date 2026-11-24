@@ -27,7 +27,8 @@ import { PACKAGE_ORIGIN, deleteCredential, hasCredential, makeRemote, readCreden
 import { SLUG_RE, meetsMinMarveenVersion, parseVersion, verifyDelivery, type Jwk } from '../agent-package/verify.js'
 import { agentsBaseDir, isReservedName, markerPathOf } from '../agent-package/marker.js'
 import {
-  flushPendingPackageNotices, packageSkillReport, readPackageManifest, reapInterruptedPackageInstalls, runInstallBlock, sameDeviceLayout,
+  OWNER_DISPLAY_NAME_MAX_INPUT, flushPendingPackageNotices, ownerDisplayName, packageSkillReport, readPackageManifest, reapInterruptedPackageInstalls,
+  runInstallBlock, sameDeviceLayout,
 } from '../agent-package/install.js'
 import { sanitizeAgentName } from '../sanitize.js'
 import { refuseIfCliCannotLaunch } from '../agent-create.js'
@@ -88,18 +89,29 @@ function codeFromBody(raw: Buffer): string | null {
 }
 
 /** The install body: exactly {slug} with a string value; null for anything else. */
-function slugFromBody(raw: Buffer): string | null {
+/**
+ * The install body: `{slug}`, or `{slug, display_name}` (MIOAGENTB4-1122, Samu 83718: the name the owner chose for
+ * the dashboard). Any other key is a 400 bad_request, as before; a display_name that is not a string, longer than
+ * OWNER_DISPLAY_NAME_MAX_INPUT, or against a manifest text rule after the cleaning is its own 400, so the dialog can
+ * say which field is wrong (Samu 83741).
+ */
+function installBodyOf(raw: Buffer): { slug: string; displayName?: string } | 'bad_request' | 'invalid_display_name' {
   let v: unknown
   try {
     v = JSON.parse(raw.toString('utf8'))
   } catch {
-    return null
+    return 'bad_request'
   }
-  if (v === null || typeof v !== 'object' || Array.isArray(v)) return null
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'bad_request'
   const keys = Object.keys(v)
-  if (keys.length !== 1 || keys[0] !== 'slug') return null
-  const slug = (v as { slug: unknown }).slug
-  return typeof slug === 'string' ? slug : null
+  if (!keys.includes('slug') || keys.some((k) => k !== 'slug' && k !== 'display_name')) return 'bad_request'
+  const { slug, display_name: rawName } = v as { slug: unknown; display_name?: unknown }
+  if (typeof slug !== 'string') return 'bad_request'
+  if (rawName === undefined) return { slug }
+  if (typeof rawName !== 'string' || Array.from(rawName).length > OWNER_DISPLAY_NAME_MAX_INPUT) return 'invalid_display_name'
+  const name = ownerDisplayName(rawName)
+  if (name === null) return 'invalid_display_name'
+  return name === undefined ? { slug } : { slug, displayName: name }
 }
 
 type Answer = { status: number; body: Record<string, unknown> }
@@ -161,8 +173,10 @@ async function installPackage(ctx: RouteContext, deps: PackageDeps): Promise<voi
   // 2. the body and the slug.
   const raw = await readBodyOrRefuse(req, res, { maxBytes: BODY_MAX_BYTES })
   if (raw === null) return
-  const slug = slugFromBody(raw)
-  if (slug === null) { json(res, BAD_REQUEST, 400); return }
+  const body = installBodyOf(raw)
+  if (body === 'bad_request') { json(res, BAD_REQUEST, 400); return }
+  if (body === 'invalid_display_name') { json(res, { error: 'invalid_display_name' }, 400); return }
+  const slug = body.slug
   if (!SLUG_RE.test(slug) || sanitizeAgentName(slug) !== slug) { json(res, { error: 'invalid_slug' }, 400); return }
   // 3. a reserved name.
   if (isReservedName(slug)) { json(res, { error: 'name_reserved' }, 409); return }
@@ -221,7 +235,7 @@ async function installPackage(ctx: RouteContext, deps: PackageDeps): Promise<voi
   const lang = agentTextLang()
   const now = deps.now()
   const out = await serializeSkillsDir(() => {
-    const r = runInstallBlock({ name: slug, pkg, model, driveFolder, lang, now })
+    const r = runInstallBlock({ name: slug, pkg, model, driveFolder, lang, now, ...(body.displayName ? { displayName: body.displayName } : {}) })
     if (r.ok) return { ok: true as const, skillReport: packageSkillReport(slug, pkg, now) }
     if (r.kind === 'marker_exists') return { ok: false as const, answer: { status: 409, body: { error: 'stale_install' } } }
     if (r.kind === 'dir_exists') {
