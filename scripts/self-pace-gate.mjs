@@ -1025,8 +1025,15 @@ function protectedPatternWord(text, ctx) {
   const words = src.replace(UNRESOLVED_EXPANSION_RX, UNRESOLVED).replace(/[\\'"]/g, '').split(/[\s;&|<>()]+/).filter(Boolean)
   const cwdReal = ctx?.cwd ? pathKey(ctx.cwd) : null
   const cwdProtected = !!cwdReal && (sameKey(cwdReal, ctx.root) || sameKey(cwdReal, ctx.store))
-  const cmd = (words.find((w) => !/^[A-Za-z_]\w*=/.test(w)) ?? '').replace(/^.*\//, '')
-  if (ctx && DIR_WRITERS.has(cmd)) {
+  // The writer need not be the first word (#3001: it was read as the first non-assignment word). A reserved word (`for ..; do tar .. -C store`,
+  // `if ..; then cp x store`, `{ cp x store; }`, `case k in k) cp x store;;`), a wrapper (env, nice, time, timeout, sudo,
+  // command, exec, nohup ..) or a runner (xargs, find -exec) puts it later, and the first-word reading let every one of
+  // them write a name of its own into the store dir or the root. Read the other way round: a dir writer named ANYWHERE in
+  // the segment, with the store dir or the root as an argument, makes the segment a mention. No list of prefixes to keep up
+  // to date: an unknown wrapper or runner is on the denying side. A mention is not yet a denial: a segment that a reader
+  // leads (`grep -rn install .`) is still a plain read in readOnlyMentionAllowed, unless it redirects onto a target built at
+  // runtime, which is the price of this reading.
+  if (ctx && words.some((w) => DIR_WRITERS.has(w.replace(/^.*\//, '')))) {
     for (const w of words) {
       const v = w.replace(/^--?[\w-]+=/, '').replace(/^-[A-Za-z](?=[/~.])/, '')
       if (!v || v.startsWith('-') || v.includes(UNRESOLVED) || /[*?[{]/.test(v)) continue
