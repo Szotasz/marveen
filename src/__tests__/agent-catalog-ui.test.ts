@@ -23,6 +23,7 @@ type Fns = {
   agentPkgCardState: (pkg: Record<string, unknown>, view: Record<string, unknown>, installed: Record<string, unknown>) => Record<string, unknown>
   agentPkgFileRows: (pkg: Record<string, unknown>) => Array<[string, string]>
   AGENT_PKG_ERR_KEYS: Record<string, string>
+  revealAgentCatalogNav: (fetchImpl: unknown, link: { hidden: boolean } | null) => Promise<void>
 }
 function load(dict: Record<string, string>): Fns {
   const t = (k: string, p?: Record<string, unknown>) => {
@@ -31,7 +32,7 @@ function load(dict: Record<string, string>): Fns {
     return s.replace(/\{(\w+)\}/g, (_m, n) => String(p?.[n] ?? ''))
   }
   const ctx: Record<string, unknown> = { t, ownerSessionText: (b: { code?: string } | null) => (b && b.code === 'owner_session_required' ? 'OWNER' : ''), URL }
-  vm.runInNewContext(`${BLOCK}\nthis.f = { agentPkgErrorText, agentPkgErrorStep, agentPkgAvatarUrl, agentPkgCardState, agentPkgFileRows, AGENT_PKG_ERR_KEYS }`, ctx)
+  vm.runInNewContext(`${BLOCK}\nthis.f = { agentPkgErrorText, agentPkgErrorStep, agentPkgAvatarUrl, agentPkgCardState, agentPkgFileRows, AGENT_PKG_ERR_KEYS, revealAgentCatalogNav }`, ctx)
   return ctx.f as Fns
 }
 
@@ -162,5 +163,79 @@ describe('catalog fields reach the DOM as text only (plan 6.5, T4; Samu, extra 2
   })
   it('its one element builder sets textContent', () => {
     expect(BLOCK).toContain('if (text !== undefined && text !== null) e.textContent = String(text)')
+  })
+})
+
+describe('no publishing origin: no menu item, no connect box (MIOAGENTB4-1122, Marveen 84855)', () => {
+  const f = load(lang('en'))
+  const reply = (status: number, body: unknown) => async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })
+  const navAfter = async (fetchImpl: unknown) => { const link = { hidden: true }; await f.revealAgentCatalogNav(fetchImpl, link); return link.hidden }
+
+  it('the menu item is hidden in the markup, and the boot code reveals it through the server answer', () => {
+    const html = read('../../web/index.html')
+    expect(html).toMatch(/<a href="#" class="sb-link" data-page="agentCatalog" id="sbAgentCatalog" hidden>/)
+    expect(APP).toContain("revealAgentCatalogNav(fetch, document.getElementById('sbAgentCatalog'))")
+  })
+
+  it('an empty origin (configured false): the menu item stays hidden', async () => {
+    expect(await navAfter(reply(200, { connected: false, configured: false }))).toBe(true)
+    expect(await navAfter(reply(200, { connected: true, label: 'x', configured: false }))).toBe(true)
+  })
+
+  it('a set origin (configured true): the menu item shows', async () => {
+    expect(await navAfter(reply(200, { connected: false, configured: true }))).toBe(false)
+  })
+
+  it('no answer to go by (an older backend, a refusal, a network error): hidden', async () => {
+    expect(await navAfter(reply(200, { connected: false }))).toBe(true)
+    expect(await navAfter(reply(403, { error: 'forbidden', configured: true }))).toBe(true)
+    expect(await navAfter(async () => { throw new Error('offline') })).toBe(true)
+  })
+
+  type El = { tag: string; className: string; textContent: string; children: El[]; [k: string]: unknown }
+  async function pageFor(cred: Record<string, unknown>): Promise<El> {
+    const el = (tag: string): El => {
+      const e: El = { tag, className: '', textContent: '', children: [] }
+      e.append = (...c: El[]) => { e.children.push(...c) }
+      e.replaceChildren = (...c: El[]) => { e.children = c }
+      e.addEventListener = () => {}
+      e.setAttribute = () => {}
+      return e
+    }
+    const root = el('div')
+    const dict = lang('en')
+    const t = (k: string) => dict[k] ?? `MISSING:${k}`
+    const ctx: Record<string, unknown> = {
+      t, URL, ownerSessionText: () => '',
+      document: { getElementById: (id: string) => (id === 'agentCatalogRoot' ? root : null), createElement: el },
+      fetch: async () => ({}),
+      readActionReply: async () => ({ ok: true, body: cred }),
+    }
+    vm.runInNewContext(`${BLOCK}\nthis.p = loadAgentCatalogPage()`, ctx)
+    await ctx.p
+    return root
+  }
+  const texts = (e: El): string[] => [e.textContent, ...e.children.flatMap(texts)]
+
+  it('an empty origin: the page says not available, and no connect box is built', async () => {
+    const root = await pageFor({ connected: false, configured: false })
+    expect(texts(root)).toContain(lang('en')['agentCatalog.not_available'])
+    expect(texts(root)).not.toContain(lang('en')['agentCatalog.connect.title'])
+  })
+
+  it('positive control: a set origin shows the connect box', async () => {
+    const root = await pageFor({ connected: false, configured: true })
+    expect(texts(root)).toContain(lang('en')['agentCatalog.connect.title'])
+  })
+
+  it('no text promises the machines page of marveen.io that does not exist yet', () => {
+    for (const code of ['en', 'hu'] as const) {
+      const d = lang(code)
+      for (const k of ['agentCatalog.connect.desc', 'agentCatalog.err.invalid_code', 'agentCatalog.err.token_limit', 'agentCatalog.disconnect_confirm']) {
+        expect(d[k], `${code} ${k}`).toBeTruthy()
+        expect(d[k], `${code} ${k}`).not.toMatch(/Marveen-gépeim|My Marveen machines/)
+      }
+      expect(d['agentCatalog.not_available']).toBeTruthy()
+    }
   })
 })
