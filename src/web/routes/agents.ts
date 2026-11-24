@@ -24,6 +24,7 @@ import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from '
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { hasLaunchTrace, hasPackageManifestFile, startsWithPackageShell } from '../agent-package/marker.js'
 import { packageDescription, packageSummaryField } from '../agent-package/install.js'
+import { readUpdatingTrace } from '../agent-package/update.js'
 
 import { claudeSupportForCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
@@ -527,6 +528,8 @@ export interface AgentSummary {
   modelSource: 'explicit_model' | 'model_profile' | 'default'
   /** MIOAGENTINSTALL1114 (plan 4.2): the installed agent package, from its readable record; null for any other agent. */
   package: { slug: string; version: string } | null
+  /** Plan 8.4 (D11): the trace of an interrupted package update, or null. */
+  interruptedUpdate: { from: string; to: string; startedAt: string } | null
   modelProfileError: string | null
   activeModel: string | null
   runningSince: number | null
@@ -698,6 +701,8 @@ function getAgentSummary(name: string): AgentSummary {
     // description comes from the package record (an unreadable record keeps the old path).
     description: packageDescription(dir) ?? extractDescriptionFromClaudeMd(claudeMd),
     package: packageSummaryField(dir),
+    // MIOAGENTB4-1122 (plan 8.4, D11): an interrupted package update shows, instead of looking like an available one.
+    interruptedUpdate: readUpdatingTrace(name),
     model: modelResolution.model,
     modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
     modelSource: modelResolution.source,

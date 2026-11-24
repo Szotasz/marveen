@@ -30,6 +30,7 @@ import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-
 import { startWebServer } from './web.js'
 import { removeCredentialTmpLeftovers } from './web/agent-package/remote.js'
 import { flushPendingPackageNotices, reapInterruptedPackageInstalls } from './web/agent-package/install.js'
+import { removeOrphanUpdatingTraces } from './web/agent-package/update.js'
 import { notifyOwner } from './notify.js'
 import { endAllDetachedGroups } from './web/detached-groups.js'
 import { logger } from './logger.js'
@@ -533,6 +534,14 @@ async function main(): Promise<void> {
     if (reaped.setAside + reaped.removedMarkers + reaped.badMarkers + reaped.blocked > 0) logger.warn({ reaped }, 'agent package installs: interrupted-install cleanup')
   } catch (err) {
     logger.error({ err }, 'agent package interrupted-install cleanup did not run')
+  }
+  // MIOAGENTB4-1122 (plan 8.4, D11, Samu (2)): the trace of an interrupted package UPDATE of an agent that no longer
+  // exists goes; a living agent's trace stays until its next successful apply.
+  try {
+    const removed = removeOrphanUpdatingTraces((n) => listAgentNames().includes(n))
+    if (removed > 0) logger.info({ removed }, 'agent package update traces of removed agents deleted')
+  } catch (err) {
+    logger.warn({ err }, 'agent package update trace cleanup did not run')
   }
 
   // GROMZOGATECONF1030 (c): the sub-agents' sender-role gates move from their own agent-config.json (which the agent
