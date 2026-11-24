@@ -30,7 +30,8 @@ import {
   buildSoulPromptEn, buildSkillPromptEn, PRECOMPACT_PROMPT_EN_TPL, fleetBaseRulesEn,
 } from './agent-scaffold-en.js'
 import { FLEET_ROSTER_BEGIN, PACKAGE_SHELL_PREFIX_TEXT, hasPackageManifestFile } from './agent-package/marker.js'
-import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps, type ExtraHookEntry } from './extra-hook-entries.js'
+import { EXTRA_HOOKS_DIR, EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps, type ExtraHookEntry } from './extra-hook-entries.js'
+import { SENDER_ROLE_GATES_FILE } from './sender-role-gate-store.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -1305,6 +1306,9 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   }
   if (!denyList.includes(SUBAGENT_TOTP_STORE_DENY)) denyList.push(SUBAGENT_TOTP_STORE_DENY)
   for (const rule of SUBAGENT_VAULT_KEY_DENY) if (!denyList.includes(rule)) denyList.push(rule)
+  if (profile.permissionMode === 'strict') {
+    for (const rule of strictSelfProtectDeny(agentRoot)) if (!denyList.includes(rule)) denyList.push(rule)
+  }
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
   // on EVERY spawn, because this function replaces the deny list wholesale --
   // a name written straight into settings.json disappears at the next respawn
@@ -1390,7 +1394,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // live fleet) stays. The gate hooks themselves are put back by the inject* calls above.
   stripLooseningKeys(existing, name, 'settings.json')
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
-  sanitizeAgentLocalSettings(name)
+  sanitizeAgentLocalSettings(name, profile.permissionMode)
 }
 
 // Top-level Claude settings keys that turn the agent's gate hooks off (disableAllHooks) or hand them another
@@ -1405,12 +1409,22 @@ function stripLooseningKeys(settings: Record<string, unknown>, name: string, fil
   return dropped
 }
 
+// AGENTISO1123: the permission sub-keys that WIDEN a strict agent (see sanitizeAgentLocalSettings).
+export const STRICT_LOCAL_LOOSENING_PERMISSION_KEYS = ['allow', 'defaultMode', 'additionalDirectories'] as const
+
 /**
  * The agent's .claude/settings.local.json, which Claude Code merges over settings.json: the same keys are dropped. The
  * file is NEVER deleted; one that holds none of them is not rewritten; one that does not parse as an object is left as
  * it is (logged), since rewriting it would lose what it holds.
+ *
+ * AGENTISO1123 (PR-A): for a STRICT profile the LOOSENING permission keys are dropped too, on every spawn
+ * (permissions.allow, defaultMode, additionalDirectories). Claude Code merges the local file over the dashboard-written
+ * settings.json, so a strict agent (or anything writing as its user) could otherwise widen its own permissions locally.
+ * The narrowing keys (deny, ask, disableBypassPermissionsMode) stay: they only restrict (Abel, #3092 review).
+ * `permissions` itself goes only when nothing is left in it. Non-strict profiles keep the whole key: they run with
+ * --dangerously-skip-permissions and the key is the operator's.
  */
-export function sanitizeAgentLocalSettings(name: string): 'absent' | 'clean' | 'stripped' | 'unparseable' {
+export function sanitizeAgentLocalSettings(name: string, permissionMode?: string): 'absent' | 'clean' | 'stripped' | 'unparseable' {
   const p = join(agentDir(name), '.claude', 'settings.local.json')
   if (!existsSync(p)) return 'absent'
   let parsed: unknown
@@ -1420,7 +1434,25 @@ export function sanitizeAgentLocalSettings(name: string): 'absent' | 'clean' | '
     return 'unparseable'
   }
   const obj = parsed as Record<string, unknown>
-  if (!stripLooseningKeys(obj, name, 'settings.local.json').length) return 'clean'
+  const dropped = stripLooseningKeys(obj, name, 'settings.local.json')
+  if (permissionMode === 'strict' && Object.prototype.hasOwnProperty.call(obj, 'permissions')) {
+    const perms = obj.permissions
+    if (perms && typeof perms === 'object' && !Array.isArray(perms)) {
+      const rec = perms as Record<string, unknown>
+      for (const k of STRICT_LOCAL_LOOSENING_PERMISSION_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(rec, k)) { delete rec[k]; dropped.push(`permissions.${k}`) }
+      }
+      if (!Object.keys(rec).length) delete obj.permissions
+    } else {
+      // Not an object: nothing in it can narrow, and Claude Code's reading of it is not ours to guess.
+      delete obj.permissions
+      dropped.push('permissions')
+    }
+    if (dropped.some(k => k.startsWith('permissions'))) {
+      logger.warn({ agent: name, dropped }, 'agent settings.local.json: loosening permission keys dropped on spawn (strict profile)')
+    }
+  }
+  if (!dropped.length) return 'clean'
   atomicWriteFileSync(p, JSON.stringify(obj, null, 2))
   return 'stripped'
 }
@@ -2020,6 +2052,57 @@ export const SUBAGENT_TOTP_STORE_DENY = 'Read(//**/store/.dashboard-totp.json)'
 // fence on the Read tool, not an OS boundary (same OS user; a Bash read is not covered). Exact names, no glob: only
 // the exact `//**/store/<file>` form is measured.
 export const SUBAGENT_VAULT_KEY_DENY = ['Read(//**/store/.vault-key)', 'Read(//**/store/.vault-key.migrated)']
+
+// AGENTISO1123 (PR-A, Dani S3): a STRICT agent may not rewrite the files that define its own limits. Same OS user, so
+// this is a rule layer, not an OS boundary: it stops the file tools, not a script that opens the file itself. Covered:
+// its own .claude/settings.json + settings.local.json, the limit-defining entries of its isolated config dir (not
+// projects/, its file memory), the hook scripts its settings run
+// (scripts/ and scripts/hooks/ of this install, plus the shared ~/.claude/hooks its config dir links to), and the Bash
+// sandbox inputs bash-sandbox.ts writes or reads (store/bash-sandbox/*, the vendor-host and write-path lists), and the
+// files that select or define its profile and gates (agent-config.json, .mcp.json, templates/profiles, the install
+// .env, store/extra-hooks.json + local-hooks/, store/autonomy-config.json, the sender-role gates, config-overrides).
+// Per code.claude.com/docs/en/permissions (read 2026-11-23) Edit rules apply to every built-in file-editing tool
+// (Write, NotebookEdit, legacy MultiEdit), while a `Write(path)` rule is accepted but never matches. Each Edit rule
+// still gets a Write twin until that is measured live (WRITERULENOOP1123, Dani N1): a no-op if the docs are right.
+// Absolute paths in the `//` form, the form absolutizeFileRule produces (a single leading `/` is settings-relative).
+export function strictSelfProtectDeny(
+  agentRoot: string,
+  opts: { home?: string; projectRoot?: string; storeDir?: string } = {},
+): string[] {
+  const home = opts.home ?? homedir()
+  const projectRoot = opts.projectRoot ?? PROJECT_ROOT
+  const storeDir = opts.storeDir ?? STORE_DIR
+  return [
+    join(agentRoot, '.claude', 'settings.json'),
+    join(agentRoot, '.claude', 'settings.local.json'),
+    // The limit-defining entries of the isolated config dir, not the whole dir: projects/ (Claude Code's own file
+    // memory for this agent) stays writable.
+    join(agentRoot, '.claude-config', 'settings.json'),
+    join(agentRoot, '.claude-config', 'settings.local.json'),
+    join(agentRoot, '.claude-config', '.claude.json'),
+    join(agentRoot, '.claude-config', 'plugins', '**'),
+    join(agentRoot, '.claude-config', 'skills', '**'),
+    join(agentRoot, '.claude-config', 'hooks', '**'),
+    join(agentRoot, '.claude-config', 'agents', '**'),
+    join(agentRoot, '.claude-config', 'commands', '**'),
+    join(projectRoot, 'scripts', '**'),
+    join(home, '.claude', 'hooks', '**'),
+    join(storeDir, 'bash-sandbox', '**'),
+    join(storeDir, 'egress-vendor-hosts.json'),
+    join(storeDir, 'bash-sandbox-write-paths.json'),
+    // Dani B1: the files that SELECT or DEFINE the profile and the gates. securityProfile lives in agent-config.json:
+    // a strict agent that rewrote or deleted it would come up in bypass at its next start.
+    join(agentRoot, 'agent-config.json'),
+    join(agentRoot, '.mcp.json'),
+    join(projectRoot, 'templates', 'profiles', '**'),
+    join(projectRoot, '.env'),
+    join(projectRoot, EXTRA_HOOKS_DIR, '**'),
+    join(storeDir, EXTRA_HOOKS_FILE),
+    join(storeDir, 'autonomy-config.json'),
+    join(storeDir, SENDER_ROLE_GATES_FILE),
+    join(storeDir, 'config-overrides.json'),
+  ].flatMap(p => [absolutizeFileRule(`Edit(${p})`), absolutizeFileRule(`Write(${p})`)])
+}
 
 // The floor's sudo pair, named so the per-agent opt-out (SUDO_AGENTS) lifts
 // exactly these two rules and nothing else of the floor.

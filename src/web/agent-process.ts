@@ -42,7 +42,7 @@ import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-b
 import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite, readAgentSecurityProfile } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
@@ -107,7 +107,7 @@ export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists:
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { isSingleLineEnvValue, readEnvFile } from '../env.js'
-import { loadProfileTemplate, profileWantsThinChiefHandoff, type ProfileTemplate } from './profiles.js'
+import { loadProfileTemplate, decideStartProfile, profileWantsThinChiefHandoff, type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { agentVendorHostsEnv } from './agent-egress-env.js'
@@ -2778,6 +2778,15 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
 
+  // AGENTISO1123 (PR-A): an explicitly configured security profile that is missing or unreadable refuses the start
+  // (fail-closed) instead of falling back to the permissive `default`. Decided before any scaffolding is written;
+  // the resolved profile is reused below, so the settings are written from the very profile this check read.
+  const startProfile = decideStartProfile(resolveAgentSecurityProfile(name), readAgentSecurityProfile(name) !== 'default')
+  if (!startProfile.ok) {
+    logger.error({ name, error: startProfile.error }, 'security profile: agent NOT started (fail-closed, no fallback to default)')
+    return { ok: false, error: startProfile.error }
+  }
+
   // Opt-in per-agent auto-memory isolation (local agents only; a remote
   // workdir cannot be provisioned from here). Default OFF: without the
   // memoryIsolation flag this is a no-op and the shared-memory behavior of
@@ -3008,7 +3017,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // `leader` (tech-lead) -> 'applier' (Supabase retained), everyone else ->
     // 'default' (deny-by-default). Keeps a fresh install's tech-lead an applier
     // without hardcoding agent names.
-    const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
+    const profile = startProfile.profile
     writeAgentSettingsFromProfile(name, profile)
     rewriteAgentClaudeMdOnStart(name, profile)
     // A sub-agent must load ONLY its own channel plugin. The user-scope

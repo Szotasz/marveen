@@ -108,9 +108,10 @@ export function listProfileTemplates(): ProfileTemplate[] {
 // started, its settings.json was rewritten from the fallback, and the dashboard
 // kept showing the REQUESTED name. `default` is the most permissive profile,
 // so for any stricter one the silent fallback is a permission
-// WIDENING that nobody sees. The fallback itself stays (an agent that cannot
-// start is worse than one that starts under the default); what changes is that
-// it is named: `fallbackReason` says why, every load logs a WARN, and the
+// WIDENING that nobody sees. The fallback itself stays for the callers that
+// only render or describe a profile; the start path refuses instead for an
+// explicitly configured profile (decideStartProfile below). The fallback is
+// named: `fallbackReason` says why, every load logs a WARN, and the
 // /security endpoint reports the effective profile next to the requested one.
 export type ProfileFallbackReason = 'missing' | 'unreadable'
 
@@ -121,12 +122,22 @@ export interface ProfileResolution {
   fallbackReason: ProfileFallbackReason | null
 }
 
+/** A parsed profile the settings writer can use: an object whose filesystem allow/deny are arrays. */
+function isUsableProfile(p: unknown): p is ProfileTemplate {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return false
+  const fs = (p as { filesystem?: unknown }).filesystem
+  if (!fs || typeof fs !== 'object') return false
+  const { allow, deny } = fs as { allow?: unknown; deny?: unknown }
+  return Array.isArray(allow) && Array.isArray(deny)
+}
+
 export function resolveProfileTemplate(id: string): ProfileResolution {
   const path = join(PROFILES_DIR, `${id}.json`)
   let reason: ProfileFallbackReason = 'missing'
   if (existsSync(path)) {
     try {
-      const profile = JSON.parse(readFileSync(path, 'utf-8')) as ProfileTemplate
+      const profile: unknown = JSON.parse(readFileSync(path, 'utf-8'))
+      if (!isUsableProfile(profile)) throw new Error('not a profile object')
       return { profile, requested: id, effective: profile.id || id, fallbackReason: null }
     } catch {
       reason = 'unreadable'
@@ -139,15 +150,50 @@ export function resolveProfileTemplate(id: string): ProfileResolution {
   return { profile: HARDCODED_DEFAULT_PROFILE, requested: id, effective: 'default', fallbackReason: null }
 }
 
-export function loadProfileTemplate(id: string): ProfileTemplate {
-  const resolution = resolveProfileTemplate(id)
+function warnProfileFallback(resolution: ProfileResolution): void {
   if (resolution.fallbackReason) {
     logger.warn(
       { requested: resolution.requested, effective: resolution.effective, reason: resolution.fallbackReason },
       `Security profile "${resolution.requested}" is ${resolution.fallbackReason}; the agent gets "${resolution.effective}" instead -- a fallback can WIDEN its permissions`,
     )
   }
+}
+
+export function loadProfileTemplate(id: string): ProfileTemplate {
+  const resolution = resolveProfileTemplate(id)
+  warnProfileFallback(resolution)
   return resolution.profile
+}
+
+// AGENTISO1123 (PR-A): the START path does not take the fallback. An agent whose
+// agent-config.json NAMES a profile (securityProfile set, not 'default') that is
+// missing or unreadable is refused, loudly: starting it under `default` would
+// silently widen a stricter profile, and for an unattended strict agent that is
+// the opposite of what was configured. An agent with NO profile configured
+// (securityProfile absent or 'default', including the role-derived 'applier' of a
+// leader) keeps the old behaviour: it starts, and a missing role-derived profile
+// still falls back with the WARN above. `explicitlyConfigured` is the caller's
+// readAgentSecurityProfile(name) !== 'default'.
+export type ProfileStartDecision =
+  | { ok: true; profile: ProfileTemplate }
+  | { ok: false; error: string }
+
+// Exactly ONE read of the profile file: the decision and the settings come from the same resolution, so a file that
+// disappears after the check cannot turn into a silent `default` (Dani N2). `resolve` is a test seam.
+export function decideStartProfile(
+  requested: string,
+  explicitlyConfigured: boolean,
+  resolve: (id: string) => ProfileResolution = resolveProfileTemplate,
+): ProfileStartDecision {
+  const resolution = resolve(requested)
+  if (resolution.fallbackReason && explicitlyConfigured) {
+    return {
+      ok: false,
+      error: `security profile "${requested}" is ${resolution.fallbackReason} (templates/profiles/${requested}.json); the agent is NOT started -- fix the file or change the agent's securityProfile`,
+    }
+  }
+  warnProfileFallback(resolution)
+  return { ok: true, profile: resolution.profile }
 }
 
 export function resolveProfilePlaceholders(value: string, ctx: { HOME: string; AGENT_DIR: string }): string {
