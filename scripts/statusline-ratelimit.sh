@@ -18,14 +18,30 @@
 # scripts/limit-monitor.sh -- a plain systemd timer, no Claude involved --
 # reads the file and alerts the owner.
 #
+# It also persists the FULL raw payload (unfiltered) to store/statusline-latest.json
+# on every render -- whatever model/session/context fields the running Claude Code
+# build hands in, not just the rate_limits slice. An install can read this to know,
+# for example, which of several concurrently-running sessions last rendered (the
+# session_id/cwd fields), without parsing or duplicating the rate-limit logic above.
+#
 # Contract: stdin = payload JSON, stdout = one status line. Never fails loudly:
 # a broken status line would be visible in every pane forever.
 
 set -u
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$INSTALL_DIR/store/.claude-rate-limits.json"
+LATEST_OUT="$INSTALL_DIR/store/statusline-latest.json"
 
 PAYLOAD="$(cat)"
+
+# Best-effort, atomic: a failure here (e.g. a read-only store/) must not stop the
+# status line itself from rendering below.
+{
+  tmp_latest="$(mktemp "$LATEST_OUT.XXXXXX" 2>/dev/null)" &&
+    printf '%s' "$PAYLOAD" > "$tmp_latest" &&
+    chmod 600 "$tmp_latest" &&
+    mv -f "$tmp_latest" "$LATEST_OUT"
+} 2>/dev/null || true
 
 printf '%s' "$PAYLOAD" | RL_OUT="$OUT" python3 -c '
 import json, os, sys, time
