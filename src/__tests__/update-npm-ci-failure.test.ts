@@ -30,9 +30,9 @@ function callSite(): string {
   return UPDATE.slice(start, end + '\n  fi\n'.length)
 }
 
-interface Run { code: number; out: string; status: string; msg: string; gitLog: string }
+interface Run { code: number; out: string; status: string; msg: string; gitLog: string; npmLog: string }
 
-function run(opts: { ciRc: number; rollbackCiRc?: number; stashed?: boolean; viaCallSite?: boolean }): Run {
+function run(opts: { ciRc: number; rollbackCiRc?: number; stashed?: boolean; viaCallSite?: boolean; noToolchain?: boolean }): Run {
   const dir = mkdtempSync(join(SANDBOX, 'run-'))
   mkdirSync(join(dir, 'dist'))
   const script = [
@@ -47,9 +47,12 @@ function run(opts: { ciRc: number; rollbackCiRc?: number; stashed?: boolean; via
     `git() { echo "git $*" >> '${dir}/git.log'; return 0; }`,
     // First `npm ci` calls (the update's own, under retry) fail with ciRc; once
     // git reset --hard has run, `npm ci` is the rollback's and uses rollbackCiRc.
-    `npm() { if [ "$1" = ci ]; then if grep -q 'reset --hard' '${dir}/git.log' 2>/dev/null; then return ${opts.rollbackCiRc ?? 0}; fi; return ${opts.ciRc}; fi; return 0; }`,
+    // noToolchain (ISSUE3103): an npm ci that runs install scripts fails, as the better-sqlite3 source build does
+    // on a host without make/g++; with --ignore-scripts it goes on to the codes above.
+    `npm() { echo "npm $*" >> '${dir}/npm.log'; if [ "$1" = ci ]; then ${opts.noToolchain ? 'case " $* " in *" --ignore-scripts "*) ;; *) return 1 ;; esac; ' : ''}if grep -q 'reset --hard' '${dir}/git.log' 2>/dev/null; then return ${opts.rollbackCiRc ?? 0}; fi; return ${opts.ciRc}; fi; return 0; }`,
     'sleep() { :; }',
     fn('retry'),
+    fn('npm_ci_deps'),
     // ANETTUPDATESTASH1102: the early-exit restore pops through pop_auto_stash().
     fn('pop_auto_stash'),
     fn('restore_stash_before_exit'),
@@ -59,7 +62,7 @@ function run(opts: { ciRc: number; rollbackCiRc?: number; stashed?: boolean; via
   ].join('\n')
   const r = spawnSync('bash', ['-c', script], { encoding: 'utf-8' })
   const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf-8') : '')
-  return { code: r.status ?? -1, out: r.stdout + r.stderr, status: read('status'), msg: read('msg'), gitLog: read('git.log') }
+  return { code: r.status ?? -1, out: r.stdout + r.stderr, status: read('status'), msg: read('msg'), gitLog: read('git.log'), npmLog: read('npm.log') }
 }
 
 describe('update.sh: a failed npm ci (UPDOOMNPMCI926)', () => {
@@ -95,7 +98,7 @@ describe('update.sh: a failed npm ci (UPDOOMNPMCI926)', () => {
     expect(r.code).toBe(6)
     expect(r.status).toBe('failed')
     expect(r.msg).toContain('hiányos')
-    expect(r.msg).toContain('npm ci --include=dev')
+    expect(r.msg).toContain('npm ci --ignore-scripts --include=dev, npm rebuild esbuild, majd npm run build')
   })
 
   it('an auto-stash is restored on this exit too', () => {
@@ -109,6 +112,22 @@ describe('update.sh: a failed npm ci (UPDOOMNPMCI926)', () => {
     expect(r.out).toContain('137')
     expect(r.status).toBe('rolled-back')
     expect(r.gitLog).toContain('reset --hard abc1234fullsha')
+  })
+
+  it('ISSUE3103: without a C toolchain the real call site installs, with no rollback', () => {
+    const r = run({ ciRc: 0, viaCallSite: true, noToolchain: true })
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('UNREACHED')
+    expect(r.gitLog).not.toContain('reset --hard')
+    expect(r.npmLog).toContain('npm ci --ignore-scripts --silent --include=dev')
+    expect(r.npmLog).toContain('npm rebuild esbuild --silent')
+  })
+
+  it('ISSUE3103: a rollback on such a host installs the old tree too', () => {
+    const r = run({ ciRc: 1, noToolchain: true })
+    expect(r.code).toBe(6)
+    expect(r.status).toBe('rolled-back')
+    expect(r.msg).not.toContain('hiányos')
   })
 
   it('the old fixed lockfile message and the bare exit 1 are gone', () => {
