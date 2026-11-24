@@ -30,6 +30,32 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 # even when a sub-agent runs this script with its own TELEGRAM_STATE_DIR
 # (the lib ignores that variable), and only a single paired DM entry counts.
 . "$SCRIPT_DIR/lib/owner-chat.sh"
+# BOTTOKEN1124: the bot token comes from THIS install's channel state dir
+# (<install>/.claude/channels/telegram/.env), exactly like channel-outage-alarm.sh
+# -- the file the running plugin itself reads, so it is the token that works.
+# Measured 2026-11-24: the install .env held the installer placeholder
+# ("your_..._here"), every send got "404 Not Found" and the fallback channel was
+# silent. The install .env counts ONLY as a fallback, and only when its value is
+# token-shaped (<digits>:<secret>); a placeholder is never sent. The token value
+# is never printed. No token anywhere = the Slack-only path below, unchanged.
+# Deliberately NOT the legacy shared ~/.claude/channels/telegram (another
+# install's bot on the same user), and only when the install's channel provider
+# is Telegram (a Slack install's leftover Telegram dir is not revived).
+_tg_token_shaped() { printf '%s' "$1" | grep -Eq '^[0-9]+:[A-Za-z0-9_-]+$'; }
+_tg_provider="$(grep -E '^CHANNEL_PROVIDER=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"' \r")"
+_tg_chan_env="$PROJECT_DIR/.claude/channels/telegram/.env"
+_tg_chan_tok=""
+if { [ -z "$_tg_provider" ] || [ "$_tg_provider" = "telegram" ]; } && [ -f "$_tg_chan_env" ]; then
+  _tg_chan_tok="$(grep -E '^[[:space:]]*TELEGRAM_BOT_TOKEN=' "$_tg_chan_env" | tail -1 | cut -d= -f2- | tr -d "\"' \r")"
+fi
+TOKEN="$(printf '%s' "$TOKEN" | head -1 | tr -d "\"' \r")"
+if _tg_token_shaped "$_tg_chan_tok"; then
+  TOKEN="$_tg_chan_tok"
+elif ! _tg_token_shaped "$TOKEN"; then
+  [ -n "$TOKEN" ] && echo "Figyelem: a .env TELEGRAM_BOT_TOKEN nem token alaku (a telepito helyorzoje?), es a csatorna-mappaban sincs token: Telegram nem megy." >&2
+  TOKEN=""
+fi
+unset _tg_chan_env _tg_chan_tok _tg_provider
 # The resolver's reason line goes to stderr as is (not captured: any stderr
 # noise on the success path would otherwise become part of the chat id).
 CHAT_OK=1
