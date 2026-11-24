@@ -7,7 +7,7 @@ import {
   retractMemory, saveAgentMemorySuperseding,
   type Memory, type MemoryRow, type Approval,
 } from '../../db.js'
-import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS } from '../../config.js'
+import { MAIN_AGENT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS } from '../../config.js'
 import { createHash } from 'crypto'
 import { readAutonomyLevel } from '../autonomy-level.js'
 import { approvalWindowSeconds, fileServerApproval } from './approvals.js'
@@ -568,7 +568,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
           .all(agentId, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), pattern, pattern, limit) as Memory[]
       }
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory, searchTrace, tsRange)
+      results = searchMemories(q, limit, !strictOnly, searchCategory, searchTrace, tsRange)
       keywordMatchKind = searchTrace.relaxed ? 'relaxed' : 'strict'
       if (results.length === 0) {
         keywordMatchKind = 'substring'
@@ -591,7 +591,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = getAgentMemories(agentId, limit, tier || undefined, offset, tsRange, staleBefore)
     } else {
       // Category goes into the query here too, not a post-filter: see getMemoriesForChat.
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined, tsRange, staleBefore)
+      results = getMemoriesForChat(limit, offset, tier || undefined, tsRange, staleBefore)
     }
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every

@@ -6,7 +6,6 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
 import { initDatabase, saveAgentMemory, getMemoriesForChat } from '../db.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
-import { ALLOWED_CHAT_ID } from '../config.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 function fakeCtx(pathAndQuery: string, method = 'GET') {
@@ -34,7 +33,7 @@ describe('tier listing without an agent filter', () => {
   beforeEach(() => { initDatabase(':memory:'); seed() })
 
   it('the seed is not vacuous: an unfiltered first page holds no hot row', () => {
-    const page = getMemoriesForChat(ALLOWED_CHAT_ID, 50)
+    const page = getMemoriesForChat(50)
     expect(page.filter(m => m.category === 'hot')).toHaveLength(0)
   })
 
