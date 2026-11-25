@@ -43,12 +43,15 @@ const projectRoot = join(__dirname, '..')
 // stuck-modal-guard.sh), and the dist modules imported below may log to fd 1 (pino writes from its own handle, a
 // worker thread with pino-pretty: patching process.stdout.write does not catch it). One such line would become part
 // of the command a shell runs. So the callers hand a THIRD descriptor (`3>&1 2>>log 1>&2`) and send fd 1 and 2 to the
-// failures log, and say so with MARVEEN_PREFIX_FD=3. Without that (a manual run) the prefix goes to stdout.
+// failures log, and say so with MARVEEN_CONTRACT_FD=3 (the one name of the three helpers, AUTHFD3-1125). Without that (a
+// manual run) the prefix goes to stdout.
 // The env marker, not "fd 3 exists": Node's own event loop takes the lowest free descriptor at start, and on macOS
 // fd 3 of a manual run is libuv's internal pipe (a FIFO, so not even its type tells it apart); a write there fails
 // with ENXIO (measured 2026-11-25). A marker with no usable fd 3 makes the write throw: exit 1, and every caller
 // treats that as configured-but-broken (no launch on the wrong backend).
-const CONTRACT_FD = process.env.MARVEEN_PREFIX_FD === '3' ? 3 : 1
+// MARVEEN_PREFIX_FD is the name #3138 shipped. It is still read for the update window: a dashboard that was built
+// before the rename and not yet restarted sends it (runCustomProviderHelper). No caller in this tree sends it.
+const CONTRACT_FD = process.env.MARVEEN_CONTRACT_FD === '3' || process.env.MARVEEN_PREFIX_FD === '3' ? 3 : 1
 
 // Top-level imports are guarded so a stale or partially-built dist never turns
 // into an unconditional channel abort. If any module fails to load and no

@@ -32,7 +32,7 @@ function run(dir: string, cfg: string) {
 }
 
 // CUSTPROVFD3-1125: the prefix on fd 3 (the helper's contract); a line on stdout must not reach it
-const OK_HELPER = `import { writeSync } from 'node:fs'; process.stdout.write('noise on stdout\\n'); writeSync(process.env.MARVEEN_PREFIX_FD === '3' ? 3 : 1, "unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL='https://router.example' && arg=" + JSON.stringify(process.argv[2] ?? null) + " && ")`
+const OK_HELPER = `import { writeSync } from 'node:fs'; process.stdout.write('noise on stdout\\n'); writeSync(process.env.MARVEEN_CONTRACT_FD === '3' ? 3 : 1, "unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL='https://router.example' && arg=" + JSON.stringify(process.argv[2] ?? null) + " && ")`
 const NONE_HELPER = `process.exit(0)`
 const BROKEN_HELPER = `process.stderr.write("main-agent-custom-provider: vault key missing\\n"); process.exit(1)`
 

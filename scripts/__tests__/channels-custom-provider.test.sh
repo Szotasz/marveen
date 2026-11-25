@@ -395,7 +395,7 @@ fi
 # (no fd 3, the stdout fallback) prints.
 run '{"customProvider":"litellm-local","model":"oc/gpt-5.6-luna"}' "$NONE_PROVIDER"
 _noise_log="$root/fd3-noise.log"
-FD3_OUT="$(MARVEEN_PREFIX_FD=3 NODE_OPTIONS="--import=data:text/javascript,process.stdout.write('NOISE-ON-STDOUT%5Cn')" node "$root/scripts/main-agent-custom-provider.mjs" 3>&1 2>>"$_noise_log" 1>&2)"
+FD3_OUT="$(MARVEEN_CONTRACT_FD=3 NODE_OPTIONS="--import=data:text/javascript,process.stdout.write('NOISE-ON-STDOUT%5Cn')" node "$root/scripts/main-agent-custom-provider.mjs" 3>&1 2>>"$_noise_log" 1>&2)"
 FD3_RC=$?
 if [ "$FD3_RC" -eq 0 ] && [ "$FD3_OUT" = "$EXPECTED_NONE" ] && grep -q 'NOISE-ON-STDOUT' "$_noise_log"; then
   pass "fd 3 carries the prefix alone while a module writes to stdout"
@@ -403,9 +403,19 @@ else
   fail "fd 3 carries the prefix alone while a module writes to stdout" "exit=0, prefix only, noise in the log" "exit=$FD3_RC, fd3='$FD3_OUT'"
 fi
 
+# AUTHFD3-1125: MARVEEN_PREFIX_FD is the name #3138 shipped; a dashboard built before the rename sends it until its
+# restart, so the helper still reads it (fd 3, the prefix alone).
+LEGACY_OUT="$(MARVEEN_PREFIX_FD=3 node "$root/scripts/main-agent-custom-provider.mjs" 3>&1 2>/dev/null 1>&2)"
+LEGACY_RC=$?
+if [ "$LEGACY_RC" -eq 0 ] && [ "$LEGACY_OUT" = "$EXPECTED_NONE" ]; then
+  pass "the legacy MARVEEN_PREFIX_FD=3 still puts the prefix on fd 3 (update window)"
+else
+  fail "the legacy MARVEEN_PREFIX_FD=3 still puts the prefix on fd 3 (update window)" "exit=0, prefix on fd 3" "exit=$LEGACY_RC, fd3='$LEGACY_OUT'"
+fi
+
 # The marker without a caller's fd 3 (a half-wired caller): the write fails and the helper exits non-zero, which every
 # caller reads as configured-but-broken, never as "no provider".
-NOFD_OUT="$(MARVEEN_PREFIX_FD=3 node "$root/scripts/main-agent-custom-provider.mjs" 3>&- 2>/dev/null)"
+NOFD_OUT="$(MARVEEN_CONTRACT_FD=3 node "$root/scripts/main-agent-custom-provider.mjs" 3>&- 2>/dev/null)"
 NOFD_RC=$?
 if [ "$NOFD_RC" -ne 0 ] && [ -z "$NOFD_OUT" ]; then
   pass "the fd 3 marker without a caller fd 3 -> exit non-zero, nothing on stdout"

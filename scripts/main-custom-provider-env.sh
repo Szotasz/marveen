@@ -14,5 +14,5 @@ main_custom_provider_env() {
   # As channels.sh: the config dir only when it exists, so the helper stamps the key approval into the right .claude.json.
   [ -n "$cfg" ] && [ -d "$cfg" ] || cfg=""
   # CUSTPROVFD3-1125: the prefix on fd 3, the helper's stdout and stderr to the log (channels.sh's contract).
-  MARVEEN_PREFIX_FD=3 "$node" "$dir/scripts/main-agent-custom-provider.mjs" "$cfg" 3>&1 2>>"$log" 1>&2
+  MARVEEN_CONTRACT_FD=3 "$node" "$dir/scripts/main-agent-custom-provider.mjs" "$cfg" 3>&1 2>>"$log" 1>&2
 }

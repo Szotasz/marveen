@@ -9,7 +9,7 @@
 //   the mode and dir exactly as scripts/main-agent-isolated-config.mjs printed them (explicit|rotated|token|isolated,
 //   or empty for the shared root).
 //
-// Output contract, on fd 3 (callers redirect `3>&1 2>>log 1>&2`, as for main-agent-isolated-config.mjs, so a log
+// Output contract, on fd 3 (callers pass MARVEEN_CONTRACT_FD=3 and redirect `3>&1 2>>log 1>&2`, as for main-agent-isolated-config.mjs, so a log
 // line the dist modules print can never reach the contract), ONE line:
 //   main-auth<TAB><configured><TAB><effective><TAB><conflict or -><TAB><failed steps comma-joined, or ->
 // One special line (VAULTUNREAD1107): api mode with an unreadable vault writes NOTHING and says
@@ -19,7 +19,7 @@
 
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { fstatSync, writeSync } from 'node:fs'
+import { writeSync } from 'node:fs'
 
 // The vault and logger modules must stay quiet and must not migrate the vault key here (vault-resolve.mjs:44-53).
 process.env.LOG_LEVEL = 'silent'
@@ -28,8 +28,10 @@ process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION = '1'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
 
-let CONTRACT_FD = 3
-try { fstatSync(CONTRACT_FD) } catch { CONTRACT_FD = 1 }
+// AUTHFD3-1125: fd 3 only when the caller says so with MARVEEN_CONTRACT_FD=3 (the callers above do), else stdout. Not
+// "does fd 3 exist": in a hand-run on macOS fd 3 is libuv's own pipe and a write there fails with ENXIO (the same fix
+// as main-agent-isolated-config.mjs, #3143, and main-agent-custom-provider.mjs, #3138).
+const CONTRACT_FD = process.env.MARVEEN_CONTRACT_FD === '3' ? 3 : 1
 
 let mod
 try {

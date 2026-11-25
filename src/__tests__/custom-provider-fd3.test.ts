@@ -20,7 +20,7 @@ import { Worker } from 'node:worker_threads'
 import { writeSync } from 'node:fs'
 process.stdout.write('{"level":30,"msg":"kept target-only settings keys"}\\n')
 await new Promise((res) => { const w = new Worker('process.stdout.write("worker log line\\\\n")', { eval: true }); w.on('exit', res) })
-writeSync(process.env.MARVEEN_PREFIX_FD === '3' ? 3 : 1, ${JSON.stringify(PREFIX)})
+writeSync(process.env.MARVEEN_CONTRACT_FD === '3' ? 3 : 1, ${JSON.stringify(PREFIX)})
 `
 const OLD_CONTRACT = `process.stdout.write(${JSON.stringify(PREFIX)})`
 const BROKEN = `process.stderr.write('main-agent-custom-provider: vault key missing\\n'); process.exit(1)`

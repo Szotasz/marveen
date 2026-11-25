@@ -32,7 +32,7 @@ export interface CustomProviderEnvDeps {
 export function runCustomProviderHelper(script: string, args: string[], timeoutMs = 15_000): string {
   const r = spawnSync(process.execPath, [script, ...args], {
     encoding: 'utf-8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
-    env: { ...process.env, MARVEEN_PREFIX_FD: '3' },
+    env: { ...process.env, MARVEEN_CONTRACT_FD: '3' },
   })
   if (r.error || r.status !== 0) {
     const err = new Error(r.error ? r.error.message : `the helper exited ${r.status ?? r.signal}`)

@@ -32,9 +32,9 @@ function fakeRoot(withDist: boolean): string {
   }
   return root
 }
-// the callers' exact redirection: contract on fd 3, the module's stdout and stderr elsewhere
+// the callers' exact form: MARVEEN_CONTRACT_FD=3, contract on fd 3, the module's stdout and stderr elsewhere
 const runHelper = (root: string, args: string[], env: Record<string, string> = {}) =>
-  execFileSync('/bin/bash', ['-c', 'node "$1" "$2" "$3" 3>&1 1>/dev/null 2>/dev/null; echo "rc=$?"', 'bash', join(root, 'scripts', 'main-agent-auth.mjs'), ...args],
+  execFileSync('/bin/bash', ['-c', 'MARVEEN_CONTRACT_FD=3 node "$1" "$2" "$3" 3>&1 1>/dev/null 2>/dev/null; echo "rc=$?"', 'bash', join(root, 'scripts', 'main-agent-auth.mjs'), ...args],
     { encoding: 'utf-8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env } })
 
 describe('scripts/main-agent-auth.mjs', () => {
@@ -54,6 +54,37 @@ describe('scripts/main-agent-auth.mjs', () => {
     expect(runHelper(fakeRoot(false), ['', ''])).toBe('rc=0\n')
     const root = fakeRoot(true)
     expect(runHelper(root, ['', ''], { STUB_LOG: join(root, 'stub.log'), STUB_THROW: '1' })).toBe('rc=0\n')
+  })
+})
+
+// AUTHFD3-1125: fd 3 only on the caller's word (MARVEEN_CONTRACT_FD=3). The old "does fd 3 exist" probe said yes in a
+// hand-run on macOS (fd 3 is libuv's own pipe there) and the write failed with ENXIO.
+describe('AUTHFD3-1125: the contract descriptor is the caller\'s word, not a probe', () => {
+  const sh = (cmd: string, root: string, log: string) =>
+    execFileSync('/bin/bash', ['-c', cmd, 'bash', join(root, 'scripts', 'main-agent-auth.mjs')],
+      { encoding: 'utf-8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin', STUB_LOG: log } })
+  it('a hand-run (no flag, no fd 3 of its own): the contract is on stdout, exit 0', () => {
+    const root = fakeRoot(true)
+    const out = sh('node "$1" isolated /cfg 2>/dev/null; echo "rc=$?"', root, join(root, 'stub.log'))
+    expect(out).toContain('main-auth\tapi\tapi\t-\tunstamp\n')
+    expect(out.endsWith('rc=0\n')).toBe(true)
+  })
+  it('an open fd 3 without the flag is not taken for the contract: fd 3 stays empty', () => {
+    const root = fakeRoot(true)
+    expect(sh('node "$1" isolated /cfg 3>&1 1>/dev/null 2>/dev/null; echo "rc=$?"', root, join(root, 'stub.log'))).toBe('rc=0\n')
+  })
+  it('one flag name for the three helpers: every caller of main-agent-auth.mjs says MARVEEN_CONTRACT_FD=3, nobody sends MARVEEN_PREFIX_FD', () => {
+    const files = ['scripts/channels.sh', 'scripts/channel-watchdog.sh', 'scripts/stuck-modal-guard.sh', 'scripts/main-custom-provider-env.sh', 'src/web/main-custom-provider-env.ts']
+    let calls = 0
+    for (const f of files) {
+      const text = readFileSync(join(REPO, f), 'utf-8')
+      expect(text, f).not.toMatch(/MARVEEN_PREFIX_FD/)
+      for (const line of text.split('\n').filter((l) => l.includes('scripts/main-agent-auth.mjs"'))) {
+        calls++
+        expect(line, f).toMatch(/MARVEEN_CONTRACT_FD=3 "\$(?:_node_bin|NODE_BIN)" "\$INSTALL_DIR\/scripts\/main-agent-auth\.mjs".* 3>&1 /)
+      }
+    }
+    expect(calls).toBe(3)
   })
 })
 
