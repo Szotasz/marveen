@@ -9,7 +9,7 @@ import { PROJECT_ROOT } from '../config.js'
 
 // The status probe: the one line that pipes the board into a program.
 const probeLine = (out: string): string | undefined =>
-  out.split('\n').find((l) => l.includes('marveen-api.sh kanban-list |'))
+  out.split('\n').find((l) => l.includes('marveen-api.sh kanban-list --json |'))
 
 // A card dispatched to an agent used to just say "drag it to done" -- but a
 // headless agent cannot drag, and the run left no record on the card. The

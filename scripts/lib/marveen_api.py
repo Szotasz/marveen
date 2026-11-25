@@ -70,7 +70,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
   skill-propose <skill-name> <skill-md-file> [--reason-file <file>] [--ref-file <name.md> ...]
                 (each --ref-file goes as references/<its file name>, markdown only)
-  kanban-list
+  kanban-list [--json]
+                (one card per row: id status assignee priority title; --json the whole board, description included)
   schedules-list
   kanban-create <assignee> <low|normal|high|urgent> <title-file>
   kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--actor <name>]
@@ -474,8 +475,9 @@ def build_request(verb, args):
             body['files'] = files
         return 'POST', '/api/skills/propose', body, headers, {}
     if verb == 'kanban-list':
+        as_json = take_flag(args, '--json')
         positional(args, 0, verb)
-        return 'GET', '/api/kanban', None, headers, {}
+        return 'GET', '/api/kanban', None, headers, {'card_rows': not as_json}
     if verb == 'schedules-list':
         # VOICETOKENLEAK1101 PR-B: the schedule list, read only (the self-pace gate keeps every schedule WRITE to the main
         # agent; schedule_write_refused stops any non-GET under the schedule route before it is sent).
@@ -711,6 +713,19 @@ def verb_usage(verb):
     return 'verbs: ' + ', '.join(re.findall(r'^ {2}([a-z-]+)(?= |$)', USAGE, re.M))
 
 
+def card_rows(text):
+    """One card per row: 'id status assignee priority title' (title whole); anything but a JSON list as it came."""
+    try:
+        cards = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(cards, list):
+        return text
+    if not cards:
+        return '(0 cards)'
+    return '\n'.join(f"{c.get('id')} {c.get('status')} {c.get('assignee')} {c.get('priority')} {c.get('title')}" for c in cards)
+
+
 def main(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
@@ -787,7 +802,7 @@ def main(argv):
                 text = json.dumps(answer, ensure_ascii=False)
             except (ValueError, AttributeError):
                 pass  # not the JSON object we expected: print it as it came
-        print(text)
+        print(card_rows(text) if flags.get('card_rows') else text)
         if flags.get('require_sig_ok'):
             # HMACINBOUND1125 (Dani 85038, 3): from_agent='system' alone can be written by a raw INSERT; only a row the
             # server signed is a directive. An older dashboard sends no sig_ok: that is a refusal too, not a pass.

@@ -155,6 +155,25 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(r.stdout.split('\n')[0]).toBe('X-Memory-Search: strict=true; relaxed=false; hits=0')
   })
 
+  it('kanban-list prints one card per row with the whole title; --json the whole board', async () => {
+    const title = 'Hosszú cím ' + 'x'.repeat(300)
+    const board = [
+      { id: 'abcd1234', status: 'in_progress', assignee: 'dani', priority: 'high', title, description: 'leírás', labels: [], version: 3 },
+      { id: 'ef567890', status: 'done', assignee: null, priority: 'low', title: 'rövid', description: null },
+    ]
+    reply = { status: 200, body: JSON.stringify(board) }
+    const r = await run(['kanban-list'])
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe(`abcd1234 in_progress dani high ${title}\nef567890 done None low rövid\n`)
+    const j = await run(['kanban-list', '--json'])
+    expect(JSON.parse(j.stdout)).toEqual(board)
+    expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual(['GET /api/kanban', 'GET /api/kanban'])
+    reply = { status: 200, body: '[]' }
+    expect((await run(['kanban-list'])).stdout).toBe('(0 cards)\n')
+    reply = { status: 200, body: '{"error":"x"}' }
+    expect((await run(['kanban-list'])).stdout).toBe('{"error":"x"}\n')
+  })
+
   it('memory-search: a missing label header is printed as MISSING, also on a 400', async () => {
     reply = { status: 400, body: '' }
     const r = await run(['memory-search', 'dani', 'x'])
