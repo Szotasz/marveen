@@ -2912,7 +2912,7 @@ window._i18n.hu = {
   'auth.companion.name_placeholder': 'A kulcs neve (pl. Laptop asztali társ)',
   'auth.companion.expiry_placeholder': 'Lejárat napokban (alapból 30, legfeljebb 90)',
   'auth.companion.recipients_label': 'Kiknek írhat:',
-  'auth.companion.main_agent':     'fő ágens',
+  'auth.companion.main_agent':     'fő ügynök',
   'auth.companion.bind_ip':        'Csak egy IP-címről fogadja el a kulcsot',
   'auth.companion.ip_placeholder': 'IP-cím (IPv4 vagy IPv6)',
   'auth.companion.bind_ip_hint':   'Fordított proxy vagy Tailscale Serve mögött a szerver a proxy címét látja, nem a gépedét, így ott ez a kötés nem valódi fék.',
