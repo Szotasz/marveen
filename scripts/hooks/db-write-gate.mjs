@@ -475,10 +475,17 @@ function dynamicSources(root) {
   if (mainCfg) otherRoots.push(mainCfg)
   const plans = readJsonFile(join(root, 'store', 'claude-plans.json'))
   if (Array.isArray(plans)) for (const pl of plans) if (pl && typeof pl.configDir === 'string' && pl.configDir.trim()) otherRoots.push(pl.configDir.trim())
+  // PLUGINDIRANCESTOR1125 (Geri, #3141 review 2): an agent's raw claudeConfigDir (agent-config.json, the field without a
+  // plan) is a config root too: its registries and its settings env are read like the others'.
+  const agentConfigs = agentNames(root).map((n) => join(root, 'agents', n, 'agent-config.json'))
+  for (const f of agentConfigs) {
+    const c = readJsonFile(f)
+    if (c && typeof c === 'object' && typeof c.claudeConfigDir === 'string' && c.claudeConfigDir.trim()) otherRoots.push(c.claudeConfigDir.trim())
+  }
   const regDirs = [join(h, '.claude', 'plugins'), join(root, '.channels-config', 'plugins'), ...otherRoots.map((d) => join(expandHome(d), 'plugins'))]
   const settingsFiles = pluginDirSettingsFiles(root, otherRoots)
   const files = [join(root, 'store', 'config-overrides.json'), join(root, '.env'), join(root, 'store', 'claude-plans.json'),
-    ...regDirs.flatMap((d) => [join(d, 'installed_plugins.json'), join(d, 'known_marketplaces.json')]), ...settingsFiles]
+    ...regDirs.flatMap((d) => [join(d, 'installed_plugins.json'), join(d, 'known_marketplaces.json')]), ...settingsFiles, ...agentConfigs]
   return { otherRoots, regDirs, settingsFiles, sig: files.map(mtimeOf).join(',') }
 }
 // ISOCFGENV1125: a settings `env` block can name mod folders in CLAUDE_CODE_PLUGIN_DIRS, and Claude Code loads their
@@ -487,15 +494,19 @@ function dynamicSources(root) {
 // .channels-config/settings.json, each agent's .claude-config/settings.json and project .claude/settings{,.local}.json,
 // the install root's project settings, and each other config root's settings.json (their mtimes are in the cache key).
 // Only absolute or ~ entries (split on ':', Claude Code's path delimiter); a relative one resolves against the
-// session's cwd at load time, which a hook does not know (stated limit).
+// session's cwd at load time, which a hook does not know (stated limit). PLUGINDIRANCESTOR1125: the managed settings
+// files too (admin-written, but their env reaches every session). An env set only in the launch environment (the
+// install .env, the tmux server's global env) is not read here (measured 2026-11-25: neither carries it; the
+// state-observer launch export names <install>/plugins, a static entry).
+const MANAGED_SETTINGS_FILES = ['/Library/Application Support/ClaudeCode/managed-settings.json', '/etc/claude-code/managed-settings.json']
+function agentNames(root) {
+  try { return readdirSync(join(root, 'agents')).filter((n) => !n.startsWith('.')) } catch { return [] }
+}
 function pluginDirSettingsFiles(root, otherRoots) {
   const out = [join(homedir(), '.claude', 'settings.json'), join(root, '.channels-config', 'settings.json'),
-    join(root, '.claude', 'settings.json'), join(root, '.claude', 'settings.local.json'),
+    join(root, '.claude', 'settings.json'), join(root, '.claude', 'settings.local.json'), ...MANAGED_SETTINGS_FILES,
     ...otherRoots.map((d) => join(expandHome(d), 'settings.json'))]
-  let names = []
-  try { names = readdirSync(join(root, 'agents')) } catch { /* no agents dir */ }
-  for (const n of names) {
-    if (n.startsWith('.')) continue
+  for (const n of agentNames(root)) {
     const a = join(root, 'agents', n)
     out.push(join(a, '.claude-config', 'settings.json'), join(a, '.claude', 'settings.json'), join(a, '.claude', 'settings.local.json'))
   }
@@ -1022,7 +1033,11 @@ export function classifyWord(word, ctx) {
     if (sameKey(key, t.key)) return 'exact'
     if (t.dir && underKey(key, t.key)) return 'under'
     // PLUGINCODEWRITE1104 (E2): also strictly below $HOME, so moving or extracting into ~/.claude reaches ~/.claude/plugins
-    if (underKey(t.key, key) && (underKey(key, rootKey) || belowHome(key))) best = 'ancestor'
+    // PLUGINDIRANCESTOR1125 (Geri, #3141 review 1): a dynamic entry (a named mod folder, a marketplace, an installPath)
+    // can sit outside both, and renaming or relinking ANY of its parents swaps the code under the named path. So for
+    // those every ancestor counts, except `/` and $HOME with its own ancestors (the D3 stated limit, unchanged:
+    // `rsync ... ~/` and `find / ...` stay free; the user cannot rename `/` or /Users anyway).
+    if (underKey(t.key, key) && (underKey(key, rootKey) || belowHome(key) || (t.dyn && !underKey(pathKey(homedir()), key) && !sameKey(key, pathKey('/'))))) best = 'ancestor'
   }
   return best
 }

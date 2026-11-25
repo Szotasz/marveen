@@ -193,6 +193,45 @@ describe('ISOCFGENV1125: mod folders named in a settings env CLAUDE_CODE_PLUGIN_
   })
 })
 
+describe('PLUGINDIRANCESTOR1125: a named folder outside the root and $HOME, its ancestors, and the raw claudeConfigDir', () => {
+  const ext = () => join(base, 'ext')
+  const named = () => join(ext(), 'a', 'mod')
+  const setEnv = (file: string, v: string) => {
+    mkdirSync(join(file, '..'), { recursive: true })
+    writeFileSync(file, JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: v } }))
+  }
+  beforeEach(() => setEnv(join(root, 'agents', 'tomi', '.claude-config', 'settings.json'), named()))
+  it.each([
+    () => `mv ${join(ext(), 'a')} ${join(ext(), 'a-old')}`,
+    () => `mv ${join(base, 'prep')} ${join(ext(), 'a')}`,
+    () => `ln -sfn ${join(base, 'prep')} ${join(ext(), 'a')}`,
+    () => `mv ${ext()} ${join(base, 'ext-old')}`,
+    () => `rm -rf ${join(ext(), 'a')}`,
+  ])('an ancestor swap of the named folder is denied: %#', (c) => {
+    expect(bash(c())).toEqual(SUB)
+  })
+  it('the same for a directory marketplace outside the root and $HOME', () => {
+    setEnv(join(root, 'agents', 'tomi', '.claude-config', 'settings.json'), '')
+    mkdirSync(join(root, '.channels-config', 'plugins'), { recursive: true })
+    writeFileSync(join(root, '.channels-config', 'plugins', 'known_marketplaces.json'),
+      JSON.stringify({ dir: { source: { source: 'directory', path: join(ext(), 'mk', 'market') } } }))
+    expect(bash(`mv ${join(ext(), 'mk')} ${join(ext(), 'mk-old')}`)).toEqual(SUB)
+  })
+  it('free: a sibling, a reader on the ancestor, and `/` itself', () => {
+    expect(write(join(ext(), 'b', 'x.ts'))).toEqual({ deny: false })
+    expect(bash(`mv ${join(ext(), 'b')} ${join(ext(), 'b-old')}`).deny).toBe(false)
+    expect(bash(`ls ${join(ext(), 'a')}`).deny).toBe(false)
+    expect(bash('find / -name nothing-here -maxdepth 1').deny).toBe(false)
+  })
+  it('an agent\'s raw claudeConfigDir (no plan) is a config root: its settings env and its plugins dir', () => {
+    const cfg = join(base, 'rawcfg')
+    writeFileSync(join(agent, 'agent-config.json'), JSON.stringify({ claudeConfigDir: cfg }))
+    setEnv(join(cfg, 'settings.json'), join(ext(), 'raw-mod'))
+    expect(write(join(ext(), 'raw-mod', 'x.ts'))).toEqual(SUB)
+    expect(write(join(cfg, 'plugins', 'installed_plugins.json'))).toEqual(SUB)
+  })
+})
+
 describe('the `claude plugin` CLI (allowlist)', () => {
   it.each([
     'claude plugin install x@m', 'claude plugins i x', 'claude plugin uninstall x', 'claude plugin enable x',
