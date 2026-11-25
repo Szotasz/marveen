@@ -47,7 +47,7 @@ import { paneRunsClaude, scheduleHardRestartVerify } from './hard-restart-verify
 import { freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors, supervisorWaitDecision, type SupervisorWait } from './channels-supervisor.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
 import { cfgKindFromDecision, mainAuthConflictText, prepareMainAuth } from './main-auth.js'
-import { mainCustomProviderLaunchEnv } from './main-custom-provider-env.js'
+import { mainCustomProviderLaunchEnv, MainCustomProviderBroken } from './main-custom-provider-env.js'
 import { runMainContinueRestart, type ContinueRestartResult } from './main-rotation-continue.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence, reapForeignMainPollers, reapGromzoOrphans, scheduleGromzoOrphanReap } from './channel-poller-reap.js'
@@ -1808,7 +1808,7 @@ export function createMainChannelsSession(): MainSessionCreateResult {
 // but starts a clean session -- exactly what scripts/channels.sh does -- so a
 // wedged plugin gets a brand-new process even on pure-tmux installs. Distinct
 // from the stage-3 resume (which keeps --continue) by clearing session state.
-function respawnMarveenSessionFresh(): boolean {
+function respawnMarveenSessionFresh(): { ok: boolean; error?: string } {
   const provider = getProvider(getMainAgentProvider())
   // #1954: mark the respawn for the schedule-runner from the START, not the
   // end (see main-respawn-hold.ts); the finally clears it on every exit.
@@ -1851,7 +1851,7 @@ function respawnMarveenSessionFresh(): boolean {
     // leaving the channel offline until manual intervention.
     schedulePluginUnlockAfterRespawn(MAIN_CHANNELS_SESSION, provider.type)
     writeRespawnStamp() // coordinate with the systemd-timer watchdog (covers the keepalive path too)
-    return true
+    return { ok: true }
   } catch (err) {
     // When the pane/session is entirely GONE (not just the claude process
     // wedged), respawn-pane fails with 'can't find pane' and there is nothing to
@@ -1869,10 +1869,17 @@ function respawnMarveenSessionFresh(): boolean {
         'Fresh respawn: pane gone -- falling back to full session recreate (channels.sh)',
       )
       const result = createMainChannelsSession()
-      return result === 'started' || result === 'grace'
+      return { ok: result === 'started' || result === 'grace' }
+    }
+    // RESPAWNREASON1125: a custom provider that cannot be used stopped the respawn before anything was killed; the
+    // caller (the dashboard restart) names that, instead of a generic respawn-pane failure. The message names the
+    // provider and the missing piece (a vault key's id, never its value).
+    if (err instanceof MainCustomProviderBroken) {
+      logger.error({ err: err.message }, 'Fresh session respawn refused: the main agent custom provider cannot be used')
+      return { ok: false, error: `restart refused, the main agent's running session is kept: ${err.message}` }
     }
     logger.error({ err }, 'Fresh session respawn failed')
-    return false
+    return { ok: false }
   } finally {
     endRespawn()
   }
@@ -2073,13 +2080,14 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   // restart no longer takes the fleet down (it did under the old
   // control-group mode, 2026-06-26), but it reruns all of channels.sh.
   // respawn-pane replaces only the claude process in the main channels pane.
-  if (respawnMarveenSessionFresh()) {
+  const fresh = respawnMarveenSessionFresh()
+  if (fresh.ok) {
     marveenLastHardRestart = Date.now()
     noteOwnHardRestartStamp(marveenLastHardRestart) // respawnMarveenSessionFresh wrote the stamp
     verifyHardRestartLater()
     return { ok: true }
   }
-  return { ok: false, error: 'hard restart failed: tmux respawn-pane failed' }
+  return { ok: false, error: fresh.error ?? 'hard restart failed: tmux respawn-pane failed' }
 }
 
 // 8c338dc4: the plan rotation's opt-in continue restart (POST /api/claude-plans/rotate with
@@ -2631,7 +2639,7 @@ function checkMainKeepaliveStaleness(): void {
   if (!staleDueToSleep) {
     sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszélgetés elveszik, memória marad).`)
   }
-  if (respawnMarveenSessionFresh()) {
+  if (respawnMarveenSessionFresh().ok) {
     marveenLastKeepaliveRespawn = now
     monitorMainRespawnAt = Date.now()
     // Suppress the process-down handler during the respawn window (reuses the
