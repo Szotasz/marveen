@@ -5281,7 +5281,9 @@ document.getElementById('agentRenameBtn').addEventListener('click', () => {
   const input = document.getElementById('agentRenameInput')
   input.value = currentAgent.displayName || currentAgent.name
   input.placeholder = currentAgent.name
-  document.getElementById('agentRenameHint').textContent = t('agents.rename.hint', { id: currentAgent.name })
+  // The fallback readAgentDisplayName gives when the key is missing, so the hint names what an empty save brings back.
+  const defaultName = currentAgent.name.charAt(0).toUpperCase() + currentAgent.name.slice(1)
+  document.getElementById('agentRenameHint').textContent = t('agents.rename.hint', { id: currentAgent.name, default: defaultName })
   document.getElementById('agentDetailNameRow').hidden = true
   document.getElementById('agentRenameForm').hidden = false
   input.focus()

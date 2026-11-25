@@ -100,6 +100,29 @@ describe('the button is there for a sub-agent only', () => {
     new Function('document', `${fnSrc('resetAgentRename')}; resetAgentRename(false)`)({ getElementById: (id: string) => els[id] })
     expect(els).toEqual({ agentRenameForm: { hidden: true }, agentDetailNameRow: { hidden: false }, agentRenameBtn: { hidden: true } })
   })
+
+  it('the pencil opens the form, and the hint names the default an empty save brings back', () => {
+    const PENCIL = "document.getElementById('agentRenameBtn').addEventListener('click', "
+    const start = APP.indexOf(PENCIL)
+    expect(start).toBeGreaterThan(-1)
+    const src = APP.slice(start + PENCIL.length, APP.indexOf('\n})\n', start) + 2)
+    const els: Record<string, any> = {
+      agentRenameInput: { value: '', placeholder: '', focus() {}, select() {} },
+      agentRenameHint: { textContent: '' }, agentDetailNameRow: { hidden: false }, agentRenameForm: { hidden: true },
+    }
+    const handler = new Function('document', 'mainAgentId', 't', 'currentAgent', `return ${src}`)(
+      { getElementById: (id: string) => els[id] }, () => 'marveen',
+      (k: string, p: Record<string, unknown>) => `${k} ${JSON.stringify(p)}`, { name: 'kutato', displayName: 'Teszt Elek' })
+    handler()
+    expect(els.agentRenameInput.value).toBe('Teszt Elek')
+    expect(els.agentRenameHint.textContent).toBe('agents.rename.hint {"id":"kutato","default":"Kutato"}')
+    expect(els.agentRenameForm.hidden).toBe(false)
+    expect(els.agentDetailNameRow.hidden).toBe(true)
+  })
+
+  it('both languages say what an empty save does, with the {default} placeholder', () => {
+    for (const lang of [HU, EN]) expect(lang).toMatch(/'agents\.rename\.hint': '[^'\n]*\{id\}[^'\n]*\{default\}[^'\n]*'/)
+  })
 })
 
 describe('saving the name', () => {
