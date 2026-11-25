@@ -5809,6 +5809,20 @@ function applyClaudeCliGate(data) {
   })
 }
 
+// HOSTINGERI18NFU2: the DeepSeek and MiniMax labels of /api/models/available are the server's Hungarian text. The
+// shown language is the VIEWER's (localStorage, then DASHBOARD_LANG, with a live toggle), so a known id gets a lang
+// key here, on data-i18n so a later switch redraws it; an id without a key keeps the server's label.
+const SERVER_MODEL_LABEL_KEYS = {
+  'deepseek-v4-pro': 'agents.model.deepseek_v4_pro',
+  'deepseek-v4-flash': 'agents.model.deepseek_v4_flash',
+  'minimax-m3': 'agents.model.minimax_m3',
+}
+function setServerModelLabel(opt, m) {
+  const key = SERVER_MODEL_LABEL_KEYS[m.id]
+  if (key) opt.dataset.i18n = key
+  opt.textContent = key ? t(key) : m.label
+}
+
 async function loadAvailableModels() {
   try {
     const res = await fetch('/api/models/available')
@@ -5830,7 +5844,7 @@ async function loadAvailableModels() {
       for (const m of deepseekModels) {
         const opt = document.createElement('option')
         opt.value = m.id
-        opt.textContent = m.label
+        setServerModelLabel(opt, m)
         group.appendChild(opt)
       }
     }
@@ -5852,7 +5866,7 @@ async function loadAvailableModels() {
       for (const m of minimaxModels) {
         const opt = document.createElement('option')
         opt.value = m.id
-        opt.textContent = m.label
+        setServerModelLabel(opt, m)
         group.appendChild(opt)
       }
     }

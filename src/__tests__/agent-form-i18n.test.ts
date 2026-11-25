@@ -106,3 +106,52 @@ describe('the security profile select', () => {
     expect(desc.dataset.i18n).toBeUndefined()
   })
 })
+
+// The DeepSeek / MiniMax option labels: the server sends Hungarian; the form shows the viewer's language by model id.
+describe('the server-labelled model options', () => {
+  const ROUTE = read('../web/routes/agents.ts')
+  const serverLabel = (id: string) => {
+    const m = ROUTE.match(new RegExp(`\\{ id: '${id.replace(/[.[\]]/g, '\\$&')}', label: '([^']+)' \\}`))
+    expect(m, id).not.toBeNull()
+    return m![1]
+  }
+  const keysSrc = slice('const SERVER_MODEL_LABEL_KEYS = {', '\n}\n') + '\n}'
+  const KEYS = vm.runInNewContext(`(${keysSrc.slice(keysSrc.indexOf('{'))})`) as Record<string, string>
+  const label = (lang: 'hu' | 'en', m: { id: string; label: string }) => {
+    const opt = { textContent: '', dataset: {} as Record<string, string> }
+    const window = { _lang: lang }
+    const t = (key: string) => (lang === 'hu' ? HU : EN)[key] ?? EN[key] ?? key
+    vm.runInNewContext(keysSrc + '\n' + slice('function setServerModelLabel(', '\n}\n') + '\n}\nsetServerModelLabel(opt, m)', { window, t, opt, m })
+    return opt
+  }
+
+  it('covers every DeepSeek and MiniMax id the route serves, and the Hungarian key is the server label', () => {
+    expect(Object.keys(KEYS).sort()).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro', 'minimax-m3'])
+    for (const [id, key] of Object.entries(KEYS)) {
+      expect(HU[key], key).toBe(serverLabel(id))
+      expect(/[áéíóöőúüű]/i.test(EN[key]), key).toBe(false)
+    }
+  })
+
+  it('an English viewer gets English, keyed on data-i18n; a Hungarian viewer gets the server text', () => {
+    for (const id of Object.keys(KEYS)) {
+      const m = { id, label: serverLabel(id) }
+      const en = label('en', m)
+      expect(en.textContent).toBe(EN[KEYS[id]])
+      expect(en.dataset.i18n).toBe(KEYS[id])
+      expect(label('hu', m).textContent).toBe(m.label)
+    }
+  })
+
+  it('an id without a key keeps the server label and no key', () => {
+    const opt = label('en', { id: 'deepseek-v5-new', label: 'DeepSeek-V5 (új)' })
+    expect(opt.textContent).toBe('DeepSeek-V5 (új)')
+    expect(opt.dataset.i18n).toBeUndefined()
+  })
+
+  it('both option loops use it', () => {
+    const fn = slice('async function loadAvailableModels() {', '\n}\n')
+    expect(fn.match(/setServerModelLabel\(opt, m\)/g)).toHaveLength(2)
+    expect(fn).not.toContain('opt.textContent = m.label')
+  })
+})
