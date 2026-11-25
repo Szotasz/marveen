@@ -2091,6 +2091,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // DASHOPERATOR1005: what a key may reach. 'full' = every existing key and the
   // default, so this column changes nothing until an 'operator' key is minted.
   try { db.exec(`ALTER TABLE device_keys ADD COLUMN scope TEXT NOT NULL DEFAULT 'full'`) } catch { /* column already exists */ }
+  // FIGURAKULCS1125: a 'companion' key's own limits. companion_recipients is a JSON array of agent ids the key may send
+  // to (null = the main agent only); bound_ip the one source address it is accepted from (null = any, the default).
+  // Null on every other key, so these change nothing until a companion key is minted.
+  try { db.exec(`ALTER TABLE device_keys ADD COLUMN companion_recipients TEXT`) } catch { /* column already exists */ }
+  try { db.exec(`ALTER TABLE device_keys ADD COLUMN bound_ip TEXT`) } catch { /* column already exists */ }
 
   // --- OTel Distributed Tracing (card def5a189) ---
   // SQLite-native span store. No external OTel SDK: spans are written via

@@ -56,7 +56,8 @@ export function selectDrainableRows(rows: AgentMessage[], mainAgentId: string): 
     // These ride their own delivery paths (channel inbound is pulled, federated
     // goes through federation) -- same rule as the router's multi-envelope
     // batch.
-    if (cls.category === 'channel-inbound' || cls.category === 'federated') continue
+    // The desktop companion's row (FIGURAKULCS1125) is the owner's message: the router delivers it on its own.
+    if (cls.category === 'channel-inbound' || cls.category === 'companion-inbound' || cls.category === 'federated') continue
     // Urgent/STOP rows are never held, so the router delivers them on its own
     // even mid-restart; draining one here would double-send it.
     if (isUrgentDelivery(row, mainAgentId)) continue

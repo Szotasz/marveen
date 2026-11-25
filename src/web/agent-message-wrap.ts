@@ -8,6 +8,8 @@ import {
   wrapUntrusted,
   wrapTrustedPeer,
   wrapChannelInbound,
+  wrapCompanionInbound,
+  COMPANION_INBOUND_PREAMBLE,
   UNTRUSTED_PREAMBLE,
   TRUSTED_PEER_PREAMBLE,
   CHANNEL_INBOUND_PREAMBLE,
@@ -17,6 +19,7 @@ import {
 } from '../prompt-safety.js'
 import { isTrustedPeer } from '../team-trust.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { COMPANION_SENDER_ID } from './sanitize.js'
 import { isKnownAgent, readAgentChannelProvider } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
@@ -34,7 +37,11 @@ const CHANNEL_COORDINATOR_AGENTS = new Set<string>(
   VOICE_CHANNEL_AGENT_ID === null ? [COORDINATOR_AGENT_ID] : [COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID],
 )
 
-export type AgentMessageCategory = 'channel-inbound' | 'trusted-peer' | 'untrusted' | 'federated'
+// 'companion-inbound' (FIGURAKULCS1125): the owner typing on the desktop companion. The owner's voice like
+// channel-inbound, but its own category: channel-inbound content goes through verbatim and the delivery reads voice
+// file ids and chat ids out of it, which a typed text must never be able to plant. The server builds this envelope and
+// escapes the text (wrapCompanionInbound).
+export type AgentMessageCategory = 'channel-inbound' | 'companion-inbound' | 'trusted-peer' | 'untrusted' | 'federated'
 
 // True when this sender id earns the channel-inbound envelope -- "the owner is
 // speaking here, a reply is expected". Exported because /api/messages is NOT
@@ -52,8 +59,11 @@ export type AgentMessageCategory = 'channel-inbound' | 'trusted-peer' | 'untrust
 // Matched on the SANITIZED id, the same way classifyAgentMessage matches it:
 // a guard that reads the raw string lets through exactly the spellings the
 // classifier still resolves to the privileged id.
+// FIGURAKULCS1125: the desktop companion's id is an owner-voice sender too (its own category, the same refusal
+// elsewhere): no other write path may mint it either.
 export function isChannelInboundSender(fromAgent: string): boolean {
-  return CHANNEL_COORDINATOR_AGENTS.has(sanitizeAgentIdent(fromAgent))
+  const id = sanitizeAgentIdent(fromAgent)
+  return CHANNEL_COORDINATOR_AGENTS.has(id) || id === COMPANION_SENDER_ID
 }
 
 
@@ -204,6 +214,7 @@ export function classifySenderId(
   const safeFrom = sanitizeAgentIdent(fromAgent)
   if (!safeFrom) return null
   if (CHANNEL_COORDINATOR_AGENTS.has(safeFrom)) return { category: 'channel-inbound', safeFrom }
+  if (safeFrom === COMPANION_SENDER_ID) return { category: 'companion-inbound', safeFrom }
   if (isTrustedPeer(fromAgent, toAgent, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam })) {
     return { category: 'trusted-peer', safeFrom }
   }
@@ -220,7 +231,8 @@ export type ClassifiableRow = SignedRowFields & { inbound_sig?: string | null }
 // Not silently dropped: a real owner message written while the key was missing still arrives, as untrusted data.
 export function classifyAgentMessage(row: ClassifiableRow): { category: AgentMessageCategory; safeFrom: string } | null {
   const cls = classifySenderId(row.from_agent, row.to_agent)
-  if (!cls || cls.category !== 'channel-inbound') return cls
+  // The owner's voice either way: the channel lanes and the desktop companion (FIGURAKULCS1125) need the signature.
+  if (!cls || (cls.category !== 'channel-inbound' && cls.category !== 'companion-inbound')) return cls
   const signed = rowSigOk(row)
   if (signed && !signedRowReplayed(row.id)) return cls
   logger.warn({ id: row.id, from: cls.safeFrom, to: row.to_agent, signed, sigPresent: row.inbound_sig != null },
@@ -267,6 +279,12 @@ export function wrapAgentMessageForDelivery(
       ? voiceChannelInboundPreamble(VOICE_CHANNEL_AGENT_ID)
       : CHANNEL_INBOUND_PREAMBLE
     return { wrapped: wrapChannelInbound(content), prefix: `${preamble}\n` }
+  }
+  if (category === 'companion-inbound') {
+    // FIGURAKULCS1125: the owner's typed message, as a user message (no freshness annotation, like channel-inbound).
+    // The msg_id rides in the prefix, so the agent can close the row; the source names the key (server-written).
+    const idSuffix = msgId != null ? ` [msg_id:${msgId}]` : ''
+    return { wrapped: wrapCompanionInbound(originNote, content), prefix: `${COMPANION_INBOUND_PREAMBLE}${idSuffix}\n` }
   }
   const idSuffix = msgId != null ? `, msg_id:${msgId}` : ''
   // Freshness/supersession heads-up appended AFTER the closing bracket of the
