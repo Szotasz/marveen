@@ -57,6 +57,7 @@ import {
   listDeviceKeys,
   revokeDeviceKey,
   getDeviceKey,
+  getCompanionKeyLimits,
   DEVICE_KEY_SCOPES,
   OPERATOR_KEY_DEFAULT_EXPIRY_DAYS,
   OPERATOR_KEY_MAX_EXPIRY_DAYS,
@@ -1121,7 +1122,15 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    json(res, { keys: listDeviceKeys() })
+    // FIGURAKULCS1125: a companion key's row also names its recipients (the main agent when none are stored) and its
+    // bound address, so the owner sees whom the key can write to.
+    json(res, {
+      keys: listDeviceKeys().map((k) => {
+        if (k.scope !== 'companion') return k
+        const limits = getCompanionKeyLimits(k.id)
+        return { ...k, recipients: limits?.recipients ?? [MAIN_AGENT_ID], bound_ip: limits?.boundIp ?? null }
+      }),
+    })
     return true
   }
 

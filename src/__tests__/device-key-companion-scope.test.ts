@@ -127,6 +127,20 @@ describe('POST /api/auth/device-keys scope companion', () => {
     await tryHandleAuth(ctx)
     expect(out.status).toBe(400)
   })
+
+  it('GET lists a companion key with its recipients and bound address; other keys without them', async () => {
+    const toMain = (await mint({ name: 'list-main' })).body
+    const toAgent = (await mint({ name: 'list-agent', recipients: [AGENT], bound_ip: '100.64.0.9' })).body
+    const full = createDeviceKey('list-full')
+    const { ctx, out } = fakeCtx('GET', '/api/auth/device-keys', undefined, owner)
+    await tryHandleAuth(ctx)
+    expect(out.status).toBe(200)
+    const byId = new Map((out.body.keys as any[]).map((k) => [k.id, k]))
+    expect(byId.get(toMain.id)).toMatchObject({ scope: 'companion', recipients: [MAIN_AGENT_ID], bound_ip: null })
+    expect(byId.get(toAgent.id)).toMatchObject({ scope: 'companion', recipients: [AGENT], bound_ip: '100.64.0.9' })
+    expect(byId.get(full.id)).not.toHaveProperty('recipients')
+    expect(byId.get(full.id)).not.toHaveProperty('bound_ip')
+  })
 })
 
 // ---- HTTP: the gate in front of the real routes ---------------------------------------------------------------
