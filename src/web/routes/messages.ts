@@ -378,12 +378,18 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // owner message. A device key is a per-device secret the sub-agents do not
     // have, so requiring it is what makes the id trustworthy at DELIVERY time,
     // where the auth context is long gone and only from_agent survives.
-    if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && ctx.auth?.kind !== 'device') {
+    //
+    // FIGVOICELANE1125: and only a FULL device key, on the scope like the companion lane, not on kind === 'device'
+    // alone. The narrow keys (operator, messenger, companion) cannot reach this today -- their own gates stop them
+    // first (operator: /api/operator/* only; messenger: from = its own name, never the voice id; companion: its own
+    // id only) -- so this is defence in depth, kept in the one place the voice id is accepted. The voice relay sends
+    // with a full key (measured on a live install 2026-11-25), so nothing that works today stops.
+    if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && !(ctx.auth?.kind === 'device' && ctx.auth.scope === 'full')) {
       logger.warn(
-        { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' },
-        'Rejected /api/messages POST as voice channel without a device key',
+        { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none', scope: ctx.auth?.scope },
+        'Rejected /api/messages POST as voice channel without a full device key',
       )
-      json(res, { error: `from '${VOICE_CHANNEL_AGENT_ID}' requires an enrolled device key, not the shared dashboard token` }, 403)
+      json(res, { error: `from '${VOICE_CHANNEL_AGENT_ID}' requires an enrolled full device key, not the shared dashboard token or a narrower key` }, 403)
       return true
     }
     // Desktop companion (FIGURAKULCS1125): the companion id is the owner typing on the desktop companion, framed as

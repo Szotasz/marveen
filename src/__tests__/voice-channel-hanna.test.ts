@@ -54,7 +54,7 @@ describe('voice channel identity', () => {
 })
 
 describe('/api/messages write guard for the voice channel', () => {
-  async function postAs(from: string, auth?: { kind: string; device?: string; deviceId?: number }) {
+  async function postAs(from: string, auth?: { kind: string; device?: string; deviceId?: number; scope?: string }) {
     const payload = JSON.stringify({ from, to: 'marveen', content: 'a dictated line' })
     const req = Readable.from([Buffer.from(payload)]) as any
     let status = 0
@@ -95,6 +95,16 @@ describe('/api/messages write guard for the voice channel', () => {
     }
   })
 
+  // FIGVOICELANE1125: a narrower device key (operator, messenger, companion) is refused as the voice sender; only a
+  // FULL key passes. Their own gates stop them earlier in production, so this is the route's second line.
+  it('REFUSES the voice id from a narrower device key, and from a device principal without a scope', async () => {
+    for (const scope of ['operator', 'messenger', 'companion', undefined] as const) {
+      const { status, body } = await postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'a-device', deviceId: 5, ...(scope ? { scope } : {}) })
+      expect(status, String(scope)).toBe(403)
+      expect(String(body?.error)).toMatch(/full device key/)
+    }
+  })
+
   it('PASSES both guards on the device lane (it has no agents/<id>/ dir either)', async () => {
     // Two guards could refuse this: the device-key lane check, and the
     // known-agent check (the voice id has no agents/<id>/ directory, so it
@@ -103,7 +113,7 @@ describe('/api/messages write guard for the voice channel', () => {
     // throw is the PROOF of passage, so we assert on it rather than skipping:
     // a guard rejection would have returned a 403 instead of ever reaching db.
     await expect(
-      postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'a-device', deviceId: 5 }),
+      postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'a-device', deviceId: 5, scope: 'full' }),
     // HMACINBOUND1125: the insert now runs in a transaction (it is signed with the row id), so the harness's missing
     // DB throws on db.transaction before db.prepare: either name is the same proof of passage.
     ).rejects.toThrow(/prepare|transaction/)
@@ -120,7 +130,8 @@ describe('/api/messages write guard for the voice channel', () => {
 
 describe('the two halves stay paired in the source', () => {
   it('the route guards the voice id on the AUTH LANE, not with a blanket 403', () => {
-    expect(MESSAGES_ROUTE_SRC).toMatch(/sanitizeAgentIdent\(from\)\s*===\s*VOICE_CHANNEL_AGENT_ID\s*&&\s*ctx\.auth\?\.kind\s*!==\s*'device'/)
+    // FIGVOICELANE1125: the lane is a FULL device key (the scope), not any device key.
+    expect(MESSAGES_ROUTE_SRC).toMatch(/sanitizeAgentIdent\(from\)\s*===\s*VOICE_CHANNEL_AGENT_ID\s*&&\s*!\(ctx\.auth\?\.kind\s*===\s*'device'\s*&&\s*ctx\.auth\.scope\s*===\s*'full'\)/)
   })
 
   it('the id comes from the shared constant, never a literal in the route', () => {
