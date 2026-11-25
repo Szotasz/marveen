@@ -52,19 +52,26 @@ afterEach(() => {
 
 describe('/approvals (CMD920 test 19)', () => {
   it('lists only pending items, marks the expired window, shows recipients', () => {
-    const nowSec = Math.floor(Date.now() / 1000)
+    // One clock reading for the fixture AND the render. The window is floored to
+    // whole minutes, so with two readings a second boundary between them printed
+    // "még 19 perc" (measured 2026-11-25: 1 failed of 30714 in a full run, this
+    // file alone 10/10 green; APPROVALSCLOCK1125).
+    const now = Date.now()
+    const nowSec = Math.floor(now / 1000)
     createApproval({ id: 'aaaaaaaa-1', agent_id: 'marveen', category: 'email', action_description: 'Ajánlat küldése', action_payload: JSON.stringify({ to: ['ugyfel@example.com'], cc: 'fonok@example.com' }), timeout_at: nowSec + 1200 })
     createApproval({ id: 'bbbbbbbb-2', agent_id: 'marveen', category: 'email', action_description: 'Régi levél', timeout_at: nowSec - 60 })
     createApproval({ id: 'cccccccc-3', agent_id: 'marveen', category: 'email', action_description: 'Már elbírálva' })
     resolveApproval('cccccccc-3', 'approved', 'owner')
 
-    const text = approvalsListText()
+    const text = approvalsListText(now)
     expect(text).toContain('Ajánlat küldése')
     expect(text).toContain('to: ugyfel@example.com · cc: fonok@example.com')
     expect(text).toContain('Régi levél')
     expect(text).toMatch(/Régi levél.*LEJÁRT/)
     expect(text).toMatch(/Ajánlat küldése.*még 20 perc/)
     expect(text).not.toContain('Már elbírálva')
+    // The floor that made it visible: one second later the same window reads 19.
+    expect(approvalsListText(now + 1000)).toMatch(/Ajánlat küldése.*még 19 perc/)
   })
 
   it('the detail view shows content, hash and window, and changes no state', () => {
