@@ -11,6 +11,8 @@ import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
+import { wakeTextLang } from './restart-wake.js'
+import type { AgentTextLang } from './agent-text-lang.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
 import { readContextTokensFromProjectDir, projectsDirFor, readLastConversationTsFromProjectDir, readLastTurnActivityMs } from './active-model.js'
@@ -62,7 +64,24 @@ const INITIAL_DELAY_MS = 3 * 60_000   // 3 min
  * The nudge text. Deliberately short: the substance is already in the session
  * as SessionStart context, and re-stating it here would only compete with it.
  */
-export function gateWakePrompt(name: string): string {
+export function gateWakePrompt(name: string, lang: AgentTextLang = wakeTextLang()): string {
+  // RESTARTWAKEI18N1125: in the install's agent-text language; the [CONTEXT-RESTART-GATE] prefix stays as it is.
+  if (lang === 'en') {
+    return (
+      '[CONTEXT-RESTART-GATE] You started with a fresh context, because the gate restarted you (/clear). ' +
+      'The restored blocks hold the end of the cleared thread (the last requests, your last answer, the path of the transcript) ' +
+      'and, if you had running work, the TASK-FOLYTATAS block with the steps already done and the next action. ' +
+      'Read them, check your kanban board and your hot memories, and CONTINUE from where it stopped. ' +
+      'Do not start over what is already done, and do not delegate again what you already handed over. ' +
+      'If you have a handoff (HANDOFF.md), an open item of its Next Steps is running work even without a card: ' +
+      'in this first turn, create a card for every item that has none (or write next to the item why it needs none). ' +
+      'If you had no running work and the handoff has no open item either, that is a complete state too: then do not invent a task for yourself. ' +
+      'Do NOT send a message about the fresh context to your channel. ' +
+      (name === MAIN_AGENT_ID
+        ? 'If the handoff was faulty (the restored block is missing or unreadable, or a request was lost), record it in the transcript; do not message the owner.'
+        : `Only if the handoff was faulty (the restored block is missing or unreadable, or a request was lost), report it in an inter-agent message to the main agent (${MAIN_AGENT_ID}), not to the owner.`)
+    )
+  }
   return (
     '[CONTEXT-RESTART-GATE] Friss kontextussal indultal, mert a kapu ujrainditott (/clear). ' +
     'A visszatoltott blokkokban ott a torolt szal vege (utolso keresek, utolso valaszod, az atirat utja) ' +
