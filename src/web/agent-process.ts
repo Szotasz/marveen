@@ -1444,6 +1444,13 @@ function provisionIsolatedConfigDir(
     //
     // enabledPlugins is explicitly never inherited -- it is decided by the
     // scope call above and must not survive from the dir's own older copy.
+    //
+    // `env` IS inherited, deliberately (ISOCFGENV1125): it is user-level, so it
+    // reaches the session's hooks too (PATH, NODE_OPTIONS, CLAUDE_CODE_PLUGIN_DIRS),
+    // but no agent can write this file (db-write-gate: agents/*/.claude-config/
+    // settings.json), so what survives here is the owner's own setting. The code
+    // a CLAUDE_CODE_PLUGIN_DIRS entry names is guarded separately: the gate
+    // reads these files and denies a sub-agent's write into every folder named.
     const ownSettingsPath = join(cfg, 'settings.json')
     if (existsSync(ownSettingsPath)) {
       try {

@@ -53,7 +53,7 @@
 // escape/glob variants, message-data residue), run with `surface: 'security'`.
 
 import { spawnSync } from 'node:child_process'
-import { accessSync, constants as fsConstants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { accessSync, constants as fsConstants, existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -476,13 +476,40 @@ function dynamicSources(root) {
   const plans = readJsonFile(join(root, 'store', 'claude-plans.json'))
   if (Array.isArray(plans)) for (const pl of plans) if (pl && typeof pl.configDir === 'string' && pl.configDir.trim()) otherRoots.push(pl.configDir.trim())
   const regDirs = [join(h, '.claude', 'plugins'), join(root, '.channels-config', 'plugins'), ...otherRoots.map((d) => join(expandHome(d), 'plugins'))]
+  const settingsFiles = pluginDirSettingsFiles(root, otherRoots)
   const files = [join(root, 'store', 'config-overrides.json'), join(root, '.env'), join(root, 'store', 'claude-plans.json'),
-    ...regDirs.flatMap((d) => [join(d, 'installed_plugins.json'), join(d, 'known_marketplaces.json')])]
-  return { otherRoots, regDirs, sig: files.map(mtimeOf).join(',') }
+    ...regDirs.flatMap((d) => [join(d, 'installed_plugins.json'), join(d, 'known_marketplaces.json')]), ...settingsFiles]
+  return { otherRoots, regDirs, settingsFiles, sig: files.map(mtimeOf).join(',') }
+}
+// ISOCFGENV1125: a settings `env` block can name mod folders in CLAUDE_CODE_PLUGIN_DIRS, and Claude Code loads their
+// hooks module into the session's own process at start. No entry here covered such a folder, so a sub-agent could
+// write code that ran in every session whose settings named it. Read: the shared ~/.claude/settings.json, the main agent's
+// .channels-config/settings.json, each agent's .claude-config/settings.json and project .claude/settings{,.local}.json,
+// the install root's project settings, and each other config root's settings.json (their mtimes are in the cache key).
+// Only absolute or ~ entries (split on ':', Claude Code's path delimiter); a relative one resolves against the
+// session's cwd at load time, which a hook does not know (stated limit).
+function pluginDirSettingsFiles(root, otherRoots) {
+  const out = [join(homedir(), '.claude', 'settings.json'), join(root, '.channels-config', 'settings.json'),
+    join(root, '.claude', 'settings.json'), join(root, '.claude', 'settings.local.json'),
+    ...otherRoots.map((d) => join(expandHome(d), 'settings.json'))]
+  let names = []
+  try { names = readdirSync(join(root, 'agents')) } catch { /* no agents dir */ }
+  for (const n of names) {
+    if (n.startsWith('.')) continue
+    const a = join(root, 'agents', n)
+    out.push(join(a, '.claude-config', 'settings.json'), join(a, '.claude', 'settings.json'), join(a, '.claude', 'settings.local.json'))
+  }
+  return out
+}
+function envPluginDirs(file) {
+  const s = readJsonFile(file)
+  const v = s && typeof s === 'object' && s.env && typeof s.env === 'object' ? s.env.CLAUDE_CODE_PLUGIN_DIRS : null
+  return typeof v === 'string' ? v.split(':').map((x) => x.trim()).filter(Boolean) : []
 }
 export function dynamicPluginEntries(root, projectDir, src = dynamicSources(root)) {
   const raw = []
   for (const r of src.otherRoots) raw.push(join(expandHome(r), 'plugins'))
+  for (const f of src.settingsFiles ?? []) raw.push(...envPluginDirs(f))
   for (const d of src.regDirs) {
     const inst = readJsonFile(join(d, 'installed_plugins.json'))
     const plugins = inst && typeof inst === 'object' ? (inst.plugins ?? inst) : null

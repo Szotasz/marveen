@@ -155,6 +155,44 @@ describe('dynamic targets: installPath outside the cache, directory marketplaces
   })
 })
 
+describe('ISOCFGENV1125: mod folders named in a settings env CLAUDE_CODE_PLUGIN_DIRS', () => {
+  const other = () => join(root, 'agents', 'tomi')
+  const mod = () => join(other(), '.claude-config', 'mods', 'observer')
+  const setEnv = (file: string, v: string) => {
+    mkdirSync(join(file, '..'), { recursive: true })
+    writeFileSync(file, JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: v } }))
+  }
+  it('another agent\'s isolated settings names a folder under its own config dir: no sub-agent writes it, the owner of the dir neither', () => {
+    setEnv(join(other(), '.claude-config', 'settings.json'), `${mod()}:${join(base, 'ext', 'second')}`)
+    expect(write(join(mod(), 'hooks', 'register.ts'))).toEqual(SUB)
+    expect(bash(`echo x >> ${join(mod(), 'hooks', 'register.ts')}`)).toEqual(SUB)
+    expect(write(join(base, 'ext', 'second', 'x.ts'))).toEqual(SUB)
+    const own = { cwd: other(), configDir: join(other(), '.claude-config') }
+    const ownWrite = gateDecision('Write', { file_path: join(mod(), 'hooks', 'register.ts'), content: 'x' }, { ...o(own), projectDir: other() })
+    expect(ownWrite).toEqual(SUB)
+  })
+  it('read from the main agent\'s .channels-config and an agent\'s project .claude/settings.local.json too', () => {
+    setEnv(join(root, '.channels-config', 'settings.json'), join(base, 'ext', 'main-mod'))
+    setEnv(join(agent, '.claude', 'settings.local.json'), join(base, 'ext', 'proj-mod'))
+    expect(write(join(base, 'ext', 'main-mod', 'x.ts'))).toEqual(SUB)
+    expect(write(join(base, 'ext', 'proj-mod', 'x.ts'))).toEqual(SUB)
+  })
+  it('the guarded and the relative are left out; a folder nobody names stays free; the main agent is not on this list', () => {
+    setEnv(join(other(), '.claude-config', 'settings.json'), `relative/mod::${root}:${join(root, 'agents')}`)
+    expect(write(join(base, 'ext', 'free', 'x.ts'))).toEqual({ deny: false })
+    expect(write(join(agent, 'work', 'x.ts'))).toEqual({ deny: false })
+    setEnv(join(other(), '.claude-config', 'settings.json'), mod())
+    expect(write(join(mod(), 'x.ts'), { subAgent: false, cwd: root })).toEqual({ deny: false })
+  })
+  it('a broken settings file or a non-string value adds nothing', () => {
+    mkdirSync(join(other(), '.claude-config'), { recursive: true })
+    writeFileSync(join(other(), '.claude-config', 'settings.json'), '{not json')
+    expect(write(join(mod(), 'x.ts'))).toEqual({ deny: false })
+    writeFileSync(join(other(), '.claude-config', 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: 42 } }))
+    expect(write(join(mod(), 'x.ts'))).toEqual({ deny: false })
+  })
+})
+
 describe('the `claude plugin` CLI (allowlist)', () => {
   it.each([
     'claude plugin install x@m', 'claude plugins i x', 'claude plugin uninstall x', 'claude plugin enable x',
