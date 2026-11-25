@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 // BOTTOKEN1124: the install .env held the installer placeholder in
 // TELEGRAM_BOT_TOKEN (and ALLOWED_CHAT_ID), the Bot API answered 404 and every
@@ -49,7 +49,9 @@ function run(envToken: string | null, chanToken: string | null, chatId = '42', a
     `#!/bin/bash\nprintf '%s\\n' "$@" >> "${argsFile}"\ncat >> "${argsFile}"\nprintf '%s' '{"ok":true,"result":{"message_id":1}}'\n`)
   chmodSync(join(binDir, 'curl'), 0o755)
   const r = spawnSync('/bin/bash', [scriptCopy, 'probe'], {
-    env: { PATH: `${binDir}:/usr/bin:/bin`, VITEST: '1', HOME: join(stage, 'home') },
+    // node's own directory: notify.sh reads access.json with `node -e`, and on the CI runner
+    // and on macOS node is not in /usr/bin (review on #3100: 41/42 there).
+    env: { PATH: `${binDir}:${dirname(process.execPath)}:/usr/bin:/bin`, VITEST: '1', HOME: join(stage, 'home') },
     encoding: 'utf-8',
   })
   const sent = existsSync(argsFile) ? readFileSync(argsFile, 'utf-8') : ''
