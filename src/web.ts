@@ -70,6 +70,7 @@ import { tryHandleSecurity } from './web/routes/security.js'
 import { tryHandleBridgeServicePorts } from './web/routes/bridge-service-ports.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
+import { tryHandleCompanion } from './web/routes/companion.js'
 import { tryHandleFederation } from './web/routes/federation.js'
 import { startFederationPoller } from './web/federation/poller.js'
 import { registerBuiltinCommands } from './web/builtin-commands.js'
@@ -314,6 +315,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleBridgeServicePorts(routeCtx)) return
       if (await tryHandleProfiles(routeCtx)) return
       if (await tryHandleMessages(routeCtx)) return
+      if (await tryHandleCompanion(routeCtx)) return
       if (await tryHandleFederation(routeCtx)) return
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandlePrLedger(routeCtx)) return

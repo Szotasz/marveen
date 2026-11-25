@@ -23,11 +23,13 @@
 // an else-branch.
 
 import type http from 'node:http'
+import { isIP } from 'node:net'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { notifySecurityEvent } from '../../notify.js'
-import { parseCookies, SESSION_COOKIE_NAME, messengerNameTaken } from '../auth-gate.js'
+import { parseCookies, SESSION_COOKIE_NAME, messengerNameTaken, companionRecipientInvalid } from '../auth-gate.js'
+import { isKnownAgent } from '../agent-config.js'
 import { MAIN_AGENT_ID, RESERVED_AGENT_IDS, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import {
@@ -58,6 +60,9 @@ import {
   DEVICE_KEY_SCOPES,
   OPERATOR_KEY_DEFAULT_EXPIRY_DAYS,
   OPERATOR_KEY_MAX_EXPIRY_DAYS,
+  COMPANION_KEY_DEFAULT_EXPIRY_DAYS,
+  COMPANION_KEY_MAX_EXPIRY_DAYS,
+  type CompanionKeyLimits,
   type DeviceKeyScope,
 } from '../auth-device-keys.js'
 import { removeBridgeSshAccess, sshDirOverride } from '../bridge-enroll.js'
@@ -1171,28 +1176,74 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    // A messenger key expires under the operator key's rule (MVDKSCOPE917).
-    const mustExpire = scope === 'operator' || scope === 'messenger'
+    // FIGURAKULCS1125: a 'companion' key (the desktop companion) is the owner's alone too. Its name is a label (the
+    // sender id is a code constant); it may list the agents it sends to (default: the main agent only) and bind
+    // itself to one source address (default: off).
+    let companion: Partial<CompanionKeyLimits> | undefined
+    if (scope === 'companion') {
+      if (!mayActAsOwner(auth, req)) {
+        refuseOwner(res, 'Issuing a companion key needs the dashboard login (an owner session).')
+        return true
+      }
+      let recipients: string[] | null = null
+      if (body.recipients !== undefined && body.recipients !== null) {
+        if (!Array.isArray(body.recipients) || body.recipients.length > 50) {
+          json(res, { error: 'recipients must be a list of at most 50 agent ids' }, 400)
+          return true
+        }
+        const seen = new Set<string>()
+        for (const r of body.recipients) {
+          const invalid = companionRecipientInvalid(r)
+          if (invalid) {
+            json(res, { error: `Invalid recipient: ${invalid}` }, 400)
+            return true
+          }
+          if (r !== sanitizeAgentIdent(r as string) || (r !== MAIN_AGENT_ID && !isKnownAgent(r as string))) {
+            json(res, { error: `Invalid recipient '${String(r)}': not a fleet agent id` }, 400)
+            return true
+          }
+          seen.add(r as string)
+        }
+        recipients = seen.size > 0 ? [...seen] : null
+      }
+      let boundIp: string | null = null
+      if (body.bound_ip !== undefined && body.bound_ip !== null && body.bound_ip !== '') {
+        if (typeof body.bound_ip !== 'string' || isIP(body.bound_ip) === 0) {
+          json(res, { error: 'bound_ip must be an IPv4 or IPv6 address' }, 400)
+          return true
+        }
+        boundIp = body.bound_ip
+      }
+      companion = { recipients, boundIp }
+    } else if (body.recipients !== undefined || body.bound_ip !== undefined) {
+      json(res, { error: 'recipients and bound_ip are for a companion key only' }, 400)
+      return true
+    }
+    // A messenger key expires under the operator key's rule (MVDKSCOPE917); a companion key too, sooner.
+    const mustExpire = scope === 'operator' || scope === 'messenger' || scope === 'companion'
     if (mustExpire && (body.expires_in_days === 0 || body.expires_in_days === null)) {
       json(res, { error: `An ${scope} key must expire` }, 400)
       return true
     }
     // Expiry is opt-in for a full key: absent/0 means it lives until revoked.
-    let expiresInDays: number | undefined = mustExpire ? OPERATOR_KEY_DEFAULT_EXPIRY_DAYS : undefined
+    let expiresInDays: number | undefined = scope === 'companion' ? COMPANION_KEY_DEFAULT_EXPIRY_DAYS : mustExpire ? OPERATOR_KEY_DEFAULT_EXPIRY_DAYS : undefined
     if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
       const n = Number(body.expires_in_days)
       // An operator (or messenger) key has its own, shorter ceiling (a year); a full key keeps 3650.
-      const maxDays = mustExpire ? OPERATOR_KEY_MAX_EXPIRY_DAYS : DEVICE_KEY_MAX_EXPIRY_DAYS
+      const maxDays = scope === 'companion' ? COMPANION_KEY_MAX_EXPIRY_DAYS : mustExpire ? OPERATOR_KEY_MAX_EXPIRY_DAYS : DEVICE_KEY_MAX_EXPIRY_DAYS
       if (!Number.isFinite(n) || n <= 0 || n > maxDays) {
         json(res, { error: `Invalid expires_in_days (1-${maxDays})` }, 400)
         return true
       }
       expiresInDays = n
     }
-    const minted = createDeviceKey(name, { expiresInDays, scope: scope as DeviceKeyScope })
+    const minted = createDeviceKey(name, { expiresInDays, scope: scope as DeviceKeyScope, ...(companion ? { companion } : {}) })
     logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt, scope: minted.scope }, 'device key minted')
     // `key` is the one and only disclosure of the raw credential.
-    json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, scope: minted.scope }, 201)
+    json(res, {
+      ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, scope: minted.scope,
+      ...(companion ? { recipients: companion.recipients ?? [MAIN_AGENT_ID], bound_ip: companion.boundIp ?? null } : {}),
+    }, 201)
     return true
   }
 

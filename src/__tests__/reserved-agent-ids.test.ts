@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { FIXED_RESERVED_AGENT_IDS, MESSAGE_LAYER_RESERVED_AGENT_IDS, AGENT_ROUTE_RESERVED_IDS } from '../web/sanitize.js'
+import { FIXED_RESERVED_AGENT_IDS, MESSAGE_LAYER_RESERVED_AGENT_IDS, AGENT_ROUTE_RESERVED_IDS, COMPANION_SENDER_ID } from '../web/sanitize.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../web/system-directive.js'
 import { HEARTBEAT_AGENT_ID, VOICE_CHANNEL_ID, RESERVED_AGENT_IDS } from '../config.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
@@ -19,6 +19,8 @@ describe('RESERVED_AGENT_IDS', () => {
     const owned = new Set<string>([
       SYSTEM_DIRECTIVE_SENDER, HEARTBEAT_AGENT_ID, COORDINATOR_AGENT_ID, ...CHAT_SYSTEM_AGENTS,
       ...(VOICE_CHANNEL_AGENT_ID === null ? [] : [VOICE_CHANNEL_AGENT_ID]),
+      // FIGURAKULCS1125: the desktop companion's sender id
+      COMPANION_SENDER_ID,
     ])
     const messageLayer = RESERVED_AGENT_IDS.filter((id) => !AGENT_ROUTE_RESERVED_IDS.includes(id))
     expect([...messageLayer].sort()).toEqual([...owned].sort())

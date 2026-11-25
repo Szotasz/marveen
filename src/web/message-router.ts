@@ -1551,7 +1551,8 @@ function collectBatchMates(
     if (compareDeliveryOrder(m, head) <= 0) continue
     if (batchedMsgIdsThisTick.has(m.id)) continue
     const cls = classifyAgentMessage(m)
-    if (!cls || cls.category === 'channel-inbound' || cls.category === 'federated') continue
+    // The owner's own messages (channel lanes, the desktop companion) are never folded into a peer batch.
+    if (!cls || cls.category === 'channel-inbound' || cls.category === 'companion-inbound' || cls.category === 'federated') continue
     if (items.length >= cap - 1) break
     if (getMessageStatus(m.id) !== 'pending') continue
     const effective = m.trace_id && m.span_id

@@ -1769,10 +1769,10 @@ export const SECURITY_SQL_WRITE_RX = new RegExp(
 // THE LIMIT, as for the security tables: a text-based brake, not an OS boundary; a program that builds the statement
 // at run time passes. The real lock is a server-side mark on the row (HMACINBOUND1125, decided separately).
 // Reserved senders: the message layer's reserved ids (sanitize.ts MESSAGE_LAYER_RESERVED_AGENT_IDS), the voice
-// channel's default id and the one this install's .env names (VOICE_CHANNEL_ID). A NEW owner-voice sender (the
-// planned companion id, FIGURAKULCS1125) is reserved there too, and agent-messages-forge.test.ts fails until it
-// is listed here as well.
-export const AGENT_MESSAGES_RESERVED_SENDERS = ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']
+// channel's default id and the one this install's .env names (VOICE_CHANNEL_ID). A NEW owner-voice sender is
+// reserved there too, and agent-messages-forge.test.ts fails until it is listed here as well: the desktop companion
+// (sanitize.ts COMPANION_SENDER_ID, FIGURAKULCS1125) is.
+export const AGENT_MESSAGES_RESERVED_SENDERS = ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna', 'desktop-companion']
 const AGENT_MESSAGES_FLAG_COLUMNS = new Set(['stop_authorized', 'urgent', 'priority', 'affects_current_work'])
 const AM_IDENT = sqlIdent(['agent_messages'])
 const AM_ROW_WRITE_RX = new RegExp(
