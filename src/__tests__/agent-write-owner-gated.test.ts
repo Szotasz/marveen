@@ -78,7 +78,7 @@ afterAll(() => {
 
 describe('the field split', () => {
   it('owner fields + {model, modelProfile} are exactly the writable fields (a new writable field must be classified)', () => {
-    expect([...AGENT_PUT_OWNER_FIELDS, 'model', 'modelProfile'].sort()).toEqual([...AGENT_PUT_WRITABLE_FIELDS].sort())
+    expect([...AGENT_PUT_OWNER_FIELDS, 'model', 'modelProfile', 'skillOverrides'].sort()).toEqual([...AGENT_PUT_WRITABLE_FIELDS].sort())
   })
   it('a field set to null or an empty string still counts (clearing a provider or a plan changes the target)', () => {
     expect(agentPutOwnerFields({ customProvider: null, claudePlan: '', model: 'x' })).toEqual(['claudePlan', 'customProvider'])

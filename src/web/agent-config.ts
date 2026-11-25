@@ -543,6 +543,38 @@ export function writeAgentCodeMode(name: string, enabled: boolean): void {
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+// Per-agent Claude Code skillOverrides (skill name -> listing mode). Merged by skill name over the shared
+// ~/.claude/settings.json skillOverrides when the isolated config dir is provisioned, the agent's value winning.
+// "on" is the default (an absent name), so only the three narrowing values are accepted.
+export const SKILL_OVERRIDE_VALUES = ['name-only', 'user-invocable-only', 'off'] as const
+
+/** null when valid, else the reason. An empty object is valid (it clears the field). */
+export function skillOverridesError(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'skillOverrides must be an object of skill name -> mode'
+  for (const [k, v] of Object.entries(value)) {
+    if (!k.trim()) return 'skillOverrides: empty skill name'
+    if (!(SKILL_OVERRIDE_VALUES as readonly unknown[]).includes(v)) return `skillOverrides.${k}: must be one of ${SKILL_OVERRIDE_VALUES.join(', ')}`
+  }
+  return null
+}
+
+export function readAgentSkillOverrides(name: string): Record<string, string> | null {
+  try {
+    const value = JSON.parse(readFileOr(join(agentDir(name), 'agent-config.json'), '{}')).skillOverrides
+    if (skillOverridesError(value) === null && Object.keys(value).length) return value as Record<string, string>
+  } catch { /* fall through */ }
+  return null
+}
+
+// An empty object or null removes the key.
+export function writeAgentSkillOverrides(name: string, overrides: Record<string, string> | null): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  const config = readJsonObjectForWrite(configPath)
+  if (overrides && Object.keys(overrides).length) config.skillOverrides = overrides
+  else delete config.skillOverrides
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 // CODEMODEFLAG1119 (Q1): the mode the agent was last LAUNCHED in, recorded by startAgentProcess. A Code Mode session
 // resumed without Code Mode refuses to start, and a session started without it resumes without it even with the
 // variable set; so when the switch differs from this record the next start is fresh. Missing = launched without.

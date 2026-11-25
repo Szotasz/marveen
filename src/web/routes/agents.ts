@@ -63,6 +63,8 @@ import {
   writeAgentMemoryIsolation,
   readAgentCodeMode,
   writeAgentCodeMode,
+  writeAgentSkillOverrides,
+  skillOverridesError,
   readAgentClaudeConfigDir,
   readAgentRemoteConfig,
   readAgentRunAsUser,
@@ -2904,6 +2906,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       engine?: AgentEngine; codexConfigDir?: string
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean; codeMode?: boolean
+      skillOverrides?: Record<string, string> | null
       modelProfile?: string | null
       customProvider?: string | null
     }
@@ -2929,6 +2932,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (typeof data.customProvider === 'string' && data.customProvider.trim() && !loadCustomProvider(data.customProvider.trim())) {
       json(res, { error: `Unknown custom provider: ${data.customProvider.trim()}` }, 400)
       return true
+    }
+    // Checked before the first write too. null clears the field; the main agent keeps the shared listing.
+    if (data.skillOverrides !== undefined && data.skillOverrides !== null) {
+      const err = isMainChannelsAgent(name) ? 'skillOverrides is not applicable to the main agent' : skillOverridesError(data.skillOverrides)
+      if (err) { json(res, { error: err }, 400); return true }
     }
 
     // MIOAGENTINSTALL1114 (plan 4.2, 7.5; Dani B1, B2): a package agent's CLAUDE.md must keep starting with the
@@ -2975,6 +2983,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       writeAgentMemoryIsolation(name, data.memoryIsolation === true)
     }
+    // Takes effect at the agent's next start (provisionIsolatedConfigDir merges it into its settings.json).
+    if (data.skillOverrides !== undefined) writeAgentSkillOverrides(name, data.skillOverrides)
     if (data.codeMode !== undefined) {
       // CODEMODEFLAG1119: sub-agents only. The switch is read by startAgentProcess's launch command, and the main
       // agent never starts through it (its lifecycle is service-managed: channels.sh and the channel-monitor respawn).

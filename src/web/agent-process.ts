@@ -44,7 +44,7 @@ import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-b
 import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { readAgentEngineConfig, validateAgentEngineConfig, agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite, readAgentSecurityProfile } from './agent-config.js'
+import { readAgentEngineConfig, validateAgentEngineConfig, agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentSkillOverrides, readAgentCodeModeLaunched, writeAgentCodeModeLaunched, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite, readAgentSecurityProfile } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
@@ -1482,6 +1482,15 @@ function provisionIsolatedConfigDir(
         // the shared one is exactly the silent-loss shape this block fixes.
         logger.warn({ err, name, path: ownSettingsPath }, 'isolated-config: unparseable own settings.json, rewriting from shared')
       }
+    }
+    // The agent's own skillOverrides (agent-config.json, PUT /api/agents/:name) are merged by skill name over the
+    // shared ones, the agent's value winning. The key-level rule above would let the shared object replace them whole.
+    // shortcut: with no shared skillOverrides, a cleared field leaves the last merged object in place as a
+    // target-only key; exclude skillOverrides from that inheritance if hand-edited own values stop mattering.
+    const ownSkillOverrides = readAgentSkillOverrides(name)
+    if (ownSkillOverrides) {
+      const shared = isPlainObject(settings.skillOverrides) ? settings.skillOverrides : {}
+      settings.skillOverrides = { ...shared, ...ownSkillOverrides }
     }
     // #1837: the shared copy can carry the operator's permissions.defaultMode
     // (bypassPermissions is a common operator setting), which would make a
