@@ -35,7 +35,8 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
-vi.mock('../config.js', () => ({ MAIN_AGENT_ID: 'main-agent' }))
+// The real config underneath (the directive's header language reads the settings store at load, HOSTINGERI18NFU1125).
+vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<object>()), MAIN_AGENT_ID: 'main-agent' }))
 
 import {
   RESUME_DRAIN_MAX,
