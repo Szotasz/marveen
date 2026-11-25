@@ -103,6 +103,11 @@ const cases: Case[] = [
   { name: 'no access file at all', env: '0', access: undefined, expected: null },
   { name: 'malformed JSON in access.json', env: '0', access: 'not json', expected: null },
   { name: 'allowFrom has only the placeholder', env: '0', access: { allowFrom: ['0'] }, expected: null },
+  // BOTTOKEN1124: the .env.example placeholder is not a chat; measured live 2026-11-24 ("chat not found").
+  { name: 'installer placeholder "your_telegram_chat_id" falls back to allowFrom', env: 'your_telegram_chat_id', access: { allowFrom: [REAL] }, expected: REAL },
+  { name: 'installer placeholder, no access file', env: 'your_telegram_chat_id', access: undefined, expected: null },
+  { name: 'a "your_" placeholder inside allowFrom is skipped like "0"', env: '0', access: { allowFrom: ['your_telegram_chat_id', REAL] }, expected: REAL },
+  { name: 'a real id merely containing "your_" later is kept', env: `${REAL}your_`, access: { allowFrom: ['999'] }, expected: `${REAL}your_` },
 ]
 
 describe('owner-chat parity: shell, Python, TS agree', () => {

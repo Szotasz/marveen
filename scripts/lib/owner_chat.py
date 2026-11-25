@@ -44,6 +44,9 @@ def _normalize(raw):
     v = v.strip()
     if not v or v == "0":
         return None
+    # BOTTOKEN1124: the installer's .env.example placeholders ("your_telegram_chat_id") are not a chat either.
+    if v.lower().startswith("your_"):
+        return None
     return v
 
 
