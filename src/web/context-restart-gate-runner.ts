@@ -102,6 +102,30 @@ export function gateWakePrompt(name: string, lang: AgentTextLang = wakeTextLang(
   )
 }
 
+/**
+ * The persistent-block alert to the main agent (RESTARTWAKEI18N1125: in the install's agent-text language, like the
+ * wake). The [CONTEXT-RESTART-GATE-RIASZTAS] prefix stays as it is in both languages: the readers match it.
+ */
+export function gateAlertText(
+  a: { name: string; blockedSinceMin: number | string; reason: string; workArgs: string[]; thresholdTokens: number; stuckLong: boolean },
+  lang: AgentTextLang = wakeTextLang(),
+): string {
+  const k = Math.round(a.thresholdTokens / 1000)
+  const children = a.workArgs.slice(0, 5).join('; ')
+  if (lang === 'en') {
+    const childInfo = children ? ` Blocking child processes: ${children}` : ''
+    const escalation = a.stuckLong
+      ? ` WARNING: the same reason has not changed for ${a.blockedSinceMin} minutes, so this condition will most likely NOT clear by itself. This is a finding, not a wait: either the blocking thing has to be closed, or the gate has to be prepared for it.`
+      : ''
+    return `[CONTEXT-RESTART-GATE-RIASZTAS] The gate of the "${a.name}" agent has been blocked for ${a.blockedSinceMin} minutes. Reason: ${a.reason}.${childInfo} It reached the ${k}k token threshold, but the gate does not open -- check that no work is stuck.${escalation} (Information, not a request for action.)`
+  }
+  const childInfo = children ? ` Blokkolo gyerekfolyamatok: ${children}` : ''
+  const escalation = a.stuckLong
+    ? ` FIGYELEM: ugyanez az ok ${a.blockedSinceMin} perce valtozatlan, tehat ez a feltetel magatol valoszinuleg NEM fog megszunni. Ez lelet, nem varakozas: vagy a blokkolo dolgot kell lezarni, vagy a kaput kell ra felkesziteni.`
+    : ''
+  return `[CONTEXT-RESTART-GATE-RIASZTAS] A(z) "${a.name}" agens kapuja ${a.blockedSinceMin} perce folyamatosan blokkolt. Ok: ${a.reason}.${childInfo} A(z) ${k}k tokenes kuszob ele ert, de a kapu nem enged -- ellenorizd hogy nincs-e elakadt munka.${escalation} (Tajekoztatas, nem muveletkeres.)`
+}
+
 // tmux path. The hardcoded `/usr/bin/tmux` fallback that used to live here does
 // not exist on a Homebrew macOS install (tmux is /opt/homebrew/bin/tmux), so
 // getPanePid() threw on EVERY sweep, returned null, and the child-process check
@@ -892,13 +916,7 @@ export async function checkAgent(name: string, nowMs: number): Promise<void> {
         try {
           // When the block reason is child processes, include their args so
           // bigme can identify the culprit at a glance (no post-hoc investigation).
-          let childInfo = ''
-          if (decision.reason.startsWith('live-child-processes')) {
-            const workArgs = getLiveWorkChildArgs(session, mcpPatterns)
-            if (workArgs.length > 0) {
-              childInfo = ` Blokkolo gyerekfolyamatok: ${workArgs.slice(0, 5).join('; ')}`
-            }
-          }
+          const workArgs = decision.reason.startsWith('live-child-processes') ? getLiveWorkChildArgs(session, mcpPatterns) : []
           // A BLOCK THAT CANNOT CLEAR IS A FINDING, NOT PATIENCE (GATEDEADLOCK922).
           // Three blocks on 2026-09-22 shared one shape: the condition waited on
           // had no path to becoming false. Two of the three causes are fixed at
@@ -909,9 +927,6 @@ export async function checkAgent(name: string, nowMs: number): Promise<void> {
           // WORDING instead of repeating the same sentence every two hours.
           const stuckLong = typeof blockedSinceMin === 'number'
             && blockedSinceMin >= NEVER_CLEARS_MIN
-          const escalation = stuckLong
-            ? ` FIGYELEM: ugyanez az ok ${blockedSinceMin} perce valtozatlan, tehat ez a feltetel magatol valoszinuleg NEM fog megszunni. Ez lelet, nem varakozas: vagy a blokkolo dolgot kell lezarni, vagy a kaput kell ra felkesziteni.`
-            : ''
           // SENDER AND PREFIX BOTH MATTER HERE (GATESENDER922).
           //
           // This used to be createAgentMessage(name, ...), i.e. the supervisory
@@ -936,7 +951,7 @@ export async function checkAgent(name: string, nowMs: number): Promise<void> {
           createAgentMessage(
             'system',
             MAIN_AGENT_ID,
-            `[CONTEXT-RESTART-GATE-RIASZTAS] A(z) "${name}" agens kapuja ${blockedSinceMin} perce folyamatosan blokkolt. Ok: ${decision.reason}.${childInfo} A(z) ${Math.round(cfg.thresholdTokens / 1000)}k tokenes kuszob ele ert, de a kapu nem enged -- ellenorizd hogy nincs-e elakadt munka.${escalation} (Tajekoztatas, nem muveletkeres.)`,
+            gateAlertText({ name, blockedSinceMin, reason: decision.reason, workArgs, thresholdTokens: cfg.thresholdTokens, stuckLong }),
             GATE_ALERT_ORIGIN_NOTE,
           )
           logger.warn({ agent: name, reason: decision.reason, blockedSinceMin },

@@ -20,7 +20,7 @@ vi.mock('../env.js', async (importOriginal) => {
 })
 
 const { restartWakePrompt, mainRestartWakePrompt, wakeTextLang } = await import('../web/restart-wake.js')
-const { gateWakePrompt } = await import('../web/context-restart-gate-runner.js')
+const { gateWakePrompt, gateAlertText } = await import('../web/context-restart-gate-runner.js')
 const { MAIN_AGENT_ID } = await import('../config.js')
 
 beforeEach(() => { settings.dashboardLang = undefined; settings.agentTextLang = undefined })
@@ -72,6 +72,24 @@ describe('the language of the wake texts', () => {
     settings.agentTextLang = undefined
     settings.dashboardLang = 'de'
     expect(wakeTextLang()).toBe('hu')
+  })
+
+  it('the gate\'s persistent-block alert: both languages, the prefix unchanged, the Hungarian text as before', () => {
+    const a = { name: 'samu', blockedSinceMin: 600, reason: 'live-child-processes', workArgs: ['node x.js', 'bash y.sh'], thresholdTokens: 160_000, stuckLong: true }
+    const en = gateAlertText(a, 'en')
+    expect(en).not.toMatch(/\b(agens|kapuja|perce|blokkolt|kuszob|ellenorizd|FIGYELEM|Tajekoztatas|gyerekfolyamatok)\b/)
+    expect(en.startsWith('[CONTEXT-RESTART-GATE-RIASZTAS] The gate of the "samu" agent has been blocked for 600 minutes. Reason: live-child-processes. Blocking child processes: node x.js; bash y.sh')).toBe(true)
+    expect(en).toContain('160k token threshold')
+    expect(en).toContain('WARNING: the same reason has not changed for 600 minutes')
+    expect(en.endsWith('(Information, not a request for action.)')).toBe(true)
+    // The Hungarian text, byte for byte the one the runner wrote before this change.
+    expect(gateAlertText({ ...a, workArgs: [], stuckLong: false }, 'hu')).toBe(
+      '[CONTEXT-RESTART-GATE-RIASZTAS] A(z) "samu" agens kapuja 600 perce folyamatosan blokkolt. Ok: live-child-processes. ' +
+      'A(z) 160k tokenes kuszob ele ert, de a kapu nem enged -- ellenorizd hogy nincs-e elakadt munka. (Tajekoztatas, nem muveletkeres.)')
+    expect(gateAlertText(a, 'hu')).toContain(' Blokkolo gyerekfolyamatok: node x.js; bash y.sh A(z) 160k')
+    expect(gateAlertText(a, 'hu')).toContain(' FIGYELEM: ugyanez az ok 600 perce valtozatlan')
+    settings.dashboardLang = 'en'
+    expect(gateAlertText(a)).toBe(en)
   })
 
   it('the prefixes other code matches are the same in both languages', () => {
