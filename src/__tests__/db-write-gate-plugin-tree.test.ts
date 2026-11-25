@@ -232,6 +232,63 @@ describe('PLUGINDIRANCESTOR1125: a named folder outside the root and $HOME, its 
   })
 })
 
+// PLUGINDIRGIT1125 (Geri 85505, the #3142 follow-up): a named folder inside a git work tree is rewritten by a git that
+// writes that tree from its top, which names the tree, not the folder. Denied for a sub-agent; reads, add/commit and a
+// tree without a named folder (an agent's own worktree) stay free.
+describe('PLUGINDIRGIT1125: git verbs on a work tree that holds a named plugin folder', () => {
+  const repo = () => join(base, 'ext-repo')
+  const own = () => join(base, 'own-wt')
+  beforeEach(() => {
+    mkdirSync(join(repo(), '.git'), { recursive: true })
+    mkdirSync(join(repo(), 'mods', 'm'), { recursive: true })
+    mkdirSync(join(own(), '.git'), { recursive: true })
+    const f = join(root, 'agents', 'tomi', '.claude-config', 'settings.json')
+    mkdirSync(join(f, '..'), { recursive: true })
+    writeFileSync(f, JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: join(repo(), 'mods', 'm') } }))
+  })
+  it.each([
+    () => `git -C ${repo()} checkout .`,
+    () => `git -C ${repo()} reset --hard HEAD~1`,
+    () => `git -C ${join(repo(), 'mods')} restore .`,
+    () => `cd ${repo()} && git clean -fdx`,
+    () => `cd ${repo()} && git stash pop`,
+    () => `git -C ${repo()} switch other`,
+    () => `git -C ${repo()} pull`,
+    () => `git -C ${repo()} merge topic`,
+    () => `git --work-tree=${repo()} checkout -- .`,
+    () => `git -C ${own()} worktree remove ${repo()}`,
+    () => `git -C ${own()} worktree add ${repo()} topic`,
+    () => `git clone https://example.com/x/y.git ${repo()}`,
+    () => `cd ${base} && git clone --depth 1 https://example.com/x/ext-repo.git`,
+  ])('denied for a sub-agent: %#', (c) => {
+    expect(bash(c())).toEqual(SUB)
+  })
+  it('an unknown directory: denied (the main-checkout rule reads it as the install already, so the reason stays git)', () => {
+    expect(bash('git -C "$R" checkout .')).toEqual({ deny: true, reason: 'git' })
+  })
+  it.each([
+    () => `git -C ${repo()} status`,
+    () => `git -C ${repo()} log --oneline -3`,
+    () => `git -C ${repo()} diff`,
+    () => `git -C ${repo()} add . && git -C ${repo()} commit -m x`,
+    () => `git -C ${repo()} fetch origin`,
+    () => `git -C ${own()} checkout -b topic`,
+    () => `git -C ${own()} reset --hard origin/develop`,
+    () => `git -C ${own()} worktree add ${join(base, 'own-wt-2')} -b t2`,
+    () => `git clone https://example.com/x/y.git ${join(base, 'other')}`,
+  ])('free for a sub-agent: %#', (c) => {
+    expect(bash(c()).deny).toBe(false)
+  })
+  it('the main agent is not under this rule', () => {
+    expect(bash(`git -C ${repo()} reset --hard HEAD~1`, { subAgent: false, cwd: root }).deny).toBe(false)
+  })
+  it('a named folder that is not inside a git work tree: a git from its parent is not this rule\'s', () => {
+    rmSync(join(repo(), '.git'), { recursive: true, force: true })
+    expect(bash(`git -C ${repo()} checkout .`).deny).toBe(false)
+    expect(bash(`git clone https://example.com/x/y.git ${repo()}`).deny).toBe(true)   // clone INTO the folder's parent: still
+  })
+})
+
 describe('the `claude plugin` CLI (allowlist)', () => {
   it.each([
     'claude plugin install x@m', 'claude plugins i x', 'claude plugin uninstall x', 'claude plugin enable x',
