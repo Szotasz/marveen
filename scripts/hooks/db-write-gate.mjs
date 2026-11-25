@@ -1851,7 +1851,9 @@ function writesIntoCwd(words, name) {
 //     other writing subcommand is denied, and so is any -c there.
 const GIT_WORD_RX = /(?:^|[\s;&|(/`"'])git(?=\s|$)/
 const GIT_ENV_RX = /(?:^|[\s;&|(])(?:export\s+|env\s+)?GIT_(?:CONFIG\w*|DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|SSH_COMMAND|SSH|EXEC_PATH|TEMPLATE_DIR|ALTERNATE_OBJECT_DIRECTORIES)=/
-const GIT_PROTECTED_KEY_RX = /^(?:remote\..+\.(?:url|pushurl|fetch|pushurl)|core\.hookspath|include\.path|includeif\..+|url\..+\.(?:insteadof|pushinsteadof))$/i
+// core.worktree (PLUGINDIRGIT1125, Samu's #3145 review): it points a repository's work tree anywhere, and the work-tree
+// rule (dynGitDeny) reads the .git entry, not this key
+const GIT_PROTECTED_KEY_RX = /^(?:remote\..+\.(?:url|pushurl|fetch|pushurl)|core\.hookspath|core\.worktree|include\.path|includeif\..+|url\..+\.(?:insteadof|pushinsteadof))$/i
 const GIT_ROOT_READS = new Set([...['diff', 'log', 'show', 'status', 'blame', 'ls-files', 'grep', 'rev-parse', 'ls-tree', 'cat-file'],
   'rev-list', 'merge-base', 'describe', 'shortlog', 'for-each-ref', 'show-ref', 'name-rev', 'check-ignore', 'count-objects',
   'ls-remote', 'cherry', 'whatchanged', 'version', 'help'])
@@ -1980,6 +1982,50 @@ function repoTop(dir) {
   }
 }
 
+// PLUGINDIRGIT1125 (Geri 85505, the #3142 follow-up): a named plugin folder (a dynamic entry, see dynamicPluginEntries)
+// inside a git work tree is rewritten by a git that writes that work tree from its top (`git -C <tree> checkout .`,
+// `reset --hard`, `clean -fdx`, `worktree remove <tree>`, `clone <url> <parent>`); classifyWord's ancestor rule never
+// sees it, since the words name the tree, not the folder. For a sub-agent such a git is denied when its work tree, or a
+// path it creates or removes (clone, worktree add/remove/move), holds a dynamic entry. A work tree without one, every
+// agent's own worktree, is not touched, and neither are the verbs that leave the files alone (reads, add, commit,
+// fetch, push, refs). Fail closed: a work tree or a path the gate cannot read counts when an entry sits in a git work
+// tree (or, for a path, when any entry exists). The `/`/$HOME limit of the ancestor rule does not apply here: a git
+// writing a work tree at $HOME would rewrite the entry just the same.
+const GIT_TREE_SAFE = new Set([...GIT_ROOT_READS, 'add', 'commit', 'fetch', 'push', 'tag', 'notes', 'branch', 'remote', 'config',
+  'gc', 'fsck', 'prune', 'reflog', 'count-objects'])
+const GIT_URL_RX = /^[A-Za-z][\w+.-]*:\/\/|^[\w.-]+@[\w.-]+:/
+function dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx) {
+  if (!ctx.subAgent || GIT_TREE_SAFE.has(sub)) return false
+  const dyn = installTargets(ctx.root, true, ctx.projectDir, ctx.configDir).list.filter((t) => t.dyn)
+  if (!dyn.length) return false
+  const holds = (p) => { const k = pathKey(p); return dyn.some((t) => underKey(t.key, k)) }
+  const base = workTree ?? dir
+  const paths = (list) => {
+    const out = []
+    for (const a of list) {
+      if (/[$`\u0000]/.test(a)) return null
+      if (!a.startsWith('/') && !a.startsWith('~') && !base) return null
+      out.push(resolve(base ?? '/', expandHome(a)))
+    }
+    return out
+  }
+  if (sub === 'clone' || sub === 'worktree') {
+    if (sub === 'worktree' && !['add', 'remove', 'move'].includes(args[0])) return false
+    const plain = (sub === 'worktree' ? args.slice(1) : args).filter((a) => !a.startsWith('-') && !GIT_URL_RX.test(a))
+    // clone without a folder makes the repository's last name in the current directory: that name is checked too, for
+    // every word (an option value such as `--depth 1` is not told apart from the repository here; only stricter)
+    if (sub === 'clone') {
+      for (const a of args.filter((x) => !x.startsWith('-'))) plain.push(basename(a.replace(/\/+$/, '').replace(/\.git$/, '').replace(/^.*:/, '')) || '.')
+    }
+    const ps = paths(plain)
+    return ps === null || ps.some(holds)
+  }
+  // a verb that writes the work tree: the tree is --work-tree, else the checkout the directory belongs to
+  if (workTree === null || (dirUnknown && !workTree)) return dyn.some((t) => repoTop(t.abs) !== null)
+  const top = workTree ?? repoTop(dir)
+  return !!top && holds(top)
+}
+
 // 'deny', 'allow' (an allowed write in the main checkout: decided, no path rule after it), or null (judge as any other).
 export function gitDecision(words, ctx) {
   const { rootKey } = installTargets(ctx.root)
@@ -1987,6 +2033,7 @@ export function gitDecision(words, ctx) {
   let dir = ctx.cwd
   let dirUnknown = !ctx.cwd
   let pointsIn = false
+  let workTree   // undefined: none given; null: given but unreadable
   const configs = []
   let i = 1
   for (; i < words.length && words[i].value.startsWith('-'); i++) {
@@ -2002,8 +2049,10 @@ export function gitDecision(words, ctx) {
       configs.push(val().split('=')[0])
     } else if (/^--(?:git-dir|work-tree)(?:=|$)/.test(v)) {
       const d = val()
-      if (/[$`\u0000]/.test(d) || !(d.startsWith('/') || ctx.cwd)) pointsIn = true
+      const known = !(/[$`\u0000]/.test(d) || !(d.startsWith('/') || ctx.cwd))
+      if (!known) pointsIn = true
       else if (inRootDir(resolve(ctx.cwd ?? '/', expandHome(d)))) pointsIn = true
+      if (v.startsWith('--work-tree')) workTree = known ? resolve(ctx.cwd ?? '/', expandHome(d)) : null
     }
   }
   const sub = words[i]?.value ?? ''
@@ -2025,6 +2074,7 @@ export function gitDecision(words, ctx) {
   }
   if (sub === 'remote' && ['set-url', 'rename', 'remove', 'rm', 'set-branches', 'set-head'].includes(args[0] ?? '')) return 'deny'
   if (sub === 'remote' && args[0] === 'add' && args.includes('origin')) return 'deny'
+  if (dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx)) return 'deny'
   // the main checkout
   const inRoot = pointsIn || dirUnknown || inRootDir(dir)
   if (!inRoot) return null
@@ -2911,7 +2961,8 @@ function decide(toolName, toolInput, opts = {}, depth = 0) {
     // VARDEFDB1121: a variable that is definitely a literal here is read as that literal (W=/abs; git -C $W)
     const paths = substituteDefiniteCommand(command)
     const file = installFileDeny(paths, opts)
-    if (file === true && subOnly() && !installFileDeny(paths, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
+    // a git denied only for a sub-agent (PLUGINDIRGIT1125: its work tree holds a named plugin folder) is that list's deny
+    if ((file === true || file === 'git') && subOnly() && !installFileDeny(paths, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
     if (file) return { deny: true, reason: file === 'git' ? 'git' : 'install-file' }
     // Refs #2974, #2975: the code this command hands to a shell (sh/bash -c, eval, trap, a shell reading a heredoc or a
     // here-string, source) runs as a command of its own, so it is judged as one, with every rule above: the file-level
