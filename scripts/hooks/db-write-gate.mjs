@@ -1070,7 +1070,9 @@ function shellRunsOnly(segs, k, targets, text) {
 //   (e) as the output of a command substitution in code position (eval "$(cat f)", sh -c "$(cat f)", the command word).
 // A wrapper's directory change (env --chdir/-C, sudo -D) is a later directory the file may run in (laterCwds).
 // Still the stated limit: a run in a LATER Bash call, and a program that reads its code from a file it finds itself.
+// The tables keyed by a command name have no prototype: a command named toString or constructor finds no entry.
 const RUN_WRAPPERS = {
+  __proto__: null,
   nice: ['-n', '--adjustment'], nohup: [], time: ['-f', '--format', '-o', '--output'], command: [], builtin: [],
   exec: ['-a'], setsid: [], stdbuf: ['-i', '-o', '-e', '--input', '--output', '--error'],
   timeout: ['-s', '--signal', '-k', '--kill-after'], gtimeout: ['-s', '--signal', '-k', '--kill-after'],
@@ -1079,7 +1081,7 @@ const RUN_WRAPPERS = {
   ionice: ['-c', '--class', '-n', '--classdata'], caffeinate: ['-t', '-w'],
   env: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'],
 }
-const WRAPPER_CHDIR = { env: ['-C', '--chdir'], sudo: ['-D', '--chdir'] }
+const WRAPPER_CHDIR = { __proto__: null, env: ['-C', '--chdir'], sudo: ['-D', '--chdir'] }
 const RESERVED_RUN_LEAD = new Set(['do', 'then', 'else', '{', '!'])
 // A variable whose value a program reads code from at start-up (a file, or code naming one).
 const STARTUP_VARS = new Set(['BASH_ENV', 'ENV', 'ZDOTDIR', 'PROMPT_COMMAND', 'NODE_OPTIONS', 'PERL5OPT', 'RUBYOPT',
@@ -1234,7 +1236,7 @@ export function copiedNames(segs, k, targets, subs = []) {
   }
   return names
 }
-const OPTION_PROGRAMS = { awk: ['-f', '--file'], gawk: ['-f', '--file'], mawk: ['-f', '--file'], nawk: ['-f', '--file'],
+const OPTION_PROGRAMS = { __proto__: null, awk: ['-f', '--file'], gawk: ['-f', '--file'], mawk: ['-f', '--file'], nawk: ['-f', '--file'],
   sed: ['-f', '--file'], gsed: ['-f', '--file'], make: ['-f', '--file', '--makefile'], gmake: ['-f', '--file', '--makefile'],
   bmake: ['-f'] }
 const VIM_NAMES = new Set(['vim', 'vi', 'nvim', 'ex', 'view', 'gvim', 'mvim', 'vimdiff', 'rvim'])
@@ -1684,7 +1686,7 @@ const DIR_CHANGERS = new Set(['rm', 'rmdir', 'mv', 'cp', 'rsync', 'ln', 'install
 // target-directory flags.
 const COPIERS = new Set(['cp', 'mv', 'install', 'ln', 'rsync', 'ditto'])
 const COPIER_WORD_RX = /(?:^|[\s;&|(/`"'])(?:cp|mv|install|ln|rsync|ditto)(?=\s|$)/
-const EXTRACT_DIR_FLAGS = { tar: ['-C', '--directory', '--cd'], bsdtar: ['-C', '--directory', '--cd'], gtar: ['-C', '--directory', '--cd'],
+const EXTRACT_DIR_FLAGS = { __proto__: null, tar: ['-C', '--directory', '--cd'], bsdtar: ['-C', '--directory', '--cd'], gtar: ['-C', '--directory', '--cd'],
   unzip: ['-d'], cpio: ['-D', '--directory'], patch: ['-d', '--directory'], '7z': ['-o'], '7za': ['-o'] }
 // The target directory an extracting program writes into (null when it names none, or does not extract). Joined
 // (`-Cdir`, `--directory=dir`, 7z's `-odir`) and separate (`-C dir`) forms.
