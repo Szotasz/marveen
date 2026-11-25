@@ -282,6 +282,21 @@ describe('PLUGINDIRGIT1125: git verbs on a work tree that holds a named plugin f
   it('the main agent is not under this rule', () => {
     expect(bash(`git -C ${repo()} reset --hard HEAD~1`, { subAgent: false, cwd: root }).deny).toBe(false)
   })
+  // Samu's #3145 review: core.worktree points a repository's work tree elsewhere, and repoTop reads only the .git entry.
+  // So it is a protected git key now, set (`git config`) or for one call (`-c`), as the remote URLs and hooksPath are.
+  it.each([
+    () => `git -C ${own()} config core.worktree ${repo()}`,
+    () => `git -C ${own()} config --local core.worktree ${repo()}`,
+    () => `git -C ${own()} config set core.worktree ${repo()}`,
+    () => `git -C ${own()} -c core.worktree=${repo()} checkout -- .`,
+    () => `git -C ${own()} -c CORE.WORKTREE=${repo()} checkout -- .`,
+  ])('core.worktree cannot be set or passed: %#', (c) => {
+    expect(bash(c()).deny).toBe(true)
+  })
+  it('core.worktree may be read', () => {
+    expect(bash(`git -C ${own()} config --get core.worktree`).deny).toBe(false)
+    expect(bash(`git -C ${own()} config core.worktree`).deny).toBe(false)
+  })
   it('a named folder that is not inside a git work tree: a git from its parent is not this rule\'s', () => {
     rmSync(join(repo(), '.git'), { recursive: true, force: true })
     expect(bash(`git -C ${repo()} checkout .`).deny).toBe(false)

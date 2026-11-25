@@ -1851,7 +1851,9 @@ function writesIntoCwd(words, name) {
 //     other writing subcommand is denied, and so is any -c there.
 const GIT_WORD_RX = /(?:^|[\s;&|(/`"'])git(?=\s|$)/
 const GIT_ENV_RX = /(?:^|[\s;&|(])(?:export\s+|env\s+)?GIT_(?:CONFIG\w*|DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|SSH_COMMAND|SSH|EXEC_PATH|TEMPLATE_DIR|ALTERNATE_OBJECT_DIRECTORIES)=/
-const GIT_PROTECTED_KEY_RX = /^(?:remote\..+\.(?:url|pushurl|fetch|pushurl)|core\.hookspath|include\.path|includeif\..+|url\..+\.(?:insteadof|pushinsteadof))$/i
+// core.worktree (PLUGINDIRGIT1125, Samu's #3145 review): it points a repository's work tree anywhere, and the work-tree
+// rule (dynGitDeny) reads the .git entry, not this key
+const GIT_PROTECTED_KEY_RX = /^(?:remote\..+\.(?:url|pushurl|fetch|pushurl)|core\.hookspath|core\.worktree|include\.path|includeif\..+|url\..+\.(?:insteadof|pushinsteadof))$/i
 const GIT_ROOT_READS = new Set([...['diff', 'log', 'show', 'status', 'blame', 'ls-files', 'grep', 'rev-parse', 'ls-tree', 'cat-file'],
   'rev-list', 'merge-base', 'describe', 'shortlog', 'for-each-ref', 'show-ref', 'name-rev', 'check-ignore', 'count-objects',
   'ls-remote', 'cherry', 'whatchanged', 'version', 'help'])
