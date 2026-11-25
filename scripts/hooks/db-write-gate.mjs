@@ -297,6 +297,19 @@ export const PROTECTED_INSTALL_PATHS = [
 //                                          dashboard writes it (claude-plans.ts, atomicWriteFileSync); no skill, script or
 //                                          scheduled task does with a tool call (measured 2026-11-11), so the main agent
 //                                          stays free, as with the .env
+//   store/claude-plans-state.json       -- the inputs of the schedule-runner's quota gate (PLANSSTATEGATE1125, Dani #3129
+//   store/usage-latest.json                review): quota-snapshot.ts reads usage-latest.json and, under plan rotation,
+//   store/.claude-rate-limits.json         (the third, Geri's #3144 review: when the official endpoint gives nothing,
+//                                          usage-collect.py fills usage-latest.json from this statusLine side file as
+//                                          source=statusline, which the gate trusts; limit-monitor.sh reads it too; only
+//                                          scripts/statusline-ratelimit.sh writes it, as the statusLine command)
+//                                          the per-plan readings of claude-plans-state.json; the rotation check decides
+//                                          from both. A written reading (a low used_percent, a fresh observedAt) lets
+//                                          background tasks run past the quota or steers the rotation. Writers: the
+//                                          dashboard (claude-plans-state.ts, atomic), the rotation-check script and
+//                                          usage-collect.py (a scheduler command task); none of them names the file in a
+//                                          tool call, and the skills and tasks only read it (measured 2026-11-25), so the
+//                                          main agent stays free, as with claude-plans.json
 export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: '.env' },
   { rel: 'store/provenance-gate-rules.json' },
@@ -306,6 +319,9 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: 'store/.fleet-memgate-observe' },
   { rel: 'store/.channel-unconfigured' },
   { rel: 'store/claude-plans.json' },
+  { rel: 'store/claude-plans-state.json' },
+  { rel: 'store/usage-latest.json' },
+  { rel: 'store/.claude-rate-limits.json' },
   // The user's shared Claude settings (Dani 67840/67841): every agents/*/.claude-config/settings.local.json is a
   // SYMLINK to ~/.claude/settings.local.json, a real file the main agent loads too, so a sub-agent writing it (through
   // its symlink or straight) changes every session's settings. The main agent writes them legitimately: sub-agent only.
