@@ -1369,6 +1369,11 @@ export function respawnMainSessionFresh(): void {
   // end (see main-respawn-hold.ts); the finally clears it on every exit.
   const endRespawn = beginMainRespawn()
   try {
+    // HOSTINGERRETEST1125 (Samu's review): the config and the custom provider env are decided FIRST, before the reaps
+    // below can kill the pane's claude. A provider that cannot be served throws here, and the running main agent is
+    // left as it is, instead of being stopped with nothing started in its place.
+    const respawnConfig = mainRespawnConfigWithAuth()
+    const customProviderEnv = mainCustomProviderLaunchEnv(respawnConfig.isolatedConfigDir)
     // Same rationale as the resume path: respawn-pane -k kills the parent claude
     // but leaves grandchild pollers alive, and two pollers on one bot token race
     // for getUpdates (409). Reap BEFORE respawning, never after.
@@ -1384,8 +1389,6 @@ export function respawnMainSessionFresh(): void {
     }
     ensureSharedClaudeOnboarded()
 
-    const respawnConfig = mainRespawnConfigWithAuth()
-
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
@@ -1399,7 +1402,7 @@ export function respawnMainSessionFresh(): void {
       // point of the nightly restart (drop the accumulated context).
       continueSession: false,
       config: respawnConfig,
-      customProviderEnv: mainCustomProviderLaunchEnv(respawnConfig.isolatedConfigDir),
+      customProviderEnv,
     })
     // c5296a52: the two reaps above kill the pane's claude, and channels.sh starts the session
     // WITHOUT remain-on-exit -- so the pane and the session can already be gone by the time we get
@@ -1466,6 +1469,11 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
   // end (see main-respawn-hold.ts); the finally clears it on every exit.
   const endRespawn = beginMainRespawn()
   try {
+    // HOSTINGERRETEST1125 (Samu's review): the config and the custom provider env are decided FIRST, before the reaps
+    // below can kill the pane's claude. A provider that cannot be served throws here, and the running main agent is
+    // left as it is, instead of being stopped with nothing started in its place.
+    const respawnConfig = mainRespawnConfigWithAuth()
+    const customProviderEnv = mainCustomProviderLaunchEnv(respawnConfig.isolatedConfigDir)
     // Reap any orphan bun/node poller BEFORE we respawn. tmux respawn-pane -k
     // kills the parent claude process but leaves grandchild pollers running -
     // see channel-poller-reap.ts. Without this, the freshly-respawned
@@ -1496,8 +1504,6 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
     // bootcamp mass-"/login"); idempotent re-seed before every respawn.
     ensureSharedClaudeOnboarded()
 
-    const respawnConfig = mainRespawnConfigWithAuth()
-
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
@@ -1513,7 +1519,7 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       // rotating Keychain and 401s. Returns null when isolation is off/no token,
       // preserving the prior shared-root behaviour.
       config: respawnConfig,
-      customProviderEnv: mainCustomProviderLaunchEnv(respawnConfig.isolatedConfigDir),
+      customProviderEnv,
     })
     if (opts.byMonitor) monitorMainRespawnAt = Date.now()
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
@@ -1808,9 +1814,13 @@ function respawnMarveenSessionFresh(): boolean {
   // end (see main-respawn-hold.ts); the finally clears it on every exit.
   const endRespawn = beginMainRespawn()
   try {
+    // HOSTINGERRETEST1125 (Samu's review): the config and the custom provider env are decided FIRST, before the reaps
+    // below can kill the pane's claude. A provider that cannot be served throws here, and the running main agent is
+    // left as it is, instead of being stopped with nothing started in its place.
+    const respawnConfig = mainRespawnConfigWithAuth()
+    const customProviderEnv = mainCustomProviderLaunchEnv(respawnConfig.isolatedConfigDir)
     // Same first-run-picker guard as resumeMarveenSession.
     ensureSharedClaudeOnboarded()
-    const respawnConfig = mainRespawnConfigWithAuth()
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
@@ -1825,7 +1835,7 @@ function respawnMarveenSessionFresh(): boolean {
       // respawn also skips channels.sh, so it must carry the isolated config
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
       config: respawnConfig,
-      customProviderEnv: mainCustomProviderLaunchEnv(respawnConfig.isolatedConfigDir),
+      customProviderEnv,
     })
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.

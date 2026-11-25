@@ -69,6 +69,7 @@ describe('mainCustomProviderLaunchEnv', () => {
 it('all three in-process main respawns pass the provider env from the same config decision', () => {
   const src = readFileSync(join(process.cwd(), 'src', 'web', 'channel-monitor.ts'), 'utf-8')
   expect(src.match(/const respawnConfig = mainRespawnConfigWithAuth\(\)/g)?.length).toBe(3)
-  expect(src.match(/customProviderEnv: mainCustomProviderLaunchEnv\(respawnConfig\.isolatedConfigDir\),/g)?.length).toBe(3)
+  expect(src.match(/const customProviderEnv = mainCustomProviderLaunchEnv\(respawnConfig\.isolatedConfigDir\)/g)?.length).toBe(3)
+  expect(src.match(/^\s*customProviderEnv,$/gm)?.length).toBe(3)
   expect(src.match(/buildMainSessionRespawnCmd\(\{/g)?.length).toBe(3)
 })
