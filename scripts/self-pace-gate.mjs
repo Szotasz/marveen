@@ -485,7 +485,7 @@ function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
   const cmd = (words[i] ?? '').replace(/^.*\//, '')
   // `git grep` reads too (EGRESSFP1106 (c)), in the narrow form gitGrepReadOnly accepts; a leading VAR=x in front of
   // git (GIT_PAGER, GIT_CONFIG_PARAMETERS, ...) can make it run a program, so then it is not a read.
-  const gitRead = cmd === 'git' && i === 0 && gitGrepReadOnly(words.slice(i + 1))
+  const gitRead = cmd === 'git' && i === 0 && (gitGrepReadOnly(words.slice(i + 1)) || gitObjectReadOnly(words.slice(i + 1)))
   if (!ALLOWLIST_READERS.has(cmd) && !gitRead) return false
   // rg runs a program with --pre (EGRESSFP1106, Samu 71567), and a RIPGREP_CONFIG_PATH prefix can bring --pre in from
   // a file: then it is not a read.
@@ -594,6 +594,32 @@ export function gitGrepReadOnly(words) {
     if (long !== null && long.length >= 5 && /^textc/.test(long) && 'textconv'.startsWith(long)) return false
   }
   return true
+}
+
+// GOVREADNAME1125: printing a file from a git object reads too, so a protected NAME under another path or in another
+// revision (`git show origin/develop:templates/<name> | jq ...`, a review of a template of the same name) is not
+// denied. Only the forms that run no program of git's choosing:
+//   - `git show <rev>:<path>`: a blob, printed as stored (no textconv without --textconv, no diff, so no external
+//     diff driver);
+//   - `git cat-file -p|-t|-s|-e|blob <rev>:<path>`: no --textconv / --filters.
+// Every word after the subcommand must be one of those; any other option is refused (a --textconv, --ext-diff,
+// --output=<file> or a pager option), and so is a word without `:` for show (a commit or a path would print a diff).
+// The global options are gitGrepReadOnly's: -C <dir>, --no-pager, -P, --no-optional-locks, --git-dir=, --work-tree=.
+const GIT_OBJECT_RX = /^[^-:][^:]*:[^:]+$/
+export function gitObjectReadOnly(words) {
+  let k = 0
+  for (; k < words.length; k++) {
+    const w = words[k]
+    if (w === '-C') { k++; continue }
+    if (w === '--no-pager' || w === '-P' || w === '--no-optional-locks') continue
+    if (/^--(?:git-dir|work-tree)=/.test(w)) continue
+    break
+  }
+  const rest = words.slice(k + 1)
+  if (!rest.length) return false
+  if (words[k] === 'show') return rest.every((w) => GIT_OBJECT_RX.test(w))
+  if (words[k] === 'cat-file') return ['-p', '-t', '-s', '-e', 'blob'].includes(rest[0]) && rest.length === 2 && GIT_OBJECT_RX.test(rest[1])
+  return false
 }
 
 // rg is a reader, except --pre <program> / --pre=<program> (rg runs it on every file), and any environment prefix
