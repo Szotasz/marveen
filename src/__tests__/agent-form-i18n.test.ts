@@ -155,3 +155,61 @@ describe('the server-labelled model options', () => {
     expect(fn).not.toContain('opt.textContent = m.label')
   })
 })
+
+// The model picker's CLI gate (hint + "not launchable" suffix), run from app.js's own source with a minimal DOM.
+describe('the CLI gate follows a language applied after the models answer', () => {
+  const gateSrc = slice('function applyClaudeCliGate(data) {', '\n}\n') + '\n}'
+  const setup = () => {
+    const mk = (value: string, key?: string) => ({ value, textContent: key ? HU[key] : value, dataset: (key ? { i18n: key } : {}) as Record<string, string>, disabled: false })
+    const sel = { value: 'inherit', options: [mk('inherit', 'agents.model.inherit'), mk('claude-opus-5-5[1m]', 'agents.model.opus55_1m'), mk('claude-haiku-4-5', 'agents.model.haiku45')] }
+    const hint = { textContent: '', style: { display: 'none' } }
+    const window = { _lang: 'hu' as 'hu' | 'en' }
+    const t = (key: string) => (window._lang === 'hu' ? HU : EN)[key] ?? EN[key] ?? key
+    const els: Record<string, unknown> = { agentModel: sel, agentModelCliHint: hint }
+    const ctx = vm.createContext({ window, t, document: { getElementById: (id: string) => els[id] ?? null } })
+    vm.runInContext('var lastAvailableModelsData = null\n' + gateSrc, ctx)
+    return { sel, hint, window, ctx, gate: (data: unknown) => vm.runInContext('applyClaudeCliGate(d)', Object.assign(ctx, { d: data })) }
+  }
+  const GATED = { cli: { error: null }, claudeSupport: { measured: true, installedVersion: '2.1.110', unsupported: [{ id: 'claude-opus-5-5', minCli: '2.1.280' }] } }
+  const UNMEASURED = { cli: { error: 'claude binary not found on PATH' }, claudeSupport: { measured: false, installedVersion: null, unsupported: [] } }
+
+  it('a gated option drawn on the hu fallback is relabelled in English when the gate runs again', () => {
+    const { sel, window, gate } = setup()
+    gate(GATED)
+    expect(sel.options[1].textContent).toContain('legújabb Opus')
+    window._lang = 'en'
+    // What renderStaticI18n does: the data-i18n sweep resets the text, then the gate runs from the cache.
+    sel.options[1].textContent = EN['agents.model.opus55_1m']
+    gate(GATED)
+    expect(sel.options[1].textContent).toBe(`${EN['agents.model.opus55_1m']} (not launchable by the installed CLI (2.1.110), needs at least 2.1.280)`)
+    expect(sel.options[1].disabled).toBe(true)
+    expect(sel.options[2].textContent).toBe(HU['agents.model.haiku45'])
+  })
+
+  it('the unmeasured hint is redrawn in the current language', () => {
+    const { hint, window, gate } = setup()
+    gate(UNMEASURED)
+    expect(hint.textContent).toContain('nem mérhető')
+    window._lang = 'en'
+    gate(UNMEASURED)
+    expect(hint.textContent).toBe(EN['agents.model.cliUnmeasured'].replace('{err}', 'claude binary not found on PATH'))
+    expect(hint.style.display).toBe('')
+  })
+
+  it('an option without a lang key keeps its cached label', () => {
+    const { sel, window, gate } = setup()
+    sel.options[1].dataset = {}
+    sel.options[1].textContent = 'Opus custom'
+    gate(GATED)
+    window._lang = 'en'
+    gate(GATED)
+    expect(sel.options[1].textContent.startsWith('Opus custom (')).toBe(true)
+  })
+
+  it('renderStaticI18n re-applies the gate from the cache, and the cache is a var (no TDZ on the early render)', () => {
+    const render = slice('function renderStaticI18n() {', '\n}\n')
+    expect(render).toContain('applyClaudeCliGate(lastAvailableModelsData)')
+    expect(APP).toContain('\nvar lastAvailableModelsData = null\n')
+    expect(APP.indexOf('function renderStaticI18n() {')).toBeLessThan(APP.indexOf('var lastAvailableModelsData'))
+  })
+})

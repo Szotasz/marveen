@@ -895,6 +895,9 @@ function renderStaticI18n() {
   // DOCKERI18N1119: the "no channel configured" banner's text is drawn from /api/marveen with the language of that
   // moment; on a fresh install that answer can come before DASHBOARD_LANG (Geri, v1.50.1: Hungarian on an en install).
   if (typeof updateMainChannelUnconfBanner === 'function' && mainChannelUnconfLast) updateMainChannelUnconfBanner(mainChannelUnconfLast)
+  // HOSTINGERI18NFU2: the model picker's CLI hint and "not launchable" suffix are drawn when /api/models/available
+  // answers, which can be before the language is applied; the sweep above also resets the gated options' text.
+  if (typeof applyClaudeCliGate === 'function' && lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
 }
 
 // Initial render on page load.
@@ -5771,7 +5774,9 @@ async function loadOllamaModels() {
 //                 silently rewrite it (#751 lesson).
 //   unmeasured -> nothing is filtered (a customer who can pick no model is
 //                 worse off than today) and a visible hint says so.
-let lastAvailableModelsData = null
+// HOSTINGERI18NFU2: renderStaticI18n re-applies the gate from this cache, so the hint and the "not launchable"
+// suffix follow a language applied after the models answer. `var`: renderStaticI18n is defined earlier in the file.
+var lastAvailableModelsData = null
 function applyClaudeCliGate(data) {
   if (data) lastAvailableModelsData = data
   const support = data && data.claudeSupport ? data.claudeSupport : null
@@ -5779,6 +5784,9 @@ function applyClaudeCliGate(data) {
   const selects = [document.getElementById('agentModel'), document.getElementById('editAgentModel')]
   const hints = [document.getElementById('agentModelCliHint'), document.getElementById('editAgentModelCliHint')]
   const base = (id) => String(id || '').replace(/\[[^\]]*\]$/, '')
+  // An option with a lang key is labelled in the current language; the cached text (cliLabel) is the language of
+  // the first gating, which can be the 'hu' fallback before /api/auth/status answers.
+  const label = (opt) => (opt.dataset.i18n ? t(opt.dataset.i18n) : (opt.dataset.cliLabel || opt.textContent))
   const unsupported = new Map()
   if (support && support.measured && Array.isArray(support.unsupported)) {
     for (const u of support.unsupported) unsupported.set(u.id, u.minCli)
@@ -5789,7 +5797,7 @@ function applyClaudeCliGate(data) {
     if (!support || !support.measured) {
       // Unmeasured: restore any earlier gating, show the hint, filter nothing.
       Array.from(sel.options).forEach((opt) => {
-        if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+        if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = label(opt); delete opt.dataset.cliGated }
       })
       if (hint) { hint.textContent = t('agents.model.cliUnmeasured').replace('{err}', (cli && cli.error) || '?'); hint.style.display = '' }
       return
@@ -5799,11 +5807,11 @@ function applyClaudeCliGate(data) {
     Array.from(sel.options).forEach((opt) => {
       if (!String(opt.value).startsWith('claude-')) return
       const minCli = unsupported.get(base(opt.value))
-      if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = label(opt); delete opt.dataset.cliGated }
       if (!minCli) return
       if (!opt.dataset.cliLabel) opt.dataset.cliLabel = opt.textContent
       opt.dataset.cliGated = '1'
-      opt.textContent = opt.dataset.cliLabel + ' (' + t('agents.model.cliUnsupported').replace('{v}', support.installedVersion).replace('{min}', minCli) + ')'
+      opt.textContent = label(opt) + ' (' + t('agents.model.cliUnsupported').replace('{v}', support.installedVersion).replace('{min}', minCli) + ')'
       opt.disabled = opt.value !== current
     })
   })
