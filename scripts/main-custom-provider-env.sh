@@ -3,7 +3,7 @@
 # out-of-process main respawns, channel-watchdog.sh and stuck-modal-guard.sh. Without it their respawn started the
 # main agent on the standard Claude backend: channels.sh is the only launcher that added it (the in-process respawns
 # got it in #3121). The same helper and the same contract as channels.sh's own block:
-#   stdout: the env prefix (ending in "&& "), or nothing when no provider is configured; rc 0
+#   stdout: the env prefix (ending in "&& ", read from the helper's fd 3), or nothing when no provider is configured; rc 0
 #   rc != 0: a provider is configured but cannot be used (no record, no key, no model). The caller must NOT respawn:
 #            the running session stays, instead of being killed and replaced by one on the wrong backend.
 # No dist (a half-updated tree) or no node: nothing, rc 0, the respawn as before.
@@ -13,5 +13,6 @@ main_custom_provider_env() {
   [ -n "$node" ] && [ -f "$dir/dist/web/custom-providers.js" ] || return 0
   # As channels.sh: the config dir only when it exists, so the helper stamps the key approval into the right .claude.json.
   [ -n "$cfg" ] && [ -d "$cfg" ] || cfg=""
-  "$node" "$dir/scripts/main-agent-custom-provider.mjs" "$cfg" 2>>"$log"
+  # CUSTPROVFD3-1125: the prefix on fd 3, the helper's stdout and stderr to the log (channels.sh's contract).
+  MARVEEN_PREFIX_FD=3 "$node" "$dir/scripts/main-agent-custom-provider.mjs" "$cfg" 3>&1 2>>"$log" 1>&2
 }

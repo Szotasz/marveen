@@ -4,7 +4,7 @@
 // without it. On Linux the hard restart IS a respawn-pane, not a channels.sh rerun, so a dashboard restart, and the
 // restart after the wizard's router step, started the main agent on a Claude login the install does not have.
 // The same helper runs here, so the cold launch and the respawn cannot drift apart.
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
@@ -19,16 +19,32 @@ export class MainCustomProviderBroken extends Error {
 
 export interface CustomProviderEnvDeps {
   provider: () => string | null
-  /** Runs the helper; returns its stdout, throws on a non-zero exit (execFileSync's behaviour). */
+  /** Runs the helper; returns its fd 3 text (the prefix), throws on a non-zero exit. */
   runHelper: (args: string[]) => string
   dirExists: (p: string) => boolean
 }
 
+/**
+ * CUSTPROVFD3-1125: runs the helper with the prefix on a THIRD descriptor (the isolated-config contract): its stdout is
+ * never read, so a line an imported dist module logs to fd 1 cannot become part of the launch command. Returns the fd 3
+ * text; throws on a non-zero exit, a timeout or a spawn error, with the helper's stderr on the error (as execFileSync).
+ */
+export function runCustomProviderHelper(script: string, args: string[], timeoutMs = 15_000): string {
+  const r = spawnSync(process.execPath, [script, ...args], {
+    encoding: 'utf-8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+    env: { ...process.env, MARVEEN_PREFIX_FD: '3' },
+  })
+  if (r.error || r.status !== 0) {
+    const err = new Error(r.error ? r.error.message : `the helper exited ${r.status ?? r.signal}`)
+    throw Object.assign(err, { stderr: typeof r.stderr === 'string' ? r.stderr : '' })
+  }
+  const fd3 = r.output?.[3]
+  return typeof fd3 === 'string' ? fd3 : ''
+}
+
 const liveDeps: CustomProviderEnvDeps = {
   provider: () => readAgentCustomProvider(MAIN_AGENT_ID),
-  runHelper: (args) => execFileSync(process.execPath, [HELPER, ...args], {
-    encoding: 'utf-8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'],
-  }),
+  runHelper: (args) => runCustomProviderHelper(HELPER, args),
   dirExists: existsSync,
 }
 

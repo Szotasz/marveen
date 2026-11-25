@@ -390,6 +390,29 @@ else
   fail "no context window set -> none exported" "no CLAUDE_CODE_MAX_CONTEXT_TOKENS" "exit=$GOT_RC, stdout='$GOT_OUT'"
 fi
 
+# CUSTPROVFD3-1125: the callers read the prefix from fd 3 (`3>&1 2>>log 1>&2`). With a module that writes to stdout
+# loaded into the helper's process, the fd 3 text is still the prefix alone, byte for byte the one a manual run
+# (no fd 3, the stdout fallback) prints.
+run '{"customProvider":"litellm-local","model":"oc/gpt-5.6-luna"}' "$NONE_PROVIDER"
+_noise_log="$root/fd3-noise.log"
+FD3_OUT="$(MARVEEN_PREFIX_FD=3 NODE_OPTIONS="--import=data:text/javascript,process.stdout.write('NOISE-ON-STDOUT%5Cn')" node "$root/scripts/main-agent-custom-provider.mjs" 3>&1 2>>"$_noise_log" 1>&2)"
+FD3_RC=$?
+if [ "$FD3_RC" -eq 0 ] && [ "$FD3_OUT" = "$EXPECTED_NONE" ] && grep -q 'NOISE-ON-STDOUT' "$_noise_log"; then
+  pass "fd 3 carries the prefix alone while a module writes to stdout"
+else
+  fail "fd 3 carries the prefix alone while a module writes to stdout" "exit=0, prefix only, noise in the log" "exit=$FD3_RC, fd3='$FD3_OUT'"
+fi
+
+# The marker without a caller's fd 3 (a half-wired caller): the write fails and the helper exits non-zero, which every
+# caller reads as configured-but-broken, never as "no provider".
+NOFD_OUT="$(MARVEEN_PREFIX_FD=3 node "$root/scripts/main-agent-custom-provider.mjs" 3>&- 2>/dev/null)"
+NOFD_RC=$?
+if [ "$NOFD_RC" -ne 0 ] && [ -z "$NOFD_OUT" ]; then
+  pass "the fd 3 marker without a caller fd 3 -> exit non-zero, nothing on stdout"
+else
+  fail "the fd 3 marker without a caller fd 3 -> exit non-zero, nothing on stdout" "exit!=0, stdout empty" "exit=$NOFD_RC, stdout='$NOFD_OUT'"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
