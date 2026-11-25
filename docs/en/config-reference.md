@@ -582,6 +582,7 @@ Every sub-agent's directory is gitignored (`agents/` folder), keeping secrets sa
 {
   "model": "claude-sonnet-5",
   "profileId": "developer-senior",
+  "displayName": "Researcher",
   "team": {
     "role": "member",
     "reportsTo": "marveen",
@@ -591,6 +592,8 @@ Every sub-agent's directory is gitignored (`agents/` folder), keeping secrets sa
   }
 }
 ```
+
+`displayName` (optional) is the name people read for the agent: the dashboard, the federation roster a peer pulls, Gromzo and a generated Slack manifest. The agent id, its folder and every route stay the folder name. Without it, the folder name shows with a capital first letter. It is edited in the agent detail window with the pencil next to the name, and needs the owner login (`PUT /api/agents/<name>` `{"displayName": "..."}`; the shared token cannot write it). The text becomes one line without control characters, cut to 60 characters; an empty name removes the field.
 
 ---
 

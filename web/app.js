@@ -4534,6 +4534,8 @@ async function openMarveenDetail() {
   avatar.innerHTML = `<img src="/api/marveen/avatar${avatarBust()}" alt="${escapeHtml(displayName)}">`
   document.getElementById('agentDetailName').textContent = displayName
   document.getElementById('agentDetailDesc').textContent = m.description || ''
+  // The main agent's name is BOT_NAME in .env (the onboarding sets it), not an agent-config displayName.
+  resetAgentRename(false)
   document.getElementById('agentDetailModel').textContent = m.model || '-'
   // CHANNELUNCONF1110: it said "connected" unconditionally, also on an install whose channel has no token.
   document.getElementById('agentDetailChStatus').innerHTML = m.mainChannelUnconfigured
@@ -5065,6 +5067,7 @@ async function openAgentDetail(agentName) {
     : initial
   document.getElementById('agentDetailName').textContent = detailLabel
   document.getElementById('agentDetailDesc').textContent = currentAgent.description || ''
+  resetAgentRename(true)
   document.getElementById('agentDetailModel').textContent = currentAgent.activeModel || currentAgent.model || 'inherit'
   document.getElementById('agentDetailModelRestarting').hidden = true
 
@@ -5263,6 +5266,74 @@ function populateDetailAvatarGrid() {
     grid.appendChild(item)
   }
 }
+
+// AGENTRENAME1125: a sub-agent's display name is edited in place, next to its name. Only what people read changes
+// (agent-config displayName); the agent id, its folder and every route stay the slug, and the hint says so. The PUT
+// needs the owner session; the server cleans the text and answers with the name it stored.
+function resetAgentRename(editable) {
+  document.getElementById('agentRenameForm').hidden = true
+  document.getElementById('agentDetailNameRow').hidden = false
+  document.getElementById('agentRenameBtn').hidden = !editable
+}
+
+document.getElementById('agentRenameBtn').addEventListener('click', () => {
+  if (!currentAgent || currentAgent.name === mainAgentId()) return
+  const input = document.getElementById('agentRenameInput')
+  input.value = currentAgent.displayName || currentAgent.name
+  input.placeholder = currentAgent.name
+  document.getElementById('agentRenameHint').textContent = t('agents.rename.hint', { id: currentAgent.name })
+  document.getElementById('agentDetailNameRow').hidden = true
+  document.getElementById('agentRenameForm').hidden = false
+  input.focus()
+  input.select()
+})
+
+document.getElementById('agentRenameCancel').addEventListener('click', () => resetAgentRename(true))
+
+document.getElementById('agentRenameForm').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  if (!currentAgent || currentAgent.name === mainAgentId()) return
+  const name = currentAgent.name
+  const input = document.getElementById('agentRenameInput')
+  const value = input.value.trim()
+  if (value === (currentAgent.displayName || name)) { resetAgentRename(true); return }
+  const saveBtn = document.getElementById('agentRenameSave')
+  saveBtn.disabled = true
+  let reply
+  try {
+    reply = await readActionReply(await fetch(`/api/agents/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName: value }),
+    }))
+  } catch {
+    reply = null
+  } finally {
+    saveBtn.disabled = false
+  }
+  if (!reply) { showToast(t('common.error_save'), 'error'); return }
+  if (!reply.ok) {
+    const msg = reply.body.error === 'invalid_display_name' ? t('agents.rename.invalid') : refusalReason(reply, reply.body)
+    showToast(t('common.not_done', { msg }), 'error')
+    input.focus()
+    return
+  }
+  // The window may have moved on to another agent while the request ran: then only the lists are redrawn.
+  const label = (typeof reply.body.displayName === 'string' && reply.body.displayName) || name
+  if (currentAgent && currentAgent.name === name) {
+    currentAgent.displayName = label
+    document.getElementById('agentDetailTitle').textContent = label
+    document.getElementById('agentDetailName').textContent = label
+    const avatar = document.getElementById('agentDetailAvatar')
+    const img = avatar.querySelector('img')
+    if (img) img.alt = label
+    else avatar.textContent = label.charAt(0).toUpperCase()
+    resetAgentRename(true)
+  }
+  showToast(t('agents.rename.saved', { name: label }), 'success')
+  loadAgents()
+  refreshVisibleTeamGraphs()
+})
 
 document.getElementById('avatarChangeBtn').addEventListener('click', () => {
   const gallery = document.getElementById('detailAvatarGallery')
