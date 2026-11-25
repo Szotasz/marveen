@@ -293,6 +293,7 @@ MODEL_FLAG=""
 # never lands in the RESPAWN_CMD string passed to tmux respawn-pane (visible
 # via ps/pane history otherwise).
 CFG_ENV=""
+CUSTOM_PROVIDER_ENV=""
 if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # Contract on fd 3, never stdout -- see scripts/main-agent-isolated-config.mjs
   # and channels.sh: the helper imports a pino-logging module that writes to fd 1
@@ -337,7 +338,22 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   _ma_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
   _ma_line="$(printf '%s\n' "$_ma_line" | grep -m1 -E '^main-auth	' || true)"
   [ -n "$_ma_line" ] && log "main-auth $(printf '%s' "$_ma_line" | cut -f2- | tr '\t' ' ')"
-  unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret _ma_mode _ma_dir _ma_line
+  # CUSTPROVWATCHDOG1125: the main agent's custom provider, decided BEFORE the respawn-pane -k below kills the pane:
+  # a provider that is configured but cannot be used leaves the running session as it is (no respawn).
+  . "$INSTALL_DIR/scripts/main-custom-provider-env.sh" 2>/dev/null || main_custom_provider_env() { :; }
+  _cp_dir=""; [ -n "$CFG_ENV" ] && _cp_dir="$_cfg_dir"
+  CUSTOM_PROVIDER_ENV="$(main_custom_provider_env "$INSTALL_DIR" "$NODE_BIN" "$_cp_dir" "$STORE/channels-failures.log")"
+  _cp_rc=$?
+  if [ "$_cp_rc" -ne 0 ]; then
+    log "main-agent custom provider configured but broken (helper exit $_cp_rc, see channels-failures.log) -- NO respawn, the running session is left as it is"
+    exit 0
+  fi
+  if [ -n "$CUSTOM_PROVIDER_ENV" ]; then
+    # the provider's model rides ANTHROPIC_MODEL; a --model flag would override it (as in channels.sh)
+    MODEL_FLAG=""
+    log "main-agent custom-provider env injected"
+  fi
+  unset _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret _ma_mode _ma_dir _ma_line _cp_dir _cp_rc
 fi
 
 # Full PATH with .bun/bin -- without it the respawned bun telegram bridge does
@@ -376,7 +392,7 @@ PANE_AUTH_POST="{ [ ! -f $(sh_single_quote "$INSTALL_DIR/store/.channels-pane-au
 # (scripts/gromzo-needs-auth-pane.sh). No helper (a half-updated tree): no step, the respawn as before.
 . "$INSTALL_DIR/scripts/gromzo-needs-auth-pane.sh" 2>/dev/null || gromzo_needs_auth_pane_step() { :; }
 GROMZO_NA_STEP="$(gromzo_needs_auth_pane_step "$INSTALL_DIR" "$CHANNELS_ARG")"
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}${GROMZO_NA_STEP}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}${GROMZO_NA_STEP}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}${CHANNELS_ARG}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

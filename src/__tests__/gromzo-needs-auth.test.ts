@@ -322,7 +322,7 @@ describe('channel-watchdog.sh and stuck-modal-guard.sh: the step in their respaw
       expect(src).toMatch(new RegExp(`GROMZO_NA_STEP="\\$\\(gromzo_needs_auth_pane_step "\\$INSTALL_DIR" "\\$${chanVar}"\\)"`))
       const cmd = src.split('\n').filter((l) => /RESPAWN_CMD="export PATH=/.test(l))
       expect(cmd.length).toBe(1)
-      expect(cmd[0]).toContain(`\${PANE_AUTH_POST}\${GROMZO_ENV}\${GROMZO_NA_STEP}${claudeVar}`)
+      expect(cmd[0]).toContain(`\${PANE_AUTH_POST}\${CUSTOM_PROVIDER_ENV}\${GROMZO_ENV}\${GROMZO_NA_STEP}${claudeVar}`)
       // the step is computed after the channels arg is final and before the respawn command is built
       const at = src.indexOf('GROMZO_NA_STEP="$(')
       expect(at).toBeGreaterThan(src.lastIndexOf(`${chanVar}=`))

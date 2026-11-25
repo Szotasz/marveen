@@ -506,6 +506,7 @@ run_guard() {
   # token via $(cat ...) at spawn time so the secret never lands in the
   # RESPAWN_CMD string handed to tmux (visible via ps/pane history otherwise).
   local CFG_ENV=""
+  local CUSTOM_PROVIDER_ENV=""
   local NODE_BIN; NODE_BIN="$(command -v node || true)"
   if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     # The helper keys the isolated dir by PROVIDER; here the configured value is
@@ -550,6 +551,21 @@ run_guard() {
     _ma_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
     _ma_line="$(printf '%s\n' "$_ma_line" | grep -m1 -E '^main-auth	' || true)"
     [ -n "$_ma_line" ] && log "main-auth $(printf '%s' "$_ma_line" | cut -f2- | tr '\t' ' ')"
+    # CUSTPROVWATCHDOG1125: the main agent's custom provider, decided BEFORE the respawn-pane -k below kills the pane
+    # (see channel-watchdog.sh): a provider that cannot be used leaves the running session as it is.
+    . "$INSTALL_DIR/scripts/main-custom-provider-env.sh" 2>/dev/null || main_custom_provider_env() { :; }
+    local _cp_dir=""; [ -n "$CFG_ENV" ] && _cp_dir="$_cfg_dir"
+    local _cp_rc
+    CUSTOM_PROVIDER_ENV="$(main_custom_provider_env "$INSTALL_DIR" "$NODE_BIN" "$_cp_dir" "$STORE/channels-failures.log")"
+    _cp_rc=$?
+    if [ "$_cp_rc" -ne 0 ]; then
+      log "main-agent custom provider configured but broken (helper exit $_cp_rc, see channels-failures.log) -- NO respawn, the running session is left as it is"
+      return 0
+    fi
+    if [ -n "$CUSTOM_PROVIDER_ENV" ]; then
+      MODEL_FLAG=""
+      log "main-agent custom-provider env injected"
+    fi
   fi
 
   # FLEETVENV923: the fleet venv's bin/ first, exactly as channels.sh boots the
@@ -569,7 +585,7 @@ run_guard() {
   # (scripts/gromzo-needs-auth-pane.sh). No helper (a half-updated tree): no step, the respawn as before.
   . "$INSTALL_DIR/scripts/gromzo-needs-auth-pane.sh" 2>/dev/null || gromzo_needs_auth_pane_step() { :; }
   local GROMZO_NA_STEP; GROMZO_NA_STEP="$(gromzo_needs_auth_pane_step "$INSTALL_DIR" "$CHAN_ARG")"
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${GROMZO_ENV}${GROMZO_NA_STEP}$CLAUDE_Q --dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}${CHAN_ARG}"
+  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${PANE_AUTH_SRC}${CFG_ENV}${PANE_AUTH_POST}${CUSTOM_PROVIDER_ENV}${GROMZO_ENV}${GROMZO_NA_STEP}$CLAUDE_Q --dangerously-skip-permissions${SETTINGS_FLAG} ${MODEL_FLAG}${CHAN_ARG}"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

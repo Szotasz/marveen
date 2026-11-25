@@ -69,7 +69,7 @@ describe('every main launch path applies main-auth and sources the post-file rig
     expect(call).toBeGreaterThan(-1)
     expect(call).toBeLessThan(sh.indexOf('respawn-pane -k -t'))
     // GROMZONEEDSAUTHGUARDS1109: the Gromzo needs-auth step sits between the Gromzo exports and claude
-    expect(sh).toContain(`\${PANE_AUTH_SRC}\${CFG_ENV}\${PANE_AUTH_POST}\${GROMZO_ENV}\${GROMZO_NA_STEP}${claude}`)
+    expect(sh).toContain(`\${PANE_AUTH_SRC}\${CFG_ENV}\${PANE_AUTH_POST}\${CUSTOM_PROVIDER_ENV}\${GROMZO_ENV}\${GROMZO_NA_STEP}${claude}`)
   })
 
   it('stuck-modal-guard.sh reads the config helper on fd 3 now, as the other two callers do', () => {
