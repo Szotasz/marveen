@@ -316,7 +316,8 @@ def build_request(verb, args):
     if verb == 'directive-verify':
         (msg_id,) = positional(args, 1, verb)
         check(msg_id, ID_RE, 'message id')
-        return 'GET', f'/api/messages/{msg_id}', None, headers, {}
+        # HMACINBOUND1125: a directive row counts only when the server signed it (sig_ok), see main().
+        return 'GET', f'/api/messages/{msg_id}', None, headers, {'require_sig_ok': True}
     if verb == 'memory-search':
         category = take_opt(args, '--category')
         strict = take_flag(args, '--strict')
@@ -687,6 +688,16 @@ def main(argv):
     if 200 <= status < 300:
         empty_sent_payloads()
         print(text)
+        if flags.get('require_sig_ok'):
+            # HMACINBOUND1125 (Dani 85038, 3): from_agent='system' alone can be written by a raw INSERT; only a row the
+            # server signed is a directive. An older dashboard sends no sig_ok: that is a refusal too, not a pass.
+            try:
+                sig_ok = json.loads(text).get('sig_ok') is True
+            except (ValueError, AttributeError):
+                sig_ok = False
+            if not sig_ok:
+                print('FAIL: sig_ok is not true: the dashboard did not sign this row, so it is not a verified directive.', file=sys.stderr)
+                return 1
         return 0
     print(f'FAIL: HTTP {status}: {text[:500]}', file=sys.stderr)
     return 1

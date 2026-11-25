@@ -235,6 +235,17 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(JSON.parse(seen[2].body)).toEqual({ status: 'failed', result: 'mit csináltam' })
   })
 
+  it('HMACINBOUND1125: directive-verify accepts a row only when the server says sig_ok true', async () => {
+    reply = { status: 200, body: '{"id":7,"from_agent":"system","sig_ok":true}' }
+    expect((await run(['directive-verify', '7'])).code).toBe(0)
+    for (const body of ['{"id":7,"from_agent":"system","sig_ok":false}', '{"id":7,"from_agent":"system"}', 'not json']) {
+      reply = { status: 200, body }
+      const r = await run(['directive-verify', '7'])
+      expect(r.code, body).toBe(1)
+      expect(r.stderr, body).toContain('sig_ok is not true')
+    }
+  })
+
   it('directive-verify, daily-log and the three approval verbs', async () => {
     await run(['directive-verify', '43081'])
     await run(['daily-log', 'dani', file('d.txt', '## 14:00 -- Téma\nMi történt')])
@@ -419,6 +430,8 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
       }, (err) => resolve(err ? (typeof err.code === 'number' ? err.code : -1) : 0))
     })
     // control: the fixture does reach the server with the shared token when nothing names another file
+    // (HMACINBOUND1125: directive-verify exits 0 only on a signed row, so the fixture answers sig_ok)
+    reply = { status: 200, body: '{"ok":true,"sig_ok":true}' }
     expect(await runIn(['directive-verify', '1'], {})).toBe(0)
     expect(seen).toHaveLength(1)
     expect(seen[0].headers.authorization).toBe(`Bearer ${SHARED}`)

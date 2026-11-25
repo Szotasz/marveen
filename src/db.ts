@@ -9,6 +9,7 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
 import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
 import { compareDeliveryOrder, deliveryRankSql } from './delivery-order.js'
+import { ensureInboundSigKey, rowSigOk, signRow } from './inbound-sig.js'
 import { toBudapestTs, type TsRange } from './date-range.js'
 
 let db: Database.Database
@@ -1269,6 +1270,20 @@ export function initDatabase(dbPathOverride?: string): void {
   // every row whose sender did not ask; the only stored value is 'unblocks' (src/web/unblocks-interrupt.ts). Unlike
   // urgent, the flag is the main agent's own explicit field on POST /api/messages, never inferred from the text.
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN affects_current_work TEXT') } catch { /* exists */ }
+  // HMACINBOUND1125: the server's HMAC over the row's fields (src/inbound-sig.ts). NULL on every older row and on a
+  // row written while the key was missing; such a row never gets the owner's voice or a STOP/urgent/priority effect.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN inbound_sig TEXT') } catch { /* exists */ }
+  // HMACINBOUND1125 (Dani 85038, 1): the delivery log of signed rows that speak with the owner's voice or carry a
+  // flag. A signed row verifies forever, so a delivered one put back to pending by a raw UPDATE would speak again;
+  // `delivered` counts the deliveries and `allowed` the ones the server granted (1, plus one per server re-queue,
+  // requeueDeliveredOpenForAgent). In SECURITY_TABLES (scripts/self-pace-gate.mjs), so no agent writes it.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS inbound_sig_log (
+      msg_id INTEGER PRIMARY KEY,
+      delivered INTEGER NOT NULL DEFAULT 0,
+      allowed INTEGER NOT NULL DEFAULT 1
+    )
+  `)
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -5306,6 +5321,8 @@ export interface AgentMessage {
   // REPLAYNOENVELOPE1114: when requeueDeliveredOpenForAgent put this delivered row back to pending (see the
   // migration). Optional in the type for the same reason as urgent; null on every row it did not touch.
   redelivered_at?: number | null
+  // HMACINBOUND1125: the server's signature (src/inbound-sig.ts), null on an unsigned row.
+  inbound_sig?: string | null
 }
 
 export function createAgentMessage(
@@ -5328,11 +5345,25 @@ export function createAgentMessage(
   const priority: 0 | 1 = opts?.priority === 1 ? 1 : 0
   const remoteRef = opts?.remoteRef ?? null
   const affectsCurrentWork = opts?.affectsCurrentWork ?? null
-  const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref, affects_current_work) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef, affectsCurrentWork)
+  // HMACINBOUND1125: insert and sign in one transaction; the signature covers the id, which exists only after the
+  // insert. The dashboard creates the key at boot; this creates it too when missing (this process is the server). A
+  // store that cannot hold it leaves the row unsigned: delivered as an ordinary, untrusted row.
+  const key = ensureInboundSigKey()
+  let inboundSig: string | null = null
+  const id = db.transaction(() => {
+    const info = db.prepare(
+      'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref, affects_current_work) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef, affectsCurrentWork)
+    const newId = Number(info.lastInsertRowid)
+    if (key) {
+      inboundSig = signRow({ id: newId, from_agent: from, to_agent: to, content, created_at: now, stop_authorized: stopAuthorized, urgent, priority, affects_current_work: affectsCurrentWork }, key)
+      db.prepare('UPDATE agent_messages SET inbound_sig = ? WHERE id = ?').run(inboundSig, newId)
+    }
+    return newId
+  })()
+  if (!key) logger.warn({ id, from, to }, 'agent message written unsigned: the inbound signature key is missing (store/.inbound-sig-key)')
   return {
-    id: Number(info.lastInsertRowid),
+    id,
     from_agent: from, to_agent: to, content, status: 'pending',
     result: null, created_at: now, delivered_at: null, seen_at: null, completed_at: null,
     origin_note: originNote ?? null,
@@ -5345,6 +5376,7 @@ export function createAgentMessage(
     remote_ref: remoteRef,
     affects_current_work: affectsCurrentWork,
     redelivered_at: null,
+    inbound_sig: inboundSig,
   }
 }
 
@@ -5375,12 +5407,51 @@ export function getMessageStatus(id: number): string | null {
 // it stored: review point 1, a priority only reorders peer traffic), a granted peer high, the rest.
 export function getPendingMessages(toAgent?: string): AgentMessage[] {
   const rank = deliveryRankSql()
-  if (toAgent) {
-    return db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ? ORDER BY ${rank.sql} DESC, created_at ASC, id ASC`)
+  const rows = toAgent
+    ? db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ? ORDER BY ${rank.sql} DESC, created_at ASC, id ASC`)
       .all(toAgent, ...rank.params) as AgentMessage[]
-  }
-  return db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' ORDER BY ${rank.sql} DESC, created_at ASC, id ASC`)
-    .all(...rank.params) as AgentMessage[]
+    : db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' ORDER BY ${rank.sql} DESC, created_at ASC, id ASC`)
+      .all(...rank.params) as AgentMessage[]
+  return withTrustedFlags(rows)
+}
+
+// HMACINBOUND1125: the delivery log (inbound_sig_log). True when this row's deliveries already used up what the
+// server granted: a delivered signed row that was put back to pending without a server re-queue.
+export function signedRowReplayed(id: number): boolean {
+  const r = db.prepare('SELECT delivered, allowed FROM inbound_sig_log WHERE msg_id = ?').get(id) as { delivered: number; allowed: number } | undefined
+  return r !== undefined && r.delivered >= r.allowed
+}
+
+// HMACINBOUND1125 (Dani, #3117 review 2): true when a signed row was DELIVERED more often than the server allowed: a
+// delivered row put back to pending by a raw UPDATE and delivered again. A row's first, legitimate delivery leaves
+// delivered = allowed, so this is `>`, not the `>=` signedRowReplayed uses before a delivery.
+export function signedRowOverDelivered(id: number): boolean {
+  const r = db.prepare('SELECT delivered, allowed FROM inbound_sig_log WHERE msg_id = ?').get(id) as { delivered: number; allowed: number } | undefined
+  return r !== undefined && r.delivered > r.allowed
+}
+
+// HMACINBOUND1125: count one delivery of a signed row. markMessageDelivered and closeMessagesWithoutDelivery do it
+// themselves; drain-inbox calls this one after it classified the rows claimPendingForAgent already marked delivered
+// (the claim must not count them, or the classification right after it would read every claimed row as a replay).
+export function recordSignedDelivery(id: number): void {
+  recordSignedDeliveryIfSigned(id)
+}
+
+// HMACINBOUND1125: the flags that change delivery (STOP, urgent, priority, unblock) count only on a row the server
+// signed and that is not a replay. Applied where the queue is READ, so no caller of these readers can act on a
+// forged flag. The row keeps every other field; a neutralized row no longer verifies, which is right: it is not a
+// row the server wrote. The order is restored afterwards, because the SQL ranked the rows by the raw flags.
+function withTrustedFlags(rows: AgentMessage[]): AgentMessage[] {
+  let changed = false
+  const out = rows.map((m) => {
+    const flagged = (m.stop_authorized ?? 0) !== 0 || (m.urgent ?? 0) !== 0 || (m.priority ?? 0) !== 0 || m.affects_current_work != null
+    if (!flagged) return m
+    if (rowSigOk(m) && !signedRowReplayed(m.id)) return m
+    changed = true
+    logger.warn({ id: m.id, from: m.from_agent, to: m.to_agent, signed: m.inbound_sig != null }, 'agent message flags ignored: the row is not server-signed or is a replay (HMACINBOUND1125)')
+    return { ...m, stop_authorized: 0, urgent: 0, priority: 0 as const, affects_current_work: null }
+  })
+  return changed ? out.sort(compareDeliveryOrder) : out
 }
 
 // Card ad771121 (K3): the high rows one sender got accepted for one recipient since `sinceSec`. Keyed
@@ -5416,7 +5487,20 @@ export function lastMessageFromAgentAt(agent: string): number | null {
 // result either.
 export function markMessageDelivered(id: number): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
+  return db.transaction(() => {
+    const ok = db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
+    // HMACINBOUND1125: every delivery of a signed row counts against what the server granted (inbound_sig_log).
+    if (ok) recordSignedDeliveryIfSigned(id)
+    return ok
+  })()
+}
+
+function recordSignedDeliveryIfSigned(id: number): void {
+  db.prepare(
+    `INSERT INTO inbound_sig_log (msg_id, delivered, allowed)
+       SELECT id, 1, 1 FROM agent_messages WHERE id = ? AND inbound_sig IS NOT NULL
+     ON CONFLICT(msg_id) DO UPDATE SET delivered = delivered + 1`,
+  ).run(id)
 }
 
 // Freshness/supersession signal (SB hardening 2026-08-22): how many STRICTLY
@@ -5652,7 +5736,13 @@ export function closeMessagesWithoutDelivery(ids: number[], reason: string): num
   )
   const run = db.transaction((rows: number[]) => {
     let n = 0
-    for (const id of rows) n += stmt.run(now, note, id).changes
+    for (const id of rows) {
+      const c = stmt.run(now, note, id).changes
+      // HMACINBOUND1125: a row closed without delivery is used up too, so a raw UPDATE back to pending cannot revive
+      // it with the owner's voice or its flags.
+      if (c) recordSignedDeliveryIfSigned(id)
+      n += c
+    }
     return n
   })
   return run(ids)
@@ -5710,11 +5800,11 @@ export function claimPendingForAgent(toAgent: string, limit: number): AgentMessa
          ORDER BY ${rank.sql} DESC, created_at ASC, id ASC
          LIMIT ?
        )
-     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, seen_at, completed_at, priority, urgent, stop_authorized, redelivered_at`,
+     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, seen_at, completed_at, priority, urgent, stop_authorized, redelivered_at, affects_current_work, inbound_sig`,
   ).all(now, now, toAgent, ...rank.params, limit) as AgentMessage[]
   // RETURNING row order is unspecified; restore the delivery order (card ad771121: high first, then
-  // FIFO with id as the tiebreaker for same-second inserts).
-  return rows.sort(compareDeliveryOrder)
+  // FIFO with id as the tiebreaker for same-second inserts). HMACINBOUND1125: untrusted flags neutralized first.
+  return withTrustedFlags(rows).sort(compareDeliveryOrder)
 }
 
 export function markMessageDone(id: number, result?: string): boolean {
@@ -5899,9 +5989,16 @@ export function requeueDeliveredOpenForAgent(agent: string, opts: RequeueDeliver
     const skip = db.prepare(
       `UPDATE agent_messages SET requeue_skipped_at = ? WHERE id = ? AND ${guards}`
     )
+    // HMACINBOUND1125: this server re-queue is a granted redelivery, so a signed row it puts back may speak once more
+    // (a raw UPDATE back to pending has no such grant and is caught as a replay).
+    const grant = db.prepare('UPDATE inbound_sig_log SET allowed = allowed + 1 WHERE msg_id = ?')
     return {
       rows,
-      revive: (m) => revive.run(now, now, m.id).changes === 1,
+      revive: (m) => {
+        if (revive.run(now, now, m.id).changes !== 1) return false
+        grant.run(m.id)
+        return true
+      },
       skip: (m) => skip.run(now, m.id).changes === 1,
     }
   })

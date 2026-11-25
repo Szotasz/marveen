@@ -20,6 +20,9 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { isKnownAgent, readAgentChannelProvider } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
+import { rowSigOk, type SignedRowFields } from '../inbound-sig.js'
+import { signedRowReplayed } from '../db.js'
+import { logger } from '../logger.js'
 import { parseQualifiedId, formatQualifiedId, federationSource } from './federation/address.js'
 import { scan as scanInjection } from '../skill-scan.js'
 
@@ -178,7 +181,10 @@ export function buildFreshnessInfo(ageMs: number, newerFromSameSender: number): 
 // Classify an inter-agent message's delivery category, in priority order on the
 // SANITIZED from-id. Returns null when the from_agent collapses to empty after
 // sanitize (the caller must reject/fail such a message, never wrap it).
-export function classifyAgentMessage(
+// HMACINBOUND1125: this is the sender-id half only. A row is classified with classifyAgentMessage(row), which adds the
+// server-signature check; nothing outside this file may call this one on a row it is about to deliver
+// (src/__tests__/inbound-sig.test.ts pins that).
+export function classifySenderId(
   fromAgent: string,
   toAgent: string,
 ): { category: AgentMessageCategory; safeFrom: string } | null {
@@ -202,6 +208,25 @@ export function classifyAgentMessage(
     return { category: 'trusted-peer', safeFrom }
   }
   return { category: 'untrusted', safeFrom }
+}
+
+/** The row fields classifyAgentMessage needs: the sender pair and the signed fields with their signature. */
+export type ClassifiableRow = SignedRowFields & { inbound_sig?: string | null }
+
+// HMACINBOUND1125 (Dani 85038, 2): the classification of a ROW, the single entry point for every caller that frames a
+// row for delivery (the router's serial and batch paths, the resume drain, drain-inbox). The owner's voice
+// (channel-inbound) goes only to a row the server signed (src/inbound-sig.ts) and that is not a replay of a delivered
+// one (inbound_sig_log); any other row with an owner-voice sender id is framed untrusted, and a warning names it.
+// Not silently dropped: a real owner message written while the key was missing still arrives, as untrusted data.
+export function classifyAgentMessage(row: ClassifiableRow): { category: AgentMessageCategory; safeFrom: string } | null {
+  const cls = classifySenderId(row.from_agent, row.to_agent)
+  if (!cls || cls.category !== 'channel-inbound') return cls
+  const signed = rowSigOk(row)
+  if (signed && !signedRowReplayed(row.id)) return cls
+  logger.warn({ id: row.id, from: cls.safeFrom, to: row.to_agent, signed, sigPresent: row.inbound_sig != null },
+    signed ? 'owner-voice row is a replay of a delivered one: framed untrusted (HMACINBOUND1125)'
+      : 'owner-voice row is not server-signed: framed untrusted (HMACINBOUND1125)')
+  return { category: 'untrusted', safeFrom: cls.safeFrom }
 }
 
 // e349287f: the untrusted framing STAYS for a fleet agent that is not the recipient's

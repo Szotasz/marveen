@@ -23,7 +23,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
 import { lockOwnerRefusal, tryHandleDesktopLock } from '../web/routes/desktop-lock.js'
-import { classifyAgentMessage, isChannelInboundSender } from '../web/agent-message-wrap.js'
+import { classifySenderId, isChannelInboundSender } from '../web/agent-message-wrap.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID as VOICE_ID_OR_NULL } from '../channel-coordinator/ingest.js'
 // VOICECHANNELID1022: the id is null only when the voice lane is off (even the
 // default names another sender); on this suite's install it is on.
@@ -39,7 +39,7 @@ describe('a channel identity may not be a desktop-lock owner', () => {
       // Both halves asserted together: this id really does earn the privileged
       // envelope, AND the lock route really does refuse to mint it. Asserting
       // only the second half would still pass if the framing quietly changed.
-      expect(classifyAgentMessage(id, 'marveen')!.category).toBe('channel-inbound')
+      expect(classifySenderId(id, 'marveen')!.category).toBe('channel-inbound')
       expect(lockOwnerRefusal(id)).toMatch(/channel identity/i)
     }
   })

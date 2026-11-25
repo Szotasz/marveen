@@ -510,7 +510,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'pane-at-escape': '81d1f7d930d89739',
   'skills-path-trap': '76b7632b730c8120',
   'strict-api': '0eeec47cd845f598',
-  'system-directive-auth': '5f72174ed4de6b5d',
+  'system-directive-auth': '9f9b67655bf84872',
 }
 
 describe('generated sections: staleness guard (a Hungarian change needs its English twin)', () => {

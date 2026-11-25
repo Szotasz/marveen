@@ -9,6 +9,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { ensureInboundSigKey } from './inbound-sig.js'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
@@ -503,6 +504,9 @@ async function main(): Promise<void> {
 
   await acquireLock()
 
+  // HMACINBOUND1125: the inbound signature key first, so every row this process writes is signed and the
+  // channel coordinator (a separate process) finds the key when it writes its next handoff row.
+  if (!ensureInboundSigKey()) logger.error('inbound signature key could not be created (store/.inbound-sig-key): rows are written unsigned and no row gets the owner\'s voice')
   // Database
   initDatabase()
   startSpawnBroker()

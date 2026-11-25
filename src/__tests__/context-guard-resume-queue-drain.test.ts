@@ -67,7 +67,7 @@ beforeEach(() => {
   dbMock.countNewerMessagesFromSameSender.mockReturnValue(0)
   // Default classification: an ordinary trusted inter-agent row.
   wrapMock.classifyAgentMessage.mockImplementation(
-    (from: string) => ({ category: 'trusted-peer', safeFrom: from }),
+    ({ from_agent: from }: { from_agent: string }) => ({ category: 'trusted-peer', safeFrom: from }),
   )
   // Envelope stub: the drain must reuse the REAL wrapper in production; here
   // the stub makes the row's identity visible in the composed attachment.
@@ -89,7 +89,7 @@ describe('selectDrainableRows (pure filter)', () => {
       row({ id: 205, content: 'USER-CHAT', from_agent: 'telegram-shadow' }),
     ]
     wrapMock.classifyAgentMessage.mockImplementation(
-      (from: string) => (from === 'telegram-shadow'
+      ({ from_agent: from }: { from_agent: string }) => (from === 'telegram-shadow'
         ? { category: 'channel-inbound', safeFrom: from }
         : { category: 'trusted-peer', safeFrom: from }),
     )

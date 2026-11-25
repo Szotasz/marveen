@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../web/agent-message-wrap.js'
+import { classifySenderId, wrapAgentMessageForDelivery } from '../web/agent-message-wrap.js'
 import { CHANNEL_INBOUND_PREAMBLE, sanitizeAgentIdent } from '../prompt-safety.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID as VOICE_ID_OR_NULL } from '../channel-coordinator/ingest.js'
 // VOICECHANNELID1022: the id is null only when the voice lane is off (even the
@@ -16,7 +16,7 @@ const VOICE_CHANNEL_AGENT_ID = VOICE_ID_OR_NULL as string
 // relay never sees the answer.
 
 function deliver(fromAgent: string, content: string) {
-  const cls = classifyAgentMessage(fromAgent, 'marveen')
+  const cls = classifySenderId(fromAgent, 'marveen')
   expect(cls).not.toBeNull()
   return { cls: cls!, ...wrapAgentMessageForDelivery(cls!.category, cls!.safeFrom, fromAgent, content, 42) }
 }
@@ -80,7 +80,7 @@ describe('voice frame: no marker echo, no approval path (D6a)', () => {
     expect(prefix).not.toMatch(/HANG-/)
     // push (router) and pull (drain-inbox) stay identical for a notice
     const raw = VOICE_CHANNEL_AGENT_ID
-    const cls = classifyAgentMessage(raw, 'marveen')!
+    const cls = classifySenderId(raw, 'marveen')!
     const push = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, '[HANG-PAROSITAS] x', 8, null, undefined, { urgent: false })
     const pull = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, '[HANG-PAROSITAS] x', 8, null, { ageMs: 5, newerFromSameSender: 0 })
     expect(pull).toEqual(push)
@@ -142,7 +142,7 @@ describe('push and pull paths produce the same voice text', () => {
   it('router call (urgent opt) and drain-inbox call (freshness) give identical output', () => {
     const v = VOICE_CHANNEL_AGENT_ID
     const raw = v.slice(0, 1) + String.fromCharCode(0x200b) + v.slice(1)
-    const cls = classifyAgentMessage(raw, 'marveen')!
+    const cls = classifySenderId(raw, 'marveen')!
     const push = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, 'szia', 7, null, undefined, { urgent: false })
     const pull = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, 'szia', 7, null, { ageMs: 5, newerFromSameSender: 0 })
     expect(pull).toEqual(push)

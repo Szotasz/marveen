@@ -80,7 +80,7 @@ vi.mock('../web/voice-modality.js', () => ({ setLastInboundModality: vi.fn() }))
 vi.mock('../web/main-agent.js', () => ({ MAIN_CHANNELS_SESSION: 'orin-channels' }))
 vi.mock('../web/agent-message-wrap.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../web/agent-message-wrap.js')>()
-  return { ...real, classifyAgentMessage: (from: string) => ({ category: 'trusted-peer', safeFrom: from }) }
+  return { ...real, classifyAgentMessage: ({ from_agent: from }: { from_agent: string }) => ({ category: 'trusted-peer', safeFrom: from }) }
 })
 vi.mock('../web/telegram-inbox-wake.js', () => ({ maybeWakeSubAgentsForTelegram: vi.fn() }))
 

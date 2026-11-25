@@ -507,6 +507,62 @@ function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
   return true
 }
 
+// HMACINBOUND1125 (Dani, #3117 review 1): the key the server signs agent_messages rows with is a SECRET, not a
+// setting. A sub-agent that reads it can sign a row in the owner's voice, so a Bash segment that names it is denied
+// even as a plain read (the #2876 secret-store pattern). The native Read tool is stopped by the settings deny
+// (SUBAGENT_INBOUND_SIG_KEY_DENY in agent-scaffold.ts); a write by any agent by db-write-gate's protected paths.
+//
+// #3117 review (Samu): read on the segment as written AND with its shell quoting removed (quotes and backslashes split
+// a name without changing what the shell opens: `.inbound''-sig-key`, `.inbound"-sig"-key`, `.inbound\-sig-key`), and
+// every glob word is matched against the file's name as the shell or find would (`store/.inb*key`, `-name '.inbound*'`).
+// A variable set to a literal earlier in the same command is substituted first (definiteAssignments).
+// THE LIMIT: a text brake, not an OS boundary. A name built at run time in a way the gate cannot resolve (a variable
+// from another command or the environment, a command substitution), a string built inside an interpreter, or a reader
+// that is never told the name (`grep -r . store/`, `xargs`) passes. The same class: a read of the whole store directory
+// without the name carries the key too (`cp -r store/ x`, `grep -ra . store/`, `zip -r x store/`; `tar` is denied, but by
+// db-write-gate, not by this rule). inbound-sig.test.ts lists them as documented passes. The key is a file of the same OS user, as src/inbound-sig.ts says.
+const INBOUND_SIG_KEY_NAME = '.inbound-sig-key'
+const INBOUND_SIG_KEY_MENTION_RX = /\.inbound[-_]?sig[-_]?key\b|\.inbound[-_]?sig[\w.-]*[*?[]/i
+
+/** A shell glob (one path component) as an anchored regex: `*`, `?` and `[...]` classes, case-insensitive. */
+function globComponentRegex(glob) {
+  let rx = ''
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]
+    if (c === '*') rx += '.*'
+    else if (c === '?') rx += '.'
+    else if (c === '[') {
+      const end = glob.indexOf(']', i + 2)
+      if (end < 0) { rx += '\\['; continue }
+      const body = glob.slice(i + 1, end).replace(/^!/, '^').replace(/\\/g, '\\\\')
+      rx += `[${body}]`
+      i = end
+    } else rx += c.replace(/[.+^${}()|\\]/g, '\\$&')
+  }
+  try { return new RegExp(`^${rx}$`, 'i') } catch { return null }
+}
+
+export function inboundSigKeyBashSegmentAllowed(seg, definite) {
+  // A variable the same command set to a literal earlier (`F=.inbound-sig; cat store/$F-key`) is read as its value,
+  // the definiteAssignments the other protected-file checks use (Dani, #3117 delta).
+  const raw = substituteDefinite(String(seg ?? ''), definite)
+  const unquoted = raw.replace(/\$(?=['"])|["'\\]/g, '')
+  if (INBOUND_SIG_KEY_MENTION_RX.test(raw) || INBOUND_SIG_KEY_MENTION_RX.test(unquoted)) return false
+  const words = unquoted.split(/\s+/)
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]
+    if (!/[*?[]/.test(w)) continue
+    const last = w.replace(/\/+$/, '').split('/').pop() ?? ''
+    // A shell glob reaches a dotfile only when its last component starts with a dot; find's -name / -iname / -path
+    // match the leading dot with any pattern.
+    const afterFindName = /^-(?:i?name|i?path|i?wholename)$/.test(words[i - 1] ?? '')
+    if (!afterFindName && !last.startsWith('.')) continue
+    const rx = globComponentRegex(last)
+    if (rx && rx.test(INBOUND_SIG_KEY_NAME)) return false
+  }
+  return true
+}
+
 export function protectedStoreBashSegmentAllowed(seg, ctx) {
   return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text), ctx?.rgConfigNamed)
 }
@@ -1660,7 +1716,9 @@ const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into
 // custom_commands (CHANINBOUNDFORGE1125): the owner's custom slash commands. A prompt command's body is queued as the
 // channel coordinator (custom-commands.ts sendPrompt), so an agent that could rewrite a body would speak in the owner's
 // voice the next time the owner runs that command. The dashboard's owner-gated CRUD is the only writer.
-export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands']
+// inbound_sig_log (HMACINBOUND1125): how many times each server-signed agent_messages row was delivered and how many
+// times the server allowed; an agent that could write it could re-arm a delivered owner-voiced row or an old STOP.
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands', 'inbound_sig_log']
 // An SQL write on one of them. The table name is read wherever the statement
 // names its target: after a schema prefix (`main.approvals`, an ATTACHed
 // `x.approvals`), in [brackets], with SQL comments or line breaks between the
@@ -4748,6 +4806,8 @@ function decide(toolName, toolInput, opts = {}) {
     protectedCtx.homeTouched = HOME_TOUCH_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
     for (const [idx, seg] of protSegs.entries()) {
       protectedCtx.definite = definite[idx]
+      // The inbound signature key (HMACINBOUND1125): a secret, so not even a read.
+      if (!inboundSigKeyBashSegmentAllowed(seg, definite[idx])) return { deny: true, reason: 'inbound-sig-key' }
       // The other store files that gate the sub-agent (c556a35a) first: they are matched by
       // name only, so a segment that names one of them gets that file's message even when
       // the allowlist check below would also deny it on an unresolved word (`> $TARGET`).
@@ -4841,6 +4901,12 @@ const MCP_GATE_MSG =
   'eri el (irva, mozgatva, vagy ismeretlen nevu fajlt teve bele), vagy egy ismert fajl-iro MCP-eszkoz ut nelkul a szerver ' +
   'alapertelmezett helyere irna. Adj meg kifejezett, a munkakonyvtaradon beluli celutat es egyszeru fajlnevet; ha vedett ' +
   'fajl kell, kerd a fo agenst.'
+
+const INBOUND_SIG_KEY_GATE_MSG =
+  'Titok TILTOTT (governance hard-gate, HMACINBOUND1125). A store/.inbound-sig-key a dashboard kulcsa, amellyel az ' +
+  'uzenetsor sorait alairja: aki ismeri, a gazda hangjan tud uzenetet alairni. Sub-agentkent se olvasni, se irni, se ' +
+  'masolni nem szabad, egyetlen paranccsal sem. Csak a dashboard-szerver es a csatorna-koordinator olvassa. Ha az ' +
+  'alairassal gond van (sig_ok false, untrusted gazda-sor), szolj a fo agensnek (inter-agent uzenet), ne a fajlt nezd meg.'
 
 const PROTECTED_STORE_GATE_MSG =
   'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
@@ -4940,6 +5006,7 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
       deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
         : verdict.reason === 'dynamic-command' ? DYNAMIC_COMMAND_GATE_MSG
         : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG
+        : verdict.reason === 'inbound-sig-key' ? INBOUND_SIG_KEY_GATE_MSG
         : String(verdict.reason ?? '').startsWith('mcp-') ? MCP_GATE_MSG : GATE_MSG)
     }
     allow()
