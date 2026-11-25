@@ -124,9 +124,10 @@ describe('the dashboard shows a requested profile that does not exist', () => {
 
   /** Runs the real populateProfileSelect from web/app.js against a tiny fake DOM. */
   async function render(selected: string) {
-    const start = APP.indexOf('function populateProfileSelect(')
+    // HOSTINGERI18NFU2: populateProfileSelect calls profileTextKey, defined right above it.
+    const start = APP.indexOf('function profileTextKey(')
     expect(APP.split('function populateProfileSelect(').length - 1).toBe(1)
-    const end = APP.indexOf('\n}\n', start) + 2
+    const end = APP.indexOf('\n}\n', APP.indexOf('function populateProfileSelect(')) + 2
     const source = APP.slice(start, end)
 
     type Opt = { value: string; textContent: string; selected: boolean }
@@ -138,12 +139,12 @@ describe('the dashboard shows a requested profile that does not exist', () => {
       get value() { return (options.find(o => o.selected) ?? options[0])?.value ?? '' },
       onchange: null as null | (() => void),
     }
-    const descEl = { textContent: '' }
+    const descEl = { textContent: '', dataset: {} as Record<string, string> }
     const profiles = [
       { id: 'default', label: 'Alapértelmezett', description: 'Permissive fallback.', permissionMode: 'permissive' },
       { id: 'researcher', label: 'Kutató', description: 'A stricter profile.', permissionMode: 'permissive' },
     ]
-    const document = { createElement: () => ({ value: '', textContent: '', selected: false }) }
+    const document = { createElement: () => ({ value: '', textContent: '', selected: false, dataset: {} }) }
     const t = (key: string, vars: Record<string, string> = {}) =>
       (hu[key] ?? key).replace(/\{(\w+)\}/g, (_m, k: string) => vars[k] ?? '')
     let done!: () => void

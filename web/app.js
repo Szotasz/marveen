@@ -895,6 +895,9 @@ function renderStaticI18n() {
   // DOCKERI18N1119: the "no channel configured" banner's text is drawn from /api/marveen with the language of that
   // moment; on a fresh install that answer can come before DASHBOARD_LANG (Geri, v1.50.1: Hungarian on an en install).
   if (typeof updateMainChannelUnconfBanner === 'function' && mainChannelUnconfLast) updateMainChannelUnconfBanner(mainChannelUnconfLast)
+  // HOSTINGERI18NFU2: the model picker's CLI hint and "not launchable" suffix are drawn when /api/models/available
+  // answers, which can be before the language is applied; the sweep above also resets the gated options' text.
+  if (typeof applyClaudeCliGate === 'function' && lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
 }
 
 // Initial render on page load.
@@ -3770,6 +3773,15 @@ async function loadProfiles() {
   return cachedProfiles || []
 }
 
+// HOSTINGERI18NFU2: a shipped profile template is Hungarian only (templates/profiles/*.json). Its label and description
+// get a lang key when one exists and the server's text is still the shipped one (the hu.js value): an edited template
+// is shown as written. The key rides on data-i18n, so a later language switch redraws it.
+function profileTextKey(p, field) {
+  const key = `agents.profile.${p.id}.${field}`
+  const shipped = window._i18n?.hu?.[key]
+  return shipped !== undefined && shipped === (field === 'label' ? p.label : p.description) ? key : null
+}
+
 function populateProfileSelect(selectEl, descEl, selected) {
   loadProfiles().then((profiles) => {
     selectEl.innerHTML = ''
@@ -3777,7 +3789,9 @@ function populateProfileSelect(selectEl, descEl, selected) {
       const opt = document.createElement('option')
       opt.value = p.id
       const tag = p.permissionMode === 'strict' ? ` (${t('agents.strict_mode')})` : ''
-      opt.textContent = `${p.label}${tag}`
+      const labelKey = profileTextKey(p, 'label')
+      if (labelKey && !tag) opt.dataset.i18n = labelKey
+      opt.textContent = `${labelKey ? t(labelKey) : p.label}${tag}`
       if (p.id === selected) opt.selected = true
       selectEl.appendChild(opt)
     }
@@ -3794,12 +3808,15 @@ function populateProfileSelect(selectEl, descEl, selected) {
       selectEl.prepend(opt)
     }
     const updateDesc = () => {
+      delete descEl.dataset.i18n
       if (missing && selectEl.value === missing) {
         descEl.textContent = t('agents.profile_missing_desc', { id: missing })
         return
       }
       const p = profiles.find(x => x.id === selectEl.value)
-      descEl.textContent = p ? p.description : ''
+      const descKey = p ? profileTextKey(p, 'description') : null
+      if (descKey) descEl.dataset.i18n = descKey
+      descEl.textContent = descKey ? t(descKey) : (p ? p.description : '')
     }
     selectEl.onchange = updateDesc
     updateDesc()
@@ -5757,7 +5774,9 @@ async function loadOllamaModels() {
 //                 silently rewrite it (#751 lesson).
 //   unmeasured -> nothing is filtered (a customer who can pick no model is
 //                 worse off than today) and a visible hint says so.
-let lastAvailableModelsData = null
+// HOSTINGERI18NFU2: renderStaticI18n re-applies the gate from this cache, so the hint and the "not launchable"
+// suffix follow a language applied after the models answer. `var`: renderStaticI18n is defined earlier in the file.
+var lastAvailableModelsData = null
 function applyClaudeCliGate(data) {
   if (data) lastAvailableModelsData = data
   const support = data && data.claudeSupport ? data.claudeSupport : null
@@ -5765,6 +5784,9 @@ function applyClaudeCliGate(data) {
   const selects = [document.getElementById('agentModel'), document.getElementById('editAgentModel')]
   const hints = [document.getElementById('agentModelCliHint'), document.getElementById('editAgentModelCliHint')]
   const base = (id) => String(id || '').replace(/\[[^\]]*\]$/, '')
+  // An option with a lang key is labelled in the current language; the cached text (cliLabel) is the language of
+  // the first gating, which can be the 'hu' fallback before /api/auth/status answers.
+  const label = (opt) => (opt.dataset.i18n ? t(opt.dataset.i18n) : (opt.dataset.cliLabel || opt.textContent))
   const unsupported = new Map()
   if (support && support.measured && Array.isArray(support.unsupported)) {
     for (const u of support.unsupported) unsupported.set(u.id, u.minCli)
@@ -5775,7 +5797,7 @@ function applyClaudeCliGate(data) {
     if (!support || !support.measured) {
       // Unmeasured: restore any earlier gating, show the hint, filter nothing.
       Array.from(sel.options).forEach((opt) => {
-        if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+        if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = label(opt); delete opt.dataset.cliGated }
       })
       if (hint) { hint.textContent = t('agents.model.cliUnmeasured').replace('{err}', (cli && cli.error) || '?'); hint.style.display = '' }
       return
@@ -5785,14 +5807,28 @@ function applyClaudeCliGate(data) {
     Array.from(sel.options).forEach((opt) => {
       if (!String(opt.value).startsWith('claude-')) return
       const minCli = unsupported.get(base(opt.value))
-      if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = label(opt); delete opt.dataset.cliGated }
       if (!minCli) return
       if (!opt.dataset.cliLabel) opt.dataset.cliLabel = opt.textContent
       opt.dataset.cliGated = '1'
-      opt.textContent = opt.dataset.cliLabel + ' (' + t('agents.model.cliUnsupported').replace('{v}', support.installedVersion).replace('{min}', minCli) + ')'
+      opt.textContent = label(opt) + ' (' + t('agents.model.cliUnsupported').replace('{v}', support.installedVersion).replace('{min}', minCli) + ')'
       opt.disabled = opt.value !== current
     })
   })
+}
+
+// HOSTINGERI18NFU2: the DeepSeek and MiniMax labels of /api/models/available are the server's Hungarian text. The
+// shown language is the VIEWER's (localStorage, then DASHBOARD_LANG, with a live toggle), so a known id gets a lang
+// key here, on data-i18n so a later switch redraws it; an id without a key keeps the server's label.
+const SERVER_MODEL_LABEL_KEYS = {
+  'deepseek-v4-pro': 'agents.model.deepseek_v4_pro',
+  'deepseek-v4-flash': 'agents.model.deepseek_v4_flash',
+  'minimax-m3': 'agents.model.minimax_m3',
+}
+function setServerModelLabel(opt, m) {
+  const key = SERVER_MODEL_LABEL_KEYS[m.id]
+  if (key) opt.dataset.i18n = key
+  opt.textContent = key ? t(key) : m.label
 }
 
 async function loadAvailableModels() {
@@ -5816,7 +5852,7 @@ async function loadAvailableModels() {
       for (const m of deepseekModels) {
         const opt = document.createElement('option')
         opt.value = m.id
-        opt.textContent = m.label
+        setServerModelLabel(opt, m)
         group.appendChild(opt)
       }
     }
@@ -5838,7 +5874,7 @@ async function loadAvailableModels() {
       for (const m of minimaxModels) {
         const opt = document.createElement('option')
         opt.value = m.id
-        opt.textContent = m.label
+        setServerModelLabel(opt, m)
         group.appendChild(opt)
       }
     }
