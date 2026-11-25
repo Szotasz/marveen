@@ -33,10 +33,22 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, writeSync } from 'node:fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
+
+// CUSTPROVFD3-1125: THE PREFIX DOES NOT TRAVEL ON STDOUT, as main-agent-isolated-config.mjs's contract does not. The
+// callers put it verbatim into the launch command (channels.sh, the dashboard's respawns, channel-watchdog.sh,
+// stuck-modal-guard.sh), and the dist modules imported below may log to fd 1 (pino writes from its own handle, a
+// worker thread with pino-pretty: patching process.stdout.write does not catch it). One such line would become part
+// of the command a shell runs. So the callers hand a THIRD descriptor (`3>&1 2>>log 1>&2`) and send fd 1 and 2 to the
+// failures log, and say so with MARVEEN_PREFIX_FD=3. Without that (a manual run) the prefix goes to stdout.
+// The env marker, not "fd 3 exists": Node's own event loop takes the lowest free descriptor at start, and on macOS
+// fd 3 of a manual run is libuv's internal pipe (a FIFO, so not even its type tells it apart); a write there fails
+// with ENXIO (measured 2026-11-25). A marker with no usable fd 3 makes the write throw: exit 1, and every caller
+// treats that as configured-but-broken (no launch on the wrong backend).
+const CONTRACT_FD = process.env.MARVEEN_PREFIX_FD === '3' ? 3 : 1
 
 // Top-level imports are guarded so a stale or partially-built dist never turns
 // into an unconditional channel abort. If any module fails to load and no
@@ -204,6 +216,7 @@ const ctxTokens = typeof readAgentCustomProviderContextTokens === 'function' ? r
 const ctxExport = Number.isSafeInteger(ctxTokens) && ctxTokens > 0 && /^\d+$/.test(String(ctxTokens))
   ? `export CLAUDE_CODE_MAX_CONTEXT_TOKENS=${ctxTokens} && `
   : ''
-process.stdout.write(
+writeSync(
+  CONTRACT_FD,
   `unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL=${sq(baseUrl)} && ${headerExport}${unsetConflict}export ANTHROPIC_MODEL=${sq(model)} && ${ctxExport}`,
 )

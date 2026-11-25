@@ -1490,7 +1490,9 @@ EOF_MA
     # arg makes it fall back to ~/.claude.json (the standard path).
     _cp_cfg_dir=""
     [ -d "${_cfg_dir:-}" ] && _cp_cfg_dir="${_cfg_dir:-}"
-    _cp_env="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "$_cp_cfg_dir" 2>>"$INSTALL_DIR/store/channels-failures.log")"
+    # CUSTPROVFD3-1125: the prefix on fd 3, the helper's stdout and stderr to the failures log (the isolated-config
+    # contract above): a line a dist module logs to fd 1 can never become part of the launch command.
+    _cp_env="$(MARVEEN_PREFIX_FD=3 "$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "$_cp_cfg_dir" 3>&1 2>>"$INSTALL_DIR/store/channels-failures.log" 1>&2)"
     _cp_rc=$?
     if [ "$_cp_rc" -ne 0 ]; then
       echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent-custom-provider exited $_cp_rc -- customProvider configured but broken; aborting to avoid silent wrong-backend launch (see channels-failures.log)" >> "$INSTALL_DIR/store/channels-failures.log"
