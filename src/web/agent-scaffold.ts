@@ -24,7 +24,7 @@ import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenP
 import { agentTextLang, type AgentTextLang } from './agent-text-lang.js'
 import { seedSourceFor } from './seed-lang.js'
 import {
-  type ScaffoldFrags, type RosterText, ROSTER_TEXT_EN, buildMcpListChannelBodyEn, buildAutonomyBodyEn, buildEvidenceBodyEn, buildMessageCloseBodyEn,
+  type ScaffoldFrags, type RosterText, ROSTER_TEXT_EN, buildMcpListChannelBodyEn, buildMcpListChannelShortBodyEn, buildAutonomyBodyEn, buildEvidenceBodyEn, buildMessageCloseBodyEn,
   buildBackgroundCheckpointBodyEn, buildPaneAtEscapeBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
   buildMemorySearchLabelBodyEn, buildMemoryFactChangeBodyEn, buildFleetAuthBodyEn, buildStrictApiBodyEn, buildApiHelperBodyEn,
   type PromptRecipes, strictPromptRecipesEn, SKILL_SECTION_HEADING_EN, buildSkillSectionEn, buildClaudeMdPromptEn,
@@ -3813,6 +3813,18 @@ export function buildMcpListChannelBody(): string {
   ].join('\n')
 }
 
+// Review on #3082: a channel-less agent has no poller of its own to lose, but a child started with a CLEARED
+// environment (env -i) loads the main agent's ~/.claude and bot folder, so it keeps this short form.
+export function buildMcpListChannelShortBody(): string {
+  if (agentTextLang() === 'en') return buildMcpListChannelShortBodyEn()
+  return [
+    '## Gyerek-`claude` csatorna nélküli ügynökben',
+    '',
+    'Gyerek-`claude`-ot (pl. `claude -p`, `claude mcp list`) ne indíts kiürített környezettel (`env -i`, törölt `TELEGRAM_STATE_DIR` vagy `CLAUDE_CONFIG_DIR`): üres környezetben a fő ügynök `~/.claude`-ját és bot-mappáját tölti be, és a fő bot pollerét lövi le.',
+    'Leválasztáshoz mindkettőt saját mappára állítsd (a config-mappát plugin nélkülire); a mérés: `docs/mcp-list-channel-plugin.md`.',
+  ].join('\n')
+}
+
 const EVIDENCE_BEGIN = '<!-- BEGIN GENERATED: evidence-rule (auto-generated, do not edit by hand) -->'
 const EVIDENCE_END = '<!-- END GENERATED: evidence-rule -->'
 const EVIDENCE_BLOCK_RE = new RegExp(
@@ -4221,14 +4233,17 @@ export function ensureEvidenceSection(name: string): void {
 // automatically on respawn without manual migration.
 //
 // Idempotency contract mirrors ensureFleetRosterSection (five rules apply).
-export function ensureMcpListChannelSection(name: string): void {
+// `hasChannel`: the full warning is for a session whose channel state dir holds a bot token (docs/mcp-list-channel-plugin.md:
+// "csatorna nélküli sessionben nincs mit elrontania"); an agent without one gets the short form, replacing a full one.
+// A predicate, not a value: agent-process.ts owns the channel probe and this module must not import it (a cycle).
+export function ensureMcpListChannelSection(name: string, hasChannel: (name: string) => boolean = () => true): void {
   // The main agent's CLAUDE.md lives at PROJECT_ROOT, not inside agents/<name>/.
   const claudeMdPath = name === MAIN_AGENT_ID
     ? join(PROJECT_ROOT, 'CLAUDE.md')
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MCPLIST_BEGIN}\n${buildMcpListChannelBody()}\n${MCPLIST_END}`
+  const block = `${MCPLIST_BEGIN}\n${hasChannel(name) ? buildMcpListChannelBody() : buildMcpListChannelShortBody()}\n${MCPLIST_END}`
 
   let existing: string
   try {

@@ -39,7 +39,7 @@ const SEQUENCE = [
   'ensureMemoryFactChangeSection(name)',
   'ensureFleetAuthSection(name)',
   'ensureEvidenceSection(name)',
-  'ensureMcpListChannelSection(name)',
+  'ensureMcpListChannelSection(name, agentMayCarryChannel)',
   'ensureMessageCloseSection(name)',
   'ensureStrictApiSection(name)',
   'ensureApiHelperSection(name)',

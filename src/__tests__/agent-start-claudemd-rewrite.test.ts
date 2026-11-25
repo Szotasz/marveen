@@ -83,6 +83,8 @@ const BLOCKS = [
   'pane-at-escape',
 ]
 
+const tgEnv = (agent: string) => join(tmpRoot, 'agents', agent, '.claude', 'channels', 'telegram', '.env')
+
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }))
 
 describe('rewriteAgentClaudeMdOnStart on an agent directory', () => {
@@ -112,6 +114,37 @@ describe('rewriteAgentClaudeMdOnStart on an agent directory', () => {
     const at = BLOCKS.indexOf('memory-search-label')
     expect(blocks(withOptIn)).toEqual([...BLOCKS.slice(0, at), 'thin-chief-handoff', ...BLOCKS.slice(at)])
     expect(blocks(first)).not.toContain('thin-chief-handoff')
+  })
+})
+
+// The full mcp-list-channel warning is for a session whose channel state dir holds a bot token; a channel-less
+// agent gets the short form in the same block (review on #3082: a cleared-environment child still hits the main bot).
+describe('rewriteAgentClaudeMdOnStart and the mcp-list warning', () => {
+  const FULL = /bot\.pid/
+  const SHORT = /## Gyerek-`claude` csatorna nélküli ügynökben/
+  it('an agent with a Telegram token gets the full block in its place; twice is once', () => {
+    setup('agent-t')
+    mkdirSync(join(tmpRoot, 'agents', 'agent-t', '.claude', 'channels', 'telegram'), { recursive: true })
+    writeFileSync(tgEnv('agent-t'), 'TELEGRAM_BOT_TOKEN=123:test\n', 'utf-8')
+    rewriteAgentClaudeMdOnStart('agent-t', PROFILE)
+    const once = read('agent-t')
+    expect(blocks(once)).toEqual(BLOCKS)
+    expect(once).toMatch(FULL)
+    expect(once).not.toMatch(SHORT)
+    rewriteAgentClaudeMdOnStart('agent-t', PROFILE)
+    expect(read('agent-t')).toBe(once)
+  })
+
+  it('when the token goes, the short form replaces the full one, and the file is what a channel-less start writes', () => {
+    rmSync(tgEnv('agent-t'))
+    rewriteAgentClaudeMdOnStart('agent-t', PROFILE)
+    const after = read('agent-t')
+    expect(blocks(after)).toEqual(BLOCKS)
+    expect(after).toMatch(SHORT)
+    expect(after).not.toMatch(FULL)
+    setup('agent-u')
+    rewriteAgentClaudeMdOnStart('agent-u', PROFILE)
+    expect(after).toBe(read('agent-u').replaceAll('agent-u', 'agent-t'))
   })
 })
 
