@@ -19069,6 +19069,8 @@ async function renderAuthCard() {
     renderDeviceKeysSection(body)
     renderBridgeEnrollSection(body)
     renderOperatorAccessSection(body)
+    // FIGURAKULCS1125: a companion key needs the owner's session (no first-run pass), so only a signed-in owner sees it.
+    if (status.method === 'session') renderCompanionKeySection(body)
   }
 }
 
@@ -19204,9 +19206,15 @@ async function refreshDeviceKeyList() {
       const bridge = k.installId ? ` <span class="auth-device-bridge-badge">${t('auth.devices.bridge_badge')}</span>` : ''
         + (k.scope === 'operator' ? ` <span class="auth-device-bridge-badge">${t('auth.operator.badge')}</span>` : '')
         + (k.scope === 'messenger' ? ` <span class="auth-device-bridge-badge">${t('auth.messenger.badge')}</span>` : '')
+        + (k.scope === 'companion' ? ` <span class="auth-device-bridge-badge">${t('auth.companion.badge')}</span>` : '')
+      // FIGURAKULCS1125: a companion key names whom it can write to, and the address it is bound to.
+      const companion = k.scope === 'companion'
+        ? ` &middot; ${t('auth.companion.list_recipients', { list: escapeHtml((k.recipients || []).join(', ')) })}`
+          + (k.bound_ip ? ` &middot; ${t('auth.companion.list_bound_ip', { ip: escapeHtml(k.bound_ip) })}` : '')
+        : ''
       return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
         `<span class="auth-device-name">${escapeHtml(k.name)}${bridge}</span>` +
-        `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +
+        `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}${companion}</span>` +
         `<button class="btn-secondary btn-compact auth-device-revoke" data-key-id="${k.id}">${t('auth.devices.revoke')}</button>` +
       `</div>`
     }).join('')
@@ -19395,6 +19403,103 @@ async function mintOperatorKey() {
         await navigator.clipboard.writeText(data.key)
         document.getElementById('opKeyCopyBtn').textContent = t('auth.devices.copied')
       } catch { document.getElementById('opKeyMintedVal').select() }
+    })
+    refreshDeviceKeyList()
+  } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+}
+
+// === Desktop companion key (FIGURAKULCS1125) ===
+// The desktop companion sends the owner's typed messages to the agents listed
+// on its key (the main agent by default), and nothing else. The key always
+// expires (30 days by default, 90 at most) and is shown once, right after minting.
+
+const COMPANION_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
+
+function renderCompanionKeySection(body) {
+  const wrap = document.createElement('div')
+  wrap.className = 'auth-device-keys'
+  wrap.id = 'authCompanionKey'
+  wrap.innerHTML =
+    `<div class="auth-sessions-title">${t('auth.companion.title')}</div>` +
+    `<p class="auth-muted">${t('auth.companion.desc')}</p>` +
+    `<div class="auth-muted">${t('auth.companion.recipients_label')}</div>` +
+    `<div id="compKeyRecipients"></div>` +
+    `<label class="auth-operator-switch"><input type="checkbox" id="compKeyBindIp"> ${t('auth.companion.bind_ip')}</label>` +
+    `<p class="auth-muted">${t('auth.companion.bind_ip_hint')}</p>` +
+    `<div class="auth-form auth-device-mint">` +
+      `<input id="compKeyName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.companion.name_placeholder')}">` +
+      `<div class="auth-muted">${t('auth.companion.expiry_placeholder')}</div>` +
+      `<input id="compKeyExpiry" type="number" min="1" max="90" value="30" placeholder="${t('auth.companion.expiry_placeholder')}" title="${t('auth.companion.expiry_placeholder')}">` +
+      `<input id="compKeyIp" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.companion.ip_placeholder')}" hidden>` +
+      `<button class="btn-secondary" id="compKeyMintBtn">${t('auth.companion.mint')}</button>` +
+      `<div class="auth-form-msg" id="compKeyMsg"></div>` +
+      `<div id="compKeyMinted" hidden></div>` +
+    `</div>`
+  body.appendChild(wrap)
+  document.getElementById('compKeyBindIp').addEventListener('change', (ev) => {
+    document.getElementById('compKeyIp').hidden = !ev.target.checked
+  })
+  document.getElementById('compKeyMintBtn').addEventListener('click', mintCompanionKey)
+  loadCompanionRecipients()
+}
+
+// Default: only the main agent is ticked; every other fleet agent can be added.
+async function loadCompanionRecipients() {
+  const el = document.getElementById('compKeyRecipients')
+  if (!el) return
+  await ensureMarveenLoaded()
+  const main = mainAgentId()
+  let names = []
+  try {
+    const r = await fetch('/api/agents')
+    const list = r.ok ? await r.json() : []
+    if (Array.isArray(list)) names = list.map((a) => a && a.name).filter(Boolean)
+  } catch { /* the main agent alone keeps the form usable */ }
+  const all = [main, ...[...new Set(names)].filter((n) => n !== main).sort()]
+  el.innerHTML = all.map((n) =>
+    `<div><label class="auth-operator-switch"><input type="checkbox" data-comp-recipient="${escapeHtml(n)}"${n === main ? ' checked' : ''}> ${escapeHtml(n)}` +
+    (n === main ? ` (${t('auth.companion.main_agent')})` : '') + `</label></div>`).join('')
+}
+
+async function mintCompanionKey() {
+  const msg = document.getElementById('compKeyMsg')
+  const minted = document.getElementById('compKeyMinted')
+  const name = (document.getElementById('compKeyName').value || '').trim()
+  const days = Number(document.getElementById('compKeyExpiry').value)
+  const recipients = [...document.querySelectorAll('[data-comp-recipient]')].filter((cb) => cb.checked).map((cb) => cb.dataset.compRecipient)
+  const bindIp = document.getElementById('compKeyBindIp').checked
+  const ip = (document.getElementById('compKeyIp').value || '').trim()
+  msg.className = 'auth-form-msg'
+  msg.textContent = ''
+  minted.hidden = true
+  const fail = (text) => { msg.classList.add('err'); msg.textContent = text }
+  if (!name) return fail(t('auth.devices.err_name'))
+  if (!COMPANION_NAME_RE.test(name)) return fail(t('auth.companion.err_name'))
+  if (!Number.isInteger(days) || days < 1 || days > 90) return fail(t('auth.companion.err_expiry'))
+  if (!recipients.length) return fail(t('auth.companion.err_recipients'))
+  if (bindIp && !ip) return fail(t('auth.companion.err_ip'))
+  // The main agent alone is sent as no list: the key then follows the main agent (the server's default).
+  const payload = { name, scope: 'companion', expires_in_days: days }
+  if (!(recipients.length === 1 && recipients[0] === mainAgentId())) payload.recipients = recipients
+  if (bindIp) payload.bound_ip = ip
+  try {
+    const r = await fetch('/api/auth/device-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    document.getElementById('compKeyName').value = ''
+    minted.hidden = false
+    minted.innerHTML =
+      `<p class="auth-muted">${t('auth.companion.minted_hint', { date: new Date(data.expires_at * 1000).toLocaleDateString(), list: escapeHtml((data.recipients || []).join(', ')) })}</p>` +
+      `<p class="auth-form-msg err">${t('auth.companion.minted_risk')}</p>` +
+      `<div class="auth-form auth-device-minted-row">` +
+        `<input id="compKeyMintedVal" type="text" readonly value="${escapeHtml(data.key)}" onclick="this.select()">` +
+        `<button class="btn-secondary btn-compact" id="compKeyCopyBtn">${t('auth.devices.copy')}</button>` +
+      `</div>`
+    document.getElementById('compKeyCopyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.key)
+        document.getElementById('compKeyCopyBtn').textContent = t('auth.devices.copied')
+      } catch { document.getElementById('compKeyMintedVal').select() }
     })
     refreshDeviceKeyList()
   } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
