@@ -20,7 +20,7 @@
 // Usage: node scripts/main-agent-isolated-config.mjs [provider]
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { writeSync, fstatSync, existsSync, statSync } from 'node:fs'
+import { writeSync, existsSync, statSync } from 'node:fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
@@ -38,10 +38,12 @@ const projectRoot = join(__dirname, '..')
 // So the callers hand us a THIRD descriptor for the contract (`3>&1 2>>log 1>&2`)
 // and let fd 1 and 2 both land in channels-failures.log: the module's diagnostics
 // stay readable -- they are deliberately loud, see agent-process.ts -- while
-// nothing it prints can reach the contract. Run by hand without that redirection
-// (no fd 3), we fall back to stdout so the script stays usable interactively.
-let CONTRACT_FD = 3
-try { fstatSync(CONTRACT_FD) } catch { CONTRACT_FD = 1 }
+// nothing it prints can reach the contract. The callers SAY so with
+// MARVEEN_CONTRACT_FD=3; without it (a hand-run) the contract goes to stdout.
+// ISOCFGFD3-1125: not "does fd 3 exist" -- on macOS Node's own event loop takes
+// the lowest free descriptor at start, so in a hand-run fd 3 is libuv's internal
+// pipe, the probe said yes, and the write failed with ENXIO (same as #3138).
+const CONTRACT_FD = process.env.MARVEEN_CONTRACT_FD === '3' ? 3 : 1
 const emitContract = (line) => writeSync(CONTRACT_FD, line)
 
 const {

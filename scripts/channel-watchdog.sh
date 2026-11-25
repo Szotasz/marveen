@@ -300,7 +300,7 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # from a worker thread, and one such line silently dropped the main agent back
   # onto the shared ~/.claude on 2026-09-12. This caller must stay in step with
   # channels.sh, or a watchdog respawn reintroduces exactly that outage.
-  _cfg_raw="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+  _cfg_raw="$(MARVEEN_CONTRACT_FD=3 "$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
   _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated|token)	/' || true)"
   if [ -n "$_cfg_raw" ] && [ -z "$_cfg_line" ]; then
     log "WARN main-agent-isolated-config.mjs printed output with NO contract line -- respawn without isolation"

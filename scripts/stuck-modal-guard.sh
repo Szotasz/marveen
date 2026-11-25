@@ -517,7 +517,7 @@ run_guard() {
     local _cfg_raw _cfg_line _cfg_mode _cfg_rest _cfg_dir _cfg_token_secret _ma_mode _ma_dir _ma_line
     # The contract rides fd 3 (as in channels.sh and channel-watchdog.sh): a log line the dist module prints on
     # stdout must not become the mode line (MAINAUTH1107: this caller read stdout until now).
-    _cfg_raw="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$_prov" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+    _cfg_raw="$(MARVEEN_CONTRACT_FD=3 "$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$_prov" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
     _cfg_line="$(printf '%s\n' "$_cfg_raw" | grep -m1 -E '^(explicit|rotated|isolated|token)	/' || true)"
     _cfg_mode="${_cfg_line%%	*}"
     _cfg_rest="${_cfg_line#*	}"
