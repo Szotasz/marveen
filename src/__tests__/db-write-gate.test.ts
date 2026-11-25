@@ -72,10 +72,10 @@ const ALLOW = { deny: false }
 describe('1. SQL writes on the security tables', () => {
   // APPROVALSLACK1030 (2): approval_slack_posts joins (the posted Slack request the owner's reaction is checked against).
   // SUPPORTKULCS1109 D5: the two support tables joined the list.
-  it('the table list is the decided fifteen (custom_commands: CHANINBOUNDFORGE1125; approver_scopes: DELEGAPPROVER1123; approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119; colleague_sessions: #2929 B1)', () => {
-    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands'])
+  it('the table list is the decided sixteen (inbound_sig_log: HMACINBOUND1125; custom_commands: CHANINBOUNDFORGE1125; approver_scopes: DELEGAPPROVER1123; approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119; colleague_sessions: #2929 B1)', () => {
+    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands', 'inbound_sig_log'])
   })
-  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands']) {
+  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands', 'inbound_sig_log']) {
     it.each([
       `UPDATE ${t} SET x=1`,
       `INSERT INTO ${t} VALUES (1)`,

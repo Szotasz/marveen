@@ -67,7 +67,7 @@ vi.mock('../web/agent-message-wrap.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../web/agent-message-wrap.js')>()
   return {
     ...real,
-    classifyAgentMessage: (from: string) => {
+    classifyAgentMessage: ({ from_agent: from }: { from_agent: string }) => {
       if (from === 'boom') throw new Error('classify exploded')
       return { category: 'trusted-peer', safeFrom: from }
     },

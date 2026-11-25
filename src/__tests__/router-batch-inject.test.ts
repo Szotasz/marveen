@@ -73,7 +73,7 @@ vi.mock('../web/agent-message-wrap.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../web/agent-message-wrap.js')>()
   return {
     ...real,
-    classifyAgentMessage: (from: string) => {
+    classifyAgentMessage: ({ from_agent: from }: { from_agent: string }) => {
       if (from === 'telegram-coordinator') return { category: 'channel-inbound', safeFrom: from }
       if (from === 'stranger') return { category: 'untrusted', safeFrom: from }
       return { category: 'trusted-peer', safeFrom: from }

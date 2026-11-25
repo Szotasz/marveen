@@ -7,7 +7,7 @@
 //      TRIGGER|INDEX ... ON) on a security table of the dashboard database
 //      (SECURITY_TABLES in self-pace-gate.mjs: approvals, approval_events,
 //      auth_sessions, colleague_sessions, dashboard_users, device_keys, vault_ssh_keys, support_consents, support_password_state,
-//      custom_commands), whatever
+//      custom_commands, inbound_sig_log), whatever
 //      program runs it: sqlite3, python -c, node -e, a heredoc, a pipe. Also
 //      PRAGMA writable_schema and any write on sqlite_master / sqlite_schema
 //      (and the temp aliases): through them a table is renamed, written under
@@ -2867,7 +2867,7 @@ const LIMIT_MSG =
 export const DB_GATE_MSG =
   'Biztonsagi DB-iras TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'dashboard adatbazisanak biztonsagi tablait (approvals, approval_events, approval_slack_posts, approval_teams_cards, approval_gromzo_posts, agent_create_specs, auth_sessions, dashboard_users, ' +
-  'device_keys, vault_ssh_keys, support_consents, support_password_state, approver_scopes, custom_commands) semmilyen programmal (sqlite3, python, node, heredoc), ' +
+  'device_keys, vault_ssh_keys, support_consents, support_password_state, approver_scopes, custom_commands, inbound_sig_log) semmilyen programmal (sqlite3, python, node, heredoc), ' +
   'az agent_messages-be NEM irhatsz foglalt vagy ismeretlen feladot (koordinator, hangcsatorna, system, gazda-hangu id) es kezbesitesi jelzot ' +
   '(stop_authorized, urgent, priority, affects_current_work), mas feladojanak sorat nem irhatod at (CHANINBOUNDFORGE1125), es NEM irhatod fajl ' +
   'szinten a store/claudeclaw.db-t (-wal/-shm/-journal is: cp/mv/tee/>/rm/ln, sqlite3 .restore/.read/.backup), ' +

@@ -13,6 +13,7 @@ import {
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { rowSigOk } from '../../inbound-sig.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'
@@ -716,7 +717,9 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'GET') {
     const one = getAgentMessage(parseInt(msgUpdateMatch[1], 10))
     if (!one) { json(res, { error: 'Message not found' }, 404); return true }
-    json(res, attachFreshness([one])[0])
+    // HMACINBOUND1125 (Dani 85038, 3): sig_ok says the server wrote and signed this row. The directive-verify recipe
+    // accepts a [SYSTEM-DIREKTIVA] only on sig_ok: from_agent='system' alone can be written by a raw INSERT.
+    json(res, { ...attachFreshness([one])[0], sig_ok: rowSigOk(one) })
     return true
   }
   if (msgUpdateMatch && method === 'PUT') {

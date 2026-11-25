@@ -49,7 +49,7 @@ export const RESUME_DRAIN_MAX = 8
 export function selectDrainableRows(rows: AgentMessage[], mainAgentId: string): AgentMessage[] {
   const kept: AgentMessage[] = []
   for (const row of rows) {
-    const cls = classifyAgentMessage(row.from_agent, row.to_agent)
+    const cls = classifyAgentMessage(row)
     // Unclassifiable sender: the router owns failing/closing such a row, the
     // drain must simply never touch it.
     if (!cls) continue
@@ -103,7 +103,7 @@ export async function sendResumeWithDrain(
   for (const row of capped) {
     // classifyAgentMessage is pure, so this second call returns exactly the
     // classification selectDrainableRows kept the row by.
-    const cls = classifyAgentMessage(row.from_agent, row.to_agent)
+    const cls = classifyAgentMessage(row)
     if (!cls) continue
     // Exactly the router's serial-path envelope (message-router.ts): own
     // prefix + wrapped block per row, freshness computed at injection time.

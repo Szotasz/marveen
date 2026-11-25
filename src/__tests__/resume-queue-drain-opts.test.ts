@@ -61,7 +61,7 @@ beforeEach(() => {
   dbMock.countNewerMessagesFromSameSender.mockReturnValue(0)
   // Default classification: an ordinary trusted inter-agent row.
   wrapMock.classifyAgentMessage.mockImplementation(
-    (from: string) => ({ category: 'trusted-peer', safeFrom: from }),
+    ({ from_agent: from }: { from_agent: string }) => ({ category: 'trusted-peer', safeFrom: from }),
   )
   // Envelope stub: makes the row's identity visible in the composed attachment.
   wrapMock.wrapAgentMessageForDelivery.mockImplementation(

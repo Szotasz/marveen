@@ -42,7 +42,7 @@ import {
 import { supersedes } from '../web/main-model.js'
 import { registerBuiltinCommands, customCommandsText } from '../web/builtin-commands.js'
 import { tryHandleCustomCommands } from '../web/routes/custom-commands.js'
-import { classifyAgentMessage } from '../web/agent-message-wrap.js'
+import { classifySenderId } from '../web/agent-message-wrap.js'
 import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
 
 const OWNER = 4242
@@ -211,7 +211,7 @@ describe('prompt (CMD920 test 23 + the changed-definition ask)', () => {
   })
 
   it('the envelope is the existing channel-inbound category (owner provenance, no new wrapper)', () => {
-    expect(classifyAgentMessage(COORDINATOR_AGENT_ID, 'marveen')?.category).toBe('channel-inbound')
+    expect(classifySenderId(COORDINATOR_AGENT_ID, 'marveen')?.category).toBe('channel-inbound')
     expect(buildOwnerCommandInbound('x', OWNER, 'a', T0)).toMatch(/^<channel source="owner-command" /)
   })
 })

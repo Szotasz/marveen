@@ -11,7 +11,7 @@ import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody, scheduleMainRestartWake, wantsMainRestartWake } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
+import { listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, recordSignedDelivery, markMessageFailed, countNewerMessagesFromSameSender,
   getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards, requeueDeliveredOpenForAgent } from '../../db.js'
 import { nicknameFor } from '../team-nicknames.js'
 import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
@@ -2447,7 +2447,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const claimed = claimPendingForAgent(name, INBOX_DRAIN_CAP)
     const blocks: string[] = []
     for (const msg of claimed) {
-      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
+      const cls = classifyAgentMessage(msg)
       if (!cls) {
         // The claim already flipped the row to 'delivered'; a silent skip
         // here is invisible message loss (delivered in the DB, never shown
@@ -2469,6 +2469,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note, freshness)
       blocks.push(prefix + wrapped)
+      // HMACINBOUND1125: the claim marked the row delivered without counting it; count it now, after the
+      // classification read the delivery log.
+      recordSignedDelivery(msg.id)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
     return true
