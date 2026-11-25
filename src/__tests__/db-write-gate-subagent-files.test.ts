@@ -13,7 +13,8 @@ import { spawnSync } from 'node:child_process'
 
 // CHANNELUNCONF1110 (Dani #2691 K1): channels.sh's .channel-unconfigured marker joins them (only channels.sh writes it).
 // PLANSFILEGATE1111 (Samu 75712): claude-plans.json too (only the owner-gated /api/claude-plans writes it).
-const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured', 'claude-plans.json']
+// PLANSSTATEGATE1125: and the quota gate's two inputs (only the dashboard and the scripts it runs write them).
+const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured', 'claude-plans.json', 'claude-plans-state.json', 'usage-latest.json']
 const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe', '.channel-unconfigured']
 
 let base: string
@@ -158,6 +159,37 @@ describe('store/claude-plans.json: a sub-agent cannot write it, the main agent a
   it("a worktree's own copy is another root: free", () => {
     expect(subFile('Write', join(wt, 'store', 'claude-plans.json'), agentDir).deny).toBe(false)
   })
+})
+
+// PLANSSTATEGATE1125 (Dani #3129 review): the schedule-runner's quota gate decides from store/usage-latest.json and,
+// under plan rotation, from the per-plan readings in store/claude-plans-state.json (quota-snapshot.ts); the rotation
+// check reads both. Measured on develop 4f1b17969: Write, Edit, `echo >` and mv onto either passed as a sub-agent. The
+// dashboard and the scripts it runs write them without naming them in a tool call; the main agent and a read stay free.
+describe('the quota gate inputs: a sub-agent cannot write them, the main agent and a read can', () => {
+  for (const f of ['claude-plans-state.json', 'usage-latest.json']) {
+    const p = () => join(root, 'store', f)
+    beforeEach(() => { writeFileSync(p(), '{}\n') })
+    it(`${f}, a sub-agent: Write, Edit, sed -i, a redirect from the store dir, cp and mv over it, rm from its parent`, () => {
+      expect(subFile('Write', p(), agentDir)).toEqual(SUB)
+      expect(subFile('Edit', p(), agentDir)).toEqual(SUB)
+      expect(sub(`sed -i '' 's/9[0-9]/1/' @ROOT@/store/${f}`, agentDir)).toEqual(SUB)
+      expect(sub(`cd @ROOT@/store && echo '{"claude":{"source":"authoritative"}}' > ${f}`, agentDir)).toEqual(SUB)
+      expect(sub(`cp /tmp/q.json @ROOT@/store/${f}`, agentDir)).toEqual(SUB)
+      expect(sub(`mv /tmp/q.json @ROOT@/store/${f}`, agentDir)).toEqual(SUB)
+      expect(sub(`rm -f ${f}`, join(root, 'store'))).toEqual(SUB)
+    })
+    it(`${f}, a sub-agent may read it (the rotation tasks read it back)`, () => {
+      expect(sub(`cat @ROOT@/store/${f}`, agentDir).deny).toBe(false)
+      expect(sub(`jq '.fleet' @ROOT@/store/${f}`, agentDir).deny).toBe(false)
+    })
+    it(`${f}, the main agent stays free`, () => {
+      expect(mainFile('Write', p()).deny).toBe(false)
+      expect(main(`echo '{}' > @ROOT@/store/${f}`).deny).toBe(false)
+    })
+    it(`${f}, a worktree's own copy is another root: free`, () => {
+      expect(subFile('Write', join(wt, 'store', f), agentDir).deny).toBe(false)
+    })
+  }
 })
 
 // TGINREPLAYGATE1104 (#2512 review, provenance): the inbound replay re-delivers a line of this log to the agent framed as
