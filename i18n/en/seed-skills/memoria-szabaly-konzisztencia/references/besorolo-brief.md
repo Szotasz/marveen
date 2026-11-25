@@ -21,7 +21,7 @@ Categories (cat):
 - "B" RULE + HISTORY: the rule is in a source, but the row also keeps an event, a cause, a measurement, a message reference etc.
 - "C" NOT IN THE SOURCES / NOT A RULE: a fact, a state, a log-like entry, data, or a lesson written down nowhere.
 - "D" CONTRADICTS: the row and a source say different things about the same subject (one of them is outdated). Say which is newer, if it can be told.
-If the row is its owner's own Q/D/B entry (the content STARTS with the id, e.g. "Q-1118-M02 (...)"), it can be B at most, never A.
+If the row CARRIES a Q/D/B id (anywhere in the text, e.g. "Q-1118-M02"), it can be B at most, never A.
 
 Separate flag (gyenge_szabaly: true/false): for an A, B or D row, true when the rule in the source is NARROWER, BROADER or less precise than what the case in the row actually teaches (a bad generalisation). Then say in one sentence in "megjegyzes" what the difference is.
 

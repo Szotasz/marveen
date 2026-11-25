@@ -21,7 +21,7 @@ Kategóriák (cat):
 - "B" SZABÁLY + ELŐZMÉNY: a szabály benne van egy forrásban, de a sor ezen felül eseményt, okot, mérést, üzenet-hivatkozást stb. őriz.
 - "C" NINCS A FORRÁSOKBAN / NEM SZABÁLY: tény, állapot, napló jellegű, adat, vagy olyan tanulság, ami sehol nincs leírva.
 - "D" ELLENTMOND: a sor és egy forrás mást mond ugyanarról (az egyik elavult). Írd meg, melyik a frissebb, ha kideríthető.
-Ha a sor saját Q/D/B azonosítós bejegyzés (a tartalom az azonosítóval KEZDŐDIK, pl. "Q-1118-M02 (...)"), az legfeljebb B lehet, A soha.
+Ha a sor Q/D/B azonosítót HORDOZ (bárhol a szövegben, pl. "Q-1118-M02"), az legfeljebb B lehet, A soha.
 
 Külön jelölő (gyenge_szabaly: true/false): A, B vagy D sornál igaz, ha a forrásban álló szabály SZŰKEBB, TÁGABB vagy pontatlanabb, mint amit a sorban leírt eset valójában tanít (rossz általánosítás). Ilyenkor a "megjegyzes" mezőben egy mondatban: mi a különbség.
 

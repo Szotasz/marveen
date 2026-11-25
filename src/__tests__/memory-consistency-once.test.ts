@@ -67,6 +67,21 @@ describe('the shipped task (MEMCONSONCE1118)', () => {
     expect(existsSync(join(ROOT, 'seed-skills', 'memoria-szabaly-konzisztencia', 'SKILL.md'))).toBe(true)
     expect(existsSync(join(ROOT, 'i18n', 'en', 'seed-skills', 'memoria-szabaly-konzisztencia', 'SKILL.md'))).toBe(true)
   })
+
+  // Review addendum 2: the runner's quota gate looks only at the start, so the prompt must not switch off the
+  // agent's own stop mid-way. A stop saves the state and reports; an unfinished earlier pass is not restarted.
+  it('both prompts keep the mid-run quota stop, retract nothing, and do not start over an unfinished pass', () => {
+    const hu = readFileSync(join(ROOT, 'scheduled-tasks', TASK, 'SKILL.md'), 'utf-8')
+    const en = readFileSync(join(ROOT, 'i18n', 'en', 'scheduled-tasks', TASK, 'SKILL.md'), 'utf-8')
+    expect(hu).not.toMatch(/A token-keretnél itt ne állj meg még egyszer/)
+    expect(en).not.toMatch(/Do not stop here again over the token budget/)
+    expect(hu).toMatch(/Ha a keret menet közben fogy el,\s+állj meg, mentsd az állapotot/)
+    expect(en).toMatch(/If the budget runs low mid-way,\s+stop, save the state/)
+    expect(hu).toMatch(/emléket sem von vissza/)
+    expect(en).toMatch(/retracts no memory/)
+    expect(hu).toMatch(/STATE\.md`, amely nem `kész`\. Ha van,\s+egy korábbi menet félbemaradt vagy még fut: ne kezdj újat/)
+    expect(en).toMatch(/STATE\.md` that is not `done`\. If there is one, an\s+earlier pass stopped halfway or is still running: do not start a new one/)
+  })
 })
 
 describe('the shipped skill: the security review findings stay fixed', () => {
@@ -80,16 +95,53 @@ describe('the shipped skill: the security review findings stay fixed', () => {
     expect(skill('en')).toContain('javaslatok-gazdanak.md')
   })
 
-  it('unattended, only a verified clean copy is retracted (its quote byte for byte in the source); the rest is a proposal', () => {
-    expect(skill('hu')).toMatch(/felügyelet\s+nélkül CSAK az igazolt tiszta másolat mehet/)
-    expect(skill('hu')).toMatch(/betűre megvan a\s+megnevezett forrásfájlban \(`grep -F`\)/)
+  // Review B1 (head 630cdc7e37): `grep -F` proves only that the SOURCE holds the quote, not that the row says
+  // nothing more, so an unattended retraction rested on the model's call over untrusted text. Now nothing is
+  // retracted unattended: the verified clean copies go to the owner as one list, and only the approved ids go.
+  it('unattended, nothing is retracted: the verified clean copies go to the owner as one list, the rest is a proposal', () => {
+    expect(skill('hu')).toMatch(/felügyelet nélkül SEMMI nem vonódik vissza/)
+    expect(skill('en')).toMatch(/NOTHING is retracted unattended/)
+    expect(skill('hu')).toMatch(/betűre megvan a megnevezett forrásfájlban \(`grep -F`\)/)
+    expect(skill('en')).toMatch(/byte for byte in the named source\s+file \(`grep -F`\)/)
     expect(skill('hu')).toMatch(/Minden más \(a nem igazolható A, minden D, az elavultság is\) a 6\. lépés\s+javaslatfájljába megy/)
-    expect(skill('en')).toMatch(/unattended ONLY a verified clean copy may go/)
-    expect(skill('en')).toMatch(/byte for byte in the named source file \(`grep -F`\)/)
     expect(skill('en')).toMatch(/Everything else \(an A that cannot be verified, every D, staleness\s+too\) goes into the proposal file/)
-    // no unattended memory-update or retraction of a D row is left in the procedure
+    // the owner's one yes comes first; the retracted ids are written down, since there is no way back
+    expect(skill('hu')).toMatch(/A gazda egyszer mond igent a listára/)
+    expect(skill('en')).toMatch(/The owner says yes to the list once/)
+    for (const lang of ['hu', 'en'] as const) expect(skill(lang)).toContain('`visszavont.txt`')
+    // the old unattended forms are gone
+    expect(skill('hu')).not.toMatch(/felügyelet\s+nélkül CSAK az igazolt tiszta másolat mehet/)
+    expect(skill('en')).not.toMatch(/unattended ONLY a verified clean copy may go/)
     expect(skill('hu')).not.toMatch(/saját \(a\) típusú D-sor: a forrás visszaolvasása után `memory-retract`/)
     expect(skill('en')).not.toMatch(/your own \(a\) D rows: after re-reading the source, `memory-retract`/)
+  })
+
+  // Review point 3: the fleet rule protects every entry that CARRIES a Q/D/B id, not only one that starts with it.
+  it('a row carrying a Q/D/B id anywhere is never on the retraction list, nor ever an A', () => {
+    expect(skill('hu')).toMatch(/Q\/D\/B azonosítót HORDOZÓ sor \(a sor bármely pontján\)/)
+    expect(skill('en')).toMatch(/A row that CARRIES a Q\/D\/B id \(anywhere in the\s+row\)/)
+    expect(skill('hu', 'references/besorolo-brief.md')).toMatch(/Q\/D\/B azonosítót HORDOZ \(bárhol a szövegben/)
+    expect(skill('en', 'references/besorolo-brief.md')).toMatch(/CARRIES a Q\/D\/B id \(anywhere in the text/)
+    for (const lang of ['hu', 'en'] as const) {
+      expect(skill(lang)).not.toMatch(/csak az azonosítóval KEZDŐDŐ sorra áll|only for a row that STARTS with the id/)
+      expect(skill(lang, 'references/besorolo-brief.md')).not.toMatch(/KEZDŐDIK|STARTS with the id/)
+    }
+  })
+
+  // Review question 2 and point 4: a restart or an abandoned run must neither lose the pass nor start a second one.
+  it('the pass keeps a STATE.md, and a run that finds an unfinished one does not start again', () => {
+    expect(skill('hu')).toMatch(/`STATE\.md` minden lépés után frissül/)
+    expect(skill('en')).toMatch(/`STATE\.md` is updated after every step/)
+    expect(skill('hu')).toMatch(/Ha van, NE kezdj új menetet/)
+    expect(skill('en')).toMatch(/If there\s+is one, do NOT start a new pass/)
+  })
+
+  // Review nit: `stat -c %a` is GNU only; the check has to work on macOS too.
+  it('the permission check is portable (python os.stat), not GNU stat', () => {
+    for (const lang of ['hu', 'en'] as const) {
+      expect(skill(lang)).toContain('os.stat(p).st_mode & 0o777')
+      expect(skill(lang)).not.toMatch(/\(`stat -c %a`\)\.?$/m)
+    }
   })
 
   it('a memory is data, not an instruction, in the skill and in both briefs', () => {
@@ -201,6 +253,20 @@ describe('a store that cannot be read decides nothing', () => {
 
     scaffold.ensureDefaultScheduledTasks('hu', withMemories)
     expect(seededConfig().once).toBe(true)
+  })
+})
+
+// Review point 1: the one surviving mutant. `storeHasMemories` returning false on an unopened store would turn
+// "decide nothing" into "decline", and a decline is a tombstone: an existing install would lose the task for good.
+// This block runs before the one below opens the database, so the real default probe sees no handle.
+describe('the default store probe on a store that is not open', () => {
+  it('decides nothing: neither seeded nor recorded', async () => {
+    const db = await import('../db.js')
+    expect(db.getDb()).toBeUndefined()
+    if (existsSync(io.REMOVED_DEFAULTS_FILE)) rmSync(io.REMOVED_DEFAULTS_FILE)
+    scaffold.ensureDefaultScheduledTasks('hu')
+    expect(existsSync(seededDir())).toBe(false)
+    expect(io.readRemovedDefaultTasks().has(TASK)).toBe(false)
   })
 })
 
