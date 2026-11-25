@@ -225,6 +225,16 @@ describe('GET /api/messages/<id> says sig_ok (the directive-verify recipe reads 
     expect((await getOne(real.id)).sig_ok).toBe(true)
     expect((await getOne(fake)).sig_ok).toBe(false)
   })
+  it('#3117 review 2: a delivered directive put back to pending and delivered again verifies no more (replayed)', async () => {
+    const d = dbm.createAgentMessage('system', 'worker', '[SYSTEM-DIREKTIVA] hand off and stop')
+    expect(dbm.markMessageDelivered(d.id)).toBe(true)
+    const once = await getOne(d.id)
+    expect([once.sig_ok, once.replayed]).toEqual([true, false])
+    db().prepare("UPDATE agent_messages SET status = 'pending' WHERE id = ?").run(d.id)
+    expect(dbm.markMessageDelivered(d.id)).toBe(true)
+    const twice = await getOne(d.id)
+    expect([twice.sig_ok, twice.replayed]).toEqual([false, true])
+  })
 })
 
 describe('guards on the source', () => {
@@ -252,6 +262,21 @@ describe('guards on the source', () => {
       expect(read(f), f).not.toContain('inbound-sig-key')
     }
   })
+  it('#3117 review 1: no sub-agent Bash segment may name the key (read or write); every agent is kept from writing it', async () => {
+    const sp = await import('../../scripts/self-pace-gate.mjs' as string)
+    for (const cmd of ['cat store/.inbound-sig-key', 'xxd -p /x/store/.inbound-sig-key', 'cp /tmp/k store/.inbound-sig-key', 'cat store/.inbound-sig*', "printf x > store/.inbound_sig_key"]) {
+      expect(sp.inboundSigKeyBashSegmentAllowed(cmd), cmd).toBe(false)
+    }
+    for (const cmd of ['grep -rn rowSigOk src/inbound-sig.ts', 'npx vitest run src/__tests__/inbound-sig.test.ts', 'cat store/claudeclaw.db-wal']) {
+      expect(sp.inboundSigKeyBashSegmentAllowed(cmd), cmd).toBe(true)
+    }
+    // wired into the gate's decision, not only the helper
+    const v = sp.gateDecision('Bash', { command: `cat ${join(TMP, '.inbound-sig-key')}` }, { projectRoot: TMP, subAgent: true, cwd: TMP })
+    expect([v?.deny, v?.reason]).toEqual([true, 'inbound-sig-key'])
+    const db = await import('../../scripts/hooks/db-write-gate.mjs' as string)
+    expect(db.PROTECTED_INSTALL_PATHS.map((e: { rel?: string }) => e.rel)).toContain('store/.inbound-sig-key')
+  })
+
   it('the delivery log is a security table of the db-write-gate', async () => {
     const gate = await import('../../scripts/self-pace-gate.mjs' as string)
     expect(gate.SECURITY_TABLES).toContain('inbound_sig_log')

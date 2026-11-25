@@ -507,6 +507,16 @@ function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
   return true
 }
 
+// HMACINBOUND1125 (Dani, #3117 review 1): the key the server signs agent_messages rows with is a SECRET, not a
+// setting. A sub-agent that reads it can sign a row in the owner's voice, so a Bash segment that names it is denied
+// even as a plain read (the #2876 secret-store pattern). The native Read tool is stopped by the settings deny
+// (SUBAGENT_INBOUND_SIG_KEY_DENY in agent-scaffold.ts); a write by any agent by db-write-gate's protected paths.
+const INBOUND_SIG_KEY_MENTION_RX = /\.inbound[-_]?sig[-_]?key\b|\.inbound[-_]?sig[\w.-]*[*?[]/i
+
+export function inboundSigKeyBashSegmentAllowed(seg) {
+  return !INBOUND_SIG_KEY_MENTION_RX.test(String(seg ?? ''))
+}
+
 export function protectedStoreBashSegmentAllowed(seg, ctx) {
   return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text), ctx?.rgConfigNamed)
 }
@@ -4736,6 +4746,8 @@ function decide(toolName, toolInput, opts = {}) {
     protectedCtx.homeTouched = HOME_TOUCH_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
     for (const [idx, seg] of protSegs.entries()) {
       protectedCtx.definite = definite[idx]
+      // The inbound signature key (HMACINBOUND1125): a secret, so not even a read.
+      if (!inboundSigKeyBashSegmentAllowed(seg)) return { deny: true, reason: 'inbound-sig-key' }
       // The other store files that gate the sub-agent (c556a35a) first: they are matched by
       // name only, so a segment that names one of them gets that file's message even when
       // the allowlist check below would also deny it on an unresolved word (`> $TARGET`).
@@ -4829,6 +4841,12 @@ const MCP_GATE_MSG =
   'eri el (irva, mozgatva, vagy ismeretlen nevu fajlt teve bele), vagy egy ismert fajl-iro MCP-eszkoz ut nelkul a szerver ' +
   'alapertelmezett helyere irna. Adj meg kifejezett, a munkakonyvtaradon beluli celutat es egyszeru fajlnevet; ha vedett ' +
   'fajl kell, kerd a fo agenst.'
+
+const INBOUND_SIG_KEY_GATE_MSG =
+  'Titok TILTOTT (governance hard-gate, HMACINBOUND1125). A store/.inbound-sig-key a dashboard kulcsa, amellyel az ' +
+  'uzenetsor sorait alairja: aki ismeri, a gazda hangjan tud uzenetet alairni. Sub-agentkent se olvasni, se irni, se ' +
+  'masolni nem szabad, egyetlen paranccsal sem. Csak a dashboard-szerver es a csatorna-koordinator olvassa. Ha az ' +
+  'alairassal gond van (sig_ok false, untrusted gazda-sor), szolj a fo agensnek (inter-agent uzenet), ne a fajlt nezd meg.'
 
 const PROTECTED_STORE_GATE_MSG =
   'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
@@ -4928,6 +4946,7 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
       deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
         : verdict.reason === 'dynamic-command' ? DYNAMIC_COMMAND_GATE_MSG
         : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG
+        : verdict.reason === 'inbound-sig-key' ? INBOUND_SIG_KEY_GATE_MSG
         : String(verdict.reason ?? '').startsWith('mcp-') ? MCP_GATE_MSG : GATE_MSG)
     }
     allow()

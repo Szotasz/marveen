@@ -5422,6 +5422,14 @@ export function signedRowReplayed(id: number): boolean {
   return r !== undefined && r.delivered >= r.allowed
 }
 
+// HMACINBOUND1125 (Dani, #3117 review 2): true when a signed row was DELIVERED more often than the server allowed: a
+// delivered row put back to pending by a raw UPDATE and delivered again. A row's first, legitimate delivery leaves
+// delivered = allowed, so this is `>`, not the `>=` signedRowReplayed uses before a delivery.
+export function signedRowOverDelivered(id: number): boolean {
+  const r = db.prepare('SELECT delivered, allowed FROM inbound_sig_log WHERE msg_id = ?').get(id) as { delivered: number; allowed: number } | undefined
+  return r !== undefined && r.delivered > r.allowed
+}
+
 // HMACINBOUND1125: count one delivery of a signed row. markMessageDelivered and closeMessagesWithoutDelivery do it
 // themselves; drain-inbox calls this one after it classified the rows claimPendingForAgent already marked delivered
 // (the claim must not count them, or the classification right after it would read every claimed row as a replay).

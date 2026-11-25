@@ -8,8 +8,7 @@ import {
   countNewerMessagesForRows,
   getHeartbeatKanbanLive,
   COMPLETION_REPORT_PREFIX,
-  type AgentMessage,
-} from '../../db.js'
+  type AgentMessage, signedRowOverDelivered } from '../../db.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
@@ -719,7 +718,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (!one) { json(res, { error: 'Message not found' }, 404); return true }
     // HMACINBOUND1125 (Dani 85038, 3): sig_ok says the server wrote and signed this row. The directive-verify recipe
     // accepts a [SYSTEM-DIREKTIVA] only on sig_ok: from_agent='system' alone can be written by a raw INSERT.
-    json(res, { ...attachFreshness([one])[0], sig_ok: rowSigOk(one) })
+    // #3117 review 2: a signed row delivered more often than the server allowed (put back to pending and delivered
+    // again) is a replay: sig_ok false, and `replayed` says why, so an old handoff or STOP directive does not verify.
+    const replayed = signedRowOverDelivered(one.id)
+    json(res, { ...attachFreshness([one])[0], sig_ok: rowSigOk(one) && !replayed, replayed })
     return true
   }
   if (msgUpdateMatch && method === 'PUT') {

@@ -225,6 +225,10 @@ export const PROTECTED_INSTALL_PATHS = [
   // break-glass CLI on the machine; deleting it no longer turns the factor off (dashboard_users.totp_enabled, a
   // security table, keeps it on and the login fails closed), but a write could swap a secret or reset the replay step.
   { rel: 'store/.dashboard-totp.json' },
+  // The key the dashboard signs agent_messages rows with (HMACINBOUND1125, Dani #3117 review 1). Only the dashboard
+  // creates it, at boot (not a tool call); a written key would make the dashboard sign and verify with a key someone
+  // else knows after its next start. A read by a sub-agent is the self-pace gate's (inboundSigKeyBashSegmentAllowed).
+  { rel: 'store/.inbound-sig-key' },
   // The node the dashboard runs on, recorded at its start for scripts/watchdog.sh (WDSANDBOXNODE1119), which runs it
   // (the Bash sandbox helper, npm start). Only the dashboard's start writes it; an edited path would be run by the
   // watchdog, a deleted one only makes it fall back to the node on its PATH.
