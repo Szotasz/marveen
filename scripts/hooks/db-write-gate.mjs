@@ -2715,6 +2715,39 @@ export function claudePluginWrite(command) {
   })
 }
 
+// The dashboard-user break-glass CLI (DASHUSERGATE1123): reset-password, add, remove, totp:off, sessions:clear and
+// security:reset write dashboard_users / auth_sessions / device_keys / store/.dashboard-totp.json, and ask for no proof
+// but being on the machine. The SQL and the file rules never see them (the statements live in the CLI's own code), so
+// an agent, or an injected prompt, could set the owner's password or turn off the second factor and sign in as the
+// owner. For EVERY agent an ALLOWLIST: only `list` (a read), no command at all and the help pass; the owner's own
+// terminal stays the way back (docs/dashboard-auth-recovery.md). Every spelling of the CLI counts: the package script
+// (`npm|pnpm|yarn|bun ... dashboard-user`, also behind xargs or docker exec), and its files (scripts/dashboard-user.ts,
+// src/dashboard-user-cli.ts, dist/dashboard-user-cli.js) under any runner (tsx, npx, node, docker compose exec), in a
+// command substitution and in shell code (decide() recurses into it). A reader of the files (cat, grep, sed -n, git) is
+// not a run. A verb that is a path (`cp ... /tmp/x.ts`) is not a CLI verb; one from a variable denies. The stated
+// limit, as for every rule here: a script file that runs the CLI, or a name built at run time, passes.
+const DASHBOARD_USER_FILES = new Set(['dashboard-user.ts', 'dashboard-user.js', 'dashboard-user-cli.ts', 'dashboard-user-cli.js'])
+const DASHBOARD_USER_PKG_RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'npx'])
+const DASHBOARD_USER_READS = new Set(['list'])
+export function dashboardUserWrite(command, depth = 0) {
+  const text = String(command ?? '')
+  if (!text.includes('dashboard-user')) return false
+  if (depth < SHELL_CODE_DEPTH && liveSubstitutions(text).some((inner) => dashboardUserWrite(inner, depth + 1))) return true
+  const segs = shellSegments(text, { surface: 'security' }) ?? splitSegments(text).map((own) => ({ own }))
+  return segs.some(({ own }) => {
+    const { rest } = unwrapRun(wordsOf(own))
+    const name = segCommand(rest)
+    if (!name || name === 'git' || isReadOnlyFsCommand(rest, name)) return false
+    const at = rest.findIndex((w, i) => DASHBOARD_USER_FILES.has(lastPart(w.value))
+      || (w.value === 'dashboard-user' && rest.slice(0, i).some((p) => DASHBOARD_USER_PKG_RUNNERS.has(lastPart(p.value)))))
+    if (at < 0) return false
+    const verb = rest.slice(at + 1).find((w) => !w.value.startsWith('-'))
+    if (!verb) return false
+    if (verb.dollar || verb.value.includes('$')) return true
+    return /^[\w:-]+$/.test(verb.value) && !DASHBOARD_USER_READS.has(verb.value)
+  })
+}
+
 // --- MCP tools (MCPWRITEGATE1104) -------------------------------------------------------------------------------
 // An MCP tool reaches local paths through its own arguments (mcp-file-targets.mjs names them). Each one is judged on
 // this gate's own engine:
@@ -2815,6 +2848,7 @@ function decide(toolName, toolInput, opts = {}, depth = 0) {
     const command = String(toolInput?.command ?? '')
     if (subOnly() && claudeMcpListWrite(command)) return { deny: true, reason: 'subagent-file' }
     if (subOnly() && claudePluginWrite(command)) return { deny: true, reason: 'subagent-file' }
+    if (dashboardUserWrite(command)) return { deny: true, reason: 'dashboard-user' }
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
     scriptDetail = null
     // VARDEFDB1121: a variable that is definitely a literal here is read as that literal (W=/abs; git -C $W)
@@ -2898,6 +2932,16 @@ export const SUBAGENT_FILE_GATE_MSG =
   'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
   'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
   '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
+
+// DASHUSERGATE1123: the break-glass CLI's writing commands, from an agent session.
+export const DASHBOARD_USER_GATE_MSG =
+  'A dashboard-user break-glass CLI iro parancsa TILTOTT ugynok-sessionbol (DASHUSERGATE1123, minden ugynokre, a fo ' +
+  'ugynokre is): reset-password, add, remove, totp:off, sessions:clear, security:reset. Ezek a gepen futason kivul ' +
+  'semmilyen bizonyitekot nem kernek, tehat egy ugynok vagy egy prompt-injekcio ezekkel a gazda jelszavat allithatna be ' +
+  'vagy a ketlepcsos belepest kapcsolhatna ki, es gazdakent lephetne be. Szabad: a list (csak olvas), a parancs nelkuli ' +
+  'hivas es a --help. Minden alakra all: npm/pnpm/yarn/bun run dashboard-user, tsx/npx/node scripts/dashboard-user.ts, ' +
+  'node dist/dashboard-user-cli.js, docker (compose) exec-ben is. A visszaut a gazda SAJAT terminalja ' +
+  '(docs/dashboard-auth-recovery.md): ha kell, ird meg a gazdanak a pontos parancsot, es o futtatja.' + LIMIT_MSG
 
 // MCPWRITEGATE1104: an MCP tool's path argument is judged like a native file tool's file_path.
 export const MCP_PREFIX_MSG =
@@ -3026,6 +3070,7 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
       const trigger = verdict.trigger ?? ''
       deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG + trigger
         : verdict.reason === 'subagent-file' ? SUBAGENT_FILE_GATE_MSG
+        : verdict.reason === 'dashboard-user' ? DASHBOARD_USER_GATE_MSG
         : verdict.reason === 'mcp-install-file' ? MCP_PREFIX_MSG + INSTALL_FILE_GATE_MSG
         : verdict.reason === 'mcp-subagent-file' ? MCP_PREFIX_MSG + SUBAGENT_FILE_GATE_MSG
         : verdict.reason === 'mcp-path' ? MCP_PATH_GATE_MSG : DB_GATE_MSG)

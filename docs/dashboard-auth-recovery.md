@@ -34,6 +34,18 @@ futásáról audit-bejegyzés készül és -- ha van bekötött csatorna -- Tele
 értesítés megy a gazdának. Csatorna nélküli installon az értesítés csendben
 kimarad; a visszaút sosem függ tőle.
 
+**Ügynök nem futtathatja (DASHUSERGATE1123).** A "gépen futás" itt a gazda saját
+terminálját jelenti, nem egy ügynök-sessiont: az írói parancsokat (`reset-password`,
+`add`, `remove`, `totp:off`, `sessions:clear`, `security:reset`) a db-write-gate
+minden ügynöknek tiltja, a fő ügynöknek is, minden alakban (`npm run`, `tsx`,
+`node dist/dashboard-user-cli.js`, `docker compose exec`). Különben egy ügynök vagy
+egy prompt-injekció beállíthatná a gazda jelszavát, vagy kikapcsolhatná a
+kétlépcsős belépést, és gazdaként léphetne be. Szabad: a `list` (csak olvas), a
+parancs nélküli hívás és a `--help`. Ha egy ügynöknek kellene visszaállítania egy
+belépést, írja meg a gazdának a pontos parancsot, és a gazda futtatja. A kapu
+szöveg-alapú: egy előre megírt szkriptfájl, amely a CLI-t futtatja, átmegy rajta
+(ugyanaz a korlát, mint a kapu többi szabályánál).
+
 ### Docker- és Hostinger-telepítésen
 
 A konténer képében nincs TypeScript-futtató, ezért ott az `npm run dashboard-user` nem fut (`tsx: not found`). Ugyanez
