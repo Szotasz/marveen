@@ -120,6 +120,14 @@ describe('the button is there for a sub-agent only', () => {
     expect(els.agentDetailNameRow.hidden).toBe(true)
   })
 
+  it('the button and the toast say display name: the id is not renamed, so they promise no real rename', () => {
+    expect(HU).toContain("'agents.rename.btn_title': 'Megjelenített név módosítása'")
+    expect(HU).toContain("'agents.rename.saved': 'Megjelenített név mentve: {name}'")
+    expect(EN).toContain("'agents.rename.btn_title': 'Change display name'")
+    expect(EN).toContain("'agents.rename.saved': 'Display name saved: {name}'")
+    expect(HTML).toContain('id="agentRenameBtn" hidden title="Megjelenített név módosítása"')
+  })
+
   it('both languages say what an empty save does, with the {default} placeholder', () => {
     for (const lang of [HU, EN]) expect(lang).toMatch(/'agents\.rename\.hint': '[^'\n]*\{id\}[^'\n]*\{default\}[^'\n]*'/)
   })
