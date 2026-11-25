@@ -5154,14 +5154,19 @@ async function openAgentDetail(agentName) {
       danger: true,
     })
     if (!confirmed) return
+    let reply
     try {
-      await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, { method: 'DELETE' })
-      closeModal(agentDetailOverlay)
-      showToast(t('agents.toast.deleted'), 'success')
-      loadAgents()
+      reply = await readActionReply(await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, { method: 'DELETE' }))
     } catch (err) {
       showToast(t('common.error_delete'), 'error')
+      return
     }
+    // A refused delete (an owner session required, an unknown agent) keeps the window open and says why.
+    if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(reply, reply.body) }), 'error'); return }
+    closeModal(agentDetailOverlay)
+    showToast(t('agents.toast.deleted'), 'success')
+    loadAgents()
+    refreshVisibleTeamGraphs()
   }
 
   // Export button: download a portable .tar.gz bundle of this agent. Offers to
@@ -16394,6 +16399,14 @@ async function loadOverviewTokens() {
 {
   const more = document.getElementById('overviewTokensMore')
   if (more) more.addEventListener('click', (e) => { e.preventDefault(); switchPage('tokenUsage') })
+}
+
+// After the roster changes (an agent deleted), the team graph is drawn again where it is on screen: the overview card
+// (with its agent count) and the Agents page tree view both open the agent's detail, where the delete button is.
+// loadAgents() only redraws the card grid, and the 3s busy poll only repaints the nodes the graph already has.
+function refreshVisibleTeamGraphs() {
+  if (document.getElementById('overviewPage')?.hidden === false) loadOverview()
+  if (document.getElementById('agentsPage')?.hidden === false && _agentsActiveView === 'tree') loadTeamGraph()
 }
 
 async function loadOverview() {
