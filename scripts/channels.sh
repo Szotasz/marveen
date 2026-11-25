@@ -1375,7 +1375,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # No contract line (no node / stale dist) = the bash fallback below (B's rule), never a guess.
   _ma_mode=""; _ma_dir=""
   if [ -n "$CFG_ENV" ]; then _ma_mode="$_cfg_mode"; _ma_dir="$_cfg_dir"; fi
-  _ma_line="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$INSTALL_DIR/store/channels-failures.log" 1>&2 || true)"
+  _ma_line="$(MARVEEN_CONTRACT_FD=3 "$_node_bin" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$INSTALL_DIR/store/channels-failures.log" 1>&2 || true)"
   _ma_line="$(printf '%s\n' "$_ma_line" | grep -m1 -E '^main-auth	' || true)"
   if [ -n "$_ma_line" ]; then
     IFS='	' read -r _ma_tag MAIN_AUTH_CONFIGURED MAIN_AUTH_EFFECTIVE MAIN_AUTH_CONFLICT MAIN_AUTH_FAILED <<EOF_MA
@@ -1492,7 +1492,7 @@ EOF_MA
     [ -d "${_cfg_dir:-}" ] && _cp_cfg_dir="${_cfg_dir:-}"
     # CUSTPROVFD3-1125: the prefix on fd 3, the helper's stdout and stderr to the failures log (the isolated-config
     # contract above): a line a dist module logs to fd 1 can never become part of the launch command.
-    _cp_env="$(MARVEEN_PREFIX_FD=3 "$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "$_cp_cfg_dir" 3>&1 2>>"$INSTALL_DIR/store/channels-failures.log" 1>&2)"
+    _cp_env="$(MARVEEN_CONTRACT_FD=3 "$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "$_cp_cfg_dir" 3>&1 2>>"$INSTALL_DIR/store/channels-failures.log" 1>&2)"
     _cp_rc=$?
     if [ "$_cp_rc" -ne 0 ]; then
       echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent-custom-provider exited $_cp_rc -- customProvider configured but broken; aborting to avoid silent wrong-backend launch (see channels-failures.log)" >> "$INSTALL_DIR/store/channels-failures.log"

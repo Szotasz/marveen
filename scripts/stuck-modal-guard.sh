@@ -548,7 +548,7 @@ run_guard() {
     # before the respawn (see channel-watchdog.sh). No contract line = the files the last launch wrote stay.
     _ma_mode=""; _ma_dir=""
     if [ -n "$CFG_ENV" ]; then _ma_mode="$_cfg_mode"; _ma_dir="$_cfg_dir"; fi
-    _ma_line="$("$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
+    _ma_line="$(MARVEEN_CONTRACT_FD=3 "$NODE_BIN" "$INSTALL_DIR/scripts/main-agent-auth.mjs" "$_ma_mode" "$_ma_dir" 3>&1 2>>"$STORE/channels-failures.log" 1>&2 || true)"
     _ma_line="$(printf '%s\n' "$_ma_line" | grep -m1 -E '^main-auth	' || true)"
     [ -n "$_ma_line" ] && log "main-auth $(printf '%s' "$_ma_line" | cut -f2- | tr '\t' ' ')"
     # CUSTPROVWATCHDOG1125: the main agent's custom provider, decided BEFORE the respawn-pane -k below kills the pane
