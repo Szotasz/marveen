@@ -127,6 +127,10 @@ CHANNEL_PROVIDER="${CHANNEL_PROVIDER//[^a-zA-Z0-9_-]/}"
 # gromzo-channel (GROMZONOPROVIDER1108; /gromzo/ would never match it).
 case "$CHANNEL_PROVIDER" in
   gromzo) PROBE_PLUGIN_SEG="gromzo-channel" ;;
+  # The slack provider's plugin dir is slack-channel: /slack/ never matched, so
+  # the probe saw a healthy Slack plugin as dead (6 keepalive respawns of the
+  # main session on 2026-10-23). Same mapping as PLUGIN_SEG in scripts/channels.sh.
+  slack) PROBE_PLUGIN_SEG="slack-channel" ;;
   *) PROBE_PLUGIN_SEG="$CHANNEL_PROVIDER" ;;
 esac
 

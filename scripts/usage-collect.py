@@ -440,15 +440,19 @@ def _read_keychain_token():
     return oauth.get("accessToken") or data.get("accessToken") or None
 
 
-def _read_claude_token():
+def _read_claude_token(skip=()):
     """Return (token, token_source) or (None, None). Never logs the value.
+
+    `skip` names sources already tried and refused (a 401): the next one is
+    returned, so a stale ~/.claude/.credentials.json left next to a valid
+    Keychain login no longer hides the Keychain (USAGE401FALLBACK1123).
 
     Source order matters: the long-lived `claude setup-token` value that
     typically lands in the .env file is NOT accepted by the oauth/usage
     endpoint (it answers 403), while the session token from the Keychain /
     credentials file is. Cheapest authoritative source first, .env last."""
     cred_path = os.path.expanduser("~/.claude/.credentials.json")
-    if os.path.exists(cred_path):
+    if "credentials_file" not in skip and os.path.exists(cred_path):
         try:
             with open(cred_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -459,11 +463,11 @@ def _read_claude_token():
         except Exception:
             pass
 
-    keychain_token = _read_keychain_token()
+    keychain_token = _read_keychain_token() if "keychain" not in skip else None
     if keychain_token:
         return keychain_token, "keychain"
 
-    if os.path.exists(ENV_PATH):
+    if "env_file" not in skip and os.path.exists(ENV_PATH):
         try:
             with open(ENV_PATH, "r", encoding="utf-8") as f:
                 for line in f:
@@ -501,6 +505,18 @@ def _claude_cli_version():
         return "unknown"
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is an error here, never followed: urllib would re-send the Authorization header to the new host
+    (Dani, #3073 review, measured with a 302). The usage endpoint has no reason to redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# urlopen goes through the installed opener: this script's only network call never follows a redirect.
+urllib.request.install_opener(urllib.request.build_opener(_NoRedirect))
+
+
 def _collect_claude_authoritative():
     """Return (windows_dict, None, None) on success.
     On failure: (None, error_str, error_kind) where error_kind is one of:
@@ -515,29 +531,51 @@ def _collect_claude_authoritative():
       'transient' -- 429 / 5xx / timeout / network error / unparseable
                      response -- safe to serve from cache if fresh enough
     """
-    token, token_source = _read_claude_token()
-    if not token:
-        return None, "no oauth token available (no credentials.json, no keychain entry, no .env token)", "no_token"
-
-    version = _claude_cli_version()
-    req = urllib.request.Request(
-        "https://api.anthropic.com/api/oauth/usage",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "User-Agent": f"claude-code/{version}",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        # 401 (expired/invalid token) and 403 (scope) are both no-retry: serving
-        # the stale authoritative cache would mask the auth problem. 401 needs a
-        # token refresh, 403 a scope fix -- the HTTP code below tells them apart.
-        kind = "permanent" if e.code in (401, 403) else "transient"
-        return None, f"HTTP {e.code} ({token_source} token)", kind
-    except Exception as e:
-        return None, f"{type(e).__name__}: {e}", "transient"
+    # USAGE401FALLBACK1123: a 401 refuses that SOURCE, not the account. A stale
+    # ~/.claude/.credentials.json left next to a valid Keychain login (macOS,
+    # MAIN_AGENT_ISOLATED_CONFIG=1) used to end the run here without the
+    # Keychain ever being tried. The next source gets one try; only the last
+    # 401 is final. Any other answer (403, 5xx, a timeout) ends the run as before.
+    tried = []
+    last_401 = None
+    data = None
+    version = None
+    while data is None:
+        token, token_source = _read_claude_token(skip=tuple(tried))
+        if not token or token_source in tried:
+            if last_401 is not None:
+                return None, last_401, "permanent"
+            return None, "no oauth token available (no credentials.json, no keychain entry, no .env token)", "no_token"
+        tried.append(token_source)
+        if version is None:
+            version = _claude_cli_version()
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/usage",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": f"claude-code/{version}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                last_401 = f"HTTP 401 ({', '.join(tried)} token{'s' if len(tried) > 1 else ''})"
+                continue
+            # 403 (scope) is no-retry: serving the stale authoritative cache
+            # would mask the auth problem. 401 (above) needs a token refresh,
+            # 403 a scope fix -- the HTTP code below tells them apart.
+            kind = "permanent" if e.code == 403 else "transient"
+            err = f"HTTP {e.code} ({token_source} token)"
+            # A 401 earlier in this run is the actionable one (Geri #3073): the .env setup-token answers this endpoint
+            # 403 by design, so "403" alone after a stale file's 401 would send the owner to fix a scope, not to
+            # refresh the token. Report both, the 401 first, and keep it a permanent (token) failure.
+            if last_401 is not None:
+                return None, f"{last_401}; then {err}", "permanent"
+            return None, err, kind
+        except Exception as e:
+            return None, f"{type(e).__name__}: {e}", "transient"
 
     # Windows are TOP-LEVEL keys of the response (not nested under
     # "rate_limits"), e.g. {"five_hour": {...}, "seven_day": {...}, ...,

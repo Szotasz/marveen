@@ -1,6 +1,6 @@
 import { CHANNEL_TOKEN_UNSET, codexRelayDir } from './agent-engine.js'
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync, unlinkSync, readlinkSync, openSync, fstatSync, readSync, closeSync, fchmodSync, constants, constants as fsConstants } from 'node:fs'
-import { encodeClaudeProjectDir } from '../claude-project-dir.js'
+import { encodeClaudeProjectDir, projectDirHasSession } from '../claude-project-dir.js'
 import { join, dirname, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFile, execFileSync, spawn } from 'node:child_process'
@@ -15,6 +15,7 @@ import {
   shouldClearTruncatedPreamble,
   detectsPastePlaceholder,
   pastePlaceholderLocation,
+  inputBoxText,
   detectPaneState,
   parkedInputText,
   parkedInputRowCount,
@@ -43,13 +44,14 @@ import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-b
 import { requeueAbandonedAndNotify } from './requeue-notice.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { readAgentEngineConfig, validateAgentEngineConfig, agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite } from './agent-config.js'
+import { readAgentEngineConfig, validateAgentEngineConfig, agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, agentConfigCarriesSenderRoleGate, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentCodeMode, readAgentCodeModeLaunched, writeAgentCodeModeLaunched, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readAgentGromzo, readAgentSenderRoleGatePolicy, readFileOr, readJsonObjectForWrite, readAgentSecurityProfile } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins, gromzoTokenFile, mxdAgentSockUsable } from './agent-extra-channels.js'
 import { filterMainGromzoIds, mainGromzoPrimaryReady, MAIN_GROMZO_PLUGIN_ID } from './main-gromzo-launch.js'
 import { ensureGromzoMarketplace } from './gromzo-marketplace.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, resolveOauthTokenFileSetting } from './agent-oauth-token-file.js'
+import { routerAvailable, routerAuthPresent, subAgentClaudeAuthMissing, HOSTINGER_ROUTER_PROVIDER_ID, HOSTINGER_ROUTER_DEFAULT_MODEL } from './hostinger-router.js'
 import { inheritedAuthUnset } from './inherited-auth-unset.js'
 import { copyProjectsOnce, currentAuthKeyMode, hostApiKey, isolatedDirReady, stampAllowed } from './auth-key-mode.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -107,7 +109,7 @@ export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists:
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { isSingleLineEnvValue, readEnvFile } from '../env.js'
-import { loadProfileTemplate, profileWantsThinChiefHandoff, type ProfileTemplate } from './profiles.js'
+import { loadProfileTemplate, decideStartProfile, profileWantsThinChiefHandoff, type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { dashboardTokenPathFor, helperTokenEnv, syncAgentTokenOnStart } from './agent-tokens.js'
 import { agentVendorHostsEnv } from './agent-egress-env.js'
@@ -345,6 +347,49 @@ export function hasFleetOauthToken(): boolean {
     return existsSync(FLEET_OAUTH_TOKEN_PATH) && readFileSync(FLEET_OAUTH_TOKEN_PATH, 'utf-8').trim().length > 0
   } catch {
     return false
+  }
+}
+
+// HOSTINGERSUBAGENTAUTH1122 (Geri #3045 B1): a key-only install (no fleet token, a non-empty ANTHROPIC_API_KEY in
+// .env). The launcher runs a shared-mode Claude sub-agent on that host key, so the agent does have auth.
+function hostKeyOnlyInstall(): boolean {
+  const env = join(PROJECT_ROOT, '.env')
+  return currentAuthKeyMode(env, FLEET_OAUTH_TOKEN_PATH) === 'keyonly' && hostApiKey(env).trim() !== ''
+}
+
+// HOSTINGERSUBAGENTAUTH1122: the shared ~/.claude holds a Claude login of its own (explicitConfigDirLacksOwnLogin's
+// rules: answers true on macOS, where the login is in the Keychain and a file check proves nothing). Without a
+// CLAUDE_CONFIG_DIR, Claude Code keeps its user state in <home>/.claude.json, not in ~/.claude/.claude.json, so a
+// Console login's primaryApiKey is read from there too (Dani #3045 F1).
+export function sharedClaudeLoginPresent(home: string = homedir(), platform: NodeJS.Platform = process.platform): boolean {
+  if (!explicitConfigDirLacksOwnLogin(join(home, '.claude'), platform)) return true
+  try {
+    const state: unknown = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))
+    const key = state && typeof state === 'object' ? (state as Record<string, unknown>).primaryApiKey : undefined
+    return typeof key === 'string' && key.trim() !== ''
+  } catch { return false }
+}
+
+/**
+ * HOSTINGERSUBAGENTAUTH1122: what the create form needs to know before a new sub-agent is made. On a router install
+ * with no Claude login, a new Claude agent could not sign in: the form warns, and when the main agent already runs on
+ * the router it preselects the router (the user can still change it). Elsewhere both are false and nothing changes.
+ */
+export function readSubAgentAuthAdvice(): { claudeAuthMissing: boolean; routerSuggested: boolean; routerProviderId: string; routerModel: string } {
+  const claudeAuthMissing = subAgentClaudeAuthMissing({
+    routerInstall: routerAvailable(PROJECT_ROOT),
+    isMainAgent: false,
+    needsClaudeLogin: true,
+    tokenExported: hasFleetOauthToken(),
+    hostKeyLaunch: hostKeyOnlyInstall(),
+    configuredConfigDir: false,
+    sharedLoginPresent: sharedClaudeLoginPresent(),
+  })
+  return {
+    claudeAuthMissing,
+    routerSuggested: claudeAuthMissing && routerAuthPresent(MAIN_AGENT_ID),
+    routerProviderId: HOSTINGER_ROUTER_PROVIDER_ID,
+    routerModel: HOSTINGER_ROUTER_DEFAULT_MODEL,
   }
 }
 
@@ -2955,6 +3000,15 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
 
+  // AGENTISO1123 (PR-A): an explicitly configured security profile that is missing or unreadable refuses the start
+  // (fail-closed) instead of falling back to the permissive `default`. Decided before any scaffolding is written;
+  // the resolved profile is reused below, so the settings are written from the very profile this check read.
+  const startProfile = decideStartProfile(resolveAgentSecurityProfile(name), readAgentSecurityProfile(name) !== 'default')
+  if (!startProfile.ok) {
+    logger.error({ name, error: startProfile.error }, 'security profile: agent NOT started (fail-closed, no fallback to default)')
+    return { ok: false, error: startProfile.error }
+  }
+
   // Opt-in per-agent auto-memory isolation (local agents only; a remote
   // workdir cannot be provisioned from here). Default OFF: without the
   // memoryIsolation flag this is a no-op and the shared-memory behavior of
@@ -3185,7 +3239,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // `leader` (tech-lead) -> 'applier' (Supabase retained), everyone else ->
     // 'default' (deny-by-default). Keeps a fresh install's tech-lead an applier
     // without hardcoding agent names.
-    const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
+    const profile = startProfile.profile
     writeAgentSettingsFromProfile(name, profile)
     rewriteAgentClaudeMdOnStart(name, profile)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
@@ -3615,6 +3669,22 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     if (planToken && !oauthTokenEnv.includes(`--strict --status ${shSingleQuote(planToken.statusPath)}`)) {
       return refusePlanTokenLaunch(name, planToken.secretId, readAgentClaudePlan(name) ?? undefined, 'plan-token-not-in-launch-env')
     }
+    // HOSTINGERSUBAGENTAUTH1122: a Claude agent with no way to sign in on a router install is refused, loudly, instead
+    // of starting on the login screen of a shared ~/.claude that holds no login.
+    if (subAgentClaudeAuthMissing({
+      routerInstall: routerAvailable(PROJECT_ROOT),
+      isMainAgent: name === MAIN_AGENT_ID,
+      needsClaudeLogin: isClaude && authMode !== 'api' && authMode !== 'own_team',
+      tokenExported: oauthTokenEnv !== '',
+      // The same condition the host-key branch below uses to export ANTHROPIC_API_KEY (keep the two in step).
+      hostKeyLaunch: keyMode === 'keyonly' && needsFleetOauth && !configuredConfigDir && !ownTokenFile && !planToken
+        && hostApiKey(join(PROJECT_ROOT, '.env')).trim() !== '',
+      configuredConfigDir,
+      sharedLoginPresent: sharedClaudeLoginPresent(),
+    })) {
+      logger.error({ name, model }, 'no-claude-auth: router install without a Claude login -- agent NOT started; switch it to the Hostinger AI Router or add a Claude login')
+      return { ok: false, error: 'no-claude-auth: this install has no Claude subscription login. Switch the agent to the Hostinger AI Router (agent settings, Model), add a Claude login, or give the agent its own auth.' }
+    }
     if (ownLaunch.kind === 'own') {
       logger.info(
         { name, path: ownLaunch.path, fingerprint: ownLaunch.fingerprint },
@@ -3687,7 +3757,8 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
       ? join(claudeConfigDir, 'projects')
       : join(homedir(), '.claude', 'projects')
     const encodedProject = encodeClaudeProjectDir(dir)
-    const hasPriorSession = existsSync(join(projectsRoot, encodedProject))
+    // #3086 M1: a session file, not just the folder (an imported file memory creates the folder before any run).
+    const hasPriorSession = projectDirHasSession(join(projectsRoot, encodedProject))
     // opts.fresh forces a brand-new conversation (auto-restart 'fresh' mode):
     // omit --continue so the heavy accumulated context is dropped. Without it
     // we resume the prior session (the 'continue' mode / normal restart).
@@ -4850,6 +4921,10 @@ export async function clearInputBuffer(session: string, host: string | null = nu
 const PLACEHOLDER_DISCARD_MAX = 3
 // Settle window after a Ctrl-C so the next capture reflects the cleared box.
 const PLACEHOLDER_DISCARD_SETTLE_MS = 450
+// How long a press waits for the input box to be redrawn before the clear stops pressing. Measured 2026-11-24
+// 03:30 on a loaded host: the box still showed the stub 450 ms after each press, so presses 2 and 3 went on a
+// box the TUI had already emptied, and the session quit. A frame identical to the pressed one proves nothing.
+const PLACEHOLDER_REDRAW_WAIT_MS = 3000
 
 // Card 71263d15 (a2): the pane's process as tmux reports it ("<pane_pid> <pane_current_command>"),
 // or null when the pane cannot be read (a pane whose process exited is gone: no remain-on-exit).
@@ -4897,8 +4972,8 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
   let lastPane: string | null = null
   let presses = 0
   try {
+    let pane = capturePane(session, host)
     for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
-      const pane = capturePane(session, host)
       if (pane == null) {
         logger.warn({ session, presses }, 'discardPlaceholderBuffer: pane capture failed; stopping (presses so far in the field)')
         return { outcome: 'failed', lastPane }
@@ -4921,11 +4996,21 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
         return { outcome: 'failed', lastPane }
       }
       presses++
-      await delay(PLACEHOLDER_DISCARD_SETTLE_MS)
+      // Another press only on a box redrawn SINCE this press that still holds the stub (checked at the loop top).
+      const pressedBox = inputBoxText(pane)
+      const deadline = Date.now() + PLACEHOLDER_REDRAW_WAIT_MS
+      do {
+        await delay(PLACEHOLDER_DISCARD_SETTLE_MS)
+        pane = capturePane(session, host)
+      } while (pane != null && inputBoxText(pane) === pressedBox && Date.now() < deadline)
+      if (pane != null && inputBoxText(pane) === pressedBox) {
+        lastPane = pane
+        logger.warn({ session, presses, waitedMs: PLACEHOLDER_REDRAW_WAIT_MS }, 'discardPlaceholderBuffer: input box not redrawn since the press; no further Ctrl-C')
+        return { outcome: 'failed', lastPane }
+      }
     }
-    const finalPane = capturePane(session, host)
-    if (finalPane != null) lastPane = finalPane
-    return { outcome: finalPane != null && pastePlaceholderLocation(finalPane) == null ? 'cleared' : 'failed', lastPane }
+    if (pane != null) lastPane = pane
+    return { outcome: pane != null && pastePlaceholderLocation(pane) == null ? 'cleared' : 'failed', lastPane }
   } finally {
     if (presses > 0) {
       const after = paneProcessOf(session, host)

@@ -23,26 +23,39 @@ describe('channel-plugin-unlock helper contract', () => {
     expect(helper).toMatch(/export\s+function\s+schedulePluginUnlockAfterRespawn\b/)
   })
 
-  it('gates the keystrokes on the absence of a bun child under the claude pid', () => {
-    // The bun-child probe is the single most important safety check: if a
-    // bun poller is alive, the plugin is running and Up+Enter+Enter would
+  it('gates the keystrokes on the absence of the plugin poller under the claude pid', () => {
+    // The poller probe is the single most important safety check: if the
+    // poller is alive, the plugin is running and Up+Enter+Enter would
     // navigate to "Disable", killing a healthy channel.
     expect(helper).toMatch(/pgrep/)
-    expect(helper).toMatch(/hasBunChild/)
-    // The unlock keystrokes path must be reachable ONLY when hasBunChild is
+    expect(helper).toMatch(/hasPluginPollerChild/)
+    // The unlock keystrokes path must be reachable ONLY when the probe is
     // false - assert by checking the early-return branch precedes the
     // keystroke call inside runUnlockProbe.
     const probeStart = helper.indexOf('function runUnlockProbe')
     expect(probeStart, 'runUnlockProbe not found').toBeGreaterThan(0)
     const probeEnd = helper.indexOf('\n}\n', probeStart)
     const probeBody = helper.slice(probeStart, probeEnd > probeStart ? probeEnd : undefined)
-    const bunIdx = probeBody.indexOf('hasBunChild(')
+    const probeIdx = probeBody.indexOf('hasPluginPollerChild(')
     const sendIdx = probeBody.indexOf('sendUnlockKeystrokes(')
-    expect(bunIdx).toBeGreaterThan(0)
-    expect(sendIdx).toBeGreaterThan(bunIdx)
-    // Ensure the hasBunChild branch returns before sendUnlockKeystrokes.
-    const between = probeBody.slice(bunIdx, sendIdx)
+    expect(probeIdx).toBeGreaterThan(0)
+    expect(sendIdx).toBeGreaterThan(probeIdx)
+    // Ensure the poller-present branch returns before sendUnlockKeystrokes.
+    const between = probeBody.slice(probeIdx, sendIdx)
     expect(between).toMatch(/return\b/)
+  })
+
+  it('counts a node (non-bun) plugin poller as running, not only bun (PLUGINNODEPOLLER1023)', () => {
+    // The slack-channel plugin runs on node/tsx. A bun-only probe read every
+    // healthy Slack agent as "plugin absent" and typed /mcp into it after each
+    // respawn, parking the pane in the /mcp menu.
+    const fnStart = helper.indexOf('function hasPluginPollerChild')
+    expect(fnStart, 'hasPluginPollerChild not found').toBeGreaterThan(0)
+    const fnBody = helper.slice(fnStart, helper.indexOf('\n}\n', fnStart))
+    expect(fnBody).toMatch(/'bun'/)
+    expect(fnBody).toMatch(/'-f', pluginPollerArgvPattern\(provider\)/)
+    // Scoped to the claude pid on both probes, never host-wide.
+    expect(fnBody.match(/'-P', String\(claudePid\)/g)?.length).toBe(2)
   })
 
   it('refuses to send keystrokes if the pane shows a modal or non-idle state', () => {

@@ -263,8 +263,12 @@ export function scanManifestText(text: string, maxChars: number): { reason: Veri
 // Fixed patterns and limits (Sz-3.1, Sz-4.3, Sz-4.5)
 // ---------------------------------------------------------------------------
 
-/** Sz-3.1 slug. The stricter shape (N9/a) is the installer's pre-download filter, not this module's. */
-export const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/
+/**
+ * The contract's strict slug (Mira 77384, S15): 2-40 characters, no double and no trailing hyphen. The ONE slug
+ * pattern of the installer (Samu 83398): the delivery check, the pre-download filter and the install name all use it,
+ * and the publisher signs only this shape (the shared publish vector's slug cases).
+ */
+export const SLUG_RE = /^(?=.{2,40}$)[a-z0-9]+(-[a-z0-9]+)*$/
 /** Sz-3.1 version and min_marveen_version. */
 export const VERSION_RE = /^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$/
 /** Sz-4.5 text path, the one-line form the contract names authoritative. */

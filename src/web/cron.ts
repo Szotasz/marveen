@@ -123,10 +123,20 @@ export function cronPrevOccurrence(cron: string, fromMs: number, toMs: number, t
     // the `> fromMs` is strict) -- a rare "silently lost" occurrence. Nudging
     // currentDate one ms past toMs makes the window a true half-open (fromMs,
     // toMs], so a boundary occurrence fires exactly once, never twice.
-    const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(toMs + 1) })
+    // `startDate: fromMs` bounds the search to the window: prev() walks back day
+    // by day, and for a dated one-off ("0 19 1 12 *") the last occurrence is up
+    // to a year away -- ~100 ms of synchronous CPU per task on every 15 s tick
+    // (measured: 135 schedules, 48 of them dated, ~2 s per tick). With the
+    // bound cron-parser throws as soon as it steps below fromMs, which the catch
+    // turns into the same null the comparison below gave. Not next() from the
+    // window start: in cron-parser 5.5.0 next() and prev() disagree across a DST
+    // change (next() skips the 03:00 occurrence on the spring-forward day that
+    // prev() reports), so that would silently drop a run once a year.
+    const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(toMs + 1), startDate: new Date(fromMs) })
     const prev = expr.prev().getTime()
     return prev > fromMs ? prev : null
   } catch {
+    // unparseable, or nothing in the window (the search left it)
     return null
   }
 }

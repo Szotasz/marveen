@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
-import { classifyAgentMessage } from '../web/agent-message-wrap.js'
+import { classifySenderId } from '../web/agent-message-wrap.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID as VOICE_ID_OR_NULL } from '../channel-coordinator/ingest.js'
 // VOICECHANNELID1022: the id is null only when the voice lane is off (even the
 // default names another sender); on this suite's install it is on.
@@ -40,7 +40,7 @@ describe('voice channel identity', () => {
   })
 
   it('classifies as channel-inbound, so every receiving agent sees the provenance', () => {
-    const cls = classifyAgentMessage(VOICE_CHANNEL_AGENT_ID, 'marveen')
+    const cls = classifySenderId(VOICE_CHANNEL_AGENT_ID, 'marveen')
     expect(cls).not.toBeNull()
     expect(cls!.category).toBe('channel-inbound')
     expect(cls!.safeFrom).toBe(VOICE_CHANNEL_AGENT_ID)
@@ -48,7 +48,7 @@ describe('voice channel identity', () => {
 
   it('a sub-agent recipient sees the SAME category (the framing is not main-agent-only)', () => {
     for (const to of ['mira', 'samu', 'iris']) {
-      expect(classifyAgentMessage(VOICE_CHANNEL_AGENT_ID, to)!.category).toBe('channel-inbound')
+      expect(classifySenderId(VOICE_CHANNEL_AGENT_ID, to)!.category).toBe('channel-inbound')
     }
   })
 })
@@ -104,7 +104,9 @@ describe('/api/messages write guard for the voice channel', () => {
     // a guard rejection would have returned a 403 instead of ever reaching db.
     await expect(
       postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'a-device', deviceId: 5 }),
-    ).rejects.toThrow(/prepare/)
+    // HMACINBOUND1125: the insert now runs in a transaction (it is signed with the row id), so the harness's missing
+    // DB throws on db.transaction before db.prepare: either name is the same proof of passage.
+    ).rejects.toThrow(/prepare|transaction/)
   })
 
   it('NEGATIVE CONTROL: an unknown non-voice id is refused by the known-agent guard', async () => {

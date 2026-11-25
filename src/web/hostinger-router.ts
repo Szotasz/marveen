@@ -5,7 +5,7 @@
 // the main-agent auth switch (main-auth-switch.ts) and the onboarding's claude-auth step both call applyMainRouter.
 //
 // Only the main agent: a sub-agent keeps running on the Claude subscription (or its own setup), and the wizard says so.
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getSecret, setSecret } from './vault.js'
 import { loadCustomProvider, saveCustomProvider } from './custom-providers.js'
@@ -49,6 +49,28 @@ export function resolveRouterModel(raw: unknown, allowed: readonly string[] = []
   return (HOSTINGER_ROUTER_MODELS as readonly string[]).includes(raw) || allowed.includes(raw) ? raw : null
 }
 
+/**
+ * HOSTINGERSUBAGENTAUTH1122: a Claude sub-agent on a router install that has no way to sign in. A router install
+ * usually has no Claude subscription at all: no fleet setup-token and no login in the shared ~/.claude. Such an
+ * agent would start and sit on the login screen in silence, so the launcher refuses it and the create form warns.
+ * Only on a router install (owner's rule: elsewhere nothing changes), and only for an agent that would use the
+ * Claude login (not authMode 'api', not 'own_team', not a custom provider, not an operator-set config dir), and that
+ * has no host API key to run on (a key-only install, Geri #3045 B1).
+ */
+export function subAgentClaudeAuthMissing(f: {
+  routerInstall: boolean
+  isMainAgent: boolean
+  needsClaudeLogin: boolean
+  tokenExported: boolean
+  /** A key-only install (no fleet token, ANTHROPIC_API_KEY in .env): the launcher runs the agent on the host key. */
+  hostKeyLaunch: boolean
+  configuredConfigDir: boolean
+  sharedLoginPresent: boolean
+}): boolean {
+  return f.routerInstall && !f.isMainAgent && f.needsClaudeLogin && !f.tokenExported && !f.hostKeyLaunch
+    && !f.configuredConfigDir && !f.sharedLoginPresent
+}
+
 export function routerActive(mainAgentId: string): boolean {
   return readAgentCustomProvider(mainAgentId) === HOSTINGER_ROUTER_PROVIDER_ID
 }
@@ -73,6 +95,10 @@ export function routerModel(mainAgentId: string): string | null {
  * main agent's customProvider + model. The caller has checked the key, the model and who may do it.
  */
 export function applyMainRouter(mainAgentId: string, newKey: string | null, model: string, contextTokens: number | null = null): void {
+  // A fresh Docker install has no agents/<main>/ folder yet, so the config write failed with ENOENT after the key and
+  // the provider record were already stored: the wizard answered 500 and left a half-made setting (Geri 83274, v1.51.1).
+  // Created first, before anything is written.
+  mkdirSync(agentDir(mainAgentId), { recursive: true })
   if (newKey) {
     setSecret(HOSTINGER_ROUTER_VAULT_KEY, 'Hostinger AI Router key (main agent)', newKey.trim())
     clearRouterModelCache()

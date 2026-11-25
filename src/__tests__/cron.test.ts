@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { cronMatchesNow, cronDueBetween, computeNextRun, resolveCronTz } from '../web/cron.js'
+import { CronExpressionParser } from 'cron-parser'
+import { cronMatchesNow, cronDueBetween, cronPrevOccurrence, computeNextRun, resolveCronTz } from '../web/cron.js'
 
 // Regression for the 2026-07-13..15 silent scheduler outage: fixed-time cron
 // tasks (reggeli-napindito "30 7 * * *", dream-engine "7 2 * * *") stopped
@@ -193,5 +194,84 @@ describe('computeNextRun honours the passed timezone', () => {
     expect(computeNextRun('30 7 * * *', 'Europe/Budapest')).toBe(
       Math.floor(Date.parse('2026-07-16T05:30:00Z') / 1000),
     )
+  })
+})
+
+// cronPrevOccurrence bounds prev() to the window with startDate (a dated one-off made the unbounded prev()
+// walk back up to a year on every tick). The window must stay (from, to], and the answer must stay prev()'s.
+describe('cronPrevOccurrence: the bounded lookup keeps the (from, to] window', () => {
+  const TICK = 15_000
+  // The unbounded lookup from before the change, kept as the reference the bounded one must agree with.
+  const prevOnly = (cron: string, fromMs: number, toMs: number): number | null => {
+    const prev = CronExpressionParser.parse(cron, { tz: TZ, currentDate: new Date(toMs + 1) }).prev().getTime()
+    return prev > fromMs ? prev : null
+  }
+
+  it('an occurrence exactly on the tick boundary belongs to the tick that ends on it, and only that one', () => {
+    const O = ms('2026-07-15T05:30:00Z')
+    expect(cronPrevOccurrence('30 7 * * *', O - TICK, O, TZ)).toBe(O)
+    expect(cronPrevOccurrence('30 7 * * *', O, O + TICK, TZ)).toBeNull()
+    expect(cronPrevOccurrence('30 7 * * *', O - 1, O + TICK, TZ)).toBe(O)
+  })
+
+  it('an occurrence one second before the tick is found, one second after it waits for the next tick', () => {
+    const O = ms('2026-07-15T05:30:00Z')
+    expect(cronPrevOccurrence('30 7 * * *', O + 1000 - TICK, O + 1000, TZ)).toBe(O)
+    expect(cronPrevOccurrence('30 7 * * *', O - 1000 - TICK, O - 1000, TZ)).toBeNull()
+    expect(cronPrevOccurrence('30 7 * * *', O - 1000, O - 1000 + TICK, TZ)).toBe(O)
+  })
+
+  it('finds a yearly occurrence across the year change, and nothing in the ticks around it', () => {
+    const O = ms('2026-12-31T23:00:00Z') // 2027-01-01 00:00 CET
+    expect(cronPrevOccurrence('0 0 1 1 *', O - 10_000, O + 5000, TZ)).toBe(O)
+    expect(cronPrevOccurrence('0 0 1 1 *', O - 10_000 - TICK, O - 10_000, TZ)).toBeNull()
+    expect(cronPrevOccurrence('0 0 1 1 *', O + 5000, O + 5000 + TICK, TZ)).toBeNull()
+    // a dated one-off whose day is not in the window: the case that cost ~100 ms per tick unbounded
+    expect(cronPrevOccurrence('0 19 1 12 *', O - TICK, O, TZ)).toBeNull()
+    expect(cronPrevOccurrence('0 19 1 12 *', ms('2026-12-01T17:59:50Z'), ms('2026-12-01T18:00:05Z'), TZ)).toBe(ms('2026-12-01T18:00:00Z'))
+  })
+
+  it('a window that is empty or runs backwards is null, not a throw', () => {
+    const O = ms('2026-07-15T05:30:00Z')
+    expect(cronPrevOccurrence('30 7 * * *', O, O, TZ)).toBeNull()
+    expect(cronPrevOccurrence('30 7 * * *', O + TICK, O - TICK, TZ)).toBeNull()
+  })
+
+  it('keeps the 03:00 run on the spring-forward day, which next() from the window start would skip', () => {
+    const O = ms('2026-03-29T01:00:00Z') // 02:00 CET -> 03:00 CEST
+    expect(cronPrevOccurrence('0 3 * * *', O - TICK, O, TZ)).toBe(O)
+    expect(CronExpressionParser.parse('0 3 * * *', { tz: TZ, currentDate: new Date(O - TICK) }).next().getTime()).toBeGreaterThan(O)
+  })
+
+  it('follows the wall clock through both DST changes', () => {
+    // 2026-03-29 is the first CEST day (07:30 == 05:30Z), 2026-10-25 the first CET day (07:30 == 06:30Z)
+    for (const O of [ms('2026-03-28T06:30:00Z'), ms('2026-03-29T05:30:00Z'), ms('2026-10-24T05:30:00Z'), ms('2026-10-25T06:30:00Z')]) {
+      expect(cronPrevOccurrence('30 7 * * *', O - TICK, O, TZ)).toBe(O)
+      expect(cronPrevOccurrence('30 7 * * *', O - 3_600_000 - TICK, O - 3_600_000, TZ)).toBeNull()
+    }
+  })
+
+  it('agrees with the unbounded lookup around the DST changes and the year change, for every window shape', () => {
+    const anchors = [
+      ms('2026-03-29T01:00:00Z'), // 02:00 CET -> 03:00 CEST, the skipped hour
+      ms('2026-10-25T01:00:00Z'), // 03:00 CEST -> 02:00 CET, the repeated hour
+      ms('2026-12-31T23:00:00Z'), // year change
+      ms('2026-07-15T05:30:00Z'),
+    ]
+    const crons = ['30 7 * * *', '*/15 * * * *', '30 2 * * *', '0 3 * * *', '0 0 * * *', '0 9 * * 1', '*/5 * * * * *']
+    let found = 0
+    for (const anchor of anchors) {
+      for (const offset of [-TICK, -1000, -1, 0, 1, 1000, TICK]) {
+        for (const width of [TICK, 3_600_000, 26 * 3_600_000]) {
+          const to = anchor + offset
+          for (const cron of crons) {
+            const got = cronPrevOccurrence(cron, to - width, to, TZ)
+            expect(got, `${cron} (${new Date(to - width).toISOString()}, ${new Date(to).toISOString()}]`).toBe(prevOnly(cron, to - width, to))
+            if (got != null) found++
+          }
+        }
+      }
+    }
+    expect(found).toBeGreaterThan(100) // the grid is not all-null
   })
 })

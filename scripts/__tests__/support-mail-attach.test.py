@@ -330,8 +330,14 @@ with tempfile.TemporaryDirectory() as td:
                                                      "attachments": al_hook}), f"{al} {al_hook}")
     approve(root, anchor)
     r = bash(root, att_cmd)
-    check("L2c with the approval: the checks pass and the approval is consumed", passed(r) and consumed(root),
-          f"rc={r[0]} err={r[2][-300:]!r}")
+    # APPROVALPRECHECK1122: the vault is down in the bash harness, so the run
+    # stops before the SMTP login and the approval must survive; the delivery
+    # (stubbed SMTP) is what consumes it.
+    check("L2c with the approval: the checks pass, and a vault failure leaves the approval unconsumed",
+          passed(r) and not consumed(root), f"rc={r[0]} err={r[2][-300:]!r}")
+    res, err = inproc(root, LETTER + ["--attach", DROP + "/ajanlat.pdf"])
+    check("L2c the delivered letter consumes the approval", bool(res["sent"].get("att")) and consumed(root),
+          f"res={res} err={err[-300:]!r}")
     # P1: two sends of the same approved letter at the same time -- the DELIVERIES are counted (the stubbed SMTP
     # send_message), not exit codes: exactly one letter reaches SMTP, the other is refused before it
     approve(root, anchor, aid="ap-par")
@@ -372,12 +378,12 @@ with tempfile.TemporaryDirectory() as td:
     check("N5 the same bytes under another name: refused (the name is in the anchor)",
           refused(r) and not consumed(root, "ap-att"), f"rc={r[0]} err={r[2][-300:]!r}")
     os.rename(os.path.join(root, DROP, "atnevezett.pdf"), os.path.join(root, DROP, "ajanlat.pdf"))
-    r = bash(root, SEND)
+    res, err = inproc(root, LETTER)
     check("N6 (INVARIANS) the plain letter still uses ITS approval (the attachment cases left it intact)",
-          passed(r) and consumed(root, "ap-plain"), f"rc={r[0]} err={r[2][-300:]!r}")
-    r = bash(root, att_cmd)
-    check("N7 the approved attachment letter still uses ITS approval", passed(r) and consumed(root, "ap-att"),
-          f"rc={r[0]} err={r[2][-300:]!r}")
+          res["sent"].get("rcpt") and consumed(root, "ap-plain"), f"res={res} err={err[-300:]!r}")
+    res, err = inproc(root, LETTER + ["--attach", DROP + "/ajanlat.pdf"])
+    check("N7 the approved attachment letter still uses ITS approval",
+          bool(res["sent"].get("att")) and consumed(root, "ap-att"), f"res={res} err={err[-300:]!r}")
     # N9: approved with TWO attachments, called with only one of them
     two_cmd = att_cmd + f" --attach {DROP}/b-masik.pdf"
     approve(root, anchor_of(bash(root, two_cmd)[2]), aid="ap-two")
@@ -388,12 +394,16 @@ with tempfile.TemporaryDirectory() as td:
     # --- I1: the hook and the real sender together (the project copy's OWN hook, its own store) ------------------
     hook_own = os.path.join(root, "scripts", "hooks", "email-approval-gate.py")
 
-    def hook_then_sender(cmd):
+    def hook_then_sender(cmd, deliver_args=None):
+        """deliver_args: run the sender in-process (stubbed vault/SMTP) instead of
+        the bash harness, for a case that must reach the delivery."""
         henv = {k: v for k, v in os.environ.items() if not k.startswith(("SUPPORT_", "EMAIL_APPROVAL"))}
         h = subprocess.run([sys.executable, hook_own], input=json.dumps(
             {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": root}),
             capture_output=True, text=True, env=henv, timeout=60)
-        return h.returncode, h.stdout, (bash(root, cmd) if h.returncode == 0 else None)
+        if h.returncode != 0:
+            return h.returncode, h.stdout, None
+        return h.returncode, h.stdout, (inproc(root, deliver_args) if deliver_args else bash(root, cmd))
 
     i_cmd = f"python3 {SENDER} --to a@example.com --subject 'Integrációs próba' --body '{BODY}' --attach {DROP}/ajanlat.pdf"
     hc, hout, _ = hook_then_sender(i_cmd)   # no approval yet: the hook passes it through, the sender refuses
@@ -405,9 +415,11 @@ with tempfile.TemporaryDirectory() as td:
           "refuses, the approval is NOT consumed", hc == 0 and "a kuldo maga ellenorzi" in hout and hc2 == 0
           and sr2 is not None and refused(sr2) and not consumed(root, "ap-int"), f"{hc} {hc2} {sr2 and sr2[2][-200:]!r}")
     put(root, DROP + "/ajanlat.pdf", PDF1)
-    hc3, _, sr3 = hook_then_sender(i_cmd)
+    hc3, _, sr3 = hook_then_sender(i_cmd, ["--to", "a@example.com", "--subject", "Integrációs próba", "--body", BODY,
+                                           "--attach", DROP + "/ajanlat.pdf"])
     check("I1b hook -> real sender with the approved attachment: passed through, the sender passes and consumes it once",
-          hc3 == 0 and sr3 is not None and passed(sr3) and consumed(root, "ap-int"), f"{hc3} {sr3 and sr3[2][-200:]!r}")
+          hc3 == 0 and sr3 is not None and bool(sr3[0]["sent"].get("att")) and consumed(root, "ap-int"),
+          f"{hc3} {sr3 and sr3[1][-200:]!r}")
 
     # --- the hook: the canonical send.py call with --attach is passed through -----
     # The gate reads the store of the install it sits in (no environment override) and passes only a sender

@@ -43,6 +43,29 @@ ni_answer() {
   esac
 }
 
+# AUTHSHHIDDEN1122: a secret (token, key) is typed without echo, so neither the screen nor a screen recording shows it.
+# The read lines stay plain `read -rp` / `read -p` (the Bridge's headless derive wraps exactly those, a `read -rsp`
+# would stop it); only the terminal echo is switched off around them, and only when stdin is a terminal. The traps set
+# before (INT, TERM, EXIT) are saved and put back, also on Ctrl+C, the same way as the Teams app password (EE2392D3).
+_secret_tty() { [ -t 0 ]; } # a terminal on stdin: only there is echo switched off
+_secret_echo_off() {
+  _secret_tty || return 0
+  _secret_prev_traps="$(trap -p INT TERM EXIT)"
+  _secret_prev_exit=""
+  eval "_secret_prev_exit=$(trap -p EXIT | sed -e 's/^trap -- //' -e 's/ EXIT$//')"
+  trap 'stty echo 2>/dev/null || true; trap - INT TERM EXIT; eval "$_secret_prev_traps"; exit 130' INT TERM
+  trap 'stty echo 2>/dev/null || true; eval "$_secret_prev_exit"' EXIT
+  stty -echo 2>/dev/null || true
+}
+_secret_echo_on() {
+  _secret_tty || return 0
+  stty echo 2>/dev/null || true
+  trap - INT TERM EXIT
+  eval "$_secret_prev_traps"
+  unset _secret_prev_traps _secret_prev_exit
+  echo ""
+}
+
 INSTALL_STEP="init"
 
 # ADMINPREREQTRUST1104 (Samu 69561): --admin-prereq runs as ROOT, so it may only run code that the
@@ -1260,7 +1283,9 @@ else
   if [ "$AUTH_MODE" = "1" ]; then
     echo ""
     echo -e "  ${DIM}API kulcsot itt talalod: https://console.anthropic.com/settings/keys${NC}"
+    _secret_echo_off
     read -p "  ANTHROPIC_API_KEY (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
+    _secret_echo_on
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
       remove_secret_export_from_rc ANTHROPIC_API_KEY
@@ -1290,7 +1315,9 @@ else
     for _try in 1 2 3; do
       # Read into OAUTH_TOKEN_INPUT (not a new name): the desktop installer
       # derives its prompts from this file by variable name.
+      _secret_echo_off
       read -p "  OAuth token: " OAUTH_TOKEN_INPUT
+      _secret_echo_on
       _tok="$(printf '%s' "$OAUTH_TOKEN_INPUT" | tr -d '[:space:]')"
       OAUTH_TOKEN_INPUT=""
       [ -z "$_tok" ] && break
@@ -1550,8 +1577,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  3. Adj nevet a botodnak${NC}"
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
+  _secret_echo_off
   ni_answer BOT_TOKEN file MARVEEN_TELEGRAM_TOKEN_FILE ||
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
+  _secret_echo_on
   probe_telegram_token "$BOT_TOKEN"
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo ""
@@ -1563,8 +1592,10 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
   echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
   echo ""
+  _secret_echo_off
   ni_answer DISCORD_BOT_TOKEN file MARVEEN_DISCORD_BOT_TOKEN_FILE ||
   read -rp "$(_t prompt_discord_bot_token)" DISCORD_BOT_TOKEN
+  _secret_echo_on
   ni_answer DISCORD_CHANNEL_ID value MARVEEN_DISCORD_CHANNEL_ID ||
   read -rp "$(_t prompt_discord_channel_id)" DISCORD_CHANNEL_ID
   echo ""
@@ -1637,10 +1668,14 @@ else
   echo -e "${DIM}     app_mention, message.channels, message.groups, message.im${NC}"
   echo -e "${DIM}  5. Installald a workspace-be${NC}"
   echo ""
+  _secret_echo_off
   ni_answer SLACK_BOT_TOKEN file MARVEEN_SLACK_BOT_TOKEN_FILE ||
   read -rp "$(_t prompt_slack_bot_token)" SLACK_BOT_TOKEN
+  _secret_echo_on
+  _secret_echo_off
   ni_answer SLACK_APP_TOKEN file MARVEEN_SLACK_APP_TOKEN_FILE ||
   read -rp "$(_t prompt_slack_app_token)" SLACK_APP_TOKEN
+  _secret_echo_on
 fi
 
 ni_answer BOT_NAME value MARVEEN_BOT_NAME ||
@@ -3256,7 +3291,8 @@ case "$DO_MIGRATE" in
     if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
       "$INSTALL_DIR/scripts/migrate.sh" || warn "$(_t macos.migrate_failed | sed 's/^ *//')"
     else
-      warn "A migrate.sh nem talalhato. Hasznald a dashboardot: http://localhost:${WEB_PORT:-3420} -> Koltoztes"
+      # MIGRATEMISSINGI18N1123: the same translated text as install-macos.sh, so an English install reads English.
+      warn "$(_t macos.migrate_missing | sed 's/^ *//')"
     fi
     ;;
 esac

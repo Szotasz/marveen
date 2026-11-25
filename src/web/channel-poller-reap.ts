@@ -1255,7 +1255,7 @@ export function reapDetachedChannelClaudes(opts: { channelNeedle?: string; tmuxP
 // argv[0] basename of the CLAUDE_PLUGIN_ROOT plugin dir per provider. The
 // telegram plugin cache path ends in `.../telegram/<ver>`; slack-channel in
 // `.../slack-channel/<ver>`; etc.
-const PLUGIN_ROOT_NEEDLE: Record<ChannelProviderType, string> = {
+export const PLUGIN_ROOT_NEEDLE: Record<ChannelProviderType, string> = {
   telegram: '/telegram',
   slack: '/slack-channel',
   discord: '/discord',

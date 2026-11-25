@@ -13,7 +13,7 @@ import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody, scheduleMainRestartWake, wantsMainRestartWake } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
+import { listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, recordSignedDelivery, markMessageFailed, countNewerMessagesFromSameSender,
   getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards, requeueDeliveredOpenForAgent } from '../../db.js'
 import { nicknameFor } from '../team-nicknames.js'
 import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
@@ -26,6 +26,7 @@ import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from '
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { hasLaunchTrace, hasPackageManifestFile, startsWithPackageShell } from '../agent-package/marker.js'
 import { packageDescription, packageSummaryField } from '../agent-package/install.js'
+import { readUpdatingTrace } from '../agent-package/update.js'
 
 import { claudeSupportForCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
@@ -146,6 +147,7 @@ import {
   resolveMainAgentRotatedTokenSecretId,
   explicitConfigDirLacksOwnLogin,
   FLEET_OAUTH_TOKEN_PATH,
+  readSubAgentAuthAdvice,
 } from '../agent-process.js'
 import { checkMainAuthSwitch, MAIN_AUTH_SWITCH_FIELDS } from '../main-auth-switch.js'
 import {
@@ -535,6 +537,8 @@ export interface AgentSummary {
   modelSource: 'explicit_model' | 'model_profile' | 'default'
   /** MIOAGENTINSTALL1114 (plan 4.2): the installed agent package, from its readable record; null for any other agent. */
   package: { slug: string; version: string } | null
+  /** Plan 8.4 (D11): the trace of an interrupted package update, or null. */
+  interruptedUpdate: { from: string; to: string; startedAt: string } | null
   modelProfileError: string | null
   activeModel: string | null
   runningSince: number | null
@@ -708,6 +712,8 @@ function getAgentSummary(name: string): AgentSummary {
     // description comes from the package record (an unreadable record keeps the old path).
     description: packageDescription(dir) ?? extractDescriptionFromClaudeMd(claudeMd),
     package: packageSummaryField(dir),
+    // MIOAGENTB4-1122 (plan 8.4, D11): an interrupted package update shows, instead of looking like an available one.
+    interruptedUpdate: readUpdatingTrace(name),
     model: modelResolution.model,
     modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
     modelSource: modelResolution.source,
@@ -1200,6 +1206,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       openrouterConfigured: hasOpenRouter,
       // Custom Anthropic-compatible providers defined in store/custom-providers.json.
       customProviders: listCustomProviders(),
+      // HOSTINGERSUBAGENTAUTH1122: the create form's warning and router preselection.
+      subAgentAuth: readSubAgentAuthAdvice(),
     })
     return true
   }
@@ -2469,7 +2477,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const claimed = claimPendingForAgent(name, INBOX_DRAIN_CAP)
     const blocks: string[] = []
     for (const msg of claimed) {
-      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
+      const cls = classifyAgentMessage(msg)
       if (!cls) {
         // The claim already flipped the row to 'delivered'; a silent skip
         // here is invisible message loss (delivered in the DB, never shown
@@ -2491,6 +2499,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note, freshness)
       blocks.push(prefix + wrapped)
+      // HMACINBOUND1125: the claim marked the row delivered without counting it; count it now, after the
+      // classification read the delivery log.
+      recordSignedDelivery(msg.id)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
     return true
@@ -2669,21 +2680,24 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const data = await serializeSkillsDir(() => {
         // Checked again on the queue: a delete queued before this export may have removed the agent.
         if (!existsSync(agentDir(name))) return null
-        exportAgentBundle(name, outPath, {
+        const m = exportAgentBundle(name, outPath, {
           includeSecrets,
           exportedBy: MAIN_AGENT_ID,
           exportedAt: new Date().toISOString(),
         })
-        return readFileSync(outPath)
+        return { bytes: readFileSync(outPath), fileMemory: m?.fileMemory ?? 'none' }
       })
       if (!data) { json(res, { error: 'Agent not found' }, 404); return true }
       res.writeHead(200, {
+        // ISSUE3056 (#3086): one line on the agent's Claude Code file memory (included | shared | over_cap | none |
+        // not_requested), so the dashboard can say whether it travelled.
+        'X-Marveen-File-Memory': data.fileMemory,
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${bundleFilename(name)}"`,
-        'Content-Length': String(data.length),
+        'Content-Length': String(data.bytes.length),
         'Cache-Control': 'private, no-store',
       })
-      res.end(data)
+      res.end(data.bytes)
     } catch (err) {
       // MIOAGENTINSTALL1114 (plan 4.2): a package agent is not exported; the answer says what to do instead.
       if (err instanceof PackageAgentExportError) { json(res, { error: 'package_agent_not_exportable', message: err.message }, 409); return true }

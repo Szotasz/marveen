@@ -229,6 +229,69 @@ package_start_refusal() {
   fi
 }
 
+# AGENTISO1123 (PR-A): this restart launches with --dangerously-skip-permissions and writes no profile settings, so
+# it must not start an agent whose security profile is strict (it would run in bypass, not dontAsk), nor one whose
+# configured profile is missing or unreadable (the dashboard refuses that start). Both are left to the dashboard's
+# start path. Resolved as the TS side does: agent-config.json securityProfile (absent, blank or 'default' = none
+# configured; then a team.role 'leader' gets 'applier', everyone else 'default'), then
+# templates/profiles/<id>.json -> permissionMode. A none-configured profile that cannot be read falls back to
+# default.json, as on the TS side. Prints "strict", "unknown" or nothing (may start).
+agent_profile_refusal() {
+  local cfg="${1%/}/agent-config.json" out
+  if out="$(python3 - "$cfg" "$INSTALL_DIR/templates/profiles" <<'PY'
+import json, os, sys
+cfg_path, profiles = sys.argv[1], sys.argv[2]
+try:
+    with open(cfg_path, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+except Exception:
+    cfg = {}
+if not isinstance(cfg, dict):
+    cfg = {}
+stored = cfg.get("securityProfile")
+stored = stored.strip() if isinstance(stored, str) else ""
+explicit = bool(stored) and stored != "default"
+team = cfg.get("team") if isinstance(cfg.get("team"), dict) else {}
+pid = stored if explicit else ("applier" if team.get("role") == "leader" else "default")
+
+def load(name):
+    if "/" in name or name in (".", ".."):
+        return None
+    try:
+        with open(os.path.join(profiles, name + ".json"), encoding="utf-8") as fh:
+            p = json.load(fh)
+    except Exception:
+        return None
+    fs = p.get("filesystem") if isinstance(p, dict) else None
+    if not isinstance(fs, dict) or not isinstance(fs.get("allow"), list) or not isinstance(fs.get("deny"), list):
+        return None
+    return p
+
+p = load(pid)
+if p is None:
+    if explicit:
+        print("unknown")
+        sys.exit(0)
+    p = load("default") or {}
+print("strict" if p.get("permissionMode") == "strict" else "")
+PY
+)"; then
+    printf '%s' "$out"
+  else
+    # No python3: refuse only an agent that names a profile; one with none configured starts as before.
+    grep -Eq '"securityProfile"[[:space:]]*:[[:space:]]*"[^"]' "$cfg" 2>/dev/null \
+      && ! grep -Eq '"securityProfile"[[:space:]]*:[[:space:]]*"[[:space:]]*default[[:space:]]*"' "$cfg" 2>/dev/null \
+      && printf 'unknown'
+  fi
+}
+
+# Self-test hook: watchdog.sh --check-profile <agent-dir>
+if [ "${1:-}" = "--check-profile" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --check-profile <agent-dir>" >&2; exit 2; }
+  echo "profile=$(agent_profile_refusal "$2")"
+  exit 0
+fi
+
 # Self-test hook: watchdog.sh --check-package <agent-dir> [hidden-list-file]
 if [ "${1:-}" = "--check-package" ]; then
   [ -n "${2:-}" ] || { echo "usage: watchdog.sh --check-package <agent-dir> [hidden-list-file]" >&2; exit 2; }
@@ -370,6 +433,13 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   PKG_REFUSAL="$(package_start_refusal "$AGENT_DIR" "$AGENT_ID" "$PACKAGE_HIDDEN_LIST")"
   if [ -n "$PKG_REFUSAL" ]; then
     echo "$(timestamp) [watchdog] $AGENT_ID: not started: $PKG_REFUSAL" >> "$LOG"
+    continue
+  fi
+
+  # AGENTISO1123: no restart attempt for these, so there is nothing to loop on; one line per agent per tick.
+  PROFILE_REFUSAL="$(agent_profile_refusal "$AGENT_DIR")"
+  if [ -n "$PROFILE_REFUSAL" ]; then
+    echo "$(timestamp) [watchdog] $AGENT_ID: not started: strict/unknown profile ($PROFILE_REFUSAL): left to the dashboard start path" >> "$LOG"
     continue
   fi
 

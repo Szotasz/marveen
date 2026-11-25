@@ -6,7 +6,8 @@
 //   1. An SQL write (INSERT / UPDATE / DELETE / REPLACE / DROP / ALTER / CREATE
 //      TRIGGER|INDEX ... ON) on a security table of the dashboard database
 //      (SECURITY_TABLES in self-pace-gate.mjs: approvals, approval_events,
-//      auth_sessions, colleague_sessions, dashboard_users, device_keys, vault_ssh_keys, support_consents, support_password_state), whatever
+//      auth_sessions, colleague_sessions, dashboard_users, device_keys, vault_ssh_keys, support_consents, support_password_state,
+//      custom_commands, inbound_sig_log), whatever
 //      program runs it: sqlite3, python -c, node -e, a heredoc, a pipe. Also
 //      PRAGMA writable_schema and any write on sqlite_master / sqlite_schema
 //      (and the temp aliases): through them a table is renamed, written under
@@ -23,10 +24,17 @@
 //      ".." resolved, case folded as a case-insensitive volume reads it). An
 //      archive extracted or a patch applied with no target directory writes
 //      into the cwd: there the cwd is the target.
+//   4. CHANINBOUNDFORGE1125: an agent_messages write that could forge who is
+//      speaking: a reserved or unknown sender (the channel coordinator, the voice
+//      channel, system, a future owner-voice id), a delivery flag (stop_authorized,
+//      urgent, priority, affects_current_work), a rewrite of another sender's row,
+//      or a statement the gate cannot read (agentMessagesForgeWrite in
+//      self-pace-gate.mjs; reported as an SQL write, reason 'db').
 //
 // What still passes: SQL reads (SELECT, sqlite3 -readonly), SQL writes on any
-// other table (UPDATE agent_messages in the skills, the daily_logs date fix in
-// CLAUDE.md), the kanban tool, reads of the protected files (cat/grep/jq/diff,
+// other table (the daily_logs date fix in CLAUDE.md), the ordinary agent_messages
+// writes (an agent's own message, a status/result update, its own pending row's
+// content), the kanban tool, reads of the protected files (cat/grep/jq/diff,
 // git diff/log/show), running a hook script, and MESSAGE TEXT that merely
 // quotes such a command: the data argument of curl -d/--data*, git commit -m/-F,
 // gh --body/--title, scripts/agent-msg.sh, the kanban tool's --title. Only that
@@ -53,7 +61,9 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 import {
   commandName,
   cwdAfterSegment,
+  substituteDefiniteCommand,
   dataResidue,
+  definiteAssignments,
   expandBraces,
   expandHome,
   globMatchesName,
@@ -64,6 +74,7 @@ import {
   nameForms,
   normalizePathSegments,
   pathKey,
+  protectedSplit,
   sameKey,
   scheduleSurfaceDeny,
   scheduleSurfaceVariants,
@@ -214,6 +225,10 @@ export const PROTECTED_INSTALL_PATHS = [
   // break-glass CLI on the machine; deleting it no longer turns the factor off (dashboard_users.totp_enabled, a
   // security table, keeps it on and the login fails closed), but a write could swap a secret or reset the replay step.
   { rel: 'store/.dashboard-totp.json' },
+  // The key the dashboard signs agent_messages rows with (HMACINBOUND1125, Dani #3117 review 1). Only the dashboard
+  // creates it, at boot (not a tool call); a written key would make the dashboard sign and verify with a key someone
+  // else knows after its next start. A read by a sub-agent is the self-pace gate's (inboundSigKeyBashSegmentAllowed).
+  { rel: 'store/.inbound-sig-key' },
   // The node the dashboard runs on, recorded at its start for scripts/watchdog.sh (WDSANDBOXNODE1119), which runs it
   // (the Bash sandbox helper, npm start). Only the dashboard's start writes it; an edited path would be run by the
   // watchdog, a deleted one only makes it fall back to the node on its PATH.
@@ -1067,7 +1082,9 @@ function shellRunsOnly(segs, k, targets, text) {
 //   (e) as the output of a command substitution in code position (eval "$(cat f)", sh -c "$(cat f)", the command word).
 // A wrapper's directory change (env --chdir/-C, sudo -D) is a later directory the file may run in (laterCwds).
 // Still the stated limit: a run in a LATER Bash call, and a program that reads its code from a file it finds itself.
+// The tables keyed by a command name have no prototype: a command named toString or constructor finds no entry.
 const RUN_WRAPPERS = {
+  __proto__: null,
   nice: ['-n', '--adjustment'], nohup: [], time: ['-f', '--format', '-o', '--output'], command: [], builtin: [],
   exec: ['-a'], setsid: [], stdbuf: ['-i', '-o', '-e', '--input', '--output', '--error'],
   timeout: ['-s', '--signal', '-k', '--kill-after'], gtimeout: ['-s', '--signal', '-k', '--kill-after'],
@@ -1076,7 +1093,7 @@ const RUN_WRAPPERS = {
   ionice: ['-c', '--class', '-n', '--classdata'], caffeinate: ['-t', '-w'],
   env: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'],
 }
-const WRAPPER_CHDIR = { env: ['-C', '--chdir'], sudo: ['-D', '--chdir'] }
+const WRAPPER_CHDIR = { __proto__: null, env: ['-C', '--chdir'], sudo: ['-D', '--chdir'] }
 const RESERVED_RUN_LEAD = new Set(['do', 'then', 'else', '{', '!'])
 // A variable whose value a program reads code from at start-up (a file, or code naming one).
 const STARTUP_VARS = new Set(['BASH_ENV', 'ENV', 'ZDOTDIR', 'PROMPT_COMMAND', 'NODE_OPTIONS', 'PERL5OPT', 'RUBYOPT',
@@ -1231,7 +1248,7 @@ export function copiedNames(segs, k, targets, subs = []) {
   }
   return names
 }
-const OPTION_PROGRAMS = { awk: ['-f', '--file'], gawk: ['-f', '--file'], mawk: ['-f', '--file'], nawk: ['-f', '--file'],
+const OPTION_PROGRAMS = { __proto__: null, awk: ['-f', '--file'], gawk: ['-f', '--file'], mawk: ['-f', '--file'], nawk: ['-f', '--file'],
   sed: ['-f', '--file'], gsed: ['-f', '--file'], make: ['-f', '--file', '--makefile'], gmake: ['-f', '--file', '--makefile'],
   bmake: ['-f'] }
 const VIM_NAMES = new Set(['vim', 'vi', 'nvim', 'ex', 'view', 'gvim', 'mvim', 'vimdiff', 'rvim'])
@@ -1681,7 +1698,7 @@ const DIR_CHANGERS = new Set(['rm', 'rmdir', 'mv', 'cp', 'rsync', 'ln', 'install
 // target-directory flags.
 const COPIERS = new Set(['cp', 'mv', 'install', 'ln', 'rsync', 'ditto'])
 const COPIER_WORD_RX = /(?:^|[\s;&|(/`"'])(?:cp|mv|install|ln|rsync|ditto)(?=\s|$)/
-const EXTRACT_DIR_FLAGS = { tar: ['-C', '--directory', '--cd'], bsdtar: ['-C', '--directory', '--cd'], gtar: ['-C', '--directory', '--cd'],
+const EXTRACT_DIR_FLAGS = { __proto__: null, tar: ['-C', '--directory', '--cd'], bsdtar: ['-C', '--directory', '--cd'], gtar: ['-C', '--directory', '--cd'],
   unzip: ['-d'], cpio: ['-D', '--directory'], patch: ['-d', '--directory'], '7z': ['-o'], '7za': ['-o'] }
 // The target directory an extracting program writes into (null when it names none, or does not extract). Joined
 // (`-Cdir`, `--directory=dir`, 7z's `-odir`) and separate (`-C dir`) forms.
@@ -1727,15 +1744,35 @@ function claudeDirCopyIn(words, ctx) {
 // archive extracted, a patch applied (Dani 56276 2a). The names they create
 // come from the archive or the patch, not from the command.
 const IMPLICIT_WRITER_RX = /(?:^|[\s;&|(/`"'])(?:tar|bsdtar|gtar|unzip|patch|cpio|7z|7za)(?=\s|$)/
+// UNKCWDEXTRACT1121 (review round 2, R2/R3): a program that runs text it is given as commands: one in RESHELL_NAMES at the command
+// position (a shell -- fish, mksh, ash, busybox too --, eval, xargs, find with -exec/-execdir/-ok/-okdir, ...), or env with
+// -S/--split-string. The program word counts by its last path part (any path: fail closed). An extract word is looked for with the quotes and backslashes taken off (`t"a"r`, `un''zip`, `ta\r`).
+const SHELLS_ALL = new Set([...SHELL_RUNNERS, 'fish', 'mksh', 'ash', 'tcsh', 'csh'])
+const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+const STDIN_SCRIPTS = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0'])
+const writerWordIn = (text) => IMPLICIT_WRITER_RX.test(String(text ?? '').replace(/["'\\]/g, ''))
+function reshells(rest, splits) {
+  if (splits && splits.length) return true
+  if (!rest.length) return false
+  // the gate's own list of re-shelling programs (RESHELL_NAMES: shells, eval/source, interpreters, xargs, find, watch, ...), by the
+  // program word's last path part, a version suffix ignored (python3.12, bash5); find only with an -exec form
+  const v = rest[0].value
+  const n = (commandName(rest) || v.slice(v.lastIndexOf('/') + 1)).toLowerCase().replace(/[\d.]+$/, '')
+  return n === 'find' ? rest.some((w) => FIND_EXEC.has(w.value)) : RESHELL_NAMES.has(n)
+}
 function writesIntoCwd(words, name) {
   const vals = words.map((w) => w.value)
   const named = (...flags) => vals.some((v, i) => flags.some((f) =>
     v === f ? i + 1 < vals.length : v.startsWith(f + '=') || (f.length === 2 && v.startsWith(f) && v.length > 2)))
   if (name === 'tar' || name === 'bsdtar' || name === 'gtar') {
     const extract = vals.slice(1).some((v) => v === '--extract' || v === '--get' || (!v.startsWith('--') && /^-?[A-Za-z]*x/.test(v)))
-    return extract && !named('-C', '--directory', '--cd')
+    // UNKCWDEXTRACT1121 (review round 3, Dani 3): -O / --to-stdout writes the members to stdout, no file. The -O is read only in an option
+    // cluster of letters (`-xzOf`, or the dashless first word `xzOf`), never in a file name or any other word.
+    const toStdout = vals.slice(1).some((v, i) => v === '--to-stdout' || /^-[A-Za-z]*O[A-Za-z]*$/.test(v) || (i === 0 && /^[A-Za-z]*O[A-Za-z]*$/.test(v)))
+    return extract && !toStdout && !named('-C', '--directory', '--cd')
   }
-  if (name === 'unzip') return !named('-d')
+  // unzip -p / -c write the member to stdout (a letter cluster of options only, as above)
+  if (name === 'unzip') return !named('-d') && !vals.slice(1).some((v) => /^-[A-Za-z]*[pc][A-Za-z]*$/.test(v))
   if (name === 'patch') return !named('-d', '--directory')
   if (name === 'cpio') return vals.slice(1).some((v) => /^-[A-Za-z]*i/.test(v) || v === '--extract') && !named('-D', '--directory')
   if (name === '7z' || name === '7za') return ['x', 'e'].includes(vals[1]) && !vals.some((v) => v.startsWith('-o'))
@@ -1781,16 +1818,83 @@ function isDirectory(p) {
   try { return statSync(p).isDirectory() } catch { return false }
 }
 
+// UNKCWDEXTRACT1121 (review round 3, Dani 2): `D=/abs/dir && cd $D && tar -x -C bin`. A `cd $NAME` / `cd ${NAME}` (or `pushd`, and a
+// plain `/sub/dir` after it) whose NAME the same command sets to an ABSOLUTE literal is a literal cd, not an unknown one. What counts as
+// "sets" is the rule the gate family already uses for a literal variable (self-pace-gate definiteAssignments, as the mail gate's
+// ISSUE2582): the assignment is a segment of its own, assigned once, every separator from it to the use is `&&` or `;`, and the command
+// holds no group, subshell, compound command or variable-setting builtin (the heredocs are taken out first, see below). Anything else
+// stays an unknown directory.
+// The text without its heredocs: each `<<TAG` operator and the body lines up to the closing TAG line are taken out (a heredoc is data for
+// the command it feeds, it cannot set a variable of the shell that runs the command). null: a heredoc that is not closed.
+const HEREDOC_OP_RX = /(?<!<)<<(?!<)-?[ \t]*(['"]?)([A-Za-z_]\w*)\1/g
+function withoutHeredocs(text) {
+  const lines = String(text).split('\n')
+  const out = []
+  for (let i = 0; i < lines.length; i++) {
+    const tags = []
+    const line = lines[i].replace(HEREDOC_OP_RX, (m, _q, tag) => { tags.push([tag, m.startsWith('<<-')]); return '' })
+    out.push(line)
+    for (const [tag, dash] of tags) {
+      let closed = false
+      for (i++; i < lines.length; i++) {
+        if ((dash ? lines[i].replace(/^\t+/, '') : lines[i]) === tag) { closed = true; break }
+      }
+      if (!closed) return null
+    }
+  }
+  return out.join('\n')
+}
+// Returns segment index -> the segment text with the literal in place (`cd '<dir>'`); the other segments are read as written.
+function literalCdSegments(cmd, segs) {
+  const out = new Map()
+  if (!cmd.includes('$') || !cmd.includes('=')) return out
+  const bare = withoutHeredocs(cmd)
+  if (bare === null) return out
+  let split
+  let defs
+  try {
+    split = protectedSplit(bare)
+    // A pipe between the assignment and the use does not touch the assignment (`S=/x; cd /y && git log | tail -2; cd $S/z`): it reads as `;`
+    // there, unless a neighbour of the pipe is an assignment segment (an assignment in a pipeline runs in a subshell and is lost).
+    const assignSeg = (k) => { const w = k >= 0 && k < split.segs.length ? shellWords(split.segs[k]) : null; return !!w && w.length > 0 && w.every((x) => ASSIGN_RX.test(x.value)) }
+    const seps = split.seps.map((sep, k) => ((sep === '|' || sep === '|&') && !assignSeg(k) && !assignSeg(k + 1) ? ';' : sep))
+    defs = definiteAssignments({ ...split, seps })
+  } catch { return out }
+  if (!split.quoteAware || split.segs.length !== segs.length) return out
+  segs.forEach((seg, i) => {
+    const known = defs[i]
+    if (!known || !known.size || split.segs[i] !== withoutHeredocs(String(seg.own))?.trim()) return
+    const w = shellWords(seg.own)
+    if (!w || !w.length || !['cd', 'pushd'].includes(w[0].value)) return
+    const arg = w.slice(1).find((x) => !/^-[LPe@]+$/.test(x.value))
+    // `dollar` marks an UNQUOTED expansion; a double-quoted one (`cd "$D"`) is read too, but a segment with a single quote or a
+    // backslash may hold the literal text `$D` (`cd '$D'`, `cd \$D`): left unknown
+    if (!arg || (!arg.dollar && /['\\]/.test(seg.own))) return
+    const m = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))((?:\/[^$`*?[\]{}~\s'"\\]*)?)$/.exec(arg.value)
+    const v = m ? known.get(m[1] ?? m[2]) : undefined
+    if (v === undefined || !v.startsWith('/') || /[\s'"\\$`*?[\]{}~]/.test(v)) return
+    out.set(i, `${w[0].value} '${v}${m[3]}'`)
+  })
+  return out
+}
+
 // INSTRFILES1104 A (Dani 69753 SHOULD 3, Samu 69755): a cd joined to the next command by ";", "||" or a newline may
 // fail, and the next commands then run in the OLD directory. The old one is kept as ctx.altCwd, and the segment checks
 // that read the cwd are run on both (the stricter decides). A later cd moves both; when they meet, the second is
 // dropped. ctx.cwd keeps its meaning for the git rule (null: unknown, read as the install).
-function moveCwd(own, seg, ctx) {
+function moveCwd(own, seg, ctx, reaches = null) {
   const before = ctx.cwd
   const altBefore = ctx.altCwd ?? null
   cwdAfterSegment(own, ctx)
   const first = shellWords(String(own ?? '').trim())?.[0]?.value
   const isCd = first === 'cd' || first === 'pushd'
+  // DBGATESUBST1125: the git rule's second directory. A cd run on a condition (the segment before it ended in && or
+  // ||) may not run, so the directory before it stays possible; an unconditional cd moves both readings to one place.
+  if (isCd) {
+    if (ctx.condSeg) {
+      if (!ctx.gitAltCwd && before && !(ctx.cwd && sameKey(pathKey(before), pathKey(ctx.cwd)))) ctx.gitAltCwd = before
+    } else ctx.gitAltCwd = null
+  }
   // WRITEGATERELPATH1115: a directory change to a place this gate cannot know: the relative words after it are read
   // against every protected path's tail (fail closed), not dropped
   if (first === 'cd' || first === 'pushd' || first === 'popd') ctx.cwdLost = !ctx.cwd
@@ -1801,7 +1905,12 @@ function moveCwd(own, seg, ctx) {
   }
   if (isCd && seg.sep !== '&&') {
     if (before && !(ctx.cwd && sameKey(pathKey(before), pathKey(ctx.cwd)))) ctx.altCwd = before
-    if (ctx.cwd && !isDirectory(ctx.cwd)) ctx.cwd = null
+    if (ctx.cwd && !isDirectory(ctx.cwd)) {
+      // UNKCWDEXTRACT1121 (review N4): a directory that is not there now but reaches a protected path (it may be made by
+      // then) is an unknown directory, read as one (cwdLost)
+      if (reaches && reaches(ctx.cwd)) ctx.cwdLost = true
+      ctx.cwd = null
+    }
   }
 }
 
@@ -2031,17 +2140,22 @@ export function subshellParts(own) {
 const DIR_CHANGE_RX = /(?:^|[\s;&|(`{])(?:cd|pushd|popd)(?=$|[\s;&|)`}])/
 
 // Bash: does the command write a protected install path? true = deny.
+// The fast-path reading context of installFileDeny; caughtItem reads the same one to name what a deny caught.
+function strictCtx(cmd, opts) {
+  return { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd, true),
+    caseInsensitiveFs: typeof opts.caseInsensitiveFs === 'boolean' ? opts.caseInsensitiveFs : undefined,
+    reShell: true,
+    // WRITEGATERELPATH1115: a command that sets HOME itself: a `cd ~` / `cd $HOME` there leads to no known directory
+    homeTouched: /(?<![$\w{])HOME(?!\w)/.test(cmd.replace(/\$(?=['"])|["'\\]/g, '')) }
+}
+
 export function installFileDeny(command, opts = {}) {
   scriptDetail = null
   const cmd = String(command ?? '')
   // The fast path below is judged with the STRICT re-shell reading (reShell true: no literal reading, the wider dotglob
   // test), whose hits include the literal reading's; the real reading (for python a python start, py-inline-data.py)
   // is computed only past it. (Only the segment reading below and the dotglob test read it.)
-  const ctx0 = { root: opts.root ?? INSTALL_ROOT, cwd: opts.cwd ? resolve(String(opts.cwd)) : null, subAgent: opts.subAgent === true, projectDir: opts.projectDir ?? null, configDir: opts.configDir ?? null, shellGlob: true, dotglob: namesDotglob(cmd, true),
-    caseInsensitiveFs: typeof opts.caseInsensitiveFs === 'boolean' ? opts.caseInsensitiveFs : undefined,
-    reShell: true,
-    // WRITEGATERELPATH1115: a command that sets HOME itself: a `cd ~` / `cd $HOME` there leads to no known directory
-    homeTouched: /(?<![$\w{])HOME(?!\w)/.test(cmd.replace(/\$(?=['"])|["'\\]/g, '')) }
+  const ctx0 = strictCtx(cmd, opts)
   const insideDir = (cwd) => !!cwd && installTargets(ctx0.root, ctx0.subAgent, ctx0.projectDir, ctx0.configDir).list.some((t) => t.dir
     && (t.pattern ? ['exact', 'under'].includes(patternRel(pathKey(cwd), t)) : underKey(pathKey(cwd), t.key)))
   const ctx = { ...ctx0, cwdInsideDir: insideDir(ctx0.cwd) }
@@ -2073,6 +2187,12 @@ export function installFileDeny(command, opts = {}) {
       return r === 'ancestor' || (t.dir && (r === 'exact' || r === 'under'))
     })
   }
+  // UNKCWDEXTRACT1121 (review round 3, Dani 1): the CLASS rule (a re-shelling program whose text holds an extract word) does not count the
+  // caller's own agent directory as a protected place: the agent writes there anyway (its HANDOFF.md), and a heredoc or a sed text that
+  // only NAMES `patch` or `tar` is no extract. An unknown directory, the install root, scripts/ and another agent's directory still
+  // count. A target-less extract in the own directory is judged by the rules below as before.
+  const ownDirKey = ctx.subAgent ? callerAgentDirKey(ctx.root, ctx.projectDir) : null
+  const classProtected = (cwd) => cwdReaches(cwd) && !(ownDirKey && sameKey(pathKey(resolve(cwd)), ownDirKey))
   // CPDESTDIR1104 (Dani 69118, Samu 69122): where a copy, move, link or install LANDS is judged always, not only after
   // a protected word was found. A destination that is a directory names no file, so `cp x/.mcp.json ../other/` found
   // nothing and passed. Each source's landing (destination + its basename) and the destination itself go through
@@ -2084,6 +2204,10 @@ export function installFileDeny(command, opts = {}) {
     const absOf = (v) => (v.startsWith('/') || v === '~' || v.startsWith('~/') ? resolve(expandHome(v === '~' ? '~/' : v)) : resolve(ctx.cwd ?? process.cwd(), v))
     if (EXTRACT_DIR_FLAGS[name]) {
       const dir = extractTargetDir(vals, name)
+      // UNKCWDEXTRACT1121: a relative target after an unknown directory change is relative to that unknown directory
+      if (dir != null && ctx.cwdLost && !(dir.startsWith('/') || dir === '~' || dir.startsWith('~/'))) return true
+      // review round 2 R4: a ~user or a brace target is no directory this gate can resolve (the base read it relative to the cwd)
+      if (dir != null && (/^~[^/]/.test(dir) || dir.includes('{'))) return true
       return dir != null && cwdReaches(absOf(dir))
     }
     if (!COPIERS.has(name)) return false
@@ -2131,6 +2255,82 @@ export function installFileDeny(command, opts = {}) {
     }
     return false
   }
+  // UNKCWDEXTRACT1121 (review round 1 N2, N3): the extract rule (a target-less extract into a cwd that is unknown or
+  // reaches a protected path; an extract target relative to an unknown cwd, or one that reaches a protected path) on
+  // what a command RUNS, at the directory it runs in:
+  //   - a wrapper (env, sudo, nice, timeout, ...: unwrapRun) is taken off, and its directory changes (env -C/--chdir,
+  //     sudo -D/--chdir), followed in order, are where the command runs: it is judged at each (the stricter); an
+  //     expansion, or a relative one from an unknown cwd, is an unknown directory;
+  //   - a shell's code (its -c word, or the text piped or heredoc'd into it) is read roughly with its cd followed, every
+  //     command at every directory the reading has passed (the stricter, as ancestorOnlyHolds); a shell in that code
+  //     once more (two levels).
+  const extractAt = (cwd, lost, fn) => {
+    const saved = [ctx.cwd, ctx.altCwd, ctx.cwdLost, ctx.cwdInsideDir]
+    ctx.cwd = cwd
+    ctx.altCwd = null
+    ctx.cwdLost = lost
+    ctx.cwdInsideDir = insideDir(cwd)
+    try { return fn() } finally { [ctx.cwd, ctx.altCwd, ctx.cwdLost, ctx.cwdInsideDir] = saved }
+  }
+  const extractDenied = (words, stdinCode = '', depth = 0, text = null) => {
+    const { rest, chdirs, splits } = unwrapRun(words)
+    if (!rest.length && !splits.length) return false
+    const n = rest.length ? commandName(rest) : ''
+    // review round 2 R2 (fail closed, a class): where the cwd is unknown or reaches a protected path, a program that runs text as commands
+    // with an extract word in its text is denied, whatever reading of that text below would or would not follow it
+    const ujraShell = reshells(rest, splits)
+    const szoveg = text ?? words.map((w) => w.value).join(' ')
+    const here = () => {
+      if (ujraShell && (ctx.cwdLost || classProtected(ctx.cwd)) && writerWordIn(szoveg)) return true
+      // R1: env -S / --split-string: each split string is a command line, read as one
+      for (const sp of splits) if (depth >= 2 ? writerWordIn(sp) : roughExtracts(sp, depth + 1)) return true
+      if (!rest.length) return false
+      if (writesIntoCwd(rest, n) && (ctx.cwdLost || cwdReaches(ctx.cwd))) return true
+      if (EXTRACT_DIR_FLAGS[n] && landingDenied(rest, n)) return true
+      // the depth limit: a code text read no deeper is denied when it holds an extract word (fail closed)
+      const tovabb = (code) => !!code && (depth >= 2 ? writerWordIn(code) : roughExtracts(code, depth + 1))
+      const sn = rest.length ? (commandName(rest) || rest[0].value.slice(rest[0].value.lastIndexOf('/') + 1)) : ''
+      if (!SHELLS_ALL.has(sn)) return false
+      // R2: the -c code is the word after -c; a rough reading (depth > 0) splits the code into words, so all of them from there on are the code
+      const ci = rest.findIndex((w, i) => i > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(w.value))
+      let code = ''
+      if (ci > 0) {
+        const k = ci + 1 < rest.length ? ci + 1 : -1
+        code = k < 0 ? '' : depth > 0 ? rest.slice(k).map((w) => w.value).join(' ') : rest[k].value
+      } else {
+        // the stdin is the code: no script word, or -s (its positional words are arguments), or a script word that is the stdin
+        const lead = rest.slice(1)
+        const elso = lead.find((w) => !w.value.startsWith('-'))
+        if (!elso || lead.some((w) => /^-[A-Za-z]*s[A-Za-z]*$/.test(w.value)) || STDIN_SCRIPTS.has(elso.value)) code = stdinCode
+      }
+      return tovabb(code)
+    }
+    // the directory changes in order (`env -C a sudo -D b`: b from a); the command runs in the LAST one (N5, review round 2): the
+    // intermediate ones are only the base of a relative later one. An expansion, a brace, ~user or a relative one from an unknown cwd: unknown
+    const at = () => {
+      if (!chdirs.length) return here()
+      let cur = ctx.cwdLost ? null : ctx.cwd ?? null
+      for (const d of chdirs) {
+        if (!d || /[$`*?[{]/.test(d) || /^~[^/]/.test(d)) cur = null
+        else if (d.startsWith('/') || d === '~' || d.startsWith('~/')) cur = resolve(expandHome(d === '~' ? '~/' : d))
+        else cur = cur ? resolve(cur, d) : null
+      }
+      return extractAt(cur, !cur, here)
+    }
+    return !!(at() || (ctx.altCwd && extractAt(ctx.altCwd, false, at)))
+  }
+  const roughExtracts = (text, depth = 0) => {
+    const c = { ...ctx }
+    const cwds = [[ctx.cwd ?? null, !!ctx.cwdLost], ...(ctx.altCwd ? [[ctx.altCwd, false]] : [])]
+    for (const words of roughCommands(text)) {
+      if (cwds.some(([cwd, lost]) => extractAt(cwd, lost, () => extractDenied(words, '', depth)))) return true
+      if (!['cd', 'pushd', 'popd'].includes(words[0].value)) continue
+      cwdAfterSegment(words.map((w) => w.value).join(' '), c)
+      const next = [c.cwd ?? null, !c.cwd]
+      if (!cwds.some(([cwd, lost]) => cwd === next[0] && lost === next[1])) cwds.push(next)
+    }
+    return false
+  }
   // A flat $(...) naming a protected path is kept as written (not replaced by an
   // opaque marker), so its segment fails to parse below and is denied.
   // 47eeb016: ...unless the outer command is a reader and everything inside the substitution is a plain reader too
@@ -2174,6 +2374,7 @@ export function installFileDeny(command, opts = {}) {
       if (git && gitDecision(git, ctx) === 'deny') return 'git'
       if (writesIntoCwd(words, commandName(words)) && cwdReaches(ctx.cwd)) return true
     }
+    if (roughExtracts(inner)) return true // UNKCWDEXTRACT1121 (review N3): its cd followed
   }
   // An unresolved quoting whose only mention is a directory on the way to a protected path, the install root itself
   // most often (`cd <root>; ... "$(cd $d; git remote get-url origin)"`, Marveen 57083). Holds when the rest, read
@@ -2295,6 +2496,7 @@ export function installFileDeny(command, opts = {}) {
       if (writesIntoCwd(words, commandName(words)) && cwdReaches(ctx.cwd)) return true
       if (landingDenied(words, commandName(words))) return true
     }
+    if (roughExtracts(cmd)) return true // UNKCWDEXTRACT1121 (review N3): its cd followed
     return false
   }
   const tainted = new Set()
@@ -2313,12 +2515,17 @@ export function installFileDeny(command, opts = {}) {
   // A subshell's cd ends with it: the cwd before its "(" comes back after its ")".
   const cwdStack = []
   let closing = 0
+  const literalCds = literalCdSegments(cmdForSegs, segs)
   for (const seg of segs) {
-    for (; closing > 0; closing--) if (cwdStack.length) [ctx.cwd, ctx.altCwd] = cwdStack.pop()
+    for (; closing > 0; closing--) if (cwdStack.length) [ctx.cwd, ctx.altCwd, ctx.cwdLost, ctx.gitAltCwd] = cwdStack.pop()
     const sub = subshellParts(seg.own)
-    for (let k = 0; k < sub.opens; k++) cwdStack.push([ctx.cwd, ctx.altCwd ?? null])
+    for (let k = 0; k < sub.opens; k++) cwdStack.push([ctx.cwd, ctx.altCwd ?? null, !!ctx.cwdLost, ctx.gitAltCwd ?? null]) // UNKCWDEXTRACT1121 (review N1): and whether it was lost
+    // DBGATESUBST1125: this segment runs on a condition when the one before it ended in && or ||
+    const at = segs.indexOf(seg)
+    ctx.condSeg = at > 0 && (segs[at - 1].sep === '&&' || segs[at - 1].sep === '||')
     closing = sub.closes
     const own = sub.body
+    const ownMove = literalCds.get(segs.indexOf(seg)) ?? own // UNKCWDEXTRACT1121 (review round 3, Dani 2): a cd to a literal variable
     const words = shellWords(own)
     // INSTRFILES1104 A: with no re-shelling program in the command, quoted spans and heredoc bodies hold no glob.
     // Not when a later segment of the command runs the file this one writes (Dani 69850: `cat > x.sh <<'EOF' ...
@@ -2341,13 +2548,18 @@ export function installFileDeny(command, opts = {}) {
         const g = gitWords(rough)
         if (g && gitDecision(g, ctx) === 'deny') return 'git'
       }
+      if (roughExtracts(own)) return true // UNKCWDEXTRACT1121 (review N3)
     }
     const name = words ? commandName(words) : ''
     if (words && words.length && DIR_CHANGERS.has(name) && both(() => claudeDirCopyIn(words, ctx))) return true
     const git = words && gitWords(words)
     if (git) {
       const g = gitDecision(git, ctx)
-      if (g === 'deny') return 'git'
+      // DBGATESUBST1125 (Dani 57400 for git): a cd that is itself run on a condition (after `false &&`, `true ||`) may
+      // not run at all, so the directory before it stays possible (ctx.gitAltCwd); the git rule reads that one too.
+      // Before, only an unreadable tail in the same command (`"$(date +%s $y)"`) made such a git write a deny, by
+      // making the whole command unreadable. An unconditional `cd /existing; git ...` is not affected (#2384).
+      if (g === 'deny' || (ctx.gitAltCwd && gitDecision(git, { ...ctx, cwd: ctx.gitAltCwd }) === 'deny')) return 'git'
       if (g === 'allow') continue
     }
     if (words && words.length && !usesTainted && both(() => landingDenied(words, name))) return true
@@ -2427,9 +2639,16 @@ export function installFileDeny(command, opts = {}) {
         if (code && (taintedIn(code) || both(() => shellTextDenied(code)))) return true
       }
     }
+    // UNKCWDEXTRACT1121: after a directory change the gate cannot follow, a target-less extract lands in an unknown
+    // directory -- possibly the install root or scripts/ -- so it is denied in either branch below (fail closed, as
+    // WRITEGATERELPATH1115 reads a relative word after such a cd); behind a wrapper and in a shell's code too (review N2, N3)
+    if (words && words.length) {
+      const bemenet = [pipedInText(segs.indexOf(seg)), ...seg.bodies].filter(Boolean).join('\n')
+      if (extractDenied(words, bemenet, 0, [own, bemenet].join('\n'))) return true
+    }
     if (!rawHits.length && !usesTainted) {
       if (words && words.length && writesIntoCwd(words, name) && (cwdReaches(ctx.cwd) || (!!ctx.altCwd && cwdReaches(ctx.altCwd)))) return true
-      moveCwd(own, seg, ctx)
+      moveCwd(ownMove, seg, ctx, cwdReaches)
       continue
     }
     if (!words || !words.length) return true
@@ -2446,7 +2665,7 @@ export function installFileDeny(command, opts = {}) {
       continue
     }
     const hits = hitsBoth(dataResidue(view, words, name, { surface: 'security' }))
-    if (!hits.length && !usesTainted) { moveCwd(own, seg, ctx); continue } // only message data names it
+    if (!hits.length && !usesTainted) { moveCwd(ownMove, seg, ctx, cwdReaches); continue } // only message data names it
     if (READERS.has(name) || isReadOnlyFsCommand(words, name)) {
       // ...but not as the file list of a pipe into a program that acts on it (xargs rm)
       const next = segs[segs.indexOf(seg) + 1]
@@ -2455,14 +2674,14 @@ export function installFileDeny(command, opts = {}) {
         const nn = nw ? commandName(nw) : ''
         if (!nw || !(READERS.has(nn) || isReadOnlyFsCommand(nw, nn))) return true
       }
-      moveCwd(own, seg, ctx)
+      moveCwd(ownMove, seg, ctx, cwdReaches)
       continue
     }
     if (name === 'git' && gitIsRead(words)) continue
     // PLUGINCODEWRITE1104: a `cp` whose DESTINATION (its last operand) is no protected path only reads the protected
     // sources it names (copying a shared skill into one's own directory). A link-making or target-directory flag
     // (-l, -s, -t, --link, --symbolic-link, --target-directory) keeps the deny: the copy would share the protected file.
-    if (!usesTainted && name === 'cp' && cpOnlyReadsProtected(words, ctx)) { moveCwd(own, seg, ctx); continue }
+    if (!usesTainted && name === 'cp' && cpOnlyReadsProtected(words, ctx)) { moveCwd(ownMove, seg, ctx, cwdReaches); continue }
     const hitWords = new Set(hits.map((h) => h.word))
     if (!usesTainted && isExecOf(words, name, hitWords)) continue
     if (!usesTainted && hits.every((h) => h.kind === 'ancestor') && !DIR_CHANGERS.has(name)) continue
@@ -2631,8 +2850,10 @@ function decide(toolName, toolInput, opts = {}, depth = 0) {
     if (subOnly() && claudePluginWrite(command)) return { deny: true, reason: 'subagent-file' }
     if (scheduleSurfaceDeny(command, { surface: 'security', projectRoot: opts.root ?? INSTALL_ROOT })) return { deny: true, reason: 'db' }
     scriptDetail = null
-    const file = installFileDeny(command, opts)
-    if (file === true && subOnly() && !installFileDeny(command, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
+    // VARDEFDB1121: a variable that is definitely a literal here is read as that literal (W=/abs; git -C $W)
+    const paths = substituteDefiniteCommand(command)
+    const file = installFileDeny(paths, opts)
+    if (file === true && subOnly() && !installFileDeny(paths, { ...opts, subAgent: false })) return { deny: true, reason: 'subagent-file' }
     if (file) return { deny: true, reason: file === 'git' ? 'git' : 'install-file' }
     // Refs #2974, #2975: the code this command hands to a shell (sh/bash -c, eval, trap, a shell reading a heredoc or a
     // here-string, source) runs as a command of its own, so it is judged as one, with every rule above: the file-level
@@ -2664,52 +2885,42 @@ const LIMIT_MSG =
 export const DB_GATE_MSG =
   'Biztonsagi DB-iras TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'dashboard adatbazisanak biztonsagi tablait (approvals, approval_events, approval_slack_posts, approval_teams_cards, approval_gromzo_posts, agent_create_specs, auth_sessions, dashboard_users, ' +
-  'device_keys, vault_ssh_keys, support_consents, support_password_state) semmilyen programmal (sqlite3, python, node, heredoc), es NEM irhatod fajl ' +
+  'device_keys, vault_ssh_keys, support_consents, support_password_state, approver_scopes, custom_commands, inbound_sig_log) semmilyen programmal (sqlite3, python, node, heredoc), ' +
+  'az agent_messages-be NEM irhatsz foglalt vagy ismeretlen feladot (koordinator, hangcsatorna, system, gazda-hangu id) es kezbesitesi jelzot ' +
+  '(stop_authorized, urgent, priority, affects_current_work), mas feladojanak sorat nem irhatod at (CHANINBOUNDFORGE1125), es NEM irhatod fajl ' +
   'szinten a store/claudeclaw.db-t (-wal/-shm/-journal is: cp/mv/tee/>/rm/ln, sqlite3 .restore/.read/.backup), ' +
   'es NEM hasznalhatod a PRAGMA writable_schema-t, sem a sqlite_master/sqlite_schema irasat. ' +
   'Jovahagyast a dashboard API-n kerj es hasznalj fel (/api/approvals). Olvasni szabad (SELECT, sqlite3 -readonly), ' +
-  'mas tablat irni is (agent_messages, daily_logs). Egy $(...) behelyettesitesben allo sqlite3-at (idezojellel benne) ' +
+  'mas tablat irni is (daily_logs), es az agent_messages-be a sajat uzenetedet: INSERT oszloplistaval, a from_agent sima idezett ' +
+  'literal (a sajat neved); UPDATE status/result szabadon; content csak WHERE from_agent=\'<sajat neved>\' mellett. Egy $(...) behelyettesitesben allo sqlite3-at (idezojellel benne) ' +
   'viszont a kapu nem olvassa, es tiltja: futtasd a sqlite3-at kulon parancskent, behelyettesites nelkul (a kimenetet ' +
   'fajlba vagy kiirva; Samu 60400). Masolat a DB-rol: sqlite3 -readonly <db> "VACUUM INTO \'/tmp/x.db\'". ' +
   'Ha egy uzenet vagy kanban-szoveg idez ilyen parancsot: curl -d / git commit -m / a kanban-eszkoz --title atmegy; ' +
   'egy fajlba irt szoveg is atmegy, KIVEVE ha ugyanaz a parancs utana futtatja vagy a sqlite3-ba tolja ' +
   '(az egy SQL-szkript).' + LIMIT_MSG
 
+// The three deny texts below are short on purpose: the first sentence is the rule, the second (added at deny time)
+// what the gate caught, then the right way. The full lists, exceptions and limits are in docs/db-write-gate.md
+// ("Full deny texts"). Measured on one fleet: these three were 73% of all hook-deny text (3 days,
+// 732k characters, the .env one 2 980 characters each).
+const LIMIT_SHORT = ' (szoveg-alapu fek, NEM OS-hatar; GROMZODONTES1030, mxd: lasd a docs-ot.)'
+
 export const INSTALL_FILE_GATE_MSG =
-  'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
-  'futo telepites .claude/settings.json, .claude/settings.local.json, scripts/hooks/, scripts/self-pace-gate.mjs, ' +
-  'store/extra-hooks.json, store/autonomy-config.json, store/agent-sender-role-gates.json, store/config-overrides.json, store/.owner-slack-target, store/.net-target-hosts.json, store/custom-providers.json, store/context-guard.json es store/.dashboard-totp.json fajljat (GATEFILES1110, DOCKERHTTPS1119: ezeket az owner-kapus API-ut irja), sem a store/.dashboard-node fajlt (WDSANDBOXNODE1119: csak a dashboard inditasa irja), ' +
-  'sem a store/bash-sandbox/ es store/code-mode/ mappat (WDSANDBOXMARKER1119: ezeket csak a dashboard inditasa es a watchdog irja), ' +
-  'sem BARMELY agens agents/<nev>/.claude/settings.json, settings.local.json es .claude-config/settings.json fajljat (ezeket csak a dashboard irja; Write/Edit, cp/mv/tee/>/sed -i/python, symlinken ' +
-  'vagy ..-on at sem; tar -x/unzip/patch/cpio/7z celkonyvtar nelkul a telepites gyokereben vagy a scripts/-ben sem). ' +
-  'Egy git worktree SAJAT masolata szabad: ott fejlessz, es PR-ral kerul a telepitesbe. ' +
-  'Olvasni szabad (cat/grep/jq/diff, git diff/log/show), egy hook-szkriptet KOZVETLENUL futtatni is ' +
-  '(python3 scripts/hooks/x.py); egy masik szkriptnek vagy ertelmezonek ARGUMENTUMKENT adott vedett ut viszont tilt, ' +
-  'mert az irhat bele. Valtoztatas a gazda jovahagyasaval a fo ugynokon at. Ha egy feloldatlan valtozo utan vedett ' +
-  'ut-veg all ($X/.claude/settings.json), azt nem tudom ellenorizni, ezert tiltom: kifejezett ut kell. Ha a parancs ' +
-  'idezese nem bonthato fel (idezojeles parancs-behelyettesites) ES vedett utat emlit, tiltom. Egy fajlba irt szoveg, ' +
-  'ami csak EMLITI a vedett utat (uzenet, komment), atmegy; az nem, amit ugyanaz a parancs utana futtat (egy szkript). ' +
-  'Elrontott telepites helyreallitasa: docs/db-write-gate.md, "Vesz-helyreallitas" szakasz.' + LIMIT_MSG
+  'Telepitesi kapu-fajl irasa TILTOTT (APPROVALDBGATE1030, minden ugynokre): a futo telepites hookjait, settings-fajljait ' +
+  'es kapu-konfigjait csak a dashboard es az owner-kapus API irja. ' +
+  'Helyes ut: egy git worktree SAJAT masolataban fejlessz, PR-ral kerul a telepitesbe; valtoztatas a gazda ' +
+  'jovahagyasaval a fo ugynokon at. Olvasni szabad (cat/grep/jq/diff, git diff/log/show), egy hook-szkriptet ' +
+  'KOZVETLENUL futtatni is; egy masik szkriptnek vagy ertelmezonek ARGUMENTUMKENT adott vedett ut viszont tilt. ' +
+  'Teljes lista, kivetelek, elrontott telepites helyreallitasa: docs/db-write-gate.md ("Telepitesi kapu-fajlok", ' +
+  '"Vesz-helyreallitas").' + LIMIT_SHORT
 
 export const SUBAGENT_FILE_GATE_MSG =
-  'Telepites .env / kapu-szabalyfajl irasa TILTOTT (ENVRELAXGATE1104, sub-agensre). NEM irhatod a futo telepites ' +
-  '.env fajljat (SUDO_AGENTS, MAIN_AGENT_ID es a kapuk lazito kapcsoloi innen jonnek), sem a store/provenance-gate-rules.json, ' +
-  'store/outgoing-copy-gate-rules.json, store/credential-gate.json, store/egress-measure-hosts.json es ' +
-  'store/.fleet-memgate-observe es store/claude-plans.json fajlt (ez utobbit az owner-kapus /api/claude-plans irja), sem a SAJAT projekt-konyvtarad .claude/settings.json es settings.local.json fajljat, sem a SAJAT CLAUDE_CONFIG_DIR settings.json es settings.local.json fajljat, sem a ~/.claude/settings.json es settings.local.json fajlt ' +
-  '(ott elnek a kapu-hookjaid), sem a fo agens izolalt config-konyvtaranak (.channels-config) egyetlen valodi fajljat (settings.json, settings.local.json, .claude.json, plugins/*.json), ' +
-  'sem egy MCP-szerverlistat (ENVRELAXMCPCFG1104: egy oda irt szerver a kovetkezo indulaskor parancskent fut): ' +
-  'barmely agens agents/<nev>/.mcp.json es .claude-config/.claude.json fajljat, a SAJAT CLAUDE_CONFIG_DIR .claude.json-jat, ' +
-  'a telepites .mcp.json fajljat es a ~/.claude.json-t, a `claude mcp add|add-json|remove` paranccsal sem (barmely --scope); ' +
-  'sem a Claude Code plugin-fajat (~/.claude/plugins, a telepites plugins/ mappaja, ~/marveen-local-plugins, a config-direk plugins/ mappaja es registry-jei) es a kozos ~/.claude/agents, skills, hooks fat, ' +
-  'a `claude plugin` paranccsal sem (csak list, validate, marketplace list, --help), es `--plugin-dir`-rel sem (PLUGINCODEWRITE1104; plugin-deploy a fo agensen at); ' +
-  'sem barmely agens Telegram inbound-evidence naplojat (agents/<nev>/.claude/channels/telegram/inbound-evidence.jsonl es .1, es a folotte allo telegram/ es channels/ konyvtarat celzo parancsot; TGINREPLAYGATE1104: a pluginja irja, nem eszkozhivas); ' +
-  'sem barmely agens agents/<nev>/agent-config.json fajljat (GATEFILES1110: customProvider, model, oauthTokenFile; az API-n owner-kapus, valtoztatas a fo agensen at); ' +
-  'egy python/node SZKRIPTFAJLNAK idezve atadott argumentum adat, a csillaga nem minta (GATESCRIPTARG1111: python3 x.py "count(*)" szabad; a -c/-e kod, a shell es az idezetlen * szigoru marad); ' +
-  'ha a cwd egy ilyen fan belul van, minden nem-olvaso parancs tilt: elobb lepj ki onnan. ' +
-  'amit ez a kapu NEM lat (limit): egy nem a szegmens elejen allo claude-ot: szkriptbol, bash -c / sh -c-bol, xargs-szal, $(which claude)-dal, valtozobol (C=claude; $C) vagy npx @anthropic-ai/claude-code alakban inditottat. ' +
-  'Mindezt: letrehozni es torolni sem (Write/Edit, cp/mv/rm/tee/>/sed -i/python, symlinken vagy ..-on at sem). ' +
-  'Olvasni szabad (cat/grep/sed -n/jq). Egy git worktree SAJAT .env-je szabad. Ha valtoztatas kell, kerd a fo agenst ' +
-  '(inter-agent uzenet: melyik kulcs/fajl es miert); o a gazda jovahagyasaval irja.' + LIMIT_MSG
+  'Telepites .env / kapu-szabalyfajl irasa TILTOTT (ENVRELAXGATE1104, sub-agensre): a telepites .env-je, a ' +
+  'kapu-szabalyfajlok, a sajat es a kozos settings-fajlok, egy MCP-szerverlista (ENVRELAXMCPCFG1104), a plugin-fa es mas agens ' +
+  'agent-config.json-ja sub-agensbol nem irhato, nem hozhato letre es nem torolheto. ' +
+  'Helyes ut: kerd a fo agenst (inter-agent uzenet: melyik kulcs/fajl es miert), o a gazda jovahagyasaval irja. ' +
+  'Olvasni szabad (cat/grep/sed -n/jq); egy git worktree SAJAT .env-je szabad; ha a cwd egy vedett fan belul van, ' +
+  'elobb lepj ki onnan. Teljes lista es amit a kapu nem lat: docs/db-write-gate.md ("ENVRELAXGATE1104").' + LIMIT_SHORT
 
 // MCPWRITEGATE1104: an MCP tool's path argument is judged like a native file tool's file_path.
 export const MCP_PREFIX_MSG =
@@ -2723,19 +2934,13 @@ export const MCP_PATH_GATE_MSG =
 // The rescue path is named in the text (Samu 56320 2): the owner's own terminal, or an approval request for it.
 export const RESCUE_DOC = 'docs/db-write-gate.md'
 export const GIT_GATE_MSG =
-  'Git-iras a telepitesben TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). A futo telepites fo ' +
-  'checkoutjaban (cwd vagy -C) csak olvaso git mehet, plusz pontosan "git fetch [origin]", "git pull --ff-only origin <ag>", ' +
-  'es a "git checkout -- <utak>" / "git restore <utak>" ref nelkul. Tiltott ott: merge (--ff-only origin/<ag> is: egy ' +
-  'worktree-bol atirt refbol huzna), reset (origin/-lal is), checkout <ag>, switch, rebase, cherry-pick, apply, am, stash, ' +
-  'clean, restore --source, pull nem-origin forrasbol, es barmilyen -c. Mindenhol tiltott: a refs/remotes/* irasa ' +
-  '(update-ref, refspec, branch -f origin-nevvel), a remote.*.url/pushurl/fetch, core.hooksPath, include.path, includeIf.*, ' +
-  'url.*.insteadOf config-irasa (--global/--system is), es a GIT_CONFIG_*/GIT_DIR/GIT_WORK_TREE kornyezeti valtozo. ' +
-  'Fejleszteni worktree-ben kell: egy SAJAT, a telepitesen KIVULI worktree-ben minden git mehet (checkout, fetch, teszt), ' +
+  'Git-iras a telepitesben TILTOTT (APPROVALDBGATE1030, minden ugynokre): a futo telepites fo checkoutjaban (cwd vagy -C) ' +
+  'csak olvaso git mehet, plusz pontosan "git fetch [origin]" es "git pull --ff-only origin <ag>"; a git-konfig es ' +
+  'GIT_* env iranyitasa mindenhol tiltott. ' +
+  'Helyes ut: egy SAJAT, a telepitesen KIVULI worktree, ' +
   'de a celt LITERALIS abszolut uttal add meg: "git -C /Users/marvin/<worktree> ..." vagy "cd /Users/marvin/<worktree> && git ..." ' +
-  '(&&-vel). Valtozo ("-C $W") vagy $(...) eseten a kapu a celt nem ismeri, es a telepitesnek veszi; ugyanigy egy ' +
-  ';-vel lancolt cd utan, ha a mappa most nem letezik (bukott cd utan a git a telepitesben futna; APPROVALDBGATE1030, Dani 60251). ' +
-  'Elrontott prod fa helyreallitasa: ' + RESCUE_DOC + ', "Vesz-helyreallitas" szakasz ' +
-  '(a gazda sajat terminaljaban, vagy jovahagyas-keressel a pontos paranccsal).' + LIMIT_MSG
+  '(&&-vel). Teljes szabaly (tiltott alparancsok, valtozo a celban): ' + RESCUE_DOC + ' ("Git-iras"); elrontott prod fa: ' +
+  '"Vesz-helyreallitas" szakasz.' + LIMIT_SHORT
 
 function allow() { process.exit(0) }
 
@@ -2754,6 +2959,31 @@ function deny(reason) {
 // matched in its text -- live ONLY in the deny message. They are recomputed in the worker thread by the same engine
 // from the same input; the verdict object from gateDecision carries no detail field, and only the finished suffix
 // string travels to the main thread, in the IPC message's `trigger` field.
+// What a git / install-file / subagent-file deny caught, for its message; computed only after the verdict, never part of it.
+const CAUGHT_FALLBACK = 'nincs megnevezheto ut (a parancs szerkezete tilt: cwd egy vedett fan belul, feloldatlan valtozo, ' +
+  'idezett behelyettesites vagy shell-kod)'
+export function caughtItem(toolName, toolInput, opts = {}, reason = '') {
+  if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(String(toolName))) {
+    return String(toolInput?.file_path ?? toolInput?.notebook_path ?? '').slice(0, 200) || CAUGHT_FALLBACK
+  }
+  const cmd = String(toolInput?.command ?? '')
+  if (reason === 'git') {
+    const gits = [...cmd.matchAll(/(?:^|[\s;&|(])((?:GIT_\w+=\S*\s+)*git\b[^;&|\n]*)/g)].map((m) => m[1].trim().slice(0, 100))
+    return [...new Set(gits)].slice(0, 3).join(' | ') || CAUGHT_FALLBACK
+  }
+  if (opts.subAgent === true && (claudeMcpListWrite(cmd) || claudePluginWrite(cmd))) return 'claude mcp / claude plugin iro parancs'
+  const text = substituteDefiniteCommand(cmd)
+  const hits = hitsIn(text, strictCtx(text, opts))
+  // a protected path itself (or an unresolvable one) names the catch better than a directory that only contains one
+  const strong = hits.filter((h) => h.kind !== 'ancestor')
+  const words = [...new Set((strong.length ? strong : hits).map((h) => String(h.word)))]
+  if (!words.length) return CAUGHT_FALLBACK
+  return words.slice(0, 3).map((w) => w.slice(0, 120)).join(', ') + (strong.length ? '' : ' (vedett utat tartalmazo konyvtar)')
+}
+
+// The caught item goes right after the rule (the first sentence).
+export const withCaught = (msg, caught) => (caught ? msg.replace('. ', `. Elkapva: ${caught}. `) : msg)
+
 function installFileTrigger(command, opts) {
   scriptDetail = null
   installFileDeny(String(command ?? ''), opts)
@@ -2807,7 +3037,14 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
   try {
     const verdict = gateDecision(workerData.toolName, workerData.toolInput, workerData.opts ?? {})
     const trigger = verdict.reason === 'install-file' ? installFileTrigger(workerData.toolInput?.command, workerData.opts ?? {}) : ''
-    parentPort.postMessage({ ok: true, deny: verdict.deny === true, reason: verdict.reason, error: verdict.error, trigger })
+    let caught = ''
+    // naming the catch must never turn a reasoned deny into a fail-closed error
+    try {
+      if (verdict.deny === true && !trigger && ['git', 'install-file', 'subagent-file'].includes(verdict.reason)) {
+        caught = caughtItem(workerData.toolName, workerData.toolInput, workerData.opts ?? {}, verdict.reason)
+      }
+    } catch { caught = '' }
+    parentPort.postMessage({ ok: true, deny: verdict.deny === true, reason: verdict.reason, error: verdict.error, trigger, caught })
   } catch (err) {
     parentPort.postMessage({ ok: false, error: String(err?.stack ?? err) })
   }
@@ -2835,8 +3072,10 @@ if (!isMainThread && workerData?.dbWriteGateWorker) {
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
       const trigger = verdict.trigger ?? ''
-      deny(verdict.reason === 'git' ? GIT_GATE_MSG : verdict.reason === 'install-file' ? INSTALL_FILE_GATE_MSG + trigger
-        : verdict.reason === 'subagent-file' ? SUBAGENT_FILE_GATE_MSG
+      const caught = verdict.caught ?? ''
+      deny(verdict.reason === 'git' ? withCaught(GIT_GATE_MSG, caught)
+        : verdict.reason === 'install-file' ? withCaught(INSTALL_FILE_GATE_MSG, caught) + trigger
+        : verdict.reason === 'subagent-file' ? withCaught(SUBAGENT_FILE_GATE_MSG, caught)
         : verdict.reason === 'mcp-install-file' ? MCP_PREFIX_MSG + INSTALL_FILE_GATE_MSG
         : verdict.reason === 'mcp-subagent-file' ? MCP_PREFIX_MSG + SUBAGENT_FILE_GATE_MSG
         : verdict.reason === 'mcp-path' ? MCP_PATH_GATE_MSG : DB_GATE_MSG)

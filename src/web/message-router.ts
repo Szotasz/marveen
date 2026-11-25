@@ -1234,7 +1234,7 @@ export async function runMessageRouterTick(): Promise<void> {
       // main-agent pull endpoint frame messages identically (no security drift).
       // Trace context (card def5a189): stamp if not yet set. channel-inbound
       // messages (user → agent) are excluded -- only inter-agent spans.
-      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
+      const cls = classifyAgentMessage(msg)
       if (!cls) {
         logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'Agent message rejected: from_agent empty after sanitize')
         if (!markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
@@ -1550,8 +1550,9 @@ function collectBatchMates(
     // rows that follow it, so the old id comparison would have left them out of its batch.
     if (compareDeliveryOrder(m, head) <= 0) continue
     if (batchedMsgIdsThisTick.has(m.id)) continue
-    const cls = classifyAgentMessage(m.from_agent, m.to_agent)
-    if (!cls || cls.category === 'channel-inbound' || cls.category === 'federated') continue
+    const cls = classifyAgentMessage(m)
+    // The owner's own messages (channel lanes, the desktop companion) are never folded into a peer batch.
+    if (!cls || cls.category === 'channel-inbound' || cls.category === 'companion-inbound' || cls.category === 'federated') continue
     if (items.length >= cap - 1) break
     if (getMessageStatus(m.id) !== 'pending') continue
     const effective = m.trace_id && m.span_id

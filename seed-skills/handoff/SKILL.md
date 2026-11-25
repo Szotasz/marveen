@@ -136,7 +136,12 @@ Jelentsd a felhasználónak vagy a hívónak:
 
 - NE tegyél a handoffba titkot, tokent vagy .env-értéket
 - NE tegyél bele teljes fájltartalmat: utakat és sorszámokat használj
-- Maradj 3000 szó alatt: a fogadó sessionnek hely kell a munkához
+- Méretkeret: cél 4000 karakter, plafon 8000. A handoff a következő session kontextusában MINDEN körben ott van,
+  és minden context-guard újraindításkor újraíródik, tehát a méretét kétszer fizeted (mérve 2026-11-24-én egy
+  7 ágenses flottán: 3,4-15,8 ezer bájtos handoffok, ágensenként 8-33 újraindulás 36 óra alatt). Állapotot vigyél,
+  ne történetet: a lezárt munka egy sorban a napi naplóba megy, nem ide; a kártya-, komment- és üzenet-azonosítókat
+  idézd a tartalmuk helyett; a kész tételek közül csak azokat sorold fel, amelyeket a következő session különben
+  újra elvégezne.
 - Ha a `target=` ágens nem fut (nézd meg a tmuxban), figyelmeztess, és térj vissza fájl módra
 - A handoff pillanatkép, tehát elavul. Az időbélyeget tedd jól látható helyre
 

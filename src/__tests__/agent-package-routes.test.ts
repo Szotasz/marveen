@@ -76,6 +76,15 @@ describe('the released build', () => {
     expect(fake.requests).toHaveLength(0)
   })
 
+  it('MIOAGENTB4-1122: GET credential says configured false while the origin is empty, true with an origin', async () => {
+    const d = { ...RELEASED_DEPS, fetchImpl: fake.fetchImpl }
+    expect(await call('GET', '/api/agent-packages/credential', SESSION, undefined, d)).toMatchObject({ status: 200, body: { connected: false, configured: false } })
+    storeCredential()
+    expect((await call('GET', '/api/agent-packages/credential', SESSION, undefined, d)).body).toMatchObject({ connected: true, configured: false })
+    expect((await call('GET', '/api/agent-packages/credential')).body).toMatchObject({ connected: true, configured: true })
+    expect(fake.requests).toHaveLength(0)
+  })
+
   it('(11) the origin is the Remote\'s own, whatever the environment says', async () => {
     const names = ['PACKAGE_ORIGIN', 'AGENT_PACKAGE_ORIGIN', 'MARVEEN_PACKAGE_ORIGIN']
     const before = names.map((n) => process.env[n])
@@ -147,7 +156,7 @@ describe('GET /api/agent-packages/credential', () => {
   it('a stored credential: its label, id and time, never the token', async () => {
     storeCredential()
     const out = await call('GET', '/api/agent-packages/credential')
-    expect(out.body).toEqual({ connected: true, label: 'Office Mac', deviceTokenId: TEST_DEVICE_ID, connectedAt: STORED.connectedAt })
+    expect(out.body).toEqual({ connected: true, label: 'Office Mac', deviceTokenId: TEST_DEVICE_ID, connectedAt: STORED.connectedAt, configured: true })
   })
 
   it.each([
@@ -159,14 +168,14 @@ describe('GET /api/agent-packages/credential', () => {
     ['an array', '[]'],
   ])('a corrupt file (%s): connected false', async (_n, content) => {
     storeCredential(content)
-    expect((await call('GET', '/api/agent-packages/credential')).body).toEqual({ connected: false })
+    expect((await call('GET', '/api/agent-packages/credential')).body).toEqual({ connected: false, configured: true })
   })
 
   it.skipIf(process.platform === 'win32')('a file readable by others (0644, 0640) is not used: connected false', async () => {
     for (const mode of [0o644, 0o640, 0o604]) {
       storeCredential()
       chmodSync(CRED, mode)
-      expect((await call('GET', '/api/agent-packages/credential')).body).toEqual({ connected: false })
+      expect((await call('GET', '/api/agent-packages/credential')).body).toEqual({ connected: false, configured: true })
     }
   })
 })
@@ -313,12 +322,23 @@ describe('GET /api/agent-packages/catalog', () => {
     expect(fake.requests).toHaveLength(0)
   })
 
+  it('MIOAGENTB4-1122: knownKids lists the kids of the build\'s keys, in order, and nothing else of them', async () => {
+    storeCredential()
+    fake.answer({ status: 200, body: JSON.stringify(CATALOG) })
+    const keys = [{ kty: 'OKP', crv: 'Ed25519', x: 'PUBLIC-X-ONE', kid: 'k-one' }, { kty: 'OKP', crv: 'Ed25519', x: 'PUBLIC-X-TWO', kid: 'k-two' }] as const
+    const out = await call('GET', '/api/agent-packages/catalog', SESSION, undefined, { ...deps, keys })
+    expect(out.body).toEqual({ catalog: CATALOG, knownKids: ['k-one', 'k-two'], origin: TEST_ORIGIN, marveenVersion: expect.any(String) })
+    expect(JSON.stringify(out.body)).not.toContain('PUBLIC-X')
+  })
+
   it('passes the A-side object on unchanged; the token rides in Authorization, to the fixed origin only', async () => {
     storeCredential()
     fake.answer({ status: 200, body: JSON.stringify(CATALOG) })
     const spy = vi.spyOn(AbortSignal, 'timeout')
     const out = await call('GET', '/api/agent-packages/catalog')
     expect(out).toMatchObject({ status: 200, body: { catalog: CATALOG } })
+    // MIOAGENTB4-1122 (Samu D2): the kids beside the body, the body itself unchanged.
+    expect(out.body).toEqual({ catalog: CATALOG, knownKids: [], origin: TEST_ORIGIN, marveenVersion: expect.any(String) })
     expect(fake.requests).toHaveLength(1)
     const r = fake.requests[0]
     expect(r.url).toBe(`${TEST_ORIGIN}/functions/v1/agent-packages`)

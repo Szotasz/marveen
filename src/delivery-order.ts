@@ -26,6 +26,7 @@
 // spends the per-pair high budget (the route stores it with priority 0, and countHighForPairSince
 // skips urgent rows).
 import { OWNER_NAME, VOICE_CHANNEL_ID } from './config.js'
+import { COMPANION_SENDER_ID } from './web/sanitize.js'
 
 // The channel coordinator's and the voice channel's sender ids. Not imported from
 // channel-coordinator/ingest.ts, which opens its own DB handle: the coordinator id is a literal,
@@ -44,7 +45,8 @@ export function rankedSenders(): readonly string[] {
   const owner = (OWNER_NAME ?? '').trim()
   const voiceId = voiceChannelSenderId()
   const voice = voiceId === null ? [] : [voiceId]
-  return [...new Set(['system', COORDINATOR_SENDER_ID, ...voice, ...(owner ? [owner] : [])])]
+  // FIGURAKULCS1125: the desktop companion is the owner typing, like the voice channel is the owner speaking.
+  return [...new Set(['system', COORDINATOR_SENDER_ID, ...voice, COMPANION_SENDER_ID, ...(owner ? [owner] : [])])]
 }
 
 export interface DeliveryOrderKey {

@@ -7,6 +7,7 @@ import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import { selectTickWindow, STOP_PREFIX } from '../web/message-router-window.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { signRowsInPlace } from './helpers/inbound-sig.js'
 
 // #1835 + #1808 together (the precedence the review stated): an authenticated STOP, then an urgent row,
 // then a system or owner row, then a granted peer high, then the rest, FIFO inside each class; and an
@@ -47,7 +48,9 @@ async function post(body: unknown, auth: Auth): Promise<{ statusCode: number; js
   return { statusCode: res.statusCode, json: JSON.parse(res.body) }
 }
 const nowSec = () => Math.floor(Date.now() / 1000)
-const setCreated = (id: number, sec: number) => getDb().prepare('UPDATE agent_messages SET created_at = ? WHERE id = ?').run(sec, id)
+// HMACINBOUND1125: rewriting created_at breaks the server's signature, so the row is signed again (the order is the
+// subject here, not the signature).
+const setCreated = (id: number, sec: number) => { getDb().prepare('UPDATE agent_messages SET created_at = ? WHERE id = ?').run(sec, id); signRowsInPlace([id]) }
 const storedPriority = (id: number) => (getDb().prepare('SELECT priority FROM agent_messages WHERE id = ?').get(id) as { priority: number }).priority
 
 beforeAll(() => {

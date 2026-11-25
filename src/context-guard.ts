@@ -287,6 +287,17 @@ export function contextLimitForModel(model: string | null | undefined): number {
   return contextWindowForModel(model).limit
 }
 
+/** The id to size a session's window from, given the id its TRANSCRIPT reports and the id it was LAUNCHED with. A
+ *  transcript carries the API id, which never has the "[1m]" marker, so a main session launched as "<id>[1m]" was sized
+ *  as the bare id: 200k for fable-5-2, a handoff at a fifth of the real window (measured: calls of 976k tokens in
+ *  transcripts that say "claude-fable-5-2"). The marker comes back only when the launch id names the very model the
+ *  transcript reports; any other pair returns the transcript's id unchanged. */
+export function withLaunchWindowMarker(measured: string | null, launched: string | null | undefined): string | null {
+  if (!measured || typeof launched !== 'string') return measured
+  const bare = (s: string): string => s.trim().toLowerCase().replace(/\[1m\]$/, '')
+  return /\[1m\]$/i.test(launched.trim()) && bare(launched) === bare(measured) ? launched.trim() : measured
+}
+
 /** CTXUNKNOWNMODEL1122: false when the window below is only the 200k fallback, not a decision for this model id. */
 export function isKnownContextModel(model: string | null | undefined): boolean {
   return contextWindowForModel(model).known

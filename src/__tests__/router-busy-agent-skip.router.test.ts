@@ -91,7 +91,7 @@ import { isSessionReadyForPrompt, clearFeedbackModalAndRecheck, clearStaleParked
 
 vi.mock('../web/agent-message-wrap.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/agent-message-wrap.js')>()),
-  classifyAgentMessage: (from: string) => ({ category: 'trusted-peer', safeFrom: from }),
+  classifyAgentMessage: ({ from_agent: from }: { from_agent: string }) => ({ category: 'trusted-peer', safeFrom: from }),
 }))
 
 function row(id: number, to: string, ageMs = 0, priority = 0) {

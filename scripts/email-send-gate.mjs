@@ -769,6 +769,9 @@ export function maskSubshellMarkers(cmd) {
 
 // Quote-aware tokenizer -> [[token, ...], ...] per segment. Throws on an
 // unbalanced quote (the caller falls back to the legacy content patterns).
+const PROC_SUBST_OPENERS = ['<', '>', '=']
+const PROC_SUBST_WORD = '$__SUBST__' // the undecidable word flattenSubstitutions writes for a substitution
+
 export function segmentsTokens(cmd) {
   const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, '$1'))
   const segments = []
@@ -778,6 +781,10 @@ export function segmentsTokens(cmd) {
   let q = null
   const pushTok = () => { if (hasTok) { cur.push(tok); tok = ''; hasTok = false } }
   const pushSeg = () => { pushTok(); if (cur.length) { segments.push(cur); cur = [] } }
+  // ISSUE3049 (twin of _segments_tokens): a process substitution is ONE WORD of the command around it. Its command is
+  // a segment of its own, and the outer command goes on after its `)` with the undecidable word in its place. Each
+  // entry: [the outer segment so far, the open plain ( inside].
+  const procs = []
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]
     if (q) {
@@ -789,12 +796,30 @@ export function segmentsTokens(cmd) {
     if (ch === "'" || ch === '"') { q = ch; hasTok = true; continue }
     if (ch === '\\' && i + 1 < s.length) { tok += s[++i]; hasTok = true; continue }
     if (ch === ' ' || ch === '\t') { pushTok(); continue }
+    if (ch === '(') {
+      pushTok()
+      if (cur.length && PROC_SUBST_OPENERS.includes(cur[cur.length - 1])) {
+        procs.push([cur.slice(0, -1).concat([PROC_SUBST_WORD]), 0])
+        cur = []
+        continue
+      }
+      if (procs.length) procs[procs.length - 1][1]++
+    } else if (ch === ')' && procs.length) {
+      if (procs[procs.length - 1][1] === 0) {
+        pushSeg()
+        cur = procs.pop()[0]
+        continue
+      }
+      procs[procs.length - 1][1]--
+    }
     if ('|&;()'.includes(ch)) { pushSeg(); continue }
     tok += ch
     hasTok = true
   }
   if (q) throw new Error('unbalanced quote')
   pushSeg()
+  // an unclosed substitution: its outer command is still judged, as a segment of its own
+  for (const [outer] of procs.reverse()) if (outer.length) segments.push(outer)
   return segments
 }
 
@@ -2991,8 +3016,15 @@ function boundIsPlain(bound, expected = new Map()) {
 
 // ISSUE2582 (B): a script written by a heredoc and then run in the same command is judged by its body (see the python
 // twin's _written_scripts for the exact conditions); every other case reads the disk as before.
+// MAILGATEWRITTENAND1123: the one provable conditional write (see the python twin's _written_and_chain_ok). The run
+// is python only: node resolves a missing P to P.js, P.json, P.node or P/index.js (Dani, review of #3090).
+const WRITTEN_AND_CHAIN = /^(?:(?:mkdir(?:[ \t]+-p)?|cd)[ \t]+[A-Za-z0-9_./-]+[ \t]*&&[ \t]*)+$/
+function writtenAndChainOk(pre, lineStart, rest, path) {
+  if (lineStart !== 0 || !WRITTEN_AND_CHAIN.test(pre)) return false
+  return new RegExp(String.raw`^[ \t]*\n[ \t]*python3?[ \t]+` + reEscape(path) + String.raw`(?=[ \t\n;&|]|$)`).test(rest)
+}
 const WRITTEN_OPENER = new RegExp(
-  String.raw`^(?<pre>[^\n'"\x60\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?<p1>[^\s'"<>;&|$\x60]+)[ \t]+<<-?[ \t]*(?<q1>'?)(?<t1>\w+)\k<q1>` +
+  String.raw`^(?<pre>[^\n'"\x60\\]*(?:;|&&)[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?<p1>[^\s'"<>;&|$\x60]+)[ \t]+<<-?[ \t]*(?<q1>'?)(?<t1>\w+)\k<q1>` +
   String.raw`|cat[ \t]+<<-?[ \t]*(?<q2>'?)(?<t2>\w+)\k<q2>[ \t]+>[ \t]*(?<p2>[^\s'"<>;&|$\x60]+)` +
   String.raw`|tee[ \t]+(?<p3>[^\s'"<>;&|$\x60-][^\s'"<>;&|$\x60]*)(?:[ \t]+>[ \t]*\/dev\/null)?[ \t]+<<-?[ \t]*(?<q3>'?)(?<t3>\w+)\k<q3>` +
   String.raw`)[ \t]*$`)
@@ -3043,6 +3075,8 @@ export function writtenScripts(cmd, cwd) {
     else continue
     // the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
     if (/(?:&&|\|\||\||\\)\s*$/.test(cmd.slice(0, lineStart))) continue
+    // MAILGATEWRITTENAND1123: a write after `&&` counts only in the one shape that is provable
+    if ((g.pre ?? '').trimEnd().endsWith('&&') && !writtenAndChainOk(g.pre, lineStart, cmd.slice(m.index + m[0].length), path)) continue
     // nothing before the write can have left P there unnamed (so the write does not fail on it)
     if (!writtenSafeBefore(outsideBodies(cmd, 0, lineStart) + (g.pre ?? ''))) continue
     // counted by the FILE NAME, so `./x.py`, `$D/x.py` and `/abs/x.py` are all mentions of x.py

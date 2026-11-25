@@ -507,6 +507,62 @@ function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
   return true
 }
 
+// HMACINBOUND1125 (Dani, #3117 review 1): the key the server signs agent_messages rows with is a SECRET, not a
+// setting. A sub-agent that reads it can sign a row in the owner's voice, so a Bash segment that names it is denied
+// even as a plain read (the #2876 secret-store pattern). The native Read tool is stopped by the settings deny
+// (SUBAGENT_INBOUND_SIG_KEY_DENY in agent-scaffold.ts); a write by any agent by db-write-gate's protected paths.
+//
+// #3117 review (Samu): read on the segment as written AND with its shell quoting removed (quotes and backslashes split
+// a name without changing what the shell opens: `.inbound''-sig-key`, `.inbound"-sig"-key`, `.inbound\-sig-key`), and
+// every glob word is matched against the file's name as the shell or find would (`store/.inb*key`, `-name '.inbound*'`).
+// A variable set to a literal earlier in the same command is substituted first (definiteAssignments).
+// THE LIMIT: a text brake, not an OS boundary. A name built at run time in a way the gate cannot resolve (a variable
+// from another command or the environment, a command substitution), a string built inside an interpreter, or a reader
+// that is never told the name (`grep -r . store/`, `xargs`) passes. The same class: a read of the whole store directory
+// without the name carries the key too (`cp -r store/ x`, `grep -ra . store/`, `zip -r x store/`; `tar` is denied, but by
+// db-write-gate, not by this rule). inbound-sig.test.ts lists them as documented passes. The key is a file of the same OS user, as src/inbound-sig.ts says.
+const INBOUND_SIG_KEY_NAME = '.inbound-sig-key'
+const INBOUND_SIG_KEY_MENTION_RX = /\.inbound[-_]?sig[-_]?key\b|\.inbound[-_]?sig[\w.-]*[*?[]/i
+
+/** A shell glob (one path component) as an anchored regex: `*`, `?` and `[...]` classes, case-insensitive. */
+function globComponentRegex(glob) {
+  let rx = ''
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]
+    if (c === '*') rx += '.*'
+    else if (c === '?') rx += '.'
+    else if (c === '[') {
+      const end = glob.indexOf(']', i + 2)
+      if (end < 0) { rx += '\\['; continue }
+      const body = glob.slice(i + 1, end).replace(/^!/, '^').replace(/\\/g, '\\\\')
+      rx += `[${body}]`
+      i = end
+    } else rx += c.replace(/[.+^${}()|\\]/g, '\\$&')
+  }
+  try { return new RegExp(`^${rx}$`, 'i') } catch { return null }
+}
+
+export function inboundSigKeyBashSegmentAllowed(seg, definite) {
+  // A variable the same command set to a literal earlier (`F=.inbound-sig; cat store/$F-key`) is read as its value,
+  // the definiteAssignments the other protected-file checks use (Dani, #3117 delta).
+  const raw = substituteDefinite(String(seg ?? ''), definite)
+  const unquoted = raw.replace(/\$(?=['"])|["'\\]/g, '')
+  if (INBOUND_SIG_KEY_MENTION_RX.test(raw) || INBOUND_SIG_KEY_MENTION_RX.test(unquoted)) return false
+  const words = unquoted.split(/\s+/)
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]
+    if (!/[*?[]/.test(w)) continue
+    const last = w.replace(/\/+$/, '').split('/').pop() ?? ''
+    // A shell glob reaches a dotfile only when its last component starts with a dot; find's -name / -iname / -path
+    // match the leading dot with any pattern.
+    const afterFindName = /^-(?:i?name|i?path|i?wholename)$/.test(words[i - 1] ?? '')
+    if (!afterFindName && !last.startsWith('.')) continue
+    const rx = globComponentRegex(last)
+    if (rx && rx.test(INBOUND_SIG_KEY_NAME)) return false
+  }
+  return true
+}
+
 export function protectedStoreBashSegmentAllowed(seg, ctx) {
   return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text), ctx?.rgConfigNamed)
 }
@@ -564,7 +620,7 @@ export function protectedSegments(command) {
 
 // protectedSegments plus what the definite-assignment rule needs: the separator after each segment ('' after the
 // last) and the mask. `quoteAware` false = the naive fallback, where no separator is known.
-function protectedSplit(command) {
+export function protectedSplit(command) {
   const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const heredocs = []
   const masked = maskInertLiterals(src, heredocs)
@@ -595,7 +651,7 @@ function protectedSplit(command) {
 //     export, local, declare, typeset, readonly, let, `printf -v`;
 //   - the name is assigned exactly ONCE in the whole command (NAME= or NAME+=, quoted text excluded), in a segment
 //     that is only literal NAME=value words, and the use comes after it;
-//   - the name is not one the shell itself sets or rewrites (SHELL_MANAGED_NAMES, any BASH*/ZSH*: Dani 71554);
+//   - the name is not one the shell itself sets or rewrites (SHELL_MANAGED_NAMES: every special name of zsh and bash; any BASH*/ZSH*/COMP_*/READLINE_*/LC_*: Dani 71554);
 //   - every separator from that assignment to the use is && or ; (or a newline);
 //   - from the last ; before the assignment up to it there is no || (`a || F=x && use $F` can run use without F);
 //   - the separator right before the assignment is not a pipe or & (that would run it in a subshell).
@@ -604,11 +660,44 @@ const COMPOUND_WORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'for', 'whil
 // Names the SHELL itself sets or rewrites: an assignment to one is no definite literal. `PWD=/tmp/q; cd .; cp -R x/.
 // $PWD` copies into the real cwd (cd resets PWD; measured in bash and zsh, Dani 71554), `cd /` resets OLDPWD, and $_,
 // RANDOM, SECONDS, LINENO ... change on their own. zsh's lower-case twins (dirstack, cdpath, ...) are listed too; any
-// BASH* / ZSH* name is excluded by prefix.
-const SHELL_MANAGED_NAMES = new Set(['PWD', 'OLDPWD', 'DIRSTACK', 'dirstack', 'CDPATH', 'cdpath', 'IFS', 'RANDOM', 'SRANDOM',
-  'SECONDS', 'LINENO', 'EPOCHSECONDS', 'EPOCHREALTIME', 'HISTCMD', 'PPID', 'UID', 'EUID', 'GROUPS', 'SHLVL', 'OPTIND', 'OPTARG',
-  'REPLY', 'PIPESTATUS', 'pipestatus', 'FUNCNAME', 'COLUMNS', 'LINES', 'HOME', 'PATH', 'path', 'argv', 'status', 'psvar',
-  'TMOUT', 'HOSTNAME', 'MACHTYPE', 'OSTYPE', 'HOSTTYPE', 'COPROC', 'MAPFILE', '_'])
+// BASH* / ZSH* / COMP_* / READLINE_* / LC_* name is excluded by prefix.
+//
+// The list is NOT grown name by name: every name either shell treats as special stays unresolved. Some zsh special
+// parameters accept an assignment, keep running and hold ANOTHER value (KEYBOARD_HACK keeps one character, HISTCHARS /
+// histchars three, USERNAME its old value), so the gate would read `$NAME<install>` as a place the shell never writes to.
+// zsh: the special parameters of zsh 5.9 (112 names), generated with
+//   for k in ${(ko)parameters}; do [[ ${parameters[$k]} == *special* ]] && print -r -- $k; done
+// A test compares this list with the running zsh's own list (skipped where there is no zsh), so a newer zsh that adds
+// a special parameter turns it red on a machine that has one.
+export const ZSH_SPECIAL_NAMES = Object.freeze([
+  '!', '#', '$', '*', '-', '0', '?', '@', 'ARGC', 'CDPATH', 'COLUMNS', 'EGID', 'EUID', 'FIGNORE', 'FPATH', 'FUNCNEST', 'GID',
+  'HISTCHARS', 'HISTCMD', 'HISTSIZE', 'HOME', 'IFS', 'KEYBOARD_HACK', 'LINENO', 'LINES', 'MAILPATH', 'MANPATH', 'MODULE_PATH',
+  'NULLCMD', 'OPTARG', 'OPTIND', 'PATH', 'PPID', 'PROMPT', 'PROMPT2', 'PROMPT3', 'PROMPT4', 'PS1', 'PS2', 'PS3', 'PS4',
+  'PSVAR', 'RANDOM', 'READNULLCMD', 'SAVEHIST', 'SECONDS', 'SHLVL', 'SPROMPT', 'TERM', 'TRY_BLOCK_ERROR',
+  'TRY_BLOCK_INTERRUPT', 'TTYIDLE', 'UID', 'USERNAME', 'WATCH', 'WORDCHARS', 'ZSH_EVAL_CONTEXT', 'ZSH_SUBSHELL', '_',
+  'aliases', 'argv', 'builtins', 'cdpath', 'commands', 'dirstack', 'dis_aliases', 'dis_builtins', 'dis_functions',
+  'dis_functions_source', 'dis_galiases', 'dis_patchars', 'dis_reswords', 'dis_saliases', 'fignore', 'fpath', 'funcfiletrace',
+  'funcsourcetrace', 'funcstack', 'functions', 'functions_source', 'functrace', 'galiases', 'histchars', 'history',
+  'historywords', 'jobdirs', 'jobstates', 'jobtexts', 'keymaps', 'mailpath', 'manpath', 'module_path', 'modules', 'nameddirs',
+  'options', 'parameters', 'patchars', 'path', 'pipestatus', 'prompt', 'psvar', 'reswords', 'saliases', 'status', 'termcap',
+  'terminfo', 'userdirs', 'usergroups', 'watch', 'widgets', 'zsh_eval_context', 'zsh_scheduled_events',
+])
+// bash: the variables the shell sets, rewrites or reads for its own behaviour (the "Shell Variables" chapter of the bash
+// manual). BASH* / COMP_* / READLINE_* / LC_* names are excluded by prefix below.
+export const BASH_SPECIAL_NAMES = Object.freeze([
+  'CDPATH', 'CHILD_MAX', 'COLUMNS', 'COMPREPLY', 'COPROC', 'DIRSTACK', 'EMACS', 'ENV', 'EPOCHREALTIME', 'EPOCHSECONDS', 'EUID',
+  'EXECIGNORE', 'FCEDIT', 'FIGNORE', 'FUNCNAME', 'FUNCNEST', 'GLOBIGNORE', 'GLOBSORT', 'GROUPS', 'HISTCMD', 'HISTCONTROL',
+  'HISTFILE', 'HISTFILESIZE', 'HISTIGNORE', 'HISTSIZE', 'HISTTIMEFORMAT', 'HOME', 'HOSTFILE', 'HOSTNAME', 'HOSTTYPE', 'IFS',
+  'IGNOREEOF', 'INPUTRC', 'INSIDE_EMACS', 'LANG', 'LINENO', 'LINES', 'MACHTYPE', 'MAIL', 'MAILCHECK', 'MAILPATH', 'MAPFILE',
+  'OLDPWD', 'OPTARG', 'OPTERR', 'OPTIND', 'OSTYPE', 'PATH', 'PIPESTATUS', 'POSIXLY_CORRECT', 'PPID', 'PROMPT_COMMAND',
+  'PROMPT_DIRTRIM', 'PS0', 'PS1', 'PS2', 'PS3', 'PS4', 'PWD', 'RANDOM', 'REPLY', 'SECONDS', 'SHELL', 'SHELLOPTS', 'SHLVL',
+  'SRANDOM', 'TERM', 'TIMEFORMAT', 'TMOUT', 'TMPDIR', 'UID', '_', 'auto_resume', 'histchars',
+])
+const SHELL_MANAGED_NAMES = new Set([...ZSH_SPECIAL_NAMES, ...BASH_SPECIAL_NAMES, 'PWD', 'OLDPWD', 'DIRSTACK', 'dirstack', 'CDPATH',
+  'cdpath', 'IFS', 'RANDOM', 'SRANDOM', 'SECONDS', 'LINENO', 'EPOCHSECONDS', 'EPOCHREALTIME', 'HISTCMD', 'PPID', 'UID', 'EUID',
+  'GROUPS', 'SHLVL', 'OPTIND', 'OPTARG', 'REPLY', 'PIPESTATUS', 'pipestatus', 'FUNCNAME', 'COLUMNS', 'LINES', 'HOME', 'PATH', 'path',
+  'argv', 'status', 'psvar', 'TMOUT', 'HOSTNAME', 'MACHTYPE', 'OSTYPE', 'HOSTTYPE', 'COPROC', 'MAPFILE', '_'])
+const SHELL_MANAGED_PREFIX_RX = /^(?:BASH|ZSH|COMP_|READLINE_|LC_)/
 const VAR_SETTERS = new Set(['source', '.', 'eval', 'read', 'mapfile', 'readarray', 'getopts', 'unset', 'export', 'local', 'declare', 'typeset', 'readonly', 'let'])
 export function definiteAssignments(split) {
   const none = split.segs.map(() => new Map())
@@ -641,7 +730,7 @@ export function definiteAssignments(split) {
       if (/[$`\u0000]/.test(v)) return
       pairs.push([m[1], v])
     }
-    for (const [name, value] of pairs) if (counts.get(name) === 1 && !SHELL_MANAGED_NAMES.has(name) && !/^(?:BASH|ZSH)_?/.test(name)) defs.push({ at, name, value })
+    for (const [name, value] of pairs) if (counts.get(name) === 1 && !SHELL_MANAGED_NAMES.has(name) && !SHELL_MANAGED_PREFIX_RX.test(name)) defs.push({ at, name, value })
   })
   const out = split.segs.map(() => new Map())
   for (const d of defs) {
@@ -663,6 +752,181 @@ export function definiteAssignments(split) {
     }
   }
   return out
+}
+
+// VARDEFDB1121: the command with every DEFINITE literal variable use (definiteAssignments) put in as its
+// value, for a gate that does not follow variables itself (db-write-gate: `W=/abs/wt; git -C $W ...`, `S=/abs; cd $S/x`).
+// Only a LIVE use is replaced (not one in single quotes or $'...'; a double-quoted one is live), only `$NAME` /
+// `${NAME}` (no `${NAME:-x}`), not one followed by `[` or `:` (zsh subscript / modifier: `$W[1]`, `$W:h`), and only an
+// ABSOLUTE value of plain path characters (`/...`: a relative one goes through CDPATH in a cd): no space, quote, glob,
+// `$`, backslash or `~`, so the value reads the same quoted or not; and nothing at all when the command names IFS.
+// Everything else keeps its unresolved reading. Unchanged when the quoting cannot be followed or nothing is definite.
+const DEFINITE_SAFE_VALUE_RX = /^\/[A-Za-z0-9_./@%+=,-]*$/
+// VARDEFDB1121: definiteAssignments proves a name is ASSIGNED once, not that nothing
+// else SETS it. A setter can hide behind a precommand word (`builtin read W`, `\builtin source f`, `time source f`, zsh
+// `repeat 1 source f`), run code later (`trap 'W=...' ERR`) or name the variable without `NAME=` (`W[0]=x`, `printf
+// -vW`, `print -v W`, `set -A W`, `builtin unset W`). Two fail-closed rules, the self-pace decision itself unchanged:
+//   (A) no replacement at all when a segment's first word (quotes and backslashes dropped) is a precommand or
+//       indirect-execution word below, a VAR_SETTERS word, or not a plain command name (`$B`, `>out`, `2>x`);
+//   (B) a name is not replaced when it occurs anywhere else than its one `NAME=` assignment and its `$NAME` /
+//       `${NAME}` uses: quoted, as an argument, subscripted, `+=`, in a `${NAME<op>...}` expansion, or glued to an
+//       option (`-vW`).
+const INDIRECT_FIRST_WORDS = new Set(['builtin', 'command', 'exec', 'noglob', 'nocorrect', '-', 'repeat', 'time', '!',
+  'trap', 'alias', 'enable', 'autoload', 'fc', 'emulate', 'zmodload'])
+const PLAIN_COMMAND_RX = /^(?:[A-Za-z0-9_./][A-Za-z0-9_./:+@%,-]*|\[)$/
+// a redirection in front of the command word (after the NAME=value prefix words): `2>/dev/null x`, `</tmp/p read W`
+// (every prefix word ends in \s+, so a run of `a=a=a=...` has ONE way to split: no backtracking blowup)
+const LEADING_REDIRECT_RX = /^\s*(?:[A-Za-z_]\w*\+?=(?:'[^']*'|"[^"]*"|\\.|[^\s'"\\])*\s+)*\d*[<>]/
+function firstWordBlocks(seg) {
+  if (LEADING_REDIRECT_RX.test(String(seg))) return true // the quote-aware reader drops redirections: keep this reading
+  // the quote-aware reader, not a split on blanks: `X='a b' source f` is ONE prefix word, then `source`
+  const w = shellWords(seg)
+  if (w === null) return true // the quoting cannot be followed: fail closed
+  let i = 0
+  while (i < w.length && /^[A-Za-z_]\w*\+?=/.test(w[i].value)) i++
+  if (i >= w.length) return false
+  const bare = w[i].value
+  if (bare === '') return true
+  return INDIRECT_FIRST_WORDS.has(bare) || VAR_SETTERS.has(bare) || !PLAIN_COMMAND_RX.test(bare)
+}
+// VARDEFDB1121: a NAME can be BUILT from pieces the raw-text rule (B) cannot see:
+// `W''T`, `"W"T`, `W\T`, `${n}T`, `$a$b`. So no name is replaced in a command where an identifier character or an
+// expansion touches another identifier character or expansion ACROSS a quoting boundary inside one word. A clean word
+// (`$W`, `"$W"`, `${W}/x`, `--format='%H'`, `NAME='a b'`) has no such joint; fail-closed otherwise (no replacement).
+function hasGluedPieces(src) {
+  const ID = /[A-Za-z0-9_]/
+  let lastId = false
+  let lastPiece = -1
+  let piece = 0
+  let q = null
+  const emit = (isId) => {
+    if (isId && lastId && lastPiece !== piece) return true
+    lastId = isId
+    lastPiece = piece
+    return false
+  }
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (q === "'") {
+      if (c === "'") { q = null; piece++; continue }
+      if (emit(ID.test(c))) return true
+      continue
+    }
+    if (c === '\\') {
+      piece++
+      const n = src[i + 1] ?? ''
+      i++
+      const bad = emit(ID.test(n) || n === '$')
+      piece++
+      if (bad) return true
+      continue
+    }
+    if (c === '"') { q = q === '"' ? null : '"'; piece++; continue }
+    if (c === "'" && q === null) { q = "'"; piece++; continue }
+    if (c === '$') {
+      let j = i + 1
+      if (src[j] === '{') { const e = src.indexOf('}', j); j = e < 0 ? src.length : e + 1 } else if (ID.test(src[j] ?? '')) { while (j < src.length && ID.test(src[j])) j++ } else j = Math.min(j + 1, src.length)
+      piece++
+      const bad = emit(true)
+      piece++
+      i = j - 1
+      if (bad) return true
+      continue
+    }
+    if (q === null && /[\s;&|<>()]/.test(c)) { lastId = false; continue }
+    if (emit(ID.test(c))) return true
+  }
+  return false
+}
+function nameSetIndirectly(src, name) {
+  let assigns = 0
+  for (const m of src.matchAll(new RegExp(`(?<![A-Za-z0-9_])(-[A-Za-z]*)?${name}(?![A-Za-z0-9_])`, 'g'))) {
+    if (m[1]) return true // glued to an option: -vW
+    const before = src.slice(0, m.index)
+    // a use is exactly `$NAME` or `${NAME}`; any other `${NAME<op>` (zsh `${W::=x}`, `${W:=x}`) may assign
+    if (before.endsWith('${')) { if (src[m.index + name.length] === '}') continue; return true }
+    if (before.endsWith('$')) continue // a use
+    if (src[m.index + name.length] === '=' && /(?:^|[\s;&|])$/.test(before)) { assigns++; continue }
+    return true
+  }
+  return assigns !== 1
+}
+export function substituteDefiniteCommand(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  // a command that names IFS may split the value: no replacement at all
+  if (/(?<![\w$])IFS(?!\w)/.test(src)) return String(command ?? '')
+  // a line continuation joins names (`"$W\<newline>X"` is $WX) and $'...' has its own escapes (`$'\'$W'`): no
+  // replacement in such a command at all
+  if (/\\\r?\n/.test(String(command ?? '')) || src.includes("$'")) return String(command ?? '')
+  const split = protectedSplit(src)
+  if (!split.quoteAware) return String(command ?? '')
+  if (split.segs.some(firstWordBlocks)) return String(command ?? '') // rule (A)
+  if (hasGluedPieces(src)) return String(command ?? '') // a name built from pieces, class level
+  const definite = definiteAssignments(split).map((m) => new Map([...m].filter(([n]) => !nameSetIndirectly(src, n))))
+  if (!definite.some((m) => m.size)) return String(command ?? '')
+  // The replacement is only for the SIMPLE form, by an ALLOWLIST (a blocklist of glob characters misses zsh
+  // extendedglob `W#T`, `^X`). Outside quotes only these characters may occur: [A-Za-z0-9_./@%+=,:-], blanks (space,
+  // tab, newline), the separators ; & |, a standalone `[` `[[` `]` `]]` word (a test), and a `$` that is a plain
+  // `$NAME` / `${NAME}` use of a name replaced here. Inside double quotes only that `$` use is allowed, and no
+  // backtick. No redirection `<` `>`: zsh runs an assignment that has only redirections as a prefix of NULLCMD, so in
+  // `W=/x &>/dev/null </dev/null; git -C "$W"` W is unset there. Anything else (`#`, `^`, `~`, `!`, `?`, `*`, a
+  // backslash, `(`, `$n:u`, `$(..)`, `${W:-x}`, `$1`, another name's use) could build or set the target name, which
+  // the text rules cannot see: no replacement at all, the denying behaviour of the unpatched gate.
+  const replaced = new Set(definite.flatMap((m) => [...m].filter(([, v]) => DEFINITE_SAFE_VALUE_RX.test(v)).map(([n]) => n)))
+  if (!replaced.size) return String(command ?? '')
+  const UNCHANGED = String(command ?? '')
+  for (let i = 0, q = null; i < src.length; i++) {
+    const c = src[i]
+    if (q === "'") { if (c === "'") q = null; continue }
+    if (c === '"') { q = q === '"' ? null : '"'; continue }
+    if (c === "'" && q === null) { q = "'"; continue }
+    if (c === '$') {
+      const u = /^\$\{([A-Za-z_]\w*)\}|^\$([A-Za-z_]\w*)(?![\w[:])/.exec(src.slice(i))
+      if (!u || !replaced.has(u[1] ?? u[2])) return UNCHANGED
+      i += u[0].length - 1
+      continue
+    }
+    if (q === '"') {
+      if (c === '`') return UNCHANGED
+      if (c === '\\') i++ // an escaped character inside double quotes cannot start a name or an expansion of its own here
+      continue
+    }
+    if (/[A-Za-z0-9_./@%+=,: \t\n;&|-]/.test(c)) continue
+    if (c === '[' || c === ']') {
+      const w = /^(?:\[\[?|\]\]?)(?=[ \t\n;&|]|$)/.exec(src.slice(i))
+      if (w && /(?:^|[ \t\n;&|])$/.test(src.slice(0, i))) { i += w[0].length - 1; continue }
+    }
+    return UNCHANGED
+  }
+  const bounds = []
+  let start = 0
+  for (const m of split.masked.matchAll(SEGMENT_SEP_RX)) { bounds.push([start, m.index]); start = m.index + m[0].length }
+  bounds.push([start, src.length])
+  if (bounds.length !== definite.length) return String(command ?? '')
+  let out = ''
+  let at = 0
+  bounds.forEach(([a, b], k) => {
+    const defs = definite[k]
+    if (!defs.size) return
+    // the quoting is followed here: a single-quoted (or $'...') `$W` is text, a double-quoted one expands
+    let q = null
+    for (let i = a; i < b; i++) {
+      const c = src[i]
+      if (q === "'") { if (c === "'") q = null; continue }
+      if (c === '\\') { i++; continue }
+      if (c === '"') { q = q === '"' ? null : '"'; continue }
+      if (c === "'" && q === null) { q = "'"; continue }
+      if (c !== '$') continue
+      const m = /^\$\{([A-Za-z_]\w*)\}|^\$([A-Za-z_]\w*)(?![\w[:])/.exec(src.slice(i, b))
+      if (!m) continue
+      const v = defs.get(m[1] ?? m[2])
+      if (v == null || !DEFINITE_SAFE_VALUE_RX.test(v)) continue
+      out += src.slice(at, i) + v
+      at = i + m[0].length
+      i = at - 1
+    }
+  })
+  return at === 0 ? String(command ?? '') : out + src.slice(at)
 }
 
 function substituteDefinite(text, definite) {
@@ -817,8 +1081,15 @@ function protectedPatternWord(text, ctx) {
   const words = src.replace(UNRESOLVED_EXPANSION_RX, UNRESOLVED).replace(/[\\'"]/g, '').split(/[\s;&|<>()]+/).filter(Boolean)
   const cwdReal = ctx?.cwd ? pathKey(ctx.cwd) : null
   const cwdProtected = !!cwdReal && (sameKey(cwdReal, ctx.root) || sameKey(cwdReal, ctx.store))
-  const cmd = (words.find((w) => !/^[A-Za-z_]\w*=/.test(w)) ?? '').replace(/^.*\//, '')
-  if (ctx && DIR_WRITERS.has(cmd)) {
+  // The writer need not be the first word (#3001: it was read as the first non-assignment word). A reserved word (`for ..; do tar .. -C store`,
+  // `if ..; then cp x store`, `{ cp x store; }`, `case k in k) cp x store;;`), a wrapper (env, nice, time, timeout, sudo,
+  // command, exec, nohup ..) or a runner (xargs, find -exec) puts it later, and the first-word reading let every one of
+  // them write a name of its own into the store dir or the root. Read the other way round: a dir writer named ANYWHERE in
+  // the segment, with the store dir or the root as an argument, makes the segment a mention. No list of prefixes to keep up
+  // to date: an unknown wrapper or runner is on the denying side. A mention is not yet a denial: a segment that a reader
+  // leads (`grep -rn install .`) is still a plain read in readOnlyMentionAllowed, unless it redirects onto a target built at
+  // runtime, which is the price of this reading.
+  if (ctx && words.some((w) => DIR_WRITERS.has(w.replace(/^.*\//, '')))) {
     for (const w of words) {
       const v = w.replace(/^--?[\w-]+=/, '').replace(/^-[A-Za-z](?=[/~.])/, '')
       if (!v || v.startsWith('-') || v.includes(UNRESOLVED) || /[*?[{]/.test(v)) continue
@@ -1440,7 +1711,14 @@ const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into
 // support_consents and support_password_state (SUPPORTKULCS1109, D5): the owner's consent to support access, with
 // how and why it ended, and the support password bucket. An agent that could write them could forge or erase the
 // trail of an enabling, or lift the lock that stands in front of enabling.
-export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state']
+// approver_scopes (DELEGAPPROVER1123): what a delegated human approver may decide; an agent that could write it could
+// widen an approver's reach to its own requests.
+// custom_commands (CHANINBOUNDFORGE1125): the owner's custom slash commands. A prompt command's body is queued as the
+// channel coordinator (custom-commands.ts sendPrompt), so an agent that could rewrite a body would speak in the owner's
+// voice the next time the owner runs that command. The dashboard's owner-gated CRUD is the only writer.
+// inbound_sig_log (HMACINBOUND1125): how many times each server-signed agent_messages row was delivered and how many
+// times the server allowed; an agent that could write it could re-arm a delivered owner-voiced row or an old STOP.
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands', 'inbound_sig_log']
 // An SQL write on one of them. The table name is read wherever the statement
 // names its target: after a schema prefix (`main.approvals`, an ATTACHed
 // `x.approvals`), in [brackets], with SQL comments or line breaks between the
@@ -1472,6 +1750,210 @@ export const SECURITY_SQL_WRITE_RX = new RegExp(
   String.raw`|\bpragma${SQL_GAP}+(?:\[?\w+\]?${SQL_GAP}*\.${SQL_GAP}*)?\[?writable_schema\b`,
   'i',
 )
+
+// CHANINBOUNDFORGE1125: agent_messages stays writable (agents mark their queue rows done, and the skills do), but not
+// in the ways that forge who is speaking. The message router frames a row as the owner speaking (channel-inbound) or
+// as a system directive by its from_agent column ALONE (message-router.ts classifyAgentMessage; the directive check
+// reads the row's from_agent), and it honours stop_authorized / urgent / priority / affects_current_work as stored.
+// /api/messages refuses those senders and those flags to the shared token; a direct SQL write skipped all of that.
+// So, on agent_messages:
+//   - INSERT / REPLACE: only `INTO agent_messages (<columns>) VALUES (<literals>)[, (...)]`, no flag column, and
+//     every row's from_agent a plain quoted literal naming a sender the API would also take from the shared token:
+//     the main agent or an existing agents/<id>/ directory, never a reserved sender. Anything the gate cannot read
+//     (no column list, INSERT .. SELECT, a parameter, a shell or f-string expansion, concatenation, an UPSERT)
+//     is denied.
+//   - UPDATE: never from_agent or a flag column; content or to_agent only with a WHERE pinned to one plain,
+//     allowed from_agent literal (your own pending row, the interagent-queue-lag skill's recipe), no OR, no subquery.
+//     A status / result / timestamp update stays free.
+//   - no DROP / ALTER / CREATE TABLE|VIEW, no trigger or index on it, no trigger that writes it.
+// THE LIMIT, as for the security tables: a text-based brake, not an OS boundary; a program that builds the statement
+// at run time passes. The real lock is a server-side mark on the row (HMACINBOUND1125, decided separately).
+// Reserved senders: the message layer's reserved ids (sanitize.ts MESSAGE_LAYER_RESERVED_AGENT_IDS), the voice
+// channel's default id and the one this install's .env names (VOICE_CHANNEL_ID). A NEW owner-voice sender is
+// reserved there too, and agent-messages-forge.test.ts fails until it is listed here as well: the desktop companion
+// (sanitize.ts COMPANION_SENDER_ID, FIGURAKULCS1125) is.
+export const AGENT_MESSAGES_RESERVED_SENDERS = ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna', 'desktop-companion']
+const AGENT_MESSAGES_FLAG_COLUMNS = new Set(['stop_authorized', 'urgent', 'priority', 'affects_current_work'])
+const AM_IDENT = sqlIdent(['agent_messages'])
+const AM_ROW_WRITE_RX = new RegExp(
+  String.raw`\b(?:insert(?:${SQL_GAP}+or${SQL_GAP}+\w+)?${SQL_GAP}+into|replace${SQL_GAP}+into|update(?:${SQL_GAP}+or${SQL_GAP}+\w+)?)${SQL_GAP}+${AM_IDENT}`,
+  'gi',
+)
+const AM_SCHEMA_WRITE_RX = new RegExp(
+  String.raw`\b(?:drop${SQL_GAP}+(?:table|view)(?:${SQL_GAP}+if${SQL_GAP}+exists)?|alter${SQL_GAP}+table|create${SQL_GAP}+(?:temp\w*${SQL_GAP}+)?(?:table|view)(?:${SQL_GAP}+if${SQL_GAP}+not${SQL_GAP}+exists)?)${SQL_GAP}+${AM_IDENT}` +
+  String.raw`|\bcreate${SQL_GAP}+(?:(?:temp\w*|unique)${SQL_GAP}+)?(?:trigger|index)\b[\s\S]{0,300}?\bon${SQL_GAP}+${AM_IDENT}` +
+  String.raw`|\bcreate${SQL_GAP}+(?:temp\w*${SQL_GAP}+)?trigger\b[\s\S]*?\b(?:insert|replace|update)\b[\s\S]{0,60}?${AM_IDENT}`,
+  'i',
+)
+
+/** The statement that starts at `i`: up to a `;` or a `"` outside a single-quoted SQL literal, or the end. */
+function sqlStatementAt(text, i) {
+  let inLit = false
+  for (let j = i; j < text.length; j++) {
+    const c = text[j]
+    if (inLit) {
+      if (c === "'") {
+        if (text[j + 1] === "'") { j++; continue }
+        inLit = false
+      }
+      continue
+    }
+    if (c === "'") inLit = true
+    else if (c === ';' || c === '"') return text.slice(i, j)
+  }
+  return inLit ? null : text.slice(i)
+}
+
+/** Split on top-level commas (outside quotes and parentheses); null when the quotes or parentheses do not balance. */
+function splitTopLevel(s) {
+  const out = []
+  let depth = 0
+  let inLit = false
+  let last = 0
+  for (let j = 0; j < s.length; j++) {
+    const c = s[j]
+    if (inLit) {
+      if (c === "'") { if (s[j + 1] === "'") { j++; continue } inLit = false }
+      continue
+    }
+    if (c === "'") inLit = true
+    else if (c === '(') depth++
+    else if (c === ')') { if (--depth < 0) return null }
+    else if (c === ',' && depth === 0) { out.push(s.slice(last, j)); last = j + 1 }
+  }
+  if (inLit || depth !== 0) return null
+  out.push(s.slice(last))
+  return out
+}
+
+const sqlColumnName = (c) => c.trim().replace(/^["`[]|["`\]]$/g, '').toLowerCase()
+
+/** The senders this install allows by SQL: the main agent and existing agent directories, never a reserved id. */
+function agentMessagesSenderOk(id, root) {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return false
+  const env = root ? readEnvFileValues(join(root, '.env')) : {}
+  const reserved = new Set(AGENT_MESSAGES_RESERVED_SENDERS)
+  if (env.VOICE_CHANNEL_ID) reserved.add(env.VOICE_CHANNEL_ID.trim().toLowerCase())
+  if (reserved.has(id.toLowerCase())) return false
+  if (id === (env.MAIN_AGENT_ID?.trim() || 'marveen')) return true
+  if (!root) return false
+  try { return lstatSync(join(root, 'agents', id)).isDirectory() } catch { return false }
+}
+
+function readEnvFileValues(path) {
+  const out = {}
+  let raw = ''
+  try { raw = readFileSync(path, 'utf8') } catch { return out }
+  for (const line of raw.split('\n')) {
+    const m = /^\s*(MAIN_AGENT_ID|VOICE_CHANNEL_ID)\s*=\s*(.*)$/.exec(line)
+    if (m) out[m[1]] = m[2].replace(/^["']|["']\s*$/g, '').trim()
+  }
+  return out
+}
+
+const PLAIN_SENDER_LITERAL_RX = /^'([A-Za-z0-9_-]{1,64})'$/
+
+/** INSERT / REPLACE INTO agent_messages: true when it could forge the sender or a flag (or cannot be read). */
+function agentMessagesInsertForges(stmt, root) {
+  const head = new RegExp(String.raw`^(?:insert(?:${SQL_GAP}+or${SQL_GAP}+\w+)?${SQL_GAP}+into|replace${SQL_GAP}+into)${SQL_GAP}+${AM_IDENT}${SQL_GAP}*\(([^()]*)\)${SQL_GAP}*values${SQL_GAP}*`, 'i').exec(stmt)
+  if (!head) return true // no column list, INSERT .. SELECT, DEFAULT VALUES, or unreadable
+  const cols = head[1].split(',').map(sqlColumnName)
+  if (cols.some((c) => AGENT_MESSAGES_FLAG_COLUMNS.has(c))) return true
+  const fromAt = cols.indexOf('from_agent')
+  if (fromAt < 0) return true
+  let rest = stmt.slice(head[0].length)
+  let rows = 0
+  while (rest.length) {
+    if (rest[0] !== '(') return true
+    let depth = 0
+    let inLit = false
+    let end = -1
+    for (let j = 0; j < rest.length; j++) {
+      const c = rest[j]
+      if (inLit) { if (c === "'") { if (rest[j + 1] === "'") { j++; continue } inLit = false } continue }
+      if (c === "'") inLit = true
+      else if (c === '(') depth++
+      else if (c === ')' && --depth === 0) { end = j; break }
+    }
+    if (end < 0) return true
+    const vals = splitTopLevel(rest.slice(1, end))
+    if (!vals || vals.length !== cols.length) return true
+    const sender = PLAIN_SENDER_LITERAL_RX.exec(vals[fromAt].trim())
+    if (!sender || !agentMessagesSenderOk(sender[1], root)) return true
+    rows++
+    rest = rest.slice(end + 1).replace(new RegExp(`^${SQL_GAP}*`), '')
+    if (rest.startsWith(',')) { rest = rest.slice(1).replace(new RegExp(`^${SQL_GAP}*`), ''); continue }
+    break
+  }
+  // nothing may follow the rows: an UPSERT (ON CONFLICT .. DO UPDATE SET from_agent ..) or anything unread
+  return rows === 0 || rest.trim() !== ''
+}
+
+/** UPDATE agent_messages: true when it could forge the sender, a flag, or rewrite another sender's row. */
+function agentMessagesUpdateForges(stmt, root) {
+  const head = new RegExp(String.raw`^update(?:${SQL_GAP}+or${SQL_GAP}+\w+)?${SQL_GAP}+${AM_IDENT}${SQL_GAP}+set${SQL_GAP}+`, 'i').exec(stmt)
+  if (!head) return true
+  const body = stmt.slice(head[0].length)
+  if (body.trimStart().startsWith('(')) return true // SET (a, b) = (...): row-value assignment, not read
+  // the first top-level WHERE (outside literals) ends the SET list
+  let whereAt = -1
+  let inLit = false
+  for (let j = 0; j < body.length; j++) {
+    const c = body[j]
+    if (inLit) { if (c === "'") { if (body[j + 1] === "'") { j++; continue } inLit = false } continue }
+    if (c === "'") { inLit = true; continue }
+    if (/\s/.test(c) && /^\swhere\b/i.test(body.slice(j))) { whereAt = j; break }
+  }
+  const setPart = whereAt < 0 ? body : body.slice(0, whereAt)
+  const wherePart = whereAt < 0 ? '' : body.slice(whereAt).replace(/^\s*where\b/i, '')
+  if (/\bfrom\b/i.test(setPart.replace(/'(?:[^']|'')*'/g, "''"))) return true // UPDATE .. FROM
+  const assigns = splitTopLevel(setPart)
+  if (!assigns) return true
+  const cols = []
+  for (const a of assigns) {
+    const m = /^\s*(\[?["`]?\w+["`]?\]?)\s*=/.exec(a)
+    if (!m) return true
+    cols.push(sqlColumnName(m[1]))
+  }
+  if (cols.some((c) => c === 'from_agent' || AGENT_MESSAGES_FLAG_COLUMNS.has(c))) return true
+  if (cols.some((c) => c === 'content' || c === 'to_agent')) {
+    const bare = wherePart.replace(/'(?:[^']|'')*'/g, "''")
+    if (/\bor\b|\bselect\b|\bnot\b/i.test(bare)) return true
+    const pins = [...wherePart.matchAll(/(?<![<>!=\w])\[?["`]?from_agent["`]?\]?\s*==?\s*('[^']*')/gi)]
+    if (pins.length !== 1) return true
+    const sender = PLAIN_SENDER_LITERAL_RX.exec(pins[0][1])
+    if (!sender || !agentMessagesSenderOk(sender[1], root)) return true
+  }
+  return false
+}
+
+/**
+ * CHANINBOUNDFORGE1125: does this text write agent_messages in a way that could forge the sender or a delivery flag?
+ * Read on the escape-decoded text WITH its quotes (the SQL literals are the evidence); a statement the gate cannot
+ * read is a forge (fail closed).
+ */
+export function agentMessagesForgeWrite(text, opts = {}) {
+  const joined = String(text ?? '').replace(/\\\r?\n/g, '')
+  const decoded = decodeEscapes(decodeEscapes(joined))
+  // cheap pre-test, so the hook pays nothing for the many texts that never name the table: the decoded text, and the
+  // same with shell quoting removed (a name split by quotes, "agent_""messages", closes up there)
+  const closed = decoded.replace(/\$\{IFS\}|\$IFS\b/g, '').replace(/[\\'"`]/g, '')
+  if (!/agent_messages/i.test(decoded) && !/agent_messages/i.test(closed)) return false
+  const vs = scheduleSurfaceVariants(text)
+  for (const v of [decoded, ...vs]) if (AM_SCHEMA_WRITE_RX.test(v)) return true
+  const root = opts.projectRoot ?? null
+  for (const m of decoded.matchAll(AM_ROW_WRITE_RX)) {
+    const stmt = sqlStatementAt(decoded, m.index)
+    if (stmt === null) return true
+    const forges = /^update/i.test(m[0]) ? agentMessagesUpdateForges(stmt, root) : agentMessagesInsertForges(stmt, root)
+    if (forges) return true
+  }
+  // a write the decoded text hides (quotes or escapes split the keywords) but an unquoted variant shows: unreadable
+  const shown = (s) => (s.match(AM_ROW_WRITE_RX) ?? []).length
+  const seen = shown(decoded)
+  return vs.some((v) => shown(v) > seen)
+}
+
 // The dashboard database file (and its WAL/SHM/journal). Reads by any program
 // stay allowed (a worker reads the board with sqlite3 SELECT); a FILE-level
 // write -- a redirect onto it, cp/mv/tee/dd/rm/ln/... naming it, or a sqlite3
@@ -1742,7 +2224,7 @@ export function scheduleSurfaceRefs(text, opts) {
       api: false,
       dir: false,
       cli: false,
-      sql: vs.some((v) => SECURITY_SQL_WRITE_RX.test(v)),
+      sql: vs.some((v) => SECURITY_SQL_WRITE_RX.test(v)) || agentMessagesForgeWrite(text, opts),
       db: vs.some((v) => DASHBOARD_DB_REF_RX.test(v)) || globRefs(text, opts).db,
     }
   }
@@ -1859,12 +2341,26 @@ function resolveCatSubst(cmd, opts) {
 // case to guard any more: a cd/pushd/popd into the store denies the whole
 // command (scheduleSurfaceDeny, rule 1).
 const FLAT_SUBST_RX = /\$\(([^()'"`$\\]*)\)/g
+// DBGATESUBST1125 (Marveen's kanban audit, memory 5737): `echo "$(date -r $LAST)"` next to a read-only
+// `sqlite3 ... "SELECT ..."` was denied, because a variable inside the substitution kept it out of FLAT_SUBST_RX and
+// the quoted, unresolved substitution made the whole command unparsable. A variable is allowed in ONE narrow shape:
+// a flat substitution whose command is a pure formatter that neither writes a file nor runs code (date, basename,
+// dirname), every `$` a plain `$NAME` / `${NAME}`. Its output is run-time data like any other marker's. Anything
+// else with an expansion inside (sqlite3, cat, an interpreter, a pipe, a redirect) stays as it was.
+const VAR_SUBST_RX = /\$\(\s*((?:date|basename|dirname)(?=[\s)])[^()'"`\\<>|;&]*)\)/g
+const PLAIN_VAR_RX = /\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})/g
 function resolveFlatSubst(cmd, opts) {
-  return cmd.replace(FLAT_SUBST_RX, (full, inner) => {
-    // opts.keepSubst: a caller's own reference (db-write-gate: a protected install
-    // path) keeps the substitution as written, so the word stays unparsable there
-    return strongRef(scheduleSurfaceRefs(inner, opts)) || opts?.keepSubst?.(inner) ? full : NONCONTENT_MARKER
-  })
+  const keep = (inner) => strongRef(scheduleSurfaceRefs(inner, opts)) || opts?.keepSubst?.(inner)
+  return cmd
+    .replace(FLAT_SUBST_RX, (full, inner) => {
+      // opts.keepSubst: a caller's own reference (db-write-gate: a protected install
+      // path) keeps the substitution as written, so the word stays unparsable there
+      return keep(inner) ? full : NONCONTENT_MARKER
+    })
+    .replace(VAR_SUBST_RX, (full, inner) => {
+      if (inner.replace(PLAIN_VAR_RX, '').includes('$')) return full // $(..), $((..)), $'..', $1 ... : not plain
+      return keep(inner) ? full : NONCONTENT_MARKER
+    })
 }
 
 // Split a command into the segments the SHELL would see: separators inside
@@ -4310,6 +4806,8 @@ function decide(toolName, toolInput, opts = {}) {
     protectedCtx.homeTouched = HOME_TOUCH_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
     for (const [idx, seg] of protSegs.entries()) {
       protectedCtx.definite = definite[idx]
+      // The inbound signature key (HMACINBOUND1125): a secret, so not even a read.
+      if (!inboundSigKeyBashSegmentAllowed(seg, definite[idx])) return { deny: true, reason: 'inbound-sig-key' }
       // The other store files that gate the sub-agent (c556a35a) first: they are matched by
       // name only, so a segment that names one of them gets that file's message even when
       // the allowlist check below would also deny it on an unresolved word (`> $TARGET`).
@@ -4403,6 +4901,12 @@ const MCP_GATE_MSG =
   'eri el (irva, mozgatva, vagy ismeretlen nevu fajlt teve bele), vagy egy ismert fajl-iro MCP-eszkoz ut nelkul a szerver ' +
   'alapertelmezett helyere irna. Adj meg kifejezett, a munkakonyvtaradon beluli celutat es egyszeru fajlnevet; ha vedett ' +
   'fajl kell, kerd a fo agenst.'
+
+const INBOUND_SIG_KEY_GATE_MSG =
+  'Titok TILTOTT (governance hard-gate, HMACINBOUND1125). A store/.inbound-sig-key a dashboard kulcsa, amellyel az ' +
+  'uzenetsor sorait alairja: aki ismeri, a gazda hangjan tud uzenetet alairni. Sub-agentkent se olvasni, se irni, se ' +
+  'masolni nem szabad, egyetlen paranccsal sem. Csak a dashboard-szerver es a csatorna-koordinator olvassa. Ha az ' +
+  'alairassal gond van (sig_ok false, untrusted gazda-sor), szolj a fo agensnek (inter-agent uzenet), ne a fajlt nezd meg.'
 
 const PROTECTED_STORE_GATE_MSG =
   'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
@@ -4502,6 +5006,7 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
       deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
         : verdict.reason === 'dynamic-command' ? DYNAMIC_COMMAND_GATE_MSG
         : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG
+        : verdict.reason === 'inbound-sig-key' ? INBOUND_SIG_KEY_GATE_MSG
         : String(verdict.reason ?? '').startsWith('mcp-') ? MCP_GATE_MSG : GATE_MSG)
     }
     allow()

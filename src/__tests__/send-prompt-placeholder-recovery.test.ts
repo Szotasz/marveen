@@ -22,7 +22,9 @@ const h = vi.hoisted(() => {
   const QUOTED_ABOVE_BOX = ['  ⎿  the pane showed [Pasted text #1 +812 chars] earlier', SEP, '❯ ', SEP, FOOTER].join('\n')
   const s = {
     parkedAs: 'box' as 'box' | 'tail',
-    onCtrlC: 'clear' as 'clear' | 'nothing' | 'to-tail' | 'die',
+    onCtrlC: 'clear' as 'clear' | 'nothing' | 'to-tail' | 'die' | 'late-redraw',
+    // 'late-redraw': the press empties the box at once, but the frame keeps the stub until this time (a loaded host)
+    staleUntil: 0,
     // 0 = never; n = the n-th chunk typed after the first Ctrl-C finds the pane gone
     dieAtReplayChunk: 0,
     // 0 = never; n = the n-th capture of the parked pane fails
@@ -49,6 +51,7 @@ vi.mock('node:child_process', async (orig) => ({
     const gone = (): never => { throw new Error("Command failed: tmux\ncan't find pane: agent-placeholder-test\n") }
     if (args.includes('capture-pane')) {
       if (s.state === 'gone') gone()
+      if (s.state === 'parked' && s.staleUntil > 0 && Date.now() >= s.staleUntil) s.state = 'idle'
       if (s.state === 'parked') {
         s.parkedCaptures++
         if (s.parkedCaptures === s.nullParkedCapture) throw new Error('capture failed')
@@ -78,6 +81,8 @@ vi.mock('node:child_process', async (orig) => ({
         return ''
       }
       if (key === 'C-c') {
+        // a second Ctrl-C on a box the TUI has already emptied quits it, whatever the stale frame still shows
+        if (s.staleUntil > 0 && s.typed === '') { s.state = 'gone'; s.ctrlC++; return '' }
         s.typed = ''
         s.ctrlC++
         if (s.onCtrlC === 'clear') s.state = 'idle'
@@ -85,6 +90,7 @@ vi.mock('node:child_process', async (orig) => ({
         if (s.onCtrlC === 'to-tail') s.parkedAs = 'tail'
         // the TUI quits on this press and the pane goes with it (no remain-on-exit)
         if (s.onCtrlC === 'die') s.state = 'gone'
+        if (s.onCtrlC === 'late-redraw') s.staleUntil = Date.now() + 1200
         return ''
       }
     }
@@ -107,7 +113,7 @@ const logged = (spy: { mock: { calls: unknown[][] } }, msg: string) => spy.mock.
 
 function scenario(over: Partial<typeof h.s>): void {
   Object.assign(h.s, {
-    parkedAs: 'box', onCtrlC: 'clear', dieAtReplayChunk: 0, nullParkedCapture: 0,
+    parkedAs: 'box', onCtrlC: 'clear', staleUntil: 0, dieAtReplayChunk: 0, nullParkedCapture: 0,
     state: 'idle', enters: 0, ctrlC: 0, chunksAfterCtrlC: 0, parkedCaptures: 0, typed: '',
   }, over)
   h.s.calls.length = 0
@@ -142,7 +148,8 @@ describe('clear-and-resend over a pane that dies (71263d15 a1)', () => {
   it('⛔ measured shape 1 (2026-10-06): the clear fails, the pane vanishes in the middle of the re-send -> the send throws, it is not "sent"', async () => {
     scenario({ onCtrlC: 'nothing', dieAtReplayChunk: 2 })
     await expect(sendPromptToSession(SESSION, LONG, null, { waitForIdle: false })).rejects.toThrow(/can't find pane/)
-    expect(h.s.ctrlC).toBe(3)
+    // the frame never changes after the press, so nothing proves the box still holds the stub: one press only
+    expect(h.s.ctrlC).toBe(1)
   }, 20_000)
 
   it('⛔ measured shape 2 (2026-10-07): the clear fails, the pane is gone at the first re-sent chunk -> the send throws', async () => {
@@ -152,14 +159,15 @@ describe('clear-and-resend over a pane that dies (71263d15 a1)', () => {
 
   it('measured shape 3 (2026-10-11): the clear fails, the re-send lands on a live pane -> sent, and the log keeps where each Ctrl-C went and the pane process around them (a2)', async () => {
     const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never)
-    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     scenario({ onCtrlC: 'nothing' })
     await expect(sendPromptToSession(SESSION, LONG, null, { waitForIdle: false })).resolves.toBe('sent')
     const presses = logged(info, 'discardPlaceholderBuffer: Ctrl-C on a placeholder in the input box')
-    expect(presses.map((p) => [p.press, p.where])).toEqual([[1, 'box'], [2, 'box'], [3, 'box']])
+    expect(presses.map((p) => [p.press, p.where])).toEqual([[1, 'box']])
+    expect(logged(warn, 'discardPlaceholderBuffer: input box not redrawn since the press; no further Ctrl-C')).toHaveLength(1)
     const after = logged(info, 'discardPlaceholderBuffer: pane process after Ctrl-C')
     expect(after).toHaveLength(1)
-    expect(after[0]).toMatchObject({ presses: 3, paneProcessBefore: '4242 claude', paneProcessAfter: '4242 claude' })
+    expect(after[0]).toMatchObject({ presses: 1, paneProcessBefore: '4242 claude', paneProcessAfter: '4242 claude' })
   }, 20_000)
 
   it('⛔ the pane dies at the first Ctrl-C: no blind second press, the send throws, and the log keeps the vanished process and the last screen (a2)', async () => {
@@ -211,6 +219,16 @@ describe('Ctrl-C only on a placeholder confirmed in the input box (71263d15 a3)'
     scenario({ onCtrlC: 'to-tail' })
     await expect(sendPromptToSession(SESSION, SHORT, null, { waitForIdle: false })).resolves.toBe('sent')
     expect(h.s.ctrlC).toBe(1)
+    expect(typed(SHORT)).toBe(2)
+  }, 20_000)
+
+  it('⛔ measured 2026-11-24 03:30: the press empties the box, the frame shows the stub 1.2 s longer -> no second press, the pane lives, the payload is re-sent', async () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    vi.spyOn(logger, 'info').mockImplementation(() => undefined as never)
+    scenario({ onCtrlC: 'late-redraw' })
+    await expect(sendPromptToSession(SESSION, SHORT, null, { waitForIdle: false })).resolves.toBe('sent')
+    expect(h.s.ctrlC).toBe(1)
+    expect(h.s.state).not.toBe('gone')
     expect(typed(SHORT)).toBe(2)
   }, 20_000)
 

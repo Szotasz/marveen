@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs'
 // Claude Code stores a session's transcripts under
 // <config root>/projects/<encoded working dir>/. This module is the ONE
 // encoder for that directory name; every reader and launcher in the tree
@@ -27,4 +28,18 @@
 // testable and importable from the launcher, the readers and the tests alike.
 export function encodeClaudeProjectDir(absPath: string): string {
   return absPath.replace(/[^a-zA-Z0-9-]/g, '-')
+}
+
+/**
+ * ISSUE3056 (#3086 M1): whether a Claude Code project folder holds a session, i.e. at least one *.jsonl transcript
+ * directly in it. The folder alone is not enough: an imported file memory creates <project>/memory/ before the
+ * agent ever ran (with no .git, or a stub .git, the memory slug IS the project folder), and `--continue` on a folder
+ * without a session makes claude exit at once.
+ */
+export function projectDirHasSession(projectDir: string): boolean {
+  try {
+    return readdirSync(projectDir, { withFileTypes: true }).some((e) => e.isFile() && e.name.endsWith('.jsonl'))
+  } catch {
+    return false
+  }
 }

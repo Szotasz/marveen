@@ -80,6 +80,8 @@ export interface Remote {
   download(slug: string, ownVersion: string, deps: CallDeps): Promise<DownloadResult>
   /** False when the origin is not a usable https origin (every call answers not_configured). */
   configured(): boolean
+  /** The usable https origin, or null (MIOAGENTB4-1122: the dashboard loads a package picture from here only). */
+  origin(): string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -394,5 +396,6 @@ export function makeRemote(origin: string): Remote {
     catalog: (deps) => catalogAt(o, deps),
     download: (slug, ownVersion, deps) => downloadAt(o, slug, ownVersion, deps),
     configured: () => o !== null,
+    origin: () => o,
   }
 }

@@ -540,6 +540,12 @@ def _segments_tokens(cmd: str):
     lex.whitespace_split = True
     lex.commenters = ""  # MAINGATENLCOMMENT1104: the mask drops comments as bash does; shlex's would not
     segments, cur = [], []
+    # ISSUE3049: a process substitution (`<(...)`, `>(...)`, zsh `=(...)`) is ONE WORD of the command around it. Its
+    # command is a segment of its own (so a send inside it is still seen), and the outer command goes on after its `)`
+    # with the undecidable word in its place. Before, the words after the `)` started a new segment, so in
+    # `cmp <(curl ...) web/app.js` the file became a command head, was read as a script, and a file over the script
+    # read limit made a read-only line a send. Each entry: [the outer segment so far, the open plain ( inside].
+    procs = []
     for tok in lex:
         # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
         # characters as ONE token, so `$(date); sendmail ...` (after the
@@ -550,6 +556,25 @@ def _segments_tokens(cmd: str):
         # the conformance list covered it. A token made ONLY of operator
         # characters is always an operator sequence, so it separates.
         if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&") or (tok and set(tok) <= set("();|&")):
+            if procs or (tok.startswith("(") and cur and cur[-1] in _PROC_SUBST_OPENERS):
+                for c in tok:
+                    if c == "(" and cur and cur[-1] in _PROC_SUBST_OPENERS:
+                        procs.append([cur[:-1] + [_PROC_SUBST_WORD], 0])
+                        cur = []
+                        continue
+                    if procs and c == ")" and procs[-1][1] == 0:
+                        if cur:
+                            segments.append(cur)
+                        cur = procs.pop()[0]
+                        continue
+                    if procs and c == "(":
+                        procs[-1][1] += 1
+                    elif procs and c == ")":
+                        procs[-1][1] -= 1
+                    if cur:
+                        segments.append(cur)
+                    cur = []
+                continue
             if cur:
                 segments.append(cur)
             cur = []
@@ -557,7 +582,13 @@ def _segments_tokens(cmd: str):
             cur.append(tok)
     if cur:
         segments.append(cur)
+    # an unclosed substitution: its outer command is still judged, as a segment of its own
+    segments.extend(outer for outer, _ in reversed(procs) if outer)
     return segments
+
+
+_PROC_SUBST_OPENERS = ("<", ">", "=")
+_PROC_SUBST_WORD = "$__SUBST__"   # the undecidable word flatten_substitutions writes for a substitution
 
 
 # SENDWRAP924: a wrapper in front of the sender -- `sudo sendmail x`,
@@ -3619,8 +3650,28 @@ def _bound_is_plain(bound: str, expected=None) -> bool:
 #   - P is named exactly twice in the command: the write and one run. Another write, a cp, mv or sed -i on it, or a
 #     second run would change what runs, so they keep today's verdict.
 # Every other case reads the disk as before (and a missing file stays fail-closed).
+#
+# MAILGATEWRITTENAND1123: one conditional write is provable too: `mkdir -p D && cat > P <<'EOF' ... EOF`, the way an
+# agent prepares a scratch file, with P run by the very next command. If the chain fails, P is not written and did not
+# exist (see above), so the run finds no file and nothing is sent; if it holds, the body is what runs. So only when:
+#   - the chain opens the command and is nothing but `mkdir [-p] WORD` / `cd WORD` joined by `&&`, each WORD plain
+#     characters (no substitution, glob, brace, redirect, variable): none of it can create a file;
+#   - the first command after the body is `python3|python P`, with P spelled as in the write: nothing can put a
+#     file at P between the skipped write and the run. Not `node P` (Dani, review of #3090): with P missing, node
+#     goes on to P.js, P.json, P.node and P/index.js, so a skipped write can run a file the command never names.
+#     python stops ("can't open file"); a directory the chain's mkdir makes at P has no __main__ and stops too.
+_WRITTEN_AND_CHAIN = re.compile(r"(?:(?:mkdir(?:[ \t]+-p)?|cd)[ \t]+[A-Za-z0-9_./-]+[ \t]*&&[ \t]*)+")
+
+
+def _written_and_chain_ok(pre: str, line_start: int, rest: str, path: str) -> bool:
+    """MAILGATEWRITTENAND1123: `rest` is what follows the heredoc's closing tag."""
+    if line_start != 0 or not _WRITTEN_AND_CHAIN.fullmatch(pre):
+        return False
+    return bool(re.match(r"[ \t]*\n[ \t]*python3?[ \t]+" + re.escape(path) + r"(?=[ \t\n;&|]|$)", rest))
+
+
 _WRITTEN_OPENER = re.compile(
-    r"""^(?P<pre>[^\n'"`\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?P<p1>[^\s'"<>;&|$`]+)[ \t]+<<-?[ \t]*(?P<q1>'?)(?P<t1>\w+)(?P=q1)"""
+    r"""^(?P<pre>[^\n'"`\\]*(?:;|&&)[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?P<p1>[^\s'"<>;&|$`]+)[ \t]+<<-?[ \t]*(?P<q1>'?)(?P<t1>\w+)(?P=q1)"""
     r"""|cat[ \t]+<<-?[ \t]*(?P<q2>'?)(?P<t2>\w+)(?P=q2)[ \t]+>[ \t]*(?P<p2>[^\s'"<>;&|$`]+)"""
     r"""|tee[ \t]+(?P<p3>[^\s'"<>;&|$`-][^\s'"<>;&|$`]*)(?:[ \t]+>[ \t]*/dev/null)?[ \t]+<<-?[ \t]*(?P<q3>'?)(?P<t3>\w+)(?P=q3)"""
     r""")[ \t]*$""")
@@ -3668,6 +3719,10 @@ def _written_scripts(cmd: str, cwd):
             continue
         # the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
         if re.search(r"(?:&&|\|\||\||\\)\s*$", cmd[:line_start]):
+            continue
+        # MAILGATEWRITTENAND1123: a write after `&&` counts only in the one shape that is provable
+        if (w.group("pre") or "").rstrip().endswith("&&") and not _written_and_chain_ok(
+                w.group("pre"), line_start, cmd[m.end():], path):
             continue
         # nothing before the write can have left P there unnamed (so the write does not fail on it)
         if not _written_safe_before(_outside_bodies(cmd, 0, line_start) + (w.group("pre") or "")):
