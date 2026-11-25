@@ -129,6 +129,7 @@ describe('launcher wiring', () => {
   const HELPER = readFileSync(join(__dirname, '../../scripts/main-agent-isolated-config.mjs'), 'utf-8')
   const CHANNELS = readFileSync(join(__dirname, '../../scripts/channels.sh'), 'utf-8')
   const WATCHDOG = readFileSync(join(__dirname, '../../scripts/channel-watchdog.sh'), 'utf-8')
+  const GUARD = readFileSync(join(__dirname, '../../scripts/stuck-modal-guard.sh'), 'utf-8')
 
   it('the helper prefers explicit over rotated (configDir) over rotated (token) over isolated', () => {
     // explicit (an operator's own separate login) always wins: design 6.2
@@ -163,7 +164,9 @@ describe('launcher wiring', () => {
   // became multi-line, `[ -d ]` failed, and the main agent silently kept the
   // shared ~/.claude -- losing both the fleet-token auth and its own egress deny.
   it('the contract rides fd 3, not stdout, so a library log line cannot break it', () => {
-    expect(HELPER).toMatch(/let CONTRACT_FD = 3/)
+    // ISOCFGFD3-1125: fd 3 only when the caller says so, never "fd 3 exists" (a hand-run's fd 3 is libuv's pipe)
+    expect(HELPER).toMatch(/const CONTRACT_FD = process\.env\.MARVEEN_CONTRACT_FD === '3' \? 3 : 1/)
+    expect(HELPER).not.toMatch(/fstatSync/)
     expect(HELPER).toMatch(/writeSync\(CONTRACT_FD/)
     // stdout stays a usable fallback for a hand-run, but nothing writes the
     // contract through process.stdout.write -- patching it does not catch pino.
@@ -177,8 +180,12 @@ describe('launcher wiring', () => {
     // explicit|rotated|isolated would silently drop a TOKEN-mode rotated plan
     // back onto the shared ~/.claude -- exactly the outage class this contract
     // exists to prevent, just for the newest mode.
-    for (const [name, sh] of [['channels.sh', CHANNELS], ['channel-watchdog.sh', WATCHDOG]] as const) {
+    for (const [name, sh] of [['channels.sh', CHANNELS], ['channel-watchdog.sh', WATCHDOG], ['stuck-modal-guard.sh', GUARD]] as const) {
       expect(sh, name).toMatch(/main-agent-isolated-config\.mjs[^\n]*3>&1/)
+      // ...and says so (ISOCFGFD3-1125): every invocation, not just one of them
+      const calls = sh.match(/[^\n]*"\$INSTALL_DIR\/scripts\/main-agent-isolated-config\.mjs"[^\n]*/g) ?? []
+      expect(calls.length, name).toBeGreaterThan(0)
+      for (const c of calls) expect(c, name).toMatch(/MARVEEN_CONTRACT_FD=3 "\$(?:_node_bin|NODE_BIN)" "\$INSTALL_DIR\/scripts\/main-agent-isolated-config\.mjs"[^\n]*3>&1/)
       expect(sh, name).toMatch(/grep -m1 -E '\^\(explicit\|rotated\|isolated\|token\)/)
     }
   })
