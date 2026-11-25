@@ -301,6 +301,18 @@ describe('marveen-api.sh: what each verb sends', () => {
     }
   })
 
+  it('directive-verify prints the fields the acceptance check reads, the content whole; --json the whole row', async () => {
+    const row = { id: 7, from_agent: 'system', to_agent: 'dani', status: 'delivered', sig_ok: true, content: '[CONTEXT-GUARD] ' + 'é'.repeat(3000),
+      result: null, created_at: 1, delivered_at: 1, trace_id: null, freshness: { ageMinutes: 0, note: '' } }
+    reply = { status: 200, body: JSON.stringify(row) }
+    const r = await run(['directive-verify', '7'])
+    expect(r.code).toBe(0)
+    expect(JSON.parse(r.stdout)).toEqual({ id: 7, from_agent: 'system', to_agent: 'dani', status: 'delivered', sig_ok: true, content: row.content })
+    const j = await run(['directive-verify', '7', '--json'])
+    expect(j.code).toBe(0)
+    expect(JSON.parse(j.stdout)).toEqual(row)
+  })
+
   it('directive-verify, daily-log and the three approval verbs', async () => {
     await run(['directive-verify', '43081'])
     await run(['daily-log', 'dani', file('d.txt', '## 14:00 -- Téma\nMi történt')])
