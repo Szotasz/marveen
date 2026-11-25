@@ -140,6 +140,13 @@ describe('POST /api/auth/device-keys scope companion', () => {
     expect(byId.get(toAgent.id)).toMatchObject({ scope: 'companion', recipients: [AGENT], bound_ip: '100.64.0.9' })
     expect(byId.get(full.id)).not.toHaveProperty('recipients')
     expect(byId.get(full.id)).not.toHaveProperty('bound_ip')
+    // The bound address is the owner's machine: the shared token (every agent can read it) lists the key without it.
+    const t = fakeCtx('GET', '/api/auth/device-keys', undefined, token)
+    await tryHandleAuth(t.ctx)
+    expect(t.out.status).toBe(200)
+    const asToken = new Map((t.out.body.keys as any[]).map((k) => [k.id, k]))
+    expect(asToken.get(toAgent.id)).toMatchObject({ scope: 'companion', recipients: [AGENT] })
+    expect(asToken.get(toAgent.id)).not.toHaveProperty('bound_ip')
   })
 })
 

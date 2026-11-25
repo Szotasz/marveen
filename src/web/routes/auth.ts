@@ -1123,12 +1123,14 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     // FIGURAKULCS1125: a companion key's row also names its recipients (the main agent when none are stored) and its
-    // bound address, so the owner sees whom the key can write to.
+    // bound address, so the owner sees whom the key can write to. The bound address is the owner's machine: it goes to
+    // an owner session only, not to the shared token every agent can read (Dani's note on #3124).
+    const owner = mayActAsOwner(auth, req)
     json(res, {
       keys: listDeviceKeys().map((k) => {
         if (k.scope !== 'companion') return k
         const limits = getCompanionKeyLimits(k.id)
-        return { ...k, recipients: limits?.recipients ?? [MAIN_AGENT_ID], bound_ip: limits?.boundIp ?? null }
+        return { ...k, recipients: limits?.recipients ?? [MAIN_AGENT_ID], ...(owner ? { bound_ip: limits?.boundIp ?? null } : {}) }
       }),
     })
     return true
