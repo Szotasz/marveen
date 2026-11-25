@@ -1,4 +1,4 @@
 {
-  "_comment": "Copy to store/egress-vendor-hosts.json (per install, gitignored). Vendor-API hosts a Bash curl / interpreter one-liner may reach past scripts/hooks/bash-egress-parser.mjs. EXACT host names only: no '*', no leading dot, no IP, no port; subdomains are NOT covered. Missing or invalid file = no exception (every external host is denied). Owner decision per entry.",
+  "_comment": "Copy to store/egress-vendor-hosts.json (per install, gitignored). Vendor-API hosts a Bash curl / interpreter one-liner may reach past scripts/hooks/bash-egress-parser.mjs. EXACT host names only: no '*', no leading dot, no IP, no port; subdomains are NOT covered. Missing or invalid file = no exception (every external host is denied). Owner decision per entry. ADDING A DOWNLOAD HOST: curl -L and wget follow a redirect to a host the command never names, and the gate does not check it (a stated limit, see bash-egress-parser.mjs). In the round the named host goes on the list, measure its chain with a HEAD on the real URL (curl -sIL <url>, every Location line) and list every host of the chain in that same round, under the same owner decision.",
   "hosts": []
 }
