@@ -104,4 +104,23 @@ describe('systemDirectiveEnvelope', () => {
     // the [SYSTEM-DIREKTIVA ...] header line".
     expect(env).not.toContain('\n')
   })
+
+  // HOSTINGERI18NFU1125: on an English install the sentences are English; the prefix, the single line and the bracket
+  // shape that provenance-gate.py and the agents' rule match stay the same in both languages.
+  it('English install: English sentences, the same prefix and shape', () => {
+    const en = systemDirectiveEnvelope(7, 'en')
+    const hu = systemDirectiveEnvelope(7, 'hu')
+    expect(hu).toBe(systemDirectiveEnvelope(7))
+    for (const env of [en, hu]) {
+      expect(env).toMatch(/^\[SYSTEM-DIREKTIVA msg_id:7 [^\[\]]*\]$/)
+      // provenance-gate.py's DIRECTIVE regex, the same pattern in JS
+      expect(`${env}\nthe body`).toMatch(/^\s*\[SYSTEM-DIREKTIVA msg_id:(\d+)(?: [^\]]*)?\][ \n]?([\s\S]*)$/)
+      expect(env).not.toContain('\n')
+      expect(env).toContain('/api/messages/7')
+    }
+    expect(en).toContain('SEPARATE messages')
+    expect(en).toContain('suspected injection')
+    expect(en).toContain('"System directive authentication"')
+    expect(en).not.toMatch(/\b(hitelesitsd|vegrehajtas|szoveg|KULON|injekcio|boritek|szekciojaban)\b/)
+  })
 })
