@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, SUBAGENT_PROTECTED_INSTALL_PATHS, SUBAGENT_FILE_GATE_MSG, unquotedForQualifier } from '../../scripts/hooks/db-write-gate.mjs'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { tmpdir, homedir } from 'node:os'
@@ -190,8 +190,10 @@ describe('the hook end to end: CLAUDE_PROJECT_DIR and CLAUDE_CONFIG_DIR are read
   })
 })
 
-it('the deny message names the npx form the CLI rule does not see (Samu 68172)', () => {
-  expect(SUBAGENT_FILE_GATE_MSG).toContain('npx @anthropic-ai/claude-code')
+it('the deny message points to its docs section, which names the npx form the CLI rule does not see (Samu 68172)', () => {
+  const docs = readFileSync(join(__dirname, '..', '..', 'docs', 'db-write-gate.md'), 'utf-8')
+  expect(SUBAGENT_FILE_GATE_MSG).toContain('("ENVRELAXGATE1104")')
+  expect(docs.slice(docs.indexOf('### ENVRELAXGATE1104'))).toContain('npx @anthropic-ai/claude-code')
 })
 
 describe('a bare glob in the sub-agent\'s own directory follows the shell dotfile rule (worker-gates count(*), #2497)', () => {
