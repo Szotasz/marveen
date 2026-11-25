@@ -6,7 +6,7 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, CHAN
 import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
-  createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
+  createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals, getApprovalBotPairing,
   createAgentMessage, setApprovalTelegramMessageId, decideApproval,
   type Approval,
 } from '../../db.js'
@@ -26,6 +26,9 @@ import { sendTeamsMessage } from '../../teams-send.js'
 import { readTeamsCreds, channelStateDir } from '../../channel-provider.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import { approverScopeFor, mayApprove } from '../approver-access.js'
+import { activeApprovalBot, confirmPendingPairing, issuePairingCode, pendingPairingInfo, sendApprovalPrompt } from '../../approval-bot.js'
+
+const PAIRING_OWNER_ONLY = 'Pairing the approval bot needs the dashboard login (the owner\'s session): whoever pairs it decides who may approve.'
 import type { RouteContext } from './types.js'
 import { fileAgentSpecRequest, AGENT_CREATE_CATEGORY } from '../agent-create-approval.js'
 import { readVaultAcl, isAgentReadableDecodedVaultId, claimedAgentOf } from '../vault-acl.js'
@@ -275,6 +278,24 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     ? buildOwnerChatApprovedText(approval, chatApprovedMessageId, lang)
     : buildOwnerApprovalText(approval, lang)
   void (async () => {
+    // 80d0e3c6: with the approval bot on, the question goes out through it, with buttons whose press this
+    // server receives (src/approval-bot.ts). It runs before the Slack paths: a paired bot is the owner's own later
+    // choice (measured 2026-11-18: with APPROVAL_SLACK_REPLIES on, the paired bot never got a request). If it cannot
+    // send (not paired yet, Telegram down), the paths below run as if the bot were off.
+    if (!informative) {
+      const bot = activeApprovalBot()
+      if (bot) {
+        try {
+          if (await sendApprovalPrompt(bot, approval)) {
+            logger.info({ approvalId: approval.id }, 'approval owner notification sent through the approval bot')
+            return
+          }
+          logger.warn({ approvalId: approval.id }, 'approval bot could not send the question: using the other paths')
+        } catch (err) {
+          logger.warn({ err, approvalId: approval.id }, 'approval bot send FAILED: using the other paths')
+        }
+      }
+    }
     // APPROVALSLACK1030 (2): the owner decides with a Slack reaction the server itself checks, when this request may
     // (approval-slack-route.ts); otherwise the normal DM below, saying the decision is on the dashboard.
     // APPROVALSLACK1030 B: with APPROVAL_SLACK_REPLIES on, the same one-message path, and the owner's typed reply decides.
@@ -529,6 +550,40 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const auth = req.headers.authorization
     const answer = await handleTeamsCardAction(typeof auth === 'string' ? auth : undefined, activity, teamsCardDeps)
     json(res, answer.body, answer.status)
+    return true
+  }
+  // POST /api/approvals/bot/pairing-code -- a one-time code the owner sends to the approval bot as /start <code>
+  // (#2160 review 1). Owner session only: whoever gets the code decides who the bot answers.
+  // GET /api/approvals/bot/pairing -- whether the bot is on and paired (no ids).
+  if (path === '/api/approvals/bot/pairing-code' && method === 'POST') {
+    if (!mayActAsOwner(ctx.auth, req)) { refuseOwner(res, PAIRING_OWNER_ONLY); return true }
+    if (!activeApprovalBot()) { json(res, { error: 'The approval bot is off (APPROVAL_BOT_ENABLED) or has no token.' }, 409); return true }
+    const { code, expiresAt } = issuePairingCode()
+    json(res, { code, command: `/start ${code}`, expires_at: expiresAt })
+    return true
+  }
+  // The account that sent the right code is shown to the owner session only, and becomes the approver only
+  // when the owner confirms it here: a bot-token holder could have sent the code first (#2160 review).
+  if (path === '/api/approvals/bot/pairing/confirm' && method === 'POST') {
+    if (!mayActAsOwner(ctx.auth, req)) { refuseOwner(res, PAIRING_OWNER_ONLY); return true }
+    let body: { from_id?: unknown }
+    try { body = JSON.parse((await readBody(req)).toString() || '{}') } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    if (typeof body.from_id !== 'string' || !confirmPendingPairing(body.from_id)) {
+      json(res, { error: 'No pending pairing for that account (the code may have expired): get a new code.' }, 409)
+      return true
+    }
+    json(res, { ok: true, paired: true })
+    return true
+  }
+  if (path === '/api/approvals/bot/pairing' && method === 'GET') {
+    const pair = getApprovalBotPairing()
+    const out: Record<string, unknown> = { enabled: activeApprovalBot() !== null, paired: Boolean(pair), paired_at: pair?.paired_at ?? null }
+    if (mayActAsOwner(ctx.auth, req)) {
+      const pending = pendingPairingInfo()
+      out.pending = pending ? { from_id: pending.fromId, name: pending.name } : null
+      out.paired_from_id = pair?.from_id ?? null
+    }
+    json(res, out)
     return true
   }
 

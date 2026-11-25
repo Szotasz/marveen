@@ -18257,9 +18257,62 @@ async function loadApprovalsPage() {
     _renderApprovalsStats()
     _renderApprovalsTable()
     _approvalsCountdownInterval = setInterval(_updateCountdowns, 1000)
+    _renderApprovalBotPairing()
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="7" style="color:var(--danger);padding:24px;text-align:center">${t('approvals.error')}</td></tr>`
   }
+}
+
+// #2160: the approval bot's pairing. Shown only while the bot is on; the code comes from the owner's session
+// (the server refuses it otherwise) and is the only way to set who the bot answers.
+async function _renderApprovalBotPairing() {
+  const el = document.getElementById('approvalBotPairing')
+  if (!el) return
+  el.textContent = ''
+  let st
+  try {
+    const res = await fetch('/api/approvals/bot/pairing')
+    if (!res.ok) return
+    st = await res.json()
+  } catch { return }
+  if (!st || !st.enabled) return
+  const line = document.createElement('div')
+  line.textContent = st.paired ? t('approvals.bot.paired') + (st.paired_from_id ? ` (Telegram id ${st.paired_from_id})` : '') : t('approvals.bot.unpaired')
+  if (st.pending) {
+    // The account that sent the code: the owner must recognise it before it may approve anything.
+    const p = document.createElement('div')
+    p.textContent = t('approvals.bot.pending') + ` ${st.pending.name} (Telegram id ${st.pending.from_id}) `
+    const ok = document.createElement('button')
+    ok.className = 'btn btn-primary btn-sm'
+    ok.textContent = t('approvals.bot.confirm')
+    ok.onclick = async () => {
+      const r = await fetch('/api/approvals/bot/pairing/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ from_id: st.pending.from_id }) }).catch(() => null)
+      if (r && r.ok) _renderApprovalBotPairing()
+      else p.textContent = t('approvals.bot.error')
+    }
+    p.appendChild(ok)
+    el.appendChild(p)
+  }
+  const btn = document.createElement('button')
+  btn.className = 'btn btn-secondary btn-sm'
+  btn.style.marginLeft = '8px'
+  btn.textContent = t('approvals.bot.pair')
+  const out = document.createElement('div')
+  btn.onclick = async () => {
+    out.textContent = ''
+    try {
+      const r = await fetch('/api/approvals/bot/pairing-code', { method: 'POST' })
+      const body = await r.json().catch(() => ({}))
+      if (!r.ok || !body.command) throw new Error('HTTP ' + r.status)
+      const code = document.createElement('code')
+      code.textContent = body.command
+      out.append(t('approvals.bot.code') + ' ', code)
+    } catch {
+      out.textContent = t('approvals.bot.error')
+    }
+  }
+  line.appendChild(btn)
+  el.append(line, out)
 }
 
 function _renderApprovalsStats() {

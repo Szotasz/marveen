@@ -72,10 +72,11 @@ const ALLOW = { deny: false }
 describe('1. SQL writes on the security tables', () => {
   // APPROVALSLACK1030 (2): approval_slack_posts joins (the posted Slack request the owner's reaction is checked against).
   // SUPPORTKULCS1109 D5: the two support tables joined the list.
-  it('the table list is the decided fourteen (approver_scopes: DELEGAPPROVER1123; approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119; colleague_sessions: #2929 B1)', () => {
-    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes'])
+  // #2160: the approval bot's pairing (who it obeys) and its sent messages (which press counts).
+  it('the table list is the decided sixteen (approver_scopes: DELEGAPPROVER1123; approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119; approval_bot_pairing, approval_bot_messages: #2160; colleague_sessions: #2929 B1)', () => {
+    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'approval_bot_pairing', 'approval_bot_messages', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes'])
   })
-  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes']) {
+  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'approval_bot_pairing', 'approval_bot_messages', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes']) {
     it.each([
       `UPDATE ${t} SET x=1`,
       `INSERT INTO ${t} VALUES (1)`,
@@ -87,6 +88,17 @@ describe('1. SQL writes on the security tables', () => {
       expect(bash(`sqlite3 ${DB} "${sql}"`)).toEqual(DENY_DB)
     })
   }
+  // #2160 review (Harderhun): an agent must not pair the approval bot to its own Telegram account in SQL.
+  it.each([
+    `sqlite3 ${DB} "INSERT OR REPLACE INTO approval_bot_pairing (id, from_id, chat_id, paired_at) VALUES (1, '555', '555', 0)"`,
+    `python3 -c "import sqlite3; sqlite3.connect('${DB}').execute(\\"UPDATE approval_bot_pairing SET from_id='555'\\")"`,
+    `sqlite3 ${DB} "UPDATE approval_bot_messages SET message_id = 7"`,
+  ])('the approval bot tables: %s is denied', (cmd) => {
+    expect(bash(cmd)).toEqual(DENY_DB)
+  })
+  it('the approval bot tables: a read stays allowed', () => {
+    expect(bash(`sqlite3 -readonly ${DB} "SELECT count(*) FROM approval_bot_pairing"`)).toEqual(ALLOW)
+  })
   // Dani 56081 point 6: the table name anywhere the statement writes it
   it.each([
     ['a CTE', `WITH a AS (SELECT 1) UPDATE approvals SET status='approved'`],

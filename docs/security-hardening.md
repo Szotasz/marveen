@@ -333,7 +333,7 @@ mistake this section exists to prevent.
 
 | | `BASH_EGRESS_DENY` | `FLEET_BASELINE_DENY` |
 |---|---|---|
-| covers | shell URL-fetch verbs: `curl` to `https://`, `wget`, `nc`, `ncat`, `telnet` | the fleet FLOOR: key/credential dirs, `.env`, `sudo`, `rm -rf` of `$HOME` and `/`, force-push (friction only), the unsafe browser-code MCP tool |
+| covers | shell URL-fetch verbs: `curl` to `https://`, `wget`, `nc`, `ncat`, `telnet` | the fleet FLOOR: key/credential dirs, `.env`, the approval bot's token and key (`Read(**/.approval-bot-token)`, `Read(**/.approval-bot-key)`), `sudo`, `rm -rf` of `$HOME` and `/`, force-push (friction only), the unsafe browser-code MCP tool |
 | sub-agent gets it | spawn + server-startup migration + scaffold template | **spawn only** (`writeAgentSettingsFromProfile`) |
 | main agent gets it | `ensureBashEgressDeny()` into its own config dir | the repo's tracked `.claude/settings.json` (the scaffold never writes the main agent, #1305) |
 | parity guarded by | `bash-egress-deny.test.ts` (template vs constant) | `fleet-baseline-deny.test.ts` (shipped file vs constant, both directions) |
@@ -411,6 +411,17 @@ next restart rather than immediately.
 ## Limits, stated out loud
 
 This is a deny list, not a sandbox.
+
+- **The approval bot (`APPROVAL_BOT_ENABLED`, `docs/jovahagyo-bot.md`): the token is the residual.** The
+  owner a press must come from is the account paired from the dashboard with the owner's session, kept in
+  the server's database. It is never `access.json` or `.env`, which an agent's OS user can write. A token
+  holder could poll the bot and send the owner's one-time code first, so the code only proposes an account:
+  the owner sees that account (name and Telegram id) in the dashboard session and confirms it before it is
+  stored. But whoever holds the token can edit the bot's messages, including after the
+  server rewrote one for the confirm step. So the text next to "Megerősítem" is only as trustworthy as the
+  token. The two-step confirm narrows that window; it does not close it. The read-deny on
+  `store/.approval-bot-token` and keeping `api.telegram.org` off sub-agent egress lists narrow it further.
+  Neither is an isolation boundary.
 
 - **The localhost exception is why only `https://` is denied for `curl`.** The
   rule language has no negation and `deny` always beats `allow`, so "any

@@ -1,0 +1,407 @@
+// Kanban 80d0e3c6: the approval bot. Every press check and every step against a fake Telegram API, the
+// notifyOwner wiring (bot on, bot failing, bot off), and the poller.
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { mkdtempSync, rmSync, mkdirSync, readFileSync } from 'node:fs'
+import { Readable } from 'node:stream'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const mainSend = vi.hoisted(() => vi.fn(async () => 4242))
+vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'marveen', TELEGRAM_BOT_TOKEN: 'main-token', CHANNEL_PROVIDER: 'telegram' }))
+vi.mock('../owner-chat.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../owner-chat.js')>()), resolveOwnerChatId: () => '777' }))
+vi.mock('../web/telegram.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../web/telegram.js')>()), sendTelegramMessage: mainSend }))
+
+import { initDatabase, createApproval, getApproval, resolveApproval, getApprovalBotMessage, recordApprovalBotMessage, setApprovalBotPairing as setApprovalBotPairingDb } from '../db.js'
+import {
+  sendApprovalPrompt, handleCallback, callbackData, parseCallbackData, compactId, expandId, confirmText,
+  startApprovalBotPoller, setActiveApprovalBotForTest, activeApprovalBot, CONFIRM_WINDOW_SEC, RESOLVED_BY,
+  handleMessage, issuePairingCode, pairingFromDb, resetPairingCodeForTest, PAIRING_CODE_TTL_SEC, PAIRING_MAX_TRIES,
+  pendingPairingInfo, confirmPendingPairing,
+  type ApprovalBot, type BotApi, type CallbackQuery, type InlineButton,
+} from '../approval-bot.js'
+import { tryHandleApprovals } from '../web/routes/approvals.js'
+import { TelegramApiError } from '../channel-coordinator/telegram-client.js'
+
+const td = mkdtempSync(join(tmpdir(), 'approval-bot-'))
+afterAll(() => { rmSync(td, { recursive: true, force: true }); setActiveApprovalBotForTest(undefined) })
+mkdirSync(join(td, 'store'), { recursive: true })
+initDatabase(join(td, 'store', 'claudeclaw.db'))
+
+const OWNER = '777'
+type Call = { m: string; args: any[] }
+function fakeApi(over: Partial<BotApi> = {}) {
+  const calls: Call[] = []
+  let nextId = 100
+  const api: BotApi = {
+    async sendMessage(...args) { calls.push({ m: 'sendMessage', args }); return nextId++ },
+    async editMessageText(...args) { calls.push({ m: 'editMessageText', args }) },
+    async answerCallbackQuery(...args) { calls.push({ m: 'answerCallbackQuery', args }) },
+    ...over,
+  }
+  return { api, calls }
+}
+let clock = 1_800_000_000
+function makeBot(api: BotApi, pair: { fromId: string; chatId: string } | null = { fromId: OWNER, chatId: OWNER }): ApprovalBot {
+  return { token: '1:' + 'a'.repeat(35), key: randomBytes(32), api, pairing: () => pair, now: () => clock }
+}
+function newApproval(opts: { timeoutIn?: number | null } = {}) {
+  const id = randomUUID()
+  const t = opts.timeoutIn === null ? null : clock + (opts.timeoutIn ?? 3600)
+  return createApproval({ id, agent_id: 'soma', category: 'email_send', action_description: 'Levél a@pelda.hu címre', action_payload: null, timeout_at: t, content_hash: null })
+}
+function press(bot: ApprovalBot, data: string, o: { from?: string; chat?: string; message?: number } = {}): CallbackQuery {
+  const from = o.from ?? OWNER
+  return { id: `cq-${Math.random()}`, data, from: { id: Number(from) }, message: { message_id: o.message ?? 0, chat: { id: Number(o.chat ?? from) } } }
+}
+const lastEdit = (calls: Call[]) => [...calls].reverse().find((c) => c.m === 'editMessageText')
+const lastAnswer = (calls: Call[]) => [...calls].reverse().find((c) => c.m === 'answerCallbackQuery')?.args[1]
+
+async function prompted(bot: ApprovalBot, opts?: { timeoutIn?: number | null }) {
+  const a = newApproval(opts)
+  expect(await sendApprovalPrompt(bot, a)).toBe(true)
+  const sent = getApprovalBotMessage(a.id)!
+  const data = (op: 'a' | 'c' | 'x' | 'r', chat = OWNER) => callbackData(bot.key, op, a.id, chat)
+  return { a, msg: sent.message_id, data }
+}
+
+beforeEach(() => { clock = 1_800_000_000; mainSend.mockClear() })
+
+describe('callback data', () => {
+  it('round-trips the approval id, fits in 64 bytes, and refuses a changed character', () => {
+    const key = randomBytes(32)
+    const id = randomUUID()
+    expect(expandId(compactId(id)!)).toBe(id)
+    const d = callbackData(key, 'c', id, OWNER)
+    expect(Buffer.byteLength(d)).toBeLessThanOrEqual(64)
+    expect(parseCallbackData(key, d, OWNER)).toEqual({ op: 'c', approvalId: id })
+    expect(parseCallbackData(key, d.replace(/^c/, 'a'), OWNER)).toBeNull() // the op is under the MAC
+    expect(parseCallbackData(key, d, '888')).toBeNull() // so is the chat
+    expect(parseCallbackData(randomBytes(32), d, OWNER)).toBeNull()
+  })
+})
+
+describe('the question', () => {
+  it('goes to the owner chat with two buttons, and the message is on record', async () => {
+    const { api, calls } = fakeApi()
+    const bot = makeBot(api)
+    const { a, msg } = await prompted(bot)
+    const send = calls.find((c) => c.m === 'sendMessage')!
+    expect(send.args[0]).toBe(OWNER)
+    expect(send.args[1]).toContain(a.action_description)
+    expect((send.args[2] as InlineButton[][])[0].map((b) => b.text)).toEqual(['Jóváhagyom', 'Elutasítom'])
+    expect(getApprovalBotMessage(a.id)).toMatchObject({ chat_id: OWNER, message_id: msg, confirm_at: null })
+  })
+  it('a non-UUID id gets no buttons (the dashboard stays the way)', async () => {
+    const { api } = fakeApi()
+    const a = createApproval({ id: 'not-a-uuid', agent_id: 'soma', category: 'x', action_description: 'y', action_payload: null, timeout_at: null, content_hash: null })
+    expect(await sendApprovalPrompt(makeBot(api), a)).toBe(false)
+  })
+  // AGENTCREATEPR2-1119: agent_create is approved only through the decision core with the hash the owner was shown.
+  it('a hash-bound request (agent_create) gets no buttons, and a press on a recorded message never approves it', async () => {
+    const { api, calls } = fakeApi()
+    const bot = makeBot(api)
+    const a = createApproval({ id: randomUUID(), agent_id: 'soma', category: 'agent_create', action_description: 'új ügynök', action_payload: null, timeout_at: clock + 3600, content_hash: 'a'.repeat(64) })
+    expect(await sendApprovalPrompt(bot, a)).toBe(false)
+    expect(calls.some((c) => c.m === 'sendMessage')).toBe(false)
+    recordApprovalBotMessage(a.id, OWNER, 4242, clock)
+    const data = (op: 'a' | 'c') => callbackData(bot.key, op, a.id, OWNER)
+    expect(await handleCallback(bot, press(bot, data('a'), { message: 4242 }))).toBe('confirm-asked')
+    expect(await handleCallback(bot, press(bot, data('c'), { message: 4242 }))).toBe('hash-bound')
+    expect(getApproval(a.id)?.status).toBe('pending')
+  })
+})
+
+describe('the owner approves in two presses', () => {
+  it('first press: the text is rewritten FROM THE DATABASE and a confirm is asked; second press approves', async () => {
+    const { api, calls } = fakeApi()
+    const bot = makeBot(api)
+    const { a, msg, data } = await prompted(bot)
+    expect(await handleCallback(bot, press(bot, data('a'), { message: msg }))).toBe('confirm-asked')
+    expect(getApproval(a.id)?.status).toBe('pending')
+    const edit = lastEdit(calls)!
+    expect(edit.args[2]).toBe(confirmText(getApproval(a.id)!))
+    expect((edit.args[3] as InlineButton[][])[0].map((b) => b.text)).toEqual(['Megerősítem', 'Mégse'])
+    clock += 30
+    expect(await handleCallback(bot, press(bot, data('c'), { message: msg }))).toBe('approved')
+    expect(getApproval(a.id)).toMatchObject({ status: 'approved', resolved_by: RESOLVED_BY })
+    expect(lastEdit(calls)!.args[2]).toContain(a.action_description)
+    expect(lastEdit(calls)!.args[3]).toBeNull()
+    expect(lastAnswer(calls)).toBe('Jóváhagyva.')
+  })
+  it('a second confirm does nothing more', async () => {
+    const { api } = fakeApi()
+    const bot = makeBot(api)
+    const { a, msg, data } = await prompted(bot)
+    await handleCallback(bot, press(bot, data('a'), { message: msg }))
+    await handleCallback(bot, press(bot, data('c'), { message: msg }))
+    expect(await handleCallback(bot, press(bot, data('c'), { message: msg }))).toBe('already-decided')
+    expect(getApproval(a.id)?.status).toBe('approved')
+  })
+  it('a confirm without the first press is refused', async () => {
+    const { api } = fakeApi()
+    const bot = makeBot(api)
+    const { a, msg, data } = await prompted(bot)
+    expect(await handleCallback(bot, press(bot, data('c'), { message: msg }))).toBe('confirm-without-step-one')
+    expect(getApproval(a.id)?.status).toBe('pending')
+  })
+  it('a confirm after the window is refused and the question starts over', async () => {
+    const { api, calls } = fakeApi()
+    const bot = makeBot(api)
+    const { a, msg, data } = await prompted(bot)
+    await handleCallback(bot, press(bot, data('a'), { message: msg }))
+    clock += CONFIRM_WINDOW_SEC + 1
+    expect(await handleCallback(bot, press(bot, data('c'), { message: msg }))).toBe('confirm-too-late')
+    expect(getApproval(a.id)?.status).toBe('pending')
+    expect((lastEdit(calls)!.args[3] as InlineButton[][])[0][0].text).toBe('Jóváhagyom')
+    expect(getApprovalBotMessage(a.id)?.confirm_at).toBeNull()
+  })
+  it('cancel puts the first buttons back, and a later confirm needs a new first press', async () => {
+    const { api } = fakeApi()
+    const bot = makeBot(api)
+    const { a, msg, data } = await prompted(bot)
+    await handleCallback(bot, press(bot, data('a'), { message: msg }))
+    expect(await handleCallback(bot, press(bot, data('x'), { message: msg }))).toBe('cancelled')
+    expect(await handleCallback(bot, press(bot, data('c'), { message: msg }))).toBe('confirm-without-step-one')
+    expect(getApproval(a.id)?.status).toBe('pending')
+  })
+  it('reject is one press', async () => {
+    const { api } = fakeApi()
+    const bot = makeBot(api)
+    const { a, msg, data } = await prompted(bot)
+    expect(await handleCallback(bot, press(bot, data('r'), { message: msg }))).toBe('rejected')
+    expect(getApproval(a.id)).toMatchObject({ status: 'rejected', resolved_by: RESOLVED_BY })
+  })
+})
+
+describe('presses that must change nothing', () => {
+  async function refused(setup: (bot: ApprovalBot, p: Awaited<ReturnType<typeof prompted>>) => CallbackQuery, outcome: string) {
+    const { api } = fakeApi()
+    const bot = makeBot(api)
+    const p = await prompted(bot)
+    await handleCallback(bot, press(bot, p.data('a'), { message: p.msg })) // even after step 1
+    expect(await handleCallback(bot, setup(bot, p))).toBe(outcome)
+    expect(getApproval(p.a.id)?.status).toBe('pending')
+  }
+  it('someone other than the paired owner', () => refused((bot, p) => press(bot, p.data('c', '555'), { from: '555', message: p.msg }), 'not-owner'))
+  it('the owner, but in a group chat', () => refused((bot, p) => press(bot, p.data('c', '-100'), { chat: '-100', message: p.msg }), 'wrong-chat'))
+  it('another paired-looking account in its own chat (allowFrom no longer decides)', () =>
+    refused((bot, p) => press(bot, p.data('c', '888'), { from: '888', message: p.msg }), 'not-owner'))
+  it('a valid HMAC on a message this server did not send (an agent with the bot token sent it)', () =>
+    refused((bot, p) => press(bot, p.data('c'), { message: p.msg + 999 }), 'not-our-message'))
+  it('a tampered HMAC', () => refused((bot, p) => press(bot, p.data('c').slice(0, -2) + 'AA', { message: p.msg }), 'bad-data'))
+  it('a request with no question on record', () => refused((bot, p) => press(bot, callbackData(bot.key, 'c', randomUUID(), OWNER), { message: p.msg }), 'wrong-chat'))
+
+  it('a question that went to a GROUP (owner chat configured as a group) cannot be approved from that group', async () => {
+    const { api } = fakeApi()
+    const bot = makeBot(api, { fromId: OWNER, chatId: '-100' })
+    const a = newApproval()
+    expect(await sendApprovalPrompt(bot, a)).toBe(true)
+    const msg = getApprovalBotMessage(a.id)!.message_id
+    expect(await handleCallback(bot, press(bot, callbackData(bot.key, 'a', a.id, '-100'), { chat: '-100', message: msg }))).toBe('wrong-chat')
+    expect(getApprovalBotMessage(a.id)?.confirm_at).toBeNull()
+  })
+  it('a timed-out request', async () => {
+    const { api } = fakeApi()
+    const bot = makeBot(api)
+    const p = await prompted(bot, { timeoutIn: 60 })
+    clock += 61
+    expect(await handleCallback(bot, press(bot, p.data('a'), { message: p.msg }))).toBe('expired')
+    expect(getApproval(p.a.id)?.status).toBe('pending')
+  })
+  it('a confirm after the timeout is refused by the decision core, not only by the pre-check (#2876 R1)', async () => {
+    const { api, calls } = fakeApi()
+    const bot = makeBot(api)
+    // The bot's clock still sees the request open; the timeout has passed on the real clock the core reads.
+    clock = Math.floor(Date.now() / 1000) - 610
+    const p = await prompted(bot, { timeoutIn: 600 })
+    expect(await handleCallback(bot, press(bot, p.data('a'), { message: p.msg }))).toBe('confirm-asked')
+    clock += 30
+    expect(await handleCallback(bot, press(bot, p.data('c'), { message: p.msg }))).toBe('expired')
+    expect(getApproval(p.a.id)).toMatchObject({ status: 'pending', resolved_by: null })
+    expect(lastAnswer(calls)).toBe('Ez a kérés lejárt.')
+  })
+  it('a request already decided on the dashboard: the message shows the result, nothing changes', async () => {
+    const { api, calls } = fakeApi()
+    const bot = makeBot(api)
+    const p = await prompted(bot)
+    resolveApproval(p.a.id, 'rejected', 'dashboard')
+    expect(await handleCallback(bot, press(bot, p.data('a'), { message: p.msg }))).toBe('already-decided')
+    expect(getApproval(p.a.id)?.status).toBe('rejected')
+    expect(lastEdit(calls)!.args[2]).toContain('ELUTASÍTVA')
+  })
+})
+
+describe('notifyOwner wiring', () => {
+  async function file() {
+    const out: { status: number; body: any } = { status: 0, body: null }
+    const res: any = { writeHead(s: number) { out.status = s; return res }, end(c?: string) { if (c) out.body = JSON.parse(c) } }
+    const str = JSON.stringify({ agent_id: 'soma', category: 'email_send', action_description: 'kérés' })
+    const req: any = { on(ev: string, cb: (c?: Buffer) => void) { if (ev === 'data') cb(Buffer.from(str)); if (ev === 'end') cb() } }
+    const url = new URL('http://localhost/api/approvals')
+    await tryHandleApprovals({ req, res, path: url.pathname, method: 'POST', url, auth: { kind: 'token', agent: 'soma' } } as any)
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r))
+    return out
+  }
+  it('bot on: the question goes through the approval bot, not the main bot', async () => {
+    const { api, calls } = fakeApi()
+    setActiveApprovalBotForTest(makeBot(api))
+    const r = await file()
+    expect(r.status).toBe(201)
+    expect(calls.filter((c) => c.m === 'sendMessage')).toHaveLength(1)
+    expect(mainSend).not.toHaveBeenCalled()
+    expect(getApprovalBotMessage(r.body.id)).toBeTruthy()
+  })
+  it('bot failing (e.g. the owner never sent /start to it): the main bot carries the question', async () => {
+    const { api } = fakeApi({ async sendMessage() { throw new Error("Forbidden: bot can't initiate conversation with a user") } })
+    setActiveApprovalBotForTest(makeBot(api))
+    await file()
+    expect(mainSend).toHaveBeenCalledTimes(1)
+  })
+  it('POSITIVE CONTROL: bot off, the main bot carries the question exactly as before', async () => {
+    setActiveApprovalBotForTest(null)
+    await file()
+    expect(mainSend).toHaveBeenCalledTimes(1)
+    expect(String((mainSend.mock.calls[0] as unknown[])[2])).toContain('[JÓVÁHAGYÁS KELL]')
+  })
+  it('the switch is off by default: no bot', () => {
+    setActiveApprovalBotForTest(undefined)
+    expect(activeApprovalBot(join(td, 'store'))).toBeNull()
+  })
+})
+
+describe('pairing (#2160 review 1): the approver comes from the server\'s own database only', () => {
+  const dm = (from: string, text: string, chat = from) => ({ message_id: 1, chat: { id: Number(chat) }, from: { id: Number(from) }, text }) as any
+  const dbBot = (api: BotApi): ApprovalBot => ({ token: '1:' + 'a'.repeat(35), key: randomBytes(32), api, pairing: pairingFromDb, now: () => clock })
+  beforeEach(() => { resetPairingCodeForTest() })
+
+  it('a fresh code sent as /start pairs that account; the questions then go to it and its presses count', async () => {
+    const { api, calls } = fakeApi()
+    const bot = dbBot(api)
+    const { code } = issuePairingCode(clock)
+    expect(await handleMessage(bot, dm('999', `/start ${code}`))).toBe('pending-confirm')
+    expect(pairingFromDb()).toBeNull() // not before the owner confirms on the dashboard
+    expect(pendingPairingInfo(clock)).toMatchObject({ fromId: '999', chatId: '999' })
+    expect(confirmPendingPairing('888', clock)).toBe(false) // another id than the one shown
+    expect(confirmPendingPairing('999', clock)).toBe(true)
+    expect(pairingFromDb()).toEqual({ fromId: '999', chatId: '999' })
+    const a = newApproval()
+    expect(await sendApprovalPrompt(bot, a)).toBe(true)
+    expect([...calls].reverse().find((c) => c.m === 'sendMessage')!.args[0]).toBe('999')
+    const msg = getApprovalBotMessage(a.id)!.message_id
+    expect(await handleCallback(bot, press(bot, callbackData(bot.key, 'a', a.id, '999'), { from: '999', message: msg }))).toBe('confirm-asked')
+    expect(await handleCallback(bot, press(bot, callbackData(bot.key, 'c', a.id, '999'), { from: '999', message: msg }))).toBe('approved')
+  })
+
+  it('rewriting access.json or ALLOWED_CHAT_ID after pairing changes nothing: the old owner id is refused', async () => {
+    // owner-chat.js is mocked to answer '777' (an agent rewrote ALLOWED_CHAT_ID / allowFrom): the bot does not ask it.
+    const { api } = fakeApi()
+    const bot = dbBot(api)
+    setApprovalBotPairingDb('999', '999', clock)
+    const a = newApproval()
+    expect(await sendApprovalPrompt(bot, a)).toBe(true)
+    expect(getApprovalBotMessage(a.id)!.chat_id).toBe('999')
+    const msg = getApprovalBotMessage(a.id)!.message_id
+    expect(await handleCallback(bot, press(bot, callbackData(bot.key, 'r', a.id, '777'), { from: '777', message: msg }))).toBe('not-owner')
+    expect(getApproval(a.id)?.status).toBe('pending')
+    const src = readFileSync(join(__dirname, '..', 'approval-bot.ts'), 'utf-8')
+    expect(src).not.toMatch(/from '\.\/owner-chat\.js'|from '\.\/channel-provider\.js'|readAllowFrom|resolveOwnerChatId\(/)
+  })
+
+  it('unpaired: no question goes out through the bot (the main-bot path runs) and no press counts', async () => {
+    const { api } = fakeApi()
+    const bot = makeBot(api, null)
+    expect(await sendApprovalPrompt(bot, newApproval())).toBe(false)
+    const a = newApproval()
+    expect(await handleCallback(bot, press(bot, callbackData(bot.key, 'r', a.id, OWNER), { message: 1 }))).toBe('not-owner')
+  })
+
+  it('a code is single-use, expires, is burnt after five wrong tries, and only counts in a private chat', async () => {
+    const { api } = fakeApi()
+    const bot = dbBot(api)
+    setApprovalBotPairingDb('999', '999', clock)
+    let { code } = issuePairingCode(clock)
+    expect(await handleMessage(bot, dm('555', `/start ${code}`, '-100'))).toBe('not-private')
+    expect(await handleMessage(bot, dm('555', 'szia'))).toBe('ignored')
+    expect(await handleMessage(bot, dm('555', `/start ${code}`))).toBe('pending-confirm')
+    expect(await handleMessage(bot, dm('666', `/start ${code}`))).toBe('bad-code') // used
+    expect(confirmPendingPairing('555', clock)).toBe(true)
+    expect(pairingFromDb()?.fromId).toBe('555')
+    const first = issuePairingCode(clock).code
+    issuePairingCode(clock) // a second code replaces the first
+    expect(await handleMessage(bot, dm('666', `/start ${first}`))).toBe('bad-code')
+    ;({ code } = issuePairingCode(clock))
+    clock += PAIRING_CODE_TTL_SEC + 1
+    expect(await handleMessage(bot, dm('666', `/start ${code}`))).toBe('bad-code') // expired
+    ;({ code } = issuePairingCode(clock))
+    for (let i = 0; i < PAIRING_MAX_TRIES; i++) expect(await handleMessage(bot, dm('666', '/start WRONGxyz'))).toBe('bad-code')
+    expect(await handleMessage(bot, dm('666', `/start ${code}`))).toBe('bad-code') // burnt
+    expect(pairingFromDb()?.fromId).toBe('555')
+  })
+
+  it('re-pairing: the old account\'s press on an earlier message is refused', async () => {
+    const { api } = fakeApi()
+    const bot = dbBot(api)
+    setApprovalBotPairingDb('999', '999', clock)
+    const a = newApproval()
+    expect(await sendApprovalPrompt(bot, a)).toBe(true)
+    const msg = getApprovalBotMessage(a.id)!.message_id
+    setApprovalBotPairingDb('555', '555', clock)
+    expect(await handleCallback(bot, press(bot, callbackData(bot.key, 'r', a.id, '999'), { from: '999', message: msg }))).toBe('not-owner')
+    expect(getApproval(a.id)?.status).toBe('pending')
+  })
+
+  it('the pairing code route takes the owner\'s session; the status route names no ids', async () => {
+    const call = async (method: string, path: string, auth: unknown) => {
+      const out: { status: number; body: any } = { status: 0, body: null }
+      const res: any = { writeHead: (s: number) => { out.status = s }, setHeader() {}, end: (b: string) => { out.body = b ? JSON.parse(b) : null } }
+      const req: any = Object.assign(Readable.from([]), { method, headers: {}, url: path })
+      await tryHandleApprovals({ req, res, path, method, url: new URL(`http://x${path}`), auth } as any)
+      return out
+    }
+    setActiveApprovalBotForTest(makeBot(fakeApi().api))
+    expect((await call('POST', '/api/approvals/bot/pairing-code', { kind: 'token', agent: 'soma' })).status).toBe(403)
+    const ok = await call('POST', '/api/approvals/bot/pairing-code', { kind: 'session', user: 'owner' })
+    expect(ok.status).toBe(200)
+    expect(ok.body.command).toBe(`/start ${ok.body.code}`)
+    const st = await call('GET', '/api/approvals/bot/pairing', { kind: 'token', agent: 'soma' })
+    expect(st.body).toEqual({ enabled: true, paired: true, paired_at: expect.any(Number) })
+    const own = await call('GET', '/api/approvals/bot/pairing', { kind: 'session', user: 'owner' })
+    expect(own.body).toMatchObject({ enabled: true, paired: true, pending: null, paired_from_id: expect.any(String) })
+    expect((await call('POST', '/api/approvals/bot/pairing/confirm', { kind: 'token', agent: 'soma' })).status).toBe(403)
+    setActiveApprovalBotForTest(null)
+    expect((await call('POST', '/api/approvals/bot/pairing-code', { kind: 'session', user: 'owner' })).status).toBe(409)
+    setActiveApprovalBotForTest(undefined)
+  })
+})
+
+describe('the poller', () => {
+  it('hands callback presses to the handler, skips other updates, advances the offset, and stops on a refused token', async () => {
+    const { api } = fakeApi()
+    const bot = makeBot(api)
+    const p = await prompted(bot)
+    resetPairingCodeForTest()
+    const startCode = issuePairingCode(clock).code
+    const offsets: number[] = []
+    let n = 0
+    const poll = vi.fn(async (_t: string, offset: number) => {
+      offsets.push(offset)
+      n++
+      if (n === 1) return [
+        { update_id: 10, message: { message_id: 1, chat: { id: 777 }, text: 'szia' } },
+        { update_id: 9, message: { message_id: 2, chat: { id: 4321 }, from: { id: 4321, first_name: 'Teszt' }, text: `/start ${startCode}` } },
+        { update_id: 11, callback_query: press(bot, p.data('r'), { message: p.msg }) },
+      ] as any
+      if (n === 2) throw new TelegramApiError('transient', 'net')
+      throw new TelegramApiError('fatal', '401')
+    })
+    const h = startApprovalBotPoller(bot, poll as any, async () => {})!
+    await h.done
+    expect(getApproval(p.a.id)?.status).toBe('rejected')
+    expect(pendingPairingInfo(clock)).toMatchObject({ fromId: '4321', name: 'Teszt' }) // the /start went through the poller
+    expect(offsets).toEqual([0, 12, 12])
+  })
+  it('no bot, no poller', () => {
+    expect(startApprovalBotPoller(null)).toBeNull()
+  })
+})
