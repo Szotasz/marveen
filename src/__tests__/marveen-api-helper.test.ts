@@ -113,6 +113,25 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen).toHaveLength(1)
   })
 
+  it('a usage error prints the failing verb\'s usage lines only, an unknown verb the verb names; --help the whole list', async () => {
+    const bad = await run(['skill-propose', 'my-skill'])
+    expect(bad.code).toBe(2)
+    expect(bad.stderr).toContain('FAIL: skill-propose: expected')
+    expect(bad.stderr).toContain('  skill-propose <skill-name> <skill-md-file>')
+    expect(bad.stderr).toContain('(each --ref-file goes as references/<its file name>, markdown only)')
+    expect(bad.stderr).not.toContain('kanban-list')
+    expect(bad.stderr).toContain('bash scripts/marveen-api.sh --help')
+    const unknown = await run(['kanban-get', 'abc'])
+    expect(unknown.code).toBe(2)
+    expect(unknown.stderr).toContain("FAIL: unknown verb: 'kanban-get'")
+    expect(unknown.stderr).toMatch(/verbs: message, message-close, directive-verify, .*kanban-list/)
+    expect(unknown.stderr).not.toContain('<content-file>')
+    const help = await run(['--help'])
+    expect(help.code).toBe(0)
+    expect(help.stdout).toContain('  kanban-comment <card-id> <author> <content-file>')
+    expect(seen).toHaveLength(0)
+  })
+
   it('memory-search: the accented query is encoded, and the label header is printed first', async () => {
     reply = { status: 200, body: '[]', headers: { 'X-Memory-Search': 'strict=true; relaxed=false; hits=0' } }
     const r = await run(['memory-search', 'dani', 'funkcionális', '--category', 'warm', '--strict', '--since', '2026-10-01'])
