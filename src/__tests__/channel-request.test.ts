@@ -7,6 +7,7 @@ import {
   updateChannelRequestStatus,
   updateChannelRequestName,
 } from '../db.js'
+import { channelRequestFromAuditLine } from '../web/channel-request-watcher.js'
 
 beforeAll(() => {
   // In-memory DB so the test never writes to the real store/claudeclaw.db.
@@ -104,23 +105,41 @@ describe('updateChannelRequestName', () => {
   })
 })
 
-describe('audit log parsing (algorithm)', () => {
-  it('parses gate.inbound.drop with botMentioned', () => {
-    const line = '{"type":"gate.inbound.drop","reason":"channel-not-allowed","channel":"C123","user":"U456","botMentioned":true}'
-    const entry = JSON.parse(line) as { type?: string; reason?: string; channel?: string; user?: string; botMentioned?: boolean }
-    expect(entry.type).toBe('gate.inbound.drop')
-    expect(entry.reason).toBe('channel-not-allowed')
-    expect(entry.botMentioned).toBe(true)
-    expect(entry.channel).toBe('C123')
+describe('channelRequestFromAuditLine (the real parser)', () => {
+  // The record the slack-channel plugin writes since DROPREASON1124 (Szotasz/claude-code-slack-channel#13).
+  const journal = (reason: string | undefined, input: Record<string, unknown>) =>
+    JSON.stringify({
+      v: 1, ts: '2026-11-24T16:00:00.000Z', seq: 1, prevHash: 'a'.repeat(64),
+      kind: 'gate.inbound.drop', outcome: 'drop', actor: 'session_owner',
+      ...(reason ? { reason } : {}), input, hash: 'b'.repeat(64),
+    })
+
+  it('turns a journaled channel-not-allowed drop that tagged the bot into a request', () => {
+    expect(channelRequestFromAuditLine(journal('channel-not-allowed', { channel: 'C123', user: 'U456', botMentioned: true })))
+      .toEqual({ channel: 'C123', user: 'U456' })
   })
 
-  it('ignores lines without botMentioned', () => {
-    const line = '{"type":"gate.inbound.drop","reason":"channel-not-allowed","channel":"C123"}'
-    const entry = JSON.parse(line) as { botMentioned?: boolean }
-    expect(entry.botMentioned).toBeUndefined()
+  it('ignores a drop that did not tag the bot, or had another reason', () => {
+    expect(channelRequestFromAuditLine(journal('channel-not-allowed', { channel: 'C123', user: 'U456', botMentioned: false }))).toBeNull()
+    expect(channelRequestFromAuditLine(journal('sender-not-allowed', { channel: 'C123', user: 'U456', botMentioned: true }))).toBeNull()
+    expect(channelRequestFromAuditLine(journal('duplicate', { channel: 'C123', ts: '1.1' }))).toBeNull()
   })
 
-  it('handles malformed JSON gracefully', () => {
-    expect(() => JSON.parse('not json')).toThrow()
+  it('ignores the pre-DROPREASON1124 record (no reason, no mention flag): measured shape, 2026-11-17', () => {
+    const old = '{"v":1,"ts":"2026-11-17T20:50:56.452Z","seq":60,"prevHash":"' + 'c'.repeat(64) +
+      '","kind":"gate.inbound.drop","outcome":"drop","actor":"peer_agent","input":{"channel":"C0CGUBW4PR7","user":"U0CJFU9QQF7"},"hash":"' + 'd'.repeat(64) + '"}'
+    expect(channelRequestFromAuditLine(old)).toBeNull()
+  })
+
+  it('still accepts the flat shape', () => {
+    const flat = '{"type":"gate.inbound.drop","reason":"channel-not-allowed","channel":"C123","user":"U456","botMentioned":true}'
+    expect(channelRequestFromAuditLine(flat)).toEqual({ channel: 'C123', user: 'U456' })
+  })
+
+  it('ignores other kinds and malformed lines', () => {
+    expect(channelRequestFromAuditLine(journal('channel-not-allowed', { channel: 'C123', botMentioned: true }).replace('gate.inbound.drop', 'gate.inbound.deliver'))).toBeNull()
+    expect(channelRequestFromAuditLine('not json')).toBeNull()
+    expect(channelRequestFromAuditLine('null')).toBeNull()
+    expect(channelRequestFromAuditLine(journal('channel-not-allowed', { botMentioned: true }))).toBeNull()
   })
 })

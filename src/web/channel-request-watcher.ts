@@ -13,13 +13,34 @@ function resolveAgentProvider(name: string): ChannelProviderType {
   return CHANNEL_PROVIDER
 }
 
-interface AuditEntry {
-  type?: string
-  reason?: string
-  channel?: string
-  user?: string
-  ts?: string
-  botMentioned?: boolean
+/**
+ * The channel request one audit line asks for, or null.
+ *
+ * The slack-channel plugin's journal record (audit.jsonl, SLACK_AUDIT_LOG) is
+ * `{"kind":"gate.inbound.drop","reason":...,"input":{"channel","user","botMentioned"}}`;
+ * the plugin writes `reason` and `botMentioned` since DROPREASON1124
+ * (Szotasz/claude-code-slack-channel#13). Before that a drop carried neither, so
+ * this watcher, which only knew a flat `{"type":...,"channel":...}` shape that the
+ * plugin never wrote, matched nothing (measured 2026-11-24: the Channel Requests
+ * list stayed empty). The flat shape is still accepted.
+ */
+export function channelRequestFromAuditLine(line: string): { channel: string; user?: string } | null {
+  let entry: unknown
+  try {
+    entry = JSON.parse(line)
+  } catch {
+    return null
+  }
+  if (!entry || typeof entry !== 'object') return null
+  const e = entry as Record<string, unknown>
+  const input = e.input && typeof e.input === 'object' ? (e.input as Record<string, unknown>) : {}
+  const kind = e.kind ?? e.type
+  const channel = input.channel ?? e.channel
+  const user = input.user ?? e.user
+  const botMentioned = input.botMentioned ?? e.botMentioned
+  if (kind !== 'gate.inbound.drop' || e.reason !== 'channel-not-allowed' || botMentioned !== true) return null
+  if (typeof channel !== 'string' || !channel) return null
+  return { channel, user: typeof user === 'string' ? user : undefined }
 }
 
 const fileOffsets = new Map<string, number>()
@@ -37,17 +58,16 @@ function scanAuditLog(agent: string, auditPath: string): void {
 
   for (const line of newContent.split('\n')) {
     if (!line.trim()) continue
+    const req = channelRequestFromAuditLine(line)
+    if (!req) continue
     try {
-      const entry = JSON.parse(line) as AuditEntry
-      if (entry.type === 'gate.inbound.drop' && entry.reason === 'channel-not-allowed' && entry.botMentioned && entry.channel) {
-        const inserted = upsertChannelRequest(agent, entry.channel, entry.user)
-        if (inserted) {
-          logger.info({ agent, channel: entry.channel, user: entry.user }, 'New channel request from audit log')
-          lookupChannelName(agent, entry.channel).catch(() => {})
-        }
+      const inserted = upsertChannelRequest(agent, req.channel, req.user)
+      if (inserted) {
+        logger.info({ agent, channel: req.channel, user: req.user }, 'New channel request from audit log')
+        lookupChannelName(agent, req.channel).catch(() => {})
       }
-    } catch {
-      // malformed line
+    } catch (err) {
+      logger.warn({ err, agent, channel: req.channel }, 'Channel request from audit log not stored')
     }
   }
 }

@@ -19,7 +19,16 @@
       "Bash(bash ${PROJECT_ROOT}/scripts/marveen-api.sh:*)",
       "Bash(bash ${PROJECT_ROOT}/scripts/agent-msg.sh:*)",
       "WebFetch(*)",
-      "WebSearch(*)"
+      "WebSearch(*)",
+      "mcp__plugin_telegram_telegram__reply",
+      "mcp__plugin_telegram_telegram__react",
+      "mcp__plugin_telegram_telegram__edit_message",
+      "mcp__plugin_telegram_telegram__download_attachment",
+      "mcp__plugin_slack-channel_slack__reply",
+      "mcp__plugin_slack-channel_slack__react",
+      "mcp__plugin_slack-channel_slack__edit_message",
+      "mcp__plugin_slack-channel_slack__fetch_messages",
+      "mcp__plugin_slack-channel_slack__download_attachment"
     ],
     "deny": [
       "Read(${HOME}/.ssh/**)",
