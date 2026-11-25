@@ -4,8 +4,21 @@
 
 1. an SQL write on the dashboard database's security tables (`approvals`, `approval_events`, `approval_slack_posts`,
    `approval_teams_cards`, `agent_create_specs`, `auth_sessions`, `colleague_sessions`, `dashboard_users`, `device_keys`, `vault_ssh_keys`, and the support access tables
-   `support_consents` and `support_password_state`), `PRAGMA writable_schema`, and any write on `sqlite_master` /
-   `sqlite_schema`;
+   `support_consents` and `support_password_state`, `approver_scopes`, and the owner's custom commands
+   `custom_commands`), `PRAGMA writable_schema`, and any write on `sqlite_master` / `sqlite_schema`;
+   and an `agent_messages` write that could forge who is speaking (CHANINBOUNDFORGE1125). The router frames a row as
+   the owner speaking or as a system directive by its `from_agent` alone, and honours the delivery flags as stored;
+   `/api/messages` refuses those senders and flags to the shared token, so a direct SQL write may not set them either:
+   - INSERT / REPLACE only as `INTO agent_messages (<columns>) VALUES (<literals>)`, no flag column
+     (`stop_authorized`, `urgent`, `priority`, `affects_current_work`), and every row's `from_agent` a plain quoted
+     literal naming the main agent or an existing `agents/<id>/`, never a reserved sender (the channel coordinator,
+     `system`, the voice channel's default id and the one in `.env` `VOICE_CHANNEL_ID`, a future owner-voice id).
+     No column list, `INSERT .. SELECT`, a parameter, a shell or f-string expansion, concatenation or an UPSERT is
+     denied: the gate cannot read the sender there;
+   - UPDATE never of `from_agent` or a flag; `content` or `to_agent` only with a WHERE pinned to one plain, allowed
+     `from_agent` literal (your own pending row), no `OR`, no subquery; a status / result / timestamp update is free;
+   - no DROP / ALTER / CREATE TABLE or VIEW on it, no trigger or index on it, no trigger that writes it.
+   The real lock is a server-side mark on the row (HMACINBOUND1125); this rule is the text brake below.
 2. a file-level write of `store/claudeclaw.db` (and its `-wal`, `-shm`, `-journal`);
 3. a write of this install's gate wiring and autonomy levels: `.claude/settings.json`, `.claude/settings.local.json`,
    `scripts/hooks/`, `scripts/self-pace-gate.mjs`, `store/extra-hooks.json`, `store/autonomy-config.json`, the main

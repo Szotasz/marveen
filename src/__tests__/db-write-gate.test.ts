@@ -72,10 +72,10 @@ const ALLOW = { deny: false }
 describe('1. SQL writes on the security tables', () => {
   // APPROVALSLACK1030 (2): approval_slack_posts joins (the posted Slack request the owner's reaction is checked against).
   // SUPPORTKULCS1109 D5: the two support tables joined the list.
-  it('the table list is the decided fourteen (approver_scopes: DELEGAPPROVER1123; approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119; colleague_sessions: #2929 B1)', () => {
-    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes'])
+  it('the table list is the decided fifteen (custom_commands: CHANINBOUNDFORGE1125; approver_scopes: DELEGAPPROVER1123; approval_teams_cards: TEAMSAPPROVECARD1118; agent_create_specs: AGENTCREATEPR2-1119; approval_gromzo_posts: AGENTCREATEPR3-1119; colleague_sessions: #2929 B1)', () => {
+    expect(SECURITY_TABLES).toEqual(['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands'])
   })
-  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes']) {
+  for (const t of ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands']) {
     it.each([
       `UPDATE ${t} SET x=1`,
       `INSERT INTO ${t} VALUES (1)`,
@@ -964,7 +964,10 @@ describe('4. git: the main checkout and the remote it pulls from', () => {
   })
   it('the deny text names the rescue section by its file', () => {
     // Samu 60400 (APPROVALDBGATE1030): a sqlite3 in a $(...) stays denied; the line names the way round it.
-    expect(DB_GATE_MSG).toContain('Olvasni szabad (SELECT, sqlite3 -readonly), mas tablat irni is (agent_messages, daily_logs). Egy $(...) behelyettesitesben allo sqlite3-at (idezojellel benne) viszont a kapu nem olvassa, es tiltja: futtasd a sqlite3-at kulon parancskent, behelyettesites nelkul')
+    expect(DB_GATE_MSG).toContain('Egy $(...) behelyettesitesben allo sqlite3-at (idezojellel benne) viszont a kapu nem olvassa, es tiltja: futtasd a sqlite3-at kulon parancskent, behelyettesites nelkul')
+    // CHANINBOUNDFORGE1125: the text says what stays open on agent_messages, and what does not
+    expect(DB_GATE_MSG).toContain("UPDATE status/result szabadon; content csak WHERE from_agent='<sajat neved>' mellett")
+    expect(DB_GATE_MSG).toContain('foglalt vagy ismeretlen feladot')
     expect(gateDecision('Bash', { command: 'echo "x: $(sqlite3 -readonly store/claudeclaw.db "SELECT count(*) FROM agent_messages")"' }, { cwd: root, root }))
       .toEqual({ deny: true, reason: 'db' })
     expect(GIT_GATE_MSG).toContain('docs/db-write-gate.md')

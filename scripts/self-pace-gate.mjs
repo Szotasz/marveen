@@ -1657,7 +1657,10 @@ const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into
 // trail of an enabling, or lift the lock that stands in front of enabling.
 // approver_scopes (DELEGAPPROVER1123): what a delegated human approver may decide; an agent that could write it could
 // widen an approver's reach to its own requests.
-export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes']
+// custom_commands (CHANINBOUNDFORGE1125): the owner's custom slash commands. A prompt command's body is queued as the
+// channel coordinator (custom-commands.ts sendPrompt), so an agent that could rewrite a body would speak in the owner's
+// voice the next time the owner runs that command. The dashboard's owner-gated CRUD is the only writer.
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands']
 // An SQL write on one of them. The table name is read wherever the statement
 // names its target: after a schema prefix (`main.approvals`, an ATTACHed
 // `x.approvals`), in [brackets], with SQL comments or line breaks between the
@@ -1689,6 +1692,210 @@ export const SECURITY_SQL_WRITE_RX = new RegExp(
   String.raw`|\bpragma${SQL_GAP}+(?:\[?\w+\]?${SQL_GAP}*\.${SQL_GAP}*)?\[?writable_schema\b`,
   'i',
 )
+
+// CHANINBOUNDFORGE1125: agent_messages stays writable (agents mark their queue rows done, and the skills do), but not
+// in the ways that forge who is speaking. The message router frames a row as the owner speaking (channel-inbound) or
+// as a system directive by its from_agent column ALONE (message-router.ts classifyAgentMessage; the directive check
+// reads the row's from_agent), and it honours stop_authorized / urgent / priority / affects_current_work as stored.
+// /api/messages refuses those senders and those flags to the shared token; a direct SQL write skipped all of that.
+// So, on agent_messages:
+//   - INSERT / REPLACE: only `INTO agent_messages (<columns>) VALUES (<literals>)[, (...)]`, no flag column, and
+//     every row's from_agent a plain quoted literal naming a sender the API would also take from the shared token:
+//     the main agent or an existing agents/<id>/ directory, never a reserved sender. Anything the gate cannot read
+//     (no column list, INSERT .. SELECT, a parameter, a shell or f-string expansion, concatenation, an UPSERT)
+//     is denied.
+//   - UPDATE: never from_agent or a flag column; content or to_agent only with a WHERE pinned to one plain,
+//     allowed from_agent literal (your own pending row, the interagent-queue-lag skill's recipe), no OR, no subquery.
+//     A status / result / timestamp update stays free.
+//   - no DROP / ALTER / CREATE TABLE|VIEW, no trigger or index on it, no trigger that writes it.
+// THE LIMIT, as for the security tables: a text-based brake, not an OS boundary; a program that builds the statement
+// at run time passes. The real lock is a server-side mark on the row (HMACINBOUND1125, decided separately).
+// Reserved senders: the message layer's reserved ids (sanitize.ts MESSAGE_LAYER_RESERVED_AGENT_IDS), the voice
+// channel's default id and the one this install's .env names (VOICE_CHANNEL_ID). A NEW owner-voice sender (the
+// planned companion id, FIGURAKULCS1125) is reserved there too, and agent-messages-forge.test.ts fails until it
+// is listed here as well.
+export const AGENT_MESSAGES_RESERVED_SENDERS = ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']
+const AGENT_MESSAGES_FLAG_COLUMNS = new Set(['stop_authorized', 'urgent', 'priority', 'affects_current_work'])
+const AM_IDENT = sqlIdent(['agent_messages'])
+const AM_ROW_WRITE_RX = new RegExp(
+  String.raw`\b(?:insert(?:${SQL_GAP}+or${SQL_GAP}+\w+)?${SQL_GAP}+into|replace${SQL_GAP}+into|update(?:${SQL_GAP}+or${SQL_GAP}+\w+)?)${SQL_GAP}+${AM_IDENT}`,
+  'gi',
+)
+const AM_SCHEMA_WRITE_RX = new RegExp(
+  String.raw`\b(?:drop${SQL_GAP}+(?:table|view)(?:${SQL_GAP}+if${SQL_GAP}+exists)?|alter${SQL_GAP}+table|create${SQL_GAP}+(?:temp\w*${SQL_GAP}+)?(?:table|view)(?:${SQL_GAP}+if${SQL_GAP}+not${SQL_GAP}+exists)?)${SQL_GAP}+${AM_IDENT}` +
+  String.raw`|\bcreate${SQL_GAP}+(?:(?:temp\w*|unique)${SQL_GAP}+)?(?:trigger|index)\b[\s\S]{0,300}?\bon${SQL_GAP}+${AM_IDENT}` +
+  String.raw`|\bcreate${SQL_GAP}+(?:temp\w*${SQL_GAP}+)?trigger\b[\s\S]*?\b(?:insert|replace|update)\b[\s\S]{0,60}?${AM_IDENT}`,
+  'i',
+)
+
+/** The statement that starts at `i`: up to a `;` or a `"` outside a single-quoted SQL literal, or the end. */
+function sqlStatementAt(text, i) {
+  let inLit = false
+  for (let j = i; j < text.length; j++) {
+    const c = text[j]
+    if (inLit) {
+      if (c === "'") {
+        if (text[j + 1] === "'") { j++; continue }
+        inLit = false
+      }
+      continue
+    }
+    if (c === "'") inLit = true
+    else if (c === ';' || c === '"') return text.slice(i, j)
+  }
+  return inLit ? null : text.slice(i)
+}
+
+/** Split on top-level commas (outside quotes and parentheses); null when the quotes or parentheses do not balance. */
+function splitTopLevel(s) {
+  const out = []
+  let depth = 0
+  let inLit = false
+  let last = 0
+  for (let j = 0; j < s.length; j++) {
+    const c = s[j]
+    if (inLit) {
+      if (c === "'") { if (s[j + 1] === "'") { j++; continue } inLit = false }
+      continue
+    }
+    if (c === "'") inLit = true
+    else if (c === '(') depth++
+    else if (c === ')') { if (--depth < 0) return null }
+    else if (c === ',' && depth === 0) { out.push(s.slice(last, j)); last = j + 1 }
+  }
+  if (inLit || depth !== 0) return null
+  out.push(s.slice(last))
+  return out
+}
+
+const sqlColumnName = (c) => c.trim().replace(/^["`[]|["`\]]$/g, '').toLowerCase()
+
+/** The senders this install allows by SQL: the main agent and existing agent directories, never a reserved id. */
+function agentMessagesSenderOk(id, root) {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return false
+  const env = root ? readEnvFileValues(join(root, '.env')) : {}
+  const reserved = new Set(AGENT_MESSAGES_RESERVED_SENDERS)
+  if (env.VOICE_CHANNEL_ID) reserved.add(env.VOICE_CHANNEL_ID.trim().toLowerCase())
+  if (reserved.has(id.toLowerCase())) return false
+  if (id === (env.MAIN_AGENT_ID?.trim() || 'marveen')) return true
+  if (!root) return false
+  try { return lstatSync(join(root, 'agents', id)).isDirectory() } catch { return false }
+}
+
+function readEnvFileValues(path) {
+  const out = {}
+  let raw = ''
+  try { raw = readFileSync(path, 'utf8') } catch { return out }
+  for (const line of raw.split('\n')) {
+    const m = /^\s*(MAIN_AGENT_ID|VOICE_CHANNEL_ID)\s*=\s*(.*)$/.exec(line)
+    if (m) out[m[1]] = m[2].replace(/^["']|["']\s*$/g, '').trim()
+  }
+  return out
+}
+
+const PLAIN_SENDER_LITERAL_RX = /^'([A-Za-z0-9_-]{1,64})'$/
+
+/** INSERT / REPLACE INTO agent_messages: true when it could forge the sender or a flag (or cannot be read). */
+function agentMessagesInsertForges(stmt, root) {
+  const head = new RegExp(String.raw`^(?:insert(?:${SQL_GAP}+or${SQL_GAP}+\w+)?${SQL_GAP}+into|replace${SQL_GAP}+into)${SQL_GAP}+${AM_IDENT}${SQL_GAP}*\(([^()]*)\)${SQL_GAP}*values${SQL_GAP}*`, 'i').exec(stmt)
+  if (!head) return true // no column list, INSERT .. SELECT, DEFAULT VALUES, or unreadable
+  const cols = head[1].split(',').map(sqlColumnName)
+  if (cols.some((c) => AGENT_MESSAGES_FLAG_COLUMNS.has(c))) return true
+  const fromAt = cols.indexOf('from_agent')
+  if (fromAt < 0) return true
+  let rest = stmt.slice(head[0].length)
+  let rows = 0
+  while (rest.length) {
+    if (rest[0] !== '(') return true
+    let depth = 0
+    let inLit = false
+    let end = -1
+    for (let j = 0; j < rest.length; j++) {
+      const c = rest[j]
+      if (inLit) { if (c === "'") { if (rest[j + 1] === "'") { j++; continue } inLit = false } continue }
+      if (c === "'") inLit = true
+      else if (c === '(') depth++
+      else if (c === ')' && --depth === 0) { end = j; break }
+    }
+    if (end < 0) return true
+    const vals = splitTopLevel(rest.slice(1, end))
+    if (!vals || vals.length !== cols.length) return true
+    const sender = PLAIN_SENDER_LITERAL_RX.exec(vals[fromAt].trim())
+    if (!sender || !agentMessagesSenderOk(sender[1], root)) return true
+    rows++
+    rest = rest.slice(end + 1).replace(new RegExp(`^${SQL_GAP}*`), '')
+    if (rest.startsWith(',')) { rest = rest.slice(1).replace(new RegExp(`^${SQL_GAP}*`), ''); continue }
+    break
+  }
+  // nothing may follow the rows: an UPSERT (ON CONFLICT .. DO UPDATE SET from_agent ..) or anything unread
+  return rows === 0 || rest.trim() !== ''
+}
+
+/** UPDATE agent_messages: true when it could forge the sender, a flag, or rewrite another sender's row. */
+function agentMessagesUpdateForges(stmt, root) {
+  const head = new RegExp(String.raw`^update(?:${SQL_GAP}+or${SQL_GAP}+\w+)?${SQL_GAP}+${AM_IDENT}${SQL_GAP}+set${SQL_GAP}+`, 'i').exec(stmt)
+  if (!head) return true
+  const body = stmt.slice(head[0].length)
+  if (body.trimStart().startsWith('(')) return true // SET (a, b) = (...): row-value assignment, not read
+  // the first top-level WHERE (outside literals) ends the SET list
+  let whereAt = -1
+  let inLit = false
+  for (let j = 0; j < body.length; j++) {
+    const c = body[j]
+    if (inLit) { if (c === "'") { if (body[j + 1] === "'") { j++; continue } inLit = false } continue }
+    if (c === "'") { inLit = true; continue }
+    if (/\s/.test(c) && /^\swhere\b/i.test(body.slice(j))) { whereAt = j; break }
+  }
+  const setPart = whereAt < 0 ? body : body.slice(0, whereAt)
+  const wherePart = whereAt < 0 ? '' : body.slice(whereAt).replace(/^\s*where\b/i, '')
+  if (/\bfrom\b/i.test(setPart.replace(/'(?:[^']|'')*'/g, "''"))) return true // UPDATE .. FROM
+  const assigns = splitTopLevel(setPart)
+  if (!assigns) return true
+  const cols = []
+  for (const a of assigns) {
+    const m = /^\s*(\[?["`]?\w+["`]?\]?)\s*=/.exec(a)
+    if (!m) return true
+    cols.push(sqlColumnName(m[1]))
+  }
+  if (cols.some((c) => c === 'from_agent' || AGENT_MESSAGES_FLAG_COLUMNS.has(c))) return true
+  if (cols.some((c) => c === 'content' || c === 'to_agent')) {
+    const bare = wherePart.replace(/'(?:[^']|'')*'/g, "''")
+    if (/\bor\b|\bselect\b|\bnot\b/i.test(bare)) return true
+    const pins = [...wherePart.matchAll(/(?<![<>!=\w])\[?["`]?from_agent["`]?\]?\s*==?\s*('[^']*')/gi)]
+    if (pins.length !== 1) return true
+    const sender = PLAIN_SENDER_LITERAL_RX.exec(pins[0][1])
+    if (!sender || !agentMessagesSenderOk(sender[1], root)) return true
+  }
+  return false
+}
+
+/**
+ * CHANINBOUNDFORGE1125: does this text write agent_messages in a way that could forge the sender or a delivery flag?
+ * Read on the escape-decoded text WITH its quotes (the SQL literals are the evidence); a statement the gate cannot
+ * read is a forge (fail closed).
+ */
+export function agentMessagesForgeWrite(text, opts = {}) {
+  const joined = String(text ?? '').replace(/\\\r?\n/g, '')
+  const decoded = decodeEscapes(decodeEscapes(joined))
+  // cheap pre-test, so the hook pays nothing for the many texts that never name the table: the decoded text, and the
+  // same with shell quoting removed (a name split by quotes, "agent_""messages", closes up there)
+  const closed = decoded.replace(/\$\{IFS\}|\$IFS\b/g, '').replace(/[\\'"`]/g, '')
+  if (!/agent_messages/i.test(decoded) && !/agent_messages/i.test(closed)) return false
+  const vs = scheduleSurfaceVariants(text)
+  for (const v of [decoded, ...vs]) if (AM_SCHEMA_WRITE_RX.test(v)) return true
+  const root = opts.projectRoot ?? null
+  for (const m of decoded.matchAll(AM_ROW_WRITE_RX)) {
+    const stmt = sqlStatementAt(decoded, m.index)
+    if (stmt === null) return true
+    const forges = /^update/i.test(m[0]) ? agentMessagesUpdateForges(stmt, root) : agentMessagesInsertForges(stmt, root)
+    if (forges) return true
+  }
+  // a write the decoded text hides (quotes or escapes split the keywords) but an unquoted variant shows: unreadable
+  const shown = (s) => (s.match(AM_ROW_WRITE_RX) ?? []).length
+  const seen = shown(decoded)
+  return vs.some((v) => shown(v) > seen)
+}
+
 // The dashboard database file (and its WAL/SHM/journal). Reads by any program
 // stay allowed (a worker reads the board with sqlite3 SELECT); a FILE-level
 // write -- a redirect onto it, cp/mv/tee/dd/rm/ln/... naming it, or a sqlite3
@@ -1959,7 +2166,7 @@ export function scheduleSurfaceRefs(text, opts) {
       api: false,
       dir: false,
       cli: false,
-      sql: vs.some((v) => SECURITY_SQL_WRITE_RX.test(v)),
+      sql: vs.some((v) => SECURITY_SQL_WRITE_RX.test(v)) || agentMessagesForgeWrite(text, opts),
       db: vs.some((v) => DASHBOARD_DB_REF_RX.test(v)) || globRefs(text, opts).db,
     }
   }

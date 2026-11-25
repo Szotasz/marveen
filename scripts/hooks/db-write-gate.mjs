@@ -6,7 +6,8 @@
 //   1. An SQL write (INSERT / UPDATE / DELETE / REPLACE / DROP / ALTER / CREATE
 //      TRIGGER|INDEX ... ON) on a security table of the dashboard database
 //      (SECURITY_TABLES in self-pace-gate.mjs: approvals, approval_events,
-//      auth_sessions, colleague_sessions, dashboard_users, device_keys, vault_ssh_keys, support_consents, support_password_state), whatever
+//      auth_sessions, colleague_sessions, dashboard_users, device_keys, vault_ssh_keys, support_consents, support_password_state,
+//      custom_commands), whatever
 //      program runs it: sqlite3, python -c, node -e, a heredoc, a pipe. Also
 //      PRAGMA writable_schema and any write on sqlite_master / sqlite_schema
 //      (and the temp aliases): through them a table is renamed, written under
@@ -23,10 +24,17 @@
 //      ".." resolved, case folded as a case-insensitive volume reads it). An
 //      archive extracted or a patch applied with no target directory writes
 //      into the cwd: there the cwd is the target.
+//   4. CHANINBOUNDFORGE1125: an agent_messages write that could forge who is
+//      speaking: a reserved or unknown sender (the channel coordinator, the voice
+//      channel, system, a future owner-voice id), a delivery flag (stop_authorized,
+//      urgent, priority, affects_current_work), a rewrite of another sender's row,
+//      or a statement the gate cannot read (agentMessagesForgeWrite in
+//      self-pace-gate.mjs; reported as an SQL write, reason 'db').
 //
 // What still passes: SQL reads (SELECT, sqlite3 -readonly), SQL writes on any
-// other table (UPDATE agent_messages in the skills, the daily_logs date fix in
-// CLAUDE.md), the kanban tool, reads of the protected files (cat/grep/jq/diff,
+// other table (the daily_logs date fix in CLAUDE.md), the ordinary agent_messages
+// writes (an agent's own message, a status/result update, its own pending row's
+// content), the kanban tool, reads of the protected files (cat/grep/jq/diff,
 // git diff/log/show), running a hook script, and MESSAGE TEXT that merely
 // quotes such a command: the data argument of curl -d/--data*, git commit -m/-F,
 // gh --body/--title, scripts/agent-msg.sh, the kanban tool's --title. Only that
@@ -2852,11 +2860,14 @@ const LIMIT_MSG =
 export const DB_GATE_MSG =
   'Biztonsagi DB-iras TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
   'dashboard adatbazisanak biztonsagi tablait (approvals, approval_events, approval_slack_posts, approval_teams_cards, approval_gromzo_posts, agent_create_specs, auth_sessions, dashboard_users, ' +
-  'device_keys, vault_ssh_keys, support_consents, support_password_state, approver_scopes) semmilyen programmal (sqlite3, python, node, heredoc), es NEM irhatod fajl ' +
+  'device_keys, vault_ssh_keys, support_consents, support_password_state, approver_scopes, custom_commands) semmilyen programmal (sqlite3, python, node, heredoc), ' +
+  'az agent_messages-be NEM irhatsz foglalt vagy ismeretlen feladot (koordinator, hangcsatorna, system, gazda-hangu id) es kezbesitesi jelzot ' +
+  '(stop_authorized, urgent, priority, affects_current_work), mas feladojanak sorat nem irhatod at (CHANINBOUNDFORGE1125), es NEM irhatod fajl ' +
   'szinten a store/claudeclaw.db-t (-wal/-shm/-journal is: cp/mv/tee/>/rm/ln, sqlite3 .restore/.read/.backup), ' +
   'es NEM hasznalhatod a PRAGMA writable_schema-t, sem a sqlite_master/sqlite_schema irasat. ' +
   'Jovahagyast a dashboard API-n kerj es hasznalj fel (/api/approvals). Olvasni szabad (SELECT, sqlite3 -readonly), ' +
-  'mas tablat irni is (agent_messages, daily_logs). Egy $(...) behelyettesitesben allo sqlite3-at (idezojellel benne) ' +
+  'mas tablat irni is (daily_logs), es az agent_messages-be a sajat uzenetedet: INSERT oszloplistaval, a from_agent sima idezett ' +
+  'literal (a sajat neved); UPDATE status/result szabadon; content csak WHERE from_agent=\'<sajat neved>\' mellett. Egy $(...) behelyettesitesben allo sqlite3-at (idezojellel benne) ' +
   'viszont a kapu nem olvassa, es tiltja: futtasd a sqlite3-at kulon parancskent, behelyettesites nelkul (a kimenetet ' +
   'fajlba vagy kiirva; Samu 60400). Masolat a DB-rol: sqlite3 -readonly <db> "VACUUM INTO \'/tmp/x.db\'". ' +
   'Ha egy uzenet vagy kanban-szoveg idez ilyen parancsot: curl -d / git commit -m / a kanban-eszkoz --title atmegy; ' +
