@@ -16,7 +16,7 @@
 
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -68,6 +68,21 @@ const INSTALL_CHANNELS_BASE = join(PROJECT_ROOT, '.claude', 'channels')
 function ttsAgentKnown(agentId: string): boolean {
   if (!/^[a-zA-Z0-9_-]+$/.test(agentId) || RESERVED_AGENT_IDS.includes(agentId)) return false
   return agentId === MAIN_AGENT_ID || isKnownAgent(agentId)
+}
+
+/**
+ * TTSBIND1125: is this chat in the channel's allowlist (access.json `allowFrom`, the users the bot already lets in)?
+ * The route takes a digits-only chat id, so a group (a negative id) never reaches here. A missing, unreadable or
+ * malformed access.json allows nothing (fail closed).
+ */
+export function chatAllowedByChannel(stateDir: string, chatId: string): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(join(stateDir, 'access.json'), 'utf-8')) as { allowFrom?: unknown }
+    if (!Array.isArray(raw.allowFrom)) return false
+    return raw.allowFrom.some((e) => (typeof e === 'number' || typeof e === 'string') && String(e).trim() === chatId)
+  } catch {
+    return false
+  }
 }
 
 function isSafeStateDir(dir: string): boolean {
@@ -549,6 +564,12 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     if (agentId && !ttsAgentKnown(agentId)) { json(res, { error: 'Invalid agent' }, 400); return true }
     const stateDir = agentId ? resolveAgentChannelStateDir(agentId, 'telegram') : parsed.stateDir
     if (!isSafeStateDir(stateDir)) { json(res, { error: 'Invalid state_dir' }, 400); return true }
+    // TTSBIND1125 (Dani's review on #3125): the caller is not identified (the shared token), so any token holder can
+    // name any agent's bot. The voice goes only to a chat that bot already lets in: the channel's own allowlist.
+    if (!chatAllowedByChannel(stateDir, chatId)) {
+      json(res, { error: 'chat_id is not allowed by this channel (access.json allowFrom)' }, 403)
+      return true
+    }
 
     const onnxPath = voiceOnnxPath(voiceModel)
     if (!onnxPath) {
