@@ -67,6 +67,8 @@ export interface TtsRequest {
   voiceModel: string
   chatId: string
   stateDir: string
+  /** #3118: the agent whose channel sends the voice; the route resolves the state dir from it. '' when not given. */
+  agentId: string
 }
 
 // The fields of POST /api/voice/tts, from either request shape:
@@ -87,15 +89,17 @@ export function parseTtsRequest(
       voiceModel: query.get('voice_model')?.trim() || defaultVoiceModel,
       chatId: (query.get('chat_id') ?? '').trim(),
       stateDir: (query.get('state_dir') ?? '').trim(),
+      agentId: (query.get('agent') ?? '').trim(),
     }
   }
-  let data: { text?: string; voice_model?: string; chat_id?: string | number; state_dir?: string }
+  let data: { text?: string; voice_model?: string; chat_id?: string | number; state_dir?: string; agent?: string }
   try { data = JSON.parse(body.toString()) as typeof data } catch { return null }
   return {
     text: data.text?.trim() ?? '',
     voiceModel: data.voice_model?.trim() ?? defaultVoiceModel,
     chatId: String(data.chat_id ?? '').trim(),
     stateDir: data.state_dir?.trim() ?? '',
+    agentId: typeof data.agent === 'string' ? data.agent.trim() : '',
   }
 }
 
@@ -107,7 +111,7 @@ export function parseTtsRequest(
 // read by the shell when the command runs, never the token value itself.
 export function buildTtsDirective(opts: {
   chatId: string
-  stateDir: string
+  agentId: string
   voiceModel: string
 }): string | null {
   try {
@@ -116,7 +120,7 @@ export function buildTtsDirective(opts: {
     // Checked, not embedded: an empty or unreadable token file still means "no directive".
     if (!readFileSync(tokenPath, 'utf-8').trim()) return null
     const tokenRef = `$(cat ${shellSingleQuote(tokenPath)})`
-    const { chatId, stateDir, voiceModel } = opts
+    const { chatId, agentId, voiceModel } = opts
     // #2600: the command used to build the JSON body with `jq -n --arg t "..."`. jq is not
     // installed by install-linux.sh and a stock Ubuntu has none, so the pipe sent an empty
     // body, the route answered 400 and the owner got no reply at all (the directive forbids a
@@ -124,7 +128,10 @@ export function buildTtsDirective(opts: {
     // it on the way. Now the text goes as the raw body through a QUOTED heredoc (no shell
     // expansion, no escaping for the agent to get wrong), the fixed fields go in the query
     // string, and the route builds the request itself (parseTtsRequest).
-    const query = new URLSearchParams({ chat_id: chatId, state_dir: stateDir, voice_model: voiceModel })
+    // #3118: the agent id, not the state dir. The dir sits under agents/<name>/.claude/channels/ for a sub-agent,
+    // and the sub-agent gate (db-write-gate.mjs, TGINREPLAYGATE1104) refuses any command that names it, so the
+    // directive prescribed a command the agent could never run. The route resolves the dir from the id.
+    const query = new URLSearchParams({ chat_id: chatId, agent: agentId, voice_model: voiceModel })
     const url = `http://localhost:${WEB_PORT}/api/voice/tts?${query.toString()}`
     const end = newTtsHeredocEnd()
     return (
