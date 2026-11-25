@@ -96,7 +96,12 @@ describe('a custom provider that cannot be served stops the respawn before anyth
   })
 
   it('the hard restart (Linux): not ok, no reap, no respawn-pane', () => {
-    expect(hardRestartMarveenChannels().ok).toBe(false)
+    const r = hardRestartMarveenChannels()
+    expect(r.ok).toBe(false)
+    // RESPAWNREASON1125: the dashboard restart's answer names the cause, not a generic respawn-pane failure
+    expect(r.error).toMatch(/provider "hostinger-router" is configured but cannot be used: vault key missing/)
+    expect(r.error).toMatch(/running session is kept/)
+    expect(r.error).not.toMatch(/tmux respawn-pane failed/)
     expect(reapChannelOrphans).not.toHaveBeenCalled()
     expect(reapDetachedChannelClaudes).not.toHaveBeenCalled()
     expect(respawnPaneRan()).toBe(false)
