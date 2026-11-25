@@ -29,7 +29,8 @@ describe('every main launch path applies main-auth and sources the post-file rig
       expect(post).toBeLessThan(cmd.indexOf('/x/claude'))
     }
     const src = readSrc('src', 'web', 'channel-monitor.ts')
-    expect(src.match(/config: mainRespawnConfigWithAuth\(\),/g)?.length).toBe(3)
+    expect(src.match(/const respawnConfig = mainRespawnConfigWithAuth\(\)/g)?.length).toBe(3)
+    expect(src.match(/config: respawnConfig,/g)?.length).toBe(3)
     expect(src).not.toMatch(/config: resolveMainConfigDecision\(\),/)
   })
 
