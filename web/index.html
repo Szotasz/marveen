@@ -3165,6 +3165,33 @@
             <select id="editAgentPlan"></select>
             <small id="editAgentPlanDesc" style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4"></small>
             <button class="btn-secondary btn-compact agent-save-section" id="savePlanBtn" data-i18n="common.btn.save">Mentés</button>
+            <!-- HOSTINGERRETEST1125: log in to a new Claude subscription right here (the same setup-token relay as
+                 Settings > Claude subscriptions), then the new plan is assigned to this agent. -->
+            <div id="agentPlanLoginBox" style="margin-top:12px;padding:12px 14px;background:var(--bg-input);border-radius:var(--radius-sm)">
+              <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px">
+                <small style="flex:1 1 220px;min-width:0;color:var(--text-muted);font-size:12px;line-height:1.4" data-i18n="agents.plan_login.desc">Új Claude-előfizetés belépéssel: kapsz egy linket és egy kódot, a kész előfizetés ehhez az ügynökhöz kerül.</small>
+                <button class="btn-primary btn-compact" id="agentPlanLoginBtn" style="flex-shrink:0" data-i18n="agents.plan_login.start">Belépés Claude-előfizetéssel</button>
+              </div>
+              <div id="agentPlanLoginStep" hidden style="margin-top:10px">
+                <a id="agentPlanLoginLink" href="#" target="_blank" rel="noopener noreferrer" style="font-size:13px;color:var(--accent)" data-i18n="agents.plan_login.open_link">A belépési oldal megnyitása</a>
+                <div style="display:flex;gap:8px;margin-top:6px">
+                  <input class="input" type="text" id="agentPlanLoginUrl" readonly style="flex:1;min-width:0;font-size:12px">
+                  <button class="btn-secondary btn-compact" id="agentPlanLoginCopyBtn" style="flex-shrink:0" data-i18n="agents.plan_login.copy">Másolás</button>
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+                  <input class="input" type="text" id="agentPlanLoginCode" autocomplete="off" spellcheck="false" style="flex:1 1 180px;min-width:0" data-i18n-placeholder="agents.plan_login.code" placeholder="A belépés után kapott kód">
+                  <button class="btn-primary btn-compact" id="agentPlanLoginCodeBtn" style="flex-shrink:0" data-i18n="agents.plan_login.submit">Kód beküldése</button>
+                  <button class="btn-secondary btn-compact" id="agentPlanLoginCancelBtn" style="flex-shrink:0" data-i18n="common.btn.cancel">Mégse</button>
+                </div>
+              </div>
+              <small id="agentPlanLoginStatus" hidden style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px"></small>
+              <div id="agentPlanLoginError" hidden style="margin-top:8px;color:var(--danger);font-size:12px"></div>
+            </div>
+          </div>
+          <!-- HOSTINGERRETEST1125: an agent on a custom provider (e.g. the Hostinger AI Router) needs no Claude login. -->
+          <div class="form-group" id="agentProviderAuthNote" hidden>
+            <label data-i18n="agents.settings.auth_mode_label">Hitelesítési mód</label>
+            <small id="agentProviderAuthNoteText" style="display:block;color:var(--text-muted);font-size:12px;line-height:1.5"></small>
           </div>
           <div class="form-group">
             <label for="editClaudeMd">CLAUDE.md</label>
