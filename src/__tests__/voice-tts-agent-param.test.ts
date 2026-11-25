@@ -117,6 +117,7 @@ describe('POST /api/voice/tts sends only to a chat the channel lets in', () => {
     const { chatAllowedByChannel } = await import('../web/routes/voice.js')
     expect(chatAllowedByChannel(agentChannel, '123')).toBe(true)
     expect(chatAllowedByChannel(agentChannel, '12')).toBe(false)
+    expect(chatAllowedByChannel(agentChannel, '1234')).toBe(false) // the allowed id as a prefix is not a match
     expect(chatAllowedByChannel(join(agentChannel, 'nope'), '123')).toBe(false)
     const odd = join(H.home, 'odd-dir')
     mkdirSync(odd, { recursive: true })
