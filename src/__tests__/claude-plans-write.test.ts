@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-write-test-'))
 
-vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
+// STORE_DIR: agent-config.ts reaches settings-store.ts, which builds its overrides path from it at import time.
+vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, STORE_DIR: join(tmpRoot, 'store'), MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
 
 const { readClaudePlans, writeClaudePlans, validatePlan, CLAUDE_PLANS_PATH } =
   await import('../web/claude-plans.js')

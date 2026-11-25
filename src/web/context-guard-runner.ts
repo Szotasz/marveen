@@ -2,7 +2,7 @@ import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 import { logger } from '../logger.js'
 import { BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
-import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
+import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending, readConfiguredMainModel } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
 import { configDirFor } from './main-transcript-root.js'
@@ -59,6 +59,7 @@ import { createAgentMessage, countRestartQueueState, listKanbanCards, hasOpenInb
 import {
   decideGuard,
   contextLimitForModel,
+  withLaunchWindowMarker,
   isKnownContextModel,
   calibrateLimit,
   handoffStaleMinutes,
@@ -722,14 +723,16 @@ export function resumePrompt(
     // started, into the dying session -- the queue marked it delivered, the
     // fresh session had no reason to look, and completed_at is unused (0/37
     // measured), so the loss is invisible from the queue. The re-read must
-    // ride in the resume prompt (the fresh session's only context), and the
-    // ack-to-sender is the OBSERVABLE trace: without it, verifying this very
-    // instruction would run into the same blindness it exists to fix.
+    // ride in the resume prompt (the fresh session's only context). The OBSERVABLE
+    // trace is the closed row, not an ack message: every ack woke its sender for a
+    // full-context turn (24h, one install: 50 turns, 3.1% of the fleet's usage).
     `RESTART-ABLAK: az előző session utolsó ~15 percében kézbesített inter-agent üzenet elveszhetett. ` +
     `Olvasd vissza a saját sorodat erre az ablakra (GET /api/messages?agent=${name}, created_at szerint szűrve), ` +
-    `és minden ott talált, még el nem intézett kérést kezelj újként. KÖTELEZŐ MEGFIGYELHETŐ NYOM: minden ` +
-    `visszaolvasott tételről küldj rövid nyugtát a feladónak ("[RESTART-ABLAK] <id> felvéve a friss sessionben"), ` +
-    `akkor is, ha nincs belőle teendő -- e nélkül a visszaolvasás a sorból láthatatlan. ` +
+    `és minden ott talált, még el nem intézett kérést kezelj újként. KÖTELEZŐ MEGFIGYELHETŐ NYOM: a lezárt sor. ` +
+    `Ha egy visszaolvasott tételből van teendő, a valódi válasz vagy eredmény a nyom: azzal zárd le a szokásos módon. ` +
+    `Ha nincs belőle teendő, zárd le értesítés nélkül (PUT /api/messages/<id> {"status":"done","notify":false}, ` +
+    `a CLAUDE.md-d üzenet-lezárási receptje szerint). A feladónak külön nyugtát NE küldj: minden nyugta felébreszti, ` +
+    `és nála egy teljes kontextusú kört visz el. ` +
     // RESPAWNZAJ822/PRODFAAG822: a fresh session acting on a resume goal is
     // exactly the actor that branch-switched and committed on the live prod
     // tree (2026-08-22 10:10, PR #1036 duplicate). The constraint must ride in
@@ -799,9 +802,14 @@ export function measureIdleMs(name: string, nowMs: number): number | null {
  *  model read from a stale root produces a wrong pct from a right token count -- and pct is what the handoff threshold
  *  compares. */
 function guardModelFor(name: string): string {
-  return (name === MAIN_AGENT_ID
-    ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
-    : readAgentModel(name)) ?? ''
+  if (name !== MAIN_AGENT_ID) return readAgentModel(name) ?? ''
+  // The main agent's model is read from its transcript, where the "[1m]" marker of the launch id is lost; a sub-agent's
+  // comes from its config and keeps it. withLaunchWindowMarker puts it back from the configured launch model.
+  // shortcut: a temporary /model switch to another "[1m]" id is not seen (it is sized as the bare id until the
+  // calibration learns the window), upgrade when the hold flow needs it: main-model.ts knows the id it sent.
+  let launched: string | null = null
+  try { launched = readConfiguredMainModel(PROJECT_ROOT) } catch { /* no launch id: the transcript's id as it is */ }
+  return withLaunchWindowMarker(readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name)), launched) ?? ''
 }
 
 /** CTXUNKNOWNMODEL1122: true when the pct is measured against the 200k fallback of a model id the guard does not know
@@ -1174,9 +1182,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           limitTokens: cfg.limitTokens,
           // The actionable field: this is what says WHAT to fix. Same branch as
           // measurePct's, and it only runs on this rare state change.
-          model: (name === MAIN_AGENT_ID
-            ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
-            : readAgentModel(name)) ?? null,
+          model: guardModelFor(name) || null,
         },
         // Fleet-side checks should match on the fields above (name, model, pct,
         // thresholdPct), never on this wording: the message is prose and may be

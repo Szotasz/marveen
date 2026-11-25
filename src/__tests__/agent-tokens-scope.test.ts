@@ -1001,7 +1001,7 @@ const ALLOWLIST_SAMPLES: Array<[string, string]> = [
   ['GET', '/api/daily-log'], ['GET', '/api/daily-log/dates'], ['POST', '/api/daily-log'],
   ['GET', '/api/approvals'], ['GET', '/api/approvals/abc-123'], ['POST', '/api/approvals'], ['POST', '/api/approvals/abc-123/consume'],
   ['GET', '/api/agents'],
-  ['GET', '/api/vault'], ['GET', '/api/vault/teszt-sajat'], ['POST', '/api/vault/resolve'],
+  ['GET', '/api/vault'], ['GET', '/api/vault/teszt-sajat'], ['POST', '/api/vault/resolve'], ['GET', '/api/vault/web-logins'], ['POST', '/api/vault/web-logins/shop-example-com/login'],
   ['POST', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa/replay'], ['POST', '/api/agent-taskstate/alfa/consume'],
   ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'],
   ['POST', '/api/skills/propose'], ['GET', '/api/updates'],

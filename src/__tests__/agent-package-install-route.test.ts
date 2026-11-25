@@ -335,7 +335,7 @@ describe('Dani, #2826 review 79824 (2): the credential file is not read through 
     rmSync(CRED)
     symlinkSync(real, CRED)
     const get = await callRoute((ctx) => tryHandleAgentPackages(ctx, deps), 'GET', '/api/agent-packages/credential', SESSION)
-    expect(get.out.body).toEqual({ connected: false })
+    expect(get.out.body).toEqual({ connected: false, configured: true })
     fake.answer({ status: 200, body: delivery() })
     expect(await install({ slug: 'invoice-helper' })).toMatchObject({ status: 409, body: { error: 'not_connected' } })
     expect(fake.requests).toHaveLength(0)
@@ -343,5 +343,59 @@ describe('Dani, #2826 review 79824 (2): the credential file is not read through 
     storeCredential()
     const again = await callRoute((ctx) => tryHandleAgentPackages(ctx, deps), 'GET', '/api/agent-packages/credential', SESSION)
     expect(again.out.body.connected).toBe(true)
+  })
+})
+
+describe('the name the owner chose in the install dialog (MIOAGENTB4-1122, Samu 83718/83741)', () => {
+  const base = () => h.baseCalls[0]?.[1] as Record<string, unknown> | undefined
+
+  it('sets only the display name: the agent id, the folder and the download stay the slug', async () => {
+    fake.answer({ status: 200, body: delivery() })
+    const out = await install({ slug: 'invoice-helper', display_name: 'Számlázó Kati' })
+    expect(out).toMatchObject({ status: 200, body: { ok: true, name: 'invoice-helper' } })
+    expect(h.baseCalls.map(([n]) => n)).toEqual(['invoice-helper'])
+    expect(base()?.displayName).toBe('Számlázó Kati')
+    expect(existsSync(join(AGENTS, 'invoice-helper', 'PACKAGE.md'))).toBe(true)
+    expect(JSON.parse(fake.requests[0]!.body!)).toEqual({ slug: 'invoice-helper' }) // the chosen name never leaves the machine
+  })
+
+  it('is cleaned the way the package name is held: one line, no S11 code point, no edge space, at most 60', async () => {
+    fake.answer({ status: 200, body: delivery() })
+    await install({ slug: 'invoice-helper', display_name: '  Számlázó\nKati\t​ ' + 'x'.repeat(70) })
+    const name = String(base()?.displayName)
+    expect(name.startsWith('Számlázó Kati x')).toBe(true)
+    expect(Array.from(name)).toHaveLength(60)
+    expect(/[\n\t​]|^\s|\s$/u.test(name)).toBe(false)
+  })
+
+  it('empty or only white space: the package\'s own name stays', async () => {
+    for (const display_name of ['', '   \n ']) {
+      rmSync(join(AGENTS, 'invoice-helper'), { recursive: true, force: true })
+      h.baseCalls.length = 0
+      fake.answer({ status: 200, body: delivery() })
+      expect((await install({ slug: 'invoice-helper', display_name })).status).toBe(200)
+      expect(base()?.displayName).toBe('Invoice helper')
+    }
+  })
+
+  it('not a string, longer than 200, or an import token after the cleaning: 400 invalid_display_name, 0 requests, no folder', async () => {
+    fake.answer({ status: 200, body: delivery() })
+    for (const display_name of [5, null, ['x'], 'x'.repeat(201), '@notes/secret.md', 'Kati &#x40; x']) {
+      expect(await install({ slug: 'invoice-helper', display_name })).toMatchObject({ status: 400, body: { error: 'invalid_display_name' } })
+    }
+    expect(fake.requests).toHaveLength(0)
+    expect(existsSync(join(AGENTS, 'invoice-helper'))).toBe(false)
+  })
+
+  it('exactly 200 characters is accepted (and cut to 60)', async () => {
+    fake.answer({ status: 200, body: delivery() })
+    expect((await install({ slug: 'invoice-helper', display_name: 'y'.repeat(200) })).status).toBe(200)
+    expect(base()?.displayName).toBe('y'.repeat(60))
+  })
+
+  it('any other key next to it is still a 400 bad_request', async () => {
+    expect(await install({ slug: 'invoice-helper', display_name: 'Kati', folder: '../x' })).toMatchObject({ status: 400, body: { error: 'bad_request' } })
+    expect(await install({ display_name: 'Kati' })).toMatchObject({ status: 400, body: { error: 'bad_request' } })
+    expect(fake.requests).toHaveLength(0)
   })
 })

@@ -23,8 +23,14 @@ export function sanitizeAgentName(raw: string): string {
 // 403'd on every POST lane; 'telegram-coordinator' is 403'd too; 'heartbeat'
 // and 'channel-coordinator' are hidden as chat threads. A main agent with one
 // of these ids could not send, or would speak as something it is not.
+// FIGURAKULCS1125: the desktop companion's sender id. A code constant, never a key name: the messages route takes it
+// as `from` only from a 'companion' scoped device key, and delivery frames it as the owner writing on the desktop
+// companion (agent-message-wrap.ts, 'companion-inbound'). Reserved like the other message-layer ids, so no agent can
+// be created under it.
+export const COMPANION_SENDER_ID = 'desktop-companion'
+
 export const MESSAGE_LAYER_RESERVED_AGENT_IDS: readonly string[] =
-  ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator']
+  ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', COMPANION_SENDER_ID]
 
 // First path segments the agents API serves itself (AGENTROUTERESERVED1114):
 // GET /api/agents/activity, GET /api/agents/status, POST /api/agents/model-suggest,

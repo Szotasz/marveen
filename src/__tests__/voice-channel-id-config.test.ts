@@ -123,8 +123,8 @@ describe('VOICE_CHANNEL_ID set in .env to another valid id', () => {
     expect(m.delivery.rankedSenders()).not.toContain(DEFAULT_VOICE_CHANNEL_ID)
 
     // Framed as channel-inbound: the configured id, not the default.
-    expect(m.wrap.classifyAgentMessage('voice-relay', 'marveen')!.category).toBe('channel-inbound')
-    expect(m.wrap.classifyAgentMessage(DEFAULT_VOICE_CHANNEL_ID, 'marveen')!.category).not.toBe('channel-inbound')
+    expect(m.wrap.classifySenderId('voice-relay', 'marveen')!.category).toBe('channel-inbound')
+    expect(m.wrap.classifySenderId(DEFAULT_VOICE_CHANNEL_ID, 'marveen')!.category).not.toBe('channel-inbound')
 
     // Write guard: the configured id needs a device key ...
     const voice = await postAs(m.messages.tryHandleMessages, 'voice-relay', { kind: 'token' })
@@ -147,7 +147,7 @@ describe('VOICE_CHANNEL_ID set in .env to an invalid value', () => {
     expect(m.config.VOICE_CHANNEL_ID_INVALID).toBe('Voice_Relay')
     expect(m.ingest.VOICE_CHANNEL_AGENT_ID).toBe(DEFAULT_VOICE_CHANNEL_ID)
     expect(m.config.RESERVED_AGENT_IDS).toContain(DEFAULT_VOICE_CHANNEL_ID)
-    expect(m.wrap.classifyAgentMessage(DEFAULT_VOICE_CHANNEL_ID, 'marveen')!.category).toBe('channel-inbound')
+    expect(m.wrap.classifySenderId(DEFAULT_VOICE_CHANNEL_ID, 'marveen')!.category).toBe('channel-inbound')
     const warned = m.warn.mock.calls.find(c => String(c[1] ?? '').includes('VOICE_CHANNEL_ID'))
     expect(warned).toBeDefined()
     expect(warned![0]).toMatchObject({ rejected: 'Voice_Relay', using: DEFAULT_VOICE_CHANNEL_ID })
@@ -172,7 +172,7 @@ describe('the default names another sender', () => {
     expect(m.config.RESERVED_AGENT_IDS).not.toContain(d)
     expect(m.delivery.rankedSenders()).not.toContain(null)
     // The main agent keeps its own lane: no voice framing, no device-key demand.
-    expect(m.wrap.classifyAgentMessage(d, 'someone')!.category).not.toBe('channel-inbound')
+    expect(m.wrap.classifySenderId(d, 'someone')!.category).not.toBe('channel-inbound')
     const r = await postAs(m.messages.tryHandleMessages, d, { kind: 'token' })
     expect(String(r.body?.error ?? '')).not.toMatch(/device key/i)
     const logged = m.error.mock.calls.find(c => String(c[1] ?? '').includes('voice channel lane is OFF'))

@@ -346,3 +346,62 @@ describe('the warnings: something to fix, or a step that is not allowed', () => 
     }
   })
 })
+
+// Block 5: a step that is done is green. What is still running or waiting (a restart, an approval, the AI), what only
+// informs, and what follows the owner's own "no" stays neutral. Where one call can end two ways, the kind follows the
+// outcome: saved but not restarted, connected with a caveat, or a team saved with something dropped is amber.
+describe('the successes: the step is done', () => {
+  const NEUTRAL_KEYS = [
+    'kanban.toast.breakdown_rejected', 'agents.wizard.already_created', 'agents.toast.restart_not_forced',
+    'agents.toast.model_save_restart', 'agents.toast.model_saved_stopped', 'agents.import.fleet_kept',
+    'channel.toast.invite_created', 'channel.toast.invite_pending', 'channel.toast.denied',
+    'memories.toast.delete_pending', 'vault.sync.nothing', 'skills.pending.rejected', 'updates.cli.started',
+    'updates.diagnose.already', 'updates.diagnose.started', 'updates.toast.applying', 'ideas.toast.ai_elaborating',
+    'agents.auth.toast_started', 'federation.routing.toast_set',
+  ]
+  const withKey = (k: string) => TOASTS.filter(c => c.msg.includes(`'${k}'`))
+
+  it('the plain successes are green', () => {
+    expect(TOASTS.filter(c => c.kind === 'success').length).toBeGreaterThanOrEqual(100)
+    for (const k of ['kanban.toast.card_created', 'agents.toast.deleted', 'common.toast.copied', 'tasks.toast.updated',
+      'vault.weblogin.toast.deleted', 'settings.toast.saved', 'updates.toast.success', 'notes.toast.added']) {
+      const hits = withKey(k)
+      expect(hits.length, k).toBeGreaterThanOrEqual(1)
+      expect(hits.every(c => c.text.includes("'success'")), k).toBe(true)
+    }
+  })
+
+  it('a key that says it is done is green wherever it is said, a new one too', () => {
+    const done = TOASTS.filter(c => /'[\w.]*[._](saved|created|updated|deleted|added|removed|copied)'/.test(c.msg)
+      && !NEUTRAL_KEYS.some(k => c.msg.includes(`'${k}'`)))
+    expect(done.length).toBeGreaterThanOrEqual(45)
+    expect(done.filter(c => !c.text.includes("'success'")).map(c => `${c.line}: ${c.text}`)).toEqual([])
+  })
+
+  it('a call that can end two ways takes its kind from the outcome', () => {
+    for (const piece of [
+      "'agents.main_auth.saved_not_restarted'), restarted ? 'success' : 'warn')",
+      "showToast(parts.join(' '), data.kind === 'fleet' && (data.skipped || []).length ? 'warn' : 'success')",
+      "result.pollerNote ? { kind: 'warn', duration: 10000 } : 'success')",
+      "showToast(t('channel.toast.test_ok') + suffix, secretNeedsCare ? { kind: 'warn', duration: 8000 } : { kind: 'success', duration: suffix ? 8000 : 3000 })",
+      "t('skills.toast.added'), created.pending ? undefined : 'success')",
+      "{ list: importedList.join(', ') }), result.pending ? undefined : 'success')",
+      "t('messages.sent'), reply.body.queued === true ? 6000 : { kind: 'success', duration: 3000 })",
+      "t('team.save_ok'), warningMsg ? 'warn' : 'success')",
+      "'approvals.toast.rejected'), decision === 'approved' ? 'success' : undefined)",
+      "{ label: data.label || data.id }), data.verified ? 'success' : 'warn')",
+    ]) expect(APP, piece).toContain(piece)
+  })
+
+  it('a Teams secret that needs care makes the working connection amber', () => {
+    expect(APP).toContain("const secretNeedsCare = ['missing', 'invalid', 'soon', 'expired'].includes(exp?.state)")
+  })
+
+  it('what is still running, only informs, or follows the owner\'s no stays neutral', () => {
+    for (const k of NEUTRAL_KEYS) {
+      const hits = withKey(k)
+      expect(hits.length, k).toBeGreaterThanOrEqual(1)
+      expect(hits.filter(c => c.kind !== null).map(c => `${c.line}: ${c.text}`), k).toEqual([])
+    }
+  })
+})

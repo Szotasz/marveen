@@ -19,6 +19,8 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { STORE_DIR, DB_FILENAME, MAIN_AGENT_ID, VOICE_CHANNEL_ID } from '../config.js'
+import { readInboundSigKey, signRow } from '../inbound-sig.js'
+import { logger } from '../logger.js'
 
 export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 
@@ -176,12 +178,34 @@ export function insertIncomingEvent(
 // inbound message -- while still treating the message body as untrusted user
 // data. (External callers cannot forge this id via /api/messages: a 403 guard
 // rejects it; only this in-process direct DB insert is trusted.)
+//
+// HMACINBOUND1125: the row is signed in the same transaction (src/inbound-sig.ts); the router gives the owner's voice
+// only to a signed row. Without the key (the dashboard creates it at boot) or before the dashboard added the column,
+// the row is written unsigned: it is still delivered, as untrusted, so nothing is lost, and the warning says why.
 export function createHandoffMessage(content: string): number {
   const now = Math.floor(Date.now() / 1000)
-  const info = requireDb().prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'pending', now)
-  return Number(info.lastInsertRowid)
+  const handle = requireDb()
+  const key = readInboundSigKey()
+  let unsignedWhy: string | null = key ? null : 'the inbound signature key is missing (store/.inbound-sig-key)'
+  const id = handle.transaction(() => {
+    const info = handle.prepare(
+      'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'pending', now)
+    const newId = Number(info.lastInsertRowid)
+    if (key) {
+      const sig = signRow({ id: newId, from_agent: COORDINATOR_AGENT_ID, to_agent: MAIN_AGENT_ID, content, created_at: now }, key)
+      try {
+        handle.prepare('UPDATE agent_messages SET inbound_sig = ? WHERE id = ?').run(sig, newId)
+      } catch (err) {
+        unsignedWhy = `the signature was not stored: ${(err as Error).message}`
+      }
+    }
+    return newId
+  })()
+  if (unsignedWhy) {
+    logger.warn({ id, why: unsignedWhy }, 'channel-coordinator: handoff row written UNSIGNED, it reaches the main agent as untrusted (HMACINBOUND1125)')
+  }
+  return id
 }
 
 export function markEventDelivered(eventId: number, agentMessageId: number): void {

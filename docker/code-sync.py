@@ -15,7 +15,10 @@ A half-copied tree never starts: a failed check exits non-zero (the container st
 crash in between leaves the marker, so the next start does the whole sync again. State never enters the image
 (.dockerignore), so a top-level state entry (.env, store/, agents/, ...) is never touched. Two files inside a code dir
 are written at runtime by the dashboard (.claude/settings.json and settings.local.json: the hook entries): an existing
-one is kept, and they are left out of the in-place check.
+one is kept, and they are left out of the in-place check. One directory inside a code dir is runtime state too:
+.claude/channels, where scripts/channels.sh keeps the main agent's channel (bot token .env, access.json, approved/).
+The whole subtree is carried over into the new code tree (the existing copy wins over anything the image ships there),
+and it is left out of the in-place check, so an image update no longer makes the owner configure the channel again.
 """
 import hashlib
 import os
@@ -26,6 +29,7 @@ IMG = os.environ.get('MARVEEN_IMAGE_DIR', '/opt/marveen-image')
 DST = os.environ.get('MARVEEN_INSTALL_DIR', '/opt/marveen')
 META = os.environ.get('MARVEEN_DOCKER_DIR', '/opt/marveen-docker')
 KEEP = ('.claude/settings.json', '.claude/settings.local.json')
+KEEP_DIRS = ('.claude/channels',)
 PENDING = '.code-sync-pending'
 ID_FILE = '.image-id'
 ENTRIES_FILE = '.code-entries'
@@ -60,10 +64,10 @@ def sha256(path):
     return h.hexdigest()
 
 
-def verify(root, rows, skip=()):
+def verify(root, rows, skip=(), skip_dirs=()):
     bad = []
     for kind, value, rel in rows:
-        if rel in skip:
+        if rel in skip or any(rel == d or rel.startswith(d + os.sep) for d in skip_dirs):
             continue
         p = os.path.join(root, rel)
         if kind == 'L':
@@ -108,6 +112,12 @@ def main():
         cur = os.path.join(DST, rel)
         if os.path.isfile(cur) and not os.path.islink(cur):
             shutil.copy2(cur, os.path.join(stage, rel))
+    for rel in KEEP_DIRS:
+        cur = os.path.join(DST, rel)
+        if os.path.isdir(cur) and not os.path.islink(cur):
+            target = os.path.join(stage, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copytree(cur, target, symlinks=True, dirs_exist_ok=True)
 
     with open(os.path.join(DST, PENDING), 'w') as f:
         f.write(want + '\n')
@@ -122,7 +132,7 @@ def main():
             os.rename(cur, os.path.join(aside, e))
         os.rename(os.path.join(stage, e), cur)
 
-    bad = verify(DST, rows, skip=KEEP)
+    bad = verify(DST, rows, skip=KEEP, skip_dirs=KEEP_DIRS)
     if bad:
         log(f'the swapped tree does not match the image: {bad} (the marker stays, the next start redoes it)')
         return 4

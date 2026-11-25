@@ -76,6 +76,15 @@ describe('the released build', () => {
     expect(fake.requests).toHaveLength(0)
   })
 
+  it('MIOAGENTB4-1122: GET credential says configured false while the origin is empty, true with an origin', async () => {
+    const d = { ...RELEASED_DEPS, fetchImpl: fake.fetchImpl }
+    expect(await call('GET', '/api/agent-packages/credential', SESSION, undefined, d)).toMatchObject({ status: 200, body: { connected: false, configured: false } })
+    storeCredential()
+    expect((await call('GET', '/api/agent-packages/credential', SESSION, undefined, d)).body).toMatchObject({ connected: true, configured: false })
+    expect((await call('GET', '/api/agent-packages/credential')).body).toMatchObject({ connected: true, configured: true })
+    expect(fake.requests).toHaveLength(0)
+  })
+
   it('(11) the origin is the Remote\'s own, whatever the environment says', async () => {
     const names = ['PACKAGE_ORIGIN', 'AGENT_PACKAGE_ORIGIN', 'MARVEEN_PACKAGE_ORIGIN']
     const before = names.map((n) => process.env[n])
@@ -147,7 +156,7 @@ describe('GET /api/agent-packages/credential', () => {
   it('a stored credential: its label, id and time, never the token', async () => {
     storeCredential()
     const out = await call('GET', '/api/agent-packages/credential')
-    expect(out.body).toEqual({ connected: true, label: 'Office Mac', deviceTokenId: TEST_DEVICE_ID, connectedAt: STORED.connectedAt })
+    expect(out.body).toEqual({ connected: true, label: 'Office Mac', deviceTokenId: TEST_DEVICE_ID, connectedAt: STORED.connectedAt, configured: true })
   })
 
   it.each([
@@ -159,14 +168,14 @@ describe('GET /api/agent-packages/credential', () => {
     ['an array', '[]'],
   ])('a corrupt file (%s): connected false', async (_n, content) => {
     storeCredential(content)
-    expect((await call('GET', '/api/agent-packages/credential')).body).toEqual({ connected: false })
+    expect((await call('GET', '/api/agent-packages/credential')).body).toEqual({ connected: false, configured: true })
   })
 
   it.skipIf(process.platform === 'win32')('a file readable by others (0644, 0640) is not used: connected false', async () => {
     for (const mode of [0o644, 0o640, 0o604]) {
       storeCredential()
       chmodSync(CRED, mode)
-      expect((await call('GET', '/api/agent-packages/credential')).body).toEqual({ connected: false })
+      expect((await call('GET', '/api/agent-packages/credential')).body).toEqual({ connected: false, configured: true })
     }
   })
 })

@@ -113,6 +113,25 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen).toHaveLength(1)
   })
 
+  it('a usage error prints the failing verb\'s usage lines only, an unknown verb the verb names; --help the whole list', async () => {
+    const bad = await run(['skill-propose', 'my-skill'])
+    expect(bad.code).toBe(2)
+    expect(bad.stderr).toContain('FAIL: skill-propose: expected')
+    expect(bad.stderr).toContain('  skill-propose <skill-name> <skill-md-file>')
+    expect(bad.stderr).toContain('(each --ref-file goes as references/<its file name>, markdown only)')
+    expect(bad.stderr).not.toContain('kanban-list')
+    expect(bad.stderr).toContain('bash scripts/marveen-api.sh --help')
+    const unknown = await run(['kanban-get', 'abc'])
+    expect(unknown.code).toBe(2)
+    expect(unknown.stderr).toContain("FAIL: unknown verb: 'kanban-get'")
+    expect(unknown.stderr).toMatch(/verbs: message, message-close, directive-verify, .*kanban-list/)
+    expect(unknown.stderr).not.toContain('<content-file>')
+    const help = await run(['--help'])
+    expect(help.code).toBe(0)
+    expect(help.stdout).toContain('  kanban-comment <card-id> <author> <content-file>')
+    expect(seen).toHaveLength(0)
+  })
+
   it('memory-search: the accented query is encoded, and the label header is printed first', async () => {
     reply = { status: 200, body: '[]', headers: { 'X-Memory-Search': 'strict=true; relaxed=false; hits=0' } }
     const r = await run(['memory-search', 'dani', 'funkcionális', '--category', 'warm', '--strict', '--since', '2026-10-01'])
@@ -214,6 +233,17 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen[1].method).toBe('GET')
     expect(seen[1].url).toBe('/api/messages/5')
     expect(JSON.parse(seen[2].body)).toEqual({ status: 'failed', result: 'mit csináltam' })
+  })
+
+  it('HMACINBOUND1125: directive-verify accepts a row only when the server says sig_ok true', async () => {
+    reply = { status: 200, body: '{"id":7,"from_agent":"system","sig_ok":true}' }
+    expect((await run(['directive-verify', '7'])).code).toBe(0)
+    for (const body of ['{"id":7,"from_agent":"system","sig_ok":false}', '{"id":7,"from_agent":"system"}', 'not json']) {
+      reply = { status: 200, body }
+      const r = await run(['directive-verify', '7'])
+      expect(r.code, body).toBe(1)
+      expect(r.stderr, body).toContain('sig_ok is not true')
+    }
   })
 
   it('directive-verify, daily-log and the three approval verbs', async () => {
@@ -400,6 +430,8 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
       }, (err) => resolve(err ? (typeof err.code === 'number' ? err.code : -1) : 0))
     })
     // control: the fixture does reach the server with the shared token when nothing names another file
+    // (HMACINBOUND1125: directive-verify exits 0 only on a signed row, so the fixture answers sig_ok)
+    reply = { status: 200, body: '{"ok":true,"sig_ok":true}' }
     expect(await runIn(['directive-verify', '1'], {})).toBe(0)
     expect(seen).toHaveLength(1)
     expect(seen[0].headers.authorization).toBe(`Bearer ${SHARED}`)
@@ -537,7 +569,7 @@ describe('marveen-api.sh: schedules are read only', () => {
     '        "kanban-list": [], "schedules-list": [], "kanban-create": ["dani", "normal", f],',
     '        "kanban-move": ["c-1", "done"], "kanban-claim": ["c-1", "dani"], "kanban-release": ["c-1", "dani"],',
     '        "kanban-comment": ["c-1", "dani", f], "kanban-assign": ["c-1", "dani"], "kanban-archive": ["c-1"],',
-    '        "kanban-done-since": ["1700000000"], "agents-list": [],',
+    '        "kanban-done-since": ["1700000000"], "agents-list": [], "vault-login": ["dani", "shop-example-com"], "vault-logins": [],',
     '        "agent-restart": ["dani"], "federation-directory": [], "daily-log-read": ["dani"], "memory-backfill": [],',
     '    }',
     '    verbs = re.findall(r"^ {2}([a-z-]+)(?= |$)", m.USAGE, re.M)',

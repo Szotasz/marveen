@@ -52,10 +52,16 @@ export default defineConfig({
     //    the live-install gate above: that one inspects the CHECKOUT, and ~/.ssh is
     //    HOME-scoped -- a clean worktree run leaked 62 real keys (ENROLL813,
     //    2026-09-15). A seam, not a gate: it sets state, so it lives in its own file.
+    //  - embed-endpoint-seam: any fetch to an /api/embeddings or /api/embed path
+    //    fails like a dead port, so no test run drives the operator's real
+    //    embedding server (EMBEDSEAM1123). A test that stubs fetch itself
+    //    (vi.stubGlobal) still gets its stub; MARVEEN_TEST_REAL_EMBED=1 turns
+    //    the seam off.
     setupFiles: [
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/default-ssh-dir-seam.ts',
+      './src/__tests__/setup/embed-endpoint-seam.ts',
     ],
   },
 })

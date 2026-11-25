@@ -2,8 +2,8 @@ import http from 'node:http'
 import { existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
+import { readPortHolder, selectReclaimVictims } from './port-reclaim.js'
 import { PROJECT_ROOT, WEB_HOST, WEB_PUBLIC_PORT, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
@@ -15,6 +15,7 @@ import { readOperatorAccess } from './web/operator-access.js'
 import { boardGateDecision, readBoardAccess } from './web/board-access.js'
 import { tryHandleBoard } from './web/routes/board.js'
 import { colleagueGateDecision } from './web/colleague-gate.js'
+import { approverGateDecision } from './web/approver-gate.js'
 import { lanLockPreAuth, lanLockActiveNow, keepOnlyColleagueCookie, LAN_LOCK_CUT_OFF } from './web/colleague-lan-lock.js'
 import { tryHandleColleague } from './web/routes/colleague.js'
 import { sweepExpiredColleagueSessions } from './web/colleague-sessions.js'
@@ -69,6 +70,7 @@ import { tryHandleSecurity } from './web/routes/security.js'
 import { tryHandleBridgeServicePorts } from './web/routes/bridge-service-ports.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
+import { tryHandleCompanion } from './web/routes/companion.js'
 import { tryHandleFederation } from './web/routes/federation.js'
 import { startFederationPoller } from './web/federation/poller.js'
 import { registerBuiltinCommands } from './web/builtin-commands.js'
@@ -139,6 +141,8 @@ import { tryHandleVoice } from './web/routes/voice.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
+import { tryHandleVaultWebLogins } from './web/routes/vault-web-logins.js'
+import { startAgentBrowserWatchdog } from './web/agent-browser.js'
 import { tryHandleCustomProviders } from './web/routes/custom-providers.js'
 import type { RouteContext } from './web/routes/types.js'
 import { isMalformedBodyError } from './web/malformed-body.js'
@@ -249,6 +253,15 @@ export function startWebServer(port = 3420): http.Server {
       res.end(JSON.stringify({ error: 'Forbidden for this credential', rule: 'colleague-scope', reason: colleagueDenied.reason }))
       return
     }
+    // DELEGAPPROVER1123 (approver-gate.ts): an approver session reaches its sign-in and the approval decision only,
+    // decided here for EVERY path, before any handler runs.
+    const approverDenied = approverGateDecision(auth, path, method)
+    if (approverDenied) {
+      logger.warn({ path, method, approver: auth.kind === 'approver' ? auth.user : undefined, reason: approverDenied }, 'approver gate: denied')
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Forbidden for this credential', rule: 'approver-scope', reason: approverDenied }))
+      return
+    }
     // DASHOPERATOR1005: an operator-scoped key reaches /api/operator/* only,
     // decided here, before ANY handler (including network-info below) runs.
     if (requiresAuth(path, method)) {
@@ -278,6 +291,7 @@ export function startWebServer(port = 3420): http.Server {
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
       : auth.kind === 'setup' ? { kind: 'setup' as const }
       : auth.kind === 'colleague' ? { kind: 'colleague' as const, colleague: auth.colleague, person: auth.person }
+      : auth.kind === 'approver' ? { kind: 'approver' as const, user: auth.user }
       : undefined
 
     // The mobile-login QR needs a URL the phone can actually reach. When the
@@ -301,6 +315,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleBridgeServicePorts(routeCtx)) return
       if (await tryHandleProfiles(routeCtx)) return
       if (await tryHandleMessages(routeCtx)) return
+      if (await tryHandleCompanion(routeCtx)) return
       if (await tryHandleFederation(routeCtx)) return
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandlePrLedger(routeCtx)) return
@@ -354,6 +369,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleSettings(routeCtx)) return
       if (await tryHandleVoice(routeCtx)) return
       if (await tryHandleVaultSshKeys(routeCtx)) return
+      if (await tryHandleVaultWebLogins(routeCtx)) return
       if (await tryHandleVaultSsh(routeCtx)) return
       if (await tryHandleCustomProviders(routeCtx)) return
       if (await tryHandleAuditLog(routeCtx)) return
@@ -391,33 +407,18 @@ export function startWebServer(port = 3420): http.Server {
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      // Try to reclaim the port only if the listener is another node/dashboard
-      // process owned by us. Blind `lsof -ti | xargs kill -9` would take down
-      // whatever happens to be on the port (e.g. an unrelated dev server),
-      // and under launchd it also race-kills the not-yet-dead predecessor.
+      // Try to reclaim the port only from THIS install's own dashboard (a predecessor that has not exited yet).
+      // Blind `lsof -ti | xargs kill -9` would take down whatever happens to be on the port, and "any same-user
+      // node process" took down the live CRM when a dashboard was started on its port (PORTRECLAIM1123).
       logger.warn({ port }, 'Web port foglalt, probalok felszabaditani...')
       try {
         const pidsRaw = (runLsof(['-ti', `:${port}`], 3000) ?? '').trim()
         const pids = pidsRaw.split('\n').map(s => s.trim()).filter(Boolean).map(Number).filter(n => Number.isFinite(n) && n > 0)
         const uid = typeof process.getuid === 'function' ? process.getuid() : null
-        const victims: number[] = []
-        for (const pid of pids) {
-          if (pid === process.pid) continue
-          let cmd = ''
-          try {
-            cmd = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], { timeout: 2000, encoding: 'utf-8' }).trim()
-          } catch { continue }
-          if (uid !== null) {
-            try {
-              const ownerUid = parseInt(execFileSync('/bin/ps', ['-p', String(pid), '-o', 'uid='], { timeout: 2000, encoding: 'utf-8' }).trim(), 10)
-              if (Number.isFinite(ownerUid) && ownerUid !== uid) continue
-            } catch { continue }
-          }
-          if (!/node|tsx/i.test(cmd)) {
-            logger.warn({ port, pid, cmd }, 'Port held by non-node process -- refusing to kill')
-            continue
-          }
-          victims.push(pid)
+        const { victims, foreign } = selectReclaimVictims(pids, process.pid, readPortHolder, PROJECT_ROOT, uid)
+        for (const { pid, holder } of foreign) {
+          // The command line can carry secrets in its arguments: only its first word goes into the log.
+          logger.warn({ port, pid, cmd: holder.command.split(/\s+/)[0] ?? '' }, 'Port held by a process that is not this install\'s dashboard -- refusing to stop it')
         }
         for (const pid of victims) {
           try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
@@ -751,6 +752,9 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       .catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
     logger.info('Token usage auto-collect started (1h poll + startup)')
   }
+
+  // VAULTLOGIN1112: every sub-agent a vault web login allows keeps its own browser running (a no-op with none).
+  if (!servicesOff) startAgentBrowserWatchdog()
 
   // NOTE: startMcpListChecker() is intentionally NOT called here.
   //

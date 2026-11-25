@@ -39,6 +39,7 @@ export const UNGATED_ROUTES: ReadonlyArray<{ key: string; cls: RouteClass; why: 
   { key: "connectors.ts POST /api/connectors/refresh", cls: "agent", why: "refreshes the connector list" },
   { key: "connectors.ts DELETE <connectorDetailMatch>", cls: "pending", why: "removes a connector" },
   { key: "connectors.ts POST /api/vault/resolve", cls: "agent", why: "agents resolve the secrets they use (ACL audit / enforce)" },
+  { key: "vault-web-logins.ts POST ? #2", cls: "agent", why: "VAULTLOGIN1112: an agent logs in, in its own browser, with an entry whose allowedAgents lists it (empty = nobody); the answer is the outcome only. The writes of the entries are owner-gated" },
   { key: "connectors.ts PATCH <vaultMatch>", cls: "pending", why: "vault secret update" },
   { key: "connectors.ts POST /api/vault/bindings", cls: "pending", why: "vault binding" },
   { key: "connectors.ts DELETE <bindingDeleteMatch>", cls: "pending", why: "vault binding removal" },

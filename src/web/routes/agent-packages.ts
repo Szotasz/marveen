@@ -5,6 +5,8 @@
 //   DELETE /api/agent-packages/credential  -> {ok:true, connected:false, remoteRevoked:false}
 //   GET    /api/agent-packages/catalog     -> {catalog: <the publishing side's body>, knownKids: [<kid>], origin, marveenVersion}
 //   POST   /api/agents/install-package     {slug} -> {ok, name, version, modelHintApplied, skillReport} (PR-I3, plan 6.1)
+//   POST   /api/agents/:name/package/check {} -> the change list (PR-I4, plan 6.2, 8.2)
+//   POST   /api/agents/:name/package/apply {planId, decisions} -> {ok, kind, version, applied, keptMine} (PR-I4, plan 6.3, 8.4)
 //
 // Every route takes the owner (mayActAsOwner) BEFORE it reads a body: the
 // credential lets this machine download packages on the owner's account. The
@@ -24,12 +26,20 @@ import { notifyOwner } from '../../notify.js'
 import { json, methodNotAllowed, readBodyOrRefuse } from '../http-helpers.js'
 import { RELEASED_KEYS } from '../agent-package/keys.js'
 import { PACKAGE_ORIGIN, deleteCredential, hasCredential, makeRemote, readCredentialView, type Remote } from '../agent-package/remote.js'
-import { meetsMinMarveenVersion, parseVersion, verifyDelivery, type Jwk } from '../agent-package/verify.js'
-import { STRICT_SLUG_RE, agentsBaseDir, isReservedName, markerPathOf } from '../agent-package/marker.js'
+import { SLUG_RE, meetsMinMarveenVersion, parseVersion, verifyDelivery, type Jwk } from '../agent-package/verify.js'
+import { agentsBaseDir, isHiddenByInstallMarker, isReservedName, markerPathOf } from '../agent-package/marker.js'
 import {
-  flushPendingPackageNotices, packageSkillReport, readPackageManifest, reapInterruptedPackageInstalls, runInstallBlock, sameDeviceLayout,
+  OWNER_DISPLAY_NAME_MAX_INPUT, flushPendingPackageNotices, ownerDisplayName, packageSkillReport, readPackageManifest, reapInterruptedPackageInstalls,
+  runInstallBlock, sameDeviceLayout,
 } from '../agent-package/install.js'
 import { sanitizeAgentName } from '../sanitize.js'
+import {
+  checkDecisions, classifyVersion, computeChangeList, installedFileHashes, readUpdatingTrace, runApplyBlock, shellRepairState,
+  updateSkillReport, type ChangeList,
+} from '../agent-package/update.js'
+import { quarantineOn } from '../skill-quarantine.js'
+import type { PackageManifest } from '../agent-package/install.js'
+import type { VerifiedPackage } from '../agent-package/verify.js'
 import { refuseIfCliCannotLaunch } from '../agent-create.js'
 import { launchableInstallDefault } from '../default-model-guard.js'
 import { currentVersion } from '../update-checker.js'
@@ -88,18 +98,29 @@ function codeFromBody(raw: Buffer): string | null {
 }
 
 /** The install body: exactly {slug} with a string value; null for anything else. */
-function slugFromBody(raw: Buffer): string | null {
+/**
+ * The install body: `{slug}`, or `{slug, display_name}` (MIOAGENTB4-1122, Samu 83718: the name the owner chose for
+ * the dashboard). Any other key is a 400 bad_request, as before; a display_name that is not a string, longer than
+ * OWNER_DISPLAY_NAME_MAX_INPUT, or against a manifest text rule after the cleaning is its own 400, so the dialog can
+ * say which field is wrong (Samu 83741).
+ */
+function installBodyOf(raw: Buffer): { slug: string; displayName?: string } | 'bad_request' | 'invalid_display_name' {
   let v: unknown
   try {
     v = JSON.parse(raw.toString('utf8'))
   } catch {
-    return null
+    return 'bad_request'
   }
-  if (v === null || typeof v !== 'object' || Array.isArray(v)) return null
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'bad_request'
   const keys = Object.keys(v)
-  if (keys.length !== 1 || keys[0] !== 'slug') return null
-  const slug = (v as { slug: unknown }).slug
-  return typeof slug === 'string' ? slug : null
+  if (!keys.includes('slug') || keys.some((k) => k !== 'slug' && k !== 'display_name')) return 'bad_request'
+  const { slug, display_name: rawName } = v as { slug: unknown; display_name?: unknown }
+  if (typeof slug !== 'string') return 'bad_request'
+  if (rawName === undefined) return { slug }
+  if (typeof rawName !== 'string' || Array.from(rawName).length > OWNER_DISPLAY_NAME_MAX_INPUT) return 'invalid_display_name'
+  const name = ownerDisplayName(rawName)
+  if (name === null) return 'invalid_display_name'
+  return name === undefined ? { slug } : { slug, displayName: name }
 }
 
 type Answer = { status: number; body: Record<string, unknown> }
@@ -161,9 +182,11 @@ async function installPackage(ctx: RouteContext, deps: PackageDeps): Promise<voi
   // 2. the body and the slug.
   const raw = await readBodyOrRefuse(req, res, { maxBytes: BODY_MAX_BYTES })
   if (raw === null) return
-  const slug = slugFromBody(raw)
-  if (slug === null) { json(res, BAD_REQUEST, 400); return }
-  if (!STRICT_SLUG_RE.test(slug) || sanitizeAgentName(slug) !== slug) { json(res, { error: 'invalid_slug' }, 400); return }
+  const body = installBodyOf(raw)
+  if (body === 'bad_request') { json(res, BAD_REQUEST, 400); return }
+  if (body === 'invalid_display_name') { json(res, { error: 'invalid_display_name' }, 400); return }
+  const slug = body.slug
+  if (!SLUG_RE.test(slug) || sanitizeAgentName(slug) !== slug) { json(res, { error: 'invalid_slug' }, 400); return }
   // 3. a reserved name.
   if (isReservedName(slug)) { json(res, { error: 'name_reserved' }, 409); return }
   // 4. the layout (a set-aside must be one rename), then the name's state, in the skills-dir queue.
@@ -221,7 +244,7 @@ async function installPackage(ctx: RouteContext, deps: PackageDeps): Promise<voi
   const lang = agentTextLang()
   const now = deps.now()
   const out = await serializeSkillsDir(() => {
-    const r = runInstallBlock({ name: slug, pkg, model, driveFolder, lang, now })
+    const r = runInstallBlock({ name: slug, pkg, model, driveFolder, lang, now, ...(body.displayName ? { displayName: body.displayName } : {}) })
     if (r.ok) return { ok: true as const, skillReport: packageSkillReport(slug, pkg, now) }
     if (r.kind === 'marker_exists') return { ok: false as const, answer: { status: 409, body: { error: 'stale_install' } } }
     if (r.kind === 'dir_exists') {
@@ -246,12 +269,191 @@ async function installPackage(ctx: RouteContext, deps: PackageDeps): Promise<voi
   }
 }
 
+// ---------------------------------------------------------------------------
+// PR-I4: the update (plan 6.2, 6.3, 8)
+// ---------------------------------------------------------------------------
+
+const UPDATE_PATH_RE = /^\/api\/agents\/([^/]+)\/package\/(check|apply)$/
+/** 6.3: one apply per agent at a time in this process, from the download to the end of the block. */
+const applying = new Set<string>()
+
+type Installed = { name: string; dir: string; manifest: PackageManifest; installedFiles: Map<string, string> }
+
+/** The agent and its record (6.2 rows 2-5); null with the refusal already sent. */
+function installedPackageOf(raw: string): Installed | Answer {
+  let name: string
+  try {
+    name = decodeURIComponent(raw)
+  } catch {
+    return { status: 404, body: { error: 'agent_not_found' } }
+  }
+  if (sanitizeAgentName(name) !== name || isReservedName(name)) return { status: 404, body: { error: 'agent_not_found' } }
+  const dir = join(agentsBaseDir(), name)
+  let isDir = false
+  try { isDir = lstatSync(dir).isDirectory() } catch { /* absent */ }
+  // 7.2 / 4.2: a folder under a counting install marker is not an agent.
+  if (!isDir || isHiddenByInstallMarker(name)) return { status: 404, body: { error: 'agent_not_found' } }
+  const m = readPackageManifest(dir)
+  if (m.state === 'none') return { status: 404, body: { error: 'not_a_package' } }
+  if (m.state === 'unreadable') return { status: 409, body: { error: 'manifest_unreadable' } }
+  const installedFiles = installedFileHashes(m.manifest)
+  if (installedFiles === null) return { status: 409, body: { error: 'manifest_unreadable' } }
+  return { name, dir, manifest: m.manifest, installedFiles }
+}
+
+/** 6.2: the same gates as the install's steps 5-8 (credential, keys, the catalog kid, download, verify, minimum). */
+async function downloadVerified(slug: string, deps: PackageDeps): Promise<{ ok: true; pkg: VerifiedPackage } | { ok: false; answer: Answer }> {
+  const ownVersion = currentVersion()
+  if (parseVersion(ownVersion) === null) return { ok: false, answer: { status: 500, body: { error: 'own_version_unknown' } } }
+  if (!hasCredential()) return { ok: false, answer: { status: 409, body: { error: 'not_connected' } } }
+  if (deps.keys.length === 0 || !deps.remote.configured()) return { ok: false, answer: { status: 502, body: { error: 'download_failed', reason: 'not_configured' } } }
+  const cat = await deps.remote.catalog({ fetchImpl: deps.fetchImpl, now: deps.now })
+  if (!cat.ok) return { ok: false, answer: cat.refusal }
+  const entry = catalogEntry(cat.catalog, slug)
+  if (entry === null) return { ok: false, answer: { status: 404, body: { error: 'package_not_found' } } }
+  if (typeof entry.kid !== 'string' || !deps.keys.some((k) => k.kid === entry.kid)) return { ok: false, answer: { status: 409, body: { error: 'unknown_kid' } } }
+  const dl = await deps.remote.download(slug, ownVersion, { fetchImpl: deps.fetchImpl, now: deps.now })
+  if (!dl.ok) return { ok: false, answer: dl.refusal }
+  const v = verifyDelivery(dl.bytes, slug, deps.keys)
+  if (!v.ok) return { ok: false, answer: { status: 422, body: { error: 'package_rejected', step: v.step, reason: v.reason, ...(v.detail ? { detail: v.detail } : {}) } } }
+  if (!meetsMinMarveenVersion(ownVersion, v.pkg.minMarveenVersion)) {
+    return { ok: false, answer: { status: 409, body: { error: 'incompatible', minMarveenVersion: v.pkg.minMarveenVersion } } }
+  }
+  return { ok: true, pkg: v.pkg }
+}
+
+/** Inside the queue: the record read again, the kind, the change list (8.1, 8.2). */
+function listNow(name: string, pkg: VerifiedPackage, quarantine: boolean): { ok: true; list: ChangeList; at: Installed } | { ok: false; answer: Answer } {
+  const at = installedPackageOf(name)
+  if (!('manifest' in at)) return { ok: false, answer: at }
+  if (at.manifest.payload.slug !== pkg.slug) return { ok: false, answer: { status: 409, body: { error: 'manifest_unreadable' } } }
+  const installed = { version: at.manifest.payload.version, payloadSha256: at.manifest.payloadSha256 }
+  let k
+  try {
+    k = classifyVersion(installed, { version: pkg.version, payloadSha256: pkg.payloadSha256 })
+  } catch {
+    return { ok: false, answer: { status: 409, body: { error: 'manifest_unreadable' } } }
+  }
+  if (!k.ok) {
+    return { ok: false, answer: k.error === 'downgrade_refused'
+      ? { status: 409, body: { error: 'downgrade_refused', installed: installed.version, available: pkg.version } }
+      : { status: 409, body: { error: 'version_conflict' } } }
+  }
+  const list = computeChangeList({ name, agentDir: at.dir, manifest: at.manifest, installedFiles: at.installedFiles, pkg, kind: k.kind, quarantine })
+  return { ok: true, list, at }
+}
+
+/** The body of check: empty or {} (6.2). */
+function isEmptyBody(raw: Buffer): boolean {
+  const t = raw.toString('utf8').trim()
+  if (t === '') return true
+  try {
+    const v = JSON.parse(t)
+    return v !== null && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0
+  } catch {
+    return false
+  }
+}
+
+/** The body of apply: exactly {planId, decisions} with a 64-hex planId (6.3); the decisions are checked later. */
+function applyBody(raw: Buffer): { planId: string; decisions: unknown } | null {
+  let v: unknown
+  try {
+    v = JSON.parse(raw.toString('utf8'))
+  } catch {
+    return null
+  }
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return null
+  const o = v as Record<string, unknown>
+  const keys = Object.keys(o).sort()
+  if (keys.length !== 2 || keys[0] !== 'decisions' || keys[1] !== 'planId') return null
+  if (typeof o.planId !== 'string' || !/^[0-9a-f]{64}$/.test(o.planId)) return null
+  return { planId: o.planId, decisions: o.decisions }
+}
+
+/** POST /api/agents/:name/package/check (6.2): downloads and verifies, writes nothing. */
+async function checkUpdate(ctx: RouteContext, deps: PackageDeps, rawName: string): Promise<void> {
+  const { req, res } = ctx
+  if (!mayActAsOwner(ctx.auth, req)) { refuseOwner(res); return }
+  const raw = await readBodyOrRefuse(req, res, { maxBytes: BODY_MAX_BYTES })
+  if (raw === null) return
+  if (!isEmptyBody(raw)) { json(res, BAD_REQUEST, 400); return }
+  const first = installedPackageOf(rawName)
+  if (!('manifest' in first)) { json(res, first.body, first.status); return }
+  const got = await downloadVerified(first.manifest.payload.slug, deps)
+  if (!got.ok) { json(res, got.answer.body, got.answer.status); return }
+  // M30: the switch read ONCE per call; 8.4: the disk hashes read in the queue, never a half-written state.
+  const quarantine = quarantineOn()
+  const out = await serializeSkillsDir(() => {
+    const l = listNow(first.name, got.pkg, quarantine)
+    if (!l.ok) return l
+    return { ...l, shellRepair: l.list.kind === 'repair' ? shellRepairState(l.at.dir) : undefined }
+  })
+  if (!out.ok) { json(res, out.answer.body, out.answer.status); return }
+  const skillReport = updateSkillReport(got.pkg, quarantine, out.list.skillFolders)
+  const trace = readUpdatingTrace(first.name)
+  json(res, {
+    ...out.list,
+    globalNameCollisions: skillReport.globalNameCollisions,
+    skillReport,
+    ...(out.shellRepair ? { shellRepair: out.shellRepair } : {}),
+    ...(trace ? { interruptedUpdate: trace } : {}),
+  })
+}
+
+/** POST /api/agents/:name/package/apply (6.3): downloads again, then ONE synchronous block in the queue. */
+async function applyUpdate(ctx: RouteContext, deps: PackageDeps, rawName: string): Promise<void> {
+  const { req, res } = ctx
+  if (!mayActAsOwner(ctx.auth, req)) { refuseOwner(res); return }
+  const raw = await readBodyOrRefuse(req, res, { maxBytes: BODY_MAX_BYTES })
+  if (raw === null) return
+  const body = applyBody(raw)
+  if (body === null) { json(res, BAD_REQUEST, 400); return }
+  const first = installedPackageOf(rawName)
+  if (!('manifest' in first)) { json(res, first.body, first.status); return }
+  if (applying.has(first.name)) { json(res, { error: 'update_in_progress' }, 409); return }
+  applying.add(first.name)
+  try {
+    const got = await downloadVerified(first.manifest.payload.slug, deps)
+    if (!got.ok) { json(res, got.answer.body, got.answer.status); return }
+    const quarantine = quarantineOn()
+    const driveFolder = String(getEffectiveSettingValue('OWNER_DRIVE_FOLDER') || '')
+    const lang = agentTextLang()
+    const now = deps.now()
+    const out = await serializeSkillsDir((): { ok: true; kind: string; keptMine: string[]; applied: Record<string, number> } | { ok: false; answer: Answer } => {
+      const l = listNow(first.name, got.pkg, quarantine)
+      if (!l.ok) return l
+      if (l.list.planId !== body.planId) return { ok: false, answer: { status: 409, body: { error: 'plan_changed', plan: l.list } } }
+      const d = checkDecisions(l.list, body.decisions)
+      if (!d.ok) return { ok: false, answer: { status: d.status, body: d.body } }
+      const r = runApplyBlock({ name: l.at.name, agentDir: l.at.dir, list: l.list, ops: d.ops, pkg: got.pkg, manifest: l.at.manifest, installedFiles: l.at.installedFiles, driveFolder, lang, now })
+      if (!r.ok) {
+        if (r.body.error === 'plan_changed') {
+          // D2: the disk moved inside the block; the new list goes with the refusal, as for a planId mismatch.
+          const again = listNow(first.name, got.pkg, quarantine)
+          return { ok: false, answer: { status: 409, body: again.ok ? { error: 'plan_changed', plan: again.list } : again.answer.body } }
+        }
+        return { ok: false, answer: { status: r.status, body: r.body } }
+      }
+      return { ok: true, kind: l.list.kind, keptMine: d.keptMine, applied: r.applied }
+    })
+    if (!out.ok) { json(res, out.answer.body, out.answer.status); return }
+    // N18/e: the audit lines are written on a successful apply (the check writes none).
+    try { packageSkillReport(first.name, got.pkg, now) } catch (err) { logger.warn({ err, name: first.name }, 'agent package update: the skill audit did not run') }
+    json(res, { ok: true, kind: out.kind, version: got.pkg.version, applied: out.applied, keptMine: out.keptMine })
+  } finally {
+    applying.delete(first.name)
+  }
+}
+
 export async function tryHandleAgentPackages(ctx: RouteContext, deps: PackageDeps = RELEASED_DEPS): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path === CREDENTIAL_PATH && method === 'GET') {
     if (!mayActAsOwner(ctx.auth, req)) { refuseOwner(res); return true }
-    json(res, readCredentialView())
+    // MIOAGENTB4-1122 (Marveen 84855): `configured` is the condition every outgoing call answers not_configured on.
+    // While it is false the dashboard shows neither the menu item nor the connect box.
+    json(res, { ...readCredentialView(), configured: deps.remote.configured() })
     return true
   }
 
@@ -293,6 +495,14 @@ export async function tryHandleAgentPackages(ctx: RouteContext, deps: PackageDep
 
   if (path === INSTALL_PATH && method === 'POST') {
     await installPackage(ctx, deps)
+    return true
+  }
+
+  const upd = UPDATE_PATH_RE.exec(path)
+  if (upd !== null) {
+    if (method !== 'POST') { methodNotAllowed(res, method, ['POST']); return true }
+    if (upd[2] === 'check') await checkUpdate(ctx, deps, upd[1])
+    else await applyUpdate(ctx, deps, upd[1])
     return true
   }
 

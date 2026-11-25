@@ -357,10 +357,10 @@ describe('the no-agent search says which pass ran', () => {
 
   it('searchMemories writes trace.relaxed for both passes', () => {
     const relaxed = { relaxed: false }
-    expect(searchMemories('meddig tart a felmondasi ido', ALLOWED_CHAT_ID, 50, true, undefined, relaxed).length).toBeGreaterThan(0)
+    expect(searchMemories('meddig tart a felmondasi ido', 50, true, undefined, relaxed).length).toBeGreaterThan(0)
     expect(relaxed.relaxed).toBe(true)
     const strict = { relaxed: true }
-    expect(searchMemories('felmondasi', ALLOWED_CHAT_ID, 50, true, undefined, strict).length).toBeGreaterThan(0)
+    expect(searchMemories('felmondasi', 50, true, undefined, strict).length).toBeGreaterThan(0)
     expect(strict.relaxed).toBe(false)
   })
 

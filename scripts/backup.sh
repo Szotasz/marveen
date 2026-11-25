@@ -123,7 +123,7 @@ add_if() {
 #   bash-sandbox -- the per-agent Bash sandbox settings (BASHSANDBOX1022): the dashboard and the watchdog rewrite
 #     them from the owner's settings on every start, so a restore loses nothing; the folder is read-only (0555),
 #     and a staged copy of it kept the 0555, so the stage cleanup's rm -rf failed and the run exited 1
-STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay scheduled-runs agent-package-credential.json agent-package-installing agent-package-leftovers agent-package-hidden.json bash-sandbox "
+STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay scheduled-runs agent-package-credential.json agent-package-installing agent-package-leftovers agent-package-hidden.json bash-sandbox .inbound-sig-key "
 if [[ -d store ]]; then
   while IFS= read -r _entry; do
     _name="$(basename "${_entry}")"

@@ -78,6 +78,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-release <card-id> <agent>
   kanban-comment <card-id> <author> <content-file>
   kanban-archive <card-id>
+  vault-login <agent> <web-login-id>   (logs in, in the agent's own browser; prints the outcome only)
+  vault-logins                         (the web logins: id, origin, username, allowed agents; never a password)
   kanban-assign <card-id> <assignee> [--actor <name>]
   kanban-done-since <epoch> [--assignee-team <leader>]
                 (read only: the cards now done whose last status change came at or after <epoch>; JSON with count and ids)
@@ -317,7 +319,8 @@ def build_request(verb, args):
     if verb == 'directive-verify':
         (msg_id,) = positional(args, 1, verb)
         check(msg_id, ID_RE, 'message id')
-        return 'GET', f'/api/messages/{msg_id}', None, headers, {}
+        # HMACINBOUND1125: a directive row counts only when the server signed it (sig_ok), see main().
+        return 'GET', f'/api/messages/{msg_id}', None, headers, {'require_sig_ok': True}
     if verb == 'memory-search':
         category = take_opt(args, '--category')
         strict = take_flag(args, '--strict')
@@ -581,6 +584,16 @@ def build_request(verb, args):
         (card,) = positional(args, 1, verb)
         check(card, CARD_ID_RE, 'card id')
         return 'POST', f'/api/kanban/{card}/archive', {}, headers, {}
+    if verb == 'vault-login':
+        # VAULTLOGIN1112: the dashboard types the vault password into the agent's own browser; only the entry id goes
+        # out and only the outcome comes back (success, 2fa, wrong, unknown, origin-mismatch, no-form, ...).
+        agent, entry = positional(args, 2, verb)
+        check(agent, NAME_RE, 'agent name')
+        check(entry, NAME_RE, 'web login id')
+        return 'POST', f'/api/vault/web-logins/{entry}/login', {}, {'X-Agent-Id': agent}, {}
+    if verb == 'vault-logins':
+        positional(args, 0, verb)
+        return 'GET', '/api/vault/web-logins', None, headers, {}
     fail_usage(f'unknown verb: {verb!r}')
 
 
@@ -682,6 +695,19 @@ def done_since_report(spec, text, token):
     return 0
 
 
+def verb_usage(verb):
+    # A failed call prints this verb's usage lines only (its line and its indented notes), not the whole list:
+    # measured on one fleet, 132 failed calls in 3 days printed the ~2.7k-character USAGE each.
+    lines = USAGE.split('\n')
+    for i, line in enumerate(lines):
+        if line == f'  {verb}' or line.startswith(f'  {verb} '):
+            j = i + 1
+            while j < len(lines) and lines[j].startswith('                ('):
+                j += 1
+            return '\n'.join(lines[i:j])
+    return 'verbs: ' + ', '.join(re.findall(r'^ {2}([a-z-]+)(?= |$)', USAGE, re.M))
+
+
 def main(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
@@ -704,7 +730,7 @@ def main(argv):
     try:
         method, path, body, headers, flags = build_request(verb, rest)
     except UsageError as e:
-        print(f'FAIL: {e}\n{USAGE}', file=sys.stderr)
+        print(f'FAIL: {e}\n{verb_usage(verb)}\n(every verb: bash scripts/marveen-api.sh --help)', file=sys.stderr)
         return 2
     refused = schedule_write_refused(method, path)
     if refused:
@@ -752,6 +778,16 @@ def main(argv):
             return done_since_report(flags['done_since'], text, token)
         empty_sent_payloads()
         print(text)
+        if flags.get('require_sig_ok'):
+            # HMACINBOUND1125 (Dani 85038, 3): from_agent='system' alone can be written by a raw INSERT; only a row the
+            # server signed is a directive. An older dashboard sends no sig_ok: that is a refusal too, not a pass.
+            try:
+                sig_ok = json.loads(text).get('sig_ok') is True
+            except (ValueError, AttributeError):
+                sig_ok = False
+            if not sig_ok:
+                print('FAIL: sig_ok is not true: the dashboard did not sign this row, so it is not a verified directive.', file=sys.stderr)
+                return 1
         return 0
     print(f'FAIL: HTTP {status}: {text[:500]}', file=sys.stderr)
     return 1

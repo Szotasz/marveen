@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, readdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 
@@ -101,6 +101,36 @@ describe('docker/code-sync.py', () => {
     expect(r.code, r.out).toBe(0)
     expect(readFileSync(join(dst, '.claude', 'settings.json'), 'utf8')).toBe('{"hooks":"mine"}')
     expect(readFileSync(join(dst, '.claude', 'settings.local.json'), 'utf8')).toBe('{"image":1}')
+  })
+
+  it('a new image keeps the main agent\'s channel state under .claude/channels (token, access, approved), mode included', () => {
+    buildImage({ '.claude/settings.json': '{"image":1}', 'dist/index.js': 'v1' })
+    expect(sync().code).toBe(0)
+    const chan = join(dst, '.claude', 'channels', 'discord')
+    mkdirSync(join(chan, 'approved'), { recursive: true })
+    writeFileSync(join(chan, '.env'), 'DISCORD_BOT_TOKEN=secret\n', { mode: 0o600 })
+    writeFileSync(join(chan, 'access.json'), '{"allowFrom":["1"]}')
+    writeFileSync(join(chan, 'approved', '1'), '')
+    buildImage({ '.claude/settings.json': '{"image":2}', 'dist/index.js': 'v2' })
+    const r = sync()
+    expect(r.code, r.out).toBe(0)
+    expect(readFileSync(join(dst, 'dist', 'index.js'), 'utf8')).toBe('v2')
+    expect(readFileSync(join(chan, '.env'), 'utf8')).toBe('DISCORD_BOT_TOKEN=secret\n')
+    expect(statSync(join(chan, '.env')).mode & 0o777).toBe(0o600)
+    expect(readFileSync(join(chan, 'access.json'), 'utf8')).toBe('{"allowFrom":["1"]}')
+    expect(existsSync(join(chan, 'approved', '1'))).toBe(true)
+    expect(readdirSync(dst).filter((e) => e.startsWith('.code-stage') || e.startsWith('.code-old'))).toEqual([])
+  })
+
+  it('the runtime channel state wins over a .claude/channels file the image ships, and the in-place check skips it', () => {
+    buildImage({ '.claude/channels/discord/access.json': '{"image":1}', 'dist/index.js': 'v1' })
+    expect(sync().code).toBe(0)
+    writeFileSync(join(dst, '.claude', 'channels', 'discord', 'access.json'), '{"owner":"paired"}')
+    buildImage({ '.claude/channels/discord/access.json': '{"image":2}', 'dist/index.js': 'v2' })
+    const r = sync()
+    expect(r.code, r.out).toBe(0)
+    expect(readFileSync(join(dst, '.claude', 'channels', 'discord', 'access.json'), 'utf8')).toBe('{"owner":"paired"}')
+    expect(existsSync(join(dst, '.code-sync-pending'))).toBe(false)
   })
 
   it('a copy that does not match the manifest is refused before anything is swapped', () => {

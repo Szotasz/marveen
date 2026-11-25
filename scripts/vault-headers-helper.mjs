@@ -40,6 +40,11 @@ for (const arg of process.argv.slice(2)) {
   const scheme = sep >= 0 ? rest.slice(0, sep) : ''
   const vaultId = (sep >= 0 ? rest.slice(sep + 3) : rest).trim()
   if (!headerName || !vaultId) continue
+  // VAULTLOGIN1112: a web login password never leaves as a header either.
+  if (vaultId.toLowerCase().startsWith('web-login-')) {
+    process.stderr.write(`vault-headers-helper: refused, web login passwords are not sent as headers: "${vaultId}"\n`)
+    continue
+  }
   // VAULTSZELES826: an SSH private key never leaves as an HTTP header to a remote server
   // (same rule as isSshPrivateKeyId in vault-acl.ts).
   if (vaultId.startsWith('ssh-key-')) {

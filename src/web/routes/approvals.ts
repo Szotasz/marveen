@@ -25,6 +25,7 @@ import { teamsCardRoute, teamsCardsOn, postApprovalCard, handleTeamsCardAction, 
 import { sendTeamsMessage } from '../../teams-send.js'
 import { readTeamsCreds, channelStateDir } from '../../channel-provider.js'
 import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
+import { approverScopeFor, mayApprove } from '../approver-access.js'
 import type { RouteContext } from './types.js'
 import { fileAgentSpecRequest, AGENT_CREATE_CATEGORY } from '../agent-create-approval.js'
 import { readVaultAcl, isAgentReadableDecodedVaultId, claimedAgentOf } from '../vault-acl.js'
@@ -794,6 +795,11 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   const idMatch = path.match(/^\/api\/approvals\/([^/]+)$/)
   if (idMatch && method === 'GET') {
     const approval = getApproval(idMatch[1])
+    // DELEGAPPROVER1123: an approver reads only a request it may decide; anything else is not found for it.
+    if (ctx.auth?.kind === 'approver' && !mayApprove(ctx.auth, approval, req)) {
+      json(res, { error: 'Not found' }, 404)
+      return true
+    }
     if (!approval) {
       json(res, { error: 'Not found' }, 404)
       return true
@@ -822,6 +828,45 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
+
+    // DELEGAPPROVER1123: a delegated approver decides (approve or reject) through the decision core only, within a
+    // live, non-owner-only scope (mayApprove), never as the owner: the evidence names the mode 'approver' and the login,
+    // and the same transaction writes an approval_events 'decided' row (who, which scope, which content hash).
+    if (ctx.auth?.kind === 'approver') {
+      const approverName = ctx.auth.user ?? ''
+      const target = getApproval(idMatch[1])
+      if (status === 'timeout') {
+        json(res, { error: 'An approver approves or rejects; it does not time a request out' }, 400)
+        return true
+      }
+      if (!mayApprove(ctx.auth, target, req)) {
+        logger.warn({ id: idMatch[1], approver: approverName, category: target?.category, agent: target?.agent_id }, 'approval decision refused: outside the approver scope')
+        json(res, { error: 'This request is outside your approver scope', code: 'approver_scope' }, 403)
+        return true
+      }
+      const scope = approverScopeFor(ctx.auth, target)
+      if (!target || !scope) {
+        json(res, { error: 'This request is outside your approver scope', code: 'approver_scope' }, 403)
+        return true
+      }
+      // A request bound to content is decided on the hash the approver was shown, never without it.
+      const shown = body.content_hash
+      if (target.content_hash && (typeof shown !== 'string' || !/^[0-9a-f]{64}$/.test(shown))) {
+        json(res, { error: 'content_hash (the hash you were shown) is required to decide this request' }, 400)
+        return true
+      }
+      const d = decideApproval({
+        approvalId: target.id,
+        status,
+        evidence: { channel: 'dashboard', mode: 'approver', trail: [approverName] },
+        expectedContentHash: target.content_hash ? (shown as string) : undefined,
+        decidedEvent: { actor: approverName, reason: `${status} scope=${scope.category}:${scope.agent}`, ref: target.content_hash ? (shown as string) : null },
+      })
+      if (d.outcome !== 'decided') { json(res, { error: `Not decided: ${d.outcome}` }, 409); return true }
+      logger.info({ id: target.id, status, approver: approverName, scope: `${scope.category}:${scope.agent}` }, 'approval decided by a delegated approver')
+      json(res, d.approval)
+      return true
+    }
 
     // Approving takes the owner (see OWNER_ONLY); rejecting or timing out does not, since
     // an agent that cancels a request gains nothing by it.

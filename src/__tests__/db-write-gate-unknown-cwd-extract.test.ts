@@ -459,3 +459,14 @@ describe('UNKCWDEXTRACT1121 round 3 X3: an extract to stdout writes no file; a l
     for (const v of both(c())) expect(v, c()).toMatchObject({ deny: true })
   })
 })
+
+// A command named like an Object.prototype key (toString, constructor) found an inherited "entry" in the extract table,
+// and the gate crashed into a fail-closed deny of a harmless command (measured on a fleet corpus: `cd ... && grep
+// "a\|toString" f` read toString as a command). RED on the base: TypeError, EXTRACT_DIR_FLAGS[name] is not iterable.
+describe('a command named like an Object.prototype key is no extractor', () => {
+  it('P1-P3 decide without a crash, for a sub-agent and the main agent', () => {
+    for (const c of ['cd |toString /', 'cd /tmp; toString -f prog.awk', 'cd /tmp && grep -n "raw\\|toString" /tmp/u.js']) {
+      for (const v of both(c)) expect(v, c).toEqual(PASS)
+    }
+  })
+})

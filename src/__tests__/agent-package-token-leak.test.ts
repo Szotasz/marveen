@@ -161,7 +161,7 @@ describe('the broken inputs reach the code paths they are meant for', () => {
 
   it('a corrupt credential file reads as not connected, and a log line says so in fixed words', async () => {
     const out = await run('GET', '/api/agent-packages/credential', undefined, 'token unquoted in an object', ANSWERS['catalog ok'])
-    expect(out.body).toEqual({ connected: false })
+    expect(out.body).toEqual({ connected: false, configured: true })
     expect(logged.length).toBeGreaterThan(0)
   })
 
