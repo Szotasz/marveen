@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
+import { CHANNEL_TOKEN_UNSET } from '../web/agent-engine.js'
 import { buildChannelStateFence } from '../web/channel-state-fence.js'
 
 const AGENT = '/install/agents/demo'
@@ -50,6 +51,8 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
     expect(FN).toContain('${unsetTokens} && ${stateFence}')
   })
   it('the unset of the inherited state dirs stays (CHANSTATEUNSET930)', () => {
-    expect(FN).toMatch(/const unsetTokens = 'unset [^']*SLACK_STATE_DIR[^']*'/)
+    expect(FN).toContain('const unsetTokens = CHANNEL_TOKEN_UNSET')
+    expect(CHANNEL_TOKEN_UNSET).toMatch(/^unset (\S+ )*SLACK_STATE_DIR( \S+)*$/)
+    expect(CHANNEL_TOKEN_UNSET.split(' ')).toEqual(expect.arrayContaining(['TELEGRAM_STATE_DIR', 'SLACK_STATE_DIR', 'DISCORD_STATE_DIR', 'GOOGLECHAT_STATE_DIR', 'TEAMS_STATE_DIR']))
   })
 })

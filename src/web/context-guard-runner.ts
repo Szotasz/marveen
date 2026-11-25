@@ -1,3 +1,5 @@
+import { contextGuardSupportsEngine } from '../context-guard.js'
+import { readAgentEngineConfigSafe } from './agent-config.js'
 import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 import { logger } from '../logger.js'
@@ -155,7 +157,8 @@ function dropPendingResume(name: string, why: string): void {
  * Returns the re-armed agent names. Exported for the regression test.
  */
 export function restorePendingResumes(nowMs: number): string[] {
-  pendingResumes = readPendingResumes()
+  pendingResumes = Object.fromEntries(Object.entries(readPendingResumes()).filter(([name]) =>
+    contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)))
   const { live, expired } = restorableResumeStates(pendingResumes, nowMs)
   let clamped = false
   for (const [name, st] of live) {
@@ -782,6 +785,7 @@ export async function reportResumeGiveUp(name: string): Promise<void> {
 
 /** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
 export function measureContextTokens(name: string): number | null {
+  if (!contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)) return null
   const tokens = readContextTokensFromProjectDir(workingDirFor(name), configDirFor(name))
   return tokens !== null && tokens > 0 ? tokens : null
 }
@@ -793,6 +797,7 @@ export function measureContextTokens(name: string): number | null {
  * a wrong clock must not be able to trigger a flush.
  */
 export function measureIdleMs(name: string, nowMs: number): number | null {
+  if (!contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)) return null
   const mtime = readTranscriptMtimeFromProjectDir(workingDirFor(name), configDirFor(name))
   if (mtime === null) return null
   return Math.max(0, nowMs - mtime)
@@ -822,6 +827,7 @@ export function contextWindowAssumed(name: string, cfgLimit: number | null): boo
 const unknownModelWarned = new Map<string, string>()
 
 export function measurePct(name: string, cfgLimit: number | null, opts: { learn?: boolean } = {}): number | null {
+  if (!contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)) return null
   const workingDir = workingDirFor(name)
   const configDir = configDirFor(name)
   const tokens = readContextTokensFromProjectDir(workingDir, configDir)
@@ -909,6 +915,7 @@ function settleResumeLoop(name: string, token: number, why: string): void {
  * Idempotent per obligation. Fire-and-forget; every outcome is logged.
  */
 function startResumeDelivery(name: string): void {
+  if (!contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)) return
   const entry = pendingResumes[name]
   if (!entry || resumeLoops.get(name) === entry.restartedAtMs) return
   const token = entry.restartedAtMs
@@ -950,7 +957,7 @@ function startResumeDelivery(name: string): void {
           resumeSending.delete(name)
         }
       },
-      stillOwed: () => pendingResumes[name]?.restartedAtMs === token && guardStates.get(name)?.phase === 'await-ready',
+      stillOwed: () => contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine) && pendingResumes[name]?.restartedAtMs === token && guardStates.get(name)?.phase === 'await-ready',
     },
   ).then((res) => {
     // 'sent' was settled inside send, before the claim was released.
@@ -1047,6 +1054,7 @@ export function restartLossLine(
 export const RESTART_TURN_QUIET_MS = 20_000
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
+  if (!contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)) return
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
 
@@ -1704,7 +1712,7 @@ export function getContextGuardStatus(): Array<{
   cooldownUntilMs?: number
 }> {
   const names = [MAIN_AGENT_ID, ...listAgentNames()]
-  return names.map((name) => {
+  return names.filter(name => contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)).map((name) => {
     const state = guardStates.get(name)
     const cfg = readContextGuardConfig(name)
     const remote = name !== MAIN_AGENT_ID && !!readAgentRemoteHost(name)
@@ -1767,6 +1775,7 @@ export function guardSweepAgentNames(): string[] {
  * aside so both mechanisms never simultaneously touch the pane.
  */
 export function getHardGuardPhase(name: string): string {
+  if (!contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)) return 'idle'
   return guardStates.get(name)?.phase ?? 'idle'
 }
 
@@ -1800,6 +1809,7 @@ function lapsed(name: string, phase: string, untilMs: number, nowMs: number): nu
  *   lapses, with one warn, and the agent's rows flow again (fail-open).
  */
 export function contextGuardDeliveryHold(name: string, nowMs: number): DeliveryHold | null {
+  if (!contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)) return null
   if (resumeSending.has(name)) {
     const owed = pendingResumes[name]
     // No owed resume while one is being sent should not happen; if it does, hold nothing.
@@ -1823,7 +1833,9 @@ export function startContextGuardRunner(): NodeJS.Timeout {
   try {
     // The re-armed obligations are delivered NOW, not at the first sweep 4.5
     // minutes later.
-    for (const name of restorePendingResumes(Date.now())) startResumeDelivery(name)
+    for (const name of restorePendingResumes(Date.now())) {
+      if (contextGuardSupportsEngine(readAgentEngineConfigSafe(name).engine)) startResumeDelivery(name)
+    }
   }
   catch (err) { logger.warn({ err }, 'context-guard: pending-resume restore failed') }
   let tickRunning = false
@@ -1854,3 +1866,5 @@ export function startContextGuardRunner(): NodeJS.Timeout {
   setTimeout(whileNotFrozen('context-guard', sweep), INITIAL_DELAY_MS)
   return setInterval(whileNotFrozen('context-guard', sweep), INTERVAL_MS)
 }
+
+export { checkAgent as checkContextGuardAgent }

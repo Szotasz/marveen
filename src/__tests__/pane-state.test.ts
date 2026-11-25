@@ -2976,3 +2976,16 @@ describe('decideStuckInputRecovery: parked behind a live turn', () => {
     expect(d.next.attempts).toBe(1)
   })
 })
+
+it('T12 ignores stale Codex quotes above non-idle Claude panes and accepts trailing blank lines', () => {
+  // NOT_A_FOOTER_QUOTED reaches terminalPrompt and is unknown; the busy
+  // fixture also pins the earlier busy detection path.
+  for (const pane of [NOT_A_FOOTER_QUOTED, BUSY_FULL_FOOTER]) {
+    expect(detectPaneState(pane)).not.toBe('idle')
+    expect(detectPaneState('› quoted\n\n  default · 42% context left\n' + pane)).toBe(detectPaneState(pane))
+  }
+  for (const trailing of ['', '\n\n']) {
+    expect(detectPaneState('› \n\n  default · 100% context left' + trailing)).toBe('idle')
+    expect(detectPaneState('› Draft a response\n\n  default · 100% context left' + trailing)).toBe('typing')
+  }
+})

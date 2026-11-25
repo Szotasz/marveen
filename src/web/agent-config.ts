@@ -1,3 +1,4 @@
+import { validateAgentEngine, resolveAgentEngine, resolveCodexConfigDir, resolveCodexIdentity, resolveCodexSandbox, type AgentEngineConfig, type CodexSandboxProfile } from './agent-engine.js'
 import { readFileSync, existsSync, readdirSync, statSync, lstatSync, realpathSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
@@ -6,10 +7,10 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { readEnvFile } from '../env.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { parseExtraChannels, wantsGromzo } from './agent-extra-channels.js'
-import type { ChannelProviderType } from '../channel-provider.js'
+import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
 import { safeJoin } from './sanitize.js'
-import { isHiddenByInstallMarker } from './agent-package/marker.js'
+import { hasPackageManifestFile, isHiddenByInstallMarker, startsWithPackageShell } from './agent-package/marker.js'
 import { isValidModelId, InvalidModelIdError } from '../model-id.js'
 import {
   resolveAgentModelFromConfig,
@@ -1099,4 +1100,67 @@ export function writeAgentCustomProvider(name: string, id: string | null): void 
   if (id && id.trim()) config.customProvider = id.trim()
   else delete config.customProvider
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+export function validateAgentEngineConfig(name: string, config: Record<string, unknown>): AgentEngineConfig {
+  const resolved = validateAgentEngine(config)
+  if (resolved.engine === 'codex') {
+    const providers: ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams', 'gromzo']
+    const hasChannel = name === MAIN_AGENT_ID || providers.some(provider =>
+      readChannelToken(provider, join(channelStateDir(provider, agentDir(name)), '.env')) !== null)
+    const validated = validateAgentEngine(config, hasChannel)
+    // The Codex CLI does not expand @ imports in AGENTS.md, so the package layer would silently not load.
+    const dir = agentDir(name)
+    let hasPackageShell = false
+    try { hasPackageShell = startsWithPackageShell(readFileSync(join(dir, 'CLAUDE.md'))) } catch { /* Unreadable means no shell. */ }
+    if (hasPackageManifestFile(dir) || hasPackageShell) {
+      throw new Error('Codex agents cannot be package agents: the Codex CLI does not expand the PACKAGE.md and LOCAL.md import lines of CLAUDE.md')
+    }
+    return validated
+  }
+  return resolved
+}
+
+export function readAgentEngineConfig(name: string): AgentEngineConfig {
+  let config: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(readFileOr(join(agentConfigRoot(name), 'agent-config.json'), '{}'))
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) config = parsed as Record<string, unknown>
+  } catch { /* Malformed JSON has the same defaults as an absent config. */ }
+  const engine = resolveAgentEngine(config.engine)
+  // Same resolve path as the engine itself, so an invalid codexSandbox is a
+  // fault (readAgentEngineConfigSafe demotes the agent to claude) instead of
+  // silently launching a relay agent as full-access. The message names the
+  // agent: the demotion's log line is the only diagnostic a bad value leaves.
+  let codexSandbox: CodexSandboxProfile
+  try {
+    codexSandbox = resolveCodexSandbox(config.codexSandbox, engine)
+  } catch (err) {
+    throw new Error(`agent ${name}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  return {
+    engine,
+    codexConfigDir: resolveCodexConfigDir(config.codexConfigDir),
+    // Same resolve path as the engine itself, so an invalid codexIdentity is a
+    // fault (readAgentEngineConfigSafe demotes the agent to claude) instead of
+    // silently launching an overrides agent as a seat agent.
+    codexIdentity: resolveCodexIdentity(config.codexIdentity, engine),
+    codexSandbox,
+  }
+}
+
+const invalidEngineWarnings = new Set<string>()
+
+export function readAgentEngineConfigSafe(name: string): AgentEngineConfig {
+  try {
+    return readAgentEngineConfig(name)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const key = JSON.stringify([name, message])
+    if (!invalidEngineWarnings.has(key)) {
+      invalidEngineWarnings.add(key)
+      logger.warn({ name, err: message }, 'agent-config.json engine is invalid; supervising the agent as claude')
+    }
+    return { engine: 'claude', codexConfigDir: null, codexIdentity: 'seat', codexSandbox: 'full-access' }
+  }
 }

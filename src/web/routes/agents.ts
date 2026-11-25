@@ -1,4 +1,6 @@
 import { readPlanTokenStatus, type PlanTokenLaunchStatus } from '../plan-token-launch.js'
+import { validateAgentEngine, preflightCodexHome, syncCodexInstructions, omitDefaultCodexIdentity, type AgentEngine } from '../agent-engine.js'
+import { readAgentEngineConfigSafe, validateAgentEngineConfig } from '../agent-config.js'
 import { isSingleLineEnvValue } from '../../env.js'
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
@@ -117,8 +119,10 @@ import {
   type ChannelProviderType,
 } from '../../channel-provider.js'
 import {
+  scaffoldAgentDir,
   writeAgentSettingsFromProfile,
   ensureFleetRosterSection,
+  inheritedMcpConfigForNewAgent,
 } from '../agent-scaffold.js'
 
 import {
@@ -214,6 +218,11 @@ import { kindAllowed, FORBIDDEN_KIND, mayActAsOwner, mayActAsOwnerOrFirstRun, re
 import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 const execFileAsync = promisify(execFile)
+
+// The refusal text says what the opt-in removes, so whoever asks for it with the token learns why it is the owner's.
+export const CODEX_FULL_ACCESS_OWNER_ONLY = "codexSandbox 'full-access' needs the dashboard login (an owner session). " +
+  'It removes the Codex sandbox (the agent can write anywhere the dashboard user can, and has the network), never asks for approval, ' +
+  "and passes every inherited MCP server through. Leave codexSandbox out to get the default 'relay' profile."
 
 // The Slack smoke test runs for up to 60 s: run it off the event loop, and as an
 // argv, so the agent name is a plain argument, never part of a shell command
@@ -537,6 +546,8 @@ export interface AgentSummary {
   securityProfile: string
   /** Named Claude subscription plan id (see claude-plans.ts), or null when the
    *  agent uses the raw claudeConfigDir / default resolution. */
+  engine: AgentEngine
+  codexConfigDir: string | null
   claudePlan: string | null
   /** SUBPLANTOKEN1110: the last launch outcome of a token-mode plan (store/plan-token-launch/<name>.json:
    *  plan-token | failed | refused | pending | fleet-fallback, with the vault reference id and a reason --
@@ -711,6 +722,7 @@ function getAgentSummary(name: string): AgentSummary {
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
+    ...readAgentEngineConfigSafe(name),
     claudePlan: readAgentClaudePlan(name),
     planTokenLaunch: name === MAIN_AGENT_ID ? null : readPlanTokenStatus(name),
     team: readAgentTeam(name),
@@ -1527,7 +1539,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     const data = JSON.parse((await readBody(req)).toString())
-    const result = await createAgentFromSpec(data)
+    let engineConfig
+    try { engineConfig = validateAgentEngine(data) }
+    catch (err) { json(res, { error: (err as Error).message }, 400); return true }
+    // A Codex agent runs under the relay profile unless codexSandbox asks for 'full-access', and that request is the
+    // owner's alone: the first-run token that may create an agent above may not create one without a sandbox.
+    if (engineConfig.engine === 'codex' && engineConfig.codexSandbox === 'full-access' && !mayActAsOwner(ctx.auth, req)) {
+      json(res, { ...OWNER_SESSION_REQUIRED, error: CODEX_FULL_ACCESS_OWNER_ONLY, fields: ['codexSandbox'] }, 403)
+      return true
+    }
+    // The engine travels as its own argument, so only this owner route can create a codex agent: the approved
+    // agent_create path (agent-create-approval.ts) passes none and always creates a claude agent.
+    const result = await createAgentFromSpec(data, { engineConfig, explicit: data.engine !== undefined || data.codexConfigDir !== undefined })
     json(res, result.body, result.status)
     return true
   }
@@ -1683,6 +1706,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const setupMatch = matchChannelRoute(path, '')
   if (setupMatch && method === 'POST') {
     const [name, provider] = setupMatch
+    if (readAgentEngineConfigSafe(name).engine === 'codex') {
+      json(res, { error: 'Codex agents cannot own channel bindings' }, 400); return true
+    }
     const isMain = name === MAIN_AGENT_ID
     // Marveen lives at PROJECT_ROOT, not under agents/marveen/ -- skip the
     // dir check for the main agent and route writes to ~/.claude/channels/.
@@ -1942,6 +1968,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     let data: { host?: string; workdir?: string }
     try { data = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    if (String(data.host ?? '').trim() !== '' && readAgentEngineConfigSafe(name).engine === 'codex') {
+      json(res, { error: 'Codex pilot agents must run locally as the dashboard user' }, 400)
+      return true
+    }
     const result = writeAgentRemoteConfig(name, data.host ?? '', data.workdir ?? '')
     if (!result.ok) { json(res, { error: result.error }, 400); return true }
     // Config changed -> drop any cached status so the next poll reflects it.
@@ -2871,6 +2901,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
+      engine?: AgentEngine; codexConfigDir?: string
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean; codeMode?: boolean
       modelProfile?: string | null
@@ -2912,6 +2943,26 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         message: 'This agent comes from a package: its CLAUDE.md must start with the two import lines (PACKAGE.md, an empty line, LOCAL.md), with nothing before them. Put them back at the very top, then save again.',
       }, 409)
       return true
+    }
+    const enginePath = join(configRoot, 'agent-config.json')
+    const currentEngineConfig = readJsonObjectForWrite(enginePath)
+    let nextEngineConfig
+    try {
+      nextEngineConfig = validateAgentEngineConfig(name, { ...currentEngineConfig, ...data })
+    } catch (err) { json(res, { error: (err as Error).message }, 400); return true }
+    if (data.engine !== undefined || data.codexConfigDir !== undefined) {
+      if (isAgentRunning(name)) { json(res, { error: 'Stop the agent before changing its engine configuration' }, 409); return true }
+      if (nextEngineConfig.engine === 'codex') {
+        try {
+          const mcpJson = join(agentDir(name), '.mcp.json')
+          const inherited = existsSync(mcpJson) ? undefined : inheritedMcpConfigForNewAgent(name, { log: false }).mcpServers
+          const servers = existsSync(mcpJson) ? JSON.parse(readFileSync(mcpJson, 'utf-8')).mcpServers ?? {}
+            : inherited && typeof inherited === 'object' && !Array.isArray(inherited) ? inherited as Record<string, unknown> : {}
+          preflightCodexHome(nextEngineConfig.codexConfigDir!, agentDir(name), servers, nextEngineConfig.codexIdentity, { profile: nextEngineConfig.codexSandbox, agentName: name })
+        } catch (err) { json(res, { error: (err as Error).message }, 400); return true }
+      }
+      atomicWriteFileSync(enginePath, JSON.stringify(omitDefaultCodexIdentity({ ...currentEngineConfig, ...nextEngineConfig }), null, 2))
+      if (nextEngineConfig.engine === 'codex') scaffoldAgentDir(name)
     }
 
     if (data.memoryIsolation !== undefined) {
@@ -2965,6 +3016,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           logger.error({ name }, 'package agent CLAUDE.md saved, but the fleet-roster block could not be written back')
         }
       }
+      if (nextEngineConfig.engine === 'codex') syncCodexInstructions(configRoot)
       // A stale dashboard-editor buffer can carry a pre-federation snapshot
       // (or a block from a since-disabled state): reconcile the managed
       // federation section right after the write, not just at boot -- the
