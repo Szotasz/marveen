@@ -7,7 +7,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 
-const VENDOR = join(__dirname, '..', '..', 'vendor', 'discord-plugin', '0.0.4')
+// The same tests run on every vendored version: 0.0.4 here, 0.0.6 through discord-plugin-ext-006.test.ts (#2787 review).
+const VERSION = process.env.DISCORD_EXT_TEST_VERSION ?? '0.0.4'
+const VENDOR = join(__dirname, '..', '..', 'vendor', 'discord-plugin', VERSION)
 const SERVER = readFileSync(join(VENDOR, 'overlay', 'server.ts'), 'utf-8')
 const UPSTREAM = readFileSync(join(VENDOR, 'upstream', 'server.ts'), 'utf-8')
 

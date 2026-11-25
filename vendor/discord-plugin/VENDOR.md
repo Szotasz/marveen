@@ -12,6 +12,9 @@
   conflict was `create_thread`: the overlay's (DCEXT1111 F5) stays, and upstream's tool definition and case are
   dropped (a `MARVEEN-PATCH(dc006)` line marks the case). `marveen-ext.ts` is the 0.0.4 file unchanged. Tests:
   `src/__tests__/patch-discord-plugin-006.test.ts`. 0.0.4 stays vendored for installs whose cache still holds it.
+  - PR5 (DCEXT1111 A9, G2, D4, D5): the same diff as on 0.0.4 (`git diff` of `0.0.4/overlay/`, applied three-way); one
+    conflict, the `messageCreate` guard: A9's bot gate first, then 0.0.6's thread-starter skip, both kept.
+    `discord-plugin-ext.test.ts` runs on 0.0.6 too (`discord-plugin-ext-006.test.ts`).
 - **Ours**: `0.0.4/overlay/` -- the plugin as Marveen runs it. Changed lines in `server.ts` carry
   a `MARVEEN-PATCH(...)` / `MARVEEN-EXT` marker; the new logic lives in `marveen-ext.ts`.
   Review it as a diff: `diff 0.0.4/upstream/server.ts 0.0.4/overlay/server.ts`.
