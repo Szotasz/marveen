@@ -270,6 +270,21 @@ describe('guards on the source', () => {
     for (const cmd of ['grep -rn rowSigOk src/inbound-sig.ts', 'npx vitest run src/__tests__/inbound-sig.test.ts', 'cat store/claudeclaw.db-wal']) {
       expect(sp.inboundSigKeyBashSegmentAllowed(cmd), cmd).toBe(true)
     }
+    // #3117 delta (Samu): quoting, escapes and globs that still name the key; ordinary globs stay free
+    for (const cmd of [`cat store/.inbound''-sig-key`, 'cat store/.inbound"-sig"-key', 'cat store/.inbound\\-sig-key',
+      'cat store/.inb*key', "find store -name '.inbound*'", "find . -iname '*SIG-KEY'", 'cat store/.in?ound-sig-key', 'cat store/.[i]nbound-sig-key']) {
+      expect(sp.inboundSigKeyBashSegmentAllowed(cmd), cmd).toBe(false)
+      expect(sp.gateDecision('Bash', { command: cmd }, { projectRoot: TMP, subAgent: true, cwd: TMP })?.deny, cmd).toBe(true)
+    }
+    for (const cmd of ['ls src/*', 'cat *', 'ls store/.dashboard*', 'cat store/.*token']) {
+      expect(sp.inboundSigKeyBashSegmentAllowed(cmd), cmd).toBe(true)
+    }
+    // DOCUMENTED PASSES (a text brake, not an OS boundary; the stated limit in self-pace-gate.mjs): a name assembled at
+    // run time, a string built inside an interpreter, a reader that is never told the name
+    for (const cmd of ['f=.inbound; cat store/${f}-sig-key', `python3 -c "print(open('store/.inbound'+'-sig'+'-key','rb').read())"`,
+      'grep -r . store/', 'ls store | xargs cat']) {
+      expect(sp.inboundSigKeyBashSegmentAllowed(cmd), cmd).toBe(true)
+    }
     // wired into the gate's decision, not only the helper
     const v = sp.gateDecision('Bash', { command: `cat ${join(TMP, '.inbound-sig-key')}` }, { projectRoot: TMP, subAgent: true, cwd: TMP })
     expect([v?.deny, v?.reason]).toEqual([true, 'inbound-sig-key'])

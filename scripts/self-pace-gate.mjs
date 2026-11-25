@@ -511,10 +511,51 @@ function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
 // setting. A sub-agent that reads it can sign a row in the owner's voice, so a Bash segment that names it is denied
 // even as a plain read (the #2876 secret-store pattern). The native Read tool is stopped by the settings deny
 // (SUBAGENT_INBOUND_SIG_KEY_DENY in agent-scaffold.ts); a write by any agent by db-write-gate's protected paths.
+//
+// #3117 review (Samu): read on the segment as written AND with its shell quoting removed (quotes and backslashes split
+// a name without changing what the shell opens: `.inbound''-sig-key`, `.inbound"-sig"-key`, `.inbound\-sig-key`), and
+// every glob word is matched against the file's name as the shell or find would (`store/.inb*key`, `-name '.inbound*'`).
+// THE LIMIT: a text brake, not an OS boundary. A name assembled at run time (`f=.inbound; cat store/${f}-sig-key`), a
+// string built inside an interpreter, or a reader that is never told the name (`grep -r . store/`, `xargs`) passes;
+// inbound-sig.test.ts lists them as documented passes. The key is a file of the same OS user, as src/inbound-sig.ts says.
+const INBOUND_SIG_KEY_NAME = '.inbound-sig-key'
 const INBOUND_SIG_KEY_MENTION_RX = /\.inbound[-_]?sig[-_]?key\b|\.inbound[-_]?sig[\w.-]*[*?[]/i
 
+/** A shell glob (one path component) as an anchored regex: `*`, `?` and `[...]` classes, case-insensitive. */
+function globComponentRegex(glob) {
+  let rx = ''
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]
+    if (c === '*') rx += '.*'
+    else if (c === '?') rx += '.'
+    else if (c === '[') {
+      const end = glob.indexOf(']', i + 2)
+      if (end < 0) { rx += '\\['; continue }
+      const body = glob.slice(i + 1, end).replace(/^!/, '^').replace(/\\/g, '\\\\')
+      rx += `[${body}]`
+      i = end
+    } else rx += c.replace(/[.+^${}()|\\]/g, '\\$&')
+  }
+  try { return new RegExp(`^${rx}$`, 'i') } catch { return null }
+}
+
 export function inboundSigKeyBashSegmentAllowed(seg) {
-  return !INBOUND_SIG_KEY_MENTION_RX.test(String(seg ?? ''))
+  const raw = String(seg ?? '')
+  const unquoted = raw.replace(/\$(?=['"])|["'\\]/g, '')
+  if (INBOUND_SIG_KEY_MENTION_RX.test(raw) || INBOUND_SIG_KEY_MENTION_RX.test(unquoted)) return false
+  const words = unquoted.split(/\s+/)
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]
+    if (!/[*?[]/.test(w)) continue
+    const last = w.replace(/\/+$/, '').split('/').pop() ?? ''
+    // A shell glob reaches a dotfile only when its last component starts with a dot; find's -name / -iname / -path
+    // match the leading dot with any pattern.
+    const afterFindName = /^-(?:i?name|i?path|i?wholename)$/.test(words[i - 1] ?? '')
+    if (!afterFindName && !last.startsWith('.')) continue
+    const rx = globComponentRegex(last)
+    if (rx && rx.test(INBOUND_SIG_KEY_NAME)) return false
+  }
+  return true
 }
 
 export function protectedStoreBashSegmentAllowed(seg, ctx) {
