@@ -131,6 +131,11 @@ export const BLOCK_LOG = process.env.BASH_EGRESS_BLOCK_LOG || join(ROOT, 'store'
 // `x.api.elevenlabs.io` are other hosts. A missing or unreadable file, or an entry that is not
 // a plain DNS name, means no exception: today's behaviour (deny). This is NOT
 // store/egress-allowlist.json -- that one is the WebFetch / quarantine-reader list.
+// Adding a download host (EGRESSREDIR1125): a redirect's target is not checked (the stated limit in the header above),
+// so the chain is measured when the named host goes on the list, with a HEAD on the real URL (`curl -sIL <url>`, every
+// Location line; it passes once the first host is listed), and every host of the chain is listed in the same round.
+// Hosts written down from memory miss: huggingface.co model files went to us.aws.cdn.hf.co, a host not among the ones
+// added for them.
 // AGENTEGRESS1111: BASH_EGRESS_AGENT_VENDOR_HOSTS adds the agent's hosts and domains to the
 // global lists. BASH_EGRESS_VENDOR_HOSTS still only overrides the global path; the agent list
 // never replaces it, and only an absolute path to a regular file contributes exceptions.
