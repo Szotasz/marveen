@@ -112,3 +112,69 @@ describe('sharedClaudeLoginPresent (Linux file rules)', () => {
     expect(sharedClaudeLoginPresent(h, 'linux')).toBe(false)
   })
 })
+
+// HOSTINGERI18NFU1125 (Dani, QA VPS, English install): the warning showed in Hungarian. The models answer can arrive
+// before /api/auth/status, while the page still runs on the 'hu' fallback; the later language apply re-runs
+// renderStaticI18n, which did not reach this text. The text now carries its key on data-i18n, so the sweep redraws it.
+describe('the create form warning follows the language applied after it (HOSTINGERI18NFU1125)', () => {
+  const app = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+  const between = (from: string, to: string) => {
+    const a = app.indexOf(from)
+    const b = app.indexOf(to, a + from.length)
+    expect(a).toBeGreaterThan(-1)
+    expect(b).toBeGreaterThan(a)
+    return app.slice(a, b)
+  }
+  const applyFn = between('function applySubAgentAuthAdvice(', '\n// =====')
+  const sweep = between("document.querySelectorAll('[data-i18n]').forEach(", "document.querySelectorAll('[data-i18n-placeholder]')")
+  const dict: Record<string, Record<string, string>> = {
+    hu: { 'agents.model.no_claude_auth': 'HU no auth', 'agents.model.no_claude_auth_router': 'HU router' },
+    en: { 'agents.model.no_claude_auth': 'EN no auth', 'agents.model.no_claude_auth_router': 'EN router' },
+  }
+  const setup = () => {
+    const state = { lang: 'hu' }
+    const warn = { style: { display: 'none' }, textContent: '', dataset: {} as Record<string, string>, children: [] as unknown[], childNodes: [] as unknown[] }
+    const sel = { value: 'inherit', options: [{ value: 'inherit' }] }
+    const document = {
+      getElementById: (id: string) => (id === 'agentModelAuthWarn' ? warn : id === 'agentModel' ? sel : null),
+      querySelectorAll: (q: string) => (q === '[data-i18n]' && warn.dataset.i18n ? [warn] : []),
+    }
+    const t = (k: string) => dict[state.lang][k] ?? k
+    const run = new Function('document', 't', 'updateCustomModelIdRow', 'advice', 'mode',
+      `${applyFn}\nif (mode === 'apply') applySubAgentAuthAdvice(advice); else { ${sweep} }`)
+    return {
+      state, warn,
+      apply: (advice: unknown) => run(document, t, () => {}, advice, 'apply'),
+      sweep: () => run(document, t, () => {}, null, 'sweep'),
+    }
+  }
+  const advice = { claudeAuthMissing: true, routerSuggested: false, routerProviderId: 'hostinger-router', routerModel: 'm' }
+
+  it('written on the hu fallback, redrawn in English once the install language is applied', () => {
+    const f = setup()
+    f.apply(advice)
+    expect(f.warn.textContent).toBe('HU no auth')
+    f.state.lang = 'en'
+    f.sweep()
+    expect(f.warn.textContent).toBe('EN no auth')
+  })
+
+  it('follows a switch back to Hungarian too', () => {
+    const f = setup()
+    f.state.lang = 'en'
+    f.apply(advice)
+    f.state.lang = 'hu'
+    f.sweep()
+    expect(f.warn.textContent).toBe('HU no auth')
+  })
+
+  it('a cleared warning stays empty after a language switch', () => {
+    const f = setup()
+    f.apply(advice)
+    f.apply({ ...advice, claudeAuthMissing: false })
+    f.state.lang = 'en'
+    f.sweep()
+    expect(f.warn.textContent).toBe('')
+    expect(f.warn.style.display).toBe('none')
+  })
+})

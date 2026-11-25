@@ -5951,7 +5951,7 @@ function applySubAgentAuthAdvice(advice) {
   const warn = document.getElementById('agentModelAuthWarn')
   const sel = document.getElementById('agentModel')
   if (!warn || !sel) return
-  if (!advice || !advice.claudeAuthMissing) { warn.style.display = 'none'; warn.textContent = ''; return }
+  if (!advice || !advice.claudeAuthMissing) { warn.style.display = 'none'; warn.textContent = ''; delete warn.dataset.i18n; return }
   const routerValue = `custom:${advice.routerProviderId}`
   const routerOption = [...sel.options].some((o) => o.value === routerValue)
   if (advice.routerSuggested && routerOption && sel.value === 'inherit') {
@@ -5960,7 +5960,10 @@ function applySubAgentAuthAdvice(advice) {
     if (idInput && !idInput.value.trim()) idInput.value = advice.routerModel
     updateCustomModelIdRow(sel)
   }
-  warn.textContent = t(advice.routerSuggested && routerOption ? 'agents.model.no_claude_auth_router' : 'agents.model.no_claude_auth')
+  // HOSTINGERI18NFU1125: the key rides on data-i18n, so renderStaticI18n's sweep redraws the text when the language is
+  // applied later. The models answer can arrive before /api/auth/status, while the page is still on the 'hu' fallback.
+  warn.dataset.i18n = advice.routerSuggested && routerOption ? 'agents.model.no_claude_auth_router' : 'agents.model.no_claude_auth'
+  warn.textContent = t(warn.dataset.i18n)
   warn.style.display = ''
 }
 
