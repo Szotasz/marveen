@@ -119,6 +119,24 @@ try:
         code, err = rc(cmd)
         check(f"{name} -> exit 2", code == 2, f"exit={code} err={err[:200]!r}")
 
+    print("== MAILGATEWRITTENAND1123: the scratch-file shape agents really use")
+    for name, cmd in (
+        ("mkdir -p, && a heredoc-written script, run next", f"mkdir -p {D}/w && " + harmless + f"python3 {D}/new.py"),
+        ("cd, && an absolute script, run next", f"cd {D} && " + harmless + f"python3 {D}/new.py"),
+        ("mkdir and cd, a second command after the run", f"mkdir -p {D}/w && cd {D}/w && " + harmless + f"python3 {D}/new.py; echo done"),
+    ):
+        code, err = rc(cmd)
+        check(f"{name} -> exit 0", code == 0, f"exit={code} err={err[:200]!r}")
+    for name, cmd in (
+        ("the same shape with a sending body", f"mkdir -p {D}/w && " + sender + f"python3 {D}/new.py"),
+        ("a write on a test", f"test -d x && " + harmless + f"python3 {D}/new.py"),
+        ("a hidden write after the skipped one", f"mkdir -p {D}/w && " + harmless + f"cat {D}/send.py > {D}/n$(printf ew).py\npython3 {D}/new.py"),
+        ("a hidden write before it", f"cat {D}/send.py > {D}/n$(printf ew).py; test -d x && " + harmless + f"python3 {D}/new.py"),
+        ("a brace write through tee before it", f"cat {D}/send.py | tee {D}/n{{e,}}w.py && " + harmless + f"python3 {D}/new.py"),
+    ):
+        code, err = rc(cmd)
+        check(f"{name} -> exit 2", code == 2, f"exit={code} err={err[:200]!r}")
+
     print("== Dani's review of #2586: the run would reach a sender in zsh or bash; every shape is stopped")
     os.makedirs(os.path.join(D, "evil"))
     with open(os.path.join(D, "evil", "hello.py"), "w") as fh:
