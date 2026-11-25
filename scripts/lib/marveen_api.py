@@ -24,6 +24,7 @@ import os
 import posixpath
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -80,6 +81,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   vault-login <agent> <web-login-id>   (logs in, in the agent's own browser; prints the outcome only)
   vault-logins                         (the web logins: id, origin, username, allowed agents; never a password)
   kanban-assign <card-id> <assignee> [--actor <name>]
+  kanban-done-since <epoch> [--assignee-team <leader>]
+                (read only: the cards now done whose last status change came at or after <epoch>; JSON with count and ids)
   agents-list
   agent-restart <agent> [--fresh]
                 (sub-agents only: the main agent is refused; no force)
@@ -556,6 +559,17 @@ def build_request(verb, args):
         if actor is not None:
             body['actor'] = check(actor, NAME_RE, 'agent name')
         return 'PUT', f'/api/kanban/{card}', body, headers, {}
+    if verb == 'kanban-done-since':
+        team = take_opt(args, '--assignee-team')
+        (since,) = positional(args, 1, verb)
+        check(since, ID_RE, 'epoch')
+        if int(since) > int(time.time()) + 60:
+            fail_usage('kanban-done-since: the epoch is in the future')
+        if team is not None:
+            check(team, NAME_RE, 'team leader')
+        return 'GET', '/api/kanban?' + urllib.parse.urlencode({
+            'status': 'done', 'includeArchived': '1', 'fields': 'status,assignee,last_status_at'
+        }), None, headers, {'done_since': {'since': int(since), 'team': team}}
     if verb == 'kanban-comment':
         card, author, content_file = positional(args, 3, verb)
         check(card, CARD_ID_RE, 'card id')
@@ -605,6 +619,80 @@ def completion_close_refused(path, token):
                 'no one. Send the result as a new message to the sender (message verb), then close this one with '
                 '--no-notify. Nothing was sent.')
     return None
+
+
+def get_json(path, token):
+    req = urllib.request.Request(api_base() + path, method='GET')
+    req.add_header('Authorization', f'Bearer {token}')
+    try:
+        with OPENER.open(req, timeout=30) as resp:
+            status, text = resp.status, resp.read().decode('utf-8', 'replace')
+    except urllib.error.HTTPError as e:
+        status, text = e.code, e.read().decode('utf-8', 'replace')
+    except (urllib.error.URLError, OSError) as e:
+        if isinstance(e, TimeoutError) or isinstance(getattr(e, 'reason', None), TimeoutError):
+            print(f'FAIL: the dashboard at {api_base()} did not answer in 30 s; read back before you retry a write.', file=sys.stderr)
+            sys.exit(3)
+        print(f'FAIL: the dashboard at {api_base()} could not be reached ({getattr(e, "reason", e)}).', file=sys.stderr)
+        sys.exit(3)
+    if not 200 <= status < 300:
+        print(f'FAIL: HTTP {status}: {text[:500]}', file=sys.stderr)
+        sys.exit(1)
+    try:
+        return json.loads(text)
+    except ValueError:
+        print(f'FAIL: kanban-done-since: unexpected JSON from {path}: {text[:200]!r}', file=sys.stderr)
+        sys.exit(1)
+
+
+# DONESINCE1123: last_status_at is the last status event; a comment does not move it (updated_at would).
+# A card created already done counts with its creation time.
+# Archived done cards are included via includeArchived=1.
+# Without a team every assignee counts, including the owner's cards.
+def done_since_report(spec, text, token):
+    try:
+        rows = json.loads(text)
+    except ValueError:
+        print(f'FAIL: kanban-done-since: unexpected card row from /api/kanban: {repr(text)[:200]}', file=sys.stderr)
+        return 1
+    if not isinstance(rows, list):
+        print(f'FAIL: kanban-done-since: unexpected card row from /api/kanban: {repr(rows)[:200]}', file=sys.stderr)
+        return 1
+    kept = []
+    for row in rows:
+        if (not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                or type(row.get('last_status_at')) is not int):
+            print(f'FAIL: kanban-done-since: unexpected card row from /api/kanban: {repr(row)[:200]}', file=sys.stderr)
+            return 1
+        if row.get('status') == 'done' and row['last_status_at'] >= spec['since']:
+            kept.append(row)
+    members = None
+    if spec['team'] is not None:
+        agents = get_json('/api/agents', token)
+        if not isinstance(agents, list):
+            print(f'FAIL: kanban-done-since: unexpected agents body from /api/agents: {repr(agents)[:200]}', file=sys.stderr)
+            return 1
+        leader = spec['team'].strip().lower()
+        by_name = {agent['name'].strip().lower(): agent for agent in agents}
+        if leader not in by_name:
+            reported_to = {agent['team']['reportsTo'].strip().lower() for agent in agents
+                           if agent['team'].get('reportsTo')}
+            known = {name for name, agent in by_name.items()
+                     if agent['team'].get('role') == 'leader' or name in reported_to}
+            print(f"FAIL: kanban-done-since: unknown team leader '{spec['team']}'; known leaders: {', '.join(sorted(known))}", file=sys.stderr)
+            return 2
+        members = {leader}
+        members.update(agent['name'].strip().lower() for agent in agents
+                       if (agent['team'].get('reportsTo') or '').strip().lower() == leader)
+        members.update(name.strip().lower() for name in by_name[leader]['team'].get('delegatesTo', []))
+        kept = [row for row in kept if isinstance(row.get('assignee'), str)
+                and any(name.strip().lower() in members for name in row['assignee'].split(','))]
+    kept.sort(key=lambda row: (row['last_status_at'], row['id']))
+    empty_sent_payloads()
+    print(json.dumps({'since': spec['since'], 'team': spec['team'],
+                      'members': sorted(members) if members is not None else None,
+                      'count': len(kept), 'ids': [row['id'] for row in kept]}, ensure_ascii=False))
+    return 0
 
 
 def verb_usage(verb):
@@ -686,6 +774,8 @@ def main(argv):
         label = resp_headers.get('X-Memory-Search') if resp_headers else None
         print(f'X-Memory-Search: {label}' if label else 'X-Memory-Search: MISSING (the search did not run as asked)')
     if 200 <= status < 300:
+        if flags.get('done_since'):
+            return done_since_report(flags['done_since'], text, token)
         empty_sent_payloads()
         print(text)
         if flags.get('require_sig_ok'):

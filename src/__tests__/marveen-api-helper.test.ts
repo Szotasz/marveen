@@ -569,7 +569,7 @@ describe('marveen-api.sh: schedules are read only', () => {
     '        "kanban-list": [], "schedules-list": [], "kanban-create": ["dani", "normal", f],',
     '        "kanban-move": ["c-1", "done"], "kanban-claim": ["c-1", "dani"], "kanban-release": ["c-1", "dani"],',
     '        "kanban-comment": ["c-1", "dani", f], "kanban-assign": ["c-1", "dani"], "kanban-archive": ["c-1"],',
-    '        "agents-list": [], "vault-login": ["dani", "shop-example-com"], "vault-logins": [],',
+    '        "kanban-done-since": ["1700000000"], "agents-list": [], "vault-login": ["dani", "shop-example-com"], "vault-logins": [],',
     '        "agent-restart": ["dani"], "federation-directory": [], "daily-log-read": ["dani"], "memory-backfill": [],',
     '    }',
     '    verbs = re.findall(r"^ {2}([a-z-]+)(?= |$)", m.USAGE, re.M)',
