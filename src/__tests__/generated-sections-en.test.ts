@@ -494,23 +494,23 @@ describe('the retired path of the English text (EGM review Major 2): per languag
 // STALENESS GUARD. A Hungarian body changed? Bring its English twin in src/web/agent-scaffold-en.ts along, then
 // update the hash here (the failing test prints the new one). The hash covers every branch combination above.
 const HU_SOURCE_HASHES: Record<string, string> = {
-  'agent-id-header': '44f5248d7fc36cbc',
+  'agent-id-header': 'aecb1a3b1848214a',
   'api-helper': 'b8eeff8bebdff1d1',
-  'autonomy': '728210d786c75e11',
+  'autonomy': '909f1d98acff1d70',
   'background-checkpoint': '04505f8789507f70',
   'evidence': '9dff6e8bd9b8d64c',
   'fleet-auth': '93c48bc9916ec0da',
   'fleet-roster': '4849b0f0ec0dab70',
   'skill-section': 'ccb3df74b18e6c8f',
-  'claude-md-prompt': '47a4cd6b4097e6be',
+  'claude-md-prompt': '2bc8b942b35b428c',
   'precompact-prompt': 'ba0d64daf27b1316',
   'mcp-list-channel': 'a7ccf3ed2f0ca342',
   'memory-search-label': '9ddf9811134c353e',
-  'message-close': '835ee6c92d6e0a7a',
+  'message-close': 'e29b78836bf9a895',
   'pane-at-escape': '81d1f7d930d89739',
   'skills-path-trap': '76b7632b730c8120',
   'strict-api': '0eeec47cd845f598',
-  'system-directive-auth': '5f72174ed4de6b5d',
+  'system-directive-auth': '9f9b67655bf84872',
 }
 
 describe('generated sections: staleness guard (a Hungarian change needs its English twin)', () => {

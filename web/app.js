@@ -2699,7 +2699,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
         }
         throw new Error(e.error || res.status)
       }
-      showToast(t('kanban.toast.card_updated'))
+      showToast(t('kanban.toast.card_updated'), 'success')
     } else {
       data.status = document.getElementById('cardEditStatus').value
       const res = await fetch('/api/kanban', {
@@ -2708,7 +2708,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
         body: JSON.stringify(data),
       })
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
-      showToast(t('kanban.toast.card_created'))
+      showToast(t('kanban.toast.card_created'), 'success')
     }
     closeModal(cardModalOverlay)
     loadKanban()
@@ -3089,7 +3089,7 @@ async function showCardDetail(card) {
         if (!r.ok) throw new Error('move failed')
         card.status = newVal
         restore(newVal)
-        showToast(t('kanban.toast.status_updated'))
+        showToast(t('kanban.toast.status_updated'), 'success')
         loadKanban && loadKanban()
       } catch {
         restore(current)
@@ -3150,7 +3150,7 @@ async function showCardDetail(card) {
         if (Number.isInteger(saved.version)) card.version = saved.version
         card.assignee = newVal
         assigneeValueEl.textContent = newVal ? newVal : t('kanban.meta.none')
-        showToast(t('kanban.toast.assignee_updated'))
+        showToast(t('kanban.toast.assignee_updated'), 'success')
         loadKanban && loadKanban()
       } catch {
         assigneeValueEl.textContent = current ? current : t('kanban.meta.none')
@@ -3218,7 +3218,7 @@ async function showCardDetail(card) {
       if (r.ok) {
         const saved = await r.json().catch(() => ({}))
         if (Number.isInteger(saved.version)) card.version = saved.version
-        card.parent_id = newParentId; showToast(label); loadKanban(); showCardDetail(card)
+        card.parent_id = newParentId; showToast(label, 'success'); loadKanban(); showCardDetail(card)
       } else if (r.status === 409 && (await r.json().catch(() => ({}))).conflict === 'stale_version') {
         showToast(t('kanban.toast.stale_version'), { kind: 'warn', duration: 6000 })
         loadKanban()
@@ -3315,7 +3315,7 @@ async function showCardDetail(card) {
     try {
       await fetch(`/api/kanban/${encodeURIComponent(card.id)}/archive`, { method: 'POST' })
       closeModal(cardDetailOverlay)
-      showToast(t('kanban.toast.card_archived'))
+      showToast(t('kanban.toast.card_archived'), 'success')
       loadKanban()
     } catch {
       showToast(t('kanban.toast.archive_error'), 'error')
@@ -3334,7 +3334,7 @@ async function showCardDetail(card) {
     try {
       await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, { method: 'DELETE' })
       closeModal(cardDetailOverlay)
-      showToast(t('kanban.toast.card_deleted'))
+      showToast(t('kanban.toast.card_deleted'), 'success')
       loadKanban()
     } catch {
       showToast(t('common.error_delete'), 'error')
@@ -3364,7 +3364,7 @@ async function showCardDetail(card) {
             body: JSON.stringify({ title, parent_id: card.id, status: card.status, priority: card.priority, project: card.project || null, assignee: null }),
           })
           if (!r.ok) { showToast(t('kanban.toast.subtask_error'), 'error'); return }
-          showToast(t('kanban.toast.subtask_created'))
+          showToast(t('kanban.toast.subtask_created'), 'success')
           loadKanban()
           showCardDetail(card)
         } catch { showToast(t('kanban.toast.subtask_error'), 'error') }
@@ -3406,7 +3406,7 @@ async function showCardDetail(card) {
             try {
               const r = await fetch(`/api/kanban/${encodeURIComponent(ch.id)}`, { method: 'DELETE' })
               if (!r.ok) { showToast(t('common.error_delete'), 'error'); return }
-              showToast(t('kanban.toast.subtask_deleted'))
+              showToast(t('kanban.toast.subtask_deleted'), 'success')
               loadKanban()
               showCardDetail(card)
             } catch { showToast(t('common.error_delete'), 'error') }
@@ -3535,7 +3535,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
       const data = await res.json()
       if (!res.ok) { showToast(data.error || t('common.error_save'), 'error'); return }
       closeModal(breakdownOverlay)
-      showToast(t('kanban.breakdown.promoted', { count: data.child_count }))
+      showToast(t('kanban.breakdown.promoted', { count: data.child_count }), 'success')
       loadIdeasPage()
       return
     }
@@ -3548,7 +3548,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
     if (!res.ok) { showToast(data.error || t('common.error_save'), 'error'); return }
     closeModal(breakdownOverlay)
     closeModal(cardDetailOverlay)
-    showToast(t('kanban.breakdown.created_count', { count: data.created.length }))
+    showToast(t('kanban.breakdown.created_count', { count: data.created.length }), 'success')
     loadKanban()
   } catch {
     showToast(t('common.error_save'), 'error')
@@ -4072,7 +4072,7 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
     }
 
     closeModal(agentWizardOverlay)
-    showToast(t('agents.wizard.created'))
+    showToast(t('agents.wizard.created'), 'success')
     await loadAgents()
     // Drop the operator straight into the Telegram tab of the new agent so
     // the pairing step is in front of them -- easy to miss otherwise.
@@ -4430,7 +4430,7 @@ document.getElementById('saveContextGuardBtn').addEventListener('click', async (
       body: JSON.stringify(cfg),
     })
     if (!res.ok) throw new Error()
-    showToast(t('agents.toast.ctx_guard_saved'))
+    showToast(t('agents.toast.ctx_guard_saved'), 'success')
   } catch { showToast(t('common.error_save'), 'error') }
 })
 
@@ -4626,8 +4626,17 @@ function applyMarveenReadonlyMode(readOnly) {
     const btn = document.getElementById(id)
     if (btn) { btn.hidden = false; btn.disabled = readOnly }
   }
+  // HOSTINGERRETEST1125: a sub-agent on a custom provider (the Hostinger AI Router on a router install) runs on that
+  // provider's key, so the Claude login choices (auth mode, Claude subscription) do not apply and are not offered:
+  // a router-only install is never pushed toward a Claude login. A note says why.
+  const agent = typeof currentAgent === 'undefined' ? null : currentAgent
+  const onProvider = !readOnly && !!(agent && agent.role !== 'main' && agent.customProvider)
+  const providerNote = document.getElementById('agentProviderAuthNote')
+  if (providerNote) providerNote.hidden = !onProvider
+  const providerNoteText = document.getElementById('agentProviderAuthNoteText')
+  if (onProvider && providerNoteText) providerNoteText.textContent = t('agents.plan_login.provider_note', { provider: agent.customProvider })
   const authModeGroup = document.getElementById('authModeGroup')
-  if (authModeGroup) authModeGroup.hidden = readOnly
+  if (authModeGroup) authModeGroup.hidden = readOnly || onProvider
   const memoryIsolationGroup = document.getElementById('memoryIsolationGroup')
   if (memoryIsolationGroup) memoryIsolationGroup.hidden = readOnly
   // CODEMODEFLAG1119: sub-agents only (the main agent does not start through the launcher that reads it)
@@ -4639,8 +4648,9 @@ function applyMarveenReadonlyMode(readOnly) {
   // both open paths run; openAgentDetail used to hide the plan group itself, which the main agent never reached.
   for (const id of ['securityProfileGroup', 'claudePlanGroup']) {
     const group = document.getElementById(id)
-    if (group) group.hidden = readOnly
+    if (group) group.hidden = readOnly || (id === 'claudePlanGroup' && onProvider)
   }
+
   // MAINAUTHSWITCH1107: the main agent's own authentication switch, on the main agent card only
   const mainAuthGroup = document.getElementById('mainAuthGroup')
   if (mainAuthGroup) {
@@ -5114,6 +5124,8 @@ async function openAgentDetail(agentName) {
 
   // Restore editable Settings (Marveen detail flips this to read-only).
   applyMarveenReadonlyMode(false)
+  // HOSTINGERRETEST1125: a subscription login started on another agent's page is not shown on this one.
+  setAgentPlanLoginState({})
 
   // Delete button (restore visibility for normal agents)
   document.getElementById('deleteAgentBtn').style.display = ''
@@ -5128,7 +5140,7 @@ async function openAgentDetail(agentName) {
     try {
       await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, { method: 'DELETE' })
       closeModal(agentDetailOverlay)
-      showToast(t('agents.toast.deleted'))
+      showToast(t('agents.toast.deleted'), 'success')
       loadAgents()
     } catch (err) {
       showToast(t('common.error_delete'), 'error')
@@ -5169,7 +5181,7 @@ async function openAgentDetail(agentName) {
       a.click()
       a.remove()
       URL.revokeObjectURL(objectUrl)
-      showToast(t(withSecrets ? 'agents.export.done_secrets' : 'agents.export.done'))
+      showToast(t(withSecrets ? 'agents.export.done_secrets' : 'agents.export.done'), 'success')
     } catch {
       showToast(t('agents.export.error'), 'error')
     }
@@ -5201,7 +5213,7 @@ function populateDetailAvatarGrid() {
           body: JSON.stringify({ galleryAvatar: avatar }),
         })
         if (!res.ok) throw new Error()
-        showToast(t('agents.toast.avatar_updated'))
+        showToast(t('agents.toast.avatar_updated'), 'success')
         bumpAvatarEpoch()
         // Update the detail avatar display
         document.getElementById('agentDetailAvatar').innerHTML = `<img src="/api/agents/${encodeURIComponent(currentAgent.name)}/avatar${avatarBust()}" alt="">`
@@ -5236,7 +5248,7 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
             body: JSON.stringify({ galleryAvatar: avatar }),
           })
           if (!res.ok) throw new Error()
-          showToast(t('agents.toast.avatar_updated'))
+          showToast(t('agents.toast.avatar_updated'), 'success')
           bumpAvatarEpoch()
           const imgUrl = isMarveen ? `/api/marveen/avatar${avatarBust()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar${avatarBust()}`
           document.getElementById('agentDetailAvatar').innerHTML = `<img src="${imgUrl}" alt="">`
@@ -5311,7 +5323,7 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
     try {
       const res = await fetch(endpoint, { method: 'POST', body: form })
       if (!res.ok) throw new Error()
-      showToast(t('agents.toast.avatar_uploaded'))
+      showToast(t('agents.toast.avatar_uploaded'), 'success')
       bumpAvatarEpoch()
       const imgUrl = isMarveen ? `/api/marveen/avatar${avatarBust()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar${avatarBust()}`
       document.getElementById('agentDetailAvatar').innerHTML = `<img src="${imgUrl}" alt="">`
@@ -5522,7 +5534,7 @@ document.getElementById('mainAuthApplyBtn').addEventListener('click', async () =
     document.getElementById('mainAuthRouterKey').value = ''
     if (reply.body.verified === false) showToast(t('agents.main_auth.unverified'), 'warn')
     const restarted = await restartMainAgentGated()
-    showToast(t(restarted ? 'agents.main_auth.saved_restarting' : 'agents.main_auth.saved_not_restarted'))
+    showToast(t(restarted ? 'agents.main_auth.saved_restarting' : 'agents.main_auth.saved_not_restarted'), restarted ? 'success' : 'warn')
     setTimeout(() => { loadMainAuthPanel() }, 20000)
     loadMainAuthPanel()
   } catch (err) {
@@ -5578,7 +5590,7 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
-    if (await restartMainAgentGated()) showToast(t('agents.toast.marveen_restarted'))
+    if (await restartMainAgentGated()) showToast(t('agents.toast.marveen_restarted'), 'success')
   } catch (err) {
     showToast(`${t('common.error')}: ${err.message}`, 'error')
   } finally {
@@ -5599,7 +5611,7 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
       const err = await res.json()
       throw new Error(err.error || t('agents.toast.start_failed'))
     }
-    showToast(t('agents.toast.started'))
+    showToast(t('agents.toast.started'), 'success')
     // Refresh
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {
@@ -5632,7 +5644,7 @@ document.getElementById('agentStopBtn').addEventListener('click', async () => {
       const err = await res.json()
       throw new Error(err.error || t('agents.toast.stop_failed'))
     }
-    showToast(t('agents.toast.stopped'))
+    showToast(t('agents.toast.stopped'), 'success')
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {
       currentAgent = await detailRes.json()
@@ -5968,6 +5980,18 @@ const AGENT_PKG_ERR_KEYS = {
   package_rejected: 'package_rejected', invalid_slug: 'invalid_slug', name_reserved: 'name_reserved',
   name_taken: 'name_taken', stale_install: 'stale_install', already_installed: 'already_installed',
   unsupported_layout: 'unsupported_layout', own_version_unknown: 'own_version_unknown', install_failed: 'install_failed',
+  invalid_display_name: 'invalid_display_name',
+  // PR-I4: the update's check and apply (plan 6.2, 6.3).
+  agent_not_found: 'agent_not_found',
+  not_a_package: 'not_a_package',
+  manifest_unreadable: 'manifest_unreadable',
+  version_conflict: 'version_conflict',
+  downgrade_refused: 'downgrade_refused',
+  plan_changed: 'plan_changed',
+  decision_required: 'decision_required',
+  path_blocked: 'path_blocked',
+  update_in_progress: 'update_in_progress',
+  update_failed: 'update_failed',
 }
 function agentPkgErrorText(d) {
   const owner = ownerSessionText(d)
@@ -5982,6 +6006,8 @@ function agentPkgErrorText(d) {
 const AGENT_PKG_ERR_STEP = {
   not_connected: 1, credential_rejected: 1, not_entitled: 1, package_not_found: 1, rate_limited: 1,
   temporarily_unavailable: 1, download_failed: 1, unknown_kid: 2, incompatible: 2,
+  // A refused name is a local refusal before any download: the first step carries it, nothing is marked done.
+  invalid_display_name: 1,
 }
 function agentPkgErrorStep(d) {
   if (d && d.error === 'package_rejected') return d.step === 5 ? 3 : 2
@@ -6149,7 +6175,7 @@ function agentCatalogConnectForm() {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
       }))
       if (!r.ok) { msg.className = 'ac-msg ac-error'; msg.textContent = agentPkgErrorText(r.body); return }
-      showToast(t('agentCatalog.connect.done'))
+      showToast(t('agentCatalog.connect.done'), 'success')
       loadAgentCatalogPage()
     } catch {
       msg.className = 'ac-msg ac-error'
@@ -6243,7 +6269,18 @@ function agentCatalogConfirm(pkg, state, panel) {
   const ul = acEl('ul', 'ac-files')
   for (const [path, what] of agentPkgFileRows(pkg)) ul.append(acEl('li', null, `${path} · ${what}`))
   box.append(ul)
-  const go = acBtn('btn-primary', t('agentCatalog.install'), () => agentCatalogInstall(pkg, panel, go))
+  // MIOAGENTB4-1122 (Samu 83718): the name the dashboard shows for the agent. Empty keeps the package's own name;
+  // the agent's id and folder stay the package's slug whatever is typed here.
+  const nameLab = acEl('label', 'ac-name')
+  nameLab.append(acEl('span', null, t('agentCatalog.confirm.name')))
+  const nameInput = acEl('input')
+  nameInput.type = 'text'
+  nameInput.maxLength = 60
+  nameInput.autocomplete = 'off'
+  nameInput.className = 'input ac-name-input'
+  nameLab.append(nameInput)
+  box.append(nameLab, acEl('p', 'ac-muted', t('agentCatalog.confirm.name_hint')))
+  const go = acBtn('btn-primary', t('agentCatalog.install'), () => agentCatalogInstall(pkg, panel, go, nameInput.value))
   if (state.trialPick) {
     box.append(acEl('p', 'ac-warn', t('agentCatalog.confirm.trial')))
     const lab = acEl('label', 'ac-check')
@@ -6275,7 +6312,7 @@ async function agentCatalogInstalledName(slug) {
   }
 }
 
-async function agentCatalogInstall(pkg, panel, btn) {
+async function agentCatalogInstall(pkg, panel, btn, displayName = '') {
   if (agentCatalogState.busy) return
   agentCatalogState.busy = true
   btn.disabled = true
@@ -6296,7 +6333,8 @@ async function agentCatalogInstall(pkg, panel, btn) {
     let r = null
     try {
       r = await readActionReply(await fetch('/api/agents/install-package', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug: pkg.slug }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(displayName.trim() ? { slug: pkg.slug, display_name: displayName } : { slug: pkg.slug }),
       }))
     } catch {
       // The answer was lost (a proxy or the network cut it): the install may have finished. Measure, do not guess.
@@ -6561,7 +6599,7 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
         const liveMatched = data.activeModel === expectedModel
         showToast(liveMatched
           ? t('agents.model.toast_active', { model: displayModel })
-          : t('agents.model.toast_restarted', { model: displayModel }))
+          : t('agents.model.toast_restarted', { model: displayModel }), 'success')
       }
     } catch { /* network blip, keep polling */ }
   }, 2000)
@@ -6694,7 +6732,7 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
             created++
           } catch { /* skip failed card */ }
         }
-        showToast(t('agents.model.cards_created', { n: created }))
+        showToast(t('agents.model.cards_created', { n: created }), 'success')
         createBtn.textContent = t('agents.model.cards_created', { n: created })
       })
     }
@@ -6744,7 +6782,7 @@ if (exportAllAgentsBtn) {
       a.click()
       a.remove()
       URL.revokeObjectURL(objectUrl)
-      showToast(t(withSecrets ? 'agents.export_all.done_secrets' : 'agents.export_all.done'))
+      showToast(t(withSecrets ? 'agents.export_all.done_secrets' : 'agents.export_all.done'), 'success')
     } catch {
       showToast(t('agents.export.error'), 'error')
     }
@@ -6815,7 +6853,8 @@ if (importAgentBtn && importAgentFile) {
         if (data.includedSecrets) parts.push(t('agents.import.note_secrets'))
         if (data.overwritten) parts.push(t('agents.import.note_overwritten'))
       }
-      showToast(parts.join(' '))
+      // a fleet import that skipped some agents is only partly done
+      showToast(parts.join(' '), data.kind === 'fleet' && (data.skipped || []).length ? 'warn' : 'success')
       loadAgents()
     } catch {
       showToast(t('agents.import.error'), 'error')
@@ -6848,7 +6887,7 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
     const reply = await readActionReply(res)
     if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error'); return }
     if (currentAgent) currentAgent.autoRestart = reply.body.autoRestart
-    showToast(t('agents.toast.auto_restart_saved'))
+    showToast(t('agents.toast.auto_restart_saved'), 'success')
   } catch { showToast(t('common.error_save'), 'error') }
 })
 
@@ -6886,7 +6925,7 @@ document.getElementById('saveIdleFlushBtn').addEventListener('click', async () =
     if (!res.ok) throw new Error()
     const body = await res.json()
     if (currentAgent) currentAgent.contextGuard = body.contextGuard
-    showToast(t('agents.toast.idle_flush_saved'))
+    showToast(t('agents.toast.idle_flush_saved'), 'success')
   } catch { showToast(t('common.error_save'), 'error') }
 })
 
@@ -7015,7 +7054,7 @@ document.getElementById('saveVoiceConfigBtn').addEventListener('click', async ()
     // OWNERGATE3-1104: the server may refuse (403 owner_session_required); show why instead of a generic error.
     const reply = await readActionReply(r)
     if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(r, reply.body) }), 'error'); return }
-    showToast(t('agents.voice.saved'))
+    showToast(t('agents.voice.saved'), 'success')
   } catch { showToast(t('common.error_save'), 'error') }
 })
 
@@ -7030,7 +7069,7 @@ document.getElementById('saveProfileBtn').addEventListener('click', async () => 
     })
     if (!res.ok) throw new Error()
     const body = await res.json()
-    showToast(body.requiresRestart ? t('agents.toast.profile_saved_restart') : t('agents.toast.profile_saved'))
+    showToast(body.requiresRestart ? t('agents.toast.profile_saved_restart') : t('agents.toast.profile_saved'), 'success')
     loadAgents()
   } catch { showToast(t('agents.toast.profile_error'), 'error') }
 })
@@ -7048,9 +7087,137 @@ document.getElementById('savePlanBtn').addEventListener('click', async () => {
     })
     if (!res.ok) throw new Error()
     currentAgent.claudePlan = claudePlan || null
-    showToast(t('agents.toast.plan_saved'))
+    showToast(t('agents.toast.plan_saved'), 'success')
     loadAgents()
   } catch { showToast(t('agents.toast.plan_error'), 'error') }
+})
+
+// === Log in to a Claude subscription for this agent (HOSTINGERRETEST1125) ===
+// The same setup-token relay as Settings > Claude subscriptions (/api/claude-plans/login/*): a link to open, the code
+// from the login page back here, the token checked with a test call. The new plan is then assigned to this agent, with
+// authMode 'shared' (a plan token runs only there: plan-token-launch.ts). The agent's own /login in its terminal
+// (own_team) is a different, advanced path that the dashboard cannot finish.
+
+/** A plan id for this agent's login: the agent name plus a time stamp, within the plan id charset. */
+function agentPlanLoginId(agentName, now = Date.now()) {
+  const base = String(agentName || 'agent').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 40) || 'agent'
+  return `${base}-${now.toString(36)}`
+}
+
+let agentPlanLoginFor = null // the agent the running login belongs to
+
+function setAgentPlanLoginState({ step = false, status = null, error = null } = {}) {
+  document.getElementById('agentPlanLoginStep').hidden = !step
+  const st = document.getElementById('agentPlanLoginStatus')
+  st.textContent = status || ''
+  st.hidden = !status
+  const er = document.getElementById('agentPlanLoginError')
+  er.textContent = error || ''
+  er.hidden = !error
+}
+
+document.getElementById('agentPlanLoginBtn').addEventListener('click', async () => {
+  if (!currentAgent || currentAgent.role === 'main') return
+  const agent = currentAgent
+  const btn = document.getElementById('agentPlanLoginBtn')
+  btn.disabled = true
+  setAgentPlanLoginState({ status: t('settings.claude_plans.login.starting') })
+  try {
+    const res = await fetch('/api/claude-plans/login/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: agentPlanLoginId(agent.name),
+        label: `${agent.displayName || agent.name} (${agent.name})`,
+        planType: 'personal',
+        channelsAllowed: false,
+      }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (!res.ok || !data || typeof data.url !== 'string') {
+      setAgentPlanLoginState({ error: claudePlanLoginErrorText(data) })
+      return
+    }
+    agentPlanLoginFor = agent.name
+    const link = document.getElementById('agentPlanLoginLink')
+    link.href = safeHref(data.url) || '#'
+    document.getElementById('agentPlanLoginUrl').value = data.url
+    document.getElementById('agentPlanLoginCode').value = ''
+    setAgentPlanLoginState({ step: true, status: t('settings.claude_plans.login.waiting_code') })
+    link.focus()
+  } catch {
+    setAgentPlanLoginState({ error: t('settings.claude_plans.form.error_generic') })
+  } finally {
+    btn.disabled = false
+  }
+})
+
+document.getElementById('agentPlanLoginCopyBtn').addEventListener('click', async () => {
+  const field = document.getElementById('agentPlanLoginUrl')
+  if (!field.value) return
+  try {
+    await navigator.clipboard.writeText(field.value)
+    showToast(t('settings.claude_plans.login.copied'), 'success')
+  } catch {
+    field.focus()
+    field.select()
+  }
+})
+
+document.getElementById('agentPlanLoginCodeBtn').addEventListener('click', async () => {
+  const code = document.getElementById('agentPlanLoginCode').value.trim()
+  const agentName = agentPlanLoginFor
+  if (!code || !agentName) return
+  const btn = document.getElementById('agentPlanLoginCodeBtn')
+  btn.disabled = true
+  setAgentPlanLoginState({ step: true, status: t('settings.claude_plans.login.checking') })
+  try {
+    const res = await fetch('/api/claude-plans/login/code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (res.status !== 201 || !data || !data.id) {
+      // A mistyped code leaves the login waiting; anything else has ended it.
+      const waiting = data && data.code === 'bad-code'
+      setAgentPlanLoginState({ step: waiting, status: waiting ? t('settings.claude_plans.login.waiting_code') : null, error: claudePlanLoginErrorText(data) })
+      if (!waiting) agentPlanLoginFor = null
+      return
+    }
+    agentPlanLoginFor = null
+    // The plan exists now; assign it to the agent (a plan token runs with authMode 'shared' only).
+    const put = await fetch(`/api/agents/${encodeURIComponent(agentName)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ authMode: 'shared', claudePlan: data.id }),
+    })
+    if (!put.ok) {
+      setAgentPlanLoginState({ error: t('agents.plan_login.assign_failed', { label: data.label || data.id }) })
+      return
+    }
+    setAgentPlanLoginState({})
+    showToast(t('agents.plan_login.done', { label: data.label || data.id }), data.verified ? 'success' : 'warn')
+    if (currentAgent && currentAgent.name === agentName) {
+      currentAgent.claudePlan = data.id
+      currentAgent.authMode = 'shared'
+      populatePlanSelect(document.getElementById('editAgentPlan'), document.getElementById('editAgentPlanDesc'), data.id)
+      updateAuthModeUI('shared', currentAgent.hasApiKey || false)
+    }
+    loadAgents()
+  } catch {
+    setAgentPlanLoginState({ error: t('settings.claude_plans.form.error_generic') })
+  } finally {
+    btn.disabled = false
+  }
+})
+
+document.getElementById('agentPlanLoginCancelBtn').addEventListener('click', async () => {
+  agentPlanLoginFor = null
+  setAgentPlanLoginState({})
+  try { await fetch('/api/claude-plans/login/cancel', { method: 'POST' }) } catch { /* the server ends it on its own timeout */ }
 })
 
 // === Auth Mode ===
@@ -7114,7 +7281,7 @@ document.getElementById('authSharedApplyBtn').addEventListener('click', async ()
         return
       }
     }
-    showToast(t('agents.toast.host_oauth_restart'))
+    showToast(t('agents.toast.host_oauth_restart'), 'success')
     loadAgents()
     const detailRes = await fetch(base)
     if (detailRes.ok) {
@@ -7176,7 +7343,7 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
 
 document.getElementById('authFlowCopyBtn').addEventListener('click', () => {
   const url = document.getElementById('authFlowUrl').textContent
-  navigator.clipboard.writeText(url).then(() => showToast(t('common.toast.copied')))
+  navigator.clipboard.writeText(url).then(() => showToast(t('common.toast.copied'), 'success'))
 })
 
 document.getElementById('memoryIsolationToggle').addEventListener('change', async (e) => {
@@ -7190,7 +7357,7 @@ document.getElementById('memoryIsolationToggle').addEventListener('change', asyn
     })
     if (!res.ok) throw new Error()
     currentAgent.memoryIsolation = enabled
-    showToast(t(enabled ? 'agents.toast.memory_isolation_on' : 'agents.toast.memory_isolation_off'))
+    showToast(t(enabled ? 'agents.toast.memory_isolation_on' : 'agents.toast.memory_isolation_off'), 'success')
   } catch {
     e.target.checked = !enabled
     showToast(t('common.error_save'), 'error')
@@ -7208,7 +7375,7 @@ document.getElementById('codeModeToggle').addEventListener('change', async (e) =
     })
     if (!res.ok) throw new Error()
     currentAgent.codeMode = enabled
-    showToast(t(enabled ? 'agents.toast.code_mode_on' : 'agents.toast.code_mode_off'))
+    showToast(t(enabled ? 'agents.toast.code_mode_on' : 'agents.toast.code_mode_off'), 'success')
   } catch {
     e.target.checked = !enabled
     showToast(t('common.error_save'), 'error')
@@ -7230,7 +7397,7 @@ document.getElementById('saveAuthModeBtn').addEventListener('click', async () =>
       body: JSON.stringify(payload),
     })
     if (!res.ok) throw new Error()
-    showToast(t('agents.toast.auth_mode_saved'))
+    showToast(t('agents.toast.auth_mode_saved'), 'success')
     loadAgents()
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {
@@ -7251,7 +7418,7 @@ document.getElementById('saveClaudeMdBtn').addEventListener('click', async () =>
     })
     if (!res.ok) throw new Error()
     markFieldSaved(document.getElementById('editClaudeMd'))
-    showToast(t('agents.claude_md_saved'))
+    showToast(t('agents.claude_md_saved'), 'success')
   } catch { showToast(t('common.error_save'), 'error') }
 })
 
@@ -7265,7 +7432,7 @@ document.getElementById('saveSoulMdBtn').addEventListener('click', async () => {
     })
     if (!res.ok) throw new Error()
     markFieldSaved(document.getElementById('editSoulMd'))
-    showToast(t('agents.soul_md_saved'))
+    showToast(t('agents.soul_md_saved'), 'success')
   } catch { showToast(t('common.error_save'), 'error') }
 })
 
@@ -7279,7 +7446,7 @@ document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => 
     })
     if (!res.ok) throw new Error()
     markFieldSaved(document.getElementById('editMcpJson'))
-    showToast(t('agents.mcp_json_saved'))
+    showToast(t('agents.mcp_json_saved'), 'success')
   } catch { showToast(t('common.error_save'), 'error') }
 })
 
@@ -7506,7 +7673,7 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     // restart must not read as "connected".
     if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), { kind: 'warn', duration: 12000 })
     // INSTTGPOLLWARN1119: another install polling the same bot cannot be checked; said with "connected", not blocked.
-    else showToast(t('channel.toast.connected', { provider: getProviderLabel() }) + (result.pollerNote ? ' ' + t('channel.telegram.poller_unverifiable') : ''), result.pollerNote ? 10000 : undefined)
+    else showToast(t('channel.toast.connected', { provider: getProviderLabel() }) + (result.pollerNote ? ' ' + t('channel.telegram.poller_unverifiable') : ''), result.pollerNote ? { kind: 'warn', duration: 10000 } : 'success')
     // Refresh detail
     // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
     if (currentAgent.name === mainAgentId()) await refreshMainChannelUnconfBanner()
@@ -7546,7 +7713,9 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
         : exp.state === 'soon' ? ' ' + t('channel.toast.teams_secret_expiry_soon', { date: exp.date, days: exp.daysLeft })
         : exp.state === 'expired' ? ' ' + t('channel.toast.teams_secret_expiry_expired', { date: exp.date })
         : ''
-      showToast(t('channel.toast.test_ok') + suffix, suffix ? 8000 : undefined)
+      // the connection works; a secret that is missing, unreadable or near its end still needs the owner
+      const secretNeedsCare = ['missing', 'invalid', 'soon', 'expired'].includes(exp?.state)
+      showToast(t('channel.toast.test_ok') + suffix, secretNeedsCare ? { kind: 'warn', duration: 8000 } : { kind: 'success', duration: suffix ? 8000 : 3000 })
     }
   } catch {
     showToast(t('channel.toast.smoke_failed'), 'error')
@@ -7563,7 +7732,7 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel/reconnect`, { method: 'POST' })
     const data = await res.json()
     if (data.ok) {
-      showToast(t('channel.toast.reconnect_ok'))
+      showToast(t('channel.toast.reconnect_ok'), 'success')
       document.getElementById('chDisconnectedNotice').hidden = true
     } else {
       showToast(data.message || t('channel.toast.reconnect_failed'), { kind: 'error', duration: 8000 })
@@ -7658,7 +7827,7 @@ async function approvePairing(code) {
       const err = await res.json()
       throw new Error(err.error || t('channel.toast.approve_error'))
     }
-    showToast(t('channel.toast.pairing_approved'))
+    showToast(t('channel.toast.pairing_approved'), 'success')
     refreshPendingPairings()
     refreshAllowedList()
   } catch (err) {
@@ -7727,7 +7896,7 @@ async function removeAllowed(kind, id) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || t('channel.toast.remove_error'))
     }
-    showToast(t('common.toast.removed'))
+    showToast(t('common.toast.removed'), 'success')
     refreshAllowedList()
   } catch (err) {
     showToast(`${t('common.error')}: ${err.message}`, 'error')
@@ -7772,7 +7941,7 @@ async function refreshInvites() {
       if (copyBtn) {
         copyBtn.addEventListener('click', async (e) => {
           const link = e.currentTarget.getAttribute('data-link')
-          try { await navigator.clipboard.writeText(link); showToast(t('common.toast.copied')) }
+          try { await navigator.clipboard.writeText(link); showToast(t('common.toast.copied'), 'success') }
           catch { showToast(t('common.toast.copy_failed'), 'error') }
         })
       }
@@ -7798,7 +7967,7 @@ async function generateInvite() {
     }
     const data = await res.json()
     if (data.deepLink) {
-      try { await navigator.clipboard.writeText(data.deepLink); showToast(t('channel.toast.invite_copied')) }
+      try { await navigator.clipboard.writeText(data.deepLink); showToast(t('channel.toast.invite_copied'), 'success') }
       catch { showToast(t('channel.toast.invite_created')) }
     } else {
       showToast(t('channel.toast.invite_pending'))
@@ -7827,7 +7996,7 @@ async function revokeInviteToken(token) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || t('common.failed'))
     }
-    showToast(t('channel.toast.invite_revoked'))
+    showToast(t('channel.toast.invite_revoked'), 'success')
     refreshInvites()
   } catch (err) {
     showToast(`${t('common.error')}: ${err.message}`, 'error')
@@ -7916,7 +8085,7 @@ async function submitApproveModal() {
     document.getElementById('chApproveModalOverlay').hidden = true
     const item = document.querySelector(`[data-req-id="${CSS.escape(String(id))}"]`)
     if (item) item.remove()
-    showToast(t('channel.toast.approved'))
+    showToast(t('channel.toast.approved'), 'success')
     refreshChannelRequests()
   } catch (err) {
     showToast(`${t('common.error')}: ${err.message}`, 'error')
@@ -7978,7 +8147,7 @@ document.getElementById('chDisconnectBtn').addEventListener('click', async () =>
     const res = await fetch(`${channelApiBase()}`, { method: 'DELETE' })
     const reply = await readActionReply(res)
     if (!reply.ok) { showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error'); return }
-    showToast(t('channel.toast.disconnected', { provider: provLabel }))
+    showToast(t('channel.toast.disconnected', { provider: provLabel }), 'success')
     // CHANNELUNCONF1110: the main agent's detail draws from /api/marveen; fetch it first so the status and the banner follow.
     if (currentAgent.name === mainAgentId()) await refreshMainChannelUnconfBanner()
     await openAgentDetail(currentAgent.name)
@@ -8034,7 +8203,7 @@ async function loadSkills(agentName) {
           if (!confirmed) return
           try {
             await fetch(`/api/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skill.name)}`, { method: 'DELETE' })
-            showToast(t('skills.toast.deleted'))
+            showToast(t('skills.toast.deleted'), 'success')
             loadSkills(agentName)
           } catch {
             showToast(t('common.error_delete'), 'error')
@@ -8132,7 +8301,7 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
     }
     const created = await res.json().catch(() => ({}))
     closeModal(skillModalOverlay)
-    showToast(created.pending ? t('skills.toast.queued') : t('skills.toast.added'))
+    showToast(created.pending ? t('skills.toast.queued') : t('skills.toast.added'), created.pending ? undefined : 'success')
     if (isGlobal) {
       loadGlobalSkills()
     } else {
@@ -8175,7 +8344,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     const result = await res.json()
     closeModal(skillModalOverlay)
     const importedList = Array.isArray(result.imported) ? result.imported : []
-    showToast(t(result.pending ? 'skills.toast.imported_queued' : 'skills.toast.imported', { list: importedList.join(', ') }))
+    showToast(t(result.pending ? 'skills.toast.imported_queued' : 'skills.toast.imported', { list: importedList.join(', ') }), result.pending ? undefined : 'success')
     skillFile = null
     document.getElementById('skillFileName').textContent = ''
     if (isGlobal) {
@@ -8308,6 +8477,11 @@ function resetScheduleForm() {
   document.getElementById('scheduleSkipIfBusy').checked = false
   document.getElementById('scheduleForceSend').checked = false
   document.getElementById('scheduleTargetSession').value = ''
+  for (const id of ['schedulePreCheck', 'schedulePreCheckTimeout']) {
+    const el = document.getElementById(id)
+    el.value = el.defaultValue = ''
+  }
+  document.getElementById('schedulePreCheckGroup').hidden = true
   scheduleFrequency.value = 'daily'
   document.getElementById('scheduleTime').value = '09:00'
   document.getElementById('scheduleCustomCron').value = ''
@@ -8641,7 +8815,7 @@ function makeScheduleRow(task) {
       try {
         const r = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/run`, { method: 'POST' })
         const data = await r.json().catch(() => ({}))
-        if (r.ok) showToast(t('tasks.toast.run_started') + (data.result ? ': ' + data.result : ''))
+        if (r.ok) showToast(t('tasks.toast.run_started') + (data.result ? ': ' + data.result : ''), 'success')
         else showToast(t('common.not_done', { msg: refusalReason(r, data) }), 'error')
         loadSchedules()
       } catch { showToast(t('tasks.toast.run_error'), 'error') }
@@ -8652,7 +8826,7 @@ function makeScheduleRow(task) {
       try {
         const res = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/toggle`, { method: 'POST' })
         const reply = await readActionReply(res)
-        if (reply.ok) showToast(task.enabled ? t('tasks.toast.toggled_paused') : t('tasks.toast.toggled_resumed'))
+        if (reply.ok) showToast(task.enabled ? t('tasks.toast.toggled_paused') : t('tasks.toast.toggled_resumed'), 'success')
         else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error')
         loadSchedules()
       } catch { showToast(t('common.error'), 'error') }
@@ -8670,7 +8844,7 @@ function makeScheduleRow(task) {
       try {
         const res = await fetch(`/api/schedules/${encodeURIComponent(task.name)}`, { method: 'DELETE' })
         const reply = await readActionReply(res)
-        if (reply.ok) showToast(t('tasks.toast.deleted'))
+        if (reply.ok) showToast(t('tasks.toast.deleted'), 'success')
         else showToast(t('common.not_done', { msg: refusalReason(res, reply.body) }), 'error')
         loadSchedules()
       } catch { showToast(t('common.error_delete'), 'error') }
@@ -8991,6 +9165,12 @@ function openEditSchedule(task) {
     document.getElementById('scheduleSkipIfBusy').checked = !!task.skipIfBusy
     document.getElementById('scheduleForceSend').checked = !!task.forceSend
     document.getElementById('scheduleTargetSession').value = task.targetSession || ''
+    // edit only: the loaded list carries both fields; defaultValue is what the save compares against
+    const preCheckEl = document.getElementById('schedulePreCheck')
+    preCheckEl.value = preCheckEl.defaultValue = typeof task.preCheck === 'string' ? task.preCheck : ''
+    const preCheckTimeoutEl = document.getElementById('schedulePreCheckTimeout')
+    preCheckTimeoutEl.value = preCheckTimeoutEl.defaultValue = task.preCheckTimeoutSeconds ?? ''
+    document.getElementById('schedulePreCheckGroup').hidden = false
 
     // Set type (heartbeat or task; custom types fall back to task)
     const typeEl = document.getElementById('scheduleType')
@@ -9092,7 +9272,7 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
         const { prompt: expanded } = await res2.json()
         document.getElementById('schedulePrompt').value = expanded
         questionsEl.hidden = true
-        showToast(t('tasks.expand.done'))
+        showToast(t('tasks.expand.done'), 'success')
       } catch {
         showToast(t('tasks.expand.error'), 'error')
       } finally {
@@ -9124,6 +9304,14 @@ saveScheduleBtn.addEventListener('click', async () => {
   const targetSession = document.getElementById('scheduleTargetSession').value.trim()
   const advanced = { skipIfBusy, forceSend }
   if (targetSession) advanced.targetSession = targetSession
+  // preCheck / preCheckTimeoutSeconds are owner fields (OWNEREXEC1109): sent only when changed, so a plain edit
+  // needs no owner session; an emptied field sends null, which clears it. The server makes the owner check.
+  const preCheckEl = document.getElementById('schedulePreCheck')
+  if (preCheckEl.value.trim() !== preCheckEl.defaultValue) advanced.preCheck = preCheckEl.value.trim() || null
+  const preCheckTimeoutEl = document.getElementById('schedulePreCheckTimeout')
+  if (preCheckTimeoutEl.value.trim() !== preCheckTimeoutEl.defaultValue) {
+    advanced.preCheckTimeoutSeconds = preCheckTimeoutEl.value.trim() ? Number(preCheckTimeoutEl.value) : null
+  }
 
   if (!name) { document.getElementById('scheduleName').focus(); return }
   if (!prompt) { document.getElementById('schedulePrompt').focus(); return }
@@ -9145,7 +9333,7 @@ saveScheduleBtn.addEventListener('click', async () => {
         const err = await res.json()
         throw new Error(err.error || t('common.failed'))
       }
-      showToast(t('tasks.toast.updated'))
+      showToast(t('tasks.toast.updated'), 'success')
     } else {
       // Create
       const res = await fetch('/api/schedules', {
@@ -9157,7 +9345,7 @@ saveScheduleBtn.addEventListener('click', async () => {
         const err = await res.json()
         throw new Error(err.error || t('common.failed'))
       }
-      showToast(t('tasks.toast.created'))
+      showToast(t('tasks.toast.created'), 'success')
     }
     closeModal(scheduleModalOverlay)
     loadSchedules()
@@ -9299,7 +9487,7 @@ async function saveMemoryFromModal() {
         : t('memories.toast.save_refused', { msg: refusalReason(res, b) }), { kind: 'error', duration: 6000 })
       return
     }
-    showToast(t(editId ? 'memories.toast.updated' : 'memories.toast.created'))
+    showToast(t(editId ? 'memories.toast.updated' : 'memories.toast.created'), 'success')
     closeModal(memModalOverlay)
     loadMemories()
     loadMemStats()
@@ -9394,7 +9582,7 @@ async function moveMemTier(mem, tier) {
       body: JSON.stringify({ tier, updated_by: 'dashboard' }),
     })
     if (!res.ok) throw new Error(String(res.status))
-    showToast(t('memories.stale.moved', { tier: tierLabels[tier] || tier }))
+    showToast(t('memories.stale.moved', { tier: tierLabels[tier] || tier }), 'success')
     loadMemories()
     loadMemStats()
   } catch {
@@ -9426,7 +9614,7 @@ async function loadMemStats() {
         const data = await r.json()
         // ok:false = pending memories but the embedding backend answered none
         if (data.ok === false) showToast(t('memories.toast.vector_error'), 'error')
-        else showToast(t('memories.toast.vector_count', { count: data.embedded ?? data.count }))
+        else showToast(t('memories.toast.vector_count', { count: data.embedded ?? data.count }), 'success')
         loadMemStats()
       } catch { showToast(t('memories.toast.vector_error'), 'error') }
     })
@@ -9662,7 +9850,7 @@ function renderMemories(memories) {
           body = await res.json().catch(() => ({}))
         }
         if (res.ok) {
-          showToast(t('memories.toast.deleted'))
+          showToast(t('memories.toast.deleted'), 'success')
           loadMemories()
           loadMemStats()
         } else if (body.error === 'approval_required') {
@@ -10552,7 +10740,7 @@ document.getElementById('connectorRefreshBtn').addEventListener('click', async (
     if (!res.ok || !data.ok) {
       showToast(t('updates.error', {msg: data.error || 'HTTP ' + res.status}), 'error')
     } else {
-      showToast(t('connectors.toast.mcp_refreshed', { n: data.count || 0 }))
+      showToast(t('connectors.toast.mcp_refreshed', { n: data.count || 0 }), 'success')
     }
     await loadConnectors()
     // Reload catalog only if the Gallery tab is currently active so we
@@ -10716,7 +10904,7 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
     const data = reply.body
     if (!reply.ok) throw new Error(refusalReason(res, data))
     closeModal(catalogInstallOverlay)
-    showToast(data.message || t('connectors.toast.installed'))
+    showToast(data.message || t('connectors.toast.installed'), 'success')
     // Reload both views
     loadCatalog()
     loadConnectors()
@@ -10743,7 +10931,7 @@ async function catalogUninstall(item) {
     const reply = await readActionReply(res)
     const data = reply.body || {}
     if (!reply.ok) throw new Error(refusalReason(res, reply.body))
-    showToast(data.message || t('connectors.toast.removed'))
+    showToast(data.message || t('connectors.toast.removed'), 'success')
     loadCatalog()
     loadConnectors()
   } catch (err) {
@@ -12078,7 +12266,7 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
       resetSshAddForm()
       panel.hidden = true
       await loadSshServers()
-      showToast(t(isEdit ? 'vault.ssh.toast.server_updated' : 'vault.ssh.toast.server_added'))
+      showToast(t(isEdit ? 'vault.ssh.toast.server_updated' : 'vault.ssh.toast.server_added'), 'success')
     } catch { showToast(t('vault.toast.network_error'), 'error') }
   })
 
@@ -12187,7 +12375,7 @@ function renderWebLogins() {
     try {
       const res = await fetch(`/api/vault/web-logins/${encodeURIComponent(btn.dataset.id)}/unlock`, { method: 'POST' })
       if (!res.ok) { const err = await res.json().catch(() => ({})); showToast(err.error || t('common.error_save'), 'error'); return }
-      showToast(t('vault.weblogin.toast.unlocked'))
+      showToast(t('vault.weblogin.toast.unlocked'), 'success')
       await loadWebLogins()
     } catch { showToast(t('vault.toast.network_error'), 'error') }
   }))
@@ -12204,7 +12392,7 @@ function renderWebLogins() {
       const res = await fetch(`/api/vault/web-logins/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) { showToast(data.error || t('vault.toast.delete_error'), 'error'); return }
-      showToast(t('vault.weblogin.toast.deleted'))
+      showToast(t('vault.weblogin.toast.deleted'), 'success')
       _showWebLoginRestartNote(data.restartAgents)
       await loadWebLogins()
     } catch { showToast(t('vault.toast.network_error'), 'error') }
@@ -12290,7 +12478,7 @@ function closeWebLoginForm() {
       if (!res.ok) { showToast(data.error || t('common.error_save'), 'error'); return }
       passEl.value = ''
       closeWebLoginForm()
-      showToast(t(isEdit ? 'vault.weblogin.toast.updated' : 'vault.weblogin.toast.added'))
+      showToast(t(isEdit ? 'vault.weblogin.toast.updated' : 'vault.weblogin.toast.added'), 'success')
       _showWebLoginRestartNote(data.restartAgents)
       await loadWebLogins()
     } catch { showToast(t('vault.toast.network_error'), 'error') }
@@ -12401,7 +12589,7 @@ function renderVaultGrid(secrets) {
           return
         }
         form.remove()
-        showToast(t(newVal ? 'vault.toast.updated_synced' : 'vault.toast.label_updated'))
+        showToast(t(newVal ? 'vault.toast.updated_synced' : 'vault.toast.label_updated'), 'success')
         loadVaultPage()
         loadVault()
       })
@@ -12627,7 +12815,7 @@ function renderVaultGrid(secrets) {
       const res = await fetch('/api/vault/sync', { method: 'POST' })
       const data = await res.json()
       if (data.updated > 0) {
-        showToast(t('vault.sync.updated', { n: data.updated }))
+        showToast(t('vault.sync.updated', { n: data.updated }), 'success')
       } else {
         showToast(t('vault.sync.nothing'))
       }
@@ -12731,7 +12919,7 @@ function renderVaultGrid(secrets) {
       })
       const data = await res.json()
       if (data.imported > 0) {
-        showToast(t('vault.scan.imported', { imported: data.imported, bound: data.bound }))
+        showToast(t('vault.scan.imported', { imported: data.imported, bound: data.bound }), 'success')
       }
       if (data.errors?.length) {
         showToast(t('vault.toast.errors', { list: data.errors.join(', ') }), 'error')
@@ -13068,7 +13256,7 @@ async function openConnectorDetail(connector) {
     try {
       await fetch(`/api/connectors/${encodeURIComponent(connector.name)}`, { method: 'DELETE' })
       closeModal(connectorDetailOverlay)
-      showToast(t('connectors.toast.deleted'))
+      showToast(t('connectors.toast.deleted'), 'success')
       loadConnectors()
     } catch {
       showToast(t('common.error_delete'), 'error')
@@ -13085,7 +13273,7 @@ async function openConnectorDetail(connector) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agents: checked, allAgents: allVisible }),
       })
-      showToast(t('connectors.toast.assignment_updated'))
+      showToast(t('connectors.toast.assignment_updated'), 'success')
       closeModal(connectorDetailOverlay)
       loadConnectors()
     } catch {
@@ -13187,9 +13375,9 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
 
     closeModal(connectorModalOverlay)
     if (result.nameChanged) {
-      showToast(t('connectors.toast.added', { name: savedName }))
+      showToast(t('connectors.toast.added', { name: savedName }), 'success')
     } else {
-      showToast(t('connectors.toast.created'))
+      showToast(t('connectors.toast.created'), 'success')
     }
     loadConnectors()
   } catch (err) {
@@ -13754,7 +13942,7 @@ memImportSaveBtn.addEventListener('click', async () => {
           Hot: ${s.hot || 0} | Warm: ${s.warm || 0} | Cold: ${s.cold || 0} | Shared: ${s.shared || 0}
         </div>
       `
-      showToast(t('memories.toast.imported', { n: data.imported }))
+      showToast(t('memories.toast.imported', { n: data.imported }), 'success')
       loadMemories()
       loadMemStats()
     } else {
@@ -13977,7 +14165,7 @@ document.getElementById('fleetExportBtn').addEventListener('click', async () => 
     a.remove()
     URL.revokeObjectURL(url)
 
-    showToast(t('fleet.export.success'))
+    showToast(t('fleet.export.success'), 'success')
   } catch (err) {
     showToast(`${t('fleet.export.error')}: ${err.message}`, 'error')
   } finally {
@@ -14369,7 +14557,7 @@ function renderPendingSkills(box, list) {
         })
         const body = await res.json().catch(() => ({}))
         if (!res.ok) throw new Error(refusalReason(res, body))
-        showToast(t('skills.pending.approved', { name: p.name }))
+        showToast(t('skills.pending.approved', { name: p.name }), 'success')
         loadGlobalSkills()
       } catch (err) {
         showToast(`${t('skills.pending.error')}: ${err.message}`, 'error')
@@ -14776,7 +14964,7 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
         contentEl.innerHTML = renderMarkdown(newContent)
         _skillDetailSavedContent = newContent
         _skillDetailExitEdit()
-        showToast(t('skills.toast.saved'))
+        showToast(t('skills.toast.saved'), 'success')
         // Refresh list to pick up new description/keywords
         loadGlobalSkills()
       } catch (err) {
@@ -14825,7 +15013,7 @@ async function saveTeamReportsTo(childId, parentId, ctx) {
     if (result.cycleRejected) { showToast(t('team.drop.cycle'), 'warn'); return }
     const childLabel = (byId.get(childId) || {}).label || childId
     const parentLabel = (byId.get(parentId) || {}).label || parentId
-    showToast(t('team.drop.saved', { child: childLabel, parent: parentLabel }))
+    showToast(t('team.drop.saved', { child: childLabel, parent: parentLabel }), 'success')
     loadTeamGraph()
   } catch {
     showToast(t('team.drop.error'), 'error')
@@ -15562,7 +15750,7 @@ async function sendChatMessage(toAgent) {
     if (textarea) textarea.value = ''
     // A stopped target (#2426): the server stores the message as pending and says
     // queued; it is delivered when the agent starts, so "sent" would be wrong.
-    showToast(reply.body.queued === true ? t('messages.queued', { agent: toAgent }) : t('messages.sent'), reply.body.queued === true ? 6000 : 3000)
+    showToast(reply.body.queued === true ? t('messages.queued', { agent: toAgent }) : t('messages.sent'), reply.body.queued === true ? 6000 : { kind: 'success', duration: 3000 })
     await loadChatThread(toAgent)
     await loadChatAgentList()
   } catch (e) {
@@ -15672,7 +15860,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
         if (parts.length) warningMsg = parts.join(' · ')
       }
     } catch { /* body already consumed or not JSON -- OK, no warnings to show */ }
-    showToast(warningMsg ? t('team.save_warning', { detail: warningMsg }) : t('team.save_ok'))
+    showToast(warningMsg ? t('team.save_warning', { detail: warningMsg }) : t('team.save_ok'), warningMsg ? 'warn' : 'success')
     btn.textContent = t('team.save_done')
     setTimeout(() => { btn.textContent = originalText; btn.disabled = false }, 1800)
     loadAgents()
@@ -15870,7 +16058,7 @@ document.getElementById('projectsGrid')?.addEventListener('click', async (e) => 
       view.dataset.raw = text.trim()
       view.hidden = false; editArea.hidden = true
       editBtn.hidden = false; saveBtn.hidden = true; cancelBtn.hidden = true
-      showToast(t('common.saved'))
+      showToast(t('common.saved'), 'success')
     } catch (err) {
       console.error('save project description failed:', err)
       showToast(t('projects.save_error'), 'error')
@@ -16858,7 +17046,7 @@ async function pollUpdateOutcome(resetBtn) {
     if (data && !data.running && fresh) {
       const st = result.status
       if (st === 'success') {
-        showToast(t('updates.toast.success', { old: result.old || '', new: result.new || '' }))
+        showToast(t('updates.toast.success', { old: result.old || '', new: result.new || '' }), 'success')
         setTimeout(() => window.location.reload(), 2000)
         return
       }
@@ -17978,7 +18166,7 @@ async function startBgTask() {
       return
     }
     document.getElementById('bgPrompt').value = ''
-    showToast(t('bgTasks.toast.started'))
+    showToast(t('bgTasks.toast.started'), 'success')
     loadBgTasks()
   } catch {
     showToast(t('bgTasks.toast.start_error'), 'error')
@@ -18068,7 +18256,7 @@ async function cancelBgTask(id, agent) {
   try {
     const res = await fetch(`/api/background-tasks/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (res.ok) {
-      showToast(t('bgTasks.toast.stopped'))
+      showToast(t('bgTasks.toast.stopped'), 'success')
       loadBgTasks()
     } else {
       showToast(t('bgTasks.toast.stop_error'), 'error')
@@ -18387,7 +18575,7 @@ async function _resolveApproval(id, decision) {
     })
     const data = await res.json()
     if (!res.ok) { showToast(t('approvals.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
-    showToast(t(decision === 'approved' ? 'approvals.toast.approved' : 'approvals.toast.rejected'))
+    showToast(t(decision === 'approved' ? 'approvals.toast.approved' : 'approvals.toast.rejected'), decision === 'approved' ? 'success' : undefined)
     // Update in-place to avoid full reload flicker
     const idx = _approvalsAll.findIndex(a => a.id === id)
     if (idx !== -1) _approvalsAll[idx] = data
@@ -18881,6 +19069,8 @@ async function renderAuthCard() {
     renderDeviceKeysSection(body)
     renderBridgeEnrollSection(body)
     renderOperatorAccessSection(body)
+    // FIGURAKULCS1125: a companion key needs the owner's session (no first-run pass), so only a signed-in owner sees it.
+    if (status.method === 'session') renderCompanionKeySection(body)
   }
 }
 
@@ -19016,9 +19206,15 @@ async function refreshDeviceKeyList() {
       const bridge = k.installId ? ` <span class="auth-device-bridge-badge">${t('auth.devices.bridge_badge')}</span>` : ''
         + (k.scope === 'operator' ? ` <span class="auth-device-bridge-badge">${t('auth.operator.badge')}</span>` : '')
         + (k.scope === 'messenger' ? ` <span class="auth-device-bridge-badge">${t('auth.messenger.badge')}</span>` : '')
+        + (k.scope === 'companion' ? ` <span class="auth-device-bridge-badge">${t('auth.companion.badge')}</span>` : '')
+      // FIGURAKULCS1125: a companion key names whom it can write to, and the address it is bound to.
+      const companion = k.scope === 'companion'
+        ? ` &middot; ${t('auth.companion.list_recipients', { list: escapeHtml((k.recipients || []).join(', ')) })}`
+          + (k.bound_ip ? ` &middot; ${t('auth.companion.list_bound_ip', { ip: escapeHtml(k.bound_ip) })}` : '')
+        : ''
       return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
         `<span class="auth-device-name">${escapeHtml(k.name)}${bridge}</span>` +
-        `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +
+        `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}${companion}</span>` +
         `<button class="btn-secondary btn-compact auth-device-revoke" data-key-id="${k.id}">${t('auth.devices.revoke')}</button>` +
       `</div>`
     }).join('')
@@ -19207,6 +19403,103 @@ async function mintOperatorKey() {
         await navigator.clipboard.writeText(data.key)
         document.getElementById('opKeyCopyBtn').textContent = t('auth.devices.copied')
       } catch { document.getElementById('opKeyMintedVal').select() }
+    })
+    refreshDeviceKeyList()
+  } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+}
+
+// === Desktop companion key (FIGURAKULCS1125) ===
+// The desktop companion sends the owner's typed messages to the agents listed
+// on its key (the main agent by default), and nothing else. The key always
+// expires (30 days by default, 90 at most) and is shown once, right after minting.
+
+const COMPANION_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
+
+function renderCompanionKeySection(body) {
+  const wrap = document.createElement('div')
+  wrap.className = 'auth-device-keys'
+  wrap.id = 'authCompanionKey'
+  wrap.innerHTML =
+    `<div class="auth-sessions-title">${t('auth.companion.title')}</div>` +
+    `<p class="auth-muted">${t('auth.companion.desc')}</p>` +
+    `<div class="auth-muted">${t('auth.companion.recipients_label')}</div>` +
+    `<div id="compKeyRecipients"></div>` +
+    `<label class="auth-operator-switch"><input type="checkbox" id="compKeyBindIp"> ${t('auth.companion.bind_ip')}</label>` +
+    `<p class="auth-muted">${t('auth.companion.bind_ip_hint')}</p>` +
+    `<div class="auth-form auth-device-mint">` +
+      `<input id="compKeyName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.companion.name_placeholder')}">` +
+      `<div class="auth-muted">${t('auth.companion.expiry_placeholder')}</div>` +
+      `<input id="compKeyExpiry" type="number" min="1" max="90" value="30" placeholder="${t('auth.companion.expiry_placeholder')}" title="${t('auth.companion.expiry_placeholder')}">` +
+      `<input id="compKeyIp" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.companion.ip_placeholder')}" hidden>` +
+      `<button class="btn-secondary" id="compKeyMintBtn">${t('auth.companion.mint')}</button>` +
+      `<div class="auth-form-msg" id="compKeyMsg"></div>` +
+      `<div id="compKeyMinted" hidden></div>` +
+    `</div>`
+  body.appendChild(wrap)
+  document.getElementById('compKeyBindIp').addEventListener('change', (ev) => {
+    document.getElementById('compKeyIp').hidden = !ev.target.checked
+  })
+  document.getElementById('compKeyMintBtn').addEventListener('click', mintCompanionKey)
+  loadCompanionRecipients()
+}
+
+// Default: only the main agent is ticked; every other fleet agent can be added.
+async function loadCompanionRecipients() {
+  const el = document.getElementById('compKeyRecipients')
+  if (!el) return
+  await ensureMarveenLoaded()
+  const main = mainAgentId()
+  let names = []
+  try {
+    const r = await fetch('/api/agents')
+    const list = r.ok ? await r.json() : []
+    if (Array.isArray(list)) names = list.map((a) => a && a.name).filter(Boolean)
+  } catch { /* the main agent alone keeps the form usable */ }
+  const all = [main, ...[...new Set(names)].filter((n) => n !== main).sort()]
+  el.innerHTML = all.map((n) =>
+    `<div><label class="auth-operator-switch"><input type="checkbox" data-comp-recipient="${escapeHtml(n)}"${n === main ? ' checked' : ''}> ${escapeHtml(n)}` +
+    (n === main ? ` (${t('auth.companion.main_agent')})` : '') + `</label></div>`).join('')
+}
+
+async function mintCompanionKey() {
+  const msg = document.getElementById('compKeyMsg')
+  const minted = document.getElementById('compKeyMinted')
+  const name = (document.getElementById('compKeyName').value || '').trim()
+  const days = Number(document.getElementById('compKeyExpiry').value)
+  const recipients = [...document.querySelectorAll('[data-comp-recipient]')].filter((cb) => cb.checked).map((cb) => cb.dataset.compRecipient)
+  const bindIp = document.getElementById('compKeyBindIp').checked
+  const ip = (document.getElementById('compKeyIp').value || '').trim()
+  msg.className = 'auth-form-msg'
+  msg.textContent = ''
+  minted.hidden = true
+  const fail = (text) => { msg.classList.add('err'); msg.textContent = text }
+  if (!name) return fail(t('auth.devices.err_name'))
+  if (!COMPANION_NAME_RE.test(name)) return fail(t('auth.companion.err_name'))
+  if (!Number.isInteger(days) || days < 1 || days > 90) return fail(t('auth.companion.err_expiry'))
+  if (!recipients.length) return fail(t('auth.companion.err_recipients'))
+  if (bindIp && !ip) return fail(t('auth.companion.err_ip'))
+  // The main agent alone is sent as no list: the key then follows the main agent (the server's default).
+  const payload = { name, scope: 'companion', expires_in_days: days }
+  if (!(recipients.length === 1 && recipients[0] === mainAgentId())) payload.recipients = recipients
+  if (bindIp) payload.bound_ip = ip
+  try {
+    const r = await fetch('/api/auth/device-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    document.getElementById('compKeyName').value = ''
+    minted.hidden = false
+    minted.innerHTML =
+      `<p class="auth-muted">${t('auth.companion.minted_hint', { date: new Date(data.expires_at * 1000).toLocaleDateString(), list: escapeHtml((data.recipients || []).join(', ')) })}</p>` +
+      `<p class="auth-form-msg err">${t('auth.companion.minted_risk')}</p>` +
+      `<div class="auth-form auth-device-minted-row">` +
+        `<input id="compKeyMintedVal" type="text" readonly value="${escapeHtml(data.key)}" onclick="this.select()">` +
+        `<button class="btn-secondary btn-compact" id="compKeyCopyBtn">${t('auth.devices.copy')}</button>` +
+      `</div>`
+    document.getElementById('compKeyCopyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.key)
+        document.getElementById('compKeyCopyBtn').textContent = t('auth.devices.copied')
+      } catch { document.getElementById('compKeyMintedVal').select() }
     })
     refreshDeviceKeyList()
   } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
@@ -19428,7 +19721,7 @@ function wireFleetFreeze() {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) { showToast(data.error || ('HTTP ' + res.status), 'error'); return }
       renderFleetFreeze(data)
-      showToast(t('fleet_freeze.toast.frozen'))
+      showToast(t('fleet_freeze.toast.frozen'), 'success')
     } catch (err) { showToast(String(err.message || err), 'error') }
   })
   unfreezeBtn.addEventListener('click', async () => {
@@ -19439,7 +19732,7 @@ function wireFleetFreeze() {
       if (res.status === 403) { showToast(t('fleet_freeze.toast.owner_only'), { kind: 'warn', duration: 8000 }); return }
       if (!res.ok) { showToast(data.error || ('HTTP ' + res.status), 'error'); return }
       renderFleetFreeze({ frozen: false })
-      showToast(t('fleet_freeze.toast.unfrozen'))
+      showToast(t('fleet_freeze.toast.unfrozen'), 'success')
     } catch (err) { showToast(String(err.message || err), 'error') }
   })
   pollFleetFreeze()
@@ -20071,7 +20364,7 @@ async function copyClaudePlanLoginUrl() {
   if (!field || !field.value) return
   try {
     await navigator.clipboard.writeText(field.value)
-    showToast(t('settings.claude_plans.login.copied'))
+    showToast(t('settings.claude_plans.login.copied'), 'success')
   } catch {
     field.focus()
     field.select()
@@ -20130,7 +20423,7 @@ async function submitClaudePlanLoginCode() {
     let data = null
     try { data = await res.json() } catch { /* non-JSON error body */ }
     if (res.status === 201 && data) {
-      showToast(t(data.verified ? 'settings.claude_plans.login.done' : 'settings.claude_plans.login.done_unverified', { label: data.label || data.id }))
+      showToast(t(data.verified ? 'settings.claude_plans.login.done' : 'settings.claude_plans.login.done_unverified', { label: data.label || data.id }), data.verified ? 'success' : 'warn')
       resetClaudePlanForm()
       await loadClaudePlansList()
       return
@@ -20188,7 +20481,7 @@ async function switchToClaudePlan(plan) {
     if (!res.ok) {
       showToast((data && data.error) || t('settings.claude_plans.switch_error'), 'error')
     } else {
-      showToast(t('settings.claude_plans.switch_done', { label: plan.label }))
+      showToast(t('settings.claude_plans.switch_done', { label: plan.label }), 'success')
     }
   } catch {
     showToast(t('settings.claude_plans.switch_error'), 'error')
@@ -20839,7 +21132,7 @@ async function resetSettingToDefault(def, row, btn, errorEl) {
   updateSettingsSaveBar()
   loadClaudePlansReadiness()
   const base = result.source === 'env' ? t('settings.toast.reset_env') : t('settings.toast.reset_default')
-  showToast(result.requiresRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base)
+  showToast(result.requiresRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base, 'success')
 }
 
 // One button per tab: every overridden row of this group back to its default.
@@ -21028,7 +21321,7 @@ async function resetSettingsGroupToDefault(group) {
     showToast(t('settings.toast.reset_tab_partial'), { kind: 'error', duration: 6000 })
   } else {
     const base = t('settings.toast.reset_tab')
-    showToast(needsRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base)
+    showToast(needsRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base, 'success')
   }
 }
 
@@ -21084,7 +21377,7 @@ async function saveAllSettings() {
   if (errors.length) {
     showToast(t('settings.toast.partial_error'), 'error')
   } else {
-    showToast(needsRestart ? t('settings.toast.saved_restart') : t('settings.toast.saved'))
+    showToast(needsRestart ? t('settings.toast.saved_restart') : t('settings.toast.saved'), 'success')
   }
 }
 
@@ -22385,7 +22678,7 @@ function wireNotesPage() {
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)
       if (contentEl) contentEl.value = ''
       if (dueEl) dueEl.value = ''
-      showToast(t('notes.toast.added'))
+      showToast(t('notes.toast.added'), 'success')
       loadNotesPage()
     } catch (err) {
       showToast(t('notes.toast.error', { msg: String(err.message || err) }), 'error')
@@ -22408,7 +22701,7 @@ function wireNotesPage() {
       })
       const data = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)
-      showToast(t('notes.toast.deleted'))
+      showToast(t('notes.toast.deleted'), 'success')
       loadNotesPage()
     } catch (err) {
       btn.disabled = false
@@ -22708,7 +23001,7 @@ document.getElementById('ideaAttachmentInput')?.addEventListener('change', async
         throw new Error(data.error || t('ideas.detail.attach.upload_error'))
       }
     }
-    if (files.length) showToast(t('ideas.detail.attach.uploaded'))
+    if (files.length) showToast(t('ideas.detail.attach.uploaded'), 'success')
     await loadIdeaAttachments(ideaDetailId)
   } catch (err) {
     showToast(err.message || t('ideas.detail.attach.upload_error'), 'error')
@@ -22771,7 +23064,7 @@ document.getElementById('ideaDetailScoreSave')?.addEventListener('click', async 
       idea.effort = effort ? Number(effort) : null
     }
     updateDetailScoreChip()
-    showToast(t('ideas.toast.score_saved'))
+    showToast(t('ideas.toast.score_saved'), 'success')
     renderIdeasList()
   } catch { showToast(t('ideas.toast.score_saved_error'), 'error') }
 })
@@ -22845,7 +23138,7 @@ async function promoteIdea(phase) {
   const data = await res.json()
   ideasPromoteId = null
   closeModal(document.getElementById('ideaPromoteOverlay'))
-  if (data.ok) showToast(t('kanban.toast.card_created') + ': ' + data.kanban_id)
+  if (data.ok) showToast(t('kanban.toast.card_created') + ': ' + data.kanban_id, 'success')
   loadIdeasPage()
 }
 
@@ -22926,7 +23219,7 @@ async function handleAgentLogin(agentName, btn) {
       showToast(t('agents.auth.toast_started'))
     } else {
       btn.textContent = t('agents.auth.btn_logged_in')
-      showToast(t('agents.auth.toast_success'))
+      showToast(t('agents.auth.toast_success'), 'success')
       setTimeout(() => loadAgents(), 1500)
     }
   } catch (e) {
@@ -23115,7 +23408,7 @@ document.getElementById('terminalInputToggle')?.addEventListener('change', (e) =
       }
       terminalInputEnabled = reply.body.enabled === true
       syncTerminalInputToggleUI()
-      showToast(t(terminalInputEnabled ? 'terminal.input_enabled' : 'terminal.input_disabled'))
+      showToast(t(terminalInputEnabled ? 'terminal.input_enabled' : 'terminal.input_disabled'), 'success')
     })
     .catch(() => {
       terminalInputEnabled = false
@@ -23342,7 +23635,7 @@ function renderFederationPage() {
       const res = await fetch('/api/federation/enabled', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); e.target.checked = !enabled; return }
-      showToast(enabled ? t('federation.toast.enabled') : t('federation.toast.disabled'))
+      showToast(enabled ? t('federation.toast.enabled') : t('federation.toast.disabled'), 'success')
       fedRefreshAndReload()
     } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error'); e.target.checked = !enabled }
   })
@@ -23412,7 +23705,7 @@ async function fedRevealToken(peerId, card) {
     box.textContent = data.inboundToken
     box.hidden = false
     navigator.clipboard?.writeText(data.inboundToken).then(
-      () => showToast(t('federation.toast.token_copied')),
+      () => showToast(t('federation.toast.token_copied'), 'success'),
       () => {},
     )
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
@@ -23437,7 +23730,7 @@ async function fedShowInboundTokenDialog(peerId, token, messageKey) {
   if (!copy) return
   try {
     await navigator.clipboard.writeText(token)
-    showToast(t('federation.toast.token_copied'))
+    showToast(t('federation.toast.token_copied'), 'success')
   } catch { showToast(t('federation.token_dialog.copy_failed'), 'error') }
 }
 
@@ -23453,7 +23746,7 @@ async function fedRotateToken(peerId) {
     const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/rotate-inbound-token`, { method: 'POST' })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
-    showToast(t('federation.toast.rotated'))
+    showToast(t('federation.toast.rotated'), 'success')
     loadFederationPage()
     // The answer carries the new token: shown right away, like at pairing.
     if (data.inboundToken) await fedShowInboundTokenDialog(peerId, data.inboundToken, 'federation.token_dialog.rotated_hint')
@@ -23468,7 +23761,7 @@ async function fedToggleShareCap(peerId, share) {
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); loadFederationPage(); return }
-    showToast(share ? t('federation.toast.share_cap_on') : t('federation.toast.share_cap_off'))
+    showToast(share ? t('federation.toast.share_cap_on') : t('federation.toast.share_cap_off'), 'success')
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error'); loadFederationPage() }
 }
 
@@ -23490,7 +23783,7 @@ async function fedDeletePeer(peerId) {
       if (key && key.startsWith('chat_last_seen_' + peerId + '/')) localStorage.removeItem(key)
     }
     if (chatSelectedAgent && chatSelectedAgent.startsWith(peerId + '/')) chatSelectedAgent = null
-    showToast(t('federation.toast.peer_deleted'))
+    showToast(t('federation.toast.peer_deleted'), 'success')
     loadFederationPage()
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
 }
@@ -23532,7 +23825,7 @@ async function fedApplyToMainAgent() {
       data = await res.json().catch(() => ({}))
     }
     if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
-    showToast(t('federation.toast.applied'))
+    showToast(t('federation.toast.applied'), 'success')
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
 }
 
@@ -23586,7 +23879,7 @@ async function fedSavePeerModal() {
       res = await fetch(`/api/federation/peers/${encodeURIComponent(fedPeerModalEditId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       data = await res.json().catch(() => ({}))
       if (!res.ok) { showToast(t('federation.toast.error', { msg: refusalReason(res, data) }), 'error'); return }
-      showToast(t('federation.toast.peer_saved'))
+      showToast(t('federation.toast.peer_saved'), 'success')
     } else {
       const body = { id, baseUrl }
       if (outbound) body.outboundToken = outbound
@@ -23597,7 +23890,7 @@ async function fedSavePeerModal() {
       // The minted inbound token is shown ONCE right away: the owner hands it
       // to the peer's operator during pairing.
       await fedShowInboundTokenDialog(id, data.inboundToken, 'federation.modal.minted_token_hint')
-      showToast(t('federation.toast.peer_added'))
+      showToast(t('federation.toast.peer_added'), 'success')
     }
     closeModal(document.getElementById('fedPeerModalOverlay'))
     fedRefreshAndReload()
@@ -23624,7 +23917,7 @@ async function fedRemoveAll() {
       if (key && /^chat_last_seen_[^/]+\//.test(key)) localStorage.removeItem(key)
     }
     if (chatSelectedAgent && chatSelectedAgent.includes('/')) chatSelectedAgent = null
-    showToast(t('federation.toast.removed'))
+    showToast(t('federation.toast.removed'), 'success')
     loadFederationPage()
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) }), 'error') }
 }

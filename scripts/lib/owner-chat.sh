@@ -35,6 +35,8 @@ _owner_chat_normalize() {
   if [ -z "$v" ] || [ "$v" = "0" ]; then
     return 1
   fi
+  # BOTTOKEN1124: the installer's .env.example placeholders ("your_telegram_chat_id") are not a chat either.
+  case "$v" in [Yy][Oo][Uu][Rr]_*) return 1 ;; esac
   printf '%s' "$v"
 }
 
@@ -103,6 +105,7 @@ _owner_chat_from_access() {
     function norm(v) {
       const s = String(v).trim().replace(/^["\x27]|["\x27]$/g, "")
       if (!s || s === "0") return null
+      if (/^your_/i.test(s)) return null  // BOTTOKEN1124: same rule as _owner_chat_normalize / normalizeChatId
       return s
     }
     const ids = new Set()

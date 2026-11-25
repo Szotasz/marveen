@@ -20,6 +20,7 @@ import { MAIN_AGENT_ID, PROJECT_ROOT, RESERVED_AGENT_IDS, STORE_DIR } from '../.
 import { logger } from '../../logger.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { sanitizeAgentName } from '../sanitize.js'
+import { SLUG_RE } from './verify.js'
 
 // ---------------------------------------------------------------------------
 // The shell (plan 4, 7.5)
@@ -112,12 +113,9 @@ export const PACKAGE_AGENT_EXPORT_REFUSAL =
 // Names (plan 6.1 step 2 and 3, 7.2 condition 1)
 // ---------------------------------------------------------------------------
 
-/** The contract's strict slug (Mira 77384, S15): 2-40 characters, no double and no trailing hyphen. */
-export const STRICT_SLUG_RE = /^(?=.{2,40}$)[a-z0-9]+(-[a-z0-9]+)*$/
-
 /** A name a package may be installed under: the strict slug, sanitizeAgentName's fixed point, and not reserved. */
 export function isInstallableName(name: string): boolean {
-  return STRICT_SLUG_RE.test(name) && sanitizeAgentName(name) === name && !isReservedName(name)
+  return SLUG_RE.test(name) && sanitizeAgentName(name) === name && !isReservedName(name)
 }
 
 /** The main agent's id, or an id the message layer or the agents API owns (RESERVED_AGENT_IDS). */

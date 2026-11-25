@@ -18,7 +18,7 @@ const { buildTtsDirective } = await import('../web/voice-directive.js')
 
 // A probe value, not a real token: if it shows up in the directive, the value leaked.
 const PROBE_TOKEN = 'probe-token-VOICETOKENLEAK1101-0123456789abcdef'
-const OPTS = { chatId: '12345', stateDir: '/tmp/state', voiceModel: 'eleven_v3' }
+const OPTS = { chatId: '12345', agentId: 'kodi', voiceModel: 'eleven_v3' }
 
 // The double-quoted Authorization header word, exactly as the directive's curl line has it.
 function authHeaderWord(directive: string): string {

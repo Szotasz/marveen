@@ -205,7 +205,7 @@ describe('the agent actions use it', () => {
 
   it('disconnect: the question and the toast are translated, not a hard-coded unaccented string', () => {
     expect(DISCONNECT).toContain("message: t('channel.confirm.disconnect', { provider: provLabel })")
-    expect(DISCONNECT).toContain("showToast(t('channel.toast.disconnected', { provider: provLabel }))")
+    expect(DISCONNECT).toContain("showToast(t('channel.toast.disconnected', { provider: provLabel }), 'success')")
     expect(DISCONNECT).not.toMatch(/levalaszt/i)
   })
 

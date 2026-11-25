@@ -212,7 +212,7 @@ describe('which call site asks which predicate (source pin, every route file)', 
     // auth.ts mayActAsOwner: users list, key revoke, user delete, the one inside mayActAsOwnerOrFirstRun, and the
     // user create's branch decided once (ONBOARDOWNERPW1107: the owner's proof, or the first-run pass recounted
     // before the insert); first-run: the first user and the first key mint.
-    for (const [f, n, first] of [['auth.ts', 7, 2] /* DOCKERHTTPS1119: + totpOwner, the two-step sign-in's owner gate (no first-run pass); MVDKSCOPE917: + the messenger key mint (owner only, no first-run pass) */, ['security.ts', 0, 1], ['operator-access.ts', 1, 0], ['onboarding.ts', 3, 2] /* ONBOARDNOTG1108: + the wizard close flag; DOCKERUX1118: + the install language switch (owner session only, no first-run pass) */, ['claude-plans-login.ts', 1, 1]] as const) {
+    for (const [f, n, first] of [['auth.ts', 12, 2] /* DOCKERHTTPS1119: + totpOwner, the two-step sign-in's owner gate (no first-run pass); MVDKSCOPE917: + the messenger key mint (owner only, no first-run pass); DELEGAPPROVER1123: + the approver list, create and change (owner only, no first-run pass); FIGURAKULCS1125: + the companion key mint (owner only, no first-run pass); + the key list's bound address (owner only, a read: the key list itself stays open) */, ['security.ts', 0, 1], ['operator-access.ts', 1, 0], ['onboarding.ts', 3, 2] /* ONBOARDNOTG1108: + the wizard close flag; DOCKERUX1118: + the install language switch (owner session only, no first-run pass) */, ['claude-plans-login.ts', 1, 1]] as const) {
       expect([f, count(f, 'mayActAsOwner'), count(f, 'mayActAsOwnerOrFirstRun')]).toEqual([f, n, first])
     }
   })

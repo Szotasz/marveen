@@ -9,6 +9,7 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
 import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
 import { compareDeliveryOrder, deliveryRankSql } from './delivery-order.js'
+import { ensureInboundSigKey, rowSigOk, signRow } from './inbound-sig.js'
 import { toBudapestTs, type TsRange } from './date-range.js'
 
 let db: Database.Database
@@ -162,6 +163,48 @@ export function getEmbeddingCacheSize(): number { return embeddingCache.size }
 // STILL gets pre-create + tighten -- this lets the permission tests exercise the
 // tightening logic on a throwaway file instead of touching the prod DB. The
 // STORE_DIR mkdir stays prod-only; a temp-file override owns its own directory.
+/** Test seam (DELEGAPPROVER1123): runs inside the approval_events rebuild, after the old table is dropped and before
+ *  the new one takes its name, so a test can fail the rebuild at its most dangerous point. */
+let approvalEventsRebuildHookForTest: (() => void) | null = null
+export function _setApprovalEventsRebuildHookForTest(fn: (() => void) | null): void { approvalEventsRebuildHookForTest = fn }
+
+/**
+ * DELEGAPPROVER1123: rebuilds approval_events so its CHECK accepts 'decided'. The whole rebuild (new table, copy, drop,
+ * rename, index) is ONE transaction (BEGIN IMMEDIATE ... COMMIT, ROLLBACK on any error): a failure or a crash midway
+ * leaves the original audit table and every row of it as they were, and the next start runs it again. Idempotent: a
+ * table that already accepts 'decided' (or a fresh one) is left alone. Throws after the rollback.
+ */
+function migrateApprovalEventsDecided(): void {
+  const aeSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='approval_events'").get() as { sql: string } | undefined
+  if (!aeSchema?.sql || aeSchema.sql.includes("'decided'")) return
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.exec(`
+      CREATE TABLE approval_events_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        approval_id TEXT NOT NULL,
+        event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill','decided')),
+        reason TEXT,
+        actor TEXT,
+        ref TEXT,
+        created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+      )
+    `)
+    db.exec(`
+      INSERT INTO approval_events_new (id, approval_id, event, reason, actor, ref, created_at)
+        SELECT id, approval_id, event, reason, actor, ref, created_at FROM approval_events
+    `)
+    db.exec('DROP TABLE approval_events')
+    approvalEventsRebuildHookForTest?.()
+    db.exec('ALTER TABLE approval_events_new RENAME TO approval_events')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)')
+    db.exec('COMMIT')
+  } catch (err) {
+    if (db.inTransaction) db.exec('ROLLBACK')
+    throw err
+  }
+}
+
 export function initDatabase(dbPathOverride?: string): void {
   embeddingCache.clear() // ids are per database: a re-init (tests, ':memory:') must not reuse vectors
   const useOverride = dbPathOverride !== undefined
@@ -1227,6 +1270,20 @@ export function initDatabase(dbPathOverride?: string): void {
   // every row whose sender did not ask; the only stored value is 'unblocks' (src/web/unblocks-interrupt.ts). Unlike
   // urgent, the flag is the main agent's own explicit field on POST /api/messages, never inferred from the text.
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN affects_current_work TEXT') } catch { /* exists */ }
+  // HMACINBOUND1125: the server's HMAC over the row's fields (src/inbound-sig.ts). NULL on every older row and on a
+  // row written while the key was missing; such a row never gets the owner's voice or a STOP/urgent/priority effect.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN inbound_sig TEXT') } catch { /* exists */ }
+  // HMACINBOUND1125 (Dani 85038, 1): the delivery log of signed rows that speak with the owner's voice or carry a
+  // flag. A signed row verifies forever, so a delivered one put back to pending by a raw UPDATE would speak again;
+  // `delivered` counts the deliveries and `allowed` the ones the server granted (1, plus one per server re-queue,
+  // requeueDeliveredOpenForAgent). In SECURITY_TABLES (scripts/self-pace-gate.mjs), so no agent writes it.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS inbound_sig_log (
+      msg_id INTEGER PRIMARY KEY,
+      delivered INTEGER NOT NULL DEFAULT 0,
+      allowed INTEGER NOT NULL DEFAULT 1
+    )
+  `)
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -1898,13 +1955,20 @@ export function initDatabase(dbPathOverride?: string): void {
     CREATE TABLE IF NOT EXISTS approval_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       approval_id TEXT NOT NULL,
-      event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill')),
+      event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill','decided')),
       reason TEXT,
       actor TEXT,
       ref TEXT,
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
     )
   `)
+  // DELEGAPPROVER1123: 'decided' is an approver's decision (who, on which scope, on which content hash). SQLite cannot
+  // alter a CHECK, so a table created before it is rebuilt once, rows and ids kept (migrateApprovalEventsDecided).
+  try {
+    migrateApprovalEventsDecided()
+  } catch (err) {
+    logger.warn({ err }, 'approval_events decided-event migration failed and was rolled back -- continuing')
+  }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)`)
 
   // --- Control-bot custom commands (CMD920 3.12) ---
@@ -1964,6 +2028,28 @@ export function initDatabase(dbPathOverride?: string): void {
   // emptying that file cannot turn the second factor off: the login fails closed (503) instead.
   const dashUserCols = (db.prepare('PRAGMA table_info(dashboard_users)').all() as { name: string }[]).map((c) => c.name)
   if (!dashUserCols.includes('totp_enabled')) db.exec('ALTER TABLE dashboard_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0')
+  // DELEGAPPROVER1123: the login's role. 'owner' is every login that existed before (the column's default), and every
+  // login created the old ways (POST /api/auth/users, the dashboard-user CLI). 'approver' is a human the owner lets
+  // decide approval requests within approver_scopes, and nothing else: it is never the owner (routes/auth.ts
+  // mayActAsOwner refuses it), it signs in only with TOTP, and its session is fenced to the approval routes
+  // (approver-gate.ts).
+  if (!dashUserCols.includes('role')) {
+    db.exec("ALTER TABLE dashboard_users ADD COLUMN role TEXT NOT NULL DEFAULT 'owner' CHECK(role IN ('owner','approver'))")
+  }
+  // DELEGAPPROVER1123: what an approver may decide: one row per (login, category, agent), agent '*' for every agent.
+  // Only the owner writes it (routes/auth.ts /api/auth/approvers); a removed row is gone (the approver's sessions go
+  // with it, auth-sessions.ts revokeAllForUser), so a live scope is simply an existing row.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approver_scopes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      agent TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      created_by TEXT,
+      UNIQUE(user_id, category, agent)
+    )
+  `)
   // Browser login sessions. NOT named `sessions` -- that table already maps
   // Telegram chats to Claude session ids. Only sha256(session_id) is stored, so
   // a DB leak does not hand out live sessions. Rows survive dashboard restarts;
@@ -2005,6 +2091,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // DASHOPERATOR1005: what a key may reach. 'full' = every existing key and the
   // default, so this column changes nothing until an 'operator' key is minted.
   try { db.exec(`ALTER TABLE device_keys ADD COLUMN scope TEXT NOT NULL DEFAULT 'full'`) } catch { /* column already exists */ }
+  // FIGURAKULCS1125: a 'companion' key's own limits. companion_recipients is a JSON array of agent ids the key may send
+  // to (null = the main agent only); bound_ip the one source address it is accepted from (null = any, the default).
+  // Null on every other key, so these change nothing until a companion key is minted.
+  try { db.exec(`ALTER TABLE device_keys ADD COLUMN companion_recipients TEXT`) } catch { /* column already exists */ }
+  try { db.exec(`ALTER TABLE device_keys ADD COLUMN bound_ip TEXT`) } catch { /* column already exists */ }
 
   // --- OTel Distributed Tracing (card def5a189) ---
   // SQLite-native span store. No external OTel SDK: spans are written via
@@ -2156,16 +2247,20 @@ export interface DashboardUser {
   disabled: number
   /** DOCKERHTTPS1119: 1 while the TOTP second factor is on (the secret itself is in store/.dashboard-totp.json). */
   totp_enabled: number
+  /** DELEGAPPROVER1123: 'owner' (every login before it, and the default) or 'approver'. */
+  role: DashboardUserRole
 }
+
+export type DashboardUserRole = 'owner' | 'approver'
 
 export type DashboardUserPublic = Omit<DashboardUser, 'password_hash' | 'totp_enabled'>
 
-export function createDashboardUser(username: string, passwordHash: string): DashboardUser {
+export function createDashboardUser(username: string, passwordHash: string, role: DashboardUserRole = 'owner'): DashboardUser {
   const now = Math.floor(Date.now() / 1000)
   const info = db
-    .prepare('INSERT INTO dashboard_users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)')
-    .run(username, passwordHash, now, now)
-  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, created_at: now, updated_at: now, disabled: 0, totp_enabled: 0 }
+    .prepare('INSERT INTO dashboard_users (username, password_hash, created_at, updated_at, role) VALUES (?, ?, ?, ?, ?)')
+    .run(username, passwordHash, now, now, role)
+  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, created_at: now, updated_at: now, disabled: 0, totp_enabled: 0, role }
 }
 
 export function getDashboardUser(username: string): DashboardUser | undefined {
@@ -2176,7 +2271,7 @@ export function getDashboardUser(username: string): DashboardUser | undefined {
 
 export function listDashboardUsers(): DashboardUserPublic[] {
   return db
-    .prepare('SELECT id, username, created_at, updated_at, disabled FROM dashboard_users ORDER BY username COLLATE NOCASE')
+    .prepare('SELECT id, username, created_at, updated_at, disabled, role FROM dashboard_users ORDER BY username COLLATE NOCASE')
     .all() as DashboardUserPublic[]
 }
 
@@ -2197,6 +2292,46 @@ export function updateDashboardUserPassword(userId: number, passwordHash: string
 export function setDashboardUserTotpEnabled(userId: number, enabled: boolean): void {
   db.prepare('UPDATE dashboard_users SET totp_enabled = ?, updated_at = ? WHERE id = ?')
     .run(enabled ? 1 : 0, Math.floor(Date.now() / 1000), userId)
+}
+
+/** DELEGAPPROVER1123: the role of a session's login, read on every request that carries a session cookie (so a role or
+ *  a disable takes effect at once). undefined when the login row is gone. */
+export function getDashboardUserAccess(userId: number): Pick<DashboardUser, 'role' | 'disabled' | 'totp_enabled'> | undefined {
+  return db.prepare('SELECT role, disabled, totp_enabled FROM dashboard_users WHERE id = ?').get(userId) as
+    Pick<DashboardUser, 'role' | 'disabled' | 'totp_enabled'> | undefined
+}
+
+/** DELEGAPPROVER1123: turn an approver login off (the caller revokes its sessions in the same step). */
+export function disableApproverUser(userId: number): boolean {
+  return db.prepare("UPDATE dashboard_users SET disabled = 1, updated_at = ? WHERE id = ? AND role = 'approver'")
+    .run(Math.floor(Date.now() / 1000), userId).changes > 0
+}
+
+export interface ApproverScope {
+  id: number
+  user_id: number
+  category: string
+  /** The requesting agent's id, or '*' for every agent. */
+  agent: string
+  created_at: number
+  created_by: string | null
+}
+
+export function listApproverScopes(userId?: number): ApproverScope[] {
+  return (userId === undefined
+    ? db.prepare('SELECT * FROM approver_scopes ORDER BY user_id, category, agent').all()
+    : db.prepare('SELECT * FROM approver_scopes WHERE user_id = ? ORDER BY category, agent').all(userId)) as ApproverScope[]
+}
+
+/** Adds a scope; false when the same (login, category, agent) row already exists. */
+export function addApproverScope(userId: number, category: string, agent: string, createdBy: string | null): boolean {
+  return db.prepare('INSERT OR IGNORE INTO approver_scopes (user_id, category, agent, created_at, created_by) VALUES (?, ?, ?, ?, ?)')
+    .run(userId, category, agent, Math.floor(Date.now() / 1000), createdBy).changes > 0
+}
+
+export function removeApproverScope(userId: number, category: string, agent: string): boolean {
+  return db.prepare('DELETE FROM approver_scopes WHERE user_id = ? AND category = ? AND agent = ?')
+    .run(userId, category, agent).changes > 0
 }
 
 export function deleteDashboardUser(username: string): boolean {
@@ -2433,9 +2568,12 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
+// MEMCHATID1123: no chat_id filter. One install has one owner and one memory store; the column carried whatever
+// chat id the WRITER had (the API and the daily-log mirror ALLOWED_CHAT_ID, the nightly digest the resolved owner
+// chat), so a filter on one of them hid the other's rows, and every row written before a change of ALLOWED_CHAT_ID.
+// The writers and the column are unchanged.
 export function searchMemories(
   query: string,
-  chatId: string,
   limit = 3,
   allowRelaxed = true,
   category?: string,
@@ -2450,10 +2588,10 @@ export function searchMemories(
       db.prepare(
         `SELECT m.*, f.rank AS rank FROM memories m
          JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.memories_fts MATCH ? AND m.chat_id = ?${category ? ' AND m.category = ?' : ''} AND m.retracted_at IS NULL${dt.sql}
+         WHERE f.memories_fts MATCH ?${category ? ' AND m.category = ?' : ''} AND m.retracted_at IS NULL${dt.sql}
          ORDER BY rank
          LIMIT ?`
-      ).all(terms, chatId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+      ).all(terms, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
       , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
@@ -2551,7 +2689,8 @@ export function decayMemories(): void {
 // staleBefore (card ca046c9a, #570): only rows whose LAST WRITE
 // (updated_at, or created_at when it was never updated) is older than this
 // unix time -- the "hot for a week and nobody touched it" view.
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange, staleBefore?: number): Memory[] {
+// MEMCHATID1123: every row of the store, no chat_id filter (see searchMemories).
+export function getMemoriesForChat(limit = 10, offset = 0, category?: string, range?: TsRange, staleBefore?: number): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
@@ -2568,8 +2707,8 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   const dt = tsClause('created_at', range)
   const stale = staleBefore !== undefined ? ' AND COALESCE(updated_at, created_at) < ?' : ''
   return db
-    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
-    .all(chatId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE retracted_at IS NULL${category ? ' AND category = ?' : ''}${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -5187,6 +5326,8 @@ export interface AgentMessage {
   // REPLAYNOENVELOPE1114: when requeueDeliveredOpenForAgent put this delivered row back to pending (see the
   // migration). Optional in the type for the same reason as urgent; null on every row it did not touch.
   redelivered_at?: number | null
+  // HMACINBOUND1125: the server's signature (src/inbound-sig.ts), null on an unsigned row.
+  inbound_sig?: string | null
 }
 
 export function createAgentMessage(
@@ -5209,11 +5350,25 @@ export function createAgentMessage(
   const priority: 0 | 1 = opts?.priority === 1 ? 1 : 0
   const remoteRef = opts?.remoteRef ?? null
   const affectsCurrentWork = opts?.affectsCurrentWork ?? null
-  const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref, affects_current_work) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef, affectsCurrentWork)
+  // HMACINBOUND1125: insert and sign in one transaction; the signature covers the id, which exists only after the
+  // insert. The dashboard creates the key at boot; this creates it too when missing (this process is the server). A
+  // store that cannot hold it leaves the row unsigned: delivered as an ordinary, untrusted row.
+  const key = ensureInboundSigKey()
+  let inboundSig: string | null = null
+  const id = db.transaction(() => {
+    const info = db.prepare(
+      'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref, affects_current_work) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef, affectsCurrentWork)
+    const newId = Number(info.lastInsertRowid)
+    if (key) {
+      inboundSig = signRow({ id: newId, from_agent: from, to_agent: to, content, created_at: now, stop_authorized: stopAuthorized, urgent, priority, affects_current_work: affectsCurrentWork }, key)
+      db.prepare('UPDATE agent_messages SET inbound_sig = ? WHERE id = ?').run(inboundSig, newId)
+    }
+    return newId
+  })()
+  if (!key) logger.warn({ id, from, to }, 'agent message written unsigned: the inbound signature key is missing (store/.inbound-sig-key)')
   return {
-    id: Number(info.lastInsertRowid),
+    id,
     from_agent: from, to_agent: to, content, status: 'pending',
     result: null, created_at: now, delivered_at: null, seen_at: null, completed_at: null,
     origin_note: originNote ?? null,
@@ -5226,6 +5381,7 @@ export function createAgentMessage(
     remote_ref: remoteRef,
     affects_current_work: affectsCurrentWork,
     redelivered_at: null,
+    inbound_sig: inboundSig,
   }
 }
 
@@ -5256,12 +5412,51 @@ export function getMessageStatus(id: number): string | null {
 // it stored: review point 1, a priority only reorders peer traffic), a granted peer high, the rest.
 export function getPendingMessages(toAgent?: string): AgentMessage[] {
   const rank = deliveryRankSql()
-  if (toAgent) {
-    return db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ? ORDER BY ${rank.sql} DESC, created_at ASC, id ASC`)
+  const rows = toAgent
+    ? db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ? ORDER BY ${rank.sql} DESC, created_at ASC, id ASC`)
       .all(toAgent, ...rank.params) as AgentMessage[]
-  }
-  return db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' ORDER BY ${rank.sql} DESC, created_at ASC, id ASC`)
-    .all(...rank.params) as AgentMessage[]
+    : db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' ORDER BY ${rank.sql} DESC, created_at ASC, id ASC`)
+      .all(...rank.params) as AgentMessage[]
+  return withTrustedFlags(rows)
+}
+
+// HMACINBOUND1125: the delivery log (inbound_sig_log). True when this row's deliveries already used up what the
+// server granted: a delivered signed row that was put back to pending without a server re-queue.
+export function signedRowReplayed(id: number): boolean {
+  const r = db.prepare('SELECT delivered, allowed FROM inbound_sig_log WHERE msg_id = ?').get(id) as { delivered: number; allowed: number } | undefined
+  return r !== undefined && r.delivered >= r.allowed
+}
+
+// HMACINBOUND1125 (Dani, #3117 review 2): true when a signed row was DELIVERED more often than the server allowed: a
+// delivered row put back to pending by a raw UPDATE and delivered again. A row's first, legitimate delivery leaves
+// delivered = allowed, so this is `>`, not the `>=` signedRowReplayed uses before a delivery.
+export function signedRowOverDelivered(id: number): boolean {
+  const r = db.prepare('SELECT delivered, allowed FROM inbound_sig_log WHERE msg_id = ?').get(id) as { delivered: number; allowed: number } | undefined
+  return r !== undefined && r.delivered > r.allowed
+}
+
+// HMACINBOUND1125: count one delivery of a signed row. markMessageDelivered and closeMessagesWithoutDelivery do it
+// themselves; drain-inbox calls this one after it classified the rows claimPendingForAgent already marked delivered
+// (the claim must not count them, or the classification right after it would read every claimed row as a replay).
+export function recordSignedDelivery(id: number): void {
+  recordSignedDeliveryIfSigned(id)
+}
+
+// HMACINBOUND1125: the flags that change delivery (STOP, urgent, priority, unblock) count only on a row the server
+// signed and that is not a replay. Applied where the queue is READ, so no caller of these readers can act on a
+// forged flag. The row keeps every other field; a neutralized row no longer verifies, which is right: it is not a
+// row the server wrote. The order is restored afterwards, because the SQL ranked the rows by the raw flags.
+function withTrustedFlags(rows: AgentMessage[]): AgentMessage[] {
+  let changed = false
+  const out = rows.map((m) => {
+    const flagged = (m.stop_authorized ?? 0) !== 0 || (m.urgent ?? 0) !== 0 || (m.priority ?? 0) !== 0 || m.affects_current_work != null
+    if (!flagged) return m
+    if (rowSigOk(m) && !signedRowReplayed(m.id)) return m
+    changed = true
+    logger.warn({ id: m.id, from: m.from_agent, to: m.to_agent, signed: m.inbound_sig != null }, 'agent message flags ignored: the row is not server-signed or is a replay (HMACINBOUND1125)')
+    return { ...m, stop_authorized: 0, urgent: 0, priority: 0 as const, affects_current_work: null }
+  })
+  return changed ? out.sort(compareDeliveryOrder) : out
 }
 
 // Card ad771121 (K3): the high rows one sender got accepted for one recipient since `sinceSec`. Keyed
@@ -5297,7 +5492,20 @@ export function lastMessageFromAgentAt(agent: string): number | null {
 // result either.
 export function markMessageDelivered(id: number): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
+  return db.transaction(() => {
+    const ok = db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
+    // HMACINBOUND1125: every delivery of a signed row counts against what the server granted (inbound_sig_log).
+    if (ok) recordSignedDeliveryIfSigned(id)
+    return ok
+  })()
+}
+
+function recordSignedDeliveryIfSigned(id: number): void {
+  db.prepare(
+    `INSERT INTO inbound_sig_log (msg_id, delivered, allowed)
+       SELECT id, 1, 1 FROM agent_messages WHERE id = ? AND inbound_sig IS NOT NULL
+     ON CONFLICT(msg_id) DO UPDATE SET delivered = delivered + 1`,
+  ).run(id)
 }
 
 // Freshness/supersession signal (SB hardening 2026-08-22): how many STRICTLY
@@ -5533,7 +5741,13 @@ export function closeMessagesWithoutDelivery(ids: number[], reason: string): num
   )
   const run = db.transaction((rows: number[]) => {
     let n = 0
-    for (const id of rows) n += stmt.run(now, note, id).changes
+    for (const id of rows) {
+      const c = stmt.run(now, note, id).changes
+      // HMACINBOUND1125: a row closed without delivery is used up too, so a raw UPDATE back to pending cannot revive
+      // it with the owner's voice or its flags.
+      if (c) recordSignedDeliveryIfSigned(id)
+      n += c
+    }
     return n
   })
   return run(ids)
@@ -5591,11 +5805,11 @@ export function claimPendingForAgent(toAgent: string, limit: number): AgentMessa
          ORDER BY ${rank.sql} DESC, created_at ASC, id ASC
          LIMIT ?
        )
-     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, seen_at, completed_at, priority, urgent, stop_authorized, redelivered_at`,
+     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, seen_at, completed_at, priority, urgent, stop_authorized, redelivered_at, affects_current_work, inbound_sig`,
   ).all(now, now, toAgent, ...rank.params, limit) as AgentMessage[]
   // RETURNING row order is unspecified; restore the delivery order (card ad771121: high first, then
-  // FIFO with id as the tiebreaker for same-second inserts).
-  return rows.sort(compareDeliveryOrder)
+  // FIFO with id as the tiebreaker for same-second inserts). HMACINBOUND1125: untrusted flags neutralized first.
+  return withTrustedFlags(rows).sort(compareDeliveryOrder)
 }
 
 export function markMessageDone(id: number, result?: string): boolean {
@@ -5780,9 +5994,16 @@ export function requeueDeliveredOpenForAgent(agent: string, opts: RequeueDeliver
     const skip = db.prepare(
       `UPDATE agent_messages SET requeue_skipped_at = ? WHERE id = ? AND ${guards}`
     )
+    // HMACINBOUND1125: this server re-queue is a granted redelivery, so a signed row it puts back may speak once more
+    // (a raw UPDATE back to pending has no such grant and is caught as a replay).
+    const grant = db.prepare('UPDATE inbound_sig_log SET allowed = allowed + 1 WHERE msg_id = ?')
     return {
       rows,
-      revive: (m) => revive.run(now, now, m.id).changes === 1,
+      revive: (m) => {
+        if (revive.run(now, now, m.id).changes !== 1) return false
+        grant.run(m.id)
+        return true
+      },
       skip: (m) => skip.run(now, m.id).changes === 1,
     }
   })
@@ -8306,11 +8527,21 @@ function runApprovalConsumer(approvalId: string): void {
  */
 export function decideApproval(p: {
   approvalId: string; status: 'approved' | 'rejected'; evidence: ApprovalEvidence; expectedContentHash?: string
+  /** DELEGAPPROVER1123: an approval_events 'decided' row, written in the same transaction, only when the core decided. */
+  decidedEvent?: { actor: string; reason: string; ref: string | null }
 }): { outcome: ApprovalDecideOutcome; approval: Approval | undefined } {
-  const outcome = db.transaction(() => decideApprovalInTx({
-    approvalId: p.approvalId, status: p.status, resolvedBy: approvalResolvedBy(p.evidence),
-    expectedContentHash: p.expectedContentHash, now: Math.floor(Date.now() / 1000),
-  }))()
+  const outcome = db.transaction(() => {
+    const now = Math.floor(Date.now() / 1000)
+    const o = decideApprovalInTx({
+      approvalId: p.approvalId, status: p.status, resolvedBy: approvalResolvedBy(p.evidence),
+      expectedContentHash: p.expectedContentHash, now,
+    })
+    if (o === 'decided' && p.decidedEvent) {
+      db.prepare('INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(p.approvalId, 'decided', p.decidedEvent.reason, p.decidedEvent.actor, p.decidedEvent.ref, now)
+    }
+    return o
+  })()
   if (outcome === 'decided') runApprovalConsumer(p.approvalId)
   return { outcome, approval: getApproval(p.approvalId) }
 }
@@ -8683,7 +8914,7 @@ export function consumeCategoryApproval(params: {
 export interface ApprovalEvent {
   id: number
   approval_id: string
-  event: 'consumed' | 'consume_refused' | 'consumed_backfill'
+  event: 'consumed' | 'consume_refused' | 'consumed_backfill' | 'decided'
   reason: string | null
   actor: string | null
   ref: string | null

@@ -67,8 +67,9 @@ describe('resumePrompt carries the prod-tree constraint on every variant', () =>
 // fresh session never looked back, and completed_at is unused (0/37 measured)
 // so the loss was invisible. The resume prompt is the fresh session's ONLY
 // context, so the re-read instruction must be present on EVERY variant, and
-// it must demand an OBSERVABLE trace (ack to the sender) -- an instruction
-// whose success cannot be observed would run into the same blindness.
+// it must demand an OBSERVABLE trace -- an instruction whose success cannot be
+// observed would run into the same blindness. The trace is the closed row
+// (notify:false), not an ack message: each ack woke its sender for a full turn.
 describe('resumePrompt carries the restart-window re-read on every variant', () => {
   const variants = [
     ['without a handoff', () => resumePrompt('samu', '/x/HANDOFF.md', false)],
@@ -83,10 +84,12 @@ describe('resumePrompt carries the restart-window re-read on every variant', () 
       expect(p).toContain('RESTART-ABLAK')
       // The queue re-read names the concrete endpoint, not a vague "check".
       expect(p).toContain('api/messages?agent=')
-      // The observable trace: an ack to the SENDER, required even when the
-      // item needs no work -- this is what makes the v1 measurable at all.
-      expect(p).toContain('nyugtát a feladónak')
-      expect(p).toContain('akkor is, ha nincs belőle teendő')
+      // The observable trace: the row closed without a notification, and no
+      // separate ack to the sender (the ack woke the sender for a whole turn).
+      expect(p).toContain('KÖTELEZŐ MEGFIGYELHETŐ NYOM: a lezárt sor')
+      expect(p).toContain('PUT /api/messages/<id> {"status":"done","notify":false}')
+      expect(p).toContain('nyugtát NE küldj')
+      expect(p).not.toContain('felvéve a friss sessionben')
     })
   }
 })

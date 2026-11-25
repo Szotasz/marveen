@@ -16,7 +16,7 @@ name: marveen
 
 services:
   marveen:
-    image: ghcr.io/szotasz/marveen:${MARVEEN_VERSION:-1.52.1}
+    image: ghcr.io/szotasz/marveen:${MARVEEN_VERSION:-1.53.0}
     restart: unless-stopped
     environment:
       MARVEEN_CHANNEL: ${MARVEEN_CHANNEL:-telegram}

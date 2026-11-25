@@ -80,6 +80,16 @@ native_module_loads() {
   node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1
 }
 
+# ISSUE3103 (#3103): every `npm ci` here runs with --ignore-scripts. better-sqlite3 has a binding.gyp, so npm
+# (10.9.8, measured) runs a default `node-gyp rebuild` for it even though its package.json says gypfile:false and
+# it ships the Node-API prebuild it loads (prebuilds/<platform>-<arch>.node). On a host without make/g++ that build
+# failed every npm ci, the update and its rollback alike, and left node_modules empty. The one install script the
+# tree needs is esbuild's postinstall, so it runs on its own; native_module_loads stays the gate for better-sqlite3.
+npm_ci_deps() {
+  npm ci --ignore-scripts --silent --include=dev || return $?
+  npm rebuild esbuild --silent
+}
+
 health_ok() {
   local port="${WEB_PORT:-3420}" i=0
   while [ "$i" -lt 20 ]; do
@@ -626,7 +636,7 @@ npm_ci_failed() {
   local deps_ok=0
   if [ -n "$OLD_VERSION_FULL" ]; then
     git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
-    if npm ci --silent --include=dev 2>/dev/null; then deps_ok=1; fi
+    if npm_ci_deps 2>/dev/null; then deps_ok=1; fi
     # #950: rebuild only when the installed prebuild does not load -- a failing source build
     # deletes the working binary, which is what this rollback is trying to restore.
     native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
@@ -649,8 +659,8 @@ npm_ci_failed() {
     RESULT_MSG="A frissítés közben ${cause}; a rendszer visszaállt a korábbi verzióra (${OLD_VERSION}). A visszaállítás függőség-telepítése is elbukott, de a meglévő függőségek épek (npm ls rendben, a natív modul betölt), a korábbi verzió fut. A frissítés nem ment ki."
   else
     RESULT_STATUS="failed"
-    RESULT_MSG="A frissítés közben ${cause}, és a visszaállítás függőség-telepítése sem sikerült: a kód a korábbi verzión (${OLD_VERSION}) áll, de a node_modules hiányos lehet. Kézi beavatkozás kell: npm ci --include=dev, majd npm run build."
-    echo -e "${RED}HIBA:${NC} a visszaallitas npm ci-je is elbukott; a node_modules hianyos lehet. Kezi beavatkozas kell: npm ci --include=dev && npm run build"
+    RESULT_MSG="A frissítés közben ${cause}, és a visszaállítás függőség-telepítése sem sikerült: a kód a korábbi verzión (${OLD_VERSION}) áll, de a node_modules hiányos lehet. Kézi beavatkozás kell: npm ci --ignore-scripts --include=dev, npm rebuild esbuild, majd npm run build."
+    echo -e "${RED}HIBA:${NC} a visszaallitas npm ci-je is elbukott; a node_modules hianyos lehet. Kezi beavatkozas kell: npm ci --ignore-scripts --include=dev && npm rebuild esbuild && npm run build"
   fi
   restore_stash_before_exit
   exit 6
@@ -1657,7 +1667,7 @@ if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock
   # failure next run, forever (the rollback also reverts the freshly pulled
   # update.sh, so a fix can never arrive through this path on its own).
   NPM_CI_RC=0
-  retry 3 3 npm ci --silent --include=dev || NPM_CI_RC=$?
+  retry 3 3 npm_ci_deps || NPM_CI_RC=$?
   if [ "$NPM_CI_RC" -ne 0 ]; then
     npm_ci_failed "$NPM_CI_RC"
   fi
@@ -1706,7 +1716,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
       # failed `npm ci` above may have pruned dev deps (NODE_ENV=production),
       # and without the compiler this rollback build would also fail silently,
       # leaving git=OLD + node_modules=pruned (AUTOUPDNODEENV905 finding A).
-      npm ci --silent --include=dev 2>/dev/null || true
+      npm_ci_deps 2>/dev/null || true
       native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
@@ -1729,7 +1739,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     echo -e "  ${DIM}Futo Node: $(node -v 2>/dev/null || echo '?'). A better-sqlite3 13.x Node 22 vagy ujabbat igenyel; ha ez alatt futsz, frissitsd a Node-ot es futtasd ujra a frissitest.${NC}"
     if [ -n "$OLD_VERSION_FULL" ]; then
       git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
-      npm ci --silent --include=dev 2>/dev/null || true
+      npm_ci_deps 2>/dev/null || true
       native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
@@ -2122,6 +2132,8 @@ STAGE="boot"
 _stage() { STAGE="$1"; echo "[finalize] stage=$1 $(date '+%H:%M:%S')" >&2; }
 # Same check as update.sh's native_module_loads (#950): this script runs on its own.
 native_module_loads() { node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1; }
+# Same as update.sh's npm_ci_deps (ISSUE3103): no install scripts but esbuild's, so no source build of better-sqlite3.
+npm_ci_deps() { npm ci --ignore-scripts --silent --include=dev || return $?; npm rebuild esbuild --silent; }
 trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' TERM HUP INT
 
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
@@ -2229,7 +2241,7 @@ if [ -n "$OLD_FULL" ]; then
   # --include=dev: same reason as the main npm ci (AUTOUPDNODEENV905) -- under
   # NODE_ENV=production a plain ci prunes the compiler and the rebuild below
   # dies silently, re-creating the pruned tree this rollback tries to escape.
-  npm ci --silent --include=dev 2>/dev/null || true
+  npm_ci_deps 2>/dev/null || true
   native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
   npm run build --silent 2>/dev/null || true
   [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"

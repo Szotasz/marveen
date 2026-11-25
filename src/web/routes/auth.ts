@@ -23,11 +23,13 @@
 // an else-branch.
 
 import type http from 'node:http'
+import { isIP } from 'node:net'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { notifySecurityEvent } from '../../notify.js'
-import { parseCookies, SESSION_COOKIE_NAME, messengerNameTaken } from '../auth-gate.js'
+import { parseCookies, SESSION_COOKIE_NAME, messengerNameTaken, companionRecipientInvalid } from '../auth-gate.js'
+import { isKnownAgent } from '../agent-config.js'
 import { MAIN_AGENT_ID, RESERVED_AGENT_IDS, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import {
@@ -55,9 +57,13 @@ import {
   listDeviceKeys,
   revokeDeviceKey,
   getDeviceKey,
+  getCompanionKeyLimits,
   DEVICE_KEY_SCOPES,
   OPERATOR_KEY_DEFAULT_EXPIRY_DAYS,
   OPERATOR_KEY_MAX_EXPIRY_DAYS,
+  COMPANION_KEY_DEFAULT_EXPIRY_DAYS,
+  COMPANION_KEY_MAX_EXPIRY_DAYS,
+  type CompanionKeyLimits,
   type DeviceKeyScope,
 } from '../auth-device-keys.js'
 import { removeBridgeSshAccess, sshDirOverride } from '../bridge-enroll.js'
@@ -70,6 +76,11 @@ import {
   deleteDashboardUser,
   setDashboardUserTotpEnabled,
   logConfigChange,
+  getDashboardUserAccess,
+  disableApproverUser,
+  listApproverScopes,
+  addApproverScope,
+  removeApproverScope,
 } from '../../db.js'
 import { supportPasswordGate } from '../support-password.js'
 import {
@@ -98,6 +109,7 @@ import {
 import { isPublicRequest, redeemSetupCode, setupCodeAvailable, setupSessionCookie } from '../public-access.js'
 import { takeSupportAccessDown } from '../support-standby-runtime.js'
 import type { RouteContext } from './types.js'
+import { DELEGABLE_APPROVAL_CATEGORIES, isOwnerOnlyCategory, isScopeAgent, isScopeCategory } from '../approver-access.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
 /** DOCKERHTTPS1119: the login throttle's key for setup-code attempts (no username can contain a space). */
@@ -176,7 +188,11 @@ export function bridgeOwner(auth: RouteContext['auth'], req?: http.IncomingMessa
 export function ownerCookieSession(req?: http.IncomingMessage): string | null {
   const cookie = req ? parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] : undefined
   if (!cookie) return null
-  return resolveSession(cookie)?.username ?? null
+  const session = resolveSession(cookie)
+  if (!session) return null
+  // DELEGAPPROVER1123: an approver's cookie is never the owner's proof, beside the shared token or a Bridge key either.
+  if (getDashboardUserAccess(session.userId)?.role === 'approver') return null
+  return session.username
 }
 
 /** OWNERGATE4-1104: the owner gate of every owner action. It needs the owner's proof on every request: a session
@@ -190,6 +206,9 @@ export function ownerCookieSession(req?: http.IncomingMessage): string | null {
  *  the first login it refuses everything (refuseOwner then says to create one), except the closed list of paths a
  *  fresh install needs, which call mayActAsOwnerOrFirstRun instead. */
 export function mayActAsOwner(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
+  // DELEGAPPROVER1123: an approver session is never the owner (fail closed). Its one decision path is mayApprove
+  // (approver-access.ts) on the approval decide route; ownerCookieSession refuses its cookie beside a token or key.
+  if (auth?.kind === 'approver') return false
   if (auth?.kind === 'session') return true
   if (auth?.kind === 'token') return !auth.tokenAgent && ownerCookieSession(req) !== null
   return bridgeOwnerAudited(auth, req)
@@ -338,9 +357,9 @@ export function dashboardLang(read: () => unknown = () => getEffectiveSettingVal
 }
 
 function statusPayload(auth: RouteContext['auth'], req?: http.IncomingMessage) {
-  const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device' || auth?.kind === 'setup'
+  const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device' || auth?.kind === 'setup' || auth?.kind === 'approver'
   const method = authenticated ? auth!.kind : null
-  const user = auth?.kind === 'session' ? auth.user ?? null : null
+  const user = auth?.kind === 'session' || auth?.kind === 'approver' ? auth.user ?? null : null
   const device = auth?.kind === 'device' ? auth.device ?? null : null
   const mayHoldOwner = auth?.kind === 'session' || (auth?.kind === 'token' && !auth.tokenAgent) || (auth?.kind === 'device' && auth.scope === 'full')
   return {
@@ -374,6 +393,7 @@ export const TOTP_ALREADY_ENABLED = { error: 'Two-step sign-in is already on.', 
 export const TOTP_NOT_ENABLED = { error: 'Two-step sign-in is off.', code: 'totp_not_enabled' }
 export const TOTP_SETUP_MISSING = { error: 'Start the setup first (or again: it expired).', code: 'totp_setup_missing' }
 export const TOTP_CODE_REQUIRED = { error: 'A code is required.', code: 'totp_code_required' }
+export const APPROVER_TOTP_REQUIRED = { error: 'An approver login signs in only with two-step sign-in, and it is not set up for this login. Ask the owner to create the approver again.', code: 'approver_totp_required' }
 
 function noStoreJson(res: http.ServerResponse, body: unknown, status: number): void {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store' })
@@ -519,6 +539,13 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         return true
       }
       logger.warn({ err: err.message, username: user.username }, 'login: the two-step sign-in store is unreadable; the flag is off, password login allowed')
+    }
+    // DELEGAPPROVER1123: an approver signs in only with the second factor. Without one enrolled (or with its store
+    // unreadable and the flag off) the right password gives no session.
+    if (!totp && user.role === 'approver') {
+      logger.warn({ username: user.username }, 'login: an approver without two-step sign-in, refused')
+      noStoreJson(res, APPROVER_TOTP_REQUIRED, 403)
+      return true
     }
     if (totp) {
       const pending = createPendingLogin(user.id, user.username)
@@ -954,12 +981,158 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // ---- DELEGAPPROVER1123: delegated approvers, the owner's alone (mayActAsOwner; never the first-run pass) ----------
+  // An approver is a login with role 'approver' that may decide approval requests within its scopes, and nothing else
+  // (../approver-access.ts). The owner creates it with a password; its TOTP second factor is enrolled in the same step
+  // and handed to the owner once (an approver never signs in without one). Disabling it or removing a scope deletes
+  // its sessions in the same step, so the change holds from the next request on.
+
+  if (path === '/api/auth/approvers' && method === 'GET') {
+    if (!mayActAsOwner(auth, req)) {
+      refuseOwner(res, 'Listing the approvers needs the dashboard login (an owner session).')
+      return true
+    }
+    const approvers = listDashboardUsers().filter((u) => u.role === 'approver')
+      .map((u) => ({ ...u, scopes: listApproverScopes(u.id).map((s) => ({ category: s.category, agent: s.agent, created_at: s.created_at })) }))
+    json(res, { approvers, delegable_categories: DELEGABLE_APPROVAL_CATEGORIES })
+    return true
+  }
+
+  if (path === '/api/auth/approvers' && method === 'POST') {
+    if (!mayActAsOwner(auth, req)) {
+      refuseOwner(res, 'Creating an approver needs the dashboard login (an owner session).')
+      return true
+    }
+    let body: Record<string, unknown>
+    try {
+      body = await parseJsonBody(req)
+    } catch {
+      json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    const username = str(body.username).trim()
+    const password = str(body.password)
+    if (!USERNAME_RE.test(username)) {
+      json(res, { error: 'Invalid username (1-64 chars: letters, digits, . _ -)' }, 400)
+      return true
+    }
+    if (getDashboardUser(username)) {
+      json(res, { error: 'User already exists' }, 409)
+      return true
+    }
+    try {
+      assertPasswordPolicy(password)
+    } catch (err) {
+      json(res, { error: err instanceof PasswordPolicyError ? err.message : 'Invalid password' }, 400)
+      return true
+    }
+    const hash = await hashPassword(password)
+    let created: ReturnType<typeof createDashboardUser>
+    try {
+      created = createDashboardUser(username, hash, 'approver')
+    } catch (err) {
+      if ((err as { code?: string })?.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        json(res, { error: 'User already exists' }, 409)
+        return true
+      }
+      throw err
+    }
+    // The second factor, enrolled now: the file first, then the flag (as /api/auth/totp/enable does).
+    const secret = generateTotpSecret()
+    const backupCodes = generateBackupCodes()
+    saveTotpRecord(created.id, { secret, last_step: -1, backup: backupCodes.map(hashBackupCode), enabled_at: Math.floor(Date.now() / 1000) })
+    setDashboardUserTotpEnabled(created.id, true)
+    logConfigChange('security.approver_create', null, created.username, auth!.kind)
+    logger.info({ username: created.username }, 'approver created')
+    // The one response the secret and the backup codes are ever in; the owner hands them to the approver.
+    noStoreJson(res, {
+      ok: true,
+      user: { id: created.id, username: created.username, role: created.role },
+      totp: { secret, otpauth_uri: otpauthUri(created.username, secret), backup_codes: backupCodes },
+    }, 201)
+    return true
+  }
+
+  const approverMatch = path.match(/^\/api\/auth\/approvers\/([^/]+)\/(disable|scopes)$/)
+  if (approverMatch && (method === 'POST' || method === 'DELETE')) {
+    if (!mayActAsOwner(auth, req)) {
+      refuseOwner(res, 'Changing an approver needs the dashboard login (an owner session).')
+      return true
+    }
+    let name: string
+    try { name = decodeURIComponent(approverMatch[1]!) } catch { name = '' }
+    const user = USERNAME_RE.test(name) ? getDashboardUser(name) : undefined
+    if (!user || user.role !== 'approver') {
+      json(res, { error: 'Approver not found' }, 404)
+      return true
+    }
+    const action = approverMatch[2]
+    if (action === 'disable' && method === 'POST') {
+      disableApproverUser(user.id)
+      revokeAllForUser(user.id)
+      logConfigChange('security.approver_disable', null, user.username, auth!.kind)
+      logger.info({ username: user.username }, 'approver disabled, its sessions revoked')
+      json(res, { ok: true, disabled: true })
+      return true
+    }
+    if (action === 'scopes') {
+      let category: unknown
+      let agent: unknown
+      if (method === 'POST') {
+        let body: Record<string, unknown>
+        try {
+          body = await parseJsonBody(req)
+        } catch {
+          json(res, { error: 'Invalid JSON' }, 400)
+          return true
+        }
+        category = body.category
+        agent = body.agent
+      } else {
+        category = ctx.url.searchParams.get('category')
+        agent = ctx.url.searchParams.get('agent')
+      }
+      if (!isScopeCategory(category) || !isScopeAgent(agent)) {
+        json(res, { error: 'category (a category key) and agent (an agent id, or * for every agent) are required' }, 400)
+        return true
+      }
+      if (method === 'POST') {
+        if (isOwnerOnlyCategory(category)) {
+          json(res, { error: `${category} is decided by the owner only`, code: 'owner_only_category' }, 400)
+          return true
+        }
+        const added = addApproverScope(user.id, category, agent, auth?.kind === 'session' ? auth.user ?? null : ownerCookieSession(req))
+        logConfigChange('security.approver_scope_add', null, `${user.username} ${category}:${agent}`, auth!.kind)
+        json(res, { ok: true, added }, added ? 201 : 200)
+        return true
+      }
+      const removed = removeApproverScope(user.id, category, agent)
+      // Revoked at once: the approver signs in again, and from then on decides without this scope.
+      revokeAllForUser(user.id)
+      logConfigChange('security.approver_scope_remove', null, `${user.username} ${category}:${agent}`, auth!.kind)
+      json(res, { ok: true, removed })
+      return true
+    }
+    json(res, { error: 'Method not allowed' }, 405)
+    return true
+  }
+
   if (path === '/api/auth/device-keys' && method === 'GET') {
     if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS) && !bridgeOwner(auth, req)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    json(res, { keys: listDeviceKeys() })
+    // FIGURAKULCS1125: a companion key's row also names its recipients (the main agent when none are stored) and its
+    // bound address, so the owner sees whom the key can write to. The bound address is the owner's machine: it goes to
+    // an owner session only, not to the shared token every agent can read (Dani's note on #3124).
+    const owner = mayActAsOwner(auth, req)
+    json(res, {
+      keys: listDeviceKeys().map((k) => {
+        if (k.scope !== 'companion') return k
+        const limits = getCompanionKeyLimits(k.id)
+        return { ...k, recipients: limits?.recipients ?? [MAIN_AGENT_ID], ...(owner ? { bound_ip: limits?.boundIp ?? null } : {}) }
+      }),
+    })
     return true
   }
 
@@ -1014,28 +1187,74 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    // A messenger key expires under the operator key's rule (MVDKSCOPE917).
-    const mustExpire = scope === 'operator' || scope === 'messenger'
+    // FIGURAKULCS1125: a 'companion' key (the desktop companion) is the owner's alone too. Its name is a label (the
+    // sender id is a code constant); it may list the agents it sends to (default: the main agent only) and bind
+    // itself to one source address (default: off).
+    let companion: Partial<CompanionKeyLimits> | undefined
+    if (scope === 'companion') {
+      if (!mayActAsOwner(auth, req)) {
+        refuseOwner(res, 'Issuing a companion key needs the dashboard login (an owner session).')
+        return true
+      }
+      let recipients: string[] | null = null
+      if (body.recipients !== undefined && body.recipients !== null) {
+        if (!Array.isArray(body.recipients) || body.recipients.length > 50) {
+          json(res, { error: 'recipients must be a list of at most 50 agent ids' }, 400)
+          return true
+        }
+        const seen = new Set<string>()
+        for (const r of body.recipients) {
+          const invalid = companionRecipientInvalid(r)
+          if (invalid) {
+            json(res, { error: `Invalid recipient: ${invalid}` }, 400)
+            return true
+          }
+          if (r !== sanitizeAgentIdent(r as string) || (r !== MAIN_AGENT_ID && !isKnownAgent(r as string))) {
+            json(res, { error: `Invalid recipient '${String(r)}': not a fleet agent id` }, 400)
+            return true
+          }
+          seen.add(r as string)
+        }
+        recipients = seen.size > 0 ? [...seen] : null
+      }
+      let boundIp: string | null = null
+      if (body.bound_ip !== undefined && body.bound_ip !== null && body.bound_ip !== '') {
+        if (typeof body.bound_ip !== 'string' || isIP(body.bound_ip) === 0) {
+          json(res, { error: 'bound_ip must be an IPv4 or IPv6 address' }, 400)
+          return true
+        }
+        boundIp = body.bound_ip
+      }
+      companion = { recipients, boundIp }
+    } else if (body.recipients !== undefined || body.bound_ip !== undefined) {
+      json(res, { error: 'recipients and bound_ip are for a companion key only' }, 400)
+      return true
+    }
+    // A messenger key expires under the operator key's rule (MVDKSCOPE917); a companion key too, sooner.
+    const mustExpire = scope === 'operator' || scope === 'messenger' || scope === 'companion'
     if (mustExpire && (body.expires_in_days === 0 || body.expires_in_days === null)) {
       json(res, { error: `An ${scope} key must expire` }, 400)
       return true
     }
     // Expiry is opt-in for a full key: absent/0 means it lives until revoked.
-    let expiresInDays: number | undefined = mustExpire ? OPERATOR_KEY_DEFAULT_EXPIRY_DAYS : undefined
+    let expiresInDays: number | undefined = scope === 'companion' ? COMPANION_KEY_DEFAULT_EXPIRY_DAYS : mustExpire ? OPERATOR_KEY_DEFAULT_EXPIRY_DAYS : undefined
     if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
       const n = Number(body.expires_in_days)
       // An operator (or messenger) key has its own, shorter ceiling (a year); a full key keeps 3650.
-      const maxDays = mustExpire ? OPERATOR_KEY_MAX_EXPIRY_DAYS : DEVICE_KEY_MAX_EXPIRY_DAYS
+      const maxDays = scope === 'companion' ? COMPANION_KEY_MAX_EXPIRY_DAYS : mustExpire ? OPERATOR_KEY_MAX_EXPIRY_DAYS : DEVICE_KEY_MAX_EXPIRY_DAYS
       if (!Number.isFinite(n) || n <= 0 || n > maxDays) {
         json(res, { error: `Invalid expires_in_days (1-${maxDays})` }, 400)
         return true
       }
       expiresInDays = n
     }
-    const minted = createDeviceKey(name, { expiresInDays, scope: scope as DeviceKeyScope })
+    const minted = createDeviceKey(name, { expiresInDays, scope: scope as DeviceKeyScope, ...(companion ? { companion } : {}) })
     logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt, scope: minted.scope }, 'device key minted')
     // `key` is the one and only disclosure of the raw credential.
-    json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, scope: minted.scope }, 201)
+    json(res, {
+      ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, scope: minted.scope,
+      ...(companion ? { recipients: companion.recipients ?? [MAIN_AGENT_ID], bound_ip: companion.boundIp ?? null } : {}),
+    }, 201)
     return true
   }
 

@@ -81,6 +81,9 @@ describe('restart notice: queue sentence', () => {
     // and that re-read instruction really is in every resume prompt variant
     for (const p of [resumePrompt('samu', '/x/HANDOFF.md', false), resumePrompt('samu', '/x/HANDOFF.md', true, 42)]) {
       expect(p).toContain('RESTART-ABLAK')
+      // the re-read item is closed without notify, no ack goes back to the sender
+      expect(p).toContain('"notify":false')
+      expect(p).not.toContain('felvéve a friss sessionben')
     }
   })
 

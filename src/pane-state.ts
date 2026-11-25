@@ -457,6 +457,13 @@ export function pastePlaceholderLocation(pane: string | null): PastePlaceholderW
   return PENDING_PASTE_RX.test(region.text) ? region.where : null
 }
 
+// The live input box's text (between its two separators), or null when the separators are not on screen.
+export function inputBoxText(pane: string | null): string | null {
+  if (!pane) return null
+  const region = pastePlaceholderRegion(pane)
+  return region.where === 'box' ? region.text : null
+}
+
 // A placeholder pane is identified by the `[Pasted text #N]` stub IN THE LIVE
 // INPUT BOX. The accompanying `paste again to expand` footer hint is
 // deliberately NOT used: it is version-dependent (the current build keeps the

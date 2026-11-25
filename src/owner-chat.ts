@@ -66,6 +66,9 @@ export function normalizeChatId(raw: string | null | undefined): string | null {
   const v = (raw ?? '').trim()
   if (!v) return null
   if (v === '0') return null
+  // BOTTOKEN1124: the installer's .env.example placeholders ("your_telegram_chat_id") are not a chat either.
+  // Measured 2026-11-24: notify.sh posted to "your_telegram_chat_id" -> "chat not found", the alert was lost.
+  if (/^your_/i.test(v)) return null
   return v
 }
 

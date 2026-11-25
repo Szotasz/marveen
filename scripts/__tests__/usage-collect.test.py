@@ -231,6 +231,110 @@ class TestCollectClaudeAuthoritative(unittest.TestCase):
         self.assertIsNotNone(err)
         self.assertEqual(err_kind, "transient")
 
+    # USAGE401FALLBACK1123: a 401 refuses the SOURCE; the next one gets a try.
+    def _sources(self, available):
+        def read(skip=()):
+            for name in ("credentials_file", "keychain", "env_file"):
+                if name in available and name not in skip:
+                    return available[name], name
+            return None, None
+        return read
+
+    def _urlopen_by_token(self, answers):
+        import urllib.error
+        seen = []
+        def opener(req, timeout=10):
+            token = req.headers["Authorization"].split(" ", 1)[1]
+            seen.append(token)
+            code = answers[token]
+            if code == 200:
+                return self._mock_response({"five_hour": {"utilization": 5.0, "resets_at": "2026-07-22T16:29:59Z"}})
+            raise urllib.error.HTTPError(req.full_url, code, "x", {}, None)
+        return opener, seen
+
+    def test_stale_credentials_file_401_falls_through_to_keychain(self):
+        opener, seen = self._urlopen_by_token({"stale": 401, "good": 200})
+        with patch.object(uc, "_read_claude_token", side_effect=self._sources({"credentials_file": "stale", "keychain": "good"})), \
+             patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+             patch("urllib.request.urlopen", side_effect=opener):
+            windows, err, err_kind = uc._collect_claude_authoritative()
+        self.assertIsNone(err)
+        self.assertEqual(windows["five_hour"]["used_percent"], 5.0)
+        self.assertEqual(seen, ["stale", "good"])
+
+    def test_every_source_401_is_permanent_and_names_them(self):
+        opener, seen = self._urlopen_by_token({"a": 401, "b": 401, "c": 401})
+        with patch.object(uc, "_read_claude_token", side_effect=self._sources({"credentials_file": "a", "keychain": "b", "env_file": "c"})), \
+             patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+             patch("urllib.request.urlopen", side_effect=opener):
+            windows, err, err_kind = uc._collect_claude_authoritative()
+        self.assertIsNone(windows)
+        self.assertEqual(err_kind, "permanent")
+        self.assertIn("HTTP 401", err)
+        self.assertIn("credentials_file, keychain, env_file", err)
+        self.assertEqual(seen, ["a", "b", "c"])
+
+    def test_403_does_not_fall_through(self):
+        opener, seen = self._urlopen_by_token({"a": 403, "b": 200})
+        with patch.object(uc, "_read_claude_token", side_effect=self._sources({"credentials_file": "a", "keychain": "b"})), \
+             patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+             patch("urllib.request.urlopen", side_effect=opener):
+            windows, err, err_kind = uc._collect_claude_authoritative()
+        self.assertIsNone(windows)
+        self.assertEqual(err_kind, "permanent")
+        self.assertIn("HTTP 403", err)
+        self.assertEqual(seen, ["a"])
+
+    def test_401_then_403_reports_the_401_first(self):
+        # Geri #3073: a stale file (401) and a .env setup-token (403 by design) must not read as a scope problem.
+        opener, seen = self._urlopen_by_token({"stale": 401, "setup": 403})
+        with patch.object(uc, "_read_claude_token", side_effect=self._sources({"credentials_file": "stale", "env_file": "setup"})), \
+             patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+             patch("urllib.request.urlopen", side_effect=opener):
+            windows, err, err_kind = uc._collect_claude_authoritative()
+        self.assertIsNone(windows)
+        self.assertEqual(err_kind, "permanent")
+        self.assertTrue(err.startswith("HTTP 401 (credentials_file token)"), err)
+        self.assertIn("then HTTP 403 (env_file token)", err)
+
+    def test_a_redirect_is_not_followed(self):
+        # Dani #3073 N1: the bearer must never follow a redirect to another host.
+        import http.server, threading
+        hits = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/start":
+                    self.send_response(302)
+                    self.send_header("Location", "http://127.0.0.1:%d/landed" % srv.server_address[1])
+                    self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            import urllib.request, urllib.error
+            req = urllib.request.Request("http://127.0.0.1:%d/start" % srv.server_address[1], headers={"Authorization": "Bearer x"})
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(ctx.exception.code, 302)
+            self.assertEqual([p for p, _ in hits], ["/start"])
+        finally:
+            srv.shutdown()
+
+    def test_read_claude_token_skips_named_sources(self):
+        with patch.object(uc, "_read_keychain_token", return_value="kc"), \
+             patch("os.path.exists", return_value=False):
+            self.assertEqual(uc._read_claude_token(), ("kc", "keychain"))
+            self.assertEqual(uc._read_claude_token(skip=("keychain",)), (None, None))
+
     def test_no_token_returns_no_token_kind(self):
         with patch.object(uc, "_read_claude_token", return_value=(None, None)):
             windows, err, err_kind = uc._collect_claude_authoritative()

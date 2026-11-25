@@ -85,6 +85,25 @@ describe('the project settings a strict sub-agent gets', () => {
     expect(Array.isArray(perms.allow)).toBe(true)
   })
 
+  it('allow-list the channel tools, so a dontAsk agent can answer on its own channel', () => {
+    // Measured 2026-11-11: a developer-junior agent under dontAsk could not call its own
+    // Slack reply tool; every unmatched call is denied, the channel tools were not listed.
+    const allow = (render(loadProfileTemplate('developer-junior')).permissions as Record<string, unknown>).allow as string[]
+    for (const tool of [
+      'mcp__plugin_telegram_telegram__reply',
+      'mcp__plugin_telegram_telegram__react',
+      'mcp__plugin_telegram_telegram__edit_message',
+      'mcp__plugin_telegram_telegram__download_attachment',
+      'mcp__plugin_slack-channel_slack__reply',
+      'mcp__plugin_slack-channel_slack__react',
+      'mcp__plugin_slack-channel_slack__edit_message',
+      'mcp__plugin_slack-channel_slack__fetch_messages',
+      'mcp__plugin_slack-channel_slack__download_attachment',
+    ]) {
+      expect(allow).toContain(tool)
+    }
+  })
+
   it('a permissive profile gets no defaultMode (unchanged behaviour)', () => {
     const perms = render(loadProfileTemplate('default')).permissions as Record<string, unknown>
     expect('defaultMode' in perms).toBe(false)

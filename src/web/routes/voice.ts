@@ -16,14 +16,14 @@
 
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
+import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig, isKnownAgent } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, parseTtsRequest } from '../voice-directive.js'
-import { PROJECT_ROOT } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, RESERVED_AGENT_IDS } from '../../config.js'
 import type { RouteContext } from './types.js'
 
 const VOICE_DIR = join(homedir(), '.local', 'share', 'marveen-voice')
@@ -63,6 +63,28 @@ const INSTALL_CHANNELS_BASE = join(PROJECT_ROOT, '.claude', 'channels')
 // Safe paths: ~/.claude/channels/<provider>/, <install>/.claude/channels/<provider>/
 // OR <AGENTS_BASE_DIR>/<name>/.claude/channels/<provider>/
 // All must contain a .env file. '..' traversal always rejected.
+/** #3118: an agent id the TTS route resolves a channel dir for: the main agent or a fleet agent, canonical, never a
+ *  reserved system id. */
+function ttsAgentKnown(agentId: string): boolean {
+  if (!/^[a-zA-Z0-9_-]+$/.test(agentId) || RESERVED_AGENT_IDS.includes(agentId)) return false
+  return agentId === MAIN_AGENT_ID || isKnownAgent(agentId)
+}
+
+/**
+ * TTSBIND1125: is this chat in the channel's allowlist (access.json `allowFrom`, the users the bot already lets in)?
+ * The route takes a digits-only chat id, so a group (a negative id) never reaches here. A missing, unreadable or
+ * malformed access.json allows nothing (fail closed).
+ */
+export function chatAllowedByChannel(stateDir: string, chatId: string): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(join(stateDir, 'access.json'), 'utf-8')) as { allowFrom?: unknown }
+    if (!Array.isArray(raw.allowFrom)) return false
+    return raw.allowFrom.some((e) => (typeof e === 'number' || typeof e === 'string') && String(e).trim() === chatId)
+  } catch {
+    return false
+  }
+}
+
 function isSafeStateDir(dir: string): boolean {
   const resolved = dir.replace(/\/$/, '')
   if (resolved.includes('..')) return false
@@ -436,7 +458,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     // Audio is decided by the declared attachment kind, never by the mere
     // presence of a file id -- a document attachment is not a voice message.
     const inboundWasAudio = fileIdOk && inboundIsAudio(kindParam, fileParam)
-    const ttsParams = { chatId, stateDir, voiceModel: voiceCfg.voiceModel ?? 'hu_HU-imre-medium' }
+    const ttsParams = { chatId, agentId, voiceModel: voiceCfg.voiceModel ?? 'hu_HU-imre-medium' }
     const directive = voiceCfg.responseMode === 'text' ? null
       : voiceCfg.responseMode === 'voice' ? buildTtsDirective(ttsParams)
       : inboundWasAudio ? buildTtsDirective(ttsParams)  // auto: only when inbound was audio
@@ -532,11 +554,22 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     // text/plain (the directive, #2600) or the JSON body: parseTtsRequest reads both.
     const parsed = parseTtsRequest(req.headers['content-type'], body, ctx.url.searchParams, 'hu_HU-imre-medium')
     if (!parsed) { json(res, { error: 'Invalid JSON' }, 400); return true }
-    const { text, voiceModel, chatId, stateDir } = parsed
+    const { text, voiceModel, chatId, agentId } = parsed
 
     if (!text) { json(res, { error: 'text required' }, 400); return true }
     if (!/^\d+$/.test(chatId)) { json(res, { error: 'Invalid chat_id' }, 400); return true }
+    // #3118: the directive names the agent, and the dir is resolved here (resolveAgentChannelStateDir), so the
+    // sub-agent's command carries no channel path. The old state_dir shape still works; giving both is refused.
+    if (agentId && parsed.stateDir) { json(res, { error: 'Give agent or state_dir, not both' }, 400); return true }
+    if (agentId && !ttsAgentKnown(agentId)) { json(res, { error: 'Invalid agent' }, 400); return true }
+    const stateDir = agentId ? resolveAgentChannelStateDir(agentId, 'telegram') : parsed.stateDir
     if (!isSafeStateDir(stateDir)) { json(res, { error: 'Invalid state_dir' }, 400); return true }
+    // TTSBIND1125 (Dani's review on #3125): the caller is not identified (the shared token), so any token holder can
+    // name any agent's bot. The voice goes only to a chat that bot already lets in: the channel's own allowlist.
+    if (!chatAllowedByChannel(stateDir, chatId)) {
+      json(res, { error: 'chat_id is not allowed by this channel (access.json allowFrom)' }, 403)
+      return true
+    }
 
     const onnxPath = voiceOnnxPath(voiceModel)
     if (!onnxPath) {

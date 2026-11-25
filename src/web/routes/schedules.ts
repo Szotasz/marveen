@@ -259,6 +259,20 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!data.schedule?.trim()) { json(res, { error: 'Schedule is required' }, 400); return true }
     if (!isValidCronShape(data.schedule)) { json(res, { error: 'Invalid cron expression' }, 400); return true }
     if (data.once !== undefined && typeof data.once !== 'boolean') { json(res, { error: 'once must be true or false' }, 400); return true }
+    // The create below writes only type and targetSession of the owner fields; any other one with a value used to be
+    // dropped behind a 200. Refuse it by name, so the caller sets it after creation instead of believing it is set.
+    // telegramChatId 'none' is no delivery instruction, not a value: skipped here as in changedScheduleOwnerFields.
+    const unwritten = SCHEDULE_OWNER_FIELDS.filter((k) => {
+      const v = (data as Record<string, unknown>)[k]
+      return k !== 'type' && k !== 'targetSession' && v != null && v !== '' && !(k === 'telegramChatId' && v === 'none')
+    })
+    if (unwritten.length > 0) {
+      json(res, {
+        error: `Creating a task does not set ${unwritten.join(', ')}. Create it without, then set it with PUT /api/schedules/${name} (an owner session).`,
+        fields: unwritten,
+      }, 400)
+      return true
+    }
     // OWNEREXEC1109: a 'command' task is a shell command, created only by the owner (see SCHEDULE_OWNER_FIELDS).
     if (data.type === 'command' && !mayActAsOwner(ctx.auth, req)) {
       refuseOwner(res, 'Creating a command task needs the dashboard login (an owner session).')

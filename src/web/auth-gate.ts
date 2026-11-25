@@ -15,6 +15,7 @@
 //   4. SSE pane-stream ?token=<device key>        -> { kind: 'device' } (path-scoped)
 //   5. Federation inbound token, endpoint-scoped  -> { kind: 'federation', peer }
 //   6. mv_session cookie                          -> { kind: 'session', user }
+//                                                    (an approver login's: { kind: 'approver', user }, DELEGAPPROVER1123)
 //   6b. mv_operator cookie                        -> { kind: 'device', scope: 'operator' }
 //   6c. mv_colleague cookie                       -> { kind: 'colleague', colleague, person }  (colleague-sessions.ts)
 //   7. none of the above                          -> { kind: 'none' }
@@ -38,17 +39,18 @@ import type http from 'node:http'
 import { checkBearerToken } from './dashboard-auth.js'
 import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
-import { resolveDeviceKey, MESSENGER_ORIGIN_NOTE, type DeviceKeyScope } from './auth-device-keys.js'
+import { resolveDeviceKey, getCompanionKeyLimits, MESSENGER_ORIGIN_NOTE, type DeviceKeyScope } from './auth-device-keys.js'
 import { OPERATOR_COOKIE_NAME, resolveOperatorSession } from './operator-sessions.js'
 import { COLLEAGUE_COOKIE_NAME, resolveColleagueSession } from './colleague-sessions.js'
 import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { isKnownAgent } from './agent-config.js'
 import type { AgentTokenResolver } from './agent-tokens.js'
 import { logger } from '../logger.js'
-import { countDashboardUsers, getAgentMessage, getApproval, getDb } from '../db.js'
+import { countDashboardUsers, getAgentMessage, getApproval, getDashboardUserAccess, getDb } from '../db.js'
 import { SETUP_COOKIE_NAME, isSetupSession } from './public-access.js'
 import { readBody, stashPreReadBody, RequestBodyTooLargeError } from './http-helpers.js'
-import { OWNER_NAME, VOICE_CHANNEL_ID, DEFAULT_VOICE_CHANNEL_ID } from '../config.js'
+import { OWNER_NAME, VOICE_CHANNEL_ID, DEFAULT_VOICE_CHANNEL_ID, RESERVED_AGENT_IDS, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../config.js'
+import { COMPANION_SENDER_ID } from './sanitize.js'
 import { agentVaultMode, isAgentReadableVaultId, readVaultAcl, type AgentVaultMode, type VaultAcl } from './vault-acl.js'
 
 export type AuthResult =
@@ -62,6 +64,10 @@ export type AuthResult =
   // A colleague board login (colleague-sessions.ts). Its own kind on purpose: every owner check trusts 'session', and
   // the colleague gate (colleague-gate.ts) keeps this kind on /api/board and /api/colleague only.
   | { kind: 'colleague'; colleague: string; person: string }
+  // DELEGAPPROVER1123: a password+TOTP session of a login with role 'approver' (approver-access.ts). Its own kind on
+  // purpose, like 'colleague': every owner check trusts 'session', and the approver gate (approver-gate.ts) keeps this
+  // kind on its sign-in routes and the approval decide route.
+  | { kind: 'approver'; user: string }
   | { kind: 'none' }
 
 export const SESSION_COOKIE_NAME = 'mv_session'
@@ -261,7 +267,15 @@ function resolveCookieAuth(req: http.IncomingMessage, publicListener: boolean): 
   const cookieValue = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   if (cookieValue) {
     const session = resolveSession(cookieValue)
-    if (session) return { kind: 'session', user: session.username }
+    if (session) {
+      // DELEGAPPROVER1123: an approver's session is never the owner's. Read on every request, so a disable or a
+      // missing second factor ends it at once (the revocation also deletes the session rows, routes/auth.ts).
+      const access = getDashboardUserAccess(session.userId)
+      if (access?.role === 'approver') {
+        return access.disabled || !access.totp_enabled ? { kind: 'none' } : { kind: 'approver', user: session.username }
+      }
+      return { kind: 'session', user: session.username }
+    }
   }
 
   // 6. Operator browser session (DASHOPERATOR1005). Resolves to the operator
@@ -828,6 +842,124 @@ async function messengerGate(
   return false
 }
 
+// ---- Companion device key (FIGURAKULCS1125) ----------------------------------------
+//
+// A 'companion' scoped device key (the desktop companion on the owner's machine) may do two things, on ANY path, and
+// nothing else: send the owner's typed message as COMPANION_SENDER_ID to a recipient listed on the key (the main agent
+// when the key lists none), and list those recipients. The gate looks at the scope, never at kind === 'device' alone.
+// The body is an exact shape: from, to and content, no other field (no origin_note: the route writes it, no
+// delivery-changing field). A system or reserved id as the recipient is a 400, a recipient the key does not list a 403,
+// too long a 413, too many an hour a 429. With an address bound to the key, a request from any other address is a 403.
+
+export const COMPANION_POSTS_PER_HOUR = 30
+export const COMPANION_MAX_CONTENT_CHARS = 2000
+const COMPANION_BODY_FIELDS = new Set(['from', 'to', 'content'])
+const companionPostTimes = new Map<number, number[]>()
+/** Tests only: forget every key's window. */
+export function resetCompanionRateLimit(): void { companionPostTimes.clear() }
+function companionPostAllowed(deviceId: number, nowMs: number): boolean {
+  const recent = (companionPostTimes.get(deviceId) ?? []).filter((t) => nowMs - t < MESSENGER_RATE_WINDOW_MS)
+  const allowed = recent.length < COMPANION_POSTS_PER_HOUR
+  if (allowed) recent.push(nowMs)
+  companionPostTimes.set(deviceId, recent)
+  return allowed
+}
+
+/** The recipients a companion key may send to: its own list, or the main agent when it lists none. */
+export function companionRecipients(limits: { recipients: string[] | null }, mainAgentId: string): string[] {
+  return limits.recipients ?? [mainAgentId]
+}
+
+/** Why `to` can never be a companion recipient (a 400), or null: not a string, a federated address, a reserved or
+ *  system id, or the companion's own id. */
+export function companionRecipientInvalid(to: unknown): string | null {
+  if (typeof to !== 'string' || to === '') return 'to must be an agent id'
+  if (to.includes('/')) return 'a federated address is not a companion recipient'
+  const id = sanitizeAgentIdent(to)
+  if (id === COMPANION_SENDER_ID || RESERVED_AGENT_IDS.includes(id)) return `'${to}' is a reserved system id`
+  if (parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent).has(id)) return `'${to}' is a system id`
+  return null
+}
+
+/** The address a request came from, IPv4-mapped IPv6 written as plain IPv4. */
+export function requestAddress(req: http.IncomingMessage): string {
+  return String(req.socket?.remoteAddress ?? '').replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, '')
+}
+
+function writeCompanionRefusal(res: http.ServerResponse, status: number, device: string, rule: string, reason: string, method: string, path: string): void {
+  logger.warn({ device, rule, method, path, reason, status }, 'companion device key: request refused')
+  res.writeHead(status, { 'Content-Type': 'application/json', ...(status === 429 ? { 'Retry-After': '3600' } : {}) })
+  res.end(JSON.stringify({ error: `a companion device key may not do this: ${reason}`, rule, device }))
+}
+
+/** The companion key's whole scope. Returns true when the request may proceed, false once a response is written. */
+async function companionGate(
+  req: http.IncomingMessage, res: http.ServerResponse, path: string, method: string,
+  device: string, deviceId: number, mainAgentId: string,
+): Promise<boolean> {
+  let limits: ReturnType<typeof getCompanionKeyLimits>
+  try {
+    limits = getCompanionKeyLimits(deviceId)
+  } catch (err) {
+    logger.error({ err: (err as Error).message, device, method, path }, 'companion device key: limits could not be read')
+    limits = null
+  }
+  if (!limits) {
+    writeCompanionRefusal(res, 403, device, 'device-key-scope', 'the key could not be verified', method, path)
+    return false
+  }
+  if (limits.boundIp !== null && requestAddress(req) !== limits.boundIp) {
+    writeCompanionRefusal(res, 403, device, 'device-key-address', 'this key is bound to another address', method, path)
+    return false
+  }
+  if (method === 'GET' && path === '/api/companion/recipients') return true
+  if (!(method === 'POST' && path === '/api/messages')) {
+    writeCompanionRefusal(res, 403, device, 'device-key-scope', `${method} ${path} is outside the companion allowlist`, method, path)
+    return false
+  }
+  const read = await readAndStashBody(req, res)
+  if (!read) return false
+  const body = parseJsonOrUndefined(read.buf)
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    writeCompanionRefusal(res, 403, device, 'device-key-scope', 'the body is not a JSON object', method, path)
+    return false
+  }
+  const o = body as Record<string, unknown>
+  const extra = Object.keys(o).filter((k) => !COMPANION_BODY_FIELDS.has(k))
+  if (extra.length > 0) {
+    writeCompanionRefusal(res, 403, device, 'device-key-scope', `only from, to and content may be sent (not ${extra.join(', ')})`, method, path)
+    return false
+  }
+  if (o.from !== COMPANION_SENDER_ID) {
+    writeCompanionRefusal(res, 403, device, 'device-key-scope', `from must be '${COMPANION_SENDER_ID}'`, method, path)
+    return false
+  }
+  if (typeof o.content !== 'string' || o.content.trim() === '') {
+    writeCompanionRefusal(res, 403, device, 'device-key-scope', 'content must be a non-empty string', method, path)
+    return false
+  }
+  const invalid = companionRecipientInvalid(o.to)
+  if (invalid) {
+    writeCompanionRefusal(res, 400, device, 'device-key-recipient', invalid, method, path)
+    return false
+  }
+  if (!companionRecipients(limits, mainAgentId).includes(o.to as string)) {
+    writeCompanionRefusal(res, 403, device, 'device-key-recipient', `'${String(o.to)}' is not a recipient of this key`, method, path)
+    return false
+  }
+  // The order is the shape (403/400), then the length (413), then the rate (429): a refused or oversized message never
+  // uses up the hour's quota.
+  if ([...o.content].length > COMPANION_MAX_CONTENT_CHARS) {
+    writeCompanionRefusal(res, 413, device, 'device-key-content-length', `at most ${COMPANION_MAX_CONTENT_CHARS} characters`, method, path)
+    return false
+  }
+  if (!companionPostAllowed(deviceId, Date.now())) {
+    writeCompanionRefusal(res, 429, device, 'device-key-rate', `at most ${COMPANION_POSTS_PER_HOUR} messages an hour`, method, path)
+    return false
+  }
+  return true
+}
+
 /**
  * The whole request gate as web.ts runs it: resolve the principal, answer 401
  * for a gated path with no principal (unchanged behaviour), then apply the
@@ -874,6 +1006,10 @@ export async function gateRequest(
   // MVDKSCOPE917: a messenger key, on EVERY path (public and static ones included).
   if (auth.kind === 'device' && auth.scope === 'messenger') {
     return (await messengerGate(req, res, url, path, method, auth.device, opts.mainAgentId, opts.identityLookups ?? dbIdentityLookups)) ? auth : null
+  }
+  // FIGURAKULCS1125: a companion key, on EVERY path (public and static ones included).
+  if (auth.kind === 'device' && auth.scope === 'companion') {
+    return (await companionGate(req, res, path, method, auth.device, auth.deviceId, opts.mainAgentId)) ? auth : null
   }
   if (auth.kind !== 'token' || !auth.tokenAgent) return auth
   // Public paths (auth status, login, avatars, static assets) stay public for

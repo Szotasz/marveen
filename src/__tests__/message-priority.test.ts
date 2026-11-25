@@ -19,6 +19,7 @@ import { decidePriority, parsePriorityField, HIGH_PRIORITY_PER_HOUR_DEFAULT } fr
 import { oldestPendingAgeMs } from '../web/inbox-nudge-watcher.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { signRowsInPlace } from './helpers/inbound-sig.js'
 
 // Card ad771121: priority delivery on the inter-agent queue. Delivery was strictly FIFO, so an urgent
 // instruction sat behind every older row of a busy recipient (the measured case: three GO messages
@@ -61,9 +62,13 @@ async function post(body: unknown): Promise<{ statusCode: number; json: any }> {
 }
 
 const nowSec = () => Math.floor(Date.now() / 1000)
-const setCreated = (id: number, sec: number) => getDb().prepare('UPDATE agent_messages SET created_at = ? WHERE id = ?').run(sec, id)
-const setRow = (id: number, created: number, status = 'pending') =>
+// HMACINBOUND1125: rewriting created_at breaks the server's signature, so the row is signed again (the order is the
+// subject here, not the signature).
+const setCreated = (id: number, sec: number) => { getDb().prepare('UPDATE agent_messages SET created_at = ? WHERE id = ?').run(sec, id); signRowsInPlace([id]) }
+const setRow = (id: number, created: number, status = 'pending') => {
   getDb().prepare('UPDATE agent_messages SET created_at = ?, status = ? WHERE id = ?').run(created, status, id)
+  signRowsInPlace([id])
+}
 const storedStatus = (id: number) => (getDb().prepare('SELECT status FROM agent_messages WHERE id = ?').get(id) as { status: string }).status
 const pendingCount = (to: string) => (getDb().prepare("SELECT count(*) AS n FROM agent_messages WHERE to_agent = ? AND status = 'pending'").get(to) as { n: number }).n
 const storedPriority = (id: number) => (getDb().prepare('SELECT priority FROM agent_messages WHERE id = ?').get(id) as { priority: number }).priority

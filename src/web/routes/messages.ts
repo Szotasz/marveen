@@ -8,12 +8,13 @@ import {
   countNewerMessagesForRows,
   getHeartbeatKanbanLive,
   COMPLETION_REPORT_PREFIX,
-  type AgentMessage,
-} from '../../db.js'
+  type AgentMessage, signedRowOverDelivered } from '../../db.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { rowSigOk } from '../../inbound-sig.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
+import { COMPANION_SENDER_ID } from '../sanitize.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'
 import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, VOICE_CHANNEL_ID_INVALID, VOICE_CHANNEL_DISABLED_BY, DEFAULT_VOICE_CHANNEL_ID, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
@@ -377,12 +378,34 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // owner message. A device key is a per-device secret the sub-agents do not
     // have, so requiring it is what makes the id trustworthy at DELIVERY time,
     // where the auth context is long gone and only from_agent survives.
-    if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && ctx.auth?.kind !== 'device') {
+    //
+    // FIGVOICELANE1125: and only a FULL device key, on the scope like the companion lane, not on kind === 'device'
+    // alone. The narrow keys (operator, messenger, companion) cannot reach this today -- their own gates stop them
+    // first (operator: /api/operator/* only; messenger: from = its own name, never the voice id; companion: its own
+    // id only) -- so this is defence in depth, kept in the one place the voice id is accepted. The voice relay sends
+    // with a full key (measured on a live install 2026-11-25), so nothing that works today stops.
+    if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && !(ctx.auth?.kind === 'device' && ctx.auth.scope === 'full')) {
       logger.warn(
-        { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' },
-        'Rejected /api/messages POST as voice channel without a device key',
+        { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none', scope: ctx.auth?.scope },
+        'Rejected /api/messages POST as voice channel without a full device key',
       )
-      json(res, { error: `from '${VOICE_CHANNEL_AGENT_ID}' requires an enrolled device key, not the shared dashboard token` }, 403)
+      json(res, { error: `from '${VOICE_CHANNEL_AGENT_ID}' requires an enrolled full device key, not the shared dashboard token or a narrower key` }, 403)
+      return true
+    }
+    // Desktop companion (FIGURAKULCS1125): the companion id is the owner typing on the desktop companion, framed as
+    // such at delivery ('companion-inbound'). Like the voice channel the guard is the auth lane, but narrower: only a
+    // 'companion' SCOPED device key, never the shared token and never another device key. The other way round too: a
+    // companion key sends as this id only (the gate refuses anything else first; this is the route's own check).
+    const isCompanionSender = sanitizeAgentIdent(from) === COMPANION_SENDER_ID
+    const isCompanionKey = ctx.auth?.kind === 'device' && ctx.auth.scope === 'companion'
+    if (isCompanionSender !== isCompanionKey) {
+      logger.warn(
+        { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none', scope: ctx.auth?.scope },
+        'Rejected /api/messages POST: the companion sender id and a companion key go together',
+      )
+      json(res, { error: isCompanionSender
+        ? `from '${COMPANION_SENDER_ID}' requires a companion device key, not the shared dashboard token or another key`
+        : `a companion device key sends as '${COMPANION_SENDER_ID}' only` }, 403)
       return true
     }
     // Federation spoof guard: a slash-qualified from ("teodor/teodor") is the
@@ -424,7 +447,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // device-key gated above, which is a STRONGER check than this one.
     const isVoiceChannelSender = sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID
     const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
-    if (!isOwnerSender && !isSystemSender && !isVoiceChannelSender && !isKnownAgent(sanitizeAgentIdent(from))) {
+    // The companion is the owner too, key-gated above (FIGURAKULCS1125).
+    if (!isOwnerSender && !isSystemSender && !isVoiceChannelSender && !isCompanionSender && !isKnownAgent(sanitizeAgentIdent(from))) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
       json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
       return true
@@ -520,7 +544,9 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const normalizedContent = normalizeKanbanRefs(stampHeartbeatHeader(content.trim()), getKanbanSeqByIdPrefix)
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
-    const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
+    // FIGURAKULCS1125: a companion row's note is the server's, naming the key that sent it (audit); the gate refuses a
+    // client-sent origin_note on that lane.
+    const trimmedOriginNote = isCompanionSender ? `companion:${ctx.auth?.device ?? ''}`.slice(0, 120) : origin_note?.trim().slice(0, 120) || null
     // Card ad771121: the optional priority. Absent = "normal" (today's FIFO); an unknown value is a
     // loud 400. Checked after every guard above, so their answers keep their precedence; the budget
     // decision and the insert run back to back with no await between them.
@@ -716,7 +742,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'GET') {
     const one = getAgentMessage(parseInt(msgUpdateMatch[1], 10))
     if (!one) { json(res, { error: 'Message not found' }, 404); return true }
-    json(res, attachFreshness([one])[0])
+    // HMACINBOUND1125 (Dani 85038, 3): sig_ok says the server wrote and signed this row. The directive-verify recipe
+    // accepts a [SYSTEM-DIREKTIVA] only on sig_ok: from_agent='system' alone can be written by a raw INSERT.
+    // #3117 review 2: a signed row delivered more often than the server allowed (put back to pending and delivered
+    // again) is a replay: sig_ok false, and `replayed` says why, so an old handoff or STOP directive does not verify.
+    const replayed = signedRowOverDelivered(one.id)
+    json(res, { ...attachFreshness([one])[0], sig_ok: rowSigOk(one) && !replayed, replayed })
     return true
   }
   if (msgUpdateMatch && method === 'PUT') {

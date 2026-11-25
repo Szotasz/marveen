@@ -7,7 +7,7 @@
 <title data-i18n="colleague.title">Feladataim</title>
 <link rel="stylesheet" href="/style.css">
 <style>
-  /* The colleague board page (docs/board-access.md, "Colleague login"): one column on the dashboard tokens. */
+  /* The colleague board page (docs/board-access.md, "Colleague login"), on the dashboard tokens. */
   body { display: block; background: var(--bg); color: var(--text); margin: 0; }
   .cb { max-width: 1100px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
   .cb-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
@@ -27,10 +27,35 @@
   .cb-msg.ok { color: var(--success); }
   .cb-login { max-width: 420px; margin: 12vh auto 0; }
   .cb-login .cb-input { width: 100%; margin: 6px 0; }
-  .cb-group h2 .cb-count { color: var(--text-muted); font-weight: 400; }
-  .cb-task { border-top: 1px solid var(--border); padding: 8px 0; }
-  .cb-task:first-of-type { border-top: 0; }
-  .cb-task-title { font-weight: 500; overflow-wrap: anywhere; }
+  /* The board: one column per status, side by side like the owner's kanban; on a narrow window the columns wrap,
+     on a phone they stack. Every status is shown, an empty one too, so a card can be dropped into it. */
+  .cb-wide { max-width: 1500px; }
+  .cb-board { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; align-items: start; }
+  .cb-col { background: var(--bg-input); border-radius: var(--radius); display: flex; flex-direction: column; min-width: 0; min-height: 160px; }
+  .cb-col-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
+  .cb-col-head h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); margin: 0; }
+  .cb-count { font-size: 11px; font-weight: 600; color: var(--text-muted); background: var(--bg-card); border-radius: 10px; padding: 1px 7px; }
+  .cb-col-body { flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 4px 8px 10px; min-height: 60px; border-radius: var(--radius-sm); }
+  .cb-col-body.drag-over { background: var(--accent-soft); outline: 2px dashed var(--accent); outline-offset: -4px; }
+  .cb-task { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; box-shadow: var(--shadow-sm); }
+  .cb-task[draggable="true"] { cursor: grab; }
+  .cb-task:hover { border-color: var(--accent); }
+  .cb-task.dragging { opacity: 0.4; }
+  .cb-task-title { display: block; font-weight: 500; font-size: 0.9rem; line-height: 1.3; overflow-wrap: anywhere; margin-bottom: 6px; }
+  .cb-task-meta { margin-bottom: 8px; }
+  .cb-task-actions .cb-input { flex: 1 1 110px; min-width: 0; }
+  /* The view switch: the column board or the status-grouped list, the colleague's choice. */
+  .cb-view { display: inline-flex; }
+  .cb-view .cb-btn { border-radius: 0; }
+  .cb-view .cb-btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+  .cb-view .cb-btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; border-left: 0; }
+  .cb-view .cb-btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+  /* The list view: one section per status that has cards, the cards stacked under each other. */
+  .cb-board.cb-list { display: block; }
+  .cb-list .cb-group h2 .cb-count { margin-left: 6px; }
+  .cb-list .cb-task { background: none; border: 0; border-top: 1px solid var(--border); border-radius: 0; box-shadow: none; padding: 8px 0; }
+  .cb-list .cb-task:first-of-type { border-top: 0; }
+  .cb-list .cb-task:hover { border-color: var(--border); }
   .cb-badge { display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 0.75rem; background: var(--bg-input); color: var(--text-muted); }
   .cb-badge.high, .cb-badge.urgent { background: var(--danger-soft); color: var(--danger); }
   .cb-detail { margin-top: 8px; padding: 8px 10px; background: var(--bg-input); border-radius: var(--radius-sm); }
@@ -42,7 +67,7 @@
 </style>
 </head>
 <body>
-<div class="cb">
+<div class="cb cb-wide">
 
   <section class="cb-card cb-login" id="cb-login" hidden>
     <h1 data-i18n="colleague.login.title">Belépés a feladatokhoz</h1>
@@ -60,6 +85,10 @@
       <h1 data-i18n="colleague.title">Feladataim</h1>
       <span class="cb-muted" id="cb-who"></span>
       <span class="spacer"></span>
+      <div class="cb-view" role="group" data-i18n-aria="colleague.view.label">
+        <button class="cb-btn" id="cb-view-columns" type="button" aria-pressed="true" data-i18n="colleague.view.columns">Oszlopok</button>
+        <button class="cb-btn" id="cb-view-list" type="button" aria-pressed="false" data-i18n="colleague.view.list">Lista</button>
+      </div>
       <button class="cb-btn" id="cb-refresh" type="button" data-i18n="colleague.refresh">Frissítés</button>
       <button class="cb-btn" id="cb-logout" type="button" data-i18n="colleague.logout">Kilépés</button>
     </div>
@@ -79,7 +108,8 @@
       <p class="cb-msg" id="cb-new-msg" hidden></p>
     </section>
 
-    <div id="cb-groups"></div>
+    <p class="cb-muted" id="cb-empty" hidden></p>
+    <div id="cb-groups" class="cb-board"></div>
   </div>
 </div>
 <script src="/lang/hu.js"></script>

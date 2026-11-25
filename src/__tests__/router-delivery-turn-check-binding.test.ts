@@ -75,7 +75,7 @@ vi.mock('../web/main-agent.js', () => ({
 
 vi.mock('../web/agent-message-wrap.js', () => ({
   // 'tg' models a channel-inbound row (a user message, no envelope msg_id).
-  classifyAgentMessage: (from: string) => (from === 'tg'
+  classifyAgentMessage: ({ from_agent: from }: { from_agent: string }) => (from === 'tg'
     ? { category: 'channel-inbound', safeFrom: 'tg' }
     : { category: 'trusted-peer', safeFrom: 'orin' }),
   wrapAgentMessageForDelivery: (_c: string, _s: string, _f: string, _content: string, id?: number) =>

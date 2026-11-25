@@ -52,6 +52,8 @@
 // not get this wake next to its own directive; the two manual routes schedule
 // after that call.
 import { statSync } from 'node:fs'
+import { agentFacingLang, type AgentTextLang } from './agent-text-lang.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { logger } from '../logger.js'
 
 /** Grace for the restarted session's boot + SessionStart hooks, as the restart gate's WAKE_DELAY_MS. */
@@ -66,8 +68,27 @@ export type RestartWakeOutcome = 'sent' | 'aborted-busy' | 'skipped-locked'
 
 export type RestartWakeSender = (agent: string, session: string, text: string) => Promise<RestartWakeOutcome>
 
+/**
+ * RESTARTWAKEI18N1125: the language of the wake texts (this file's two and the restart gate's), the one every
+ * agent-facing text of the install uses: AGENT_TEXT_LANG when set, else DASHBOARD_LANG, else Hungarian. Only the
+ * sentences change: the bracketed prefix ([RESTART-WAKE], [CONTEXT-RESTART-GATE]) is what other code and the agents'
+ * directive rules match, so it stays the same in both languages.
+ */
+export function wakeTextLang(): AgentTextLang {
+  return agentFacingLang(() => getEffectiveSettingValue('DASHBOARD_LANG'))
+}
+
 /** The wake text. Short on purpose: the conversation itself is back, this only restarts the turn. */
-export function restartWakePrompt(reason: string): string {
+export function restartWakePrompt(reason: string, lang: AgentTextLang = wakeTextLang()): string {
+  if (lang === 'en') {
+    return (
+      `[RESTART-WAKE] The system restarted your session (--continue, reason: ${reason}): ` +
+      'the earlier conversation is still there, but the running turn was cut off. ' +
+      'Look at your last steps and your kanban board, and CONTINUE from where it stopped. ' +
+      'Do not start over what is already done, and do not delegate again what you already handed over. ' +
+      'If you had no running work, that is a complete state too: then do not invent a task for yourself.'
+    )
+  }
   return (
     `[RESTART-WAKE] A munkamenetedet a rendszer ujrainditotta (--continue, ok: ${reason}): ` +
     'a korabbi beszelgetes megmaradt, de a futo kor megszakadt. ' +
@@ -146,9 +167,10 @@ export function freshHandoff(
 }
 
 /** "2026-11-15T16:21Z, 12 perce": the stamp to the minute (UTC) and the age in whole minutes. */
-function handoffWhen(h: FreshHandoff): string {
+function handoffWhen(h: FreshHandoff, lang: AgentTextLang): string {
   const stamp = `${new Date(h.mtimeMs).toISOString().slice(0, 16)}Z`
   const minutes = Math.floor(h.ageMs / 60_000)
+  if (lang === 'en') return `${stamp}, ${minutes < 1 ? 'less than a minute ago' : `${minutes} minutes ago`}`
   return `${stamp}, ${minutes < 1 ? 'kevesebb mint egy perce' : `${minutes} perce`}`
 }
 
@@ -161,9 +183,29 @@ function handoffWhen(h: FreshHandoff): string {
  * (null) is not mentioned at all. Either way the text forbids a channel post
  * about the restart.
  */
-export function mainRestartWakePrompt(reason: string, handoff: FreshHandoff | null): string {
+export function mainRestartWakePrompt(reason: string, handoff: FreshHandoff | null, lang: AgentTextLang = wakeTextLang()): string {
+  if (lang === 'en') {
+    const whereEn = handoff
+      ? `The handoff ${handoff.path} is fresh (written: ${handoffWhen(handoff, 'en')}): read it, and CONTINUE the work it describes. ` +
+        'What happened since the handoff is on your kanban board and in your hot memories: look at those too. ' +
+        'EVERY item of the handoff\'s Next Steps is a task even without a card: in this first turn, create a card for every item that has none ' +
+        '(or write next to the item why it needs none). The kanban is NOT the whole task list. '
+      : 'Look at your kanban board and your hot memories, and CONTINUE the work you started from there. '
+    const idleEn = handoff
+      ? 'An open item of the handoff is running work, even without a card. ' +
+        'If you had no running work and the handoff has no open item either, that is a complete state too: then do not invent a task for yourself. '
+      : 'If you had no running work, that is a complete state too: then do not invent a task for yourself. '
+    return (
+      `[RESTART-WAKE] Your session was restarted by hand (fresh start, reason: ${reason}): ` +
+      'the earlier conversation is NOT kept. ' +
+      whereEn +
+      'Do not start over what is already done, and do not delegate again what you already handed over. ' +
+      idleEn +
+      'Do NOT send a message about the restart to your channel.'
+    )
+  }
   const where = handoff
-    ? `A ${handoff.path} atado friss (irva: ${handoffWhen(handoff)}): olvasd be, es FOLYTASD az ott leirt munkat. ` +
+    ? `A ${handoff.path} atado friss (irva: ${handoffWhen(handoff, 'hu')}): olvasd be, es FOLYTASD az ott leirt munkat. ` +
       'Ami az atado ota tortent, azt a kanban tablad es a hot memoriaid mutatjak: azokat is nezd meg. ' +
       // HANDOFFKARTYA1118: the kanban alone dropped an agreed handoff item that had no card.
       'Az atado Next Steps MINDEN tetele teendo akkor is, ha nincs kartyaja: ebben az elso korben minden kartya nelkuli tetelre hozz letre kartyat ' +

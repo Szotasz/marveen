@@ -100,6 +100,12 @@ export interface SettingDefinition {
    */
   overridesOnly?: boolean
   /**
+   * Optional: an overrides-only key whose `.env` line stays in effect all the same, because a consumer released
+   * before the key entered the registry reads it (ROOT_CLAUDEMD_EXCLUDE_AGENTS). The settings layer then reports the
+   * line as what it is, the 'env' source, and never as ignored (#2996 review B1).
+   */
+  envStillApplies?: boolean
+  /**
    * Optional (NETTARGETENV1104): ANY change of this key through the Settings route needs the owner (an owner session or
    * a full-scope device key), not the shared fleet token. Unlike `loosens` it does NOT make the key overrides-only: its
    * .env line keeps working. For keys that choose a TARGET (where the token, a prompt or memory text is sent) and whose
@@ -179,6 +185,13 @@ export const DISABLEABLE_TOOLS = ['Artifact', 'Workflow', 'SendFeedback', 'Repor
 /** The AGENT_DISALLOWED_TOOLS entries that are on DISABLEABLE_TOOLS, in order, without repeats. */
 export function disallowedToolList(v: string): string[] {
   return [...new Set(v.split(/[\s,]+/).filter((t) => (DISABLEABLE_TOOLS as readonly string[]).includes(t)))]
+}
+/** SKILL_LISTING_BUDGET_FRACTION as a number in (0, 1], or null when it is empty or not one. */
+export function skillListingBudgetFraction(v: string): number | null {
+  const t = v.trim()
+  if (!/^\d*\.?\d+$/.test(t)) return null
+  const n = Number(t)
+  return n > 0 && n <= 1 ? n : null
 }
 function validAgentNameList(v: string): string | null {
   const t = v.trim()
@@ -1098,6 +1111,41 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
         ? null
         : `Csak ezek közül, vesszővel elválasztva: ${DISABLEABLE_TOOLS.join(', ')}.`,
     description: 'Beépített Claude Code eszközök, amelyeket egyik ügynök (a fő ágens is) NEM kap meg: a leírásuk így nem utazik minden hívásban (kevesebb token). Csak a nem használt eszközök közül választható: Artifact, Workflow, SendFeedback, ReportFindings, ScheduleWakeup. Vesszővel elválasztva; üres = mind megmarad. Az ügynök következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'ROOT_CLAUDEMD_EXCLUDE_AGENTS',
+    type: 'string',
+    default: '',
+    // Adding an agent (or '*') drops the install root's CLAUDE.md, fleet rules included, for it: a loosening, so only
+    // the owner can save it. Taking one off restores the rules and stays open to everyone.
+    loosens: (oldValue, newValue) => {
+      const ids = (v: string) => new Set(v.split(/[\s,]+/).map((w) => w.trim()).filter(Boolean))
+      const old = ids(oldValue)
+      return [...ids(newValue)].some((id) => !old.has(id))
+    },
+    // agentExcludesRootClaudeMd reads the .env line too (the released path), so it must not be reported as ignored.
+    envStillApplies: true,
+    validate: (v) =>
+      v.split(/[\s,]+/).filter(Boolean).every((n) => n === '*' || AGENT_NAME_RE.test(n))
+        ? null
+        : 'Ügynöknevek vesszővel elválasztva (pl. pm,reviewer), vagy * minden al-ügynökre.',
+    description: 'Al-ügynökök, akik NEM töltik be a telepítés gyökerében álló CLAUDE.md-t (a fő ágens személyiségét és a közös szabályokat), csak a sajátjukat: így egy hívás a gyökér CLAUDE.md méretével kisebb. Vesszővel elválasztott ügynöknevek, vagy * minden al-ügynökre, a később létrehozottakra is. A fő ágensre nem hat. FIGYELEM: a kizárt ügynök a gyökér közös szabályait sem kapja meg, ezért előbb a saját CLAUDE.md-jébe kell kerülniük. Ügynököt felvenni csak bejelentkezett gazda-session tud (a közös tokennel és eszközkulccsal nem), levenni bárki. A .env ROOT_CLAUDEMD_EXCLUDE_AGENTS sora (a korábbi út) ettől függetlenül érvényes marad, a kettő összeadódik. A módosítás az ügynök következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'SKILL_LISTING_BUDGET_FRACTION',
+    type: 'string',
+    default: '',
+    validate: (v) =>
+      v.trim() === '' || skillListingBudgetFraction(v) !== null
+        ? null
+        : 'Tört 0 és 1 között, ponttal írva (pl. 0.005), vagy üresen a Claude Code saját értéke (0.01) él.',
+    description: 'Mekkora részét kaphatja a kontextusablaknak (karakterben) a skill-lista, amit a Claude Code minden al-ügynök munkamenetének elküld. Üresen a Claude Code saját értéke él (0.01, vagyis 1%). Kisebb érték kevesebb tokent jelent hívásonként: ha a lista nem fér bele, a legritkábban használt skillek LEÍRÁSA marad ki (a nevük megmarad és hívhatók), a többié teljes marad. Az al-ügynökök settings.json-jába kerül (skillListingBudgetFraction), a fő ágensébe nem; az érték törlésekor a következő indításnál kikerül onnan. A módosítás az ügynök következő indításakor lép életbe.',
     module: 'system',
     secret: false,
     requiresRestart: true,

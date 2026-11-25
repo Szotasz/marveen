@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
-import { classifyAgentMessage } from '../web/agent-message-wrap.js'
+import { classifySenderId } from '../web/agent-message-wrap.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID as VOICE_ID_OR_NULL } from '../channel-coordinator/ingest.js'
 // VOICECHANNELID1022: the id is null only when the voice lane is off (even the
 // default names another sender); on this suite's install it is on.
@@ -40,7 +40,7 @@ describe('voice channel identity', () => {
   })
 
   it('classifies as channel-inbound, so every receiving agent sees the provenance', () => {
-    const cls = classifyAgentMessage(VOICE_CHANNEL_AGENT_ID, 'marveen')
+    const cls = classifySenderId(VOICE_CHANNEL_AGENT_ID, 'marveen')
     expect(cls).not.toBeNull()
     expect(cls!.category).toBe('channel-inbound')
     expect(cls!.safeFrom).toBe(VOICE_CHANNEL_AGENT_ID)
@@ -48,13 +48,13 @@ describe('voice channel identity', () => {
 
   it('a sub-agent recipient sees the SAME category (the framing is not main-agent-only)', () => {
     for (const to of ['mira', 'samu', 'iris']) {
-      expect(classifyAgentMessage(VOICE_CHANNEL_AGENT_ID, to)!.category).toBe('channel-inbound')
+      expect(classifySenderId(VOICE_CHANNEL_AGENT_ID, to)!.category).toBe('channel-inbound')
     }
   })
 })
 
 describe('/api/messages write guard for the voice channel', () => {
-  async function postAs(from: string, auth?: { kind: string; device?: string; deviceId?: number }) {
+  async function postAs(from: string, auth?: { kind: string; device?: string; deviceId?: number; scope?: string }) {
     const payload = JSON.stringify({ from, to: 'marveen', content: 'a dictated line' })
     const req = Readable.from([Buffer.from(payload)]) as any
     let status = 0
@@ -95,6 +95,16 @@ describe('/api/messages write guard for the voice channel', () => {
     }
   })
 
+  // FIGVOICELANE1125: a narrower device key (operator, messenger, companion) is refused as the voice sender; only a
+  // FULL key passes. Their own gates stop them earlier in production, so this is the route's second line.
+  it('REFUSES the voice id from a narrower device key, and from a device principal without a scope', async () => {
+    for (const scope of ['operator', 'messenger', 'companion', undefined] as const) {
+      const { status, body } = await postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'a-device', deviceId: 5, ...(scope ? { scope } : {}) })
+      expect(status, String(scope)).toBe(403)
+      expect(String(body?.error)).toMatch(/full device key/)
+    }
+  })
+
   it('PASSES both guards on the device lane (it has no agents/<id>/ dir either)', async () => {
     // Two guards could refuse this: the device-key lane check, and the
     // known-agent check (the voice id has no agents/<id>/ directory, so it
@@ -103,8 +113,10 @@ describe('/api/messages write guard for the voice channel', () => {
     // throw is the PROOF of passage, so we assert on it rather than skipping:
     // a guard rejection would have returned a 403 instead of ever reaching db.
     await expect(
-      postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'a-device', deviceId: 5 }),
-    ).rejects.toThrow(/prepare/)
+      postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'a-device', deviceId: 5, scope: 'full' }),
+    // HMACINBOUND1125: the insert now runs in a transaction (it is signed with the row id), so the harness's missing
+    // DB throws on db.transaction before db.prepare: either name is the same proof of passage.
+    ).rejects.toThrow(/prepare|transaction/)
   })
 
   it('NEGATIVE CONTROL: an unknown non-voice id is refused by the known-agent guard', async () => {
@@ -118,7 +130,8 @@ describe('/api/messages write guard for the voice channel', () => {
 
 describe('the two halves stay paired in the source', () => {
   it('the route guards the voice id on the AUTH LANE, not with a blanket 403', () => {
-    expect(MESSAGES_ROUTE_SRC).toMatch(/sanitizeAgentIdent\(from\)\s*===\s*VOICE_CHANNEL_AGENT_ID\s*&&\s*ctx\.auth\?\.kind\s*!==\s*'device'/)
+    // FIGVOICELANE1125: the lane is a FULL device key (the scope), not any device key.
+    expect(MESSAGES_ROUTE_SRC).toMatch(/sanitizeAgentIdent\(from\)\s*===\s*VOICE_CHANNEL_AGENT_ID\s*&&\s*!\(ctx\.auth\?\.kind\s*===\s*'device'\s*&&\s*ctx\.auth\.scope\s*===\s*'full'\)/)
   })
 
   it('the id comes from the shared constant, never a literal in the route', () => {

@@ -49,14 +49,15 @@ export const RESUME_DRAIN_MAX = 8
 export function selectDrainableRows(rows: AgentMessage[], mainAgentId: string): AgentMessage[] {
   const kept: AgentMessage[] = []
   for (const row of rows) {
-    const cls = classifyAgentMessage(row.from_agent, row.to_agent)
+    const cls = classifyAgentMessage(row)
     // Unclassifiable sender: the router owns failing/closing such a row, the
     // drain must simply never touch it.
     if (!cls) continue
     // These ride their own delivery paths (channel inbound is pulled, federated
     // goes through federation) -- same rule as the router's multi-envelope
     // batch.
-    if (cls.category === 'channel-inbound' || cls.category === 'federated') continue
+    // The desktop companion's row (FIGURAKULCS1125) is the owner's message: the router delivers it on its own.
+    if (cls.category === 'channel-inbound' || cls.category === 'companion-inbound' || cls.category === 'federated') continue
     // Urgent/STOP rows are never held, so the router delivers them on its own
     // even mid-restart; draining one here would double-send it.
     if (isUrgentDelivery(row, mainAgentId)) continue
@@ -103,7 +104,7 @@ export async function sendResumeWithDrain(
   for (const row of capped) {
     // classifyAgentMessage is pure, so this second call returns exactly the
     // classification selectDrainableRows kept the row by.
-    const cls = classifyAgentMessage(row.from_agent, row.to_agent)
+    const cls = classifyAgentMessage(row)
     if (!cls) continue
     // Exactly the router's serial-path envelope (message-router.ts): own
     // prefix + wrapped block per row, freshness computed at injection time.

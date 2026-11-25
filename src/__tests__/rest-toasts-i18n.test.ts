@@ -216,9 +216,9 @@ describe('the handlers speak the dashboard language', () => {
   })
 
   it('the auth URL copy, the .mcp.json save and the voice install error use their keys', () => {
-    expect(APP).toContain("navigator.clipboard.writeText(url).then(() => showToast(t('common.toast.copied')))")
+    expect(APP).toContain("navigator.clipboard.writeText(url).then(() => showToast(t('common.toast.copied'), 'success'))")
     const mcp = APP.slice(APP.indexOf("document.getElementById('saveMcpJsonBtn')"))
-    expect(mcp.slice(0, mcp.indexOf('\n})\n'))).toContain("showToast(t('agents.mcp_json_saved'))")
+    expect(mcp.slice(0, mcp.indexOf('\n})\n'))).toContain("showToast(t('agents.mcp_json_saved'), 'success')")
     expect(APP).toContain("showToast(t('agents.voice.install_error'), 'error')")
   })
 })

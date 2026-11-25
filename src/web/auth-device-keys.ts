@@ -35,13 +35,19 @@ const KEY_PREFIX = 'mvdk_'
  * key: the gate lets it reach /api/operator/* only (operator-gate.ts), and it
  * must expire -- an operator key without an end date cannot be minted.
  */
-export type DeviceKeyScope = 'full' | 'operator' | 'messenger'
-export const DEVICE_KEY_SCOPES: readonly DeviceKeyScope[] = ['full', 'operator', 'messenger']
+export type DeviceKeyScope = 'full' | 'operator' | 'messenger' | 'companion'
+export const DEVICE_KEY_SCOPES: readonly DeviceKeyScope[] = ['full', 'operator', 'messenger', 'companion']
 /** MVDKSCOPE917: a 'messenger' key (the voice-robot relay) only sends messages as itself, marked with this
  *  origin_note, and reads the replies to its own messages (auth-gate.ts MESSENGER_ALLOWLIST). It must expire, with
  *  the operator key's bounds. */
 export const MESSENGER_ORIGIN_NOTE = 'hang-robot'
 export const OPERATOR_KEY_DEFAULT_EXPIRY_DAYS = 90
+/** FIGURAKULCS1125: a 'companion' key (the desktop companion) sends the owner's typed messages as COMPANION_SENDER_ID to
+ *  the recipients listed on the key (the main agent when none are), and lists those recipients; nothing else
+ *  (auth-gate.ts COMPANION_ALLOWLIST). It must expire, sooner than an operator key: any later version of the companion
+ *  page can read the key file on the owner's machine (Dani, plan v2). */
+export const COMPANION_KEY_DEFAULT_EXPIRY_DAYS = 30
+export const COMPANION_KEY_MAX_EXPIRY_DAYS = 90
 /** An operator key lives at most a year (owner decision 2026-10-05; a full key keeps its own ceiling). */
 export const OPERATOR_KEY_MAX_EXPIRY_DAYS = 365
 
@@ -49,6 +55,14 @@ export interface DeviceKeyPrincipal {
   id: number
   name: string
   scope: DeviceKeyScope
+}
+
+/** FIGURAKULCS1125: a companion key's own limits, read by the gate on every request (getCompanionKeyLimits). */
+export interface CompanionKeyLimits {
+  /** The agent ids the key may send to; null = the main agent only. */
+  recipients: string[] | null
+  /** The one source address the key is accepted from; null = any (the default, off). */
+  boundIp: string | null
 }
 
 export interface DeviceKeyInfo {
@@ -81,6 +95,7 @@ interface CachedKey {
 function toScope(value: unknown): DeviceKeyScope {
   if (value === 'full') return 'full'
   if (value === 'messenger') return 'messenger'
+  if (value === 'companion') return 'companion'
   return 'operator'
 }
 
@@ -97,24 +112,31 @@ function nowSec(): number {
 // Mint a new key. The raw value exists only in the returned object; the row
 // stores its hash. expiresInDays is opt-in -- omitted means the key lives until
 // revoked.
-export function createDeviceKey(name: string, opts: { expiresInDays?: number; installId?: string; scope?: DeviceKeyScope } = {}): MintedDeviceKey {
+export function createDeviceKey(
+  name: string,
+  opts: { expiresInDays?: number; installId?: string; scope?: DeviceKeyScope; companion?: Partial<CompanionKeyLimits> } = {},
+): MintedDeviceKey {
   const scope = opts.scope ?? 'full'
-  // MVDKSCOPE917: a messenger key expires under the operator key's rule.
-  const mustExpire = scope === 'operator' || scope === 'messenger'
+  // MVDKSCOPE917: a messenger key expires under the operator key's rule; a companion key too, with its own ceiling.
+  const mustExpire = scope === 'operator' || scope === 'messenger' || scope === 'companion'
   if (mustExpire && !(opts.expiresInDays && opts.expiresInDays > 0)) {
     throw new Error(`an ${scope} key must expire`)
   }
-  if (mustExpire && opts.expiresInDays! > OPERATOR_KEY_MAX_EXPIRY_DAYS) {
-    throw new Error(`an ${scope} key lives at most ${OPERATOR_KEY_MAX_EXPIRY_DAYS} days`)
+  const maxDays = scope === 'companion' ? COMPANION_KEY_MAX_EXPIRY_DAYS : OPERATOR_KEY_MAX_EXPIRY_DAYS
+  if (mustExpire && opts.expiresInDays! > maxDays) {
+    throw new Error(`an ${scope} key lives at most ${maxDays} days`)
   }
+  if (opts.companion && scope !== 'companion') throw new Error('recipients and a bound address are for a companion key only')
+  const recipients = scope === 'companion' && opts.companion?.recipients?.length ? JSON.stringify(opts.companion.recipients) : null
+  const boundIp = scope === 'companion' ? opts.companion?.boundIp ?? null : null
   const raw = KEY_PREFIX + randomBytes(32).toString('base64url')
   const keyHash = sha256hex(raw)
   const now = nowSec()
   const expiresAt = opts.expiresInDays ? now + Math.floor(opts.expiresInDays * 24 * 60 * 60) : null
   const installId = opts.installId ?? null
   const info = getDb()
-    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id, scope) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(keyHash, name, now, null, expiresAt, installId, scope)
+    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id, scope, companion_recipients, bound_ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(keyHash, name, now, null, expiresAt, installId, scope, recipients, boundIp)
   const id = Number(info.lastInsertRowid)
   cache.set(keyHash, { id, name, lastUsedAt: null, expiresAt, scope })
   return { id, name, createdAt: now, lastUsedAt: null, expiresAt, installId, scope, key: raw }
@@ -159,6 +181,25 @@ export function resolveDeviceKey(raw: string): DeviceKeyPrincipal | null {
     }
   }
   return { id: entry.id, name: entry.name, scope: entry.scope }
+}
+
+/** FIGURAKULCS1125: a companion key's recipients and bound address, read from the row (not the cache) so a change made
+ *  outside this process is seen at once; null when the key is gone or not a companion key. A stored recipient list that
+ *  does not parse as an array of strings reads as an empty list: the key then sends to nobody (fail closed). */
+export function getCompanionKeyLimits(id: number): CompanionKeyLimits | null {
+  const row = getDb().prepare('SELECT scope, companion_recipients, bound_ip FROM device_keys WHERE id = ?').get(id) as
+    { scope: string; companion_recipients: string | null; bound_ip: string | null } | undefined
+  if (!row || toScope(row.scope) !== 'companion') return null
+  let recipients: string[] | null = null
+  if (row.companion_recipients !== null) {
+    try {
+      const parsed: unknown = JSON.parse(row.companion_recipients)
+      recipients = Array.isArray(parsed) && parsed.every((r) => typeof r === 'string') ? parsed : []
+    } catch {
+      recipients = []
+    }
+  }
+  return { recipients, boundIp: row.bound_ip }
 }
 
 function rowToInfo(r: { id: number; name: string; created_at: number; last_used_at: number | null; expires_at: number | null; install_id: string | null; scope: string }): DeviceKeyInfo {

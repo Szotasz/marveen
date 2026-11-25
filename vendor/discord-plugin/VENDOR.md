@@ -5,6 +5,13 @@
 - **Pinned**: version 0.0.4. `0.0.4/upstream/server.ts` is the upstream file **verbatim**
   (sha256 `6edc17d9e9d04930967361ba51c8e03b8f8508647a1dfc11d79ee6a0eb1010b7`), identical to the
   marketplace copy and to upstream main on 2026-11-11 (last code commit there: 48aa4351, 2026-04-14).
+- **Pinned, also**: version 0.0.6 (DCPLUGIN006, 2026-11-23). `0.0.6/upstream/server.ts` is the marketplace file
+  verbatim (sha256 `400387f4dd86ca1fea85a15a545ff8a486efaccffc7ee46c67b29f889904a515`). Upstream 0.0.4 -> 0.0.6 adds
+  a `list_emojis` tool, its own `create_thread` tool, and skips the thread-starter system message.
+  `0.0.6/overlay/` is the 0.0.4 overlay three-way merged onto it (`git merge-file`, base: 0.0.4 upstream). The one
+  conflict was `create_thread`: the overlay's (DCEXT1111 F5) stays, and upstream's tool definition and case are
+  dropped (a `MARVEEN-PATCH(dc006)` line marks the case). `marveen-ext.ts` is the 0.0.4 file unchanged. Tests:
+  `src/__tests__/patch-discord-plugin-006.test.ts`. 0.0.4 stays vendored for installs whose cache still holds it.
 - **Ours**: `0.0.4/overlay/` -- the plugin as Marveen runs it. Changed lines in `server.ts` carry
   a `MARVEEN-PATCH(...)` / `MARVEEN-EXT` marker; the new logic lives in `marveen-ext.ts`.
   Review it as a diff: `diff 0.0.4/upstream/server.ts 0.0.4/overlay/server.ts`.

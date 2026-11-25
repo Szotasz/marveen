@@ -3016,8 +3016,15 @@ function boundIsPlain(bound, expected = new Map()) {
 
 // ISSUE2582 (B): a script written by a heredoc and then run in the same command is judged by its body (see the python
 // twin's _written_scripts for the exact conditions); every other case reads the disk as before.
+// MAILGATEWRITTENAND1123: the one provable conditional write (see the python twin's _written_and_chain_ok). The run
+// is python only: node resolves a missing P to P.js, P.json, P.node or P/index.js (Dani, review of #3090).
+const WRITTEN_AND_CHAIN = /^(?:(?:mkdir(?:[ \t]+-p)?|cd)[ \t]+[A-Za-z0-9_./-]+[ \t]*&&[ \t]*)+$/
+function writtenAndChainOk(pre, lineStart, rest, path) {
+  if (lineStart !== 0 || !WRITTEN_AND_CHAIN.test(pre)) return false
+  return new RegExp(String.raw`^[ \t]*\n[ \t]*python3?[ \t]+` + reEscape(path) + String.raw`(?=[ \t\n;&|]|$)`).test(rest)
+}
 const WRITTEN_OPENER = new RegExp(
-  String.raw`^(?<pre>[^\n'"\x60\\]*;[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?<p1>[^\s'"<>;&|$\x60]+)[ \t]+<<-?[ \t]*(?<q1>'?)(?<t1>\w+)\k<q1>` +
+  String.raw`^(?<pre>[^\n'"\x60\\]*(?:;|&&)[ \t]*)?[ \t]*(?:cat[ \t]+>[ \t]*(?<p1>[^\s'"<>;&|$\x60]+)[ \t]+<<-?[ \t]*(?<q1>'?)(?<t1>\w+)\k<q1>` +
   String.raw`|cat[ \t]+<<-?[ \t]*(?<q2>'?)(?<t2>\w+)\k<q2>[ \t]+>[ \t]*(?<p2>[^\s'"<>;&|$\x60]+)` +
   String.raw`|tee[ \t]+(?<p3>[^\s'"<>;&|$\x60-][^\s'"<>;&|$\x60]*)(?:[ \t]+>[ \t]*\/dev\/null)?[ \t]+<<-?[ \t]*(?<q3>'?)(?<t3>\w+)\k<q3>` +
   String.raw`)[ \t]*$`)
@@ -3068,6 +3075,8 @@ export function writtenScripts(cmd, cwd) {
     else continue
     // the write runs unconditionally: the line before does not continue into it (&&, ||, |, a backslash)
     if (/(?:&&|\|\||\||\\)\s*$/.test(cmd.slice(0, lineStart))) continue
+    // MAILGATEWRITTENAND1123: a write after `&&` counts only in the one shape that is provable
+    if ((g.pre ?? '').trimEnd().endsWith('&&') && !writtenAndChainOk(g.pre, lineStart, cmd.slice(m.index + m[0].length), path)) continue
     // nothing before the write can have left P there unnamed (so the write does not fail on it)
     if (!writtenSafeBefore(outsideBodies(cmd, 0, lineStart) + (g.pre ?? ''))) continue
     // counted by the FILE NAME, so `./x.py`, `$D/x.py` and `/abs/x.py` are all mentions of x.py

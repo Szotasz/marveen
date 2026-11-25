@@ -1,8 +1,9 @@
 // The colleague board page (docs/board-access.md, "Colleague login").
 // Talks to /api/colleague/* and /api/board/* only, and relies on the HttpOnly
 // colleague cookie the login sets; nothing is kept in browser storage except the
-// dashboard's language choice (marveen.lang), read, never written. Every value
-// from the server goes in through textContent.
+// dashboard's language choice (marveen.lang), read, never written, and this
+// page's view choice (marveen.colleague.view: 'columns' or 'list'), a per-browser
+// convenience. Every value from the server goes in through textContent.
 (function () {
   'use strict'
 
@@ -106,34 +107,98 @@
     render(r.data.cards || [])
   }
 
-  function render(cards) {
-    const root = $('cb-groups')
-    root.replaceChildren()
-    const statuses = (me && me.statuses) || ['planned', 'in_progress', 'testing', 'waiting', 'done']
-    let any = false
-    for (const s of statuses) {
-      const list = cards.filter((c) => c.status === s)
-      if (!list.length) continue
-      any = true
-      const sec = el('section', null, 'cb-card cb-group')
-      const h = el('h2', statusLabel(s))
-      h.append(' ', el('span', `(${list.length})`, 'cb-count'))
-      sec.append(h)
-      for (const c of list) sec.append(renderCard(c, statuses))
-      root.append(sec)
-    }
-    if (!any) root.append(el('p', t('colleague.empty'), 'cb-muted'))
+  // The card being dragged: its record and its status select, so a drop goes through the same move() as the select.
+  let dragged = null
+
+  // The view: 'columns' (the kanban, with drag) or 'list' (one section per status that has cards, select only).
+  // An unreadable or unknown stored value is the column view.
+  const VIEW_KEY = 'marveen.colleague.view'
+  let view = 'columns'
+  try { if (localStorage.getItem(VIEW_KEY) === 'list') view = 'list' } catch { /* storage blocked */ }
+  let lastCards = []
+
+  function setView(v) {
+    view = v === 'list' ? 'list' : 'columns'
+    try { localStorage.setItem(VIEW_KEY, view) } catch { /* storage blocked: the choice lasts for this page only */ }
+    render(lastCards)
   }
 
-  function renderCard(c, statuses) {
+  function render(cards) {
+    lastCards = cards
+    $('cb-view-columns').setAttribute('aria-pressed', String(view === 'columns'))
+    $('cb-view-list').setAttribute('aria-pressed', String(view === 'list'))
+    const root = $('cb-groups')
+    root.replaceChildren()
+    root.classList.toggle('cb-list', view === 'list')
+    const statuses = (me && me.statuses) || ['planned', 'in_progress', 'testing', 'waiting', 'done']
+    const empty = $('cb-empty')
+    empty.textContent = t('colleague.empty')
+    empty.hidden = cards.length > 0
+    if (view === 'list') renderList(root, cards, statuses)
+    else renderColumns(root, cards, statuses)
+  }
+
+  /** The list view: a section per status that has cards; moving is the select's job, there is no drag. */
+  function renderList(root, cards, statuses) {
+    for (const s of statuses) {
+      const list = cards.filter((c) => c.status === s)
+      if (list.length === 0) continue
+      const sec = el('section', null, 'cb-card cb-group')
+      const h = el('h2', statusLabel(s))
+      h.append(el('span', String(list.length), 'cb-count'))
+      sec.append(h)
+      for (const c of list) sec.append(renderCard(c, statuses, false))
+      root.append(sec)
+    }
+  }
+
+  /** One column per status, side by side, the empty ones too: an empty column is still a drop target. */
+  function renderColumns(root, cards, statuses) {
+    for (const s of statuses) {
+      const list = cards.filter((c) => c.status === s)
+      const col = el('section', null, 'cb-col')
+      const head = el('div', null, 'cb-col-head')
+      head.append(el('h2', statusLabel(s)), el('span', String(list.length), 'cb-count'))
+      const body = el('div', null, 'cb-col-body')
+      body.dataset.status = s
+      wireDrop(body, s)
+      for (const c of list) body.append(renderCard(c, statuses, true))
+      col.append(head, body)
+      root.append(col)
+    }
+  }
+
+  /** A column body accepts a dragged card of another column; the move itself is the select's move(). */
+  function wireDrop(body, status) {
+    body.addEventListener('dragover', (e) => {
+      if (!dragged || dragged.card.status === status) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      body.classList.add('drag-over')
+    })
+    body.addEventListener('dragleave', (e) => {
+      if (!body.contains(e.relatedTarget)) body.classList.remove('drag-over')
+    })
+    body.addEventListener('drop', (e) => {
+      e.preventDefault()
+      body.classList.remove('drag-over')
+      const d = dragged
+      dragged = null
+      if (!d || d.card.status === status) return
+      d.sel.value = status
+      move(d.card, status, d.sel)
+    })
+  }
+
+  function renderCard(c, statuses, canDrag) {
     const box = el('div', null, 'cb-task')
-    const top = el('div', null, 'cb-row')
-    top.append(el('span', c.title, 'cb-task-title'))
-    if (c.priority && c.priority !== 'normal') top.append(el('span', priorityLabel(c.priority), `cb-badge ${c.priority}`))
+    box.append(el('span', c.title, 'cb-task-title'))
+    const meta = el('div', null, 'cb-row cb-task-meta')
+    if (c.priority && c.priority !== 'normal') meta.append(el('span', priorityLabel(c.priority), `cb-badge ${c.priority}`))
     const due = dueText(c.due_date)
-    if (due) top.append(el('span', t('colleague.card.due', { date: due }), 'cb-muted'))
-    const spacer = el('span'); spacer.style.flex = '1'
-    top.append(spacer)
+    if (due) meta.append(el('span', t('colleague.card.due', { date: due }), 'cb-muted'))
+    if (meta.childElementCount) box.append(meta)
+    const top = el('div', null, 'cb-row cb-task-actions')
     const sel = el('select', null, 'cb-input')
     sel.setAttribute('aria-label', t('colleague.card.move'))
     for (const s of statuses) {
@@ -157,7 +222,29 @@
       showDetail(c.id, detail)
     })
     if (openCard === c.id) showDetail(c.id, detail)
+    if (canDrag) wireDrag(box, c, sel)
     return box
+  }
+
+  function wireDrag(box, c, sel) {
+    // Drag by the card itself, but not from its controls: a draggable ancestor stops a select from opening and
+    // text from being selected in the comment box in some browsers, so dragging is off while the pointer is on one.
+    box.draggable = true
+    box.addEventListener('pointerdown', (e) => {
+      box.draggable = !(e.target instanceof Element && e.target.closest('select, input, textarea, button, a, .cb-detail'))
+    })
+    box.addEventListener('dragstart', (e) => {
+      dragged = { card: c, sel }
+      e.dataTransfer.effectAllowed = 'move'
+      try { e.dataTransfer.setData('text/plain', c.id) } catch { /* some browsers refuse; the drag still works */ }
+      box.classList.add('dragging')
+    })
+    box.addEventListener('dragend', () => {
+      box.classList.remove('dragging')
+      box.draggable = true
+      dragged = null
+      for (const b of document.querySelectorAll('.cb-col-body.drag-over')) b.classList.remove('drag-over')
+    })
   }
 
   async function showDetail(id, detail) {
@@ -240,6 +327,8 @@
   })
 
   $('cb-refresh').addEventListener('click', () => load())
+  $('cb-view-columns').addEventListener('click', () => setView('columns'))
+  $('cb-view-list').addEventListener('click', () => setView('list'))
 
   $('cb-new-form').addEventListener('submit', async (e) => {
     e.preventDefault()

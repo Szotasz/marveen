@@ -20,7 +20,7 @@ import { writeAgentBase } from '../agent-create.js'
 import { ensureFleetRosterSection, fleetBaseRulesBlock } from '../agent-scaffold.js'
 import { appendSkillAudit, globalSkillsRoot, quarantineOn, scanSkillDir } from '../skill-quarantine.js'
 import {
-  AVATAR_PATH_RE, IMPORT_TOKEN_RE, TEXT_PATH_RE, scanManifestText, scanPackageText, MANIFEST_TEXT_MAX_CHARS, VerifiedPackage,
+  AVATAR_PATH_RE, IMPORT_TOKEN_RE, TEXT_PATH_RE, isForbiddenCodePoint, scanManifestText, scanPackageText, MANIFEST_TEXT_MAX_CHARS, VerifiedPackage,
 } from './verify.js'
 import {
   PACKAGE_SHELL_PREFIX_TEXT, agentsBaseDir, dirIdentityOf, hasLaunchTrace, hasPackageManifestFile, installMarkerState,
@@ -114,9 +114,9 @@ export function readPackageManifest(dir: string): ManifestRead {
  * The record's bytes. The payload is the signed payload exactly as signed: this is the ONE caller of
  * unverifiedPayloadBytes (plan 4.1, mutant 55); nothing shown or written into a file the CLI reads comes from it.
  */
-export function manifestRecordText(pkg: VerifiedPackage, at: string): string {
+export function manifestRecordText(pkg: VerifiedPackage, at: string, installedAt: string = at): string {
   const payload = Buffer.from(pkg.unverifiedPayloadBytes()).toString('utf8')
-  const head = JSON.stringify({ schema: 1, payloadSha256: pkg.payloadSha256, kid: pkg.kid, installedAt: at, updatedAt: at })
+  const head = JSON.stringify({ schema: 1, payloadSha256: pkg.payloadSha256, kid: pkg.kid, installedAt, updatedAt: at })
   return head.slice(0, -1) + ',"payload":' + payload + '}\n'
 }
 
@@ -290,6 +290,8 @@ function removeMarker(name: string): void {
 export interface InstallContext {
   name: string
   pkg: VerifiedPackage
+  /** The name the owner chose in the install dialog (MIOAGENTB4-1122, Samu 83718), already cleaned; else the package's. */
+  displayName?: string
   model: string
   driveFolder: string
   lang: 'hu' | 'en'
@@ -327,7 +329,29 @@ export function step3bShell(c: InstallContext): void {
 
 /** Step 4: the agent base (writeAgentBase); the display name is the verified one (D10), cut for display. */
 export function step4Base(c: InstallContext): void {
-  writeAgentBase(c.name, { model: c.model, profileId: 'default', customProvider: null, displayName: displayNameOf(c.pkg) })
+  writeAgentBase(c.name, { model: c.model, profileId: 'default', customProvider: null, displayName: c.displayName ?? displayNameOf(c.pkg) })
+}
+
+/** The longest name the install dialog may send; longer is a 400 invalid_display_name (Samu 83741). */
+export const OWNER_DISPLAY_NAME_MAX_INPUT = 200
+
+/**
+ * The display name the owner typed in the install dialog, cleaned the way the package's own is held (MIOAGENTB4-1122,
+ * Samu 83718): line breaks, tabs and every S11 code point become a space, runs of white space one space, no white
+ * space at either end, at most 60 code points. It renames only what the dashboard shows (agent-config displayName):
+ * the agent id, the folder and the marker stay the slug. Returns undefined when nothing is left (the package's name
+ * then stays) and null when the text breaks a manifest text rule after the cleaning (an import token, a trigger
+ * entity): the route answers 400 invalid_display_name.
+ */
+export function ownerDisplayName(raw: string): string | undefined | null {
+  const spaced = Array.from(raw, (ch) => {
+    const cp = ch.codePointAt(0)!
+    return cp === 0x0a || cp === 0x0d || cp === 0x09 || isForbiddenCodePoint(cp) ? ' ' : ch
+  }).join('')
+  const collapsed = spaced.replace(/\p{White_Space}+/gu, ' ').replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '')
+  const cut = Array.from(collapsed).slice(0, MANIFEST_TEXT_MAX_CHARS.displayName).join('').replace(/\p{White_Space}+$/u, '')
+  if (cut === '') return undefined
+  return scanManifestText(cut, MANIFEST_TEXT_MAX_CHARS.displayName) === null ? cut : null
 }
 
 /** Plan 6.1: the verified display name, at most 60 characters (it is already one line without control characters). */
@@ -357,7 +381,7 @@ export function packageDiskFiles(pkg: VerifiedPackage): Array<{ path: string; by
  * standing on the path stops the write. This narrows the window, it does not close it: a swap between the lstat and
  * the write is still possible (Node has no openat/O_NOFOLLOW-per-component here).
  */
-function mkdirInsideAgentDir(dir: string, folder: string): void {
+export function mkdirInsideAgentDir(dir: string, folder: string): void {
   const rel = relative(dir, folder)
   if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('package folder resolves outside the agent directory')
   let cur = dir

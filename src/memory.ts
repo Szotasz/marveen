@@ -143,7 +143,8 @@ export function runDecaySweep(): void {
 export async function runDailyDigest(chatId: string): Promise<string | null> {
   // Collect today's episodic memories (last 24h)
   const oneDayAgo = Math.floor(Date.now() / 1000) - 86400
-  const allRecent = getMemoriesForChat(chatId, 50)
+  // MEMCHATID1123: the day's rows from the whole store; the chat id only names where the digest is saved.
+  const allRecent = getMemoriesForChat(50)
   const todayMemories = allRecent.filter((m) => m.created_at >= oneDayAgo)
 
   if (todayMemories.length < 2) {

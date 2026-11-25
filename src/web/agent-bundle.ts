@@ -6,6 +6,7 @@ import {
   writeFileSync,
   rmSync,
   cpSync,
+  lstatSync,
   readdirSync,
   statSync,
 } from 'node:fs'
@@ -17,6 +18,9 @@ import { MAIN_AGENT_ID, RESERVED_AGENT_IDS } from '../config.js'
 import { sanitizeAgentName } from './sanitize.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { PACKAGE_AGENT_EXPORT_REFUSAL, isPackageAgentDir } from './agent-package/marker.js'
+import {
+  FS_IO, importTargetMemoryDir, liveFleetFileMemory, readMemoryFiles, targetIsShared, writeImportedMemory, type FileMemory,
+} from './agent-file-memory.js'
 
 // Portable per-agent export/import bundle.
 //
@@ -50,6 +54,14 @@ export interface BundleManifest {
   // Free-form provenance, never trusted for any logic.
   exportedBy?: string
   exportedAt?: string
+  /**
+   * ISSUE3056 (#3056): Claude Code's file memory. 'included' = file-memory/ is in the archive; 'shared' = the agent
+   * writes to a folder the main agent or another agent shares, so it travels with the fleet export, never in one
+   * agent's bundle; 'over_cap' = too large, left out; 'none' = the agent has none; 'not_requested' = an export
+   * without secrets (Samu's decision on Dani N2: the memory carries free text about the owner, and a bundle without
+   * secrets is the one the owner treats as shareable). Absent in older bundles.
+   */
+  fileMemory?: 'included' | 'shared' | 'over_cap' | 'none' | 'not_requested'
 }
 
 // Files/dirs that make up a portable agent, RELATIVE to agents/<name>/.
@@ -162,6 +174,26 @@ export function stageAgentForExport(
   return stageAgentDirForExport(agentDir(name), stageAgentDir, includeSecrets)
 }
 
+/**
+ * ISSUE3056: stages the agent's file memory as <stage>/file-memory/ (slug-neutral) ONLY when it is the agent's own.
+ * A shared folder is never staged: it holds the main agent's and the other agents' memory.
+ */
+export function stageFileMemoryForExport(fm: FileMemory | undefined, stage: string): NonNullable<BundleManifest['fileMemory']> {
+  if (fm === undefined || fm.dir === null) return 'none'
+  if (fm.shared) return 'shared'
+  const r = readMemoryFiles(fm.dir)
+  if (!r.ok) return 'over_cap'
+  const out = join(stage, 'file-memory')
+  mkdirSync(out, { recursive: true })
+  for (const f of r.files) writeFileSync(join(out, f.name), f.bytes)
+  return 'included'
+}
+
+/** #3086 N2 (Samu): the file memory follows includeSecrets, no switch of its own; without secrets it is not looked up. */
+export function fileMemoryForExport(includeSecrets: boolean, lookup: () => FileMemory | undefined, stage: string): NonNullable<BundleManifest['fileMemory']> {
+  return includeSecrets ? stageFileMemoryForExport(lookup(), stage) : 'not_requested'
+}
+
 // Build a .tar.gz bundle of agent <name> at <outPath>. Returns the manifest
 // that was embedded. The archive layout is:
 //   manifest.json
@@ -169,18 +201,20 @@ export function stageAgentForExport(
 export function exportAgentBundle(
   name: string,
   outPath: string,
-  opts: { includeSecrets?: boolean; exportedBy?: string; exportedAt?: string } = {},
+  opts: { includeSecrets?: boolean; exportedBy?: string; exportedAt?: string; fileMemoryOf?: (name: string) => FileMemory | undefined } = {},
 ): BundleManifest {
   const includeSecrets = opts.includeSecrets === true
   const stage = makeTempDir('marveen-agent-export-')
   try {
     const stageAgentDir = join(stage, 'agent')
     stageAgentForExport(name, stageAgentDir, includeSecrets)
+    const fileMemory = fileMemoryForExport(includeSecrets, () => (opts.fileMemoryOf ?? ((n: string) => liveFleetFileMemory().get(n)))(name), stage)
 
     const manifest: BundleManifest = {
       schemaVersion: BUNDLE_SCHEMA_VERSION,
       agentName: name,
       includesSecrets: includeSecrets,
+      fileMemory,
       ...(opts.exportedBy ? { exportedBy: opts.exportedBy } : {}),
       ...(opts.exportedAt ? { exportedAt: opts.exportedAt } : {}),
     }
@@ -189,7 +223,7 @@ export function exportAgentBundle(
     // Single plain tar over the staging dir -- identical output on bsdtar and
     // GNU tar (see backup.sh). `-C stage .` keeps names clean (no temp prefix).
     mkdirSync(join(outPath, '..'), { recursive: true })
-    execFileSync('tar', ['-czf', outPath, '-C', stage, 'manifest.json', 'agent'])
+    execFileSync('tar', ['-czf', outPath, '-C', stage, 'manifest.json', 'agent', ...(fileMemory === 'included' ? ['file-memory'] : [])])
     return manifest
   } finally {
     rmSync(stage, { recursive: true, force: true })
@@ -245,6 +279,8 @@ export interface ImportResult {
   name: string
   manifest: BundleManifest
   overwritten: boolean
+  /** ISSUE3056: what happened to the bundle's file-memory/ (absent when the bundle had none). */
+  fileMemory?: { state: 'imported' | 'skipped_shared_target' | 'over_cap'; written: number; renamed: number; indexAppended: boolean }
 }
 
 // Import an agent bundle (a .tar.gz buffer or file) into agents/<name>/.
@@ -258,7 +294,12 @@ export interface ImportResult {
 // Returns the final installed name + the bundle manifest.
 export function importAgentBundle(
   bundle: Buffer,
-  opts: { overrideName?: string; overwrite?: boolean; resolveDest?: (name: string) => string } = {},
+  opts: {
+    overrideName?: string; overwrite?: boolean; resolveDest?: (name: string) => string
+    /** ISSUE3056: the imported agent's memory folder and whether it is shared (the live install's by default). */
+    memoryTarget?: (name: string, dest: string) => { dir: string; shared: boolean }
+    now?: () => Date
+  } = {},
 ): ImportResult {
   const resolveDest = opts.resolveDest ?? agentDir
   const work = makeTempDir('marveen-agent-import-')
@@ -301,7 +342,26 @@ export function importAgentBundle(
     mkdirSync(join(dest, '..'), { recursive: true })
     cpSync(stagedAgentDir, dest, { recursive: true })
 
-    return { name, manifest, overwritten: exists }
+    // ISSUE3056: the file memory, read as untrusted (lstat, plain *.md only, the cap), into the target's own folder,
+    // never over an existing file, and never into a folder the main agent or another agent shares.
+    let fileMemory: ImportResult['fileMemory']
+    const memSrc = join(extractRoot, 'file-memory')
+    if (existsSync(memSrc) && lstatSync(memSrc).isDirectory()) {
+      const target = (opts.memoryTarget ?? ((n: string, d: string) => {
+        const dir = importTargetMemoryDir(n, d)
+        return { dir, shared: targetIsShared(dir, n, liveFleetFileMemory()) }
+      }))(name, dest)
+      const files = readMemoryFiles(memSrc)
+      if (target.shared) fileMemory = { state: 'skipped_shared_target', written: 0, renamed: 0, indexAppended: false }
+      else if (!files.ok) fileMemory = { state: 'over_cap', written: 0, renamed: 0, indexAppended: false }
+      else {
+        // Dani N1: the heading names the SANITIZED agent, never the archive's raw text.
+        const w = writeImportedMemory(target.dir, files.files, name, (opts.now ?? (() => new Date()))(), FS_IO)
+        fileMemory = { state: 'imported', written: w.written.length, renamed: w.renamed.length, indexAppended: w.indexAppended }
+      }
+    }
+
+    return { name, manifest, overwritten: exists, ...(fileMemory ? { fileMemory } : {}) }
   } finally {
     rmSync(work, { recursive: true, force: true })
   }

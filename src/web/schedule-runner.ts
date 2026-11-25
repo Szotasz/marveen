@@ -1466,29 +1466,36 @@ function readQuotaHardAtPercent(): number {
 
 // The gate fails open on an untrusted or stale snapshot (quota-gate.ts); that
 // must not be silent. One log line per state change, and one owner notice when
-// the gate goes blind; quiet until it can see again. The blind kind and the source
-// that were alerted on are kept in store/ (no timestamp: a running collector rewrites
-// an estimate every 15 minutes), so a restart while the same blindness lasts does
-// not notify again.
+// the gate goes blind. The blind kind and the source that were alerted on are kept
+// in store/ (no snapshot timestamp: a running collector rewrites an estimate every
+// 15 minutes), so a restart while the same blindness lasts does not notify again.
+// The key is forgotten only after the gate has seen the quota without a break for
+// QUOTA_BLIND_CLEAR_AFTER_MS: a source that flaps (statusline / estimate) alerts
+// once, not on every dip (QUOTABLINDFLAP1124). When that steady sight began is kept
+// in the same store, so a restart does not restart the clock.
 let quotaBlindState: ReturnType<typeof quotaBlindness> = null
 
 const QUOTA_BLIND_ALERT_PATH = join(PROJECT_ROOT, 'store', 'quota-blind-alert.json')
+const QUOTA_BLIND_CLEAR_AFTER_MS = 2 * 60 * 60_000
 
-export interface AlertedKeyStore { read(): string | null; write(key: string): void }
+export interface BlindAlert { key: string; seeingSinceMs: number | null }
+export interface AlertedKeyStore { read(): BlindAlert | null; write(alert: BlindAlert | null): void }
 
-const fileAlertedKeyStore: AlertedKeyStore = {
+export const blindAlertFileStore = (path: string): AlertedKeyStore => ({
   read() {
     try {
-      const k = (JSON.parse(readFileSync(QUOTA_BLIND_ALERT_PATH, 'utf-8')) as { key?: unknown }).key
-      return typeof k === 'string' ? k : null
+      const j = JSON.parse(readFileSync(path, 'utf-8')) as { key?: unknown; seeingSinceMs?: unknown }
+      if (typeof j.key !== 'string' || !j.key) return null
+      return { key: j.key, seeingSinceMs: typeof j.seeingSinceMs === 'number' ? j.seeingSinceMs : null }
     } catch { return null }
   },
-  write(key) {
-    try { atomicWriteFileSync(QUOTA_BLIND_ALERT_PATH, JSON.stringify({ key }) + '\n') } catch (err) {
+  write(alert) {
+    try { atomicWriteFileSync(path, JSON.stringify(alert ?? { key: '' }) + '\n') } catch (err) {
       logger.warn({ err }, 'schedule-runner: failed to persist the quota blind-alert key')
     }
   },
-}
+})
+const fileAlertedKeyStore = blindAlertFileStore(QUOTA_BLIND_ALERT_PATH)
 
 export function noteQuotaBlindness(
   snapshot: QuotaSnapshot | null,
@@ -1497,12 +1504,12 @@ export function noteQuotaBlindness(
   alerted: AlertedKeyStore = fileAlertedKeyStore,
 ): void {
   const next = quotaBlindness(snapshot, nowMs)
+  settleBlindAlert(next !== null, nowMs, alerted)
   if (next === quotaBlindState) return
   const prev = quotaBlindState
   quotaBlindState = next
   if (!next) {
     logger.info({ previous: prev }, 'Quota gate sees the quota again (trusted, fresh snapshot)')
-    if (prev) alerted.write('')
     return
   }
   const at = snapshot?.generatedAtMs
@@ -1513,8 +1520,8 @@ export function noteQuotaBlindness(
   )
   if (prev) return
   const key = `${next}|${snapshot?.source ?? 'none'}`
-  if (alerted.read() === key) return // same blindness already alerted on, before a restart
-  alerted.write(key)
+  if (alerted.read()?.key === key) return // same blindness already alerted on, with no steady sight since
+  alerted.write({ key, seeingSinceMs: null })
   const why = next === 'untrusted-source'
     ? `a kvóta-pillanatkép forrása "${snapshot?.source ?? 'ismeretlen'}", ami nem mért szám`
     : `a legutóbbi kvóta-pillanatkép ${ageMinutes ?? '?'} perce készült`
@@ -1523,6 +1530,19 @@ export function noteQuotaBlindness(
     'A háttérfeladatok ettől még futnak, de a kapu nem tudja visszafogni őket, ha fogy a keret.',
     'Javítás: a usage-collect feladat (scripts/usage-collect.py) adjon friss, mért számot; a részletek a dashboard.log-ban. Amíg így marad, nem szólok újra.',
   ].join('\n'))
+}
+
+// Every tick: a blind tick stops the recovery clock; a seeing tick starts it, and
+// forgets the alerted key once the gate has seen steadily for QUOTA_BLIND_CLEAR_AFTER_MS.
+function settleBlindAlert(blind: boolean, nowMs: number, alerted: AlertedKeyStore): void {
+  const a = alerted.read()
+  if (!a) return
+  if (blind) {
+    if (a.seeingSinceMs !== null) alerted.write({ key: a.key, seeingSinceMs: null })
+    return
+  }
+  if (a.seeingSinceMs === null || nowMs < a.seeingSinceMs) alerted.write({ key: a.key, seeingSinceMs: nowMs })
+  else if (nowMs - a.seeingSinceMs >= QUOTA_BLIND_CLEAR_AFTER_MS) alerted.write(null)
 }
 
 /** Test helper: forget the last blind state. */
@@ -2674,6 +2694,15 @@ async function attemptFireTask(
           // Host-aware so a remote agent's post-send stuck-check + recovery
           // Enter hit the laptop session, not a (nonexistent) local one.
           const pane = capturePane(session, host)
+          // The session died after the send (a placeholder clear's Ctrl-C quit the TUI, measured 2026-11-24 03:30):
+          // the prompt never ran, and a null pane reads "not parked" below. The run is an error, and the
+          // occurrence is retried once the session is back, like 'giveup'.
+          if (pane == null && !sessionExistsOnHost(host, session)) {
+            logger.warn({ task: task.name, session, attempt }, 'Scheduled prompt: the session is gone after the send -- run marked error, retried once the session is back')
+            if (firedRunId != null) markTaskRunFireError(firedRunId)
+            insertPendingTaskRetryIfNew(task.name, agentName, now, 'session-gone')
+            return 'done'
+          }
           const stuck = isScheduledPromptStuck(pane, marker)
             || isOwnPromptParkedOverfull(pane, getInjectedPrompt(session))
           const action = decideScheduledResubmitAction(attempt, stuck)

@@ -9,6 +9,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { ensureInboundSigKey } from './inbound-sig.js'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
@@ -30,6 +31,7 @@ import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-
 import { startWebServer } from './web.js'
 import { removeCredentialTmpLeftovers } from './web/agent-package/remote.js'
 import { flushPendingPackageNotices, reapInterruptedPackageInstalls } from './web/agent-package/install.js'
+import { removeOrphanUpdatingTraces } from './web/agent-package/update.js'
 import { notifyOwner } from './notify.js'
 import { endAllDetachedGroups } from './web/detached-groups.js'
 import { logger } from './logger.js'
@@ -502,6 +504,9 @@ async function main(): Promise<void> {
 
   await acquireLock()
 
+  // HMACINBOUND1125: the inbound signature key first, so every row this process writes is signed and the
+  // channel coordinator (a separate process) finds the key when it writes its next handoff row.
+  if (!ensureInboundSigKey()) logger.error('inbound signature key could not be created (store/.inbound-sig-key): rows are written unsigned and no row gets the owner\'s voice')
   // Database
   initDatabase()
   startSpawnBroker()
@@ -533,6 +538,14 @@ async function main(): Promise<void> {
     if (reaped.setAside + reaped.removedMarkers + reaped.badMarkers + reaped.blocked > 0) logger.warn({ reaped }, 'agent package installs: interrupted-install cleanup')
   } catch (err) {
     logger.error({ err }, 'agent package interrupted-install cleanup did not run')
+  }
+  // MIOAGENTB4-1122 (plan 8.4, D11, Samu (2)): the trace of an interrupted package UPDATE of an agent that no longer
+  // exists goes; a living agent's trace stays until its next successful apply.
+  try {
+    const removed = removeOrphanUpdatingTraces((n) => listAgentNames().includes(n))
+    if (removed > 0) logger.info({ removed }, 'agent package update traces of removed agents deleted')
+  } catch (err) {
+    logger.warn({ err }, 'agent package update trace cleanup did not run')
   }
 
   // GROMZOGATECONF1030 (c): the sub-agents' sender-role gates move from their own agent-config.json (which the agent

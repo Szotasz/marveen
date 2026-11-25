@@ -705,6 +705,12 @@ export function generateSlackAppManifest(appName: string): string {
     'display_information:',
     `  name: ${JSON.stringify(safeName)}`,
     'features:',
+    // Without app_home the Messages tab is off and Slack refuses DMs to the
+    // bot ("Sending messages to this app has been turned off").
+    '  app_home:',
+    '    home_tab_enabled: false',
+    '    messages_tab_enabled: true',
+    '    messages_tab_read_only_enabled: false',
     '  bot_user:',
     `    display_name: ${JSON.stringify(safeName)}`,
     '    always_online: true',
