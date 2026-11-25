@@ -47,6 +47,7 @@ import { paneRunsClaude, scheduleHardRestartVerify } from './hard-restart-verify
 import { freshSupervisor, launchdReloadVerdict, reloadWindowSec, runningChannelsSupervisors, supervisorWaitDecision, type SupervisorWait } from './channels-supervisor.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
 import { cfgKindFromDecision, mainAuthConflictText, prepareMainAuth } from './main-auth.js'
+import { mainCustomProviderLaunchEnv } from './main-custom-provider-env.js'
 import { runMainContinueRestart, type ContinueRestartResult } from './main-rotation-continue.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence, reapForeignMainPollers, reapGromzoOrphans, scheduleGromzoOrphanReap } from './channel-poller-reap.js'
@@ -1214,6 +1215,12 @@ export function buildMainSessionRespawnCmd(opts: {
    * launch it. Absent: configured (the launch as before).
    */
   channelConfigured?: boolean
+  /**
+   * HOSTINGERRETEST1125: the main agent's custom provider env (mainCustomProviderLaunchEnv), '' or absent when it has
+   * none. Set: it goes after the auth files, as channels.sh's CUSTOM_PROVIDER_ENV does, and the --model flag is dropped
+   * (the provider's model rides ANTHROPIC_MODEL; a flag would override it).
+   */
+  customProviderEnv?: string
 }): string {
   // GROMZONOPROVIDER1108: on a gromzo install the Gromzo plugin is the PRIMARY (never also an extra). It comes back only
   // when the main agent can take it (mainGromzoPrimaryReady); otherwise this respawn is a gromzo-pending session with
@@ -1287,6 +1294,8 @@ export function buildMainSessionRespawnCmd(opts: {
         : []),
     // MAINAUTH1107: the post-file right AFTER the config branch (a static piece: no mode logic in this builder).
     `&& { [ ! -f ${shSingleQuote(PANE_AUTH_POST_PATH)} ] || . ${shSingleQuote(PANE_AUTH_POST_PATH)}; }`,
+    // HOSTINGERRETEST1125: the custom provider after the auth files, as channels.sh's CUSTOM_PROVIDER_ENV.
+    ...(opts.customProviderEnv ? [`&& ${opts.customProviderEnv}`] : []),
     // GROMZOMAINAGENT1106: the plugin names itself with MXD_AGENT (main-gromzo-launch.ts).
     // MXDAGENTSOCKID1106: and its token file, so a protected main agent's hello is not refused.
     ...(gromzoSlug ? [`&& export MXD_AGENT="${gromzoSlug}" MXD_SCOPE="both"`] : []),
@@ -1303,7 +1312,7 @@ export function buildMainSessionRespawnCmd(opts: {
     // the 5th launch sink; it must use the same escaper as the other four (the
     // allowlist is the belt, this is the braces). shSingleQuote makes the value
     // one inert shell word. See model-id-injection.test.ts.
-    ...(opts.model ? ['--model', shSingleQuote(opts.model)] : []),
+    ...(opts.model && !opts.customProviderEnv ? ['--model', shSingleQuote(opts.model)] : []),
     // Parity with channels.sh/channel-watchdog.sh: without it every recovery respawn drops AGENT_DISALLOWED_TOOLS.
     ...[(opts.disallowedTools ?? disallowedToolsFlag()).trim()].filter(Boolean),
     ...(channelsList.length > 0 ? [['--channels', ...channelsList].join(' ')] : []),
@@ -1375,6 +1384,8 @@ export function respawnMainSessionFresh(): void {
     }
     ensureSharedClaudeOnboarded()
 
+    const respawnConfig = mainRespawnConfigWithAuth()
+
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
@@ -1387,7 +1398,8 @@ export function respawnMainSessionFresh(): void {
       // The main session always starts a new conversation -- this is the whole
       // point of the nightly restart (drop the accumulated context).
       continueSession: false,
-      config: mainRespawnConfigWithAuth(),
+      config: respawnConfig,
+      customProviderEnv: mainCustomProviderLaunchEnv(respawnConfig.isolatedConfigDir),
     })
     // c5296a52: the two reaps above kill the pane's claude, and channels.sh starts the session
     // WITHOUT remain-on-exit -- so the pane and the session can already be gone by the time we get
@@ -1484,6 +1496,8 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
     // bootcamp mass-"/login"); idempotent re-seed before every respawn.
     ensureSharedClaudeOnboarded()
 
+    const respawnConfig = mainRespawnConfigWithAuth()
+
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
@@ -1498,7 +1512,8 @@ export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): 
       // isolated CLAUDE_CONFIG_DIR (macOS), else it re-authenticates from the
       // rotating Keychain and 401s. Returns null when isolation is off/no token,
       // preserving the prior shared-root behaviour.
-      config: mainRespawnConfigWithAuth(),
+      config: respawnConfig,
+      customProviderEnv: mainCustomProviderLaunchEnv(respawnConfig.isolatedConfigDir),
     })
     if (opts.byMonitor) monitorMainRespawnAt = Date.now()
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
@@ -1795,6 +1810,7 @@ function respawnMarveenSessionFresh(): boolean {
   try {
     // Same first-run-picker guard as resumeMarveenSession.
     ensureSharedClaudeOnboarded()
+    const respawnConfig = mainRespawnConfigWithAuth()
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: claudeBin(),
       pluginId: provider.pluginId,
@@ -1808,7 +1824,8 @@ function respawnMarveenSessionFresh(): boolean {
       // Same channels.sh-bypass concern as resumeMarveenSession: this fresh
       // respawn also skips channels.sh, so it must carry the isolated config
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
-      config: mainRespawnConfigWithAuth(),
+      config: respawnConfig,
+      customProviderEnv: mainCustomProviderLaunchEnv(respawnConfig.isolatedConfigDir),
     })
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     // MXDAGENTSOCKID1106 (b): the old claude's gromzo plugin outlives it (it ignores a closed stdin); sweep it once the respawn landed.
