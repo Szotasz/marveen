@@ -8,7 +8,7 @@ import { gateDecision, GIT_GATE_MSG } from '../../scripts/hooks/db-write-gate.mj
 // @ts-expect-error -- plain .mjs hook script, no types
 import * as spg from '../../scripts/self-pace-gate.mjs'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -77,9 +77,12 @@ describe('VARDEFDB1121: a definite literal variable is read as its value', () =>
   })
 
   // The git refusal names the exception.
-  it('M1 the git refusal names the definite-literal exception and keeps the literal-path sentence', () => {
-    expect(GIT_GATE_MSG).toMatch(/VARDEFDB1121/)
-    expect(GIT_GATE_MSG).toMatch(/egyszer, feltetel nelkul, literalis uttal/)
+  it('M1 the git refusal keeps the literal-path sentence; its docs section names the definite-literal exception', () => {
+    const docs = readFileSync(join(__dirname, '..', '..', 'docs', 'db-write-gate.md'), 'utf-8')
+    const gitSection = docs.slice(docs.indexOf('### Git-iras'))
+    expect(GIT_GATE_MSG).toContain('("Git-iras")')
+    expect(gitSection).toMatch(/VARDEFDB1121/)
+    expect(gitSection).toMatch(/egyszer, feltetel nelkul, literalis uttal/)
     expect(GIT_GATE_MSG).toContain('de a celt LITERALIS abszolut uttal add meg: "git -C /Users/marvin/<worktree> ..." vagy "cd /Users/marvin/<worktree> && git ..."')
   })
 

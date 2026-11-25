@@ -9,7 +9,7 @@
 // (Dani 56100). The gate is a text-based brake, not an OS boundary (stated in both messages).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, DB_GATE_MSG, GIT_GATE_MSG, INSTALL_FILE_GATE_MSG, PROTECTED_INSTALL_PATHS } from '../../scripts/hooks/db-write-gate.mjs'
+import { gateDecision, DB_GATE_MSG, GIT_GATE_MSG, INSTALL_FILE_GATE_MSG, PROTECTED_INSTALL_PATHS, withCaught } from '../../scripts/hooks/db-write-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { SECURITY_TABLES, gateDecision as selfPaceDecision } from '../../scripts/self-pace-gate.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSync, realpathSync } from 'node:fs'
@@ -994,7 +994,14 @@ describe('the gate itself', () => {
     expect(d.status).toBe(0)
     expect(JSON.parse(d.stdout).hookSpecificOutput.permissionDecision).toBe('deny')
     const w = run({ tool_name: 'Write', cwd: '/tmp', tool_input: { file_path: join(REPO, 'store', 'autonomy-config.json'), content: '{}' } })
-    expect(JSON.parse(w.stdout).hookSpecificOutput.permissionDecisionReason).toBe(INSTALL_FILE_GATE_MSG)
+    const autonomy = join(REPO, 'store', 'autonomy-config.json')
+    expect(JSON.parse(w.stdout).hookSpecificOutput.permissionDecisionReason).toBe(withCaught(INSTALL_FILE_GATE_MSG, autonomy))
+    // the short deny names what it caught right after the rule: the protected path, the git call
+    const reason = (payload: unknown) => String(JSON.parse(run(payload).stdout).hookSpecificOutput.permissionDecisionReason)
+    const cp = reason({ tool_name: 'Bash', cwd: '/tmp', tool_input: { command: `cp /tmp/x.json ${autonomy}` } })
+    expect(cp).toMatch(/^Telepitesi kapu-fajl irasa TILTOTT [^.]*\. Elkapva: [^.]*autonomy-config\.json/)
+    const git = reason({ tool_name: 'Bash', cwd: REPO, tool_input: { command: 'git status && git reset --hard HEAD~1' } })
+    expect(git).toMatch(/^Git-iras a telepitesben TILTOTT [^.]*\. Elkapva: git status \| git reset --hard HEAD~1\. Helyes ut: /)
     const a = run({ tool_name: 'Bash', cwd: REPO, tool_input: { command: 'ls -la' } })
     expect(a.status).toBe(0)
     expect(a.stdout).toBe('')
