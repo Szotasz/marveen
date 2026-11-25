@@ -1719,6 +1719,7 @@ window._i18n.en = {
   'agents.wizard.create_btn':    'Create',
   'agents.wizard.modal_title':   'Create new agent',
   'agents.wizard.upload_hint':   'Upload image (max 1 MB)',
+  'agents.wizard.avatar_or':     'or',
   'agents.wizard.generating_status': 'CLAUDE.md generating...',
   'agents.wizard.desc_label':    'Describe freely what you want this agent to do',
   'agents.wizard.profile_label': 'Security profile',

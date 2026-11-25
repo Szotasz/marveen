@@ -605,6 +605,7 @@ window._i18n.hu = {
   'agents.wizard.create_btn':    'Létrehozás',
   'agents.wizard.modal_title':   'Új ügynök létrehozása',
   'agents.wizard.upload_hint':   'Kép feltöltése (max 1 MB)',
+  'agents.wizard.avatar_or':     'vagy',
   'agents.wizard.generating_status': 'CLAUDE.md generálás...',
   'agents.wizard.desc_label':    'Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök',
   'agents.wizard.profile_label': 'Biztonsági profil',
