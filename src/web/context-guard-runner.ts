@@ -723,14 +723,16 @@ export function resumePrompt(
     // started, into the dying session -- the queue marked it delivered, the
     // fresh session had no reason to look, and completed_at is unused (0/37
     // measured), so the loss is invisible from the queue. The re-read must
-    // ride in the resume prompt (the fresh session's only context), and the
-    // ack-to-sender is the OBSERVABLE trace: without it, verifying this very
-    // instruction would run into the same blindness it exists to fix.
+    // ride in the resume prompt (the fresh session's only context). The OBSERVABLE
+    // trace is the closed row, not an ack message: every ack woke its sender for a
+    // full-context turn (24h, one install: 50 turns, 3.1% of the fleet's usage).
     `RESTART-ABLAK: az előző session utolsó ~15 percében kézbesített inter-agent üzenet elveszhetett. ` +
     `Olvasd vissza a saját sorodat erre az ablakra (GET /api/messages?agent=${name}, created_at szerint szűrve), ` +
-    `és minden ott talált, még el nem intézett kérést kezelj újként. KÖTELEZŐ MEGFIGYELHETŐ NYOM: minden ` +
-    `visszaolvasott tételről küldj rövid nyugtát a feladónak ("[RESTART-ABLAK] <id> felvéve a friss sessionben"), ` +
-    `akkor is, ha nincs belőle teendő -- e nélkül a visszaolvasás a sorból láthatatlan. ` +
+    `és minden ott talált, még el nem intézett kérést kezelj újként. KÖTELEZŐ MEGFIGYELHETŐ NYOM: a lezárt sor. ` +
+    `Ha egy visszaolvasott tételből van teendő, a valódi válasz vagy eredmény a nyom: azzal zárd le a szokásos módon. ` +
+    `Ha nincs belőle teendő, zárd le értesítés nélkül (PUT /api/messages/<id> {"status":"done","notify":false}, ` +
+    `a CLAUDE.md-d üzenet-lezárási receptje szerint). A feladónak külön nyugtát NE küldj: minden nyugta felébreszti, ` +
+    `és nála egy teljes kontextusú kört visz el. ` +
     // RESPAWNZAJ822/PRODFAAG822: a fresh session acting on a resume goal is
     // exactly the actor that branch-switched and committed on the live prod
     // tree (2026-08-22 10:10, PR #1036 duplicate). The constraint must ride in
