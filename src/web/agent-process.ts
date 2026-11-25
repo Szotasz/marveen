@@ -1463,8 +1463,9 @@ function provisionIsolatedConfigDir(
             // 'hooks' is excluded here too: the shared copy just dropped it
             // (#1305), so without this exclusion an isolated dir that already
             // carries the old derived hooks would inherit them right back as a
-            // "target-only" key on every re-provision.
-            if (key !== 'enabledPlugins' && key !== 'hooks' && key !== 'disableAllHooks' && !(key in settings)) {
+            // "target-only" key on every re-provision. 'skillOverrides' likewise: agent-config.json is its only own
+            // source (merged below), so a cleared field must not come back from the last provisioned copy.
+            if (key !== 'enabledPlugins' && key !== 'hooks' && key !== 'disableAllHooks' && key !== 'skillOverrides' && !(key in settings)) {
               settings[key] = value
               inherited.push(key)
             }
@@ -1485,8 +1486,6 @@ function provisionIsolatedConfigDir(
     }
     // The agent's own skillOverrides (agent-config.json, PUT /api/agents/:name) are merged by skill name over the
     // shared ones, the agent's value winning. The key-level rule above would let the shared object replace them whole.
-    // shortcut: with no shared skillOverrides, a cleared field leaves the last merged object in place as a
-    // target-only key; exclude skillOverrides from that inheritance if hand-edited own values stop mattering.
     const ownSkillOverrides = readAgentSkillOverrides(name)
     if (ownSkillOverrides) {
       const shared = isPlainObject(settings.skillOverrides) ? settings.skillOverrides : {}

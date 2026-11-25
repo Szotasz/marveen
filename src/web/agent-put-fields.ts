@@ -22,31 +22,21 @@ export const AGENT_PUT_WRITABLE_FIELDS = [
 // APIAGENTWRITE1104: the fields that change what an agent is told (CLAUDE.md, SOUL.md), what it runs (.mcp.json: a
 // server there is a command started at the next launch), where its prompt goes (customProvider), which login or key it
 // runs under (authMode, apiKey, claudePlan), its memory boundary (memoryIsolation) or how Claude Code runs (codeMode,
-// CODEMODEFLAG1119: an experimental mode switched on by an env var at launch). They need the owner, not the
+// CODEMODEFLAG1119: an experimental mode switched on by an env var at launch) or which skills it is shown and how
+// (skillOverrides: even name-only drops the description that makes a skill trigger). They need the owner, not the
 // shared access token every sub-agent can read. model and modelProfile stay token-writable (Samu 69185): the id is
 // validated and changes neither a target nor an instruction, and the quota and install flows set it with the token.
 export const AGENT_PUT_OWNER_FIELDS = [
   'engine', 'codexConfigDir',
   'claudeMd', 'soulMd', 'mcpJson',
   'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
-  'customProvider', 'codeMode',
+  'customProvider', 'codeMode', 'skillOverrides',
 ] as const
 
 /** The owner-only fields present in a PUT body, in AGENT_PUT_OWNER_FIELDS order. A field set to null or '' counts:
  *  clearing a provider or a plan changes the target too. */
 export function agentPutOwnerFields(body: Record<string, unknown>): string[] {
-  const fields: string[] = AGENT_PUT_OWNER_FIELDS.filter((f) => body[f] !== undefined)
-  if (skillOverridesHide(body.skillOverrides)) fields.push('skillOverrides')
-  return fields
-}
-
-// skillOverrides is token-writable only while it hides nothing: "name-only" keeps the skill listed and callable, it
-// drops the description. "off" and "user-invocable-only" take a skill away from the agent, which changes what it is
-// told, so those need the owner. Clearing the field (null) only restores the shared listing.
-function skillOverridesHide(value: unknown): boolean {
-  if (value === undefined || value === null) return false
-  if (typeof value !== 'object' || Array.isArray(value)) return true
-  return Object.values(value).some((v) => v !== 'name-only')
+  return AGENT_PUT_OWNER_FIELDS.filter((f) => body[f] !== undefined)
 }
 
 // Fields that exist on the agent but belong to a different endpoint. Listed

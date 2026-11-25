@@ -66,6 +66,14 @@ describe('per-agent skillOverrides merge', () => {
     OVERRIDES.testagent = { 'skill-a': 'off' }
     expect(provision().skillOverrides).toEqual({ 'skill-a': 'off' })
   })
+
+  it('a cleared field takes effect at the next provision (no target-only inheritance)', () => {
+    writeFileSync(join(SANDBOX, 'home', '.claude', 'settings.json'), '{}')
+    OVERRIDES.testagent = { 'skill-a': 'off' }
+    expect(provision().skillOverrides).toEqual({ 'skill-a': 'off' })
+    delete OVERRIDES.testagent
+    expect(provision()).not.toHaveProperty('skillOverrides')
+  })
 })
 
 describe('skillOverrides validation', () => {
@@ -83,11 +91,10 @@ describe('skillOverrides validation', () => {
   it('is a writable PUT field', () => {
     expect(checkAgentPutFields('x', { skillOverrides: { a: 'off' } })).toEqual({ ok: true })
   })
-  it('needs the owner only when it hides a skill', () => {
-    expect(agentPutOwnerFields({ skillOverrides: { a: 'name-only', b: 'name-only' } })).toEqual([])
-    expect(agentPutOwnerFields({ skillOverrides: null })).toEqual([])
-    expect(agentPutOwnerFields({ skillOverrides: { a: 'name-only', b: 'off' } })).toEqual(['skillOverrides'])
-    expect(agentPutOwnerFields({ skillOverrides: { a: 'user-invocable-only' } })).toEqual(['skillOverrides'])
-    expect(agentPutOwnerFields({ skillOverrides: 'off' })).toEqual(['skillOverrides'])
+  it('needs the owner for any value, name-only and clearing included', () => {
+    expect(agentPutOwnerFields({ skillOverrides: { a: 'name-only' } })).toEqual(['skillOverrides'])
+    expect(agentPutOwnerFields({ skillOverrides: null })).toEqual(['skillOverrides'])
+    expect(agentPutOwnerFields({ skillOverrides: {} })).toEqual(['skillOverrides'])
+    expect(agentPutOwnerFields({ model: 'x' })).toEqual([])
   })
 })
