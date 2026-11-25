@@ -606,6 +606,19 @@ def completion_close_refused(path, token):
     return None
 
 
+def verb_usage(verb):
+    # A failed call prints this verb's usage lines only (its line and its indented notes), not the whole list:
+    # measured on one fleet, 132 failed calls in 3 days printed the ~2.7k-character USAGE each.
+    lines = USAGE.split('\n')
+    for i, line in enumerate(lines):
+        if line == f'  {verb}' or line.startswith(f'  {verb} '):
+            j = i + 1
+            while j < len(lines) and lines[j].startswith('                ('):
+                j += 1
+            return '\n'.join(lines[i:j])
+    return 'verbs: ' + ', '.join(re.findall(r'^ {2}([a-z-]+)(?= |$)', USAGE, re.M))
+
+
 def main(argv):
     if not argv or argv[0] in ('-h', '--help'):
         print(USAGE)
@@ -628,7 +641,7 @@ def main(argv):
     try:
         method, path, body, headers, flags = build_request(verb, rest)
     except UsageError as e:
-        print(f'FAIL: {e}\n{USAGE}', file=sys.stderr)
+        print(f'FAIL: {e}\n{verb_usage(verb)}\n(every verb: bash scripts/marveen-api.sh --help)', file=sys.stderr)
         return 2
     refused = schedule_write_refused(method, path)
     if refused:
