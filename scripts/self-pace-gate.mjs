@@ -515,8 +515,10 @@ function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
 // #3117 review (Samu): read on the segment as written AND with its shell quoting removed (quotes and backslashes split
 // a name without changing what the shell opens: `.inbound''-sig-key`, `.inbound"-sig"-key`, `.inbound\-sig-key`), and
 // every glob word is matched against the file's name as the shell or find would (`store/.inb*key`, `-name '.inbound*'`).
-// THE LIMIT: a text brake, not an OS boundary. A name assembled at run time (`f=.inbound; cat store/${f}-sig-key`), a
-// string built inside an interpreter, or a reader that is never told the name (`grep -r . store/`, `xargs`) passes;
+// A variable set to a literal earlier in the same command is substituted first (definiteAssignments).
+// THE LIMIT: a text brake, not an OS boundary. A name built at run time in a way the gate cannot resolve (a variable
+// from another command or the environment, a command substitution), a string built inside an interpreter, or a reader
+// that is never told the name (`grep -r . store/`, `xargs`) passes;
 // inbound-sig.test.ts lists them as documented passes. The key is a file of the same OS user, as src/inbound-sig.ts says.
 const INBOUND_SIG_KEY_NAME = '.inbound-sig-key'
 const INBOUND_SIG_KEY_MENTION_RX = /\.inbound[-_]?sig[-_]?key\b|\.inbound[-_]?sig[\w.-]*[*?[]/i
@@ -539,8 +541,10 @@ function globComponentRegex(glob) {
   try { return new RegExp(`^${rx}$`, 'i') } catch { return null }
 }
 
-export function inboundSigKeyBashSegmentAllowed(seg) {
-  const raw = String(seg ?? '')
+export function inboundSigKeyBashSegmentAllowed(seg, definite) {
+  // A variable the same command set to a literal earlier (`F=.inbound-sig; cat store/$F-key`) is read as its value,
+  // the definiteAssignments the other protected-file checks use (Dani, #3117 delta).
+  const raw = substituteDefinite(String(seg ?? ''), definite)
   const unquoted = raw.replace(/\$(?=['"])|["'\\]/g, '')
   if (INBOUND_SIG_KEY_MENTION_RX.test(raw) || INBOUND_SIG_KEY_MENTION_RX.test(unquoted)) return false
   const words = unquoted.split(/\s+/)
@@ -4788,7 +4792,7 @@ function decide(toolName, toolInput, opts = {}) {
     for (const [idx, seg] of protSegs.entries()) {
       protectedCtx.definite = definite[idx]
       // The inbound signature key (HMACINBOUND1125): a secret, so not even a read.
-      if (!inboundSigKeyBashSegmentAllowed(seg)) return { deny: true, reason: 'inbound-sig-key' }
+      if (!inboundSigKeyBashSegmentAllowed(seg, definite[idx])) return { deny: true, reason: 'inbound-sig-key' }
       // The other store files that gate the sub-agent (c556a35a) first: they are matched by
       // name only, so a segment that names one of them gets that file's message even when
       // the allowlist check below would also deny it on an unresolved word (`> $TARGET`).

@@ -281,7 +281,11 @@ describe('guards on the source', () => {
     }
     // DOCUMENTED PASSES (a text brake, not an OS boundary; the stated limit in self-pace-gate.mjs): a name assembled at
     // run time, a string built inside an interpreter, a reader that is never told the name
-    for (const cmd of ['f=.inbound; cat store/${f}-sig-key', `python3 -c "print(open('store/.inbound'+'-sig'+'-key','rb').read())"`,
+    // a variable the same command set to a literal is resolved (Dani, #3117 delta)
+    for (const cmd of ['F=.inbound-sig; cat store/$F-key', 'f=.inbound; cat store/${f}-sig-key']) {
+      expect(sp.gateDecision('Bash', { command: cmd }, { projectRoot: TMP, subAgent: true, cwd: TMP })?.deny, cmd).toBe(true)
+    }
+    for (const cmd of ['cat store/${KEYNAME}', `python3 -c "print(open('store/.inbound'+'-sig'+'-key','rb').read())"`,
       'grep -r . store/', 'ls store | xargs cat']) {
       expect(sp.inboundSigKeyBashSegmentAllowed(cmd), cmd).toBe(true)
     }
