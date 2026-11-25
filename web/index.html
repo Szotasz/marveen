@@ -1754,6 +1754,79 @@
         <p class="vault-empty-hint" data-i18n="vault.empty_hint">Adj hozzá egyet az „Új API-kulcs” gombbal</p>
       </div>
 
+      <!-- === Web logins section (VAULTLOGIN1112) === -->
+      <div class="ssh-section web-login-section" id="webLoginSection">
+        <div class="ssh-section-header">
+          <div>
+            <h2 class="ssh-section-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+              <span data-i18n="vault.weblogin.title">Webes belépések</span>
+            </h2>
+            <p class="ssh-section-sub" data-i18n="vault.weblogin.sub">Weboldalak belépési adatai, amelyekkel egy ügynök a saját böngészőjében beléphet</p>
+          </div>
+          <div class="ssh-section-actions">
+            <button class="btn-primary btn-compact" id="webLoginNewBtn" title="Új webes belépés felvétele" data-i18n-title="vault.weblogin.new_btn_title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <span data-i18n="vault.weblogin.new_btn">Új belépés</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="vault-add-panel" id="webLoginPanel" hidden>
+          <div class="vault-add-panel-header">
+            <h3 id="webLoginPanelTitle" data-i18n="vault.weblogin.form.add_title">Webes belépés hozzáadása</h3>
+            <button class="modal-close" id="webLoginPanelClose">&times;</button>
+          </div>
+          <div class="vault-add-fields web-login-fields">
+            <div class="vault-field-group">
+              <label class="vault-field-label" for="webLoginOriginInput" data-i18n="vault.weblogin.form.origin">Oldal címe (origó)</label>
+              <input type="url" id="webLoginOriginInput" class="input" placeholder="https://www.pelda.hu" data-i18n-placeholder="vault.weblogin.form.origin_ph" autocomplete="off">
+            </div>
+            <div class="vault-field-group">
+              <label class="vault-field-label" for="webLoginUserInput" data-i18n="vault.weblogin.form.username">Felhasználónév</label>
+              <input type="text" id="webLoginUserInput" class="input" autocomplete="off">
+            </div>
+            <div class="vault-field-group">
+              <label class="vault-field-label" for="webLoginPassInput" data-i18n="vault.weblogin.form.password">Jelszó</label>
+              <input type="password" id="webLoginPassInput" class="input" autocomplete="new-password">
+            </div>
+            <div class="vault-field-group">
+              <label class="vault-field-label" for="webLoginUrlInput" data-i18n="vault.weblogin.form.login_url">Belépő oldal (opcionális)</label>
+              <input type="url" id="webLoginUrlInput" class="input" placeholder="https://www.pelda.hu/belepes" data-i18n-placeholder="vault.weblogin.form.login_url_ph" autocomplete="off">
+            </div>
+          </div>
+          <details class="web-login-advanced">
+            <summary data-i18n="vault.weblogin.form.advanced">Haladó beállítások</summary>
+            <div class="vault-add-fields web-login-fields">
+              <div class="vault-field-group">
+                <label class="vault-field-label" for="webLoginUserSelInput" data-i18n="vault.weblogin.form.user_selector">Felhasználónév-mező (CSS-szelektor)</label>
+                <input type="text" id="webLoginUserSelInput" class="input" placeholder="#email" autocomplete="off">
+              </div>
+              <div class="vault-field-group">
+                <label class="vault-field-label" for="webLoginPassSelInput" data-i18n="vault.weblogin.form.pass_selector">Jelszómező (CSS-szelektor)</label>
+                <input type="text" id="webLoginPassSelInput" class="input" placeholder="#password" autocomplete="off">
+              </div>
+            </div>
+          </details>
+          <div class="vault-field-group web-login-agents-group">
+            <span class="vault-field-label" data-i18n="vault.weblogin.form.agents">Ügynökök, akik használhatják</span>
+            <div class="web-login-agents" id="webLoginAgents"></div>
+            <p class="web-login-hint" data-i18n="vault.weblogin.form.agents_hint">Ha egy ügynök sincs bejelölve, a belépést senki nem használhatja.</p>
+          </div>
+          <div class="vault-add-actions">
+            <button class="btn-primary" id="webLoginSaveBtn" data-i18n="vault.weblogin.form.save">Belépés mentése</button>
+          </div>
+        </div>
+
+        <div class="web-login-note" id="webLoginRestartNote" hidden></div>
+        <div class="ssh-cards" id="webLoginCards"></div>
+        <div id="webLoginEmpty" class="vault-empty" hidden>
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <p data-i18n="vault.weblogin.empty">Még nincs webes belépés</p>
+          <p class="vault-empty-hint" data-i18n="vault.weblogin.empty_hint">Adj hozzá egyet az „Új belépés” gombbal</p>
+        </div>
+      </div>
+
       <!-- === SSH Key Store section === -->
       <div class="ssh-section ssh-key-store-section">
         <div class="ssh-section-header">
@@ -1898,79 +1971,6 @@
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
           <p data-i18n="vault.ssh.servers.empty">Még nincs szerver</p>
           <p class="vault-empty-hint" data-i18n="vault.ssh.servers.empty_hint">Adj hozzá egyet az „Új szerver” gombbal</p>
-        </div>
-      </div>
-
-      <!-- === Web logins section (VAULTLOGIN1112) === -->
-      <div class="ssh-section web-login-section" id="webLoginSection">
-        <div class="ssh-section-header">
-          <div>
-            <h2 class="ssh-section-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-              <span data-i18n="vault.weblogin.title">Webes belépések</span>
-            </h2>
-            <p class="ssh-section-sub" data-i18n="vault.weblogin.sub">Weboldalak belépési adatai, amelyekkel egy ügynök a saját böngészőjében beléphet</p>
-          </div>
-          <div class="ssh-section-actions">
-            <button class="btn-primary btn-compact" id="webLoginNewBtn" title="Új webes belépés felvétele" data-i18n-title="vault.weblogin.new_btn_title">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              <span data-i18n="vault.weblogin.new_btn">Új belépés</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="vault-add-panel" id="webLoginPanel" hidden>
-          <div class="vault-add-panel-header">
-            <h3 id="webLoginPanelTitle" data-i18n="vault.weblogin.form.add_title">Webes belépés hozzáadása</h3>
-            <button class="modal-close" id="webLoginPanelClose">&times;</button>
-          </div>
-          <div class="vault-add-fields web-login-fields">
-            <div class="vault-field-group">
-              <label class="vault-field-label" for="webLoginOriginInput" data-i18n="vault.weblogin.form.origin">Oldal címe (origó)</label>
-              <input type="url" id="webLoginOriginInput" class="input" placeholder="https://www.pelda.hu" data-i18n-placeholder="vault.weblogin.form.origin_ph" autocomplete="off">
-            </div>
-            <div class="vault-field-group">
-              <label class="vault-field-label" for="webLoginUserInput" data-i18n="vault.weblogin.form.username">Felhasználónév</label>
-              <input type="text" id="webLoginUserInput" class="input" autocomplete="off">
-            </div>
-            <div class="vault-field-group">
-              <label class="vault-field-label" for="webLoginPassInput" data-i18n="vault.weblogin.form.password">Jelszó</label>
-              <input type="password" id="webLoginPassInput" class="input" autocomplete="new-password">
-            </div>
-            <div class="vault-field-group">
-              <label class="vault-field-label" for="webLoginUrlInput" data-i18n="vault.weblogin.form.login_url">Belépő oldal (opcionális)</label>
-              <input type="url" id="webLoginUrlInput" class="input" placeholder="https://www.pelda.hu/belepes" data-i18n-placeholder="vault.weblogin.form.login_url_ph" autocomplete="off">
-            </div>
-          </div>
-          <details class="web-login-advanced">
-            <summary data-i18n="vault.weblogin.form.advanced">Haladó beállítások</summary>
-            <div class="vault-add-fields web-login-fields">
-              <div class="vault-field-group">
-                <label class="vault-field-label" for="webLoginUserSelInput" data-i18n="vault.weblogin.form.user_selector">Felhasználónév-mező (CSS-szelektor)</label>
-                <input type="text" id="webLoginUserSelInput" class="input" placeholder="#email" autocomplete="off">
-              </div>
-              <div class="vault-field-group">
-                <label class="vault-field-label" for="webLoginPassSelInput" data-i18n="vault.weblogin.form.pass_selector">Jelszómező (CSS-szelektor)</label>
-                <input type="text" id="webLoginPassSelInput" class="input" placeholder="#password" autocomplete="off">
-              </div>
-            </div>
-          </details>
-          <div class="vault-field-group web-login-agents-group">
-            <span class="vault-field-label" data-i18n="vault.weblogin.form.agents">Ügynökök, akik használhatják</span>
-            <div class="web-login-agents" id="webLoginAgents"></div>
-            <p class="web-login-hint" data-i18n="vault.weblogin.form.agents_hint">Ha egy ügynök sincs bejelölve, a belépést senki nem használhatja.</p>
-          </div>
-          <div class="vault-add-actions">
-            <button class="btn-primary" id="webLoginSaveBtn" data-i18n="vault.weblogin.form.save">Belépés mentése</button>
-          </div>
-        </div>
-
-        <div class="web-login-note" id="webLoginRestartNote" hidden></div>
-        <div class="ssh-cards" id="webLoginCards"></div>
-        <div id="webLoginEmpty" class="vault-empty" hidden>
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          <p data-i18n="vault.weblogin.empty">Még nincs webes belépés</p>
-          <p class="vault-empty-hint" data-i18n="vault.weblogin.empty_hint">Adj hozzá egyet az „Új belépés” gombbal</p>
         </div>
       </div>
 
