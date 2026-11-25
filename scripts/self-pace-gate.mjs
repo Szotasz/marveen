@@ -518,8 +518,9 @@ function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
 // A variable set to a literal earlier in the same command is substituted first (definiteAssignments).
 // THE LIMIT: a text brake, not an OS boundary. A name built at run time in a way the gate cannot resolve (a variable
 // from another command or the environment, a command substitution), a string built inside an interpreter, or a reader
-// that is never told the name (`grep -r . store/`, `xargs`) passes;
-// inbound-sig.test.ts lists them as documented passes. The key is a file of the same OS user, as src/inbound-sig.ts says.
+// that is never told the name (`grep -r . store/`, `xargs`) passes. The same class: a read of the whole store directory
+// without the name carries the key too (`cp -r store/ x`, `grep -ra . store/`, `zip -r x store/`; `tar` is denied, but by
+// db-write-gate, not by this rule). inbound-sig.test.ts lists them as documented passes. The key is a file of the same OS user, as src/inbound-sig.ts says.
 const INBOUND_SIG_KEY_NAME = '.inbound-sig-key'
 const INBOUND_SIG_KEY_MENTION_RX = /\.inbound[-_]?sig[-_]?key\b|\.inbound[-_]?sig[\w.-]*[*?[]/i
 

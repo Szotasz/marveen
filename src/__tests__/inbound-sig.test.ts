@@ -286,7 +286,7 @@ describe('guards on the source', () => {
       expect(sp.gateDecision('Bash', { command: cmd }, { projectRoot: TMP, subAgent: true, cwd: TMP })?.deny, cmd).toBe(true)
     }
     for (const cmd of ['cat store/${KEYNAME}', `python3 -c "print(open('store/.inbound'+'-sig'+'-key','rb').read())"`,
-      'grep -r . store/', 'ls store | xargs cat']) {
+      'grep -r . store/', 'ls store | xargs cat', 'cp -r store/ x', 'grep -ra . store/', 'zip -r x.zip store/']) {
       expect(sp.inboundSigKeyBashSegmentAllowed(cmd), cmd).toBe(true)
     }
     // wired into the gate's decision, not only the helper
