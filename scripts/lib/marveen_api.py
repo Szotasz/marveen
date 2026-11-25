@@ -76,7 +76,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--actor <name>]
   kanban-claim <card-id> <agent> [--ttl <seconds>]
   kanban-release <card-id> <agent>
-  kanban-comment <card-id> <author> <content-file>
+  kanban-comment <card-id> <author> <content-file> [--json]
+                (prints the answer without the echoed content; --json prints it whole)
   kanban-archive <card-id>
   vault-login <agent> <web-login-id>   (logs in, in the agent's own browser; prints the outcome only)
   vault-logins                         (the web logins: id, origin, username, allowed agents; never a password)
@@ -571,13 +572,15 @@ def build_request(verb, args):
             'status': 'done', 'includeArchived': '1', 'fields': 'status,assignee,last_status_at'
         }), None, headers, {'done_since': {'since': int(since), 'team': team}}
     if verb == 'kanban-comment':
+        as_json = take_flag(args, '--json')
         card, author, content_file = positional(args, 3, verb)
         check(card, CARD_ID_RE, 'card id')
         check(author, NAME_RE, 'agent name')
         content = read_text(content_file)
         if not content.strip():
             fail_usage('kanban-comment: the content is empty')
-        return 'POST', f'/api/kanban/{card}/comments', {'author': author, 'content': content}, headers, {}
+        # The answer echoes the whole comment back; the caller wrote it from its own file.
+        return 'POST', f'/api/kanban/{card}/comments', {'author': author, 'content': content}, headers, {} if as_json else {'drop_echo': 'content'}
     if verb == 'kanban-archive':
         # KANBANARCHIVEVERB1122: the audit's archive step (POST /api/kanban/<id>/archive, empty body).
         # Without a verb the level-3 archive could only go through a raw token curl, so it did not run.
@@ -777,6 +780,13 @@ def main(argv):
         if flags.get('done_since'):
             return done_since_report(flags['done_since'], text, token)
         empty_sent_payloads()
+        if flags.get('drop_echo'):
+            try:
+                answer = json.loads(text)
+                answer.pop(flags['drop_echo'], None)
+                text = json.dumps(answer, ensure_ascii=False)
+            except (ValueError, AttributeError):
+                pass  # not the JSON object we expected: print it as it came
         print(text)
         if flags.get('require_sig_ok'):
             # HMACINBOUND1125 (Dani 85038, 3): from_agent='system' alone can be written by a raw INSERT; only a row the

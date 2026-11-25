@@ -132,6 +132,18 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen).toHaveLength(0)
   })
 
+  it('kanban-comment prints the answer without the echoed content; --json prints it whole', async () => {
+    const row = { id: 42, card_id: 'c-1', author: 'dani', content: 'hosszú komment '.repeat(50), created_at: 1, archived_note: 'x' }
+    reply = { status: 200, body: JSON.stringify(row) }
+    const short = await run(['kanban-comment', 'c-1', 'dani', file('k.txt', 'komment')])
+    expect(short.code).toBe(0)
+    expect(JSON.parse(short.stdout)).toEqual({ id: 42, card_id: 'c-1', author: 'dani', created_at: 1, archived_note: 'x' })
+    const whole = await run(['kanban-comment', 'c-1', 'dani', file('k.txt', 'komment'), '--json'])
+    expect(whole.code).toBe(0)
+    expect(JSON.parse(whole.stdout)).toEqual(row)
+    expect(JSON.parse(seen[1].body)).toEqual({ author: 'dani', content: 'komment' })
+  })
+
   it('memory-search: the accented query is encoded, and the label header is printed first', async () => {
     reply = { status: 200, body: '[]', headers: { 'X-Memory-Search': 'strict=true; relaxed=false; hits=0' } }
     const r = await run(['memory-search', 'dani', 'funkcionális', '--category', 'warm', '--strict', '--since', '2026-10-01'])
