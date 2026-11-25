@@ -36,6 +36,8 @@ beforeAll(() => {
   writeFileSync(join(H.home, '.local', 'share', 'marveen-voice', '_vtools.py'), '')
   mkdirSync(agentChannel, { recursive: true })
   writeFileSync(join(agentChannel, '.env'), 'TELEGRAM_BOT_TOKEN=not-a-real-token\n')
+  // TTSBIND1125: the bot lets in one user, the chat the tests send to
+  writeFileSync(join(agentChannel, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['123'], groups: {} }))
 })
 afterAll(() => {
   rmSync(join(agentsBase, AGENT), { recursive: true, force: true })
@@ -97,5 +99,32 @@ describe('POST /api/voice/tts with ?agent=', () => {
     const old = await tts({ chat_id: '123', state_dir: agentChannel, voice_model: 'no-such-model' })
     expect(old.status).toBe(400)
     expect(old.body.error).toMatch(/voice model/)
+  })
+})
+
+// TTSBIND1125 (Dani's review on #3125): the caller is not identified, so the voice goes only to a chat the bot already
+// lets in (its access.json allowFrom).
+describe('POST /api/voice/tts sends only to a chat the channel lets in', () => {
+  it('a chat outside the allowlist is a 403, by agent and by state_dir alike', async () => {
+    const byAgent = await tts({ chat_id: '999', agent: AGENT, voice_model: 'hu_HU-imre-medium' })
+    expect(byAgent.status).toBe(403)
+    expect(byAgent.body.error).toMatch(/not allowed/)
+    const byDir = await tts({ chat_id: '999', state_dir: agentChannel, voice_model: 'hu_HU-imre-medium' })
+    expect(byDir.status).toBe(403)
+  })
+
+  it('a missing or malformed allowlist allows nothing', async () => {
+    const { chatAllowedByChannel } = await import('../web/routes/voice.js')
+    expect(chatAllowedByChannel(agentChannel, '123')).toBe(true)
+    expect(chatAllowedByChannel(agentChannel, '12')).toBe(false)
+    expect(chatAllowedByChannel(join(agentChannel, 'nope'), '123')).toBe(false)
+    const odd = join(H.home, 'odd-dir')
+    mkdirSync(odd, { recursive: true })
+    writeFileSync(join(odd, 'access.json'), '{ not json')
+    expect(chatAllowedByChannel(odd, '123')).toBe(false)
+    writeFileSync(join(odd, 'access.json'), JSON.stringify({ allowFrom: 'not-a-list' }))
+    expect(chatAllowedByChannel(odd, '123')).toBe(false)
+    writeFileSync(join(odd, 'access.json'), JSON.stringify({ allowFrom: [123] }))
+    expect(chatAllowedByChannel(odd, '123')).toBe(true)
   })
 })
