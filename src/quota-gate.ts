@@ -71,7 +71,12 @@ export const QUOTA_GATE = {
    * command (scripts/statusline-ratelimit.sh): the same numbers the official
    * endpoint reports, which usage-collect.py only uses when it is fresh.
    */
-  trustedSources: ['authoritative', 'authoritative_cached', 'statusline', 'ratelimit_headers'],
+  trustedSources: ['authoritative', 'authoritative_cached', 'statusline', 'ratelimit_headers', 'plans_state'],
+  /**
+   * 'plans_state' (above): with Claude plan rotation on, the per-plan readings of
+   * store/claude-plans-state.json (src/quota-snapshot.ts snapshotFromPlansState), only
+   * when every plan in use has a real, fresh one; otherwise the estimate goes through.
+   */
   /**
    * 'ratelimit_headers' (above) is the anthropic-ratelimit-unified-* headers of
    * one minimal Messages call (src/claude-ratelimit-reading.ts), which
