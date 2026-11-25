@@ -2076,12 +2076,26 @@ function resolveCatSubst(cmd, opts) {
 // case to guard any more: a cd/pushd/popd into the store denies the whole
 // command (scheduleSurfaceDeny, rule 1).
 const FLAT_SUBST_RX = /\$\(([^()'"`$\\]*)\)/g
+// DBGATESUBST1125 (Marveen's kanban audit, memory 5737): `echo "$(date -r $LAST)"` next to a read-only
+// `sqlite3 ... "SELECT ..."` was denied, because a variable inside the substitution kept it out of FLAT_SUBST_RX and
+// the quoted, unresolved substitution made the whole command unparsable. A variable is allowed in ONE narrow shape:
+// a flat substitution whose command is a pure formatter that neither writes a file nor runs code (date, basename,
+// dirname), every `$` a plain `$NAME` / `${NAME}`. Its output is run-time data like any other marker's. Anything
+// else with an expansion inside (sqlite3, cat, an interpreter, a pipe, a redirect) stays as it was.
+const VAR_SUBST_RX = /\$\(\s*((?:date|basename|dirname)(?=[\s)])[^()'"`\\<>|;&]*)\)/g
+const PLAIN_VAR_RX = /\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})/g
 function resolveFlatSubst(cmd, opts) {
-  return cmd.replace(FLAT_SUBST_RX, (full, inner) => {
-    // opts.keepSubst: a caller's own reference (db-write-gate: a protected install
-    // path) keeps the substitution as written, so the word stays unparsable there
-    return strongRef(scheduleSurfaceRefs(inner, opts)) || opts?.keepSubst?.(inner) ? full : NONCONTENT_MARKER
-  })
+  const keep = (inner) => strongRef(scheduleSurfaceRefs(inner, opts)) || opts?.keepSubst?.(inner)
+  return cmd
+    .replace(FLAT_SUBST_RX, (full, inner) => {
+      // opts.keepSubst: a caller's own reference (db-write-gate: a protected install
+      // path) keeps the substitution as written, so the word stays unparsable there
+      return keep(inner) ? full : NONCONTENT_MARKER
+    })
+    .replace(VAR_SUBST_RX, (full, inner) => {
+      if (inner.replace(PLAIN_VAR_RX, '').includes('$')) return full // $(..), $((..)), $'..', $1 ... : not plain
+      return keep(inner) ? full : NONCONTENT_MARKER
+    })
 }
 
 // Split a command into the segments the SHELL would see: separators inside

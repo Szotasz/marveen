@@ -1874,6 +1874,13 @@ function moveCwd(own, seg, ctx, reaches = null) {
   cwdAfterSegment(own, ctx)
   const first = shellWords(String(own ?? '').trim())?.[0]?.value
   const isCd = first === 'cd' || first === 'pushd'
+  // DBGATESUBST1125: the git rule's second directory. A cd run on a condition (the segment before it ended in && or
+  // ||) may not run, so the directory before it stays possible; an unconditional cd moves both readings to one place.
+  if (isCd) {
+    if (ctx.condSeg) {
+      if (!ctx.gitAltCwd && before && !(ctx.cwd && sameKey(pathKey(before), pathKey(ctx.cwd)))) ctx.gitAltCwd = before
+    } else ctx.gitAltCwd = null
+  }
   // WRITEGATERELPATH1115: a directory change to a place this gate cannot know: the relative words after it are read
   // against every protected path's tail (fail closed), not dropped
   if (first === 'cd' || first === 'pushd' || first === 'popd') ctx.cwdLost = !ctx.cwd
@@ -2496,9 +2503,12 @@ export function installFileDeny(command, opts = {}) {
   let closing = 0
   const literalCds = literalCdSegments(cmdForSegs, segs)
   for (const seg of segs) {
-    for (; closing > 0; closing--) if (cwdStack.length) [ctx.cwd, ctx.altCwd, ctx.cwdLost] = cwdStack.pop()
+    for (; closing > 0; closing--) if (cwdStack.length) [ctx.cwd, ctx.altCwd, ctx.cwdLost, ctx.gitAltCwd] = cwdStack.pop()
     const sub = subshellParts(seg.own)
-    for (let k = 0; k < sub.opens; k++) cwdStack.push([ctx.cwd, ctx.altCwd ?? null, !!ctx.cwdLost]) // UNKCWDEXTRACT1121 (review N1): and whether it was lost
+    for (let k = 0; k < sub.opens; k++) cwdStack.push([ctx.cwd, ctx.altCwd ?? null, !!ctx.cwdLost, ctx.gitAltCwd ?? null]) // UNKCWDEXTRACT1121 (review N1): and whether it was lost
+    // DBGATESUBST1125: this segment runs on a condition when the one before it ended in && or ||
+    const at = segs.indexOf(seg)
+    ctx.condSeg = at > 0 && (segs[at - 1].sep === '&&' || segs[at - 1].sep === '||')
     closing = sub.closes
     const own = sub.body
     const ownMove = literalCds.get(segs.indexOf(seg)) ?? own // UNKCWDEXTRACT1121 (review round 3, Dani 2): a cd to a literal variable
@@ -2531,7 +2541,11 @@ export function installFileDeny(command, opts = {}) {
     const git = words && gitWords(words)
     if (git) {
       const g = gitDecision(git, ctx)
-      if (g === 'deny') return 'git'
+      // DBGATESUBST1125 (Dani 57400 for git): a cd that is itself run on a condition (after `false &&`, `true ||`) may
+      // not run at all, so the directory before it stays possible (ctx.gitAltCwd); the git rule reads that one too.
+      // Before, only an unreadable tail in the same command (`"$(date +%s $y)"`) made such a git write a deny, by
+      // making the whole command unreadable. An unconditional `cd /existing; git ...` is not affected (#2384).
+      if (g === 'deny' || (ctx.gitAltCwd && gitDecision(git, { ...ctx, cwd: ctx.gitAltCwd }) === 'deny')) return 'git'
       if (g === 'allow') continue
     }
     if (words && words.length && !usesTainted && both(() => landingDenied(words, name))) return true
