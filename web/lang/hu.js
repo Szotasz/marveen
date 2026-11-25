@@ -609,6 +609,8 @@ window._i18n.hu = {
   'agents.wizard.generating_status': 'CLAUDE.md generálás...',
   'agents.wizard.desc_label':    'Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök',
   'agents.wizard.profile_label': 'Biztonsági profil',
+  'agents.profile.default.label': 'Alapértelmezett (kompatibilitási)',
+  'agents.profile.default.description': 'Régi, skip-permission módú ágensekhez. Új ágenshez inkább válassz szerep-specifikus profilt.',
   'agents.model.custom_model_required': 'Egyéni szolgáltatóhoz add meg a modell azonosítóját is.',
   'agents.model.no_claude_auth': 'Ezen a telepítésen nincs Claude-előfizetéses bejelentkezés, ezért egy Claude-modellen futó ügynök nem tud belépni, és nem indul el.',
   'agents.model.no_claude_auth_router': 'Ezen a telepítésen nincs Claude-előfizetéses bejelentkezés, ezért a Hostinger AI Router van kiválasztva. Ugyanazt a router-kulcsot és kreditet használja, mint a fő ügynök. Átállíthatod.',

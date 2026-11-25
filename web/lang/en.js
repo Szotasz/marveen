@@ -1723,6 +1723,8 @@ window._i18n.en = {
   'agents.wizard.generating_status': 'CLAUDE.md generating...',
   'agents.wizard.desc_label':    'Describe freely what you want this agent to do',
   'agents.wizard.profile_label': 'Security profile',
+  'agents.profile.default.label': 'Default (compatibility)',
+  'agents.profile.default.description': 'For older agents that run in skip-permission mode. For a new agent, pick a role-specific profile instead.',
   'agents.model.custom_model_required': 'With a custom provider, enter the model ID too.',
   'agents.model.no_claude_auth': 'This install has no Claude subscription login, so an agent on a Claude model cannot sign in and will not start.',
   'agents.model.no_claude_auth_router': 'This install has no Claude subscription login, so the Hostinger AI Router is selected (it uses the same router key and credit as the main agent). You can change it.',

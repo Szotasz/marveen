@@ -3770,6 +3770,15 @@ async function loadProfiles() {
   return cachedProfiles || []
 }
 
+// HOSTINGERI18NFU2: a shipped profile template is Hungarian only (templates/profiles/*.json). Its label and description
+// get a lang key when one exists and the server's text is still the shipped one (the hu.js value): an edited template
+// is shown as written. The key rides on data-i18n, so a later language switch redraws it.
+function profileTextKey(p, field) {
+  const key = `agents.profile.${p.id}.${field}`
+  const shipped = window._i18n?.hu?.[key]
+  return shipped !== undefined && shipped === (field === 'label' ? p.label : p.description) ? key : null
+}
+
 function populateProfileSelect(selectEl, descEl, selected) {
   loadProfiles().then((profiles) => {
     selectEl.innerHTML = ''
@@ -3777,7 +3786,9 @@ function populateProfileSelect(selectEl, descEl, selected) {
       const opt = document.createElement('option')
       opt.value = p.id
       const tag = p.permissionMode === 'strict' ? ` (${t('agents.strict_mode')})` : ''
-      opt.textContent = `${p.label}${tag}`
+      const labelKey = profileTextKey(p, 'label')
+      if (labelKey && !tag) opt.dataset.i18n = labelKey
+      opt.textContent = `${labelKey ? t(labelKey) : p.label}${tag}`
       if (p.id === selected) opt.selected = true
       selectEl.appendChild(opt)
     }
@@ -3794,12 +3805,15 @@ function populateProfileSelect(selectEl, descEl, selected) {
       selectEl.prepend(opt)
     }
     const updateDesc = () => {
+      delete descEl.dataset.i18n
       if (missing && selectEl.value === missing) {
         descEl.textContent = t('agents.profile_missing_desc', { id: missing })
         return
       }
       const p = profiles.find(x => x.id === selectEl.value)
-      descEl.textContent = p ? p.description : ''
+      const descKey = p ? profileTextKey(p, 'description') : null
+      if (descKey) descEl.dataset.i18n = descKey
+      descEl.textContent = descKey ? t(descKey) : (p ? p.description : '')
     }
     selectEl.onchange = updateDesc
     updateDesc()

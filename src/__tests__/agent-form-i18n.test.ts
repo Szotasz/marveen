@@ -27,3 +27,82 @@ describe('the "or" divider between the avatar grid and the upload box', () => {
     expect(HU['agents.wizard.avatar_or']).toBe('vagy')
   })
 })
+
+// The profile select, run from app.js's own source with a minimal DOM: the shipped default template's Hungarian
+// text gets the viewer's language, an edited template and an unknown profile keep the server's text.
+const APP = read('../../web/app.js')
+const slice = (from: string, to: string) => {
+  const a = APP.indexOf(from)
+  const b = APP.indexOf(to, a)
+  expect(a).toBeGreaterThan(-1)
+  expect(b).toBeGreaterThan(a)
+  return APP.slice(a, b)
+}
+const DEFAULT_TEMPLATE = JSON.parse(read('../../templates/profiles/default.json')) as { id: string; label: string; description: string; permissionMode: string }
+
+type FakeEl = { value: string; textContent: string; dataset: Record<string, string>; selected?: boolean; options?: FakeEl[]; onchange?: () => void }
+function renderProfiles(lang: 'hu' | 'en', profiles: unknown[], selected = 'default') {
+  const select: FakeEl & { innerHTML: string; appendChild: (o: FakeEl) => void; prepend: (o: FakeEl) => void } = {
+    value: '', textContent: '', dataset: {}, options: [],
+    set innerHTML(_v: string) { this.options = [] },
+    get innerHTML() { return '' },
+    appendChild(o: FakeEl) { this.options!.push(o); if (o.selected || this.options!.length === 1) this.value = o.value },
+    prepend(o: FakeEl) { this.options!.unshift(o); if (o.selected) this.value = o.value },
+  }
+  const desc: FakeEl = { value: '', textContent: '', dataset: {} }
+  const window = { _i18n: { hu: HU, en: EN }, _lang: lang }
+  const t = (key: string, params: Record<string, string> = {}) => {
+    const s = window._i18n[window._lang][key] ?? window._i18n.en[key] ?? key
+    return s.replace(/\{(\w+)\}/g, (_m: string, k: string) => params[k] ?? `{${k}}`)
+  }
+  const ctx = {
+    window, t, Promise,
+    document: { createElement: () => ({ value: '', textContent: '', dataset: {} }) },
+    loadProfiles: () => ({ then: (cb: (p: unknown[]) => void) => cb(profiles) }),
+  }
+  vm.runInNewContext(slice('function profileTextKey(', '// Populate the per-agent Claude subscription plan dropdown') + '\npopulateProfileSelect(select, desc, selected)', { ...ctx, select, desc, selected })
+  return { select, desc }
+}
+
+describe('the security profile select', () => {
+  it('the Hungarian keys hold the shipped default template text exactly (else the match below never holds)', () => {
+    expect(HU['agents.profile.default.label']).toBe(DEFAULT_TEMPLATE.label)
+    expect(HU['agents.profile.default.description']).toBe(DEFAULT_TEMPLATE.description)
+  })
+
+  it('an English viewer sees the default profile in English, keyed for a later language switch', () => {
+    const { select, desc } = renderProfiles('en', [DEFAULT_TEMPLATE])
+    const opt = select.options!.find(o => o.value === 'default')!
+    expect(opt.textContent).toBe('Default (compatibility)')
+    expect(opt.dataset.i18n).toBe('agents.profile.default.label')
+    expect(desc.textContent).toBe(EN['agents.profile.default.description'])
+    expect(desc.dataset.i18n).toBe('agents.profile.default.description')
+    expect(/[áéíóöőúüű]/i.test(opt.textContent + desc.textContent)).toBe(false)
+  })
+
+  it('a Hungarian viewer sees exactly what the template says', () => {
+    const { select, desc } = renderProfiles('hu', [DEFAULT_TEMPLATE])
+    expect(select.options!.find(o => o.value === 'default')!.textContent).toBe(DEFAULT_TEMPLATE.label)
+    expect(desc.textContent).toBe(DEFAULT_TEMPLATE.description)
+  })
+
+  it('an edited template is shown as written, in either language, and carries no key', () => {
+    const edited = { ...DEFAULT_TEMPLATE, label: 'Saját alap', description: 'Saját leírás' }
+    const { select, desc } = renderProfiles('en', [edited])
+    const opt = select.options!.find(o => o.value === 'default')!
+    expect(opt.textContent).toBe('Saját alap')
+    expect(opt.dataset.i18n).toBeUndefined()
+    expect(desc.textContent).toBe('Saját leírás')
+    expect(desc.dataset.i18n).toBeUndefined()
+  })
+
+  it('a profile without a key keeps the server text, and selecting it drops the description key', () => {
+    const other = { id: 'sub-dev', label: 'Sub-dev (Supabase MCP denied)', description: 'Full-stack sub-developer.', permissionMode: 'permissive' }
+    const { select, desc } = renderProfiles('en', [DEFAULT_TEMPLATE, other])
+    expect(select.options!.find(o => o.value === 'sub-dev')!.textContent).toBe(other.label)
+    select.value = 'sub-dev'
+    select.onchange!()
+    expect(desc.textContent).toBe(other.description)
+    expect(desc.dataset.i18n).toBeUndefined()
+  })
+})
