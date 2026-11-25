@@ -84,16 +84,16 @@ afterAll(async () => {
 
 describe('the TTS directive works without jq (#2600)', () => {
   it('the command does not call jq', () => {
-    const d = buildTtsDirective({ chatId: '1', stateDir: '/s', voiceModel: 'v' }) as string
+    const d = buildTtsDirective({ chatId: '1', agentId: 'a', voiceModel: 'v' }) as string
     expect(bashBlock(d)).not.toMatch(/\bjq\b/)
   })
 
-  it('without jq on PATH the reply text, the chat id, the state dir and the voice model all arrive', async () => {
+  it('without jq on PATH the reply text, the chat id, the agent and the voice model all arrive', async () => {
     expect(existsSync(join(root, 'bin', 'jq'))).toBe(false)
     seen = []
-    // A space, a single quote, & and = in the state dir: the query string and the shell quoting must hold.
-    const stateDir = "/srv/mv/pro ject's&x=1/state"
-    const d = buildTtsDirective({ chatId: '12345', stateDir, voiceModel: 'hu_HU-imre-medium' }) as string
+    // #3118: the directive names the agent; the route resolves the dir. The fields still go through the query string.
+    const agentId = 'kodi-1'
+    const d = buildTtsDirective({ chatId: '12345', agentId, voiceModel: 'hu_HU-imre-medium' }) as string
     const text = 'Szia, ez a válaszom: "idézet", egy \' jel, egy \\ jel.\nMásodik sor, árvíztűrő tükörfúrógép.'
     const r = await runDirective(d, text, join(root, 'bin'))
     expect(r.stderr).toBe('')
@@ -101,13 +101,13 @@ describe('the TTS directive works without jq (#2600)', () => {
     expect(seen).toHaveLength(1)
     expect(seen[0].contentType).toBe('text/plain; charset=utf-8')
     expect(seen[0].auth).toBe(`Bearer ${PROBE_TOKEN}`)
-    expect(seen[0].parsed).toEqual({ text, voiceModel: 'hu_HU-imre-medium', chatId: '12345', stateDir })
+    expect(seen[0].parsed).toEqual({ text, voiceModel: 'hu_HU-imre-medium', chatId: '12345', stateDir: '', agentId })
   })
 
   it('the shell does not expand $(...), backticks or $VARS in the reply text', async () => {
     seen = []
     const marker = join(root, 'INJECTED')
-    const d = buildTtsDirective({ chatId: '1', stateDir: '/s', voiceModel: 'v' }) as string
+    const d = buildTtsDirective({ chatId: '1', agentId: 'a', voiceModel: 'v' }) as string
     const text = `a $(touch ${marker}) b \`touch ${marker}\` c $HOME d`
     const r = await runDirective(d, text, join(root, 'bin'))
     expect(r.code).toBe(0)
@@ -120,8 +120,8 @@ describe('the heredoc end marker is new for every directive (Dani, #2605 review)
   const MARKER_RE = /--data-binary @- <<'(MARVEEN_TTS_END_[0-9a-f]{16})'\n[\s\S]*?\n(MARVEEN_TTS_END_[0-9a-f]{16})\n```/
 
   it('the opening and closing marker match, and two directives get different markers', () => {
-    const a = buildTtsDirective({ chatId: '1', stateDir: '/s', voiceModel: 'v' }) as string
-    const b = buildTtsDirective({ chatId: '1', stateDir: '/s', voiceModel: 'v' }) as string
+    const a = buildTtsDirective({ chatId: '1', agentId: 'a', voiceModel: 'v' }) as string
+    const b = buildTtsDirective({ chatId: '1', agentId: 'a', voiceModel: 'v' }) as string
     const ma = a.match(MARKER_RE)
     const mb = b.match(MARKER_RE)
     expect(ma).not.toBeNull()
@@ -135,7 +135,7 @@ describe('the heredoc end marker is new for every directive (Dani, #2605 review)
 
   it('a reply line equal to a predictable marker stays part of the text', async () => {
     seen = []
-    const d = buildTtsDirective({ chatId: '1', stateDir: '/s', voiceModel: 'v' }) as string
+    const d = buildTtsDirective({ chatId: '1', agentId: 'a', voiceModel: 'v' }) as string
     const text = ['Első sor', 'MARVEEN_TTS_END', 'MARVEEN_TTS_END_', 'Utolsó sor'].join('\n')
     const r = await runDirective(d, text, join(root, 'bin'))
     expect(r.stderr).toBe('')
@@ -150,7 +150,7 @@ describe('parseTtsRequest', () => {
 
   it('reads the JSON body, as the route did before', () => {
     const body = Buffer.from(JSON.stringify({ text: ' hi ', voice_model: 'm', chat_id: 42, state_dir: '/s ' }))
-    expect(parseTtsRequest('application/json', body, q, 'def')).toEqual({ text: 'hi', voiceModel: 'm', chatId: '42', stateDir: '/s' })
+    expect(parseTtsRequest('application/json', body, q, 'def')).toEqual({ text: 'hi', voiceModel: 'm', chatId: '42', stateDir: '/s', agentId: '' })
   })
 
   it('a JSON body without voice_model gets the default', () => {
@@ -163,6 +163,15 @@ describe('parseTtsRequest', () => {
 
   it('a text/plain body with an empty voice_model gets the default', () => {
     const query = new URLSearchParams({ chat_id: '1', state_dir: '/s', voice_model: '' })
-    expect(parseTtsRequest('TEXT/PLAIN', Buffer.from('szöveg\n'), query, 'def')).toEqual({ text: 'szöveg', voiceModel: 'def', chatId: '1', stateDir: '/s' })
+    expect(parseTtsRequest('TEXT/PLAIN', Buffer.from('szöveg\n'), query, 'def')).toEqual({ text: 'szöveg', voiceModel: 'def', chatId: '1', stateDir: '/s', agentId: '' })
+  })
+
+  // #3118: the directive's new shape names the agent; JSON callers may too.
+  it('reads the agent from the query string and from a JSON body', () => {
+    const query = new URLSearchParams({ chat_id: '1', agent: 'kodi', voice_model: 'm' })
+    expect(parseTtsRequest('text/plain', Buffer.from('x'), query, 'def')).toEqual({ text: 'x', voiceModel: 'm', chatId: '1', stateDir: '', agentId: 'kodi' })
+    const json = (o: Record<string, unknown>) => Buffer.from(JSON.stringify(o))
+    expect(parseTtsRequest('application/json', json({ text: 'x', agent: ' kodi ' }), q, 'def')?.agentId).toBe('kodi')
+    expect(parseTtsRequest('application/json', json({ text: 'x', agent: 5 }), q, 'def')?.agentId).toBe('')
   })
 })
