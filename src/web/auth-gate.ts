@@ -52,6 +52,7 @@ import { readBody, stashPreReadBody, RequestBodyTooLargeError } from './http-hel
 import { OWNER_NAME, VOICE_CHANNEL_ID, DEFAULT_VOICE_CHANNEL_ID, RESERVED_AGENT_IDS, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../config.js'
 import { COMPANION_SENDER_ID } from './sanitize.js'
 import { agentVaultMode, isAgentReadableVaultId, readVaultAcl, type AgentVaultMode, type VaultAcl } from './vault-acl.js'
+import { parseTtsRequest } from './voice-directive.js'
 
 export type AuthResult =
   | { kind: 'token'; agent?: string; tokenAgent?: string }
@@ -430,6 +431,8 @@ export const AGENT_TOKEN_ALLOWLIST: readonly AgentAllowEntry[] = [
   { methods: ['POST'], pattern: /^\/api\/skill-usage$/, why: 'skill-usage-capture hook' },
   { methods: ['POST'], pattern: /^\/api\/tool-log$/, why: 'tool-log-capture hook' },
   { methods: ['GET'], pattern: /^\/api\/voice\/directive$/, why: 'voice-reply-directive hook' },
+  // TTSBIND1125 (a): the command the directive prescribes; bound to the caller below (agent=<itself>, no state_dir).
+  { methods: ['POST'], pattern: /^\/api\/voice\/tts$/, why: 'voice reply (the voice-reply directive\'s curl)' },
   // VAULTSZELES826 (0) replay, Samu 74563: what sub-agents call today and must keep after AGENT_TOKENS.
   // The proposer is the authenticated token (routes/skills.ts proposedBy = auth.agent); approval stays the owner's.
   { methods: ['POST'], pattern: /^\/api\/skills\/propose$/, why: 'skill proposal (marveen-api.sh skill-propose, every agent CLAUDE.md)' },
@@ -545,6 +548,28 @@ export interface IdentityBinding {
    *  all refused with ONE reason (approvalNotGrantedReason), so the answer
    *  says nothing about whether the id exists. */
   rowGrantee?: (m: RegExpExecArray, lk: IdentityLookups) => string | null
+  /** TTSBIND1125: for a route whose identity is not a JSON body field (it sits in the query string, or the body is
+   *  text/plain): reads the raw request the way the ROUTE reads it and returns the reason to refuse, or null. */
+  rawCheck?: (agent: string, raw: RawIdentityRequest) => string | null
+}
+
+/** The request as the route sees it: content type, the body bytes (read once and stashed), the query string. */
+export interface RawIdentityRequest {
+  contentType: string | undefined
+  buf: Buffer
+  query: URLSearchParams
+}
+
+/** TTSBIND1125 (a), Dani's review on #3125: POST /api/voice/tts sends through the channel of the agent it names, so
+ *  a sub-agent token names itself. Read with the route's own parser (parseTtsRequest: the query string with a
+ *  text/plain body, or the JSON body), so the gate and the route cannot disagree about which agent is named. The
+ *  state_dir shape is refused: a dir is not an identity, and a sub-agent never needs to name one. */
+export function ttsIdentityViolation(agent: string, raw: RawIdentityRequest): string | null {
+  const t = parseTtsRequest(raw.contentType, raw.buf, raw.query, '')
+  if (!t) return null // unparseable JSON: the route answers 400 and sends nothing
+  if (t.stateDir) return `'state_dir' cannot be sent with a sub-agent token; name the agent instead (agent=${agent})`
+  if (t.agentId !== agent) return `'agent' must be the calling agent '${agent}', got ${JSON.stringify(t.agentId).slice(0, 80)}`
+  return null
 }
 
 /** Who may consume an approval row with a sub-agent token: the grantee the
@@ -589,6 +614,8 @@ export const AGENT_IDENTITY_BINDINGS: readonly IdentityBinding[] = [
   { methods: ['POST'], pattern: new RegExp(`^/api/kanban/${KANBAN_CARD}/(?:archive|unarchive|labels|blockers)$`), bodyFields: ['actor'], why: 'audit actor is the caller' },
   { methods: ['POST'], pattern: /^\/api\/tool-log$/, bodyFields: ['agent_id'], why: 'tool-log rows are written as the caller' },
   { methods: ['POST'], pattern: /^\/api\/skill-usage$/, bodyFields: ['agent_id'], why: 'skill-usage rows are written as the caller' },
+  { methods: ['POST'], pattern: /^\/api\/voice\/tts$/, rawCheck: ttsIdentityViolation,
+    why: 'a voice reply goes out only through the caller\'s own channel: agent names the caller, never a state_dir' },
 ]
 
 function matchingBindings(method: string, path: string): Array<{ b: IdentityBinding; m: RegExpExecArray }> {
@@ -606,7 +633,7 @@ function matchingBindings(method: string, path: string): Array<{ b: IdentityBind
 // after the client has finished sending, and the route continues from the
 // stashed bytes with no client-timed gap between the check and its write.
 export function identityBindingNeedsBody(method: string, path: string): boolean {
-  return matchingBindings(method, path).some(({ b }) => !!(b.bodyFields || b.defaultsToMain || b.ownerLaneFields || b.rowOwner || b.rowGrantee))
+  return matchingBindings(method, path).some(({ b }) => !!(b.bodyFields || b.defaultsToMain || b.ownerLaneFields || b.rowOwner || b.rowGrantee || b.rawCheck))
 }
 
 /**
@@ -621,8 +648,15 @@ export function agentIdentityViolation(
   body: unknown,
   mainAgentId: string,
   lk: IdentityLookups = dbIdentityLookups,
+  raw?: RawIdentityRequest,
 ): string | null {
   for (const { b, m } of matchingBindings(method, path)) {
+    if (b.rawCheck) {
+      // Fail closed: a rawCheck route with no raw request to judge is refused, not waved through.
+      if (!raw) return 'the request could not be read for the identity check'
+      const reason = b.rawCheck(agent, raw)
+      if (reason) return reason
+    }
     if (b.pathAgentGroup !== undefined) {
       let named: string
       try { named = decodeURIComponent(m[b.pathAgentGroup] ?? '') } catch { return 'the agent named in the path is not decodable' }
@@ -1026,14 +1060,16 @@ export async function gateRequest(
   }
   if (matchingBindings(method, path).length > 0) {
     let body: unknown
+    let raw: RawIdentityRequest | undefined
     if (identityBindingNeedsBody(method, path)) {
       const read = await readAndStashBody(req, res)
       if (!read) return null
       body = parseJsonOrUndefined(read.buf)
+      raw = { contentType: req.headers['content-type'], buf: read.buf, query: url.searchParams }
     }
     let reason: string | null
     try {
-      reason = agentIdentityViolation(agent, method, path, body, opts.mainAgentId, opts.identityLookups ?? dbIdentityLookups)
+      reason = agentIdentityViolation(agent, method, path, body, opts.mainAgentId, opts.identityLookups ?? dbIdentityLookups, raw)
     } catch (err) {
       // A lookup failure must not open the door: fail closed.
       logger.error({ err: (err as Error).message, agent, method, path }, 'agent token: identity lookup failed')

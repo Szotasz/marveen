@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { STORE_DIR, WEB_PORT } from '../config.js'
 import { AGENTS_BASE_DIR } from './agent-config.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
+import { dashboardTokenPathFor, mainTokenPath } from './agent-tokens.js'
 
 const KNOWN_PROVIDERS = new Set<string>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
@@ -109,13 +110,19 @@ export function parseTtsRequest(
 // VOICETOKENLEAK1101: the directive is prompt text, so it lands in the agent's
 // pane and in its transcript. It must carry only a REFERENCE to the token file,
 // read by the shell when the command runs, never the token value itself.
+//
+// TTSBIND1125 (a): the reference names the AGENT's own token file when it has one
+// (AGENT_TOKENS on, the file in place: dashboardTokenPathFor), so the server knows
+// who calls and the gate binds ?agent= to that caller (auth-gate.ts). Otherwise
+// (switch off, the main agent, no file yet) the shared file, as before.
 export function buildTtsDirective(opts: {
   chatId: string
   agentId: string
   voiceModel: string
 }): string | null {
   try {
-    const tokenPath = join(STORE_DIR, '.dashboard-token')
+    const own = dashboardTokenPathFor(opts.agentId)
+    const tokenPath = own !== mainTokenPath() ? own : join(STORE_DIR, '.dashboard-token')
     if (!existsSync(tokenPath)) return null
     // Checked, not embedded: an empty or unreadable token file still means "no directive".
     if (!readFileSync(tokenPath, 'utf-8').trim()) return null

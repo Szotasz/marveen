@@ -75,7 +75,7 @@ const { initDatabase, createAgentMessage, saveAgentMemory, getAgentMessage, getD
 const { MAIN_AGENT_ID, PROJECT_ROOT } = await import('../config.js')
 const { logger } = await import('../logger.js')
 const {
-  resolveAuth, gateRequest, isScheduleWrite, agentScopeDenial, AGENT_TOKEN_ALLOWLIST, isAgentVaultReadAllowed,
+  resolveAuth, gateRequest, isScheduleWrite, agentScopeDenial, AGENT_TOKEN_ALLOWLIST, isAgentVaultReadAllowed, agentIdentityViolation,
 } = await import('../web/auth-gate.js')
 const {
   ensureAgentToken, createAgentTokenResolver, dashboardTokenPathFor, matchAgentToken, helperTokenEnv,
@@ -1003,7 +1003,7 @@ const ALLOWLIST_SAMPLES: Array<[string, string]> = [
   ['GET', '/api/agents'],
   ['GET', '/api/vault'], ['GET', '/api/vault/teszt-sajat'], ['POST', '/api/vault/resolve'], ['GET', '/api/vault/web-logins'], ['POST', '/api/vault/web-logins/shop-example-com/login'],
   ['POST', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa'], ['GET', '/api/agent-taskstate/alfa/replay'], ['POST', '/api/agent-taskstate/alfa/consume'],
-  ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'],
+  ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'], ['POST', '/api/voice/tts'],
   ['POST', '/api/skills/propose'], ['GET', '/api/updates'],
   ['GET', '/api/updates/rebase-plan'], ['GET', '/api/claude-plans/state'], ['GET', '/api/claude-plans/readiness'],
 ]
@@ -1051,7 +1051,7 @@ const INDIRECT_SUBAGENT_CALLS: Array<[string, string]> = [
   ['POST', '/api/messages'], ['GET', '/api/messages'], ['PUT', '/api/messages/42'],
   ['POST', '/api/memories'], ['POST', '/api/daily-log'], ['POST', '/api/agent-taskstate/alfa'],
   ['GET', '/api/agent-taskstate/alfa/replay'], ['POST', '/api/agent-taskstate/alfa/consume'],
-  ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'],
+  ['POST', '/api/skill-usage'], ['POST', '/api/tool-log'], ['GET', '/api/voice/directive'], ['POST', '/api/voice/tts'],
   ['POST', '/api/skills/propose'], ['GET', '/api/updates'], ['GET', '/api/claude-plans/state'], ['GET', '/api/claude-plans/readiness'],
 ]
 
@@ -1236,6 +1236,92 @@ describe('gate invariants: identity lookup failure and the SSE pane stream', () 
     // The main token still opens it both ways (unchanged).
     expect((await gateRaw('GET', `${pane}?token=${MAIN_TOKEN}`, {}, resolver)).status).toBe(200)
     expect((await gateRaw('GET', pane, { authorization: `Bearer ${MAIN_TOKEN}` }, resolver)).status).toBe(200)
+  })
+})
+
+// ---- TTSBIND1125 (a): POST /api/voice/tts names the caller ----------------------
+
+describe('POST /api/voice/tts with a sub-agent token: agent is the caller, never a state_dir (TTSBIND1125)', () => {
+  const base = join(scratch.root, 'ttsbind', 'agents')
+  let agentTok = ''
+  let resolver: (t: string) => string | null = () => null
+  beforeAll(() => {
+    mkdirSync(join(base, AGENT), { recursive: true })
+    ensureAgentToken(AGENT, base, MAIN_TOKEN)
+    agentTok = readFileSync(agentTokenPath(AGENT, base), 'utf-8')
+    resolver = createAgentTokenResolver({ baseDir: base, mainToken: MAIN_TOKEN })
+  })
+
+  // The directive's shape: text/plain body, the fields in the query string. Or a JSON body (the older shape).
+  async function tts(token: string, query: Record<string, string>, body: { text?: string; json?: unknown } = { text: 'szia' }, extra: Record<string, string> = {}) {
+    const out: { status: number; body: Record<string, unknown>; auth: unknown; req?: http.IncomingMessage } = { status: 0, body: {}, auth: null }
+    const res = {
+      writeHead(code: number) { out.status = code; return res },
+      end(data?: unknown) { try { out.body = JSON.parse(String(data ?? '{}')) } catch { /* non-JSON */ } },
+      setHeader() { return res },
+    } as unknown as http.ServerResponse
+    const isJson = body.json !== undefined
+    const req = Readable.from([Buffer.from(isJson ? JSON.stringify(body.json) : body.text ?? '')]) as unknown as http.IncomingMessage
+    ;(req as unknown as { headers: Record<string, string> }).headers = {
+      authorization: `Bearer ${token}`, 'content-type': isJson ? 'application/json' : 'text/plain; charset=utf-8', ...extra,
+    }
+    out.req = req
+    const url = new URL(`http://127.0.0.1/api/voice/tts?${new URLSearchParams(query)}`)
+    out.auth = await gateRequest(req, res, url, url.pathname, 'POST', { dashboardToken: MAIN_TOKEN, resolveAgentToken: resolver, mainAgentId: MAIN_AGENT_ID })
+    if (out.auth !== null) out.status = 200 // passed the gate; the route decides from here
+    return out
+  }
+  const DIR = '/home/x/.claude/channels/telegram'
+
+  it('agent=<itself> passes the gate (the directive\'s command), and the route still gets the body', async () => {
+    const r = await tts(agentTok, { chat_id: '123', agent: AGENT, voice_model: 'm' })
+    expect(r.status, JSON.stringify(r.body)).toBe(200)
+    expect((r.auth as { tokenAgent?: string }).tokenAgent).toBe(AGENT)
+    const { readBody } = await import('../web/http-helpers.js')
+    expect((await readBody(r.req!)).toString()).toBe('szia')
+    expect((await tts(agentTok, { chat_id: '123' }, { json: { text: 'szia', chat_id: '123', agent: AGENT } })).status).toBe(200)
+  })
+
+  it('agent=<another agent> is 403 agent-identity-binding, in the query and in a JSON body', async () => {
+    for (const r of [
+      await tts(agentTok, { chat_id: '123', agent: OTHER }),
+      await tts(agentTok, { chat_id: '123', agent: MAIN_AGENT_ID }),
+      await tts(agentTok, { chat_id: '123' }, { json: { text: 'szia', chat_id: '123', agent: OTHER } }),
+      // a JSON request is read from the body (as the route does): ?agent=<itself> beside it changes nothing
+      await tts(agentTok, { chat_id: '123', agent: AGENT }, { json: { text: 'szia', chat_id: '123', agent: OTHER } }),
+      // no agent at all names nobody
+      await tts(agentTok, { chat_id: '123' }),
+    ]) {
+      expect(r.status).toBe(403)
+      expect(r.body.rule).toBe('agent-identity-binding')
+      expect(r.body.agent).toBe(AGENT)
+    }
+  })
+
+  it('the state_dir shape is 403 with a sub-agent token, alone or beside agent=<itself>', async () => {
+    for (const r of [
+      await tts(agentTok, { chat_id: '123', state_dir: DIR }),
+      await tts(agentTok, { chat_id: '123', agent: AGENT, state_dir: DIR }),
+      await tts(agentTok, { chat_id: '123' }, { json: { text: 'szia', chat_id: '123', state_dir: DIR } }),
+    ]) {
+      expect(r.status).toBe(403)
+      expect(r.body.rule).toBe('agent-identity-binding')
+      expect(String(r.body.error)).toContain('state_dir')
+    }
+  })
+
+  it('with no raw request to judge, the binding fails CLOSED', () => {
+    expect(agentIdentityViolation(AGENT, 'POST', '/api/voice/tts', undefined, MAIN_AGENT_ID)).toContain('could not be read')
+  })
+
+  it('the shared token keeps today\'s behaviour: any agent, the state_dir shape, with or without X-Agent-Id', async () => {
+    for (const extra of [{}, { 'x-agent-id': AGENT }] as Array<Record<string, string>>) {
+      for (const q of [{ chat_id: '123', agent: OTHER }, { chat_id: '123', agent: MAIN_AGENT_ID }, { chat_id: '123', state_dir: DIR }] as Array<Record<string, string>>) {
+        const r = await tts(MAIN_TOKEN, q, { text: 'szia' }, extra)
+        expect(r.status, JSON.stringify(q)).toBe(200)
+        expect((r.auth as { tokenAgent?: string }).tokenAgent).toBeUndefined()
+      }
+    }
   })
 })
 
