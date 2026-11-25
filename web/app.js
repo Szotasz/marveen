@@ -4626,8 +4626,17 @@ function applyMarveenReadonlyMode(readOnly) {
     const btn = document.getElementById(id)
     if (btn) { btn.hidden = false; btn.disabled = readOnly }
   }
+  // HOSTINGERRETEST1125: a sub-agent on a custom provider (the Hostinger AI Router on a router install) runs on that
+  // provider's key, so the Claude login choices (auth mode, Claude subscription) do not apply and are not offered:
+  // a router-only install is never pushed toward a Claude login. A note says why.
+  const agent = typeof currentAgent === 'undefined' ? null : currentAgent
+  const onProvider = !readOnly && !!(agent && agent.role !== 'main' && agent.customProvider)
+  const providerNote = document.getElementById('agentProviderAuthNote')
+  if (providerNote) providerNote.hidden = !onProvider
+  const providerNoteText = document.getElementById('agentProviderAuthNoteText')
+  if (onProvider && providerNoteText) providerNoteText.textContent = t('agents.plan_login.provider_note', { provider: agent.customProvider })
   const authModeGroup = document.getElementById('authModeGroup')
-  if (authModeGroup) authModeGroup.hidden = readOnly
+  if (authModeGroup) authModeGroup.hidden = readOnly || onProvider
   const memoryIsolationGroup = document.getElementById('memoryIsolationGroup')
   if (memoryIsolationGroup) memoryIsolationGroup.hidden = readOnly
   // CODEMODEFLAG1119: sub-agents only (the main agent does not start through the launcher that reads it)
@@ -4639,8 +4648,9 @@ function applyMarveenReadonlyMode(readOnly) {
   // both open paths run; openAgentDetail used to hide the plan group itself, which the main agent never reached.
   for (const id of ['securityProfileGroup', 'claudePlanGroup']) {
     const group = document.getElementById(id)
-    if (group) group.hidden = readOnly
+    if (group) group.hidden = readOnly || (id === 'claudePlanGroup' && onProvider)
   }
+
   // MAINAUTHSWITCH1107: the main agent's own authentication switch, on the main agent card only
   const mainAuthGroup = document.getElementById('mainAuthGroup')
   if (mainAuthGroup) {
@@ -5114,6 +5124,8 @@ async function openAgentDetail(agentName) {
 
   // Restore editable Settings (Marveen detail flips this to read-only).
   applyMarveenReadonlyMode(false)
+  // HOSTINGERRETEST1125: a subscription login started on another agent's page is not shown on this one.
+  setAgentPlanLoginState({})
 
   // Delete button (restore visibility for normal agents)
   document.getElementById('deleteAgentBtn').style.display = ''
@@ -7078,6 +7090,134 @@ document.getElementById('savePlanBtn').addEventListener('click', async () => {
     showToast(t('agents.toast.plan_saved'), 'success')
     loadAgents()
   } catch { showToast(t('agents.toast.plan_error'), 'error') }
+})
+
+// === Log in to a Claude subscription for this agent (HOSTINGERRETEST1125) ===
+// The same setup-token relay as Settings > Claude subscriptions (/api/claude-plans/login/*): a link to open, the code
+// from the login page back here, the token checked with a test call. The new plan is then assigned to this agent, with
+// authMode 'shared' (a plan token runs only there: plan-token-launch.ts). The agent's own /login in its terminal
+// (own_team) is a different, advanced path that the dashboard cannot finish.
+
+/** A plan id for this agent's login: the agent name plus a time stamp, within the plan id charset. */
+function agentPlanLoginId(agentName, now = Date.now()) {
+  const base = String(agentName || 'agent').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 40) || 'agent'
+  return `${base}-${now.toString(36)}`
+}
+
+let agentPlanLoginFor = null // the agent the running login belongs to
+
+function setAgentPlanLoginState({ step = false, status = null, error = null } = {}) {
+  document.getElementById('agentPlanLoginStep').hidden = !step
+  const st = document.getElementById('agentPlanLoginStatus')
+  st.textContent = status || ''
+  st.hidden = !status
+  const er = document.getElementById('agentPlanLoginError')
+  er.textContent = error || ''
+  er.hidden = !error
+}
+
+document.getElementById('agentPlanLoginBtn').addEventListener('click', async () => {
+  if (!currentAgent || currentAgent.role === 'main') return
+  const agent = currentAgent
+  const btn = document.getElementById('agentPlanLoginBtn')
+  btn.disabled = true
+  setAgentPlanLoginState({ status: t('settings.claude_plans.login.starting') })
+  try {
+    const res = await fetch('/api/claude-plans/login/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: agentPlanLoginId(agent.name),
+        label: `${agent.displayName || agent.name} (${agent.name})`,
+        planType: 'personal',
+        channelsAllowed: false,
+      }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (!res.ok || !data || typeof data.url !== 'string') {
+      setAgentPlanLoginState({ error: claudePlanLoginErrorText(data) })
+      return
+    }
+    agentPlanLoginFor = agent.name
+    const link = document.getElementById('agentPlanLoginLink')
+    link.href = safeHref(data.url) || '#'
+    document.getElementById('agentPlanLoginUrl').value = data.url
+    document.getElementById('agentPlanLoginCode').value = ''
+    setAgentPlanLoginState({ step: true, status: t('settings.claude_plans.login.waiting_code') })
+    link.focus()
+  } catch {
+    setAgentPlanLoginState({ error: t('settings.claude_plans.form.error_generic') })
+  } finally {
+    btn.disabled = false
+  }
+})
+
+document.getElementById('agentPlanLoginCopyBtn').addEventListener('click', async () => {
+  const field = document.getElementById('agentPlanLoginUrl')
+  if (!field.value) return
+  try {
+    await navigator.clipboard.writeText(field.value)
+    showToast(t('settings.claude_plans.login.copied'), 'success')
+  } catch {
+    field.focus()
+    field.select()
+  }
+})
+
+document.getElementById('agentPlanLoginCodeBtn').addEventListener('click', async () => {
+  const code = document.getElementById('agentPlanLoginCode').value.trim()
+  const agentName = agentPlanLoginFor
+  if (!code || !agentName) return
+  const btn = document.getElementById('agentPlanLoginCodeBtn')
+  btn.disabled = true
+  setAgentPlanLoginState({ step: true, status: t('settings.claude_plans.login.checking') })
+  try {
+    const res = await fetch('/api/claude-plans/login/code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (res.status !== 201 || !data || !data.id) {
+      // A mistyped code leaves the login waiting; anything else has ended it.
+      const waiting = data && data.code === 'bad-code'
+      setAgentPlanLoginState({ step: waiting, status: waiting ? t('settings.claude_plans.login.waiting_code') : null, error: claudePlanLoginErrorText(data) })
+      if (!waiting) agentPlanLoginFor = null
+      return
+    }
+    agentPlanLoginFor = null
+    // The plan exists now; assign it to the agent (a plan token runs with authMode 'shared' only).
+    const put = await fetch(`/api/agents/${encodeURIComponent(agentName)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ authMode: 'shared', claudePlan: data.id }),
+    })
+    if (!put.ok) {
+      setAgentPlanLoginState({ error: t('agents.plan_login.assign_failed', { label: data.label || data.id }) })
+      return
+    }
+    setAgentPlanLoginState({})
+    showToast(t('agents.plan_login.done', { label: data.label || data.id }), data.verified ? 'success' : 'warn')
+    if (currentAgent && currentAgent.name === agentName) {
+      currentAgent.claudePlan = data.id
+      currentAgent.authMode = 'shared'
+      populatePlanSelect(document.getElementById('editAgentPlan'), document.getElementById('editAgentPlanDesc'), data.id)
+      updateAuthModeUI('shared', currentAgent.hasApiKey || false)
+    }
+    loadAgents()
+  } catch {
+    setAgentPlanLoginState({ error: t('settings.claude_plans.form.error_generic') })
+  } finally {
+    btn.disabled = false
+  }
+})
+
+document.getElementById('agentPlanLoginCancelBtn').addEventListener('click', async () => {
+  agentPlanLoginFor = null
+  setAgentPlanLoginState({})
+  try { await fetch('/api/claude-plans/login/cancel', { method: 'POST' }) } catch { /* the server ends it on its own timeout */ }
 })
 
 // === Auth Mode ===
