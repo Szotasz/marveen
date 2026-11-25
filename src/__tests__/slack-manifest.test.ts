@@ -32,6 +32,11 @@ describe('generateSlackAppManifest', () => {
     expect(yaml).toContain('socket_mode_enabled: true')
   })
 
+  it('enables the writable Messages tab, so users can DM the app', () => {
+    const yaml = generateSlackAppManifest('Bot')
+    expect(yaml).toContain('  app_home:\n    home_tab_enabled: false\n    messages_tab_enabled: true\n    messages_tab_read_only_enabled: false\n  bot_user:')
+  })
+
   it('enables interactivity', () => {
     const yaml = generateSlackAppManifest('Bot')
     expect(yaml).toContain('is_enabled: true')

@@ -19,6 +19,9 @@
 #   - reply to a thread nobody asked in, only threads pending -> chat cleared
 #   - reply in a different chat -> nothing cleared, state file untouched
 #   - non-reply / non-slack tool -> no-op
+#   - react ON the inbound message -> only that one cleared; react elsewhere -> no-op
+#   - edit_message of the thread root the inbound was written in -> only that one
+#     cleared; any other edit -> no-op
 # and the failed-delete contract (review #4), through the stub's failure
 # injection (stub_mode):
 #   - chat.delete RETRYABLE (HTTP 429/503, ok:false ratelimited, API down)
@@ -227,11 +230,61 @@ run_hook "$TOOL" '{"chat_id":"'"$CHAT"'","text":"kesz"}'
 assert_eq "placeholder deleted"  "$PH_A"   "$(deleted_ts)"
 assert_eq "state file removed"   "(none)"  "$(remaining_ts)"
 
-echo "== non-reply slack tool -> no-op"
+echo "== react without a message_id -> no-op"
 reset "[$ENTRY_A]"
 run_hook "mcp__plugin_slack-channel_slack__react" '{"chat_id":"'"$CHAT"'","emoji":"eyes"}'
 assert_eq "nothing deleted"      ""        "$(deleted_ts)"
 assert_eq "A still pending"      "$PH_A"   "$(remaining_ts)"
+
+echo "== react ON the inbound message answers it (D-218 #7: an ack is owed no text)"
+reset "[$ENTRY_A,$ENTRY_B]"
+run_hook "mcp__plugin_slack-channel_slack__react" '{"chat_id":"'"$CHAT"'","message_id":"'"$SRC_TS"'","emoji":"thumbsup"}'
+assert_eq "only A's placeholder deleted" "$PH_A" "$(deleted_ts)"
+assert_eq "B still pending"              "$PH_B" "$(remaining_ts)"
+
+echo "== react on some OTHER message -> no-op"
+reset "[$ENTRY_A]"
+run_hook "mcp__plugin_slack-channel_slack__react" '{"chat_id":"'"$CHAT"'","message_id":"1757409999.000009","emoji":"eyes"}'
+assert_eq "nothing deleted"      ""        "$(deleted_ts)"
+assert_eq "A still pending"      "$PH_A"   "$(remaining_ts)"
+
+echo "== react on the inbound ts but in another chat -> no-op"
+reset "[$ENTRY_A]"
+run_hook "mcp__plugin_slack-channel_slack__react" '{"chat_id":"'"$OTHER_CHAT"'","message_id":"'"$SRC_TS"'","emoji":"eyes"}'
+assert_eq "nothing deleted"      ""        "$(deleted_ts)"
+assert_eq "A still pending"      "$PH_A"   "$(remaining_ts)"
+
+EDIT="mcp__plugin_slack-channel_slack__edit_message"
+
+echo "== edit of the question whose thread the inbound came in answers it (D-218 #5/#7)"
+reset "[$ENTRY_A,$ENTRY_B]"
+run_hook "$EDIT" '{"chat_id":"'"$CHAT"'","message_id":"'"$THREAD_B"'","text":"✅ Kérdés 3"}'
+assert_eq "only B's placeholder deleted" "$PH_B" "$(deleted_ts)"
+assert_eq "A still pending"              "$PH_A" "$(remaining_ts)"
+
+echo "== edit of a top-level inbound's own ts (not a thread reply) -> no-op"
+reset "[$ENTRY_A]"
+run_hook "$EDIT" '{"chat_id":"'"$CHAT"'","message_id":"'"$SRC_TS"'","text":"x"}'
+assert_eq "nothing deleted"      ""        "$(deleted_ts)"
+assert_eq "A still pending"      "$PH_A"   "$(remaining_ts)"
+
+echo "== edit of some OTHER message -> no-op"
+reset "[$ENTRY_B]"
+run_hook "$EDIT" '{"chat_id":"'"$CHAT"'","message_id":"1757409999.000009","text":"x"}'
+assert_eq "nothing deleted"      ""        "$(deleted_ts)"
+assert_eq "B still pending"      "$PH_B"   "$(remaining_ts)"
+
+echo "== edit of the thread root but in another chat -> no-op"
+reset "[$ENTRY_B]"
+run_hook "$EDIT" '{"chat_id":"'"$OTHER_CHAT"'","message_id":"'"$THREAD_B"'","text":"x"}'
+assert_eq "nothing deleted"      ""        "$(deleted_ts)"
+assert_eq "B still pending"      "$PH_B"   "$(remaining_ts)"
+
+echo "== edit without a message_id -> no-op"
+reset "[$ENTRY_B]"
+run_hook "$EDIT" '{"chat_id":"'"$CHAT"'","text":"x"}'
+assert_eq "nothing deleted"      ""        "$(deleted_ts)"
+assert_eq "B still pending"      "$PH_B"   "$(remaining_ts)"
 
 echo "== telegram reply tool -> no-op"
 reset "[$ENTRY_A]"
