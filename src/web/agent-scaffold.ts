@@ -6,6 +6,7 @@ import { registerScheduledTask } from './schedule-registry.js'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR, mainAgentRecipientLedgerEnabled } from '../config.js'
+import { AGENT_BROWSER_MCP_NAME } from './agent-browser.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync, writeMcpJsonFile } from './atomic-write.js'
@@ -2044,6 +2045,9 @@ export const FLEET_BASELINE_DENY = [
   'Bash(git push --force:*)',
   'Bash(git push -f:*)',
   'mcp__playwright__browser_run_code_unsafe',
+  // CDPP0DENY1126 (Dani's measurement, CDPSUTI1126): the fleet's own browser server (@playwright/mcp) exposes the same
+  // tool under its own name; it returns HttpOnly cookie values to the model and its fetch reaches any origin.
+  `mcp__${AGENT_BROWSER_MCP_NAME}__browser_run_code_unsafe`,
   // MCPWRITEGATE1104 (Samu 68033 D2): the filesystem MCP server (its root was "/": its read tools walked past the
   // Read(...) rules above, its write tools past every path gate) and gitnexus's repo-wide rename (it rewrites files
   // with no path in its arguments). The bare server form denies every tool of that server, in every permission mode
