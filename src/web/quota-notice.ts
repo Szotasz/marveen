@@ -30,6 +30,7 @@ import { logger } from '../logger.js'
 import { STORE_DIR, PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, CHANNEL_TOKEN } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { STATE_OBSERVER_STATE_DIR } from './state-observer.js'
+import { inboundRecordText } from './inbound-probe.js'
 import {
   readQuotaSnapshot, readModQuotaSnapshot, chooseQuotaSnapshot, DEFAULT_MAX_AGE_SEC, DEFAULT_FABLE_MAX_AGE_SEC,
   type QuotaSnapshot, type QuotaWindow,
@@ -187,19 +188,6 @@ export interface ChannelExchange { inbound: ChannelInbound[]; replies: Array<{ c
 const CHANNEL_TAG_RX = /<channel\s+([^>]*)>([\s\S]*?)<\/channel>/g
 const ATTR_RX = /([a-z_]+)="([^"]*)"/g
 
-function recordInboundText(rec: { type?: unknown; message?: { content?: unknown } }): string | null {
-  if (rec.type !== 'user') return null
-  const content = rec.message?.content
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return null
-  const parts: string[] = []
-  for (const p of content as Array<{ type?: unknown; text?: unknown }>) {
-    if (p?.type === 'tool_result') return null
-    if (p?.type === 'text' && typeof p.text === 'string') parts.push(p.text)
-  }
-  return parts.length ? parts.join('\n') : null
-}
-
 /**
  * Inbound channel messages and channel replies in transcript JSONL lines. An inbound is a user record carrying a
  * `<channel source=... chat_id=... message_id=...>` block (the channel plugin's envelope); a reply is an assistant
@@ -221,7 +209,9 @@ export function scanChannelExchanges(lines: string[]): ChannelExchange {
       }
       continue
     }
-    const text = recordInboundText(rec)
+    // inboundRecordText also reads the records a busy session writes instead of a user turn (queued_command
+    // attachment, queue-operation enqueue): a message that arrived mid-turn is an inbound too (measured 2026-11-26).
+    const text = inboundRecordText(rec)
     if (!text) continue
     CHANNEL_TAG_RX.lastIndex = 0
     let m: RegExpExecArray | null
@@ -231,10 +221,16 @@ export function scanChannelExchanges(lines: string[]): ChannelExchange {
       let a: RegExpExecArray | null
       while ((a = ATTR_RX.exec(m[1])) !== null) attrs[a[1]] = a[2]
       if (!attrs['chat_id'] || !attrs['source']?.startsWith('plugin:')) continue
-      inbound.push({
+      // The envelope's own ts is the arrival time; a queued_command line is written later, at the next tool boundary.
+      const tagMs = attrs['ts'] ? Date.parse(attrs['ts']) : NaN
+      const item = {
         chatId: attrs['chat_id'], messageId: attrs['message_id'] ?? '', user: attrs['user'] ?? '',
-        source: attrs['source'], atMs, text: m[2].trim(),
-      })
+        source: attrs['source'], atMs: Number.isFinite(tagMs) ? tagMs : atMs, text: m[2].trim(),
+      }
+      // The same message can be recorded twice (queue-operation enqueue, then the turn itself): keep it once.
+      const dup = item.messageId ? inbound.find((i) => i.chatId === item.chatId && i.messageId === item.messageId) : undefined
+      if (dup) { if (item.atMs < dup.atMs) dup.atMs = item.atMs; continue }
+      inbound.push(item)
     }
   }
   return { inbound, replies }
@@ -280,8 +276,21 @@ export function wallStateFor(
   return { walled: false, key: '', resetsAtSec: null, resetsAtText: null }
 }
 
+/**
+ * The CLI banner prints a 12-hour clock ("9:20pm", "2am"). In a Hungarian text that reads wrong, so the plain
+ * forms become 24-hour ("21:20", "02:00"); anything else (a date, a zone) is kept as the CLI printed it.
+ */
+export function bannerTimeFor(text: string, lang: NoticeLang): string {
+  if (lang === 'en') return text
+  const m = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i.exec(text.trim())
+  if (!m) return text
+  let h = Number(m[1]) % 12
+  if (m[3].toLowerCase() === 'pm') h += 12
+  return `${String(h).padStart(2, '0')}:${m[2] ?? '00'}`
+}
+
 export function formatAutoReply(wall: WallState, lang: NoticeLang, nowSec?: number): string {
-  const at = wall.resetsAtText ?? formatResetTime(wall.resetsAtSec, lang, nowSec)
+  const at = wall.resetsAtText !== null ? bannerTimeFor(wall.resetsAtText, lang) : formatResetTime(wall.resetsAtSec, lang, nowSec)
   if (lang === 'en') {
     return `⏳ Automatic message: the AI quota is used up for now, so I cannot answer yet. It resets at ${at}, and I will answer your message then. No need to send it again.`
   }
@@ -316,7 +325,8 @@ export function decideHandBacks(agent: string, wall: WallState, records: AutoRep
 // Transcript tail
 // ---------------------------------------------------------------------------------------------------------------
 
-export const TRANSCRIPT_TAIL_BYTES = 512 * 1024
+// A busy hub's transcript holds large tool results (512 KB was ~100 lines on the live main agent, 2026-11-26).
+export const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024
 
 /** The lines of the newest .jsonl across the dirs, its last TRANSCRIPT_TAIL_BYTES only (first partial line dropped). */
 export function newestTranscriptLines(dirs: string[], tailBytes = TRANSCRIPT_TAIL_BYTES): string[] {

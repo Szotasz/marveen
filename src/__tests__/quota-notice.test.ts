@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   readQuotaNoticeConfig, readUsageCollectSnapshot, fresherSnapshot, decideThresholdNotices, formatThresholdNotice,
   scanChannelExchanges, unansweredInbound, wallStateFor, decideAutoReplies, decideHandBacks, runQuotaNoticeTick,
+  bannerTimeFor, formatAutoReply,
   type QuotaNoticeDeps, type QuotaNoticeState,
 } from '../web/quota-notice.js'
 import type { QuotaSnapshot } from '../web/quota.js'
@@ -91,11 +92,32 @@ describe('(B) transcript scan', () => {
   })
 })
 
+describe('(B) transcript scan, busy session', () => {
+  it('reads a message queued mid-turn (queue-operation + queued_command) once, at its envelope time', () => {
+    const tag = `<channel source="plugin:discord:discord" chat_id="Q" message_id="7" user="dave" ts="${iso(NOW - 400)}">\nsorban\n</channel>`
+    const ex = scanChannelExchanges([
+      tl({ type: 'queue-operation', operation: 'enqueue', timestamp: iso(NOW - 399), content: tag }),
+      tl({ type: 'attachment', timestamp: iso(NOW - 200), attachment: { type: 'queued_command', prompt: tag } }),
+    ])
+    expect(ex.inbound).toHaveLength(1)
+    expect(ex.inbound[0].atMs).toBe((NOW - 400) * 1000)
+    expect(unansweredInbound(ex, NOW * 1000, 120_000).map((i) => i.chatId)).toEqual(['Q'])
+  })
+})
+
 describe('(B) wall and replies', () => {
   it('a pane banner walls; otherwise the shared plan at the threshold does', () => {
     expect(wallStateFor({ resetsAt: '7:20pm' }, snap(10, 10), 95)).toMatchObject({ walled: true, key: 'pane:7:20pm', resetsAtText: '7:20pm' })
     expect(wallStateFor(null, snap(96, 10), 95)).toMatchObject({ walled: true, key: `five_hour:${NOW + 3600}` })
     expect(wallStateFor(null, snap(94, 10), 95).walled).toBe(false)
+  })
+  it('the banner 12-hour time reads as 24-hour in Hungarian, other forms stay as printed', () => {
+    expect(bannerTimeFor('9:20pm', 'hu')).toBe('21:20')
+    expect(bannerTimeFor('2am', 'hu')).toBe('02:00')
+    expect(bannerTimeFor('12:05am', 'hu')).toBe('00:05')
+    expect(bannerTimeFor('Sep 28, 5pm (UTC)', 'hu')).toBe('Sep 28, 5pm (UTC)')
+    expect(bannerTimeFor('9:20pm', 'en')).toBe('9:20pm')
+    expect(formatAutoReply(wallStateFor({ resetsAt: '9:20pm' }, snap(0, 0), 95), 'hu')).toContain('21:20 körül')
   })
   it('one auto-reply per agent + chat + wall', () => {
     const wall = wallStateFor(null, snap(96, 10), 95)
@@ -157,7 +179,7 @@ describe('tick', () => {
     await runQuotaNoticeTick(walled.d)
     await runQuotaNoticeTick({ ...walled.d, loadState: () => walled.getState() })
     expect(walled.d.sendChannel).toHaveBeenCalledTimes(1)
-    expect((walled.d.sendChannel as ReturnType<typeof vi.fn>).mock.calls[0][2]).toContain('7:20pm')
+    expect((walled.d.sendChannel as ReturnType<typeof vi.fn>).mock.calls[0][2]).toContain('19:20')
 
     const lifted = deps({ wall: null, lines, state: walled.getState() })
     await runQuotaNoticeTick(lifted.d)
