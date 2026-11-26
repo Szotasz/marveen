@@ -5707,7 +5707,10 @@ function helperBodyRecipeLines(name: string): string[] {
     '  Hiány-állításhoz tedd hozzá a `--strict` kapcsolót. A keresőszót a segéd maga kódolja, az ékezetes szó is megy.',
     `- ${ONE_FILE_ONE_SEND}`,
     '- A tier hot, warm, cold vagy shared. Az átsorolás csak a tier-t állítja, a tartalmat nem kell újraküldeni.',
-    `- Webes belépés a vaultból: \`${apiHelper} vault-logins\` listázza, melyik oldalra léphetsz be, és \`${apiHelper} vault-login ${name} <id>\` a SAJÁT böngésződben (a marveen-browser eszközöd) lép be helyetted. A jelszót nem kapod meg, a válasz csak az eredmény (success, 2fa, wrong, ...). 2fa esetén kérd meg a gazdát, hogy a böngésző ablakában írja be a kódot; wrong után a bejegyzés zárolt, amíg a gazda fel nem oldja.`,
+    // VAULTRECEPT1126: an entry may allow sub-agents only, so the server answers not-allowed to the main agent.
+    name === MAIN_AGENT_ID
+      ? `- Webes belépés a vaultból: a belépés egy al-ügynök SAJÁT böngészőjében történik, a fő ügynöknek a szerver nem engedi (egy bejegyzés csak al-ügynököt engedélyezhet). A \`${apiHelper} vault-logins\` listázza a bejegyzéseket és az engedélyezett ügynökeiket; a webes belépést igénylő feladatot delegáld egy engedélyezett al-ügynöknek.`
+      : `- Webes belépés a vaultból: \`${apiHelper} vault-logins\` listázza, melyik oldalra léphetsz be, és \`${apiHelper} vault-login ${name} <id>\` a SAJÁT böngésződben (a marveen-browser eszközöd) lép be helyetted. A jelszót nem kapod meg, a válasz csak az eredmény (success, 2fa, wrong, ...). 2fa esetén kérd meg a gazdát, hogy a böngésző ablakában írja be a kódot; wrong után a bejegyzés zárolt, amíg a gazda fel nem oldja.`,
   ]
 }
 

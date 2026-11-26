@@ -496,7 +496,7 @@ describe('the retired path of the English text (EGM review Major 2): per languag
 // update the hash here (the failing test prints the new one). The hash covers every branch combination above.
 const HU_SOURCE_HASHES: Record<string, string> = {
   'agent-id-header': 'aecb1a3b1848214a',
-  'api-helper': 'b8eeff8bebdff1d1',
+  'api-helper': 'ac8937bbb8353860',
   'autonomy': '909f1d98acff1d70',
   'background-checkpoint': '04505f8789507f70',
   'evidence': '9dff6e8bd9b8d64c',
@@ -511,7 +511,7 @@ const HU_SOURCE_HASHES: Record<string, string> = {
   'message-close': 'e29b78836bf9a895',
   'pane-at-escape': '81d1f7d930d89739',
   'skills-path-trap': '76b7632b730c8120',
-  'strict-api': '0eeec47cd845f598',
+  'strict-api': 'aa744626e198c285',
   'system-directive-auth': '9f9b67655bf84872',
 }
 
@@ -529,6 +529,28 @@ describe('generated sections: staleness guard (a Hungarian change needs its Engl
       for (const id of ids) h.update(`${id}\n${CASES.find((c) => c.id === id)!.build().split(tmpRoot).join('<ROOT>')}\n`)
       const digest = h.digest('hex').slice(0, 16)
       expect(HU_SOURCE_HASHES[g], `${g}: the Hungarian body changed; update its English twin, then set the hash to '${digest}'`).toBe(digest)
+    })
+  }
+})
+
+// VAULTRECEPT1126: a vault web-login entry may allow sub-agents only, so the server answers not-allowed to the main
+// agent. Its recipe list must not offer `vault-login` (it points to delegation instead); a sub-agent keeps the recipe.
+describe('the vault-login recipe: delegation for the main agent, the recipe for a sub-agent', () => {
+  for (const lang of [null, 'en'] as const) {
+    it(`${lang ?? 'hu'}: in both the api-helper and the strict-api block`, () => {
+      setLang(lang)
+      const delegate = lang === 'en' ? 'delegate a task that needs a web login to an allowed sub-agent' : 'a webes belépést igénylő feladatot delegáld egy engedélyezett al-ügynöknek'
+      for (const build of [sc.buildApiHelperBody, sc.buildStrictApiBody]) {
+        const main = build(MAIN)
+        expect(main).not.toContain(' vault-login ')
+        expect(main).toContain('vault-logins`')
+        expect(main).toContain(delegate)
+        for (const sub of [OWN, SHARED]) {
+          const body = build(sub)
+          expect(body).toContain(` vault-login ${sub} <id>\``)
+          expect(body).not.toContain(delegate)
+        }
+      }
     })
   }
 })

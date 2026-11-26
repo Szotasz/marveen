@@ -629,7 +629,9 @@ function helperBodyRecipeLinesEn(name: string, f: ScaffoldFrags): string[] {
     '  For an absence claim add the `--strict` switch. The helper encodes the search word itself, a word with accents works too.',
     `- ${ONE_FILE_ONE_SEND_EN}`,
     '- The tier is hot, warm, cold or shared. A move sets only the tier, the content does not have to be sent again.',
-    `- Web logins from the vault: \`${f.apiHelper} vault-logins\` lists the sites you may log in to, and \`${f.apiHelper} vault-login ${name} <id>\` logs you in, in YOUR OWN browser (your marveen-browser tool). You never get the password; the answer is the outcome only (success, 2fa, wrong, ...). On 2fa ask the owner to type the code in the browser window; after wrong the entry is locked until the owner unlocks it.`,
+    name === f.mainAgentId
+      ? `- Web logins from the vault: a login happens in a sub-agent's OWN browser; the server does not allow it for the main agent (an entry can allow sub-agents only). \`${f.apiHelper} vault-logins\` lists the entries and their allowed agents; delegate a task that needs a web login to an allowed sub-agent.`
+      : `- Web logins from the vault: \`${f.apiHelper} vault-logins\` lists the sites you may log in to, and \`${f.apiHelper} vault-login ${name} <id>\` logs you in, in YOUR OWN browser (your marveen-browser tool). You never get the password; the answer is the outcome only (success, 2fa, wrong, ...). On 2fa ask the owner to type the code in the browser window; after wrong the entry is locked until the owner unlocks it.`,
   ]
 }
 
