@@ -1995,6 +1995,10 @@ const GIT_TREE_SAFE = new Set([...GIT_ROOT_READS, 'add', 'commit', 'fetch', 'pus
   'gc', 'fsck', 'prune', 'reflog', 'count-objects'])
 const GIT_URL_RX = /^[A-Za-z][\w+.-]*:\/\/|^[\w.-]+@[\w.-]+:/
 
+// PLUGINDIRGIT2-1126, what it does NOT see: only the repository's own config is read (config, config.worktree), not
+// the user's global git config or the system one, so a core.worktree or an insteadOf placed there is not seen; those
+// files are on the protected list for writes. `--receive-pack=<cmd>` on a local push runs a command: not a tree write,
+// and a sub-agent can run a command anyway, so no new reach.
 // PLUGINDIRGIT2-1126: a repository's git dir and the common dir it shares, from a checkout top (a .git directory, or a
 // linked worktree's `gitdir:` file) or from a git dir given as is. null: unreadable.
 function gitDirsOf({ top, gitDir }) {
@@ -2099,6 +2103,9 @@ function dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx, gitDir) {
       break
     }
     const cur = gitDir === null || dirUnknown ? null : gitDir ? repoConfig({ gitDir }) : (repoTop(dir) ? repoConfig({ top: repoTop(dir) }) : { entries: [] })
+    // url.<base>.insteadOf / pushInsteadOf in the repository's own config rewrite a target that looks like a relative
+    // path, a URL or a remote's URL into a local repository (Samu's #3156 review): read as pointing anywhere.
+    if (cur?.entries.some((e) => e.sec === 'url' && (e.key === 'insteadof' || e.key === 'pushinsteadof'))) return failClosed()
     const remoteUrls = (name) => (cur?.entries ?? []).filter((e) => e.sec === 'remote' && (name === undefined || e.sub === name) && (e.key === 'url' || e.key === 'pushurl')).map((e) => e.value)
     let urls
     if (target === undefined || (target && !/^[/.~]/.test(target) && !GIT_URL_RX.test(target) && remoteUrls(target).length)) {

@@ -396,6 +396,17 @@ describe('PLUGINDIRGIT2-1126: core.worktree from the config, and a push to a loc
       cfg(bare, `[core]\n\tbare = false\n\tworktree = ${repo()}\n`)
       expect(bash(`git -C ${own()} push ${bare} topic`)).toEqual(SUB)
     })
+    // Samu's #3156 review: url.<base>.insteadOf / pushInsteadOf in the clone's own config rewrite a target into a local
+    // repository; any such entry fails closed for a push.
+    it.each([
+      ['insteadOf, a target that looks like a relative path', () => `[url "${repo()}"]\n\tinsteadOf = x:\n`, () => `git -C ${own()} push x:anything topic`],
+      ['pushInsteadOf, a target that looks like a relative path', () => `[url "${repo()}"]\n\tpushInsteadOf = x:\n`, () => `git -C ${own()} push x:anything topic`],
+      ['pushInsteadOf, a network-looking URL', () => `[url "${repo()}"]\n\tpushInsteadOf = https://example.com/\n`, () => `git -C ${own()} push https://example.com/y.git topic`],
+      ['insteadOf, mixed case, under a remote with a network URL', () => `[url "${repo()}"]\n\tInsteadOf = https://example.com/\n[remote "origin"]\n\turl = https://example.com/y.git\n`, () => `git -C ${own()} push origin topic`],
+    ])('a url rewrite in the repository config fails closed: %s', (_n, text, c) => {
+      cfg(join(own(), '.git'), text())
+      expect(bash(c())).toEqual(SUB)
+    })
     it('an unknown target fails closed', () => {
       expect(bash(`git -C ${own()} push "$T" topic`)).toEqual(SUB)
     })
