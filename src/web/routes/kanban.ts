@@ -676,9 +676,11 @@ export function assigneeMatchKey(s: string): string {
 /**
  * The colleagues of store/board-access.json join the assignee list, so the board's
  * assignee filter can select a person, not only an agent. A person who is already
- * listed (the owner, matched by name or id) gets the aliases on that entry instead
- * of a second one. Aliases are matched only against the person's own name and id:
- * an alias such as "reka" may also be an agent's id, and that agent keeps its entry.
+ * listed as a person (the owner, the bot or an earlier colleague, matched by name or
+ * id) gets the aliases on that entry instead of a second one. An agent entry is never
+ * a match: a person whose id or name equals an agent's id ("reka") gets an entry of
+ * their own, and the agent keeps its entry without the person's aliases. Aliases are
+ * matched only against the person's own name and id, for the same reason.
  */
 export function withBoardColleagues(entries: KanbanAssigneeEntry[], cfg: BoardAccessConfig): KanbanAssigneeEntry[] {
   if (!cfg.enabled || cfg.broken) return entries
@@ -686,7 +688,7 @@ export function withBoardColleagues(entries: KanbanAssigneeEntry[], cfg: BoardAc
   for (const person of cfg.people.values()) {
     const ownKeys = new Set([assigneeMatchKey(person.name), assigneeMatchKey(person.id)])
     const names = [person.name, ...person.assignees]
-    const existing = out.find((e) => ownKeys.has(assigneeMatchKey(e.name)))
+    const existing = out.find((e) => e.type !== 'agent' && ownKeys.has(assigneeMatchKey(e.name)))
     const target = existing ?? { name: person.name, type: 'colleague', nickname: nicknameFor(person.name) }
     const seen = new Set([assigneeMatchKey(target.name), ...(target.aliases ?? []).map(assigneeMatchKey)])
     const aliases = [...(target.aliases ?? [])]
