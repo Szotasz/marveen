@@ -273,7 +273,7 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 // resolve through a gateway, not the literal host). A one-liner reaches all of them through a curl
 // binding (PHP curl_exec, pycurl) or a stream wrapper (PHP ftps://, Perl LWP gopher://), so an
 // http/ftp-only list let `php -r '...curl_init("sftp://host/")...curl_exec(...)'` out untouched.
-const URL_RE = /\b(?:https?|ftps?|sftp|scp|tftp|smbs?|dict|gophers?|imaps?|pop3s?|smtps?|ldaps?|telnet|mqtt|rtsp):\/\/[^\s'"`<>\\)]+/gi
+const URL_RE = /\b(?:https?|wss?|ftps?|sftp|scp|tftp|smbs?|dict|gophers?|imaps?|pop3s?|smtps?|ldaps?|telnet|mqtt|rtsp):\/\/[^\s'"`<>\\)]+/gi
 const INTERPRETER = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|perl|ruby|php|deno|bun|powershell(?:\.exe)?|pwsh(?:\.exe)?)$/
 const CODE_FLAG = new Set(['-c', '-e', '-E', '-r', '--eval', '-p', '--print', 'eval'])
 // PowerShell (WSL reaches the Windows side with powershell.exe): its code flag is -Command (any
@@ -525,7 +525,7 @@ export function commandIndex(mw) {
 // 10 would-be blocks. Browser automation (chromium / playwright / puppeteer) is deliberately NOT in
 // this list: it is the fleet's mandated browser-verify path on its own domains, and an own-domain
 // allowlist is direction (b). Stated as open, measured, and left to the owner.
-const NET_PRIMITIVE = /\b(?:urllib|requests\.|http\.client|httplib|httpx|aiohttp|urlopen|socket\.|fetch\s*\(|https?\.(?:get|request)\s*\(|axios|node-fetch|undici|got\s*\(|LWP::|HTTP::Tiny|Net::HTTP|open-uri|IO::Socket|file_get_contents|curl_exec|Invoke-WebRequest)|-M(?:LWP|HTTP::Tiny|IO::Socket|Net::HTTP)/
+const NET_PRIMITIVE = /\b(?:urllib|requests\.|http\.client|httplib|httpx|aiohttp|urlopen|socket\.|fetch\s*\(|https?\.(?:get|request)\s*\(|axios|node-fetch|undici|got\s*\(|LWP::|HTTP::Tiny|Net::HTTP|open-uri|IO::Socket|file_get_contents|curl_exec|Invoke-WebRequest|WebSocket|websockets?\.)|-M(?:LWP|HTTP::Tiny|IO::Socket|Net::HTTP)/
 
 export function hostOf(url) {
   const m = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)
@@ -547,9 +547,24 @@ export function isPrivateTarget(host) {
   return MDNS_NAME.test(h)
 }
 export function isLocalHost(host) { return LOCAL_HOSTS.has(host) || isPrivateTarget(host) }
+// CDPSUTI1126 (P2): the agent browsers' DevTools ports (src/web/agent-browser.ts PORT_FIRST..PORT_LAST). Their CDP
+// endpoint hands every cookie of the logged-in profile, HttpOnly included, to any local process that connects, so a
+// LOOPBACK host on one of these ports is not local here. Decided by the literal port, like the host: a port held in a
+// variable stays unread (http://localhost:$PORT is the dashboard's form). A text fence: a script file is not read.
+const AGENT_BROWSER_PORT_FIRST = 9400
+const AGENT_BROWSER_PORT_LAST = 9499
+function isLoopback(host) { return LOCAL_HOSTS.has(host) || (CANON_IPV4.test(host) && host.startsWith('127.')) }
+function isAgentBrowserPort(port) {
+  return /^\d+$/.test(String(port ?? '')) && Number(port) >= AGENT_BROWSER_PORT_FIRST && Number(port) <= AGENT_BROWSER_PORT_LAST
+}
+// A loopback host on an agent-browser port is returned as host:port, which no local / private / vendor rule matches.
+function agentBrowserDest(host, port) { return isLoopback(host) && isAgentBrowserPort(port) ? `${host}:${port}` : host }
+const AUTHORITY_PORT = /^(?:[^@/?#]*@)?(?:\[[^\]]*\]|[^/:?#]*):(\d+)/
 export function isExternal(url) {
   const h = hostOf(url)
   if (h === null || h === '') return false
+  const port = AUTHORITY_PORT.exec(String(url).replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''))?.[1]
+  if (agentBrowserDest(h, port) !== h) return true
   return !isLocalHost(h)
 }
 function spans(masked) {
@@ -870,7 +885,7 @@ export function destHost(value) {
   if (authority.includes('\\')) return authority.toLowerCase()
   const m = /^(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/.exec(noScheme)
   const h = m ? m[1].toLowerCase() : ''
-  if (HOSTNAME.test(h)) return h
+  if (HOSTNAME.test(h)) return agentBrowserDest(h, AUTHORITY_PORT.exec(noScheme)?.[1])
   // A host still holding a `$` after this command's own assignments and loops were expanded is
   // computed at run time (the environment, printf -v, a read from a file, a substitution): with the
   // switch on it would go unchecked, so it denies (#1931, round 3).
@@ -919,6 +934,9 @@ export function curlPartHosts(name, v) {
   const f = colonFields(s)
   if (f.length !== 4) return [`<unresolved: ${s.toLowerCase()}>`]
   push(f[0]); push(f[2])
+  // CDPSUTI1126 (P2): the connection goes to HOST2:PORT2, so a loopback HOST2 on an agent-browser port is a destination
+  const to = partHost(f[2])
+  if (to && agentBrowserDest(to, f[3]) !== to) out.push(agentBrowserDest(to, f[3]))
   return out
 }
 // Every external destination host in a curl argv (the words AFTER `curl`).
