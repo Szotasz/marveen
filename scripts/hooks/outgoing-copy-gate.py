@@ -503,33 +503,44 @@ def _mask_subshell_markers(cmd: str) -> str:
     i, n = 0, len(cmd)
     parens = []  # Bence 69701: "s" for an open $( , "p" for a plain ( -- which ) closes a command substitution
     subst_close_at = -1
+    prev = -1  # LINECONT1126: the index of the last character that is not part of a removed line continuation
     while i < n:
         ch = cmd[i]
         if q:
             if ch == "\\" and q == '"' and i + 1 < n:
-                out.append(cmd[i:i + 2]); i += 2; continue
+                if cmd[i + 1] != "\n":       # LINECONT1126: inside "..." a backslash-newline is removed too (bash)
+                    out.append(cmd[i:i + 2]); prev = i + 1
+                i += 2; continue
             if ch == q:
                 q = None
-            out.append(ch); i += 1; continue
+            out.append(ch); prev = i; i += 1; continue
         if ch in "'\"":
-            q = ch; out.append(ch); i += 1; continue
+            q = ch; out.append(ch); prev = i; i += 1; continue
         if ch == "\\" and i + 1 < n:
-            out.append(cmd[i:i + 2]); i += 2; continue
+            # LINECONT1126: a backslash-newline is a line continuation: bash removes both characters before it splits
+            # words, so `sudo \<nl> curl ...`, `true && \<nl> curl ...` and `curl\<nl> -d ...` are the one-line commands.
+            # Kept, shlex made the newline a word of its own (the command head `sudo`'s program became "\n") or glued it
+            # to the word ("curl\n", "-exec\n"), and the send was not seen. A comment is cut below first, so a backslash
+            # at the end of a comment is no continuation (bash: the comment ends at the newline).
+            if cmd[i + 1] != "\n":
+                out.append(cmd[i:i + 2]); prev = i + 1
+            i += 2; continue
         # a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701)
-        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|(" or (cmd[i - 1] == ")" and subst_close_at != i - 1)):
+        # LINECONT1126: the character before is the last one that was not removed: `a\<nl>#b` is the one word a#b
+        if ch == "#" and (prev < 0 or cmd[prev] in " \t\n;&|(" or (cmd[prev] == ")" and subst_close_at != prev)):
             while i < n and cmd[i] != "\n":
                 i += 1
             continue
         if ch == "\n" or ch == "`":
-            out.append(";"); i += 1; continue
+            out.append(";"); prev = i; i += 1; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
             parens.append("s")
-            out.append(";"); i += 2; continue
+            out.append(";"); prev = i + 1; i += 2; continue
         if ch == "(":
             parens.append("p")
         elif ch == ")" and parens and parens.pop() == "s":
             subst_close_at = i
-        out.append(ch); i += 1
+        out.append(ch); prev = i; i += 1
     return "".join(out)
 
 
@@ -761,6 +772,16 @@ def _command_heads(toks, _d: int = 0):
         return _env_heads(toks, _d)
     if w in ("find", "gfind"):   # MAILRUNTIMECMD1126 (gfind: GNU find under its homebrew name)
         return [toks] + _find_exec_heads(toks, _d)
+    if w == "busybox" and len(toks) > 1:   # LINECONT1126 (Revizor 5686 Q15): busybox runs its applet, find and sendmail too
+        return [toks] + _command_heads(toks[1:], _d + 1)
+    if w in ("fd", "fdfind"):   # LINECONT1126 (Revizor 5686 Q14): fd -x / -X runs the rest as a command template
+        heads = [toks]
+        for k, t in enumerate(toks):
+            if t in ("-x", "--exec", "-X", "--exec-batch") or t.startswith(("--exec=", "--exec-batch=")):
+                rest = toks[k + 1:] if "=" not in t else [t.split("=", 1)[1]] + toks[k + 1:]
+                end = next((j for j, x in enumerate(rest) if x in (";", "\\;")), len(rest))
+                heads += _command_heads(rest[:end], _d + 1)
+        return heads
     # a backslash-newline continuation can leave a word of blanks only in front: the first real word decides
     first = next((t for t in toks if not t or t.strip()), "")
     if ((first.startswith("-") or first in ("!", "(", ")", "\\(", "\\)", ","))
@@ -1210,6 +1231,7 @@ _FLEET_EXEMPT_BLOCK = re.compile(r"@|(?:^|[\s='\"(])~(?!/)|--b?cc\b")
 _FLEET_TOKEN_BLOCK = re.compile(r"--(?:cc?|bc{0,2})(?:=|\Z)|~(?!/)")   # on the DEQUOTED words: `--c""c`, `--\cc` are `--cc` to the program;
 # (v4.1, Merlin 34962) an argparse abbreviation (--c, --b, --bc) is --cc / --bcc to a default-argparse script: a send
 _AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
+_CONT_AFTER_TO = re.compile(r"--to?=?[ \t]*\\\n")   # LINECONT1126: a backslash-newline right after the recipient flag
 KNOWN_AGENTS_OVERRIDE = None   # the shared conformance list sets it (send-invocation-cases.json known_agents); None = the install
 _LINE_EXEMPT_OK = [False]      # set per top-level is_send_invocation call from the WHOLE command line
 
@@ -1252,6 +1274,11 @@ def _line_clean(cmd: str) -> bool:
     nor in any DEQUOTED word of any segment, the substitution-flattened form included (`--c""c "$E"` is `--cc` to the program).
     An unparseable line is not clean (fail-closed)."""
     if _FLEET_EXEMPT_BLOCK.search(cmd):
+        return False
+    if _CONT_AFTER_TO.search(cmd):
+        # LINECONT1126: the tokenizer now removes a backslash-newline as bash does, so `--to \<nl> name` reads as `--to name`.
+        # The exception stays as it was on develop (FLEETTOFLAG1025 v4: a continuation between --to and its value is a send);
+        # a continuation elsewhere in the line (after the name, M1c) changes nothing.
         return False
     try:
         words = [t for c in (cmd, flatten_substitutions(cmd)) for seg in _segments_tokens(c) for t in seg]

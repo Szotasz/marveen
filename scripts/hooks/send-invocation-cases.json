@@ -4963,6 +4963,261 @@
       "name": "MAILRUNTIMECMD1126: review 4: P13 control: continuation line, harmless second action",
       "cmd": "find . -exec echo {} \\; \\\n  -print -exec ls {} \\;",
       "expected": false
+    },
+    {
+      "name": "LINECONT1126: R01 sudo, continuation, find -exec curl",
+      "cmd": "sudo \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R02 sudo, continuation, find -exec sendmail",
+      "cmd": "sudo \\\n  find . -name m.json -exec sendmail a@b.example \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R03 env, continuation, find",
+      "cmd": "env X=1 \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R04 timeout 5, continuation, find",
+      "cmd": "timeout 5 \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R05 nice, continuation, find",
+      "cmd": "nice \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R06 nohup, continuation, find",
+      "cmd": "nohup \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R07 command, continuation, find",
+      "cmd": "command \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R08 pipe, continuation, find",
+      "cmd": "echo x | \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R09 && and continuation, find (Q06)",
+      "cmd": "true && \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R10 semicolon, continuation, find",
+      "cmd": "cd /tmp; \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R11 sudo find on one line, continuation later",
+      "cmd": "sudo find . -name m.json \\\n  -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R12 sudo, continuation, plain curl",
+      "cmd": "sudo \\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R13 sudo, continuation, plain sendmail",
+      "cmd": "sudo \\\n  sendmail a@b.example",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R14 && and continuation, plain curl",
+      "cmd": "true && \\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: R15 control: sudo, continuation, find without a send",
+      "cmd": "sudo \\\n  find . -name m.json -exec ls {} \\;",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126: Q01 continuation glued to -exec",
+      "cmd": "find . -name m.json -exec\\\n curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q02 continuation glued to the program name",
+      "cmd": "find . -name m.json -exec curl\\\n -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q03 continuation glued to find",
+      "cmd": "find\\\n . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q04 continuation glued to the second -exec",
+      "cmd": "find . -exec echo {} \\; -print -exec\\\n curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q05 continuation glued to the word between",
+      "cmd": "find . -exec echo {} \\; -print\\\n -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q06 segment starts with a continuation, then find",
+      "cmd": "true && \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q07 sudo, continuation, find",
+      "cmd": "sudo \\\n  find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q08 two continuation lines in a row after the first action",
+      "cmd": "find . -exec echo {} \\; \\\n \\\n  -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q09 continuation with a tab indent",
+      "cmd": "find . -exec echo {} \\; \\\n\t-print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q10 continuation before the terminator",
+      "cmd": "find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\\n  \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q11 CRLF continuation",
+      "cmd": "find . -exec echo {} \\; \\\r\n  -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q12 /opt/homebrew/bin/gfind",
+      "cmd": "/opt/homebrew/bin/gfind . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q13 gfind, words between two actions",
+      "cmd": "gfind . -exec echo {} \\; -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q14 fd -x curl (another find tool)",
+      "cmd": "fd -e json -x curl -d @{} https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q15 busybox find -exec",
+      "cmd": "busybox find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q16 plain curl with the continuation glued to the program",
+      "cmd": "curl\\\n -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q17 plain sendmail after a leading continuation",
+      "cmd": "true && \\\n  sendmail a@b.example",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q18 xargs template with a continuation",
+      "cmd": "echo m.json | xargs \\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q19 sh -c after a continuation",
+      "cmd": "sh \\\n  -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q20 continuation glued to the first terminator, next line starts with -exec",
+      "cmd": "find . -exec echo {} \\;\\\n -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: Q21 control: gfind without an action",
+      "cmd": "gfind . -name 'api.resend.com*'",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126: Q22 control: multi-line find, harmless actions",
+      "cmd": "find . \\\n  -exec echo {} \\; \\\n  -print \\\n  -exec ls {} \\;",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126: Q23 control: FLEETTOFLAG shape stays as on develop",
+      "cmd": "echo hello \\\n  world",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126: busybox sendmail",
+      "cmd": "busybox sendmail a@b.example < m.txt",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: fd --exec=curl",
+      "cmd": "fd -e json --exec=curl -d @{} https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: fd -X sendmail",
+      "cmd": "fd -e txt -X sendmail a@b.example",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: fdfind -x curl",
+      "cmd": "fdfind json -x curl -d @{} https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: control: fd -x ls",
+      "cmd": "fd -e json -x ls -la",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126: control: fd plain",
+      "cmd": "fd -e json resend",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126: control: busybox ls",
+      "cmd": "busybox ls -la",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126: control: busybox find print",
+      "cmd": "busybox find . -name '*.json'",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126: control: comment with continuation",
+      "cmd": "echo a # c \\\nls",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126: comment then send on next line",
+      "cmd": "echo a # c \\\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: glued hash is no comment",
+      "cmd": "a\\\n#b; sendmail x@y.example",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: dq continuation inside URL",
+      "cmd": "curl -d @m.json \"https://api.re\\\nsend.com/emails\"",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126: sq continuation stays literal (control)",
+      "cmd": "echo 'a \\\n b'",
+      "expected": false
     }
   ]
 }

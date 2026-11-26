@@ -750,16 +750,36 @@ const codeStringSends = (code, lang = null) => {
 export function maskSubshellMarkers(cmd) {
   let out = ''
   let q = null
+  let prev = -1 // LINECONT1126: the index of the last character that is not part of a removed line continuation
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]
     if (q) {
-      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += cmd[i] + cmd[i + 1]; i++; continue }
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) {
+        if (cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1 } // LINECONT1126: removed inside "..." too
+        i++
+        continue
+      }
       if (ch === q) q = null
       out += ch
+      prev = i
       continue
     }
-    if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
-    if (ch === '\\' && i + 1 < cmd.length) { out += cmd[i] + cmd[i + 1]; i++; continue }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; prev = i; continue }
+    // LINECONT1126 (twin of _mask_subshell_markers): a backslash-newline is a line continuation, removed before words
+    // are split, so `sudo \<nl> curl ...` and `curl\<nl> -d ...` are the one-line commands. A comment (an unquoted #
+    // at the start of a word, the last kept character decides) is dropped up to its newline as bash does (and as the
+    // python twin's mask), so a backslash at its end continues nothing and the newline still separates.
+    if (ch === '\\' && i + 1 < cmd.length) {
+      if (cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1 }
+      i++
+      continue
+    }
+    if (ch === '#' && (prev < 0 || /[\s;&|(]/.test(cmd[prev]))) {
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+      prev = i
+      continue
+    }
+    prev = i
     if (ch === '\n' || ch === '`') { out += ';'; continue }
     if (ch === '$' && cmd[i + 1] === '(') { out += ';'; i++; continue }
     out += ch
@@ -995,6 +1015,20 @@ function commandHeads(toksIn, d = 0) {
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
   if (w === 'env' || w === 'genv') return envHeads(toks, d)
   if (w === 'find' || w === 'gfind') return [toks, ...findExecHeads(toks, d)] // MAILRUNTIMECMD1126 (gfind: GNU find, homebrew)
+  // LINECONT1126 (Revizor 5686 Q15, Q14; python twin): busybox runs its applet; fd -x / -X runs the rest as a template
+  if (w === 'busybox' && toks.length > 1) return [toks, ...commandHeads(toks.slice(1), d + 1)]
+  if (w === 'fd' || w === 'fdfind') {
+    const heads = [toks]
+    toks.forEach((t, k) => {
+      if (['-x', '--exec', '-X', '--exec-batch'].includes(t) || t.startsWith('--exec=') || t.startsWith('--exec-batch=')) {
+        const rest = t.includes('=') ? [t.split('=').slice(1).join('='), ...toks.slice(k + 1)] : toks.slice(k + 1)
+        let end = rest.findIndex((x) => x === ';' || x === '\\;')
+        if (end < 0) end = rest.length
+        heads.push(...commandHeads(rest.slice(0, end), d + 1))
+      }
+    })
+    return heads
+  }
   // MAILRUNTIMECMD1126 (review): a segment that starts with a find action is the find continuation (python twin)
   // a backslash-newline continuation can leave a word of blanks only in front: the first real word decides
   const first = toks.find((t) => !t || t.trim()) ?? ''
@@ -1238,6 +1272,7 @@ function knownAgents() {
 // segment, the substitution-flattened form included. An unparseable line is not clean (fail-closed).
 function lineClean(cmd) {
   if (FLEET_EXEMPT_BLOCK.test(cmd)) return false
+  if (/--to?=?[ \t]*\\\n/.test(cmd)) return false // LINECONT1126: a continuation right after --to gets no exception (python twin)
   let words
   try {
     words = [cmd, flattenSubstitutions(cmd)].flatMap((c) => segmentsTokens(c).flat())
