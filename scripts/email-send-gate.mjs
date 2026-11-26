@@ -839,7 +839,7 @@ const WRAPPERS = new Map([
   ['nice', ['n', ['adjustment'], 0]],
   ['exec', ['a', [], 0]],
   ['command', ['', [], 0]],
-  ['xargs', ['ILJnPsdEa', ['arg-file', 'delimiter', 'eof', 'replace', 'max-lines', 'max-args',
+  ['xargs', ['ILJnPsdEa', ['arg-file', 'delimiter', 'eof', 'max-lines', 'max-args',
     'max-procs', 'max-chars', 'process-slot-var'], 0]],
   ['timeout', ['sk', ['signal', 'kill-after'], 1]],
   ['setsid', ['', [], 0]],
@@ -1023,6 +1023,8 @@ function commandHeads(toksIn, d = 0) {
 // EVALXARGSMAIL1126: xargs appends the words it reads to an HTTP client template (or puts them where its replace string
 // stands): that word stands in as one undecidable word, see _xargs_heads in the python twin
 const XARGS_ARG = '$XARGS_ARG'
+const XARGS_VALUE_SHORT = 'adELnPsRS' // xargs short options that take a separate value (I / J handled below)
+const XARGS_VALUE_LONG = ['arg-file', 'delimiter', 'max-lines', 'max-args', 'max-procs', 'max-chars', 'process-slot-var']
 function xargsReplaceString(toks) {
   for (let i = 1; i < toks.length; i++) {
     const t = toks[i]
@@ -1033,8 +1035,18 @@ function xargsReplaceString(toks) {
     if (t.startsWith('-i') && t.length > 2) return t.slice(2)
     if (t.startsWith('--replace=')) return t.slice('--replace='.length) || '{}'
     if (!t.startsWith('-')) break
+    if ((t.length === 2 && XARGS_VALUE_SHORT.includes(t[1])) || XARGS_VALUE_LONG.includes(t.slice(2))) i++ // its value
   }
   return null
+}
+
+// EVALXARGSMAIL1126: past the depth bound of 3 an eval line or a shell -c program counts as a send when its text carries
+// a send marker (_deeper_sends / _DEPTH_SEND_MARK in the python twin)
+let depthSendMark = null // built on first use: MAIL_MARKER is defined further down
+function deeperSends(text, depth) {
+  if (depth < 3) return isSendInvocation(text, depth + 1)
+  depthSendMark ??= new RegExp(MAIL_MARKER.source + String.raw`|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?:\/\/`, 'i')
+  return depthSendMark.test(text)
 }
 // the template as written, plus (HTTP client) the added word at the end, plus (a replace string) every template with it
 // replaced: these only ADD heads (_xargs_heads in the python twin)
@@ -1237,15 +1249,24 @@ function headIsSend(toks, depth) {
   if (CURLISH.test(prog) && rest.some((t) => CURL_SMTP.test(t))) return true
   // EVALXARGSMAIL1126: eval runs its words, joined with blanks, as a command line (`builtin eval` too); past the depth
   // bound the command is out of sight and counts as a send
-  let evalRest = prog === 'eval' ? rest : prog === 'builtin' && rest[0] === 'eval' ? rest.slice(1) : null
+  let p = prog
+  let r = rest
+  while ((p === 'builtin' || p === 'command') && r.length) {
+    while (r.length && (r[0] === '--' || r[0] === '-p')) r = r.slice(1)
+    if (!r.length) break
+    p = basename(r[0])
+    r = r.slice(1)
+  }
+  let evalRest = p === 'eval' ? r : null
   if (evalRest !== null) {
     if (evalRest[0] === '--') evalRest = evalRest.slice(1)
-    if (evalRest.length && (depth >= 3 || isSendInvocation(evalRest.join(' '), depth + 1))) return true
+    if (evalRest.length && deeperSends(evalRest.join(' '), depth)) return true
   }
   if (WRAPPER_SHELL.test(prog)) {
     for (let i = 0; i < rest.length; i++) {
-      // EVALXARGSMAIL1126: past the depth bound the -c program is out of sight: it counts as a send
-      if (rest[i] === '-c' && rest[i + 1] && (depth >= 3 || isSendInvocation(rest[i + 1], depth + 1))) return true
+      // EVALXARGSMAIL1126: -c in a cluster (bash -lc, sh -ec) takes the program as well
+      // past the bound the marker reads every word of the shell call, its arguments too
+      if ((rest[i] === '-c' || SHELL_C_FLAG.test(rest[i])) && rest[i + 1] && deeperSends(depth >= 3 ? rest.join(' ') : rest[i + 1], depth)) return true
     }
   }
   if (PYTHON.test(prog) || NODEISH.test(prog)) {

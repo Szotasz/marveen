@@ -615,7 +615,7 @@ _WRAPPERS = {
     "nice": ("n", ("adjustment",), 0),
     "exec": ("a", (), 0),
     "command": ("", (), 0),
-    "xargs": ("ILJnPsdEa", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args",
+    "xargs": ("ILJnPsdEa", ("arg-file", "delimiter", "eof", "max-lines", "max-args",
                            "max-procs", "max-chars", "process-slot-var"), 0),
     "timeout": ("sk", ("signal", "kill-after"), 1),
     # setsid: for future use and symmetry. NOT measured local traffic: the hits the
@@ -798,9 +798,29 @@ def _command_heads(toks, _d: int = 0):
 _XARGS_ARG = "$XARGS_ARG"
 
 
+# EVALXARGSMAIL1126: past the depth bound of 3 an eval line or a shell -c program is out of sight. It counts as a send
+# when its text carries a send marker: a mail-only API host, a Microsoft Graph host, or a sender literal. The same
+# pattern in both twins (DEPTH_SEND_MARK).
+_DEPTH_SEND_MARK = []   # compiled on first use: _MAIL_MARKER is defined further down
+
+
+def _deeper_sends(text: str, depth: int) -> bool:
+    if depth >= 3:
+        if not _DEPTH_SEND_MARK:
+            _DEPTH_SEND_MARK.append(re.compile(
+                _MAIL_MARKER.pattern + r"|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://", re.I))
+        return bool(_DEPTH_SEND_MARK[0].search(text))
+    return is_send_invocation(text, _depth=depth + 1)
+
+
 def _xargs_replace_string(toks):
-    """the replace string of an xargs call (-I X, -IX, -J X, -i[X], --replace[=X]), or None"""
+    """the replace string of an xargs call (-I X, -IX, -J X, -i[X], --replace[=X]), or None. The value of another
+    value-taking option (-n 1, -d '\\n', --max-args 1) is stepped over."""
+    skip = False
     for i, t in enumerate(toks[1:], 1):
+        if skip:
+            skip = False
+            continue
         if t == "--":
             break
         if t in ("-I", "-J") and i + 1 < len(toks):
@@ -815,7 +835,13 @@ def _xargs_replace_string(toks):
             return t[len("--replace="):] or "{}"
         if not t.startswith("-"):
             break
+        if (len(t) == 2 and t[1] in _XARGS_VALUE_SHORT) or t[2:] in _XARGS_VALUE_LONG:
+            skip = True
     return None
+
+
+_XARGS_VALUE_SHORT = "adELnPsRS"   # GNU and BSD xargs short options that take a separate value (I / J handled above)
+_XARGS_VALUE_LONG = ("arg-file", "delimiter", "max-lines", "max-args", "max-procs", "max-chars", "process-slot-var")
 
 
 def _xargs_heads(toks, heads):
@@ -1245,18 +1271,26 @@ def _head_is_send(toks, depth: int) -> bool:
         return True
     # EVALXARGSMAIL1126: eval runs its words, joined with blanks, as a command line (`builtin eval` too). Past the
     # depth bound the command is out of sight, so it counts as a send, as a wrapper at the bound does.
-    if prog == "builtin" and rest[:1] == ["eval"]:
-        prog, rest = "eval", rest[1:]
+    p, r = prog, rest
+    while p in ("builtin", "command") and r:
+        while r and r[0] in ("--", "-p"):
+            r = r[1:]
+        if not r:
+            break
+        p, r = _basename(r[0]), r[1:]
+    if p == "eval":
+        prog, rest = "eval", r
     if prog == "eval":
         words = rest[1:] if rest[:1] == ["--"] else rest
-        if words and (depth >= 3 or is_send_invocation(" ".join(words), _depth=depth + 1)):
+        if words and _deeper_sends(" ".join(words), depth):
             return True
     # burkolo hejj: a -c string-argumentum maga is parancs -- rekurzio
     if _WRAPPER_SHELL.match(prog):
         for i, t in enumerate(rest):
-            if t == "-c" and i + 1 < len(rest):
-                # EVALXARGSMAIL1126: past the depth bound the -c program is out of sight: it counts as a send
-                if depth >= 3 or is_send_invocation(rest[i + 1], _depth=depth + 1):
+            # EVALXARGSMAIL1126: -c in a cluster (bash -lc, sh -ec) takes the program as well
+            if (t == "-c" or _SHELL_C_FLAG.match(t)) and i + 1 < len(rest):
+                # past the bound the marker reads every word of the shell call, its arguments too
+                if _deeper_sends(" ".join(rest) if depth >= 3 else rest[i + 1], depth):
                     return True
     # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
     if _PYTHON.match(prog) or _NODEISH.match(prog):
