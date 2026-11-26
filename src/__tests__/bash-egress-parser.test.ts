@@ -2013,3 +2013,68 @@ describe('per-agent vendor lists', () => {
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
+
+// CDPSUTI1126 (P2): an agent browser's DevTools port hands every cookie of its logged-in profile, HttpOnly included,
+// to any local process. A loopback host on 9400-9499 is therefore not local, by the literal port, for curl, wget and
+// an interpreter one-liner or heredoc; every other loopback port stays local (the dashboard's calls).
+describe('the agent-browser DevTools ports on loopback (CDPSUTI1126)', () => {
+  const DENY_CDP = [
+    'curl -s http://127.0.0.1:9471/json/version',
+    'curl -s http://localhost:9400/json/list',
+    'curl -s "http://[::1]:9499/json/version"',
+    'curl -s http://127.0.0.2:9450/json',
+    'curl -s http://LOCALHOST:9471/json',
+    'curl -s 127.0.0.1:9471/json/version',
+    'curl -s localhost:9471/json/version',
+    'curl --url http://127.0.0.1:9471/json/version',
+    'curl http://u:p@127.0.0.1:9471/json',
+    'P=9471; curl -s "http://127.0.0.1:$P/json/version"',
+    'curl --connect-to ::127.0.0.1:9471 http://localhost/json/version',
+    'wget -qO- http://127.0.0.1:9471/json/version',
+    `bash -c 'curl -s http://127.0.0.1:9471/json/version'`,
+    `node -e "fetch('http://127.0.0.1:9471/json/version').then(r=>r.text())"`,
+    `node -e "new WebSocket('ws://localhost:9480/devtools/page/x')"`,
+    `python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:9471/json/version')"`,
+    `python3 -c "import websocket; websocket.create_connection('ws://127.0.0.1:9471/devtools/browser/x')"`,
+    "python3 - <<'PY'\nimport urllib.request\nprint(urllib.request.urlopen('http://localhost:9471/json').read())\nPY",
+  ]
+  const PASS_LOCAL = [
+    'curl -s http://localhost:3420/api/messages',
+    'curl -s http://127.0.0.1:9399/x',
+    'curl -s http://127.0.0.1:9500/x',
+    'curl -s http://127.0.0.1:94000/x',
+    'curl -s http://localhost/x',
+    'curl -s "http://localhost:$WEB_PORT/api/x"',
+    'curl -s http://10.0.0.5:9471/x',
+    'curl --connect-to ::127.0.0.1:3420 http://localhost/api',
+    `node -e "fetch('http://127.0.0.1:3420/api/kanban')"`,
+    `node -e "new WebSocket('ws://localhost:3420/x')"`,
+  ]
+  it('denies every shape that reaches a loopback DevTools port', () => {
+    for (const cmd of DENY_CDP) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: true })
+  })
+  it('keeps every other loopback port, the unread $PORT form and a private address on that port local', () => {
+    for (const cmd of PASS_LOCAL) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+  it('the range edges, through isExternal and destHost', () => {
+    expect(isExternal('http://127.0.0.1:9400/')).toBe(true)
+    expect(isExternal('http://127.0.0.1:9499/')).toBe(true)
+    expect(isExternal('http://127.0.0.1:9399/')).toBe(false)
+    expect(isExternal('http://127.0.0.1:9500/')).toBe(false)
+    expect(destHost('localhost:9471/json')).toBe('localhost:9471')
+    expect(destHost('localhost:3420/api')).toBe('localhost')
+  })
+  it('a WebSocket one-liner to an external host is a network call too', () => {
+    expect(deny(`node -e "new WebSocket('wss://example.org/x')"`)).toBe(true)
+  })
+  it('the range is the one src/web/agent-browser.ts hands out', () => {
+    const src = readFileSync(join(ROOT, 'src', 'web', 'agent-browser.ts'), 'utf-8')
+    const parser = readFileSync(join(ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs'), 'utf-8')
+    for (const [name, gate] of [['PORT_FIRST', 'AGENT_BROWSER_PORT_FIRST'], ['PORT_LAST', 'AGENT_BROWSER_PORT_LAST']]) {
+      const a = new RegExp(`const ${name} = (\\d+)`).exec(src)?.[1]
+      const b = new RegExp(`const ${gate} = (\\d+)`).exec(parser)?.[1]
+      expect({ name, a }).toEqual({ name, a: b })
+      expect(a).toBeDefined()
+    }
+  })
+})
