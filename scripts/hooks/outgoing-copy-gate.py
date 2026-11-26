@@ -526,38 +526,52 @@ def _develop_comment_starts(cmd: str) -> set:
     return starts
 
 
-def _bash_ansi_c_indices(cmd: str) -> set:
-    """Revizor 5756 J4: the indices inside a bash/zsh ANSI-C string $'...' (where \\' does not close it). Used ONLY as a veto on
-    a comment: the mask's quote tracking stays develop's, because a shell that knows no $'...' (dash, a POSIX sh) reads
-    $'a\\' as $ and a closed '...', and a newline after it then separates commands. So knowing $'...' can only keep more text."""
-    out = set()
-    q = None
+def _mask_subshell_markers_develop(cmd: str) -> str:
+    """LINECONT1126 (Marveen 5771): develop's mask, copied UNCHANGED (only renamed). is_send_invocation ORs the verdict
+    of this reading with the new one, so the new mask can never weaken the gate against develop.
+
+    Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
+    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom).
+
+    MAINGATENLCOMMENT1104: a shell comment is dropped HERE, as bash does: an unquoted `#` at the start of a word, up
+    to the newline (the newline itself still becomes `;`). shlex's own comment handling is off (_segments_tokens):
+    after this mask there is no newline left, so a shlex comment ran to the end of the command and swallowed the next
+    line's send; an apostrophe inside a comment flipped this mask into quote mode; and shlex starts a comment at a `#`
+    inside a word (`echo a#b; sendmail x` lost the send). The word-start set matches the JS twin's
+    stripShellComments (whitespace and ;&|())."""
+    out = []
+    q = None  # None | "'" | '"'
     i, n = 0, len(cmd)
+    parens = []  # Bence 69701: "s" for an open $( , "p" for a plain ( -- which ) closes a command substitution
+    subst_close_at = -1
     while i < n:
         ch = cmd[i]
-        if q == "A":
-            out.add(i)
-            if ch == "\\" and i + 1 < n:
-                out.add(i + 1); i += 2; continue
-            if ch == "'":
-                q = None
-            i += 1; continue
         if q:
             if ch == "\\" and q == '"' and i + 1 < n:
-                i += 2; continue
+                out.append(cmd[i:i + 2]); i += 2; continue
             if ch == q:
                 q = None
-            i += 1; continue
-        if ch == "\\" and i + 1 < n:
-            i += 2; continue
-        if ch == "$" and i + 1 < n and cmd[i + 1] == "$":   # $$ is the pid: $$'...' is no ANSI-C string
-            i += 2; continue
-        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
-            q = "A"; out.update((i, i + 1)); i += 2; continue
+            out.append(ch); i += 1; continue
         if ch in "'\"":
-            q = ch
-        i += 1
-    return out
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        # a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701)
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|(" or (cmd[i - 1] == ")" and subst_close_at != i - 1)):
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
+        if ch == "\n" or ch == "`":
+            out.append(";"); i += 1; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s")
+            out.append(";"); i += 2; continue
+        if ch == "(":
+            parens.append("p")
+        elif ch == ")" and parens and parens.pop() == "s":
+            subst_close_at = i
+        out.append(ch); i += 1
+    return "".join(out)
 
 
 def _mask_subshell_markers(cmd: str) -> str:
@@ -571,13 +585,12 @@ def _mask_subshell_markers(cmd: str) -> str:
     inside a word (`echo a#b; sendmail x` lost the send). The word-start set matches the JS twin's
     stripShellComments (whitespace and ;&|())."""
     out = []
-    q = None  # None | "'" | '"' -- develop's quote tracking (Revizor 5756 J4: $'...' is NOT followed here, see below)
+    q = None  # None | "'" | '"' -- develop's quote tracking (Revizor 5756 J4: a shell without $'...' reads it as $ + '...')
     i, n = 0, len(cmd)
     parens = []  # Bence 69701: "s" for an open $( , "p" for a plain ( -- which ) closes a command substitution
     subst_close_at = -1
     plain_close_at = -1  # Revizor 5751 J3: the index of the last ) that closed a subshell or (( ))
     dev_starts = _develop_comment_starts(cmd)   # LINECONT1126 (Marveen 5755): a comment is dropped only where develop dropped one too
-    ansi = _bash_ansi_c_indices(cmd)            # Revizor 5756 J4: inside a bash $'...' a # is no comment (a veto only)
     prev = -1         # LINECONT1126: the index of the last character that is not part of a removed line continuation
     prev_esc = False  # LINECONT1126 (Revizor 5744): that character was escaped (`\ #`, `\;#`): it ends no word
     braces = 0        # LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
@@ -607,12 +620,21 @@ def _mask_subshell_markers(cmd: str) -> str:
         # a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701)
         # LINECONT1126: the character before is the last one that was not removed (`a\<nl>#b` is the one word a#b), it must
         # not be escaped, and only bash's own blanks count (no CR, FF, VT or Unicode space: `a<CR># ; curl` runs curl)
-        if ch == "#" and i in dev_starts and i not in ansi and not braces and (prev < 0 or (not prev_esc and (cmd[prev] in " \t\n;&|("
+        if ch == "#" and i in dev_starts and not braces and (prev < 0 or (not prev_esc and (cmd[prev] in " \t\n;&|("
                                                                        or (cmd[prev] == ")" and plain_close_at == prev)))):
             # Revizor 5751 J3: after a ) only when it closes a subshell or (( )); never after a $( , a process
             # substitution <( ) >( ) or an array assignment x=( ) -- there the # is part of the word, as in bash
             while i < n and cmd[i] != "\n":
                 i += 1
+            continue
+        if ch == "#" and i in dev_starts:
+            # Revizor 5766 J5: develop dropped this comment, the new rule keeps it (bash may run it). Kept as NEUTRAL words:
+            # its quotes, backslashes and backticks become "_", so the kept text can never open a quote, continue a line or
+            # start a substitution that develop never saw, and the newline at its end still separates as it did on develop.
+            # Everything after it is then read with develop's quote state: keeping this text can only add words.
+            while i < n and cmd[i] != "\n":
+                out.append("_" if cmd[i] in "'\"\\`" else cmd[i]); prev = i; i += 1
+            prev_esc = False
             continue
         after_esc, prev_esc = prev_esc, False
         if ch == "\n" or ch == "`":
@@ -638,10 +660,12 @@ def _mask_subshell_markers(cmd: str) -> str:
     return "".join(out)
 
 
-def _segments_tokens(cmd: str):
-    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
+def _segments_tokens(cmd: str, develop: bool = False):
+    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve.
+    develop=True: develop's reading (LINECONT1126, Marveen 5771: the verdict is the OR of both readings)."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
+    mask = _mask_subshell_markers_develop if develop else _mask_subshell_markers
+    lex = shlex.shlex(mask(_HEREDOC.sub(r"\1", cmd)),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     lex.commenters = ""  # MAINGATENLCOMMENT1104: the mask drops comments as bash does; shlex's would not
@@ -1376,7 +1400,8 @@ def _line_clean(cmd: str) -> bool:
         # a continuation elsewhere in the line (after the name, M1c) changes nothing.
         return False
     try:
-        words = [t for c in (cmd, flatten_substitutions(cmd)) for seg in _segments_tokens(c) for t in seg]
+        words = [t for c in (cmd, flatten_substitutions(cmd)) for dev in (False, True)   # LINECONT1126: both readings clean
+                 for seg in _segments_tokens(c, develop=dev) for t in seg]
     except ValueError:
         return False
     return not any("@" in w or _FLEET_TOKEN_BLOCK.match(_tok(w)) for w in words)
@@ -2175,25 +2200,24 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or bool(_MAIL_API_HOST.search(cmd)) or _words_mail_host(cmd)   # MAILCURLSEND1118
     if _heredoc_program_sends(cmd, _depth):
         return True
-    try:
-        segments = _segments_tokens(cmd)
-    except ValueError:
-        # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
-        # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
-        # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
-        # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
-        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))   # MAILURLFILE1118: a mail host too
-    if any(_segment_is_send(toks, _depth) for toks in segments):
-        return True
-    # the same command with every substitution as one undecidable word
-    # (flatten_substitutions): the outer command keeps the word it would run
+    # LINECONT1126 (Marveen 5771): the new logic can only tighten. The verdict is the OR of the new reading and develop's
+    # reading (_mask_subshell_markers_develop, copied unchanged); everything after the tokenizer only gained sends in this
+    # change (busybox / fd heads, a narrower fleet exception), so per twin there is no weakening against develop by construction.
+    # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani. Konzervativ visszaeses: csak akkor auditalunk, ha
+    # eros kuldes-literal all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at neman (either reading failing to
+    # parse brings the fallback in, as develop's own reading did).
+    # The same command with every substitution as one undecidable word (flatten_substitutions): the outer command keeps
+    # the word it would run.
     flat = flatten_substitutions(cmd)
-    if flat == cmd:
-        return False
-    try:
-        return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
-    except ValueError:
-        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))
+    fallback = False
+    for text in ((cmd,) if flat == cmd else (cmd, flat)):
+        for develop in (False, True):
+            try:
+                if any(_segment_is_send(toks, _depth) for toks in _segments_tokens(text, develop=develop)):
+                    return True
+            except ValueError:
+                fallback = True
+    return bool(fallback and (_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd)))   # MAILURLFILE1118: a mail host too
 
 # MAILGATESCRIPT1027: a mail send done by a SCRIPT FILE. is_send_invocation sees the command text only,
 # so `node send-it.mjs` or `python3 notify.py` ran a mail past the main agent's approval gate. This is the

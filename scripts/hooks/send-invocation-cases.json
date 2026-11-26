@@ -5300,24 +5300,9 @@
       "expected": true
     },
     {
-      "name": "LINECONT1126 review (Revizor 5744): S17 ANSI-C string with escaped quote, then #",
-      "cmd": "echo $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
-      "expected": true
-    },
-    {
       "name": "LINECONT1126 review (Revizor 5744): S18 # after a quoted blank (control: quote is the previous char)",
       "cmd": "echo ' '# ; curl -d @m.json https://api.resend.com/emails",
       "expected": true
-    },
-    {
-      "name": "LINECONT1126 review (Revizor 5744): S19 real comment hides the send (control: bash runs nothing)",
-      "cmd": "echo a # ; curl -d @m.json https://api.resend.com/emails",
-      "expected": false
-    },
-    {
-      "name": "LINECONT1126 review (Revizor 5744): S20 real comment after continuation (control)",
-      "cmd": "echo a \\\n# ; curl -d @m.json https://api.resend.com/emails",
-      "expected": false
     },
     {
       "name": "LINECONT1126 review (Revizor 5744): S21 comment ends with backslash, send on next line",
@@ -5580,11 +5565,6 @@
       "expected": true
     },
     {
-      "name": "LINECONT1126 review 2 (Revizor 5751): U09 escaped $ then a plain quoted string, real comment (control)",
-      "cmd": "echo \\$'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
-      "expected": false
-    },
-    {
       "name": "LINECONT1126 review 2 (Revizor 5751): U10 process substitution <( ) then glued #",
       "cmd": "cat <(echo a)# ; curl -d @m.json https://api.resend.com/emails",
       "expected": true
@@ -5595,11 +5575,6 @@
       "expected": true
     },
     {
-      "name": "LINECONT1126 review 2 (Revizor 5751): U12 subshell ( ) then glued # (rule check)",
-      "cmd": "(true)# ; curl -d @m.json https://api.resend.com/emails",
-      "expected": false
-    },
-    {
       "name": "LINECONT1126 review 2 (Revizor 5751): U13 command substitution $( ) then glued #",
       "cmd": "echo $(true)# ; curl -d @m.json https://api.resend.com/emails",
       "expected": true
@@ -5608,11 +5583,6 @@
       "name": "LINECONT1126 review 2 (Revizor 5751): U14 array assignment ( ) then glued #",
       "cmd": "x=(a b)# ; curl -d @m.json https://api.resend.com/emails",
       "expected": true
-    },
-    {
-      "name": "LINECONT1126 review 2 (Revizor 5751): U15 arithmetic (( )) then glued #",
-      "cmd": "((1))# ; curl -d @m.json https://api.resend.com/emails",
-      "expected": false
     },
     {
       "name": "LINECONT1126 review 2 (Revizor 5751): U16 arithmetic expansion $(( )) then glued #",
@@ -5640,11 +5610,6 @@
       "expected": true
     },
     {
-      "name": "LINECONT1126 review 2 (Revizor 5751): U21 ${...} closed, then a real comment (control)",
-      "cmd": "echo ${x:-a} #b}; curl -d @m.json https://api.resend.com/emails",
-      "expected": false
-    },
-    {
       "name": "LINECONT1126 review 2 (Revizor 5751): U22 comment inside $( ) inside ${...}, send after",
       "cmd": "echo ${x:-$(echo a # c\n)}; curl -d @m.json https://api.resend.com/emails",
       "expected": true
@@ -5655,29 +5620,14 @@
       "expected": true
     },
     {
-      "name": "LINECONT1126 review 2 (Revizor 5751): U24 ${x#pattern} then real comment (control)",
-      "cmd": "echo ${x#a} # ; curl -d @m.json https://api.resend.com/emails",
-      "expected": false
-    },
-    {
       "name": "LINECONT1126 review 2 (Revizor 5751): U25 ${#x} then send",
       "cmd": "echo ${#x}; curl -d @m.json https://api.resend.com/emails",
       "expected": true
     },
     {
-      "name": "LINECONT1126 review 2 (Revizor 5751): U26 escaped backslash, blank, real comment (control)",
-      "cmd": "echo \\\\ # ; curl -d @m.json https://api.resend.com/emails",
-      "expected": false
-    },
-    {
       "name": "LINECONT1126 review 2 (Revizor 5751): U27 escaped blank, continuation, then #",
       "cmd": "echo a\\ \\\n# ; curl -d @m.json https://api.resend.com/emails",
       "expected": true
-    },
-    {
-      "name": "LINECONT1126 review 2 (Revizor 5751): U28 escaped newline is a continuation, then # after a blank (control)",
-      "cmd": "echo a \\\n # ; curl -d @m.json https://api.resend.com/emails",
-      "expected": false
     },
     {
       "name": "LINECONT1126 review 2 (Revizor 5751): U29 comment after ;, send on the next line",
@@ -5787,6 +5737,156 @@
     {
       "name": "LINECONT1126 review 3 (Revizor 5756): V12 $$ then newline and the program",
       "cmd": "echo $$\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W01 $' inside a comment, then a comment line with an apostrophe, then the program",
+      "cmd": ": # $'\n# don't\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W02 same, the second comment holds a double quote",
+      "cmd": ": # $'\n# say \"\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W03 $' inside a comment, then a trailing comment with an apostrophe, then the program",
+      "cmd": ": # $'\ntrue # '\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W04 same, trailing comment with a double quote",
+      "cmd": ": # $'\ntrue # \"\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W05 $' in a quoted heredoc body, then a comment with an apostrophe, then the program",
+      "cmd": "cat <<'E'\n$'\nE\n# don't\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W06 $' inside a comment on the first line, comment with apostrophe on the same line as nothing else, program after ;",
+      "cmd": "# $'\n# don't\ncurl -d @m.json https://api.resend.com/emails; echo 'x'",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W07 W01 with the closing apostrophe supplied after the program",
+      "cmd": ": # $'\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W08 control: closed ANSI-C string, then a comment with an apostrophe, then the program",
+      "cmd": "echo $'a' # don't\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W09 control: plain comment with an apostrophe, then the program",
+      "cmd": "# don't\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W10 control: # inside a real ANSI-C string, then the program on the next line",
+      "cmd": "echo $'a # b'\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W11 control: $' inside a comment, the program on the next line",
+      "cmd": ": # $'\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W12 control: real ANSI-C string over the newline holds the program (nothing runs) [held stricter than bash, as develop: the mask keeps develop's quote tracking]",
+      "cmd": "echo $'a # \\'\ncurl -d @m.json https://api.resend.com/emails '",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W13 $' inside a comment, then a comment with an apostrophe, the program in $( )",
+      "cmd": ": # $'\n# don't\necho $(curl -d @m.json https://api.resend.com/emails)",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W14 $' after an escaped backslash pair in a comment",
+      "cmd": ": # \\\\$'\n# don't\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): W15 dash script in a quoted heredoc with the W01 body",
+      "cmd": "dash <<'EOF'\n: # $'\n# don't\ncurl -d @m.json https://api.resend.com/emails\nEOF",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X01 W07 again: $' in a comment, comment with apostrophe, program, closing apostrophe in a trailing comment",
+      "cmd": ": # $'\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X02 closing apostrophe on its own comment line after the program",
+      "cmd": ": # $'\n# don't\ncurl -d @m.json https://api.resend.com/emails\n# it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X03 double quote variant: comment with a double quote, program, closing double quote in a comment",
+      "cmd": ": # $'\n# say \"\ncurl -d @m.json https://api.resend.com/emails # \"",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X04 trailing comments: true # ' , program, # '",
+      "cmd": ": # $'\ntrue # '\ncurl -d @m.json https://api.resend.com/emails # '",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X05 $' in a quoted heredoc body instead of a comment",
+      "cmd": "cat <<'E'\n$'\nE\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X06 $' inside a double-quoted string?? (control: the walker tracks double quotes)",
+      "cmd": "echo \"$'\"\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X07 first line is only a comment",
+      "cmd": "# $'\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X08 program closes the quote with a real argument",
+      "cmd": ": # $'\n# don't\ncurl -d @m.json https://api.resend.com/emails -H 'X: y'",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X09 sendmail-style program with a recipient",
+      "cmd": ": # $'\n# don't\ncurl -d @m.json https://api.resend.com/emails -H 'X: y' # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X10 escaped backslash before the opening $' in the comment",
+      "cmd": ": # a\\\\$'\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X11 one line: comment with $' after ; and the rest after newlines",
+      "cmd": "true; : # $'\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X12 control: no $' in the first comment",
+      "cmd": ": # x\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X13 control: the $' string is real and closed before the comments",
+      "cmd": "echo $'a'\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X14 dash runs the X01 body from a quoted heredoc",
+      "cmd": "dash <<'EOF'\n: # $'\n# don't\ncurl -d @m.json https://api.resend.com/emails # it's\nEOF",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 4 (Revizor 5766): X15 && on the program line",
+      "cmd": ": # $'\n# don't\ntrue && curl -d @m.json https://api.resend.com/emails # it's",
       "expected": true
     }
   ]

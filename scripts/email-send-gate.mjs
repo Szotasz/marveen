@@ -777,38 +777,32 @@ export function developCommentStarts(cmd) {
   return starts
 }
 
-// Revizor 5756 J4 (twin of _bash_ansi_c_indices): the indices inside a bash/zsh ANSI-C string $'...' (where \' does not
-// close it). Used ONLY as a veto on a comment: the mask's quote tracking stays develop's, because a shell that knows no
-// $'...' (dash, a POSIX sh) reads $'a\' as $ and a closed '...', and a newline after it then separates commands.
-export function bashAnsiCIndices(cmd) {
-  const out = new Set()
+// LINECONT1126 (Marveen 5771): develop's mask, copied UNCHANGED (only renamed). isSendInvocation ORs the verdict of
+// this reading with the new one, so the new mask can never weaken the gate against develop (python twin).
+export function maskSubshellMarkersDevelop(cmd) {
+  let out = ''
   let q = null
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]
-    if (q === 'A') {
-      out.add(i)
-      if (ch === '\\' && i + 1 < cmd.length) { out.add(i + 1); i++; continue }
-      if (ch === "'") q = null
-      continue
-    }
     if (q) {
-      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { i++; continue }
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += cmd[i] + cmd[i + 1]; i++; continue }
       if (ch === q) q = null
+      out += ch
       continue
     }
-    if (ch === '\\' && i + 1 < cmd.length) { i++; continue }
-    if (ch === '$' && cmd[i + 1] === '$') { i++; continue } // $$ is the pid: $$'...' is no ANSI-C string
-    if (ch === '$' && cmd[i + 1] === "'") { q = 'A'; out.add(i); out.add(i + 1); i++; continue }
-    if (ch === "'" || ch === '"') q = ch
+    if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
+    if (ch === '\\' && i + 1 < cmd.length) { out += cmd[i] + cmd[i + 1]; i++; continue }
+    if (ch === '\n' || ch === '`') { out += ';'; continue }
+    if (ch === '$' && cmd[i + 1] === '(') { out += ';'; i++; continue }
+    out += ch
   }
   return out
 }
 
 export function maskSubshellMarkers(cmd) {
   const devStarts = developCommentStarts(cmd) // LINECONT1126 (Marveen 5755): a comment is dropped only where develop dropped one too
-  const ansi = bashAnsiCIndices(cmd) // Revizor 5756 J4: inside a bash $'...' a # is no comment (a veto only)
   let out = ''
-  let q = null // null | "'" | '"' -- develop's quote tracking (Revizor 5756 J4: $'...' is NOT followed here)
+  let q = null // null | "'" | '"' -- develop's quote tracking (Revizor 5756 J4: a shell without $'...' reads it as $ + '...')
   let prev = -1 // LINECONT1126: the index of the last character that is not part of a removed line continuation
   let prevEsc = false // LINECONT1126 (Revizor 5744): that character was escaped (`\ #`, `\;#`): it ends no word
   let braces = 0 // LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
@@ -843,11 +837,20 @@ export function maskSubshellMarkers(cmd) {
     }
     // a comment starts only where bash starts one (Revizor 5744 J1): after nothing, or after an UNESCAPED blank (space,
     // tab, newline only: no CR, FF, VT or Unicode space), ; & | ( or a ) that closes no $( ; never inside ${...}
-    if (ch === '#' && devStarts.has(i) && !ansi.has(i) && !braces && (prev < 0 || (!prevEsc && (' \t\n;&|('.includes(cmd[prev])
+    if (ch === '#' && devStarts.has(i) && !braces && (prev < 0 || (!prevEsc && (' \t\n;&|('.includes(cmd[prev])
       || (cmd[prev] === ')' && plainCloseAt === prev))))) {
       // Revizor 5751 J3: after a ) only when it closes a subshell or (( )); never after a $( , a process substitution
       // <( ) >( ) or an array assignment x=( ) -- there the # is part of the word, as in bash
       while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+      continue
+    }
+    if (ch === '#' && devStarts.has(i)) {
+      // Revizor 5766 J5 (python twin): develop dropped this comment, the new rule keeps it. Kept as NEUTRAL words: quotes,
+      // backslashes and backticks become "_", so it can never open a quote, continue a line or start a substitution that
+      // develop never saw, and the newline at its end still separates. Keeping it can only add words.
+      while (i < cmd.length && cmd[i] !== '\n') { out += `'"\\\``.includes(cmd[i]) ? '_' : cmd[i]; prev = i; i++ }
+      i--
+      prevEsc = false
       continue
     }
     const afterEsc = prevEsc
@@ -875,8 +878,9 @@ export function maskSubshellMarkers(cmd) {
 const PROC_SUBST_OPENERS = ['<', '>', '=']
 const PROC_SUBST_WORD = '$__SUBST__' // the undecidable word flattenSubstitutions writes for a substitution
 
-export function segmentsTokens(cmd) {
-  const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, '$1'))
+export function segmentsTokens(cmd, develop = false) {
+  // develop=true: develop's reading (LINECONT1126, Marveen 5771: the verdict is the OR of both readings)
+  const s = (develop ? maskSubshellMarkersDevelop : maskSubshellMarkers)(cmd.replace(HEREDOC_RE, '$1'))
   const segments = []
   let cur = []
   let tok = ''
@@ -1358,7 +1362,7 @@ function lineClean(cmd) {
   if (/--to?=?[ \t]*"?[^\s"]*\\\n/.test(cmd)) return false // LINECONT1126: a continuation after --to or inside its value gets no exception (python twin)
   let words
   try {
-    words = [cmd, flattenSubstitutions(cmd)].flatMap((c) => segmentsTokens(c).flat())
+    words = [cmd, flattenSubstitutions(cmd)].flatMap((c) => [false, true].flatMap((d) => segmentsTokens(c, d).flat())) // LINECONT1126: both readings clean
   } catch { return false }
   return !words.some((w) => w.includes('@') || FLEET_TOKEN_BLOCK.test(tok(w)))
 }
@@ -2005,24 +2009,21 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   lineExemptOk = (depth === 0 || lineExemptOk) && lineClean(cmd)
   lineMailHost = (depth > 0 && lineMailHost) || MAIL_API_HOST.test(cmd) || wordsMailHost(cmd) // MAILCURLSEND1118
   if (heredocProgramSends(cmd, depth)) return true
-  let segments
-  try {
-    segments = segmentsTokens(cmd)
-  } catch {
-    // Unparseable command: fall back to the LEGACY content patterns, so on
-    // this path the gate is exactly as strict as before -- never weaker.
-    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd) // MAILURLFILE1118: a mail host too
-  }
-  if (segments.some((toks) => segmentIsSend(toks, depth))) return true
-  // The same command with every substitution as one undecidable word (see
-  // flattenSubstitutions): the outer command keeps the word it would run.
+  // LINECONT1126 (Marveen 5771, python twin): the new logic can only tighten. The verdict is the OR of the new reading and
+  // develop's reading (maskSubshellMarkersDevelop, copied unchanged); everything after the tokenizer only gained sends in
+  // this change, so per twin there is no weakening against develop by construction. An unparseable reading brings in the
+  // LEGACY content patterns, as develop's own reading did. The same command with every substitution as one undecidable
+  // word (see flattenSubstitutions): the outer command keeps the word it would run.
   const flat = flattenSubstitutions(cmd)
-  if (flat === cmd) return false
-  try {
-    return segmentsTokens(flat).some((toks) => segmentIsSend(toks, depth))
-  } catch {
-    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd)
+  let fallback = false
+  for (const text of flat === cmd ? [cmd] : [cmd, flat]) {
+    for (const develop of [false, true]) {
+      try {
+        if (segmentsTokens(text, develop).some((toks) => segmentIsSend(toks, depth))) return true
+      } catch { fallback = true }
+    }
   }
+  return fallback && (SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd)) // MAILURLFILE1118: a mail host too
 }
 
 // EMAILGATESUBST1116: a send command built by process substitution, a here-string, a stdin heredoc or xargs is
