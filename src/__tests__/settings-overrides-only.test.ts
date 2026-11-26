@@ -345,6 +345,24 @@ describe('script parity with the store', () => {
     }
   })
 
+  // MAINEXTRAHOOKS1123 (a): the db-write-gate reads the owner's EXTRA_HOOKS_MAIN_AGENT_WRITE switch straight from the
+  // overrides file; it must open the extras pair to the main agent exactly when the store (the extras loader's view)
+  // says "on", for every override / .env state: a .env "on" counts for neither.
+  it('scripts/hooks/db-write-gate.mjs mainExtraHooksWriteOn (EXTRA_HOOKS_MAIN_AGENT_WRITE)', async () => {
+    const { mainExtraHooksWriteOn } = await import(pathToFileURL(join(ROOT, 'scripts', 'hooks', 'db-write-gate.mjs')).href)
+    const K = 'EXTRA_HOOKS_MAIN_AGENT_WRITE'
+    const states: Array<Record<string, string> | 'unreadable' | null> = [null, 'unreadable', { K: 'on' }, { K: 'off' }, { K: ' ON ' }, { K: 'yes' }, { K: '' }]
+    const envs: Array<Record<string, string>> = [{}, { K: 'on' }, { K: 'off' }]
+    for (const ov of states) {
+      for (const env of envs) {
+        const o = sub(ov, K)
+        const e = Object.fromEntries(Object.entries(env).map(([, v]) => [K, v]))
+        const want = storeView(K, o, e).trim().toLowerCase() === 'on'
+        expect(mainExtraHooksWriteOn(install(o, e)), JSON.stringify([o, e])).toBe(want)
+      }
+    }
+  })
+
   it('scripts/hooks/ledger-capture.py SLACK_OWNER_USER_ID (None is the store\'s empty default)', () => {
     const hook = join(ROOT, 'scripts', 'hooks', 'ledger-capture.py')
     const py = [
@@ -523,7 +541,9 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     'scripts/self-pace-gate.mjs': 1,
     'scripts/notify.sh': 1,
     // WDSANDBOXMARKER1119: + a comment on the protected store/bash-sandbox directory
-    'scripts/hooks/db-write-gate.mjs': 3,
+    // MAINEXTRAHOOKS1123: + 5 EXTRA_HOOKS_MAIN_AGENT_WRITE (comments, and the EXTRA_HOOKS_SWITCH constant that
+    // mainExtraHooksWriteOn reads, an override-only mirror parity-tested above; the full deny texts are in the docs)
+    'scripts/hooks/db-write-gate.mjs': 8,
     // ISSUE2556X: a comment and a log line; both read through owner-chat.sh / owner_chat.py (the mirrors above)
     'scripts/main-inbox-observer.sh': 2,
     'scripts/hooks/persona-change-notify.py': 1,

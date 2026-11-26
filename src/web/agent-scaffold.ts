@@ -32,7 +32,7 @@ import {
   buildSoulPromptEn, buildSkillPromptEn, PRECOMPACT_PROMPT_EN_TPL, fleetBaseRulesEn,
 } from './agent-scaffold-en.js'
 import { FLEET_ROSTER_BEGIN, PACKAGE_SHELL_PREFIX_TEXT, hasPackageManifestFile } from './agent-package/marker.js'
-import { EXTRA_HOOKS_DIR, EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps, type ExtraHookEntry } from './extra-hook-entries.js'
+import { EXTRA_HOOKS_DIR, EXTRA_HOOKS_FILE, EXTRA_HOOKS_SWITCH_KEY, applyExtraHookEntries, checkExtraHooksDigestState, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps, type ExtraHookEntry } from './extra-hook-entries.js'
 import { SENDER_ROLE_GATES_FILE } from './sender-role-gate-store.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
@@ -285,12 +285,15 @@ export function hookCommand(scriptPath: string, args: readonly string[] = [], ho
 // is the 127 exit, because Claude Code treats 127 as NON-blocking and lets the
 // tool call through -- a gate that silently stops enforcing. So the interpreter
 // is probed first and a miss exits 2, which blocks.
-export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
+export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10, opts: { noBytecode?: boolean } = {}): string {
   const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
   // SITEPKGPLANT1104 (1): -I -S, so no start-up code the gate did not ship runs inside it (a .pth line or
   // sitecustomize in a writable site-packages, a user site, PYTHON* settings). The hooks import only the standard
   // library and their own directory, which they put on sys.path themselves (measured on every hook).
-  const invocation = gateInvocation('python3 -I -S', scriptPath, args)
+  // MAINEXTRAHOOKS1123 (c): `noBytecode` adds -B, so the run writes no __pycache__/*.pyc (the install-local extras,
+  // whose digest hashes compiled Python like any other file). A flag, not PYTHONDONTWRITEBYTECODE: -I ignores every
+  // PYTHON* variable. Off (every built-in gate), the command is byte-identical to before.
+  const invocation = gateInvocation(opts.noBytecode ? 'python3 -I -S -B' : 'python3 -I -S', scriptPath, args)
   return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
 }
 
@@ -1479,19 +1482,39 @@ export function extraHooksConfigPath(): string {
   return join(STORE_DIR, EXTRA_HOOKS_FILE)
 }
 
+// MAINEXTRAHOOKS1123 (a)/(b): the owner's switch, through the settings store (overrides-only: a .env line cannot turn
+// it on). The db-write-gate reads the same key straight from store/config-overrides.json, "on" only. A switch that
+// cannot be read counts as ON here, the STRICTER reading for the loader (gate-shaped extras only).
+export function extraHooksMainAgentWriteOn(): boolean {
+  try {
+    return String(getEffectiveSettingValue(EXTRA_HOOKS_SWITCH_KEY)).trim().toLowerCase() === 'on'
+  } catch {
+    return true
+  }
+}
+
 function extraHookDeps(): ExtraHookDeps {
   return {
     projectRoot: PROJECT_ROOT,
     shippedScriptsDir: join(PROJECT_ROOT, 'scripts'),
     nodeBin: HOOK_NODE_BIN,
     nodeGateCommand: (p, t) => hookCommand(p, [], t),
-    pythonGateCommand: (p, t) => pythonHookCommand(p, [], t),
+    pythonGateCommand: (p, t) => pythonHookCommand(p, [], t, { noBytecode: true }),
     isUnsafe: isUnsafeHookCommand,
+    agentWritable: extraHooksMainAgentWriteOn(),
   }
 }
 
 // One error line per distinct problem set, not one per agent and boot.
 const _loggedExtraHookProblems = new Set<string>()
+function logExtraHookProblems(path: string, errors: string[], applied: number): void {
+  if (!errors.length) return
+  const key = `${path}\n${errors.join('\n')}`
+  if (_loggedExtraHookProblems.has(key)) return
+  _loggedExtraHookProblems.add(key)
+  logger.error({ path, errors, applied },
+    'extra-hooks.json: invalid entries IGNORED (built-in hooks unaffected)')
+}
 
 // The fingerprint line (review #2001): the self-pace gate stops a sub-agent
 // command that spells extra-hooks.json or local-hooks/, not one that builds the
@@ -1500,15 +1523,36 @@ const _loggedExtraHookProblems = new Set<string>()
 // and process: the first sync after a start always logs, a later one only when
 // something changed. An unexpected change then shows up in dashboard.log, the
 // way the egress allowlist's baseline reports its file. No file, no line.
+//
+// MAINEXTRAHOOKS1123 (c), fleet review of #3064: a log line nobody watches live is not enough once the main agent may
+// write the pair, so the same sync also compares the digest with the one last announced to the owner
+// (store/.extra-hooks-digest.json, next to the config; denied to every agent by the db-write-gate) and sends a
+// notifySecurityEvent on a difference: a restart with unchanged files stays silent, the first sync with a non-blank
+// file announces it once, a deleted file is announced too. Whatever the switch says: an operator's hand edit is
+// announced as well. The in-process key below keeps it to one notice per content even with many spawns.
 let _lastExtraHooksDigest = ''
-export function logExtraHooksDigest(path = extraHooksConfigPath()): void {
+export type ExtraHooksNotifier = (text: string) => void
+const defaultExtraHooksNotifier: ExtraHooksNotifier = (text) => {
+  logger.warn({ notice: text }, 'extra-hooks.json: change announced to the owner (notifySecurityEvent)')
+  void import('../notify.js').then((m) => m.notifySecurityEvent(text)).catch((err) => {
+    logger.warn({ err }, 'extra-hooks.json: the owner notice could not be sent')
+  })
+}
+export function logExtraHooksDigest(path = extraHooksConfigPath(), notify: ExtraHooksNotifier = defaultExtraHooksNotifier): void {
   const digest = extraHooksDigest(path, PROJECT_ROOT)
-  if (!digest) { _lastExtraHooksDigest = ''; return }
-  const key = `${path}\n${JSON.stringify(digest)}`
+  const key = digest ? `${path}\n${JSON.stringify(digest)}` : `${path}\nnone`
   if (key === _lastExtraHooksDigest) return
   _lastExtraHooksDigest = key
-  logger.info({ path, sha256: digest.sha256, scripts: digest.scripts },
-    'extra-hooks.json: sha256 of the file and of each script it names (a change nobody made on purpose is a write to check)')
+  if (digest) {
+    logger.info({ path, sha256: digest.sha256, scripts: digest.scripts, files: digest.files, ...(digest.filesTruncated ? { filesTruncated: true } : {}) },
+      'extra-hooks.json: sha256 of the file, of each script it names and of every other local-hooks/ file (a change nobody made on purpose is a write to check)')
+  }
+  checkExtraHooksDigestState(path, digest, {
+    switchOn: extraHooksMainAgentWriteOn(),
+    notify,
+    write: (p, data) => atomicWriteFileSync(p, data, { mode: 0o600 }),
+    onError: (err) => logger.warn({ err, path }, 'extra-hooks.json: the announced-digest record could not be read or written'),
+  })
 }
 
 // Append the extras to a sub-agent's settings object (after removing the ones
@@ -1519,14 +1563,7 @@ export function injectExtraHookEntries(name: string, existing: Record<string, un
   try {
     logExtraHooksDigest(path)
     const { entries, errors } = loadExtraHookEntries(path, extraHookDeps())
-    if (errors.length) {
-      const key = `${path}\n${errors.join('\n')}`
-      if (!_loggedExtraHookProblems.has(key)) {
-        _loggedExtraHookProblems.add(key)
-        logger.error({ path, errors, applied: entries.length },
-          'extra-hooks.json: invalid entries IGNORED (built-in hooks unaffected)')
-      }
-    }
+    logExtraHookProblems(path, errors, entries.length)
     return applyExtraHookEntries(existing, entries.filter((e) => e.scope === 'subagents'))
   } catch (err) {
     logger.error({ err, path }, 'extra-hooks.json: could not be applied, extras IGNORED (built-in hooks unaffected)')
@@ -1538,10 +1575,15 @@ export function injectExtraHookEntries(name: string, existing: Record<string, un
 // loads for the main session (MAIN_SCOPE_SETTINGS_PATH, the same file the --main-scope egress parser uses). Only
 // this module's own marked groups are replaced; the owner's own keys and hooks keep their bytes. An unreadable
 // file is left alone; a file that held only our entries goes when they go. Returns true if written.
+// MAINEXTRAHOOKS1123 (b): while EXTRA_HOOKS_MAIN_AGENT_WRITE is on, no "scope": "main" entry loads, so this pass
+// takes out the ones an earlier pass wrote (the main agent cannot change its own hooks through the file).
 export function ensureMainScopeExtraHookEntries(path = extraHooksConfigPath(), settingsPath = MAIN_SCOPE_SETTINGS_PATH): boolean {
   let entries: ExtraHookEntry[]
   try {
-    entries = loadExtraHookEntries(path, extraHookDeps()).entries.filter((e) => e.scope === 'main')
+    logExtraHooksDigest(path)
+    const load = loadExtraHookEntries(path, extraHookDeps())
+    logExtraHookProblems(path, load.errors, load.entries.length)
+    entries = load.entries.filter((e) => e.scope === 'main')
   } catch (err) {
     logger.error({ err, path }, 'extra-hooks.json: main-scope extras could not be read, left as they are')
     return false

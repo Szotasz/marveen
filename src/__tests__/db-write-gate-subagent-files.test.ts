@@ -74,7 +74,10 @@ it('the sub-agent list is exactly the plan\'s: the root .env, five store files, 
       // root are added per root in installTargets)
       ...INSTRUCTION_SURFACES, ...['CLAUDE.md', 'rules', 'commands', 'output-styles'].map((f) => `~/.claude/${f}`),
       ...[...INSTRUCTION_SURFACES, '.claude-config/CLAUDE.md', ...['rules', 'commands', 'output-styles'].map((d) => `.claude-config/${d}`)]
-        .map((f) => `agents/*/${f}`)])
+        .map((f) => `agents/*/${f}`),
+      // MAINEXTRAHOOKS1123: the install-local extra hooks, written by the operator, or by the main agent only while the
+      // owner's EXTRA_HOOKS_MAIN_AGENT_WRITE switch is on (db-write-gate-main-extra-hooks.test.ts)
+      'store/extra-hooks.json', 'local-hooks'])
 })
 
 describe('the install .env, as a sub-agent: every write denied', () => {

@@ -1273,6 +1273,22 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
   },
   {
+    // MAINEXTRAHOOKS1123 (fleet review of #3064, (a)-(c)): the main agent may write the install-local extra hooks only
+    // on the owner's opt-in. Read by scripts/hooks/db-write-gate.mjs straight from store/config-overrides.json (only
+    // "on" there opens it, everything else is off) and by the extras loader in agent-scaffold.ts through the settings
+    // store; overrides-only through `loosens`, so a .env line cannot switch it on.
+    key: 'EXTRA_HOOKS_MAIN_AGENT_WRITE',
+    type: 'string',
+    default: 'off',
+    description: 'A fő ügynök írhatja-e a telepítés-helyi plusz hookokat (store/extra-hooks.json és a local-hooks/ mappa; MAINEXTRAHOOKS1123). Kikapcsolva (alapértelmezés) mindkettőt csak a gazda írja kézzel, a db-write-gate a fő ügynöknek is tiltja. Bekapcsolva (on) a fő ügynök a gazda kérésére maga teszi be a bejegyzést és a szkriptet; sub-ügynök egyik állásban sem írhatja. Amíg be van kapcsolva, a dashboard a fájlból csak kapu jellegű bejegyzést tölt be (PreToolUse és PostToolUse, "scope": "main" nélkül), a többit kihagyja és naplózza, és a fájl vagy egy local-hooks/ fájl minden változásáról biztonsági értesítést küld a gazdának. Az értesítés kikapcsolt állásban is megy. Bekapcsolni csak bejelentkezett gazda-session vagy teljes jogú eszközkulcs tudja (a közös tokennel nem, mert azt minden ügynök birtokolja), vagy a store/config-overrides.json kézi szerkesztése. A kikapcsolás a fájl addigi tartalmát a gazdáé teszi: előtte nézd át. A változás a következő sub-ügynök-indításkor és a dashboard indulásakor lép életbe. Alapból KI.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    // Switching it ON lets an agent write code that runs in every sub-agent's session: that needs the owner's session.
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
+  },
+  {
     // TEAMSAPPROVECARD1118 (Samu D3): one more way to approve, so off by default and switching it on needs the owner.
     key: 'APPROVAL_TEAMS_CARDS',
     type: 'string',

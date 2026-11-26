@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,8 +13,10 @@ import { join } from 'node:path'
 import { foldName, gateDecision, nameForms, protectedMention } from '../../scripts/self-pace-gate.mjs'
 import {
   EXTRA_HOOK_MARK, applyExtraHookEntries, extraHookScriptNames, extraHooksDigest, mainScopeGuard, isExtraHookGroup, loadExtraHookEntries, parseExtraHookEntries,
-  type ExtraHookDeps, type ExtraHookEntry,
+  AGENT_WRITABLE_EXTRA_HOOK_EVENTS, EXTRA_HOOK_EVENTS, checkExtraHooksDigestState, diffExtraHooksDigest, extraHooksChangeNotice, extraHooksDigestStatePath,
+  type ExtraHookDeps, type ExtraHookEntry, type ExtraHooksDigest,
 } from '../web/extra-hook-entries.js'
+import { getSettingDefinition, isOverridesOnly } from '../config-registry.js'
 
 let root: string
 let outside: string
@@ -78,9 +80,9 @@ describe('rendering', () => {
     expect(r.entries[0].timeout).toBe(10)
   })
 
-  it('a non-fail-closed entry is a plain interpreter call; matcher is optional', () => {
+  it('a non-fail-closed entry is a plain interpreter call (python with -B); matcher is optional', () => {
     const py = one({ event: 'Stop', script: 'local-hooks/gate.py', failClosed: false })
-    expect(py.entries[0]).toEqual({ event: 'Stop', timeout: 10, scope: 'subagents', command: `${EXTRA_HOOK_MARK} python3 "${join(root, 'local-hooks', 'gate.py')}"` })
+    expect(py.entries[0]).toEqual({ event: 'Stop', timeout: 10, scope: 'subagents', command: `${EXTRA_HOOK_MARK} python3 -B "${join(root, 'local-hooks', 'gate.py')}"` })
     const js = one({ event: 'PostToolUse', script: 'local-hooks/log.mjs', failClosed: false })
     expect(js.entries[0].command).toBe(`${EXTRA_HOOK_MARK} "/opt/node/bin/node" "${join(root, 'local-hooks', 'log.mjs')}"`)
   })
@@ -207,6 +209,69 @@ describe('validation: every rejection names the entry and adds nothing', () => {
       expect(r.entries).toEqual([])
       expect(r.errors).toHaveLength(1)
     }
+  })
+})
+
+// Review condition (b) of #3064: while the owner's EXTRA_HOOKS_MAIN_AGENT_WRITE switch is on, the main agent may write
+// the file, so only gate-shaped extras load from it. Off (the operator's own file), the full set stays.
+describe('(b) an agent-writable file (the switch on): gate-shaped extras only', () => {
+  const agentDeps = () => ({ ...deps, agentWritable: true })
+  const NON_GATE = EXTRA_HOOK_EVENTS.filter((e) => !(AGENT_WRITABLE_EXTRA_HOOK_EVENTS as readonly string[]).includes(e))
+
+  it('the allowed events are exactly PreToolUse and PostToolUse, and every other event is a refused one', () => {
+    expect([...AGENT_WRITABLE_EXTRA_HOOK_EVENTS]).toEqual(['PreToolUse', 'PostToolUse'])
+    expect(NON_GATE).toEqual(['PostToolUseFailure', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'SessionStart', 'SessionEnd', 'PreCompact', 'Notification'])
+  })
+
+  it.each(NON_GATE)('%s is refused, with a reason that names the switch', (event) => {
+    const r = parseExtraHookEntries({ entries: [{ ...ok, event, failClosed: false }] }, agentDeps())
+    expect(r.entries).toEqual([])
+    expect(r.errors).toHaveLength(1)
+    expect(r.errors[0]).toMatch(/^entries\[0\]: event \S+ is refused while EXTRA_HOOKS_MAIN_AGENT_WRITE is on/)
+  })
+
+  it('"scope": "main" is refused, for a gate event too', () => {
+    for (const event of ['PreToolUse', 'PostToolUse']) {
+      const r = parseExtraHookEntries({ entries: [{ ...ok, event, failClosed: event === 'PreToolUse', scope: 'main' }] }, agentDeps())
+      expect(r.entries).toEqual([])
+      expect(r.errors[0]).toMatch(/"scope": "main" is refused while EXTRA_HOOKS_MAIN_AGENT_WRITE is on/)
+    }
+  })
+
+  it('PreToolUse and PostToolUse for the sub-agents still load, next to the refused ones', () => {
+    const r = parseExtraHookEntries({ entries: [
+      { ...ok, event: 'SessionStart', failClosed: false },
+      ok,
+      { ...ok, scope: 'main' },
+      { event: 'PostToolUse', matcher: 'Bash', script: 'local-hooks/log.mjs', failClosed: false, scope: 'subagents' },
+      { ...ok, event: 'UserPromptSubmit', failClosed: false },
+    ] }, agentDeps())
+    expect(r.entries.map((e) => [e.event, e.scope])).toEqual([['PreToolUse', 'subagents'], ['PostToolUse', 'subagents']])
+    expect(r.errors.map((e) => e.slice(0, 11))).toEqual(['entries[0]:', 'entries[2]:', 'entries[4]:'])
+  })
+
+  it('the same file with the switch off (the operator\'s file) keeps the full set', () => {
+    const entries = [{ ...ok, event: 'SessionStart', failClosed: false }, { ...ok, scope: 'main' }, { ...ok, event: 'UserPromptSubmit', failClosed: false }]
+    for (const d of [deps, { ...deps, agentWritable: false }]) {
+      const r = parseExtraHookEntries({ entries }, d)
+      expect(r.errors).toEqual([])
+      expect(r.entries.map((e) => [e.event, e.scope])).toEqual([['SessionStart', 'subagents'], ['PreToolUse', 'main'], ['UserPromptSubmit', 'subagents']])
+    }
+  })
+
+  it('the loader applies it to a file read from disk', () => {
+    const file = join(root, 'extras.json')
+    writeFileSync(file, JSON.stringify({ entries: [{ ...ok, event: 'PreCompact', failClosed: false }, ok] }))
+    const r = loadExtraHookEntries(file, agentDeps())
+    expect(r.entries).toHaveLength(1)
+    expect(r.errors[0]).toMatch(/event PreCompact is refused/)
+  })
+
+  it('the scaffold feeds the switch into the loader and logs the skipped entries on both sync paths', () => {
+    const scaffold = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
+    expect(scaffold).toContain('agentWritable: extraHooksMainAgentWriteOn(),')
+    expect(scaffold).toContain('getEffectiveSettingValue(EXTRA_HOOKS_SWITCH_KEY)')
+    expect(scaffold.match(/logExtraHookProblems\(path, /g)).toHaveLength(2)
   })
 })
 
@@ -675,6 +740,8 @@ describe('the sha256 fingerprint of the extras (review #2001)', () => {
     expect(extraHooksDigest(file, root)).toEqual({
       sha256: sha(text),
       scripts: { 'local-hooks/gate.py': sha('print(1)\n'), 'local-hooks/log.mjs': sha(''), 'local-hooks/missing.py': null },
+      // MAINEXTRAHOOKS1123 (c): every other file under local-hooks/ too
+      files: { 'local-hooks/tool.sh': sha('') },
     })
   })
 
@@ -686,7 +753,274 @@ describe('the sha256 fingerprint of the extras (review #2001)', () => {
     writeFileSync(join(root, 'local-hooks', 'gate.py'), 'import os  # changed\n')
     expect(extraHooksDigest(file, root)).not.toEqual(before)
     writeFileSync(file, '{ not json')
-    expect(extraHooksDigest(file, root)).toEqual({ sha256: sha('{ not json'), scripts: {} })
+    expect(extraHooksDigest(file, root)).toEqual({ sha256: sha('{ not json'), scripts: {},
+      files: { 'local-hooks/gate.py': sha('import os  # changed\n'), 'local-hooks/log.mjs': sha(''), 'local-hooks/tool.sh': sha('') } })
+  })
+
+  // MAINEXTRAHOOKS1123 (c): a named script runs with local-hooks/ on its import path, so a helper it imports is code too
+  // Fleet re-review of #3064: Python runs compiled files, so __pycache__/ and *.pyc are hashed too; only .DS_Store is not.
+  it('a helper the file does not name (a sub-directory, a linked-in directory, compiled Python) is hashed; .DS_Store is not', () => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    const file = join(root, 'store', 'extra-hooks.json')
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    mkdirSync(join(root, 'local-hooks', 'lib', '__pycache__'), { recursive: true })
+    writeFileSync(join(root, 'local-hooks', 'lib', 'helper.py'), 'X = 1\n')
+    writeFileSync(join(root, 'local-hooks', 'lib', '__pycache__', 'helper.cpython-312.pyc'), 'bytecode')
+    writeFileSync(join(root, 'local-hooks', 'old.pyc'), 'bytecode')
+    writeFileSync(join(root, 'local-hooks', '.DS_Store'), 'finder')
+    symlinkSync(outside, join(root, 'local-hooks', 'elsewhere'))
+    symlinkSync(join(root, 'local-hooks'), join(root, 'local-hooks', 'lib', 'loop'))
+    const d = extraHooksDigest(file, root)!
+    expect(Object.keys(d.files)).toEqual(['local-hooks/elsewhere/evil.py', 'local-hooks/lib/__pycache__/helper.cpython-312.pyc',
+      'local-hooks/lib/helper.py', 'local-hooks/log.mjs', 'local-hooks/old.pyc', 'local-hooks/tool.sh'])
+    expect(d.files['local-hooks/lib/helper.py']).toBe(sha('X = 1\n'))
+    expect(d.files['local-hooks/lib/__pycache__/helper.cpython-312.pyc']).toBe(sha('bytecode'))
+    expect(d.files['local-hooks/old.pyc']).toBe(sha('bytecode'))
+    expect(d.filesTruncated).toBeUndefined()
+    writeFileSync(join(root, 'local-hooks', 'lib', 'helper.py'), 'X = 2\n')
+    writeFileSync(join(outside, 'evil.py'), 'import os\n')
+    expect(diffExtraHooksDigest(d, extraHooksDigest(file, root))).toEqual({ file: null, paths: [
+      { path: 'local-hooks/elsewhere/evil.py', change: 'changed' }, { path: 'local-hooks/lib/helper.py', change: 'changed' }] })
+  })
+})
+
+// Review condition (c) of #3064: the owner is told on every change of the file or of a local-hooks/ file.
+describe('(c) the change is announced to the owner, once per content', () => {
+  let file: string
+  let statePath: string
+  let sent: string[]
+  const fake = (switchOn = false) => ({
+    switchOn,
+    notify: (t: string) => { sent.push(t) },
+    write: (p: string, data: string) => writeFileSync(p, data),
+  })
+  const check = (switchOn = false) => checkExtraHooksDigestState(file, extraHooksDigest(file, root), fake(switchOn))
+  beforeEach(() => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    file = join(root, 'store', 'extra-hooks.json')
+    statePath = extraHooksDigestStatePath(file)
+    sent = []
+  })
+
+  it('the record lives next to the config: store/.extra-hooks-digest.json', () => {
+    expect(statePath).toBe(join(root, 'store', '.extra-hooks-digest.json'))
+  })
+
+  it('the first sync with a non-blank file announces it once and records it; the same bytes again stay silent', () => {
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    const r = check()
+    expect(r).toMatchObject({ recorded: true })
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toContain('[Biztonság]')
+    expect(sent[0]).toContain('első rögzítés')
+    expect(sent[0]).toContain('local-hooks/gate.py új')
+    expect(JSON.parse(readFileSync(statePath, 'utf-8')).digest).toEqual(extraHooksDigest(file, root))
+    // a restart with unchanged files: the record matches, no notice
+    expect(check()).toEqual({ notice: null, recorded: false })
+    expect(check()).toEqual({ notice: null, recorded: false })
+    expect(sent).toHaveLength(1)
+  })
+
+  it('a change of the file, of a named script, or of a helper is announced, each once', () => {
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    check()
+    writeFileSync(file, JSON.stringify({ entries: [ok, { event: 'PostToolUse', script: 'local-hooks/log.mjs', failClosed: false }] }))
+    check(); check()
+    writeFileSync(join(root, 'local-hooks', 'gate.py'), 'import os\n')
+    check(); check()
+    writeFileSync(join(root, 'local-hooks', 'helper.py'), 'X = 1\n')
+    check(); check()
+    expect(sent).toHaveLength(4)
+    expect(sent[1]).toContain('store/extra-hooks.json módosult')
+    expect(sent[2]).toContain('local-hooks/gate.py módosult')
+    expect(sent[2]).not.toContain('store/extra-hooks.json módosult')
+    expect(sent[3]).toContain('local-hooks/helper.py új')
+  })
+
+  it('a deleted file is announced; a file that comes back is announced again', () => {
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    check()
+    rmSync(file)
+    check(); check()
+    expect(sent).toHaveLength(2)
+    expect(sent[1]).toContain('store/extra-hooks.json törölve')
+    expect(sent[1]).not.toContain('local-hooks/gate.py törölve')
+    expect(JSON.parse(readFileSync(statePath, 'utf-8'))).toEqual({ digest: null })
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    check()
+    expect(sent).toHaveLength(3)
+    expect(sent[2]).toContain('store/extra-hooks.json új')
+  })
+
+  it('no file and no record: nothing; a blank file is recorded without a notice', () => {
+    expect(check()).toEqual({ notice: null, recorded: false })
+    writeFileSync(file, '  \n')
+    expect(check()).toMatchObject({ notice: null, recorded: true })
+    expect(sent).toEqual([])
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    check()
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toContain('store/extra-hooks.json módosult')
+  })
+
+  it('a lost or unparsable record can only cause a notice, never hide one', () => {
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    check()
+    for (const bad of ['{ not json', '[]', '{"digest": 5}', '']) {
+      writeFileSync(statePath, bad)
+      check()
+    }
+    rmSync(statePath)
+    check()
+    expect(sent).toHaveLength(6)
+  })
+
+  it('a record that cannot be written still lets the notice out (and the next sync announces again)', () => {
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    const errors: unknown[] = []
+    const r = checkExtraHooksDigestState(file, extraHooksDigest(file, root), {
+      ...fake(), write: () => { throw new Error('EACCES') }, onError: (e) => errors.push(e),
+    })
+    expect(r.recorded).toBe(false)
+    expect(sent).toHaveLength(1)
+    expect(errors).toHaveLength(1)
+  })
+
+  it('the notice says the switch state and the hashes, with full accents and no em dash', () => {
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    check(true)
+    expect(sent[0]).toContain('EXTRA_HOOKS_MAIN_AGENT_WRITE: BE')
+    expect(sent[0]).toContain('kapcsold ki a kapcsolót')
+    expect(sent[0]).toMatch(/sha256: nincs -> [0-9a-f]{12}\./)
+    writeFileSync(file, JSON.stringify({ entries: [] }))
+    check(false)
+    expect(sent[1]).toContain('EXTRA_HOOKS_MAIN_AGENT_WRITE: KI')
+    for (const t of sent) expect(t).not.toMatch(new RegExp('[\\u2013\\u2014]'))
+  })
+
+  it('a long list is cut at ten paths', () => {
+    const prev: ExtraHooksDigest = { sha256: 'a', scripts: {}, files: {} }
+    const cur: ExtraHooksDigest = { sha256: 'a', scripts: {}, files: Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`local-hooks/f${String(i).padStart(2, '0')}.py`, 'h'])) }
+    const t = extraHooksChangeNotice(diffExtraHooksDigest(prev, cur)!, { switchOn: false, first: false, before: 'a', after: 'a' })
+    expect(t).toContain('local-hooks/f09.py új')
+    expect(t).not.toContain('local-hooks/f10.py')
+    expect(t).toContain('és még 3 fájl')
+  })
+
+  it('the sync wires it: the record is written 0600, the owner notice goes through notifySecurityEvent', () => {
+    const scaffold = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
+    expect(scaffold).toContain('checkExtraHooksDigestState(path, digest, {')
+    expect(scaffold).toContain("m.notifySecurityEvent(text)")
+    expect(scaffold).toContain('atomicWriteFileSync(p, data, { mode: 0o600 })')
+  })
+})
+
+// Fleet re-review of #3064, item 1, end to end with the real python3: (c) did not see compiled Python. Both planted
+// variants the reviewer measured run their code while every source file stays byte-identical; the digest must report
+// them, and the -B launch must keep a normal run from writing bytecode (which would announce a change every first run).
+describe('(c) compiled Python is code: a planted .pyc is announced, a normal -B run writes none', () => {
+  let file: string
+  let sent: string[]
+  const lh = (...p: string[]) => join(root, 'local-hooks', ...p)
+  const py = (args: string[], input = '') => spawnSync('python3', args, { encoding: 'utf-8', input })
+  const sh = (command: string) => spawnSync('sh', ['-c', command], { encoding: 'utf-8', input: '{}' })
+  const check = () => checkExtraHooksDigestState(file, extraHooksDigest(file, root), {
+    switchOn: true, notify: (t: string) => { sent.push(t) }, write: (p: string, data: string) => writeFileSync(p, data),
+  })
+  // Compile `source` to `cfile` with the header of `like` (its mtime and size): a timestamp pyc Python accepts for it.
+  // TIMESTAMP explicitly: SOURCE_DATE_EPOCH in the environment would otherwise make py_compile write a checked-hash pyc.
+  const PLANT = [
+    'import os, py_compile, sys',
+    'src, like, cfile, tmp = sys.argv[1:5]',
+    'st = os.stat(like)',
+    'open(tmp, "w").write(src)',
+    'assert os.stat(tmp).st_size == st.st_size, "the planted source must have the size of the real one"',
+    'os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))',
+    'py_compile.compile(tmp, cfile=cfile, doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)',
+    'os.remove(tmp)',
+  ].join('\n')
+  const plant = (source: string, like: string, cfile: string) => {
+    const r = py(['-I', '-c', PLANT, source, like, cfile, join(outside, 'planted-src.py')])
+    expect(r.status, r.stderr).toBe(0)
+  }
+  const cacheTag = () => py(['-I', '-c', 'import sys; print(sys.implementation.cache_tag)']).stdout.trim()
+  let hookCmd: string
+  beforeEach(() => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    file = join(root, 'store', 'extra-hooks.json')
+    sent = []
+    writeFileSync(lh('x.py'), 'import helper\nprint(helper.X)\n')
+    writeFileSync(lh('helper.py'), "X = 'clean'\n")
+    const entry = { event: 'PostToolUse', matcher: 'Bash', script: 'local-hooks/x.py', failClosed: false }
+    writeFileSync(file, JSON.stringify({ entries: [entry] }))
+    hookCmd = one(entry).entries[0].command
+    expect(hookCmd).toBe(`${EXTRA_HOOK_MARK} python3 -B "${lh('x.py')}"`)
+    check() // the first record, announced once
+    expect(sent).toHaveLength(1)
+  })
+
+  it('the rendered -B command runs the hook and writes no __pycache__, so the next sync is silent', () => {
+    const r = sh(hookCmd)
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout.trim()).toBe('clean')
+    expect(existsSync(lh('__pycache__'))).toBe(false)
+    expect(check()).toEqual({ notice: null, recorded: false })
+    // NEGATIVE CONTROL: the same run without -B writes the bytecode, and that alone is announced
+    const plain = sh(hookCmd.replace('python3 -B ', 'python3 '))
+    expect(plain.stdout.trim()).toBe('clean')
+    expect(readdirSync(lh('__pycache__'))).toEqual([`helper.${cacheTag()}.pyc`])
+    expect(check().notice).toContain(`local-hooks/__pycache__/helper.${cacheTag()}.pyc új`)
+  })
+
+  it('variant 1: a __pycache__/helper.<tag>.pyc with the source\'s mtime/size header runs, and is announced', () => {
+    const before = readFileSync(lh('helper.py'))
+    const cfile = lh('__pycache__', `helper.${cacheTag()}.pyc`)
+    mkdirSync(lh('__pycache__'))
+    plant("X = 'PWNED'\n", lh('helper.py'), cfile)
+    // the planted code runs through the real launch, while helper.py and x.py are byte-identical
+    expect(sh(hookCmd).stdout.trim()).toBe('PWNED')
+    expect(readFileSync(lh('helper.py'))).toEqual(before)
+    const r = check()
+    expect(r.notice).toContain(`local-hooks/__pycache__/helper.${cacheTag()}.pyc új`)
+    expect(r.notice).not.toContain('local-hooks/helper.py')
+    expect(r.notice).not.toContain('store/extra-hooks.json módosult')
+    expect(sent).toHaveLength(2)
+    // and a planted pyc rewritten in place is a change too
+    plant("X = 'AGAIN'\n", lh('helper.py'), cfile)
+    expect(sh(hookCmd).stdout.trim()).toBe('AGAIN')
+    expect(check().notice).toContain(`local-hooks/__pycache__/helper.${cacheTag()}.pyc módosult`)
+  })
+
+  it('variant 2: a sourceless helper2.pyc next to the hook is imported, and is announced', () => {
+    writeFileSync(lh('x.py'), 'import helper2\nprint(helper2.X)\n')
+    expect(check().notice).toContain('local-hooks/x.py módosult') // the hook's own change, announced as before
+    writeFileSync(join(outside, 'like.py'), "X = 'SRCLESS'\n")
+    plant("X = 'SRCLESS'\n", join(outside, 'like.py'), lh('helper2.pyc'))
+    expect(existsSync(lh('helper2.py'))).toBe(false)
+    expect(sh(hookCmd).stdout.trim()).toBe('SRCLESS')
+    const r = check()
+    expect(r.notice).toContain('local-hooks/helper2.pyc új')
+    expect(r.notice).not.toContain('local-hooks/x.py')
+  })
+
+  it('.DS_Store stays out of the digest', () => {
+    writeFileSync(lh('.DS_Store'), 'finder')
+    mkdirSync(lh('lib'))
+    writeFileSync(lh('lib', '.DS_Store'), 'finder')
+    expect(check()).toEqual({ notice: null, recorded: false })
+  })
+})
+
+describe('the owner\'s switch in the settings registry (MAINEXTRAHOOKS1123 (a))', () => {
+  it('EXTRA_HOOKS_MAIN_AGENT_WRITE: off by default, on/off only, overrides-only, switching it on loosens', () => {
+    const def = getSettingDefinition('EXTRA_HOOKS_MAIN_AGENT_WRITE')!
+    expect(def.default).toBe('off')
+    expect(def.validate!('on')).toBeNull()
+    expect(def.validate!('off')).toBeNull()
+    expect(def.validate!('yes')).not.toBeNull()
+    expect(isOverridesOnly(def)).toBe(true)
+    expect(def.loosens!('off', 'on')).toBe(true)
+    expect(def.loosens!('on', 'off')).toBe(false)
   })
 })
 

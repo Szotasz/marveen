@@ -17,8 +17,11 @@
 //      sqlite3 dot-command that replaces or runs files, a native Write/Edit.
 //   3. A write of this gate's own wiring and of the autonomy levels, in THIS
 //      INSTALL: .claude/settings.json, .claude/settings.local.json,
-//      scripts/hooks/, scripts/self-pace-gate.mjs, store/extra-hooks.json,
-//      store/autonomy-config.json. "This install" is the root this file sits in
+//      scripts/hooks/, scripts/self-pace-gate.mjs,
+//      store/autonomy-config.json, and store/extra-hooks.json with local-hooks/
+//      unless the owner switched EXTRA_HOOKS_MAIN_AGENT_WRITE on (then only a
+//      sub-agent is denied the pair, MAINEXTRAHOOKS1123; EXTRA_HOOKS_PAIR).
+//      "This install" is the root this file sits in
 //      (scripts/hooks/ -> ../..), never the cwd: the same Edit in a worktree's
 //      own copy passes, and every path is compared after realpath (symlinks and
 //      ".." resolved, case folded as a case-insensitive volume reads it). An
@@ -194,13 +197,61 @@ function ownedByCaller(t, key) {
   return !!t.exceptKey && underKey(key, t.exceptKey)
 }
 
+// The install-local extra hooks (MAINEXTRAHOOKS1123): store/extra-hooks.json lists them and local-hooks/ holds their
+// scripts (the whole directory, as a directory); the dashboard wires them into every sub-agent's settings at its start
+// and on every sub-agent spawn, so what is written here runs in every sub-agent's session with no gate in front of it.
+//   - A SUB-AGENT writes neither, ever (SUBAGENT_PROTECTED_INSTALL_PATHS). The scripts/self-pace-gate.mjs rule for the
+//     same pair stays (it runs for sub-agents only); this list adds the real-path reading.
+//   - The MAIN agent writes them only while the owner has switched EXTRA_HOOKS_MAIN_AGENT_WRITE on in
+//     store/config-overrides.json (fleet review of #3064, condition (a): an opt-in per install, default off). Off, the
+//     pair is on the main agent's list as well and the operator writes it by hand. The switch file itself is on the
+//     common list above, so no agent flips it; the dashboard writes it through its owner-gated settings route.
+//   - While the switch is on, the dashboard loads only gate-shaped extras from the file (PreToolUse, PostToolUse, no
+//     "scope": "main"; condition (b), extra-hook-entries.ts) and tells the owner every change of the file or of a
+//     local-hooks/ file (condition (c), agent-scaffold.ts, store/.extra-hooks-digest.json on the common list).
+// What no extra can do, by construction (extra-hook-entries.ts): replace, remove or reorder a built-in gate, or point
+// outside local-hooks/.
+export const EXTRA_HOOKS_PAIR = [
+  { rel: 'store/extra-hooks.json' },
+  { rel: 'local-hooks', dir: true },
+]
+// The pair as the MAIN agent's list carries it while the switch is off. local-hooks/ is the first entry of that list a
+// bare `*` reaches from the main agent's cwd (the install root; every other one has a leading dot or a parent), so a
+// QUOTED `*` that no program re-shells, the literal name (`sqlite3 -readonly <db> "SELECT count(*) ..."`), is free
+// for it (quotedGlobFree, the INSTRSURFACE1118 rule for CLAUDE.md); an unquoted `cp x *` there still matches. The
+// sub-agent list keeps the strict entry.
+const MAIN_EXTRA_HOOKS_ENTRIES = EXTRA_HOOKS_PAIR.map((t) => (t.dir ? { ...t, quotedGlobFree: true } : t))
+
+// The owner's switch (fail-closed): ON only when store/config-overrides.json parses as an object whose
+// EXTRA_HOOKS_MAIN_AGENT_WRITE is the STRING "on" (trimmed, any case), the one value the Settings route stores for it.
+// A missing, unreadable or unparsable file, a missing key, "off", a boolean, "1", "yes": all OFF. Only the overrides
+// file counts, never .env: the key is overrides-only (a .env line may only tighten, and there is nothing tighter than
+// off). Read per call, memoised on the file's mtime and size.
+export const EXTRA_HOOKS_SWITCH = 'EXTRA_HOOKS_MAIN_AGENT_WRITE'
+const switchMemo = new Map()
+export function mainExtraHooksWriteOn(root = INSTALL_ROOT) {
+  const p = join(resolve(root), 'store', 'config-overrides.json')
+  let sig
+  try { const st = statSync(p); sig = `${st.mtimeMs}:${st.size}:${st.ino}` } catch { return false }
+  if (switchMemo.has(p) && switchMemo.get(p).sig === sig) return switchMemo.get(p).on
+  let on = false
+  try {
+    const ov = JSON.parse(readFileSync(p, 'utf-8'))
+    on = !!ov && typeof ov === 'object' && !Array.isArray(ov) && typeof ov[EXTRA_HOOKS_SWITCH] === 'string'
+      && ov[EXTRA_HOOKS_SWITCH].trim().toLowerCase() === 'on'
+  } catch { on = false }
+  switchMemo.set(p, { sig, on })
+  return on
+}
+
 // The install's own gate wiring and autonomy levels (Dani 56081 point 5, Samu 56090).
 export const PROTECTED_INSTALL_PATHS = [
   { rel: '.claude/settings.json' },
   { rel: '.claude/settings.local.json' },
   { rel: 'scripts/hooks', dir: true },
   { rel: 'scripts/self-pace-gate.mjs' },
-  { rel: 'store/extra-hooks.json' },
+  // store/extra-hooks.json and local-hooks/ are EXTRA_HOOKS_PAIR below (MAINEXTRAHOOKS1123): on the sub-agent list
+  // always, and on the main agent's list unless the owner's EXTRA_HOOKS_MAIN_AGENT_WRITE switch is on.
   { rel: 'store/autonomy-config.json' },
   // The sub-agents' sender-role gates (GROMZOGATECONF1030 (c), Samu 59516): only the dashboard writes them, so no
   // agent can widen its own gate for its next restart.
@@ -214,6 +265,9 @@ export const PROTECTED_INSTALL_PATHS = [
   // The network-target origins recorded at the last boot (NETTARGETENV1104, Dani 68849): the drift check compares
   // against it, so a pre-written or deleted record would hide a target change.
   { rel: 'store/.net-target-hosts.json' },
+  // The extras' digest last announced to the owner (MAINEXTRAHOOKS1123 (c)): the sync compares store/extra-hooks.json
+  // and local-hooks/ against it and tells the owner on a difference, so a pre-written record would hide a change.
+  { rel: 'store/.extra-hooks-digest.json' },
   // The owner-gated agent settings the dashboard keeps in store/ (GATEFILES1110): custom-providers.json holds each
   // provider's baseUrl, where an agent's whole prompt goes (owner-only on the API, APIAGENTWRITE1104), and
   // context-guard.json the context-guard values (raising one is an owner session on the API, OWNERGATE3-1104). Only the
@@ -422,6 +476,8 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: 'store/plan-token-launch', dir: true },
   // INSTRSURFACE1118: the instruction surfaces other sessions load (see instructionSurfaceTargets)
   ...instructionSurfaceTargets(),
+  // The install-local extra hooks (MAINEXTRAHOOKS1123): a sub-agent writes neither, whatever the switch (below).
+  ...EXTRA_HOOKS_PAIR,
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -595,9 +651,12 @@ const targetCache = new Map()
 export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir = null, configDir = null) {
   const k = resolve(root)
   const dyn = subAgent ? dynamicSources(k) : null
-  const ck = `${subAgent ? 'sub' : 'all'}\u0000${k}\u0000${subAgent && projectDir ? resolve(String(projectDir)) : ''}\u0000${subAgent && configDir ? resolve(String(configDir)) : ''}\u0000${dyn ? dyn.sig : ''}\u0000${subAgent ? homedir() : ''}`
+  // MAINEXTRAHOOKS1123 (a): the main agent's list carries the extras pair unless the owner's switch is on
+  const mainExtras = !subAgent && !mainExtraHooksWriteOn(k)
+  const ck = `${subAgent ? 'sub' : mainExtras ? 'all+extras' : 'all'}\u0000${k}\u0000${subAgent && projectDir ? resolve(String(projectDir)) : ''}\u0000${subAgent && configDir ? resolve(String(configDir)) : ''}\u0000${dyn ? dyn.sig : ''}\u0000${subAgent ? homedir() : ''}`
   if (!targetCache.has(ck)) {
-    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir), ...workerConfigEntries(k), ...dynamicPluginEntries(k, projectDir, dyn), ...rootAncestorInstructionEntries(k)] : PROTECTED_INSTALL_PATHS
+    const entries = subAgent ? [...PROTECTED_INSTALL_PATHS, ...SUBAGENT_PROTECTED_INSTALL_PATHS, ...callerSettingsEntries(projectDir, configDir), ...workerConfigEntries(k), ...dynamicPluginEntries(k, projectDir, dyn), ...rootAncestorInstructionEntries(k)]
+      : mainExtras ? [...PROTECTED_INSTALL_PATHS, ...MAIN_EXTRA_HOOKS_ENTRIES] : PROTECTED_INSTALL_PATHS
     const ownKey = subAgent ? callerAgentDirKey(k, projectDir) : null
     targetCache.set(ck, {
       rootKey: pathKey(k),
@@ -620,7 +679,7 @@ export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir
 // protected directory every relative word is a candidate.
 const PATH_LIKE_RX = /\/|\.\w|^~/
 export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
-  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.net-target-hosts.json', 'custom-providers.json', 'context-guard.json', '.claude', 'scripts', 'store', '.', '..', '~',
+  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.net-target-hosts.json', '.extra-hooks-digest.json', 'custom-providers.json', 'context-guard.json', '.claude', 'scripts', 'store', '.', '..', '~',
   '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe',
   // GATEFILES1110: an agent's agent-config.json, from its parent (`cd agents/samu && sed -i ... agent-config.json`)
   'agent-config.json',
@@ -632,7 +691,9 @@ export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.js
   // CHANSTATEWRITE1104: the channel state dirs' trust directories, from their parent
   'progress', 'approved',
   // SUBPLANTOKEN1110 (Dani 75621): the token-plan launch status dir, from its parent (`cd store && rm -rf plan-token-launch`)
-  'plan-token-launch'])
+  'plan-token-launch',
+  // MAINEXTRAHOOKS1123: the extras' script dir, from its parent (`cd .. && rm -rf local-hooks`)
+  'local-hooks'])
 const GLOB_CHAR_RX = /[*?[{]/
 // A shell glob does not match a leading-dot name unless its own segment starts with a dot (bash without dotglob,
 // zsh without GLOB_DOTS). Without this, a bare `*` in a sub-agent's own directory matched its .mcp.json
