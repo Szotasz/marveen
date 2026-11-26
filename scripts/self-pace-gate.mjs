@@ -605,6 +605,10 @@ export function gitGrepReadOnly(words) {
 // Every word after the subcommand must be one of those; any other option is refused (a --textconv, --ext-diff,
 // --output=<file> or a pager option), and so is a word without `:` for show (a commit or a path would print a diff).
 // The global options are gitGrepReadOnly's: -C <dir>, --no-pager, -P, --no-optional-locks, --git-dir=, --work-tree=.
+// What it does NOT see (Geri, measured; Samu 35264): in a partial clone, a `git show` of a blob that is not there yet
+// fetches it, and a remote.origin.uploadpack in the repository config naming a command runs that command. No new
+// reach: the command comes from a config file written beforehand, and any fetching git (`git fetch`) runs it without
+// a protected name.
 const GIT_OBJECT_RX = /^[^-:][^:]*:[^:]+$/
 export function gitObjectReadOnly(words) {
   let k = 0
