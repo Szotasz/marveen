@@ -484,9 +484,13 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
 // holds a fresh clone, no live install: no database, no agents, nothing this gate protects. There the clone IS
 // INSTALL_ROOT (this file lives in it), so every git write and every install-file write would be denied for nothing.
 // Both variables are set by the cloud runtime in the session's own environment, which a hook inherits; a local
-// session has neither, and a Bash command cannot change the hook's environment. Default off.
-export function onDisposableCloud(env = process.env) {
-  return env.CLAUDE_CODE_REMOTE === 'true' && Boolean(env.CLAUDE_CODE_REMOTE_SESSION_ID)
+// session has neither. Default off.
+// The variables alone never suffice (Dani, #3177): an agent can plant them for its next start (tmux setenv, a shell rc
+// file), and byoc/self_hosted remotes set them on the customer's own machine. A running install always has its
+// dashboard token, and deleting it is a store write this still-active gate denies.
+export function onDisposableCloud(env = process.env, root = INSTALL_ROOT) {
+  return env.CLAUDE_CODE_REMOTE === 'true' && Boolean(env.CLAUDE_CODE_REMOTE_SESSION_ID) &&
+    !['.dashboard-token', '.claude-oauth-token'].some((f) => existsSync(join(root, 'store', f)))
 }
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in

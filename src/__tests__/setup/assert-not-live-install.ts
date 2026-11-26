@@ -27,12 +27,14 @@ const LIVE_MARKERS = [
   join('store', '.claude-oauth-token'),
 ]
 
-// DISPOSABLECLOUD1126: a Claude Code cloud session's VM is a throwaway clone with no live install to protect; a
-// marker there was made by the run itself (a test that writes store/), so it stops a harmless run. Both variables come
-// from the cloud runtime; locally neither is set. Same rule as onDisposableCloud in scripts/hooks/db-write-gate.mjs.
+// DISPOSABLECLOUD1126: a Claude Code cloud session's VM is a throwaway clone with no live install to protect; the
+// database there was made by the run itself (a test that writes store/), so it stops a harmless run. Both variables
+// come from the cloud runtime; locally neither is set. They are easy to set by hand (an env prefix on `npx vitest`),
+// so in the cloud only the database is ignored: the token markers a live install always has still refuse (#3177).
+// Same rule as onDisposableCloud in scripts/hooks/db-write-gate.mjs.
 export function liveMarkersFound(root: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  if (env.CLAUDE_CODE_REMOTE === 'true' && env.CLAUDE_CODE_REMOTE_SESSION_ID) return []
-  return LIVE_MARKERS.filter((m) => existsSync(join(root, m)))
+  const cloud = env.CLAUDE_CODE_REMOTE === 'true' && Boolean(env.CLAUDE_CODE_REMOTE_SESSION_ID)
+  return LIVE_MARKERS.filter((m) => existsSync(join(root, m)) && !(cloud && m === join('store', 'claudeclaw.db')))
 }
 
 // The cloud verdict is read once per worker process (a reused worker re-runs this file after the variables are gone);
