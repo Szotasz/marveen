@@ -256,9 +256,10 @@ describe('a blanked flag argument and a naive-split fragment are no hiding place
     deniedAllowlist(`python3 - <<'E'\ncat = open('store/egress-allowlist.json','w')\nE`)
     deniedAllowlist(`echo "$(date)"; node -e "\nhead = require('fs').writeFileSync('local-hooks/x', '')\n"`)
     expect(bash(`echo "$(date)"; python3 -c "\ncat = open('store/config-overrides.json','w')\n"`)).toEqual({ deny: true, reason: 'protected-store-file' })
-    // a real read next to a heredoc or a substitution is still a read
+    // a real read next to a resolved heredoc is still a read
     allowed(`cat <<'E' >/tmp/n\nx\nE\ncat store/egress-allowlist.json`)
-    allowed(`echo "$(date)"; grep -c a store/egress-allowlist.json`)
+    // known cost: after a "$(...)" in double quotes there is no strict mask, so a later read is a fragment too
+    deniedAllowlist(`echo "$(date)"; grep -c a store/egress-allowlist.json`)
   })
   it('with no mask at all (unresolved quoting), every naive piece after the first is a fragment', () => {
     const W = `cat = open('store/egress-allowlist.json','w')`
@@ -271,5 +272,13 @@ describe('a blanked flag argument and a naive-split fragment are no hiding place
     allowed(`grep -c a store/egress-allowlist.json; : <<E`)
     // known cost: a real read after the unresolved quote is denied too
     deniedAllowlist(`: <<E; grep -c a store/egress-allowlist.json`)
+  })
+  it('only the strict mask decides a naive piece: the lenient one misreads a comment or heredoc inside "$(...)"', () => {
+    const W = `cat = open('store/egress-allowlist.json','w')`
+    // bash runs the python3 -c code here (measured on a dummy file); the lenient mask saw `cat = open(...)` as a command
+    deniedAllowlist(`echo "$(true #)"\n)"; python3 -c "\n${W}\n" #"`)
+    deniedAllowlist(`echo "$(cat <<E\n)\nE\n)"; python3 -c "\n${W}\n"`)
+    deniedAllowlist(`echo "$(cat <<'E'\n"\nE\n)"; python3 -c "\n${W}\n"`)
+    deniedAllowlist(`echo "$(date)"; cp /tmp/x >& cat store/egress-allowlist.json`)
   })
 })
