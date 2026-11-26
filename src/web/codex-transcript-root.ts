@@ -23,8 +23,8 @@
  * and the running session file's mtime advances while the agent works.
  *
  * Resolve the rollout root from agent-config.json: engine must be codex,
- * and codexConfigDir supplies CODEX_HOME. When codexConfigDir is null, use
- * ~/.codex, the default rollout location documented in scripts/usage-collect.py.
+ * and codexConfigDir supplies CODEX_HOME. Without a configured home, there is
+ * no Codex evidence: ~/.codex would belong to the dashboard user.
  *
  * Contract (both watchers depend on it):
  *   - codexSessionDirsFor never throws: any failure returns [] plus a debug
@@ -33,8 +33,7 @@
  *   - After reading config, a claude-motor agent costs zero filesystem access
  *     and zero subprocess spawns.
  */
-import { readdir, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { open, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { readAgentEngineConfigSafe } from './agent-config.js'
@@ -62,8 +61,13 @@ export async function codexSessionDirsFor(agent: string, deps: CodexSessionDeps 
       logger.debug({ agent }, 'codex-transcript-root: claude-motor agent, no codex evidence')
       return []
     }
-    const homeDir = deps.homeDir ?? homedir
-    const home = cfg.codexConfigDir ?? join(homeDir(), '.codex')
+    const home = cfg.codexConfigDir
+    if (!home) {
+      // A ~/.codex fallback would read the dashboard user's own sessions,
+      // providing evidence about the wrong party.
+      logger.debug({ agent }, 'codex-transcript-root: no configured codex home (no codex evidence)')
+      return []
+    }
     const sessionsDir = join(home, 'sessions')
     const statDir = deps.stat ?? stat
     try {
@@ -129,6 +133,64 @@ export async function codexRolloutFiles(
   }
   for (const dir of dirs) await walk(dir, CODEX_WALK_DEPTH)
   return out
+}
+
+export interface CodexAgentRolloutDeps extends CodexRolloutFsDeps {
+  readFirstLine?: (path: string) => Promise<string | null>
+}
+
+async function readRolloutFirstLine(path: string): Promise<string | null> {
+  try {
+    const file = await open(path, 'r')
+    try {
+      const buffer = Buffer.alloc(64 * 1024)
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
+      const firstNewline = buffer.subarray(0, bytesRead).indexOf(10)
+      return buffer.toString('utf8', 0, firstNewline < 0 ? bytesRead : firstNewline)
+    } finally {
+      await file.close()
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A shared seat's other agents and ad-hoc Codex runs with other cwds must not
+ * produce evidence for this agent: the session_meta cwd is the owner.
+ * Returns the agent's newest rollout mtime, or null; never throws.
+ * With sinceMs, files not written after it are skipped before their first line
+ * is read: the caller only counts mtime > sinceMs. No directory is pruned by
+ * name, because a long-running Codex session keeps writing to the rollout file
+ * in its START day's directory.
+ */
+export async function codexAgentRolloutMtime(
+  dirs: readonly string[],
+  workspace: string,
+  sinceMs?: number,
+  deps: CodexAgentRolloutDeps = {},
+): Promise<number | null> {
+  let max: number | null = null
+  try {
+    const readFirstLine = deps.readFirstLine ?? readRolloutFirstLine
+    for (const file of await codexRolloutFiles(dirs, deps)) {
+      if (sinceMs != null && file.mtimeMs <= sinceMs) continue
+      try {
+        const line = await readFirstLine(file.path)
+        if (line == null) continue
+        const parsed = JSON.parse(line)
+        const cwd = parsed?.payload?.cwd
+        if (parsed?.type !== 'session_meta' || typeof cwd !== 'string') continue
+        if (cwd !== workspace && !cwd.startsWith(workspace + '/')) continue
+        if (max == null || file.mtimeMs > max) max = file.mtimeMs
+      } catch {
+        // Missing or malformed ownership metadata is not evidence for this agent.
+      }
+    }
+  } catch {
+    // Unreadable rollout trees leave the watcher without Codex evidence.
+  }
+  return max
 }
 
 /**

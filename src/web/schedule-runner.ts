@@ -85,7 +85,7 @@ import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig,
 import { enqueueWorksourceItem, worksourceItemStage, worksourcePendingHead, type WorksourceItemStage } from './worksource-queue.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
-import { codexSessionDirsFor, codexRolloutMtime } from './codex-transcript-root.js'
+import { codexSessionDirsFor, codexAgentRolloutMtime } from './codex-transcript-root.js'
 import { classifyDelivery, readUserPromptsSince, sessionAuthFailedSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
 import { paneTyped } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
@@ -3693,6 +3693,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // local agent whose pane runs OpenAI Codex -- the Claude transcript of
         // those agents never moves, which made every fast task read 'lost' and
         // re-deliver (measured 2026-11-15: 38 duplicate runs in one day).
+        // Only the agent's own rollouts count (session_meta cwd under its
+        // workspace), so another agent on the same seat cannot suppress 'lost'.
         // codexSessionDirsFor returns [] unless the agent's persisted engine config says
         // codex, so a Claude-Code agent never pays for this.
         let codexMtime: (() => number | null) | undefined
@@ -3700,7 +3702,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           try {
             const codexDirs = await codexSessionDirsFor(entry.agentName)
             if (codexDirs.length > 0) {
-              const rolloutMtime = await codexRolloutMtime(codexDirs)
+              const rolloutMtime = await codexAgentRolloutMtime(codexDirs, entry.workingDir, entry.injectedAt)
               codexMtime = () => rolloutMtime
             }
           } catch {
