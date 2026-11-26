@@ -154,10 +154,11 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // gives the reader no reason to ever read it. Two agent incidents on one card
   // (2026-09-15, 7ed56208) confirmed the failure mode -- the reader ran exactly
   // this probe, saw a status, and never saw the override sitting one field over.
+  // --json: the helper's default is one row per card, without the description this probe needs.
   // The helper prints the list on stdout, or nothing (its FAIL line goes to stderr, exit 1); an empty or non-list
   // answer is reported, never a Python traceback.
   const statusProbe =
-    `  ${api} kanban-list | python3 -c "import sys,json;s=sys.stdin.read();d=(json.loads(s) if s.lstrip().startswith('[') else s);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a kartya-lista nem jott meg (a FAIL sor fent mondja, miert): '+str(d)[:120]))"`
+    `  ${api} kanban-list --json | python3 -c "import sys,json;s=sys.stdin.read();d=(json.loads(s) if s.lstrip().startswith('[') else s);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a kartya-lista nem jott meg (a FAIL sor fent mondja, miert): '+str(d)[:120]))"`
   return [
     'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát ÉS leírását. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett -- a leírás pedig a kártya saját, ennél a sablonnál erősebb szabályait hordozhatja (lásd lent):',
     statusProbe,
