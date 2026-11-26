@@ -54,7 +54,8 @@ ASSIGNEE_RE = re.compile(r'^[^\W_][\w .-]{0,63}$')
 USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   message <from> <to> <content-file> [--priority high|normal]
   message-close <id> [--result-file <file>] [--no-notify] [--failed]
-  directive-verify <msg-id>
+  directive-verify <msg-id> [--json]
+                (prints id, from_agent, to_agent, status, sig_ok and the whole content; --json the whole row)
   memory-search <agent> <query> [--category hot|warm|cold|shared] [--strict] [--date <expr>] [--since <day>] [--until <day>] [--limit <n>] [--json]
   memory-save <agent> <hot|warm|cold|shared> <keywords> <content-file> [--supersedes <id>[,<id>...]]
                 (--supersedes: your own older memories this one replaces; the server retracts them)
@@ -320,10 +321,13 @@ def build_request(verb, args):
             body['result'] = read_text(result_file)
         return 'PUT', f'/api/messages/{msg_id}', body, headers, {}
     if verb == 'directive-verify':
+        as_json = take_flag(args, '--json')
         (msg_id,) = positional(args, 1, verb)
         check(msg_id, ID_RE, 'message id')
         # HMACINBOUND1125: a directive row counts only when the server signed it (sig_ok), see main().
-        return 'GET', f'/api/messages/{msg_id}', None, headers, {'require_sig_ok': True}
+        # By default only what the acceptance check reads is printed; the content whole.
+        keep = None if as_json else ('id', 'from_agent', 'to_agent', 'status', 'sig_ok', 'content')
+        return 'GET', f'/api/messages/{msg_id}', None, headers, {'require_sig_ok': True, 'keep': keep}
     if verb == 'memory-search':
         as_json = take_flag(args, '--json')
         category = take_opt(args, '--category')
@@ -823,7 +827,14 @@ def main(argv):
                 text = json.dumps(answer, ensure_ascii=False)
             except (ValueError, AttributeError):
                 pass  # not the JSON object we expected: print it as it came
-        print(card_rows(text) if flags.get('card_rows') else memory_rows(text) if flags.get('rows') else text)
+        out = card_rows(text) if flags.get('card_rows') else memory_rows(text) if flags.get('rows') else text
+        if flags.get('keep'):
+            try:
+                answer = json.loads(text)
+                out = json.dumps({k: answer.get(k) for k in flags['keep']}, ensure_ascii=False, separators=(',', ':'))
+            except (ValueError, AttributeError):
+                pass  # not the JSON object we expected: print it as it came
+        print(out)
         if flags.get('require_sig_ok'):
             # HMACINBOUND1125 (Dani 85038, 3): from_agent='system' alone can be written by a raw INSERT; only a row the
             # server signed is a directive. An older dashboard sends no sig_ok: that is a refusal too, not a pass.
