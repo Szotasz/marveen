@@ -197,3 +197,40 @@ describe('Dani 71554 / Samu 71567: programs a reader runs, and names the shell r
     expect(rgReadOnly(['x'], true)).toBe(false)
   })
 })
+
+// Reviewer suspicions measured on develop 6c4c5b40 (Marveen 18400): a flag argument blanked for the wrong command, and
+// a naive-split piece read as a command of its own, let a write onto a protected name through.
+describe('a blanked flag argument and a naive-split fragment are no hiding place', () => {
+  it('a prose flag is blanked only on the gh/git/glab segment that owns it', () => {
+    mkdirSync(join(root, 'local-hooks'))
+    deniedAllowlist(`git status; cp -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`gh pr list; mv -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`git log -1 && install -t "local-hooks" /tmp/x`)
+    // a quoted separator or a quoted command word does not fake a gh segment
+    deniedAllowlist(`cp -S '; gh ' -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`'cp' gh -t 'local-hooks' /tmp/x`)
+    // the PR text on gh/git itself is still blanked (the false positive the strip exists for)
+    allowed(`gh pr create --title 'x' --body 'edits local-hooks and store/egress-allowlist.json'`)
+    allowed(`git status; GH_REPO=a/b gh pr comment 1 -b 'see local-hooks'`)
+    allowed(`gh pr create \\\n  --title 'x; y' \\\n  --body 'see local-hooks'`)
+    allowed(`T=x; gh pr create --title \${T} --body 'see local-hooks'`)
+  })
+  it('a data payload is blanked only on curl', () => {
+    mkdirSync(join(root, 'local-hooks'))
+    deniedAllowlist(`unzip -o /tmp/a.zip -d 'local-hooks'`)
+    deniedAllowlist(`unzip -o /tmp/a.zip -d "store"`)
+    allowed(`curl -s -d '{"note":"local-hooks"}' http://127.0.0.1:3420/api/x`)
+  })
+  it('a naive-split piece that starts inside a quote or a heredoc body is no read', () => {
+    mkdirSync(join(root, 'local-hooks'))
+    deniedAllowlist(`echo "$(date)"; python3 -c "\ncat = open('store/egress-allowlist.json','w')\n"`)
+    deniedAllowlist(`echo "$(date)"; python3 -c "\nif 1:\n  cat = open('store/egress-allowlist.json','w')\n"`)
+    deniedAllowlist(`cat <<'E' >/tmp/n\nx\nE\npython3 -c "\ncat = open('store/egress-allowlist.json','w')\n"`)
+    deniedAllowlist(`python3 - <<'E'\ncat = open('store/egress-allowlist.json','w')\nE`)
+    deniedAllowlist(`echo "$(date)"; node -e "\nhead = require('fs').writeFileSync('local-hooks/x', '')\n"`)
+    expect(bash(`echo "$(date)"; python3 -c "\ncat = open('store/config-overrides.json','w')\n"`)).toEqual({ deny: true, reason: 'protected-store-file' })
+    // a real read next to a heredoc or a substitution is still a read
+    allowed(`cat <<'E' >/tmp/n\nx\nE\ncat store/egress-allowlist.json`)
+    allowed(`echo "$(date)"; grep -c a store/egress-allowlist.json`)
+  })
+})

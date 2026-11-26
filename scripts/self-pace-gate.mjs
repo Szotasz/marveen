@@ -429,7 +429,7 @@ const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 // passed from the root), so a cd followed wrongly can only make it stricter.
 export function allowlistBashSegmentAllowed(seg, ctx) {
   const cwds = ctx?.cwds?.length ? ctx.cwds : [ctx?.cwd ?? null]
-  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)), ctx?.rgConfigNamed)
+  return readOnlyMentionAllowed(seg, (text) => cwds.some((cwd) => protectedMention(text, ctx ? { ...ctx, cwd } : ctx)), ctx?.rgConfigNamed, ctx?.fragment)
 }
 
 // MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
@@ -476,9 +476,11 @@ const PROTECTED_MENTION_RX =
 // `mentions(text)` says whether a text names the protected object.
 // `rgConfigNamed`: the WHOLE command names RIPGREP_CONFIG_PATH (an export or an assignment in another segment
 // reaches rg too, Dani 71589), so rg is no read anywhere in it.
-function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false) {
+// `fragment`: the segment is a piece of a quoted or heredoc text the naive split cut out (protectedSplit), so no read.
+function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false, fragment = false) {
   const s = String(seg ?? '').trim()
   if (!mentions(s)) return true
+  if (fragment) return false
   const words = s.split(/\s+/)
   let i = 0
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
@@ -564,7 +566,7 @@ export function inboundSigKeyBashSegmentAllowed(seg, definite) {
 }
 
 export function protectedStoreBashSegmentAllowed(seg, ctx) {
-  return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text), ctx?.rgConfigNamed)
+  return readOnlyMentionAllowed(seg, (text) => PROTECTED_MENTION_RX.test(text), ctx?.rgConfigNamed, ctx?.fragment)
 }
 
 // EGRESSFP1106 (c): `git grep` only reads, except where git runs a program of its choosing:
@@ -651,7 +653,18 @@ export function protectedSplit(command) {
   const heredocs = []
   const masked = maskInertLiterals(src, heredocs)
   if (masked == null || masked.length !== src.length || heredocs.length) {
-    return { segs: splitSegments(command), seps: null, masked: null, quoteAware: false }
+    // The naive split also cuts inside a quote or a heredoc body. A piece that STARTS there is a fragment of another
+    // command, never a command of its own, so it is no read: `echo "$(date)"; python3 -c "<newline>cat =
+    // open('<allowlist>','w')"` must not read as `cat`. No mask at all (unresolved quoting): no piece is known as one.
+    const mask = masked?.length === src.length ? masked : maskInertLiterals(src, [], true)
+    const fragments = []
+    let start = 0
+    for (const m of [...src.matchAll(/&&|\|\||[;&|]|\r?\n/g), { index: src.length, 0: '' }]) {
+      const k = start + /^\s*/.exec(src.slice(start, m.index))[0].length
+      fragments.push(mask?.length === src.length && k < m.index && mask[k] === ' ')
+      start = m.index + m[0].length
+    }
+    return { segs: splitSegments(command), seps: null, masked: null, quoteAware: false, fragments }
   }
   const segs = []
   const seps = []
@@ -1463,22 +1476,48 @@ export function stripProseArguments(seg) {
   // unrelated tool would hide real data from the gate (PR #770 review, Szotasz).
   // Same coarse command-word guard as stripGitCommitMessages just below.
   if (!/\b(?:gh|git|glab)\b/i.test(s)) return s
+  const head = segmentHeads(s)
   return s.replace(
     new RegExp(String.raw`((?:^|\s)(?:${PROSE_FLAGS})(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")`, 'gi'),
-    (full, flag, arg) => {
+    (full, flag, arg, at) => {
       const dq = arg.startsWith('"')
       if (dq && (arg.includes('$(') || arg.includes('`'))) return full
+      // the flag's OWN segment must be gh/git/glab: `git status; cp -t 'local-hooks' x` keeps the cp target
+      if (!/^(?:gh|git|glab)$/i.test(head(at))) return full
       return flag + (dq ? '""' : "''")
     },
   )
 }
 
+// segmentHeads(s)(i): the command word of the shell segment that holds offset i of s, '' when it cannot be read.
+// The segment start is the last separator before i in the MASKED text, so a quoted `;` cannot fake one; the word is
+// read from the raw text and must be plain (no quote, `$`, backslash), so `'cp' gh -t ...` is not a gh segment.
+// No mask (unresolved quoting) = '' everywhere: nothing is blanked, which only scans more.
+function segmentHeads(s) {
+  let masked
+  return (i) => {
+    if (masked === undefined) {
+      const src = s.replace(/\\\r?\n/g, (m) => ' '.repeat(m.length)) // keeps the offsets of s
+      masked = maskInertLiterals(src, []) ?? maskInertLiterals(src, [], true)
+      if (masked?.length !== s.length) masked = null
+    }
+    if (masked == null) return ''
+    let start = -1 // `${NAME}` opens no group
+    for (const m of masked.slice(0, i).matchAll(/[;&|\n(]|(?<!\$)\{/g)) start = m.index
+    const w = /^\s*(?:[A-Za-z_]\w*=\S*\s+)*([^\s'"\\$`]+)(?=\s|$)/.exec(s.slice(start + 1, i))?.[1] ?? ''
+    return w.slice(w.lastIndexOf('/') + 1)
+  }
+}
+
 export function stripDataPayloads(seg) {
-  return String(seg ?? '').replace(
+  const s = String(seg ?? '')
+  const head = segmentHeads(s)
+  return s.replace(
     /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
-    (full, flag, arg) => {
+    (full, flag, arg, at) => {
       const dq = arg.startsWith('"')
       if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
+      if (head(at) !== 'curl') return full // `-d` is a directory to unzip/install: `unzip x.zip -d 'local-hooks'`
       return flag + (dq ? '""' : "''") // literal payload -> blank the content
     },
   )
@@ -4832,6 +4871,7 @@ function decide(toolName, toolInput, opts = {}) {
     protectedCtx.homeTouched = HOME_TOUCH_RX.test(safeCommand.replace(/\$(?=['"])|["'\\]/g, ''))
     for (const [idx, seg] of protSegs.entries()) {
       protectedCtx.definite = definite[idx]
+      protectedCtx.fragment = protSplit.fragments?.[idx] ?? false
       // The inbound signature key (HMACINBOUND1125): a secret, so not even a read.
       if (!inboundSigKeyBashSegmentAllowed(seg, definite[idx])) return { deny: true, reason: 'inbound-sig-key' }
       // The other store files that gate the sub-agent (c556a35a) first: they are matched by
