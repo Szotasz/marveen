@@ -15,9 +15,9 @@ import { tmpdir } from 'node:os'
 //    numpy array, so faster-whisper's PyAV decoder is never reached. Every
 //    model.transcribe(...) call site must take _decode_audio(...) as its
 //    audio: one site left on a path is the bug back on that path.
-// 2. install-voice.sh pins av<19, and its step-3 skip gate re-installs a venv
-//    that already resolved av 19 (otherwise the pin never reaches an existing
-//    install). The gate is executed for real against a stubbed venv.
+// 2. install-voice.sh pins av<19 and, on a re-run, repairs a venv that already
+//    resolved av 19 (develop #2005, the same net this PR first carried). Step 3
+//    is executed for real against a stubbed venv whose pip honours av<19.
 //
 // The behavioural decode test (real ffmpeg, real numpy) is
 // scripts/voice/test_vtools_decode.py; it needs the voice venv.
@@ -116,7 +116,10 @@ function makeVenv(avVersion: string | null): { dest: string; pipLog: string } {
   const python3 = execFileSync('bash', ['-c', 'command -v python3'], { encoding: 'utf-8' }).trim()
   writeFileSync(join(bin, 'python'), `#!/bin/sh\nPYTHONPATH=${JSON.stringify(site)} exec ${JSON.stringify(python3)} "$@"\n`)
   const pipLog = join(dest, 'pip.log')
-  writeFileSync(join(bin, 'pip'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(pipLog)}\n`)
+  // records its argv; an av<19 request leaves av 18.1.0 behind, as the real pip would
+  writeFileSync(join(bin, 'pip'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(pipLog)}\n`
+    + `for a in "$@"; do case "$a" in 'av<19') mkdir -p ${JSON.stringify(join(site, 'av'))}; `
+    + `echo '__version__ = "18.1.0"' > ${JSON.stringify(join(site, 'av', '__init__.py'))};; esac; done\n`)
   chmodSync(join(bin, 'python'), 0o755)
   chmodSync(join(bin, 'pip'), 0o755)
   return { dest, pipLog }
@@ -142,23 +145,20 @@ function runStep3(dest: string): { code: number; out: string } {
 }
 
 describe('VOICEPYAV930: install-voice.sh step 3 pins PyAV below 19', () => {
-  it('re-installs under the pin when the venv already resolved av 19 (the 09-30 venv)', () => {
+  it('repairs a venv that already resolved av 19 (the 09-30 venv) under the pin', () => {
     const { dest, pipLog } = makeVenv('19.0.0')
     const r = runStep3(dest)
     expect(r.code).toBe(0)
-    expect(r.out).not.toContain('[SKIP] packages already installed')
-    expect(readFileSync(pipLog, 'utf-8').split('\n')).toContain('av>=11,<19')
+    expect(readFileSync(pipLog, 'utf-8').split('\n')).toContain('av<19')
+    expect(r.out).toContain('[PASS] PyAV pinned below 19')
   })
 
-  it('installs with the pin on a fresh venv', () => {
+  it('pins av on a venv that has no av yet', () => {
     const { dest, pipLog } = makeVenv(null)
     const r = runStep3(dest)
-    // pip is a stub, so the final import check still sees no av -- that is fine,
-    // it only checks faster_whisper and piper.
     expect(r.code).toBe(0)
-    expect(readFileSync(pipLog, 'utf-8').split('\n')).toEqual(
-      expect.arrayContaining(['faster-whisper', 'piper-tts', 'av>=11,<19']),
-    )
+    expect(readFileSync(pipLog, 'utf-8').split('\n')).toContain('av<19')
+    expect(r.out).toContain('[PASS] PyAV pinned below 19')
   })
 
   it('skips a venv that already has av 18 (idempotency)', () => {
