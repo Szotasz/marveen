@@ -114,12 +114,15 @@ function makeVenv(avVersion: string | null): { dest: string; pipLog: string } {
     writeFileSync(join(site, 'av', '__init__.py'), `__version__ = ${JSON.stringify(avVersion)}\n`)
   }
   const python3 = execFileSync('bash', ['-c', 'command -v python3'], { encoding: 'utf-8' }).trim()
-  writeFileSync(join(bin, 'python'), `#!/bin/sh\nPYTHONPATH=${JSON.stringify(site)} exec ${JSON.stringify(python3)} "$@"\n`)
+  // no bytecode: the pip stub rewrites av/__init__.py with a same-length version, and a .pyc of the old one written in
+  // the same second would still be used (seen on the Linux CI: the repaired venv still read av 19)
+  writeFileSync(join(bin, 'python'), `#!/bin/sh\nPYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${JSON.stringify(site)} exec ${JSON.stringify(python3)} "$@"\n`)
   const pipLog = join(dest, 'pip.log')
   // records its argv; an av<19 request leaves av 18.1.0 behind, as the real pip would
   writeFileSync(join(bin, 'pip'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(pipLog)}\n`
     + `for a in "$@"; do case "$a" in 'av<19') mkdir -p ${JSON.stringify(join(site, 'av'))}; `
-    + `echo '__version__ = "18.1.0"' > ${JSON.stringify(join(site, 'av', '__init__.py'))};; esac; done\n`)
+    + `echo '__version__ = "18.1.0"' > ${JSON.stringify(join(site, 'av', '__init__.py'))}; `
+    + `rm -rf ${JSON.stringify(join(site, 'av', '__pycache__'))};; esac; done\n`)
   chmodSync(join(bin, 'python'), 0o755)
   chmodSync(join(bin, 'pip'), 0o755)
   return { dest, pipLog }
