@@ -124,6 +124,26 @@ describe('withBoardColleagues', () => {
     expect(annas[0].aliases).toEqual(['Anna N.'])
   })
 
+  it('an agent-clashing person does not fall back to a name an EARLIER colleague already has', () => {
+    // The spellings taken are read from the entries built so far, not only from the
+    // input list: colleague "a" is already "Réka K.", so the later person "reka",
+    // whose own name is the agent's id, has no spelling left and is left out.
+    const earlier = normaliseBoardAccess({
+      enabled: true,
+      people: {
+        a: { name: 'Réka K.', assignees: ['Réka K.'] },
+        reka: { assignees: ['reka', 'Réka K.'] },
+      },
+      agents: {},
+    })
+    const out = withBoardColleagues(base, earlier)
+    const rekaK = out.filter((e) => assigneeMatchKey(e.name) === assigneeMatchKey('Réka K.'))
+    expect(rekaK).toHaveLength(1)
+    expect(rekaK[0].type).toBe('colleague')
+    expect(out.filter((e) => assigneeMatchKey(e.name) === 'reka')).toHaveLength(1)
+    expect(out.find((e) => e.name === 'reka')?.type).toBe('agent')
+  })
+
   it('leaves the list untouched when board access is off or broken', () => {
     const off = normaliseBoardAccess({ enabled: false, people: { a: { name: 'A' } } })
     expect(withBoardColleagues(base, off)).toEqual(base)
