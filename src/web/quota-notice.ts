@@ -48,18 +48,29 @@ export interface QuotaNoticeConfig {
   dryRun: boolean
 }
 
-function pctFrom(raw: string | undefined, dflt: number): number {
+function pctFrom(raw: unknown, dflt: number): number {
   const n = Number(raw)
   return Number.isFinite(n) && n > 0 && n <= 100 ? n : dflt
 }
 
-export function readQuotaNoticeConfig(env: NodeJS.ProcessEnv = process.env): QuotaNoticeConfig {
-  const grace = Number(env['QUOTA_AUTOREPLY_GRACE_SEC'])
+/** The registry keys (src/config-registry.ts, module 'claude-plans', owner-gated): the Settings page writes them. */
+export const QUOTA_NOTICE_KEYS = ['QUOTA_NOTICE', 'QUOTA_NOTICE_PCT', 'QUOTA_AUTOREPLY', 'QUOTA_AUTOREPLY_PCT', 'QUOTA_AUTOREPLY_GRACE_SEC'] as const
+
+/**
+ * Both parts are OFF unless switched on (owner decision 2026-11-26). `read` resolves a key the settings way
+ * (config-overrides.json > .env > registry default); the dry-run switch is an environment variable only, for testing.
+ */
+export function readQuotaNoticeConfig(
+  read: (key: string) => string | number | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): QuotaNoticeConfig {
+  const on = (k: string) => String(read(k) ?? '0').trim() === '1'
+  const grace = Number(read('QUOTA_AUTOREPLY_GRACE_SEC'))
   return {
-    noticeEnabled: (env['QUOTA_NOTICE'] ?? '1').trim() !== '0',
-    noticePct: pctFrom(env['QUOTA_NOTICE_PCT'], 90),
-    autoReplyEnabled: (env['QUOTA_AUTOREPLY'] ?? '0').trim() === '1',
-    autoReplyPct: pctFrom(env['QUOTA_AUTOREPLY_PCT'], 95),
+    noticeEnabled: on('QUOTA_NOTICE'),
+    noticePct: pctFrom(read('QUOTA_NOTICE_PCT'), 90),
+    autoReplyEnabled: on('QUOTA_AUTOREPLY'),
+    autoReplyPct: pctFrom(read('QUOTA_AUTOREPLY_PCT'), 95),
     autoReplyGraceSec: Number.isFinite(grace) && grace >= 0 ? grace : 120,
     dryRun: (env['QUOTA_NOTICE_DRY_RUN'] ?? '').trim() === '1',
   }
@@ -130,10 +141,63 @@ export function openWindows(snap: QuotaSnapshot): Array<{ kind: WindowKind; wind
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Plans (subscriptions)
+// ---------------------------------------------------------------------------------------------------------------
+//
+// An install can register several Claude subscriptions (store/claude-plans.json, src/web/claude-plans.ts) and point
+// agents at them (agent-config `claudePlan`, or the main agent's rotation: claude-plans-state.json activePlanByAgent).
+// Each plan has its own 5-hour and weekly window, so the notice names the plan, and an agent's auto-reply uses the
+// numbers of the plan THAT agent runs on.
+//
+// Where per-plan numbers come from (measured in the code 2026-11-26):
+//   - the DEFAULT plan (the fleet token / the host login every agent without a `claudePlan` uses): the statusLine
+//     block, the observer mod and usage-collect.py's store/usage-latest.json. usage-collect reads ONE token, the
+//     default one; under plan rotation it gives up on purpose (QUOTAHDRROT1118).
+//   - a NAMED plan: store/claude-plans-state.json `plans[id]`, written by the plan-rotation heartbeat (the active
+//     plan, from usage-collect) and by its live probe of idle token plans (CLAUDE_PLAN_USAGE_REFRESH). Without
+//     rotation nothing writes it, so a named plan can have no fresh numbers: then an agent on it is judged by its own
+//     pane banner only, and the owner gets no percentage notice for that plan.
+
+export const DEFAULT_PLAN_ID = 'default'
+
+export interface PlanQuota { planId: string; label: string; snap: QuotaSnapshot }
+
+/** A claude-plans-state.json observation as a QuotaSnapshot (observedAt is unix ms, windows usedPercent/resetsAt). */
+export function planStateSnapshot(
+  observed: { observedAt?: unknown; windows?: Record<string, { usedPercent?: unknown; resetsAt?: unknown }> } | undefined,
+  nowSec: number,
+  maxAgeSec: number = DEFAULT_FABLE_MAX_AGE_SEC,
+): QuotaSnapshot {
+  const empty = { ageSec: null, maxAgeSec, fiveHour: null, sevenDay: null }
+  if (!observed || !observed.windows || typeof observed.observedAt !== 'number') return { status: 'missing', reason: 'no-file', ...empty }
+  const win = (raw: { usedPercent?: unknown; resetsAt?: unknown } | undefined): QuotaWindow | null => {
+    if (!raw || typeof raw.usedPercent !== 'number' || !Number.isFinite(raw.usedPercent)) return null
+    const resetsAt = typeof raw.resetsAt === 'number' && Number.isFinite(raw.resetsAt) ? raw.resetsAt : null
+    return { usedPercentage: raw.usedPercent, resetsAt, expired: resetsAt !== null && resetsAt <= nowSec }
+  }
+  const fiveHour = win(observed.windows['five_hour'])
+  const sevenDay = win(observed.windows['seven_day'])
+  if (!fiveHour && !sevenDay) return { status: 'missing', reason: 'no-rate-limits', ...empty }
+  const ageSec = Math.max(0, nowSec - Math.floor(observed.observedAt / 1000))
+  return { status: ageSec > maxAgeSec ? 'stale' : 'ok', ageSec, maxAgeSec, fiveHour, sevenDay }
+}
+
+const MISSING: QuotaSnapshot = { status: 'missing', reason: 'no-source', ageSec: null, maxAgeSec: 0, fiveHour: null, sevenDay: null }
+
+/** The snapshot of one plan, or a missing one: an agent on a plan with no numbers is judged by its pane only. */
+export function snapshotOfPlan(plans: PlanQuota[], planId: string): QuotaSnapshot {
+  return plans.find((p) => p.planId === planId)?.snap ?? MISSING
+}
+
+export function defaultPlanLabel(lang: NoticeLang): string {
+  return lang === 'en' ? 'default (fleet)' : 'alap (flotta)'
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // (A) Threshold notice
 // ---------------------------------------------------------------------------------------------------------------
 
-export interface ThresholdNotice { kind: WindowKind; pct: number; resetsAt: number | null }
+export interface ThresholdNotice { kind: WindowKind; pct: number; resetsAt: number | null; planLabel?: string }
 
 /**
  * Which windows cross the threshold for the first time in their life. `notified` maps a window kind to the reset
@@ -170,12 +234,13 @@ export function formatResetTime(resetsAtSec: number | null, lang: NoticeLang, no
 export function formatThresholdNotice(n: ThresholdNotice, lang: NoticeLang, nowSec?: number): string {
   const pct = Math.round(n.pct)
   const at = formatResetTime(n.resetsAt, lang, nowSec)
+  const plan = n.planLabel ?? defaultPlanLabel(lang)
   if (lang === 'en') {
     const name = n.kind === 'five_hour' ? 'the 5-hour window' : 'the weekly window'
-    return `⚠️ AI quota: ${name} is at ${pct}%. It resets at ${at}. Above the limit the agents cannot answer until then.`
+    return `⚠️ AI quota, subscription "${plan}": ${name} is at ${pct}%. It resets at ${at}. Above the limit the agents on this subscription cannot answer until then.`
   }
   const name = n.kind === 'five_hour' ? 'az 5 órás ablak' : 'a heti ablak'
-  return `⚠️ AI-keret: ${name} ${pct}%-on áll. Újra tele: ${at}. A keret elfogyása után az ügynökök addig nem tudnak válaszolni.`
+  return `⚠️ AI-keret, „${plan}” előfizetés: ${name} ${pct}%-on áll. Újra tele: ${at}. A keret elfogyása után az ezen futó ügynökök addig nem tudnak válaszolni.`
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -355,15 +420,22 @@ export function newestTranscriptLines(dirs: string[], tailBytes = TRANSCRIPT_TAI
 // State + runner
 // ---------------------------------------------------------------------------------------------------------------
 
-export interface QuotaNoticeState { notified: Partial<Record<WindowKind, number>>; autoReplies: AutoReplyRecord[] }
+/** `notified`: per plan id, per window kind, the reset instant of the window already announced. */
+export interface QuotaNoticeState { notified: Record<string, Partial<Record<WindowKind, number>>>; autoReplies: AutoReplyRecord[] }
 
 const STATE_FILE = 'quota-notice-state.json'
 const RECORD_KEEP_MS = 8 * 24 * 60 * 60 * 1000
 
 export function loadQuotaNoticeState(file = join(STORE_DIR, STATE_FILE)): QuotaNoticeState {
   try {
-    const d = JSON.parse(readFileSync(file, 'utf-8')) as Partial<QuotaNoticeState>
-    return { notified: d.notified ?? {}, autoReplies: Array.isArray(d.autoReplies) ? d.autoReplies : [] }
+    const d = JSON.parse(readFileSync(file, 'utf-8')) as { notified?: Record<string, unknown>; autoReplies?: unknown }
+    const notified: QuotaNoticeState['notified'] = {}
+    for (const [k, v] of Object.entries(d.notified ?? {})) {
+      // The first (single-plan) shape kept the window kinds at the top level: that was the default plan.
+      if ((k === 'five_hour' || k === 'seven_day') && typeof v === 'number') (notified[DEFAULT_PLAN_ID] ??= {})[k] = v
+      else if (v && typeof v === 'object') notified[k] = { ...(notified[k] ?? {}), ...(v as Partial<Record<WindowKind, number>>) }
+    }
+    return { notified, autoReplies: Array.isArray(d.autoReplies) ? d.autoReplies as AutoReplyRecord[] : [] }
   } catch {
     return { notified: {}, autoReplies: [] }
   }
@@ -379,7 +451,10 @@ export interface QuotaNoticeDeps {
   now: () => number
   config: QuotaNoticeConfig
   lang: () => NoticeLang
-  snapshot: (nowSec: number) => QuotaSnapshot
+  /** Every plan with its reading (the default plan always, named plans as registered). */
+  plans: (nowSec: number) => PlanQuota[]
+  /** The plan id an agent runs on (DEFAULT_PLAN_ID when it has none). */
+  planOf: (agent: string) => string
   notifyOwner: (text: string) => Promise<boolean>
   channelAgents: () => string[]
   paneWall: (agent: string) => Promise<{ resetsAt: string | null } | null>
@@ -397,15 +472,17 @@ export async function runQuotaNoticeTick(deps: QuotaNoticeDeps): Promise<void> {
   const lang = deps.lang()
   const state = deps.loadState()
   let dirty = false
-  const snap = deps.snapshot(nowSec)
+  const plans = deps.plans(nowSec)
 
   if (cfg.noticeEnabled) {
-    const { notices, next } = decideThresholdNotices(snap, state.notified, cfg.noticePct)
-    for (const n of notices) {
-      const text = formatThresholdNotice(n, lang, nowSec)
-      const ok = cfg.dryRun ? (logger.info({ text }, 'quota-notice DRY-RUN: owner notice'), true) : await deps.notifyOwner(text)
-      // Record only a delivered notice: a lost one is tried again next tick.
-      if (ok) { state.notified[n.kind] = next[n.kind]; dirty = true }
+    for (const plan of plans) {
+      const { notices, next } = decideThresholdNotices(plan.snap, state.notified[plan.planId] ?? {}, cfg.noticePct)
+      for (const n of notices) {
+        const text = formatThresholdNotice({ ...n, planLabel: plan.label }, lang, nowSec)
+        const ok = cfg.dryRun ? (logger.info({ plan: plan.planId, text }, 'quota-notice DRY-RUN: owner notice'), true) : await deps.notifyOwner(text)
+        // Record only a delivered notice: a lost one is tried again next tick.
+        if (ok) { (state.notified[plan.planId] ??= {})[n.kind] = next[n.kind]; dirty = true }
+      }
     }
   }
 
@@ -413,7 +490,8 @@ export async function runQuotaNoticeTick(deps: QuotaNoticeDeps): Promise<void> {
     for (const agent of deps.channelAgents()) {
       let paneWall: { resetsAt: string | null } | null = null
       try { paneWall = await deps.paneWall(agent) } catch { paneWall = null }
-      const wall = wallStateFor(paneWall, snap, cfg.autoReplyPct)
+      // The numbers of the plan THIS agent runs on; a plan without numbers leaves the pane banner as the only signal.
+      const wall = wallStateFor(paneWall, snapshotOfPlan(plans, deps.planOf(agent)), cfg.autoReplyPct)
       const mine = state.autoReplies.filter((r) => r.agent === agent)
       if (!wall.walled && !mine.some((r) => !r.handedBack)) continue
       const ex = scanChannelExchanges(deps.transcriptLines(agent))
@@ -450,9 +528,10 @@ export const QUOTA_NOTICE_INTERVAL_MS = 60 * 1000
 
 /** Live wiring, kept apart from the deciders so the tests never load tmux or a channel. */
 export async function liveQuotaNoticeDeps(): Promise<QuotaNoticeDeps> {
-  const [{ notifyOwner }, agentProcess, agentConfig, channelProvider, mainAgent, paneState, intake, textLang] = await Promise.all([
+  const [{ notifyOwner }, agentProcess, agentConfig, channelProvider, mainAgent, paneState, intake, textLang, settings, plansReg, plansState] = await Promise.all([
     import('../notify.js'), import('./agent-process.js'), import('./agent-config.js'), import('../channel-provider.js'),
     import('./main-agent.js'), import('../pane-state.js'), import('./channel-intake-monitor.js'), import('./agent-text-lang.js'),
+    import('../settings-store.js'), import('./claude-plans.js'), import('./claude-plans-state.js'),
   ])
   const sessionOf = (agent: string) => (agent === MAIN_AGENT_ID ? mainAgent.MAIN_CHANNELS_SESSION : agentProcess.agentSessionName(agent))
   const providerOf = (agent: string) =>
@@ -464,9 +543,18 @@ export async function liveQuotaNoticeDeps(): Promise<QuotaNoticeDeps> {
   }
   return {
     now: () => Date.now(),
-    config: readQuotaNoticeConfig(),
+    config: readQuotaNoticeConfig((k) => settings.getEffectiveSettingValue(k)),
     lang: () => textLang.agentTextLang(),
-    snapshot: (s) => currentQuotaSnapshot(s),
+    plans: (s) => {
+      const lang = textLang.agentTextLang()
+      const observed = plansState.readClaudePlansState().plans
+      return [
+        { planId: DEFAULT_PLAN_ID, label: defaultPlanLabel(lang), snap: currentQuotaSnapshot(s) },
+        ...plansReg.readClaudePlans().map((p) => ({ planId: p.id, label: p.label || p.id, snap: planStateSnapshot(observed[p.id], s) })),
+      ]
+    },
+    planOf: (agent) =>
+      plansState.readClaudePlansState().activePlanByAgent[agent] ?? agentConfig.readAgentClaudePlan(agent) ?? DEFAULT_PLAN_ID,
     notifyOwner: (text) => notifyOwner(text, { kind: 'quota-notice' }),
     channelAgents: () => [MAIN_AGENT_ID, ...agentConfig.listAgentNames().filter((n) => n !== MAIN_AGENT_ID)].filter((a) => !!tokenOf(a)),
     paneWall: async (agent) => {

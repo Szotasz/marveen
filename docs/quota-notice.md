@@ -6,7 +6,11 @@ reason. `src/web/quota-notice.ts` runs in the dashboard process every minute and
 
 ## What it does
 
-1. **Owner notice** (on by default). When a window reaches `QUOTA_NOTICE_PCT` (default 90), the owner gets one
+Both parts are **off by default**. Switch them on in the dashboard: Settings > Claude plans (`QUOTA_NOTICE`,
+`QUOTA_NOTICE_PCT`, `QUOTA_AUTOREPLY`, `QUOTA_AUTOREPLY_PCT`, `QUOTA_AUTOREPLY_GRACE_SEC`). The keys are owner-gated:
+the shared fleet token cannot change them. They are read every minute, no restart.
+
+1. **Owner notice** (`QUOTA_NOTICE`). When a window reaches `QUOTA_NOTICE_PCT` (default 90), the owner gets one
    message on the install's owner channel (the same route as other owner alerts, `notifyOwner`) with the percentage
    and the local reset time. One message per window: the window's reset instant is the key, so the next window
    re-arms it. A message that could not be delivered is tried again on the next tick.
@@ -23,11 +27,23 @@ reason. `src/web/quota-notice.ts` runs in the dashboard process every minute and
 Unanswered messages are read from the agent's own transcript (the channel envelope in, a `*__reply` tool call out),
 so it works for every channel agent, not only those with the conversation ledger.
 
-## Where the numbers come from
+## Per subscription (plan)
 
-The fresher of: the statusLine block (`store/.claude-rate-limits.json`), the observer mod's readings, and the usage
-collector's `store/usage-latest.json`. On a setup-token install only the collector gives numbers: switch on the
-`usage-collect` scheduled task (dashboard, Schedules). A stale or missing reading triggers nothing.
+An install can register several Claude subscriptions (Settings > Claude plans) and point agents at them. The notice
+names the subscription and fires once per subscription and window; an agent's auto-reply uses the numbers of the
+subscription THAT agent runs on (the rotation's active plan, else its `claudePlan`, else the default plan).
+
+Where the numbers come from:
+
+- **Default subscription** (the fleet token / host login): the fresher of the statusLine block
+  (`store/.claude-rate-limits.json`), the observer mod's readings and the usage collector's `store/usage-latest.json`.
+  On a setup-token install only the collector gives numbers: switch on the `usage-collect` scheduled task. The
+  collector reads one token, the default one.
+- **Named subscription**: `store/claude-plans-state.json`, which the plan rotation writes (the active plan's reading,
+  and the live probe of idle token plans). Without rotation nothing refreshes it: such a plan gets no percentage
+  notice, and its agents are judged by their own pane's limit banner only.
+
+A stale or missing reading triggers nothing.
 
 ## Trying it safely
 

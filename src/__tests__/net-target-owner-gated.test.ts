@@ -49,7 +49,12 @@ beforeEach(() => {
 
 describe('registry: the five targets are ownerGated, NOT loosens (their .env stays)', () => {
   it('exactly the five network targets carry the flag', () => {
-    expect(registry.SETTINGS_REGISTRY.filter((d) => d.ownerGated).map((d) => d.key).sort()).toEqual([...TARGETS].sort())
+    // The QUOTA_* keys are owner-gated too, for their own reason (quota-notice-settings.test.ts): not network targets.
+    expect(registry.SETTINGS_REGISTRY.filter((d) => d.ownerGated && !d.key.startsWith('QUOTA_')).map((d) => d.key).sort()).toEqual([...TARGETS].sort())
+  })
+  it('exactly the five carry netTarget: an owner-gated switch is no network target (QUOTANOTICE1126)', () => {
+    expect(registry.SETTINGS_REGISTRY.filter((d) => d.netTarget).map((d) => d.key).sort()).toEqual([...TARGETS].sort())
+    expect(notice.netTargetKeys().sort()).toEqual([...TARGETS].sort())
   })
   it('none of them is loosens or overrides-only', () => {
     for (const k of TARGETS) {

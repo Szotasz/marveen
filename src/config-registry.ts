@@ -112,6 +112,12 @@ export interface SettingDefinition {
    * .env form is documented and used by remote installs.
    */
   ownerGated?: boolean
+  /**
+   * Optional (QUOTANOTICE1126): the key is a NETWORK TARGET (NETTARGETENV1104): its origin is recorded and a change is
+   * told to the owner (src/net-target-notice.ts). Before this flag the notice took every `ownerGated` key as a target;
+   * an owner-gated switch or number (QUOTA_NOTICE ...) is no target, so the two are named apart.
+   */
+  netTarget?: boolean
 }
 
 // ENVRELAXGATE1104 step 2: the keys whose `.env` value may only tighten. A `loosens` function marks a security
@@ -537,6 +543,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     validate: validAbsoluteHttpUrlOrEmpty,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'AGENT_API_ORIGIN',
@@ -549,6 +556,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     validate: validAbsoluteHttpUrlOrEmpty,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'FLEET_PYTHON_VENV',
@@ -614,6 +622,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'EMBED_URL',
@@ -625,6 +634,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'EMBED_MODEL',
@@ -656,6 +666,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'MEMORY_VECTOR_MIN_MARGIN',
@@ -1665,6 +1676,65 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,
+  },
+  // QUOTANOTICE1126 (src/web/quota-notice.ts): plan usage notices. Both parts OFF by default (owner decision
+  // 2026-11-26); read every minute, no restart. Owner-gated: the owner's alert and messages sent on the agents'
+  // behalf to the people who write to them are the owner's call, not a fleet-token caller's.
+  {
+    key: 'QUOTA_NOTICE',
+    type: 'boolean',
+    default: '0',
+    description: 'Kvóta-értesítés a tulajdonosnak: ha egy előfizetés 5 órás vagy heti ablaka eléri a QUOTA_NOTICE_PCT küszöböt, egy üzenet megy a tulajdonosi csatornára (melyik előfizetés, hány százalék, mikor töltődik újra). Ablakonként és előfizetésenként egyszer. A számokat a usage-collect ütemezett feladat (alap előfizetés) és a plan-rotáció (megnevezett planek) adja; szám nélküli előfizetésre nem jön értesítés.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+    ownerGated: true,
+  },
+  {
+    key: 'QUOTA_NOTICE_PCT',
+    type: 'int',
+    default: 90,
+    min: 50,
+    max: 100,
+    description: 'A kvóta-értesítés küszöbe százalékban (QUOTA_NOTICE).',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+    ownerGated: true,
+  },
+  {
+    key: 'QUOTA_AUTOREPLY',
+    type: 'boolean',
+    default: '0',
+    description: 'Automatikus válasz a csatornán, ha egy ügynök kerete elfogyott: ha az ügynök paneljén a keret-limit felirat látszik, vagy az ő előfizetése eléri a QUOTA_AUTOREPLY_PCT küszöböt, a megválaszolatlan üzenetre (QUOTA_AUTOREPLY_GRACE_SEC után) az ügynök saját botja egyszer jelzi, hogy a keret elfogyott és mikor jön a válasz. A keret visszatérésekor a még megválaszolatlan üzenetet a dashboard visszaadja az ügynöknek.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+    ownerGated: true,
+  },
+  {
+    key: 'QUOTA_AUTOREPLY_PCT',
+    type: 'int',
+    default: 95,
+    min: 50,
+    max: 100,
+    description: 'Az automatikus válasz küszöbe százalékban, az ügynök saját előfizetésére (QUOTA_AUTOREPLY).',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+    ownerGated: true,
+  },
+  {
+    key: 'QUOTA_AUTOREPLY_GRACE_SEC',
+    type: 'int',
+    default: 120,
+    min: 0,
+    max: 3600,
+    description: 'Ennyi másodpercig megválaszolatlan üzenet kap automatikus választ (QUOTA_AUTOREPLY), hogy egy épp dolgozó ügynök ne kapjon dupla választ.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+    ownerGated: true,
   },
 ]
 

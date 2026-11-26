@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import {
   readQuotaNoticeConfig, readUsageCollectSnapshot, fresherSnapshot, decideThresholdNotices, formatThresholdNotice,
   scanChannelExchanges, unansweredInbound, wallStateFor, decideAutoReplies, decideHandBacks, runQuotaNoticeTick,
-  bannerTimeFor, formatAutoReply,
+  bannerTimeFor, formatAutoReply, planStateSnapshot, snapshotOfPlan, loadQuotaNoticeState, DEFAULT_PLAN_ID,
+  type PlanQuota,
   type QuotaNoticeDeps, type QuotaNoticeState,
 } from '../web/quota-notice.js'
 import type { QuotaSnapshot } from '../web/quota.js'
@@ -18,12 +19,13 @@ const snap = (five: number, seven: number, fiveReset = NOW + 3600, sevenReset = 
 })
 
 describe('config', () => {
-  it('defaults: notice on at 90, auto-reply off at 95, grace 120', () => {
-    expect(readQuotaNoticeConfig({})).toEqual({ noticeEnabled: true, noticePct: 90, autoReplyEnabled: false, autoReplyPct: 95, autoReplyGraceSec: 120, dryRun: false })
+  it('defaults: BOTH parts off, 90 / 95, grace 120', () => {
+    expect(readQuotaNoticeConfig(() => undefined, {})).toEqual({ noticeEnabled: false, noticePct: 90, autoReplyEnabled: false, autoReplyPct: 95, autoReplyGraceSec: 120, dryRun: false })
   })
-  it('reads overrides and rejects nonsense percentages', () => {
-    const c = readQuotaNoticeConfig({ QUOTA_NOTICE: '0', QUOTA_NOTICE_PCT: '80', QUOTA_AUTOREPLY: '1', QUOTA_AUTOREPLY_PCT: '150', QUOTA_NOTICE_DRY_RUN: '1' })
-    expect(c).toMatchObject({ noticeEnabled: false, noticePct: 80, autoReplyEnabled: true, autoReplyPct: 95, dryRun: true })
+  it('reads the settings values, rejects nonsense percentages; dry-run is environment only', () => {
+    const v: Record<string, string | number> = { QUOTA_NOTICE: '1', QUOTA_NOTICE_PCT: 80, QUOTA_AUTOREPLY: '1', QUOTA_AUTOREPLY_PCT: 150 }
+    const c = readQuotaNoticeConfig((k) => v[k], { QUOTA_NOTICE_DRY_RUN: '1' })
+    expect(c).toMatchObject({ noticeEnabled: true, noticePct: 80, autoReplyEnabled: true, autoReplyPct: 95, dryRun: true })
   })
 })
 
@@ -58,8 +60,9 @@ describe('(A) threshold notice', () => {
     expect(decideThresholdNotices(snap(89, 10), {}, 90).notices).toEqual([])
     expect(decideThresholdNotices({ ...snap(99, 99), status: 'stale' }, {}, 90).notices).toEqual([])
   })
-  it('Hungarian text: accents, percentage, no em dash', () => {
-    const t = formatThresholdNotice({ kind: 'five_hour', pct: 90.4, resetsAt: NOW + 3600 }, 'hu', NOW)
+  it('Hungarian text: names the subscription, accents, percentage, no em dash', () => {
+    const t = formatThresholdNotice({ kind: 'five_hour', pct: 90.4, resetsAt: NOW + 3600, planLabel: 'Céges' }, 'hu', NOW)
+    expect(t).toContain('„Céges” előfizetés')
     expect(t).toContain('90%')
     expect(t).toContain('5 órás')
     expect(t).not.toMatch(/—|–/)
@@ -139,13 +142,14 @@ describe('(B) wall and replies', () => {
 })
 
 describe('tick', () => {
-  function deps(over: Partial<QuotaNoticeDeps> & { state?: QuotaNoticeState; lines?: string[]; wall?: { resetsAt: string | null } | null; q?: QuotaSnapshot }) {
+  function deps(over: Partial<QuotaNoticeDeps> & { planList?: PlanQuota[]; state?: QuotaNoticeState; lines?: string[]; wall?: { resetsAt: string | null } | null; q?: QuotaSnapshot }) {
     let state: QuotaNoticeState = over.state ?? { notified: {}, autoReplies: [] }
     const d: QuotaNoticeDeps = {
       now: () => NOW * 1000,
       config: { noticeEnabled: true, noticePct: 90, autoReplyEnabled: true, autoReplyPct: 95, autoReplyGraceSec: 120, dryRun: false },
       lang: () => 'hu',
-      snapshot: () => over.q ?? snap(10, 10),
+      plans: () => over.planList ?? [{ planId: DEFAULT_PLAN_ID, label: 'alap (flotta)', snap: over.q ?? snap(10, 10) }],
+      planOf: () => DEFAULT_PLAN_ID,
       notifyOwner: vi.fn(async () => true),
       channelAgents: () => ['alex'],
       paneWall: async () => over.wall ?? null,
@@ -209,5 +213,79 @@ describe('tick', () => {
     const { d } = deps({ wall: { resetsAt: null }, lines: [inboundLine('B', '2', iso(NOW - 300))] })
     await runQuotaNoticeTick({ ...d, config: { ...d.config, autoReplyEnabled: false } })
     expect(d.sendChannel).not.toHaveBeenCalled()
+  })
+})
+
+describe('multi-plan', () => {
+  const two = (a: QuotaSnapshot, b: QuotaSnapshot): PlanQuota[] => [
+    { planId: DEFAULT_PLAN_ID, label: 'alap (flotta)', snap: a },
+    { planId: 'ceges', label: 'Céges', snap: b },
+  ]
+  function harness(plans: PlanQuota[], planOf: (a: string) => string, wall: { resetsAt: string | null } | null = null, lines: string[] = []) {
+    let state: QuotaNoticeState = { notified: {}, autoReplies: [] }
+    const sent: string[] = []
+    const replies: string[] = []
+    const d: QuotaNoticeDeps = {
+      now: () => NOW * 1000,
+      config: { noticeEnabled: true, noticePct: 90, autoReplyEnabled: true, autoReplyPct: 95, autoReplyGraceSec: 120, dryRun: false },
+      lang: () => 'hu', plans: () => plans, planOf,
+      notifyOwner: async (t) => { sent.push(t); return true },
+      channelAgents: () => ['alex', 'coco'],
+      paneWall: async () => wall,
+      transcriptLines: () => lines,
+      sendChannel: async (agent, chat, t) => { replies.push(`${agent}:${chat}:${t}`); return true },
+      handBack: async () => true,
+      loadState: () => JSON.parse(JSON.stringify(state)), saveState: (s) => { state = s },
+    }
+    return { d, sent, replies, state: () => state }
+  }
+
+  it('one notice per plan per window, each naming its plan', async () => {
+    const h = harness(two(snap(92, 10), snap(91, 10, NOW + 7000)), () => DEFAULT_PLAN_ID)
+    await runQuotaNoticeTick(h.d)
+    await runQuotaNoticeTick(h.d)
+    expect(h.sent).toHaveLength(2)
+    expect(h.sent[0]).toContain('„alap (flotta)” előfizetés')
+    expect(h.sent[1]).toContain('„Céges” előfizetés')
+    expect(Object.keys(h.state().notified).sort()).toEqual(['ceges', DEFAULT_PLAN_ID])
+  })
+
+  it('the auto-reply uses the numbers of the plan THAT agent runs on', async () => {
+    const lines = [inboundLine('B', '2', iso(NOW - 300))]
+    // default plan at 97 %, "ceges" at 20 %: alex is on default (walled), coco on ceges (free)
+    const h = harness(two(snap(97, 10), snap(20, 10)), (a) => (a === 'coco' ? 'ceges' : DEFAULT_PLAN_ID), null, lines)
+    await runQuotaNoticeTick(h.d)
+    expect(h.replies.map((r) => r.split(':')[0])).toEqual(['alex'])
+  })
+
+  it('a plan with no numbers: only the pane banner can wall the agent', async () => {
+    const lines = [inboundLine('B', '2', iso(NOW - 300))]
+    const missing: QuotaSnapshot = { status: 'missing', reason: 'no-file', ageSec: null, maxAgeSec: 0, fiveHour: null, sevenDay: null }
+    const noBanner = harness(two(snap(10, 10), missing), () => 'ceges', null, lines)
+    await runQuotaNoticeTick(noBanner.d)
+    expect(noBanner.replies).toEqual([])
+    expect(noBanner.sent).toEqual([])
+    const banner = harness(two(snap(10, 10), missing), () => 'ceges', { resetsAt: '9pm' }, lines)
+    await runQuotaNoticeTick(banner.d)
+    expect(banner.replies).toHaveLength(2)
+    expect(banner.replies[0]).toContain('21:00 körül')
+  })
+
+  it('an unknown plan id reads as no numbers', () => {
+    expect(snapshotOfPlan(two(snap(99, 99), snap(99, 99)), 'gone').status).toBe('missing')
+  })
+
+  it('reads a claude-plans-state observation (ms observedAt, usedPercent/resetsAt) with freshness', () => {
+    const obs = { observedAt: (NOW - 60) * 1000, windows: { five_hour: { usedPercent: 93, resetsAt: NOW + 100 }, seven_day: { usedPercent: 50, resetsAt: NOW + 9999 } } }
+    expect(planStateSnapshot(obs, NOW)).toMatchObject({ status: 'ok', fiveHour: { usedPercentage: 93 } })
+    expect(planStateSnapshot(obs, NOW + 5000).status).toBe('stale')
+    expect(planStateSnapshot(undefined, NOW).status).toBe('missing')
+  })
+
+  it('a state file from the single-plan shape is read as the default plan', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qn-state-'))
+    const f = join(dir, 's.json')
+    writeFileSync(f, JSON.stringify({ notified: { five_hour: 123, ceges: { seven_day: 5 } }, autoReplies: [] }))
+    expect(loadQuotaNoticeState(f).notified).toEqual({ [DEFAULT_PLAN_ID]: { five_hour: 123 }, ceges: { seven_day: 5 } })
   })
 })
