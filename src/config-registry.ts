@@ -1580,6 +1580,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   // Opt-in (#1705 maintainer decision, 2026-10-14): read per spawn by
   // agent-scaffold.ts (ytDlpIngestOnly / bashEgressDeny). Off == the generated
   // settings are byte-identical to an install without the switch.
+  // Opt-in, read per start by agent-scaffold.ts (claudeMdCompactEnabled). Off == every CLAUDE.md byte-identical.
+  {
+    key: 'CLAUDEMD_COMPACT',
+    type: 'boolean',
+    default: '0',
+    description: 'Tömör CLAUDE.md. Bekapcsolva tíz generált szakasz (autonómia, skill-útvonal, AUTH, gyerek-claude, üzenet-lezárás, X-Agent-Id, háttér-mentés, fordított perjel, tényváltozás, a segéd) a CLAUDE.md-ben csak egy rövid szabályt hordoz, a teljes szöveg pedig a mellette álló CLAUDE-details.md-be kerül (ezt a Claude Code nem tölti be magától, az ügynök szükség esetén olvassa el). Kikapcsolva (alapértelmezés) minden szakasz teljes szövege a CLAUDE.md-ben áll, mint eddig. Az ügynökök következő indításakor, a fő ügynöknél a dashboard újraindításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: false,
+  },
   {
     key: 'YT_DLP_INGEST_ONLY',
     type: 'boolean',
