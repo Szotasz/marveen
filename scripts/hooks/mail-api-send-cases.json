@@ -1243,6 +1243,15 @@
    "files": {
     "other.txt": "https://example.com/form\n"
    }
+  },
+  {
+   "name": "CURLMAILAPI1118: a config-file referer equal to a positional word of the line hides nothing (the file's words never take the option-value relaxation)",
+   "class": "send",
+   "expected": true,
+   "cmd": "set -- https://api.resend.com/emails; curl -K cfg -d @m.json \"$1\"",
+   "files": {
+    "cfg": "referer = \"https://api.resend.com/emails\"\n"
+   }
   }
  ]
 }

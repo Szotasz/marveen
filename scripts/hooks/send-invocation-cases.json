@@ -2678,6 +2678,1231 @@
       "name": "EVALXARGSMAIL1126: review 3: G14 xargs --replace=R sh -c",
       "cmd": "echo https://api.resend.com/emails | xargs --replace=R sh -c 'curl -d @m.json R'",
       "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Gmail messages/send",
+      "cmd": "curl -s -X POST -H \"Authorization: Bearer x\" https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Gmail drafts/send",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/drafts/send -d '{\"id\":\"r1\"}'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl implicit POST (body file) to Gmail messages/send",
+      "cmd": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/messages/send --data-binary @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl double-quoted Gmail messages/send URL with --json",
+      "cmd": "curl -s \"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\" --json @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl --url= Gmail upload messages/send",
+      "cmd": "curl -s --url=https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media -H \"Content-Type: message/rfc822\" --data-binary @/tmp/m.eml",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: wget --post-file to Gmail messages/send",
+      "cmd": "wget -q --post-file=/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST legacy www.googleapis.com Gmail send",
+      "cmd": "curl -s -X POST https://www.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Graph sendMail",
+      "cmd": "curl -s -X POST https://graph.microsoft.com/v1.0/me/sendMail -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST SendGrid mail/send",
+      "cmd": "curl -s -X POST https://api.sendgrid.com/v3/mail/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Mailgun messages",
+      "cmd": "curl -s --user api:k https://api.mailgun.net/v3/mg.example.test/messages -F to=a@example.test",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl POST Postmark email",
+      "cmd": "curl -s https://api.postmarkapp.com/email -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: curl to Gmail send with an undecidable method stays fail-closed",
+      "cmd": "curl -s -X $M https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: read: Gmail messages list",
+      "cmd": "curl -s -H \"Authorization: Bearer x\" \"https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread\"",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: read: Gmail drafts.get",
+      "cmd": "curl -s https://gmail.googleapis.com/gmail/v1/users/me/drafts/r-123?format=full",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: draft: Gmail drafts.create puts nothing on the wire (follows MAILCURLSEND1118: a non-read write on a mail-only API host is a send)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/drafts -d @/tmp/d.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: read: explicit GET on the send path is no send",
+      "cmd": "curl -s -X GET https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: payload only names the Gmail send URL",
+      "cmd": "curl -s http://localhost:3420/api/messages -d '{\"to\":\"samu\",\"content\":\"https://gmail.googleapis.com/gmail/v1/users/me/messages/send megy at\"}'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: Graph read: list messages",
+      "cmd": "curl -s https://graph.microsoft.com/v1.0/me/messages",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: port in the host",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com:443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: user info in the host",
+      "cmd": "curl -s -X POST https://x@gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: trailing dot on the host",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com./gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: dot segment in the path",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/x/../send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: curl glob {..} in the path",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/{messages}/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: curl glob [..] in the path",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/sen[d-d]' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: percent-encoded path",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/sen%64 -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: shell brace expansion",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/sen{d,} -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: httpie https binary",
+      "cmd": "https POST gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: xh client",
+      "cmd": "xh POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: SendGrid regional host",
+      "cmd": "curl -s -X POST https://api.eu.sendgrid.com/v3/mail/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: Graph namespaced sendMail action",
+      "cmd": "curl -s -X POST https://graph.microsoft.com/v1.0/me/microsoft.graph.sendMail -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: -XPOST cluster (the URL is the next token)",
+      "cmd": "curl -sXPOST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d@/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: double slash in the path",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com//gmail/v1/users/me/messages//send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: send URL only in a header value",
+      "cmd": "curl -s -X POST https://example.test/hook -H 'X-Note: https://gmail.googleapis.com/gmail/v1/users/me/messages/send' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: host only in the -o output file name",
+      "cmd": "curl -s -X POST https://example.test/hook -d @/tmp/x.json -o gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: send URL only in a query parameter",
+      "cmd": "curl -s -X POST 'https://example.test/p?u=https://gmail.googleapis.com/gmail/v1/users/me/messages/send' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 2: Resend with a port in the host",
+      "cmd": "curl -s https://api.resend.com:443/emails -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: wget -H (span-hosts, kapcsoló érték nélkül) az URL előtt",
+      "cmd": "wget -q --post-file=/tmp/m.json -H https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: wget --proxy (kapcsoló) az URL előtt",
+      "cmd": "wget -q --post-file=/tmp/m.json --proxy https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: httpie https --json (kapcsoló) az URL előtt",
+      "cmd": "https --json gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: httpie http --form (kapcsoló) az URL előtt",
+      "cmd": "http --form https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: xh --json (kapcsoló) az URL előtt",
+      "cmd": "xh --json https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: curl-glob a hostban (co{m})",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.co{m}/gmail/v1/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: curl-glob a hostban ([s-s])",
+      "cmd": "curl -s -X POST 'https://gmail.googleapi[s-s].com/gmail/v1/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: százalék-kódolt pont a hostban",
+      "cmd": "curl -s -X POST https://gmail%2Egoogleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: százalék-kódolt betű a hostban",
+      "cmd": "curl -s -X POST https://gmail.googleapi%73.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: ideografikus pont a hostban (IDN)",
+      "cmd": "curl -s -X POST https://gmail。googleapis。com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: lágy kötőjel a hostban (IDN)",
+      "cmd": "curl -s -X POST https://gmail.google­apis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: port + záró pont együtt",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com.:443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: felhasználó:jelszó + port",
+      "cmd": "curl -s -X POST https://u:p@gmail.googleapis.com:443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: kódolt pont-szegmens (%2e%2e)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/x/%2e%2e/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: kódolt per (messages%2Fsend)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages%2Fsend -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -o érték után az URL",
+      "cmd": "curl -s -o /tmp/out.json -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: összevont -so, utána URL",
+      "cmd": "curl -so /tmp/out.json -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: összevont -sSLXPOST, utána URL",
+      "cmd": "curl -sSLXPOST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: összevont -sd@fájl, utána URL",
+      "cmd": "curl -sd@/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -O (érték nélküli) után az URL",
+      "cmd": "curl -s -O -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --compressed, -L, -k után az URL",
+      "cmd": "curl -s --compressed -L -k -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -H érték után az URL",
+      "cmd": "curl -s -H 'Authorization: Bearer x' -H 'Content-Type: application/json' -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --retry 3 --max-time 20 után az URL",
+      "cmd": "curl -s --retry 3 --max-time 20 -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: wget -O - és --header után az URL",
+      "cmd": "wget -q -O - --header='Authorization: Bearer x' --post-file=/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: wget -qO- összevonva",
+      "cmd": "wget -qO- --post-file=/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Resend porttal",
+      "cmd": "curl -s -X POST https://api.resend.com:443/emails -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Resend felhasználó-résszel",
+      "cmd": "curl -s -X POST https://x@api.resend.com/emails -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: xhs kliens",
+      "cmd": "xhs POST gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: SendGrid EU porttal",
+      "cmd": "curl -s -X POST https://api.eu.sendgrid.com:443/v3/mail/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Graph users/x/microsoft.graph.sendMail",
+      "cmd": "curl -s -X POST https://graph.microsoft.com/v1.0/users/a@example.test/microsoft.graph.sendMail -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: a séma után három per",
+      "cmd": "curl -s -X POST https:///gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: visszaper a séma után",
+      "cmd": "curl -s -X POST 'https:\\\\gmail.googleapis.com/gmail/v1/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --url külön tokenben, kapcsolók értéke között",
+      "cmd": "curl -s -H 'A: b' --url https://gmail.googleapis.com/gmail/v1/users/me/messages/send -o /tmp/o -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --proto-default https, séma nélkül",
+      "cmd": "curl -s --proto-default https -X POST gmail.googleapis.com/gmail/v1/users/me/drafts/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: piszkozat létrehozása, szögletes zárójel a lekérdezésben (follows MAILCURLSEND1118: a non-read write on a mail-only API host is a send)",
+      "cmd": "curl -s -g -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/drafts?fields=id&x=[1]' -d @/tmp/d.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Naptár esemény, kapcsos zárójel a lekérdezésben",
+      "cmd": "curl -s -g -X POST 'https://www.googleapis.com/calendar/v3/calendars/primary/events?x={a}' -d @/tmp/e.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -e hivatkozó a küldő URL",
+      "cmd": "curl -s -X POST https://example.test/hook -e https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: -d érték a küldő URL (idegen hostra megy)",
+      "cmd": "curl -s -X POST https://example.test/hook -d https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: --write-out érték a küldő URL",
+      "cmd": "curl -s -X POST https://example.test/hook -d @/tmp/x.json --write-out https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: OAuth token csere porttal",
+      "cmd": "curl -s -X POST https://oauth2.googleapis.com:443/token -d grant_type=refresh_token",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Gmail lista https klienssel (httpie GET) (follows MAILCURLSEND1118: httpie's method is not read, fail-closed on a mail-only API host)",
+      "cmd": "https GET gmail.googleapis.com/gmail/v1/users/me/messages",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: xh GET idegen hostra",
+      "cmd": "xh GET https://example.test/api",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: https kliens idegen hostra POST",
+      "cmd": "https POST example.test/hook a=b",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: drafts.create porttal (follows MAILCURLSEND1118: a non-read write on a mail-only API host is a send)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com:443/gmail/v1/users/me/drafts -d @/tmp/d.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Gmail olvasás kódolt lekérdezéssel",
+      "cmd": "curl -s 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=from%3Aa%40example.test'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: SendGrid EU statisztika olvasás",
+      "cmd": "curl -s https://api.eu.sendgrid.com/v3/stats",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: hasonló nevű idegen host porttal",
+      "cmd": "curl -s -X POST https://gmail.evilgoogleapis.com:443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: a küldő host a felhasználó-részben, idegen hostra megy",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com@example.test/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Graph piszkozat létrehozás porttal",
+      "cmd": "curl -s -X POST https://graph.microsoft.com:443/v1.0/me/messages -d @/tmp/m.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: helyi dashboard, a szövegben kapcsos zárójel",
+      "cmd": "curl -s -X POST http://localhost:3420/api/messages -d '{\"to\":\"marveen\"}'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 3: Gmail messages.import pont-szegmenssel (follows MAILCURLSEND1118: a non-read write on a mail-only API host is a send)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send/../import -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: IPv6 literál, helyi POST",
+      "cmd": "curl -s -X POST 'http://[::1]:3420/api/kanban' -d '{\"title\":\"x\"}'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: séma nélküli localhost + JSON tömb törzs",
+      "cmd": "curl -s -X POST localhost:3420/api/x -H 'Content-Type: application/json' -d '[1,2,3]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: séma nélküli localhost + JSON objektumtömb törzs",
+      "cmd": "curl -s -X POST localhost:3420/api/x -d '[{\"a\":1}]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: változós URL + JSON tömb törzs",
+      "cmd": "curl -s -X POST \"$BASE/api/x\" -H \"Authorization: Bearer $T\" -d '[{\"a\":1}]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: változós URL + szögletes zárójel a fejlécben",
+      "cmd": "curl -s -X POST \"$BASE/api/x\" -H 'X-Tags: [a,b]' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: idegen host, szögletes zárójel az útban (nem tartomány)",
+      "cmd": "curl -s -g -X POST 'https://example.test/items[abc]/x' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: idegen host, lezáratlan kapcsos zárójel az útban",
+      "cmd": "curl -s -g -X POST 'https://example.test/a{b' -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: idegen host, nagy számtartomány (feltöltés 1-100)",
+      "cmd": "curl -s -T /tmp/f.bin 'https://example.test/up/part[1-100].bin'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: helyi dashboard sémával + JSON tömb törzs",
+      "cmd": "curl -s -X POST http://localhost:3420/api/x -d '[1,2,3]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: séma nélküli localhost + JSON objektum törzs",
+      "cmd": "curl -s -X POST localhost:3420/api/messages -d '{\"to\":\"marveen\",\"content\":\"x\"}'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: Naptár esemény, szögletes zárójel az útban",
+      "cmd": "curl -s -g -X POST 'https://www.googleapis.com/calendar/v3/calendars/primary/events/[x]/move' -d @/tmp/e.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: változós URL, a -e értéke a küldő URL (follows develop: a mail host in an option value marks the line)",
+      "cmd": "curl -s -X POST \"$HOOK\" -e https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/x.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: wget idegen hostra, -e robots=off",
+      "cmd": "wget -q -e robots=off --post-file=/tmp/x.json https://example.test/hook",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: Gmail lista, tartomány-glob az útban (olvasás) (follows MAILCURLSEND1118: a URL glob on a mail-only API host is a send)",
+      "cmd": "curl -s 'https://gmail.googleapis.com/gmail/v1/users/me/messages/[1-3]'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: glob-lista a hostban ({gmail,x})",
+      "cmd": "curl -s -X POST 'https://{gmail,x}.googleapis.com/gmail/v1/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: glob lépésközzel (sen[d-d:1])",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/sen[d-d:1]' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: két glob-lista (4 URL)",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/{messages,drafts}/{send,x}' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: stated limit, a glob past the 64 URL limit is judged literally (follows MAILCURLSEND1118: a URL glob on a mail-only API host is a send)",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/{m,n}{e,f}{s,t}{s,t}{a,b}{g,h}{e,f}s/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: számtartomány 1-65 (a korlát felett) a küldő úton",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send?x' -d @/tmp/m[1-65].json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: betűtartomány a hostban és az útban",
+      "cmd": "curl -s -X POST 'https://gmail.googleapi[s-s].com/gmail/v1/users/me/message[s-s]/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: bekarikázott betű a hostban (NFKC)",
+      "cmd": "curl -s -X POST https://ⓖmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: teljes szélességű pont a hostban",
+      "cmd": "curl -s -X POST https://gmail．googleapis．com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: félszélességű ideografikus pont a hostban",
+      "cmd": "curl -s -X POST https://gmail｡googleapis｡com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: kódolt @ a felhasználó-részben",
+      "cmd": "curl -s -X POST https://a%40b@gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: kódolt kettőspont-port (%3A443)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com%3A443/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: két per a séma után, egy helyett egy",
+      "cmd": "curl -s -X POST https:/gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: wget -nH (két betűs kapcsoló) az URL előtt",
+      "cmd": "wget -q -nH --post-file=/tmp/m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: xh --form az URL előtt",
+      "cmd": "xh --form POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send raw=abc",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: curl két URL, az első olvasás, a második küldés",
+      "cmd": "curl -s -d @/tmp/m.json https://example.test/a https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: kódolt lekérdezőjel a send után (send%3Falt=json)",
+      "cmd": "curl -s -X POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send%3Falt=json -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: nagybetűs séma és host, porttal",
+      "cmd": "curl -s -X POST HTTPS://GMAIL.GOOGLEAPIS.COM:443/gmail/v1/users/me/drafts/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: vezető nullás számtartomány a verzióban (v[01-01])",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v[1-1]/users/me/messages/send' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: nagy-kisbetű tartomány ([S-s]) a küldő szóban",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/[S-s]end' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: üres glob-elem ({,x}) a küldő szó után",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send{,x}' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: glob a lekérdező rész után is, a küldő út előtte",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send?x=[1-2]' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: schemeless localhost:3420 with a Gmail send URL as referer",
+      "cmd": "curl -s -X POST localhost:3420/api/x -e https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: 127.0.0.1 with a Gmail send URL in -d",
+      "cmd": "curl -s -X POST http://127.0.0.1:3420/api/x -d 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: [::1] with a JSON array body",
+      "cmd": "curl -s -X POST 'http://[::1]:3420/api/x' -d '[1,2]'",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: the dashboard messages API with a Resend URL as referer (follows develop: a mail host in an option value marks the line)",
+      "cmd": "curl -s -X POST http://localhost:3420/api/x -e https://api.resend.com/emails -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: local host guard: httpie to localhost, header item and a send URL as a value",
+      "cmd": "http POST localhost:3420/api/x Content-Type:application/json note=https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 4: value fallback: the URL after a flag this list does not know still counts when nothing else can be the URL",
+      "cmd": "curl -s -X POST --unknown-flag https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: IPv6-shaped bracket in the path next to a range glob (curl keeps the bracket, expands the glob)",
+      "cmd": "curl -s -X POST 'https://gmail.googleapis.com/gmail/v1/users/me/x/[::1]/../messages/sen[d-d]' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: IPv6-shaped bracket in the user info next to a glob in the path",
+      "cmd": "curl -s -X POST 'https://[::1]@gmail.googleapis.com/gmail/v1/users/me/messages/sen[d-d]' -d @/tmp/m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: local host guard: a variable inside the positional URL, a send URL as referer",
+      "cmd": "curl -s -X POST localhost:$PORT/api/x -e https://gmail.googleapis.com/gmail/v1/users/me/messages/send -d @/tmp/x.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: wget --referer value is data",
+      "cmd": "wget -q --post-file=/tmp/m.json --referer https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118 round 5: foreign host with a large glob in the host",
+      "cmd": "curl -s -X POST 'https://graph{0-99}.example.test/x' -d @/tmp/m.json",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P01 curl -O (takes no value) before a Resend URL",
+      "cmd": "curl -O https://api.resend.com/emails -d '{}'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P02 curl -a (takes no value) before a Resend URL",
+      "cmd": "curl -a https://api.resend.com/emails -d '{}'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P03 curl -sSO cluster before a Resend URL",
+      "cmd": "curl -sSO https://api.resend.com/emails -H 'Authorization: Bearer x' -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P04 variable URL assigned on the line, option value a fragment of the host",
+      "cmd": "X=https://api.resend.com/emails; curl -A api.res -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P05 same, SendGrid, -A sendgrid",
+      "cmd": "X=https://api.sendgrid.com/v3/mail/send; curl -A sendgrid -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P06 same, Gmail, -e gmail",
+      "cmd": "X=https://gmail.googleapis.com/gmail/v1/users/me/messages/send; curl -e gmail -d @m.json $X",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P07 same, Resend, -o resend",
+      "cmd": "X=https://api.resend.com/emails; curl -d @m.json -o resend \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P08 control: variable URL assigned on the line, no option trick",
+      "cmd": "X=https://api.resend.com/emails; curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P09 control: variable URL, no mail host on the line",
+      "cmd": "curl -d @m.json \"$X\"",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P10 designed relaxation: referer names a send URL, variable URL (follows develop: a mail host in an option value marks the line)",
+      "cmd": "curl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P11 variable host, mail host only in a header value, send path",
+      "cmd": "curl -H 'X-Note: api.resend.com' -d @m.json https://$H/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P12 httpie, empty port",
+      "cmd": "http POST api.resend.com:/emails from=a",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P13 curl, empty port, no scheme",
+      "cmd": "curl -X POST api.sendgrid.com:/v3/mail/send -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P14 wget, empty port, no scheme",
+      "cmd": "wget --post-file m.json api.sendgrid.com:/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P15 curl, empty port with scheme",
+      "cmd": "curl -X POST https://api.sendgrid.com:/v3/mail/send -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P16 curl --url",
+      "cmd": "curl --url https://api.resend.com/emails -d '{}'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P17 control: curl -e x then Resend URL",
+      "cmd": "curl -e x https://api.resend.com/emails -d '{}'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P18 wget -nv",
+      "cmd": "wget -nv --post-data x https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P19 wget -N",
+      "cmd": "wget -N --post-data x https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P20 httpie -v",
+      "cmd": "http -v POST https://api.resend.com/emails a=b",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P21 httpie --raw",
+      "cmd": "http --raw '{}' POST https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P22 body names a send URL, call goes elsewhere",
+      "cmd": "curl -d '{\"a\":\"https://api.resend.com/emails\"}' https://example.test/hook",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P23 designed relaxation: localhost call with a Resend referer (follows develop: a mail host in an option value marks the line)",
+      "cmd": "curl -X POST -e https://api.resend.com/emails http://localhost:3420/api/x -d '{}'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P24 curl -d then -O before a SendGrid URL",
+      "cmd": "curl -d @m.json -O https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P25 curl -d then -a before a Gmail send URL",
+      "cmd": "curl -d @m.json -a https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P26 wget -c (no value in wget) before a Resend URL",
+      "cmd": "wget -c https://api.resend.com/emails --post-data x",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P27 curl -O before a Resend URL, GET",
+      "cmd": "curl -O https://api.resend.com/emails",
+      "expected": false
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P28 Resend URL as value of -x then real Resend URL",
+      "cmd": "curl -x https://api.resend.com/emails https://api.resend.com/emails -d '{}'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 6 (review): P29 variable URL, option value equals a word of the assignment",
+      "cmd": "X=https://api.resend.com/emails; curl -H api.resend.com -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q01 variable URL assigned on the line; option value is the host split by empty quotes",
+      "cmd": "X=https://api.resend.com/emails; curl -A api.re''send.com -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q02 same; host split by adjacent double quotes",
+      "cmd": "X=https://api.resend.com/emails; curl -A \"api.resend.co\"m -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q03 same; host with a backslash-escaped letter",
+      "cmd": "X=https://api.resend.com/emails; curl -A api.resend.co\\m -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q04 same; ANSI-C quoted host",
+      "cmd": "X=https://api.resend.com/emails; curl -A $'api.resend.co\\x6d' -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q05 same; SendGrid, referer split by quotes",
+      "cmd": "X=https://api.sendgrid.com/v3/mail/send; curl -e 'https://api.send'grid.com/ -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q06 control: option value names the host twice, verbatim",
+      "cmd": "X=https://api.sendgrid.com/v3/mail/send; curl -A 'api.sendgrid.com api.sendgrid.com' -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q07 control: the whole host as a plain option value",
+      "cmd": "X=https://api.resend.com/emails; curl -A api.resend.com -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q08 designed pass: referer split by quotes, variable URL, no assignment (follows develop: a mail host in an option value marks the line)",
+      "cmd": "curl -e 'https://api.re'send.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q09 curl -O then -a before a Gmail send URL",
+      "cmd": "curl -O -a -d @m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q10 http scheme with one slash",
+      "cmd": "curl -d @m.json http:/api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q11 wget -O - (value in wget) then a SendGrid URL",
+      "cmd": "wget -O - --post-file m.json https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 7 (review): Q12 wget -a log (value in wget) then a Resend URL",
+      "cmd": "wget -a log --post-data x https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 8 (review): R01 variable URL assigned on the line; the same option twice, once verbatim and once split by quotes",
+      "cmd": "X=https://api.resend.com/emails; curl -A api.resend.com -A api.re''send.com -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 8 (review): R02 same, SendGrid, -e twice",
+      "cmd": "X=https://api.sendgrid.com/v3/mail/send; curl -e api.sendgrid.com -e \"api.send\"grid.com -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 8 (review): R03 same, backslash form second",
+      "cmd": "X=https://api.resend.com/emails; curl -A api.resend.com -A api.resend.co\\m -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 8 (review): R04 the verbatim pair stands in an earlier command of the line",
+      "cmd": "X=https://api.resend.com/emails; curl -A api.resend.com http://localhost:3420/x; curl -A api.re''send.com -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 8 (review): R05 control: another option carries the split host",
+      "cmd": "X=https://api.resend.com/emails; curl -A api.resend.com -H api.re''send.com -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 8 (review): R06 control: the same option twice, both verbatim",
+      "cmd": "X=https://api.resend.com/emails; curl -A api.resend.com -A api.resend.com -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 8 (review): R07 designed pass: the same option twice, no assignment on the line (follows develop: a mail host in an option value marks the line)",
+      "cmd": "curl -e https://api.resend.com/emails -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 8 (review): R08 the verbatim pair stands in a comment-like echo, split form in curl",
+      "cmd": "X=https://api.resend.com/emails; echo -A api.resend.com; curl -A api.re''send.com -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S01 inner shell: value resolves to a word of the outer line (the URL passed as $0)",
+      "cmd": "bash -c 'curl -A \"https://api.re\"\"send.com/emails\" -d @m.json \"$0\"' https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S02 inner sh: referer with a backslash, URL passed as $1",
+      "cmd": "sh -c 'curl -e https://api.resend.co\\m/emails -d @m.json \"$1\"' x https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S04 for loop word passed to an inner shell",
+      "cmd": "for U in https://api.resend.com/emails; do bash -c 'curl -A \"https://api.re\"\"send.com/emails\" -d @m.json \"$0\"' \"$U\"; done",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S05 assignment by command substitution",
+      "cmd": "X=$(echo https://api.resend.com/emails); curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S06 assignment by backticks",
+      "cmd": "X=`echo https://api.resend.com/emails`; curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S07 here-string",
+      "cmd": "read X <<< https://api.resend.com/emails; curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S08 heredoc",
+      "cmd": "read X <<EOF\nhttps://api.resend.com/emails\nEOF\ncurl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S09 host only in a trailing comment",
+      "cmd": "curl -d @m.json \"$X\" # api.resend.com",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S10 control: option value equals the assignment word",
+      "cmd": "X=https://api.resend.com/emails; curl -A X=https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S11 default value inside the URL word",
+      "cmd": "curl -A https://api.resend.com/emails -d @m.json \"${X:-https://api.resend.com/emails}\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S12 no space after the semicolon",
+      "cmd": "X=https://api.resend.com/emails;curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S13 subshell",
+      "cmd": "(X=https://api.resend.com/emails; curl -d @m.json \"$X\")",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S14 brace group",
+      "cmd": "{ X=https://api.resend.com/emails; curl -d @m.json \"$X\"; }",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S15 if block",
+      "cmd": "if true; then X=https://api.resend.com/emails; fi; curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S16 declare",
+      "cmd": "declare X=https://api.resend.com/emails; curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S17 array",
+      "cmd": "X=(https://api.resend.com/emails); curl -d @m.json \"${X[0]}\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S18 function with the URL as argument",
+      "cmd": "f(){ curl -d @m.json \"$1\"; }; f https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S19 function, referer equals the argument word",
+      "cmd": "f(){ curl -e https://api.resend.com/emails -d @m.json \"$1\"; }; f https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S20 printf -v",
+      "cmd": "printf -v X %s https://api.resend.com/emails; curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S21 positional set, referer equals the positional word",
+      "cmd": "set -- https://api.resend.com/emails; curl -e https://api.resend.com/emails -d @m.json \"$1\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S22 two clients: the first one's referer, the second one's variable URL",
+      "cmd": "curl -e https://api.resend.com/emails http://localhost:3420/x; X=https://api.resend.com/emails; curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S23 env prefix assignment",
+      "cmd": "X=https://api.resend.com/emails bash -c 'curl -d @m.json \"$X\"'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S25 unbalanced quote (unparseable line)",
+      "cmd": "X=https://api.resend.com/emails; curl -A 'x -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S26 newline separated",
+      "cmd": "X=https://api.resend.com/emails\ncurl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S27 wget, value equals positional word",
+      "cmd": "set -- https://api.sendgrid.com/v3/mail/send; wget --referer https://api.sendgrid.com/v3/mail/send --post-file m.json \"$1\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 9 (review): S28 httpie, value equals positional word",
+      "cmd": "set -- https://api.resend.com/emails; http --session https://api.resend.com/emails POST \"$1\" a=b",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U01 heredoc, plain delimiter, referer on the client",
+      "cmd": "read X <<EOF\nhttps://api.resend.com/emails\nEOF\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U02 heredoc, the URL on a line that starts with a hash",
+      "cmd": "read _ X <<EOF\n# https://api.resend.com/emails\nEOF\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U03 heredoc, double-quoted delimiter, hash line",
+      "cmd": "read _ X <<\"EOF\"\n# https://api.resend.com/emails\nEOF\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U04 heredoc, backslash delimiter, hash line",
+      "cmd": "read _ X <<\\EOF\n# https://api.resend.com/emails\nEOF\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U05 heredoc <<- with tab-indented terminator, hash line",
+      "cmd": "read _ X <<-EOF\n\t# https://api.resend.com/emails\n\tEOF\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U06 heredoc, single-quoted delimiter, hash line",
+      "cmd": "read _ X <<'EOF'\n# https://api.resend.com/emails\nEOF\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U07 heredoc, double-quoted delimiter, plain line",
+      "cmd": "read X <<\"EOF\"\nhttps://api.resend.com/emails\nEOF\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U08 heredoc, delimiter with a dash in its name, hash line",
+      "cmd": "read _ X <<E-F\n# https://api.resend.com/emails\nE-F\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U09 here-string, referer",
+      "cmd": "read X <<< https://api.resend.com/emails; curl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U10 command substitution assignment, referer",
+      "cmd": "X=$(echo https://api.resend.com/emails); curl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U11 backticks assignment, referer",
+      "cmd": "X=`echo https://api.resend.com/emails`; curl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U12 for loop word, referer",
+      "cmd": "for X in https://api.resend.com/emails; do curl -e https://api.resend.com/emails -d @m.json \"$X\"; done",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U13 inner shell, verbatim referer inside, URL as $0",
+      "cmd": "bash -c 'curl -e https://api.resend.com/emails -d @m.json \"$0\"' https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U14 env prefix, inner shell with referer",
+      "cmd": "X=https://api.resend.com/emails bash -c 'curl -e https://api.resend.com/emails -d @m.json \"$X\"'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U15 escaped hash before the assignment",
+      "cmd": "echo a \\# b; X=https://api.resend.com/emails; curl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U16 quoted hash before the assignment",
+      "cmd": "echo \"a # b\"; X=https://api.resend.com/emails; curl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U17 process substitution read, referer",
+      "cmd": "read X < <(echo https://api.resend.com/emails); curl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U18 pipe into a group, referer",
+      "cmd": "echo https://api.resend.com/emails | { read X; curl -e https://api.resend.com/emails -d @m.json \"$X\"; }",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U19 array, referer",
+      "cmd": "X=(https://api.resend.com/emails); curl -e https://api.resend.com/emails -d @m.json \"${X[0]}\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U20 printf -v, referer",
+      "cmd": "printf -v X %s https://api.resend.com/emails; curl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U21 two inner shells, the second with a referer",
+      "cmd": "bash -c 'echo https://api.resend.com/emails > u.txt'; bash -c 'curl -e https://api.resend.com/emails -d @m.json \"$(cat u.txt)\"'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U22 function body with referer, URL as argument",
+      "cmd": "f(){ curl -e https://api.resend.com/emails -d @m.json \"$1\"; }; f https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U23 heredoc feeding an inner shell script with the referer and variable URL",
+      "cmd": "X=https://api.resend.com/emails bash <<EOF\ncurl -e https://api.resend.com/emails -d @m.json \"\\$X\"\nEOF",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U24 designed pass: heredoc elsewhere without a host, referer, variable URL",
+      "cmd": "cat <<EOF\nhello\nEOF\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U25 the mail host only in a comment, referer, variable URL",
+      "cmd": "curl -e https://api.resend.com/emails -d @m.json \"$X\" # api.resend.com",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U26 hash line inside a double-quoted multi-line assignment",
+      "cmd": "X=\"$(printf '%s' 'https://api.resend.com/emails')\"\ncurl -e https://api.resend.com/emails -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 10 (review): U27 wget, heredoc with quoted delimiter and hash line",
+      "cmd": "read _ X <<\"EOF\"\n# https://api.sendgrid.com/v3/mail/send\nEOF\nwget --referer https://api.sendgrid.com/v3/mail/send --post-file m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W01 backslash in the user info before the mail host (curl)",
+      "cmd": "curl -d @m.json 'https://evil.test\\@api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W02 same, SendGrid",
+      "cmd": "curl -X POST -d @m.json 'https://x\\y@api.sendgrid.com/v3/mail/send'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W03 same, Gmail",
+      "cmd": "curl -d @m.json 'https://a\\b:c@gmail.googleapis.com/gmail/v1/users/me/messages/send'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W04 same, wget",
+      "cmd": "wget --post-file m.json 'https://evil.test\\@api.sendgrid.com/v3/mail/send'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W05 same, httpie",
+      "cmd": "http POST 'https://evil.test\\@api.resend.com/emails' a=b",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W06 schemeless host with a port",
+      "cmd": "curl -d @m.json api.resend.com:443/emails",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W07 control: plain user info before the mail host",
+      "cmd": "curl -d @m.json 'https://user:pw@api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W08 backslash in the path after the mail host",
+      "cmd": "curl -d @m.json 'https://api.resend.com/emails\\x/../../emails'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W09 schemeless, backslash in the user info",
+      "cmd": "curl -d @m.json 'evil.test\\@api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "CURLMAILAPI1118: round 11 (review): W10 mail host followed by a backslash and a foreign host",
+      "cmd": "curl -d @m.json 'https://api.resend.com\\@evil.test/emails'",
+      "expected": false
     }
   ]
 }
