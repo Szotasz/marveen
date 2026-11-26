@@ -108,6 +108,8 @@ export const EXTRA_HOOKS_SWITCH_KEY = 'EXTRA_HOOKS_MAIN_AGENT_WRITE'
 const ENTRY_KEYS = new Set(['event', 'matcher', 'script', 'timeout', 'failClosed', 'scope', 'description'])
 const SCRIPT_RE = /^[A-Za-z0-9_][A-Za-z0-9_./@+-]*$/
 const SCRIPT_EXTS = new Set(['.py', '.mjs', '.js'])
+/** The plain (non-fail-closed) .py launch: -B, so the run writes no __pycache__/ (see validateEntry). */
+const PY_NO_BYTECODE = 'python3 -B'
 const MAX_MATCHER = 500
 const MAX_TIMEOUT_SEC = 600
 const DEFAULT_TIMEOUT_SEC = 10
@@ -121,6 +123,8 @@ export interface ExtraHookDeps {
   nodeBin: string
   /** Fail-closed builders: the same ones the built-in gates use. */
   nodeGateCommand: (scriptPath: string, timeoutSec: number) => string
+  /** Must start python3 with -B (MAINEXTRAHOOKS1123 (c)): the digest hashes compiled Python, so a run that wrote
+   *  __pycache__/ would announce a change on every first import. agent-scaffold.ts: pythonHookCommand(..., { noBytecode }). */
   pythonGateCommand: (scriptPath: string, timeoutSec: number) => string
   isUnsafe: (command: string) => boolean
   /** MAINEXTRAHOOKS1123 (b): the owner's EXTRA_HOOKS_MAIN_AGENT_WRITE switch is on, so the file may be agent-written:
@@ -237,9 +241,11 @@ function validateEntry(raw: unknown, i: number, deps: ExtraHookDeps, reserved: s
   try { realRoot = realpathSync(deps.projectRoot) } catch { /* keep as given */ }
   if (!realInside(join(realRoot, EXTRA_HOOKS_DIR), realAbs)) return `${at}: script ${script} resolves outside ${EXTRA_HOOKS_DIR}/`
 
+  // A .py extra runs with -B (both forms): it writes no bytecode, which the digest would otherwise report as a change
+  // on its first run (MAINEXTRAHOOKS1123 (c)). An existing .pyc is still read, and that is what the digest hashes.
   const body = e.failClosed
     ? (ext === '.py' ? deps.pythonGateCommand(abs, timeout) : deps.nodeGateCommand(abs, timeout))
-    : (ext === '.py' ? `python3 "${abs}"` : `"${deps.nodeBin}" "${abs}"`)
+    : (ext === '.py' ? `${PY_NO_BYTECODE} "${abs}"` : `"${deps.nodeBin}" "${abs}"`)
   const command = scope === 'main'
     ? `${EXTRA_HOOK_MARK} ${mainScopeGuard(deps.projectRoot)} ${body}`
     : `${EXTRA_HOOK_MARK} ${body}`
@@ -336,8 +342,11 @@ export interface ExtraHooksDigest {
 const sha256Hex = (b: Buffer): string => createHash('sha256').update(b).digest('hex')
 
 const MAX_DIGEST_FILES = 500
-// Byproducts a run leaves, not code anyone wrote: hashing them would announce a change on every first import.
-const DIGEST_SKIP = (name: string): boolean => name === '__pycache__' || name === '.DS_Store' || name.endsWith('.pyc')
+// Finder metadata only. Compiled Python is hashed like any other file (fleet re-review of #3064): Python RUNS a
+// __pycache__/<mod>.cpython-XY.pyc whose header matches the source's mtime and size, and a sourceless <mod>.pyc next
+// to the importer, so skipping them let planted code run while every hashed file stayed byte-identical. A .py extra
+// is started with -B (validateEntry), so a normal run writes no bytecode and causes no notice.
+const DIGEST_SKIP = (name: string): boolean => name === '.DS_Store'
 
 // Every file reachable under <root>/local-hooks/, by path from the root, sorted. A symlink is followed (a helper
 // directory linked in from elsewhere, an agent's own directory included, is code a named script can import), each real

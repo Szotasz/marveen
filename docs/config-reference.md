@@ -501,7 +501,7 @@ dashboard indulásakor is (ilyenkor a meglévő ágensekre is, újraindítás n�
 | `matcher` | nem | A Claude Code matcher-e (regex), legfeljebb 500 karakter; hiányában minden hívásra fut |
 | `script` | igen | Relatív út a projekt gyökeréhez képest, a `local-hooks/` mappán belül (gitignore-olt), `.py`, `.mjs` vagy `.js`; csak betű, szám és `_ . / @ + -`, `..` nélkül |
 | `timeout` | nem | Másodperc, 1..600, alapból 10 |
-| `failClosed` | igen | `true`: a beépített kapukkal azonos burok (hiányzó interpreter vagy a 0-tól és 2-től eltérő kilépés = tiltás, a határidő 2 mp-cel a timeout előtt). Csak `PreToolUse`-on engedett, mert `UserPromptSubmit`-en egy összeomlás minden promptot blokkolna. `false`: sima hívás, egy összeomlás nem blokkol |
+| `failClosed` | igen | `true`: a beépített kapukkal azonos burok (hiányzó interpreter vagy a 0-tól és 2-től eltérő kilépés = tiltás, a határidő 2 mp-cel a timeout előtt). Csak `PreToolUse`-on engedett, mert `UserPromptSubmit`-en egy összeomlás minden promptot blokkolna. `false`: sima hívás, egy összeomlás nem blokkol. Egy `.py` szkript mindkét esetben `python3 -B`-vel fut (nem ír bájtkódot) |
 | `scope` | nem | `"subagents"` (az alapértelmezés): minden sub-ügynök generált beállítása. `"main"`: a fő ügynök projekt-helyi `.claude/settings.local.json`-ja, amit a fő session betölt (a `--main-scope` egress-parser is ezt használja), minden parancs előtt `[ "$CLAUDE_PROJECT_DIR" = '<gyökér>' ] \|\| exit 0;`: egy sub-ügynök sessionje is betölti ezt a fájlt, és ott a hook nem csinál semmit. Csak a megjelölt extra bejegyzések cserélődnek, a fájl többi kulcsa marad. Más érték esetén a bejegyzés kimarad. Bekapcsolt `EXTRA_HOOKS_MAIN_AGENT_WRITE` mellett a `"main"` is kimarad |
 | `description` | nem | Szabad szöveg, a scaffold nem használja |
 
@@ -562,8 +562,11 @@ mappát az import-útján látja, így egy segédfájl is kód) a legutóbb beje
 (`notifySecurityEvent`, a Telegram vagy Slack riasztási csatornán): mi lett új, mi módosult, mi
 tűnt el, és a kapcsoló állása. Változatlan fájlokkal egy újraindítás nem küld semmit; az első
 szinkron egy nem üres fájllal egyszer bejelenti; egy törölt fájlt is bejelent. Elveszett vagy
-olvashatatlan lenyomat csak értesítést okozhat, elhallgatni nem tud. A `__pycache__`, a `*.pyc` és
-a `.DS_Store` nem számít.
+olvashatatlan lenyomat csak értesítést okozhat, elhallgatni nem tud. A lefordított Python ugyanúgy
+számít, mint bármely más fájl (`__pycache__/`, `*.pyc`: a Python ezeket futtatja, így egy becsempészett
+is kód); csak a `.DS_Store` nem számít. A `.py` plusz hook `python3 -B`-vel indul, így egy szokásos
+futás nem ír bájtkódot, és nem okoz értesítést. Ahol egy `.py` plusz hook már `-B` nélkül futott, ott
+a frissítés utáni első szinkron az általa hagyott `__pycache__/` fájlokat egyszer bejelenti.
 
 A gazdán és a fő ágensen a sub-ágensek self-pace kapuja nem fut. Amit ez a kapu a sub-ágensre
 garantál, az szűkebb annál, hogy „a sub-ágens nem írhatja”, ezért pontosan:

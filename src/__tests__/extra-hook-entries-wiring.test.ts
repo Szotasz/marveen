@@ -44,6 +44,11 @@ const missingConfig = join(agentRoot, 'no-such-extra-hooks.json')
 const hooksDir = join(PROJECT_ROOT, 'local-hooks')
 const gateRel = `local-hooks/${TEST_AGENT}-post-gate.py`
 const logRel = `local-hooks/${TEST_AGENT}-action-log.py`
+// A helper the fail-closed probe imports (MAINEXTRAHOOKS1123 (c), -B): its bytecode would land in local-hooks/__pycache__.
+const helperMod = 'extra_hooks_probe_helper'
+const helperRel = `local-hooks/${helperMod}.py`
+const pycacheDir = join(hooksDir, '__pycache__')
+const pycacheProbes = (): string[] => (existsSync(pycacheDir) ? readdirSync(pycacheDir).filter((f) => f.startsWith(`${helperMod}.`)) : [])
 let createdHooksDir = false
 
 // Through the namespace: a base without the feature has no such export.
@@ -51,7 +56,9 @@ const ensureExtra = (name: string, path?: string): boolean =>
   (scaffold as unknown as { ensureExtraHookEntries: (n: string, p?: string) => boolean }).ensureExtraHookEntries(name, path)
 
 function cleanup(): void {
-  for (const rel of [gateRel, logRel]) rmSync(join(PROJECT_ROOT, rel), { force: true })
+  for (const rel of [gateRel, logRel, helperRel]) rmSync(join(PROJECT_ROOT, rel), { force: true })
+  for (const f of pycacheProbes()) rmSync(join(pycacheDir, f), { force: true })
+  if (existsSync(pycacheDir) && readdirSync(pycacheDir).length === 0) rmSync(pycacheDir, { recursive: true })
   if (createdHooksDir && existsSync(hooksDir) && readdirSync(hooksDir).length === 0) rmSync(hooksDir, { recursive: true })
   if (!existsSync(agentRoot)) return
   if (!agentRoot.startsWith(join(AGENTS_BASE_DIR, TEST_AGENT))) throw new Error(`refusing: ${agentRoot}`)
@@ -132,7 +139,30 @@ describe('a valid entry is appended after the built-ins and changes nothing else
     expect(cmd).toContain('command -v python3')
     expect(cmd).toContain(GATE_FAIL_CLOSED_TAG)
     expect(cmd).toContain('timeout -k 1 118 ')
-    expect(cmd).toContain(`"${join(PROJECT_ROOT, gateRel)}"`)
+    // MAINEXTRAHOOKS1123 (c), fleet re-review of #3064: isolated like the built-in gates, plus -B (no bytecode)
+    expect(cmd).toContain(`python3 -I -S -B "${join(PROJECT_ROOT, gateRel)}"`)
+  })
+
+  it('the built-in python gates keep their exact command: -B is only the extras\' (byte-identical builder)', () => {
+    expect(scaffold.pythonHookCommand('/x/gate.py')).toContain('python3 -I -S "/x/gate.py"')
+    expect(scaffold.pythonHookCommand('/x/gate.py')).not.toContain(' -B ')
+    expect(scaffold.pythonHookCommand('/x/gate.py', [], 10, { noBytecode: true }))
+      .toBe(scaffold.pythonHookCommand('/x/gate.py').replaceAll('python3 -I -S ', 'python3 -I -S -B '))
+  })
+
+  it('end to end: the rendered fail-closed gate imports a local-hooks/ helper and leaves no __pycache__ behind', () => {
+    writeFileSync(join(PROJECT_ROOT, helperRel), 'OK = 0\n')
+    writeFileSync(join(PROJECT_ROOT, gateRel),
+      `import os, sys\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\nimport ${helperMod} as h\nsys.stdin.read()\nsys.exit(h.OK)\n`)
+    const ptu = parse(render(config([GATE]))).hooks.PreToolUse
+    const cmd = ptu[ptu.length - 1].hooks[0].command
+    const run = (c: string) => spawnSync('sh', ['-c', c], { encoding: 'utf-8', input: '{}' })
+    const r = run(cmd)
+    expect(r.status, r.stderr).toBe(0)
+    expect(pycacheProbes()).toEqual([])
+    // NEGATIVE CONTROL: the same command without -B writes the helper's bytecode
+    expect(run(cmd.replaceAll('python3 -I -S -B ', 'python3 -I -S ')).status).toBe(0)
+    expect(pycacheProbes()).toHaveLength(1)
   })
 
   it('a non-gate entry is a plain call on its own event, no fail-closed tail', () => {
@@ -140,7 +170,7 @@ describe('a valid entry is appended after the built-ins and changes nothing else
     const found = extras(on)
     expect(found).toHaveLength(1)
     expect(found[0].ev).toBe('PostToolUse')
-    expect(found[0].g.hooks[0].command).toBe(`${MARK} python3 "${join(PROJECT_ROOT, logRel)}"`)
+    expect(found[0].g.hooks[0].command).toBe(`${MARK} python3 -B "${join(PROJECT_ROOT, logRel)}"`)
     expect(found[0].g.hooks[0].timeout).toBe(10)
   })
 

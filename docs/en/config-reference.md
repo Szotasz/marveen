@@ -446,7 +446,7 @@ start (so existing agents get it without a respawn).
 | `matcher` | no | Claude Code matcher (regex), at most 500 characters; without it the hook runs on every call |
 | `script` | yes | Path relative to the project root, inside `local-hooks/` (gitignored), `.py`, `.mjs` or `.js`; letters, digits and `_ . / @ + -` only, no `..` |
 | `timeout` | no | Seconds, 1..600, default 10 |
-| `failClosed` | yes | `true`: the same wrapper as the built-in gates (a missing interpreter or any exit other than 0 and 2 = deny, deadline 2 s before the timeout). Allowed on `PreToolUse` only, because on `UserPromptSubmit` a crash would block every prompt. `false`: a plain call, a crash does not block |
+| `failClosed` | yes | `true`: the same wrapper as the built-in gates (a missing interpreter or any exit other than 0 and 2 = deny, deadline 2 s before the timeout). Allowed on `PreToolUse` only, because on `UserPromptSubmit` a crash would block every prompt. `false`: a plain call, a crash does not block. A `.py` script runs with `python3 -B` either way (no bytecode written) |
 | `scope` | no | `"subagents"` (the default): every sub-agent's generated settings. `"main"`: the main agent's project-local `.claude/settings.local.json`, the file the main session loads (the `--main-scope` egress parser uses it too), each command behind `[ "$CLAUDE_PROJECT_DIR" = '<root>' ] \|\| exit 0;`: a sub-agent session loads that file as well, and there the hook does nothing. Only the marked extra entries are replaced; the owner's own keys in the file stay. Any other value skips the entry. With `EXTRA_HOOKS_MAIN_AGENT_WRITE` on, `"main"` is skipped too |
 | `description` | no | Free text, not used by the scaffold |
 
@@ -509,7 +509,10 @@ difference a security notice goes to the owner (`notifySecurityEvent`, the Teleg
 channel): what is new, what changed, what went, and the switch state. A restart with unchanged
 files sends nothing; the first sync with a non-blank file announces it once; a deleted file is
 announced too. A lost or unparsable record can only cause a notice, never suppress one.
-`__pycache__`, `*.pyc` and `.DS_Store` do not count.
+Compiled Python counts like any other file (`__pycache__/`, `*.pyc`: Python runs them, so a planted
+one is code); only `.DS_Store` does not. A `.py` extra is started with `python3 -B`, so a normal run
+writes no bytecode and causes no notice. Where a `.py` extra already ran without `-B`, the first sync
+after the update announces the `__pycache__/` files it left, once.
 
 The operator and the main agent do not run the sub-agents' self-pace gate. What that gate
 guarantees for a sub-agent is narrower than "a sub-agent cannot write them", so here is exactly

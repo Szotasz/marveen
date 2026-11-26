@@ -285,12 +285,15 @@ export function hookCommand(scriptPath: string, args: readonly string[] = [], ho
 // is the 127 exit, because Claude Code treats 127 as NON-blocking and lets the
 // tool call through -- a gate that silently stops enforcing. So the interpreter
 // is probed first and a miss exits 2, which blocks.
-export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
+export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10, opts: { noBytecode?: boolean } = {}): string {
   const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
   // SITEPKGPLANT1104 (1): -I -S, so no start-up code the gate did not ship runs inside it (a .pth line or
   // sitecustomize in a writable site-packages, a user site, PYTHON* settings). The hooks import only the standard
   // library and their own directory, which they put on sys.path themselves (measured on every hook).
-  const invocation = gateInvocation('python3 -I -S', scriptPath, args)
+  // MAINEXTRAHOOKS1123 (c): `noBytecode` adds -B, so the run writes no __pycache__/*.pyc (the install-local extras,
+  // whose digest hashes compiled Python like any other file). A flag, not PYTHONDONTWRITEBYTECODE: -I ignores every
+  // PYTHON* variable. Off (every built-in gate), the command is byte-identical to before.
+  const invocation = gateInvocation(opts.noBytecode ? 'python3 -I -S -B' : 'python3 -I -S', scriptPath, args)
   return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
 }
 
@@ -1496,7 +1499,7 @@ function extraHookDeps(): ExtraHookDeps {
     shippedScriptsDir: join(PROJECT_ROOT, 'scripts'),
     nodeBin: HOOK_NODE_BIN,
     nodeGateCommand: (p, t) => hookCommand(p, [], t),
-    pythonGateCommand: (p, t) => pythonHookCommand(p, [], t),
+    pythonGateCommand: (p, t) => pythonHookCommand(p, [], t, { noBytecode: true }),
     isUnsafe: isUnsafeHookCommand,
     agentWritable: extraHooksMainAgentWriteOn(),
   }
