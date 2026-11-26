@@ -565,6 +565,11 @@ the file sits in an untrusted directory; every other `Read` returns at once with
 no label and no log line. Untrusted directories:
 
 - `.playwright-mcp`, as a path component anywhere (built in);
+- `<install root>/store/agent-browser/`, as an absolute prefix (built in): the
+  per-agent browser (`src/web/agent-browser.ts`) starts the playwright MCP with
+  `--output-dir store/agent-browser/<agent>/mcp-out`, and with that flag its
+  snapshots land there instead of `.playwright-mcp/`. It is anchored at the
+  install root rather than matched by the generic name `mcp-out`;
 - `UNTRUSTED_READ_DIRS` in the hook's environment (`os.pathsep`-separated);
 - the `dirs` list of `store/untrusted-read-dirs.json` (path overridable with
   `UNTRUSTED_READ_CONFIG`), for example
@@ -573,11 +578,22 @@ no label and no log line. Untrusted directories:
 An entry that starts with `/` is an absolute directory prefix; any other entry
 is a directory name matched as a path component. Both the path as given and its
 resolved form are checked, so a symlink or a `..` walk does not step around the
-match. Image reads are skipped (no text to envelope). The text of the file is
-wrapped in `file.content` (the rest of the Read result is kept byte-identical),
-the label says the content was saved to disk from outside, and the log record
-keeps no payload, as for the private MCP servers: a snapshot can be a logged-in
-page.
+match. The text of the file is wrapped in `file.content` (the rest of the Read
+result is kept byte-identical), the label says the content was saved to disk
+from outside, and the log record keeps no payload, as for the private MCP
+servers: a snapshot can be a logged-in page.
+
+Limits of this layer:
+
+- **Only the `Read` tool.** The same file read another way gets no envelope:
+  `cat`, `head` or `grep` through `Bash`, and the `Grep` tool.
+- **Non-text reads get the label only.** An image, a PDF read natively or a
+  notebook has no text field to wrap; the label is still written (with the
+  result type), and the log record holds no payload, so no base64.
+- **Other download locations depend on the operator list.** The built-in
+  entries cover only the two playwright output folders; a file written
+  elsewhere (`curl -o page.html`, a script's output folder) is covered only
+  once that folder is in `UNTRUSTED_READ_DIRS` or `store/untrusted-read-dirs.json`.
 
 ### The shape rule, and the silent fallback behind it
 

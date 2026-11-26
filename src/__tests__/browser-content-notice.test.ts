@@ -636,12 +636,34 @@ describe('browser-content-notice (Read of a saved external file)', () => {
     expect(notice(runRead(join(dir, 'a', '..', '.playwright-mcp', 'snap.yml'), textRead('x')))).toContain('[UNTRUSTED-CONTENT tool=Read')
   })
 
-  it('skips an image read: nothing to envelope, and the log must not hold base64', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'bcn-img-'))
-    const run = runRead(join(dir, '.playwright-mcp', 'shot.png'), { type: 'image', file: { base64: 'AAAA', type: 'image/png' } })
+  it('wraps a snapshot of the per-agent browser under <install root>/store/agent-browser/', () => {
+    // agent-browser.ts starts the playwright MCP with --output-dir store/agent-browser/<agent>/mcp-out
+    const repoRoot = join(dirname(HOOK), '..', '..')
+    const run = runRead(join(repoRoot, 'store', 'agent-browser', 'samu', 'mcp-out', 'page-1.yml'), textRead(INJ))
     expect(run.status).toBe(0)
-    expect(run.stdout.trim()).toBe('')
-    expect(existsSync(run.logPath)).toBe(false)
+    expect(notice(run)).toContain('[UNTRUSTED-CONTENT tool=Read src=file:page-1.yml')
+    expect(replacement(run).file.content).toMatch(/^<untrusted source="Read:file:page-1.yml"/)
+    // anchored at the install root: the same folder names elsewhere are an ordinary Read
+    const elsewhere = mkdtempSync(join(tmpdir(), 'bcn-ab-'))
+    expect(runRead(join(elsewhere, 'store', 'agent-browser', 'samu', 'mcp-out', 'page-1.yml'), textRead(INJ)).stdout.trim()).toBe('')
+  })
+
+  it('labels a non-text read (image, native PDF) without an envelope, and the log holds no base64', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bcn-img-'))
+    for (const [file, resp, kind] of [
+      ['shot.png', { type: 'image', file: { base64: 'QUFBQUJBU0U2NA==', type: 'image/png' } }, 'image'],
+      ['doc.pdf', { type: 'pdf', file: { base64: 'QUFBQUJBU0U2NA==', originalSize: 10 } }, 'pdf'],
+    ] as const) {
+      const run = runRead(join(dir, '.playwright-mcp', file), resp)
+      expect(run.status).toBe(0)
+      const out = notice(run)
+      expect(out).toContain(`[UNTRUSTED-CONTENT tool=Read src=file:${file}`)
+      expect(out).toContain(`non-text content (type=${kind})`)
+      expect(JSON.parse(run.stdout).hookSpecificOutput.updatedToolOutput).toBeUndefined()
+      const log = readFileSync(run.logPath, 'utf-8')
+      expect(log).not.toContain('QUFBQUJBU0U2NA')
+      expect(JSON.parse(log.trim()).envelope_attempted).toBe(`label-only-${kind}`)
+    }
   })
 
   it('exits 0 on a malformed Read payload', () => {
