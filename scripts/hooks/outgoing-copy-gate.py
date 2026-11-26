@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 # --- what counts as an email send -------------------------------------------
 # KAPUHATOKOR822 (2026-08-22, NEGY hamis pozitiv egy delutanon, HAROM
@@ -1355,6 +1356,12 @@ def _head_is_send(toks, depth: int) -> bool:
 # The Resend rule above keeps its own method verdict on its host for curl, wget and http. A URL the line only names in
 # a file (curl -K, wget -i) is read in by _url_file_words (MAILURLFILE1118). Mirrored in email-send-gate.mjs
 # (inlineMailApiSends); the `inline` cases of mail-api-send-cases.json bind the two twins.
+# CURLMAILAPI1118: the URL is read the way the client sends it. The host: %-escapes decoded (a %2E dot, a %3A443 port),
+# the IDN dot forms and a soft hyphen, NFKC (a circled or full-width letter); a regional SendGrid host is SendGrid; a
+# scheme followed by one, three or backslash separators. Graph's namespaced action (microsoft.graph.sendMail) is its
+# short name. Option values are per client (wget -H, httpie --json take none). A curl glob in the scheme, host or path that
+# expands onto a mail-only API host (or a Graph send path) is a send; an invalid glob or one past 64 URLs is judged as
+# written (stated limit). The `CURLMAILAPI1118` cases of send-invocation-cases.json bind the two twins.
 _HTTP_CLIENT = re.compile(r"^(?:curl|wget|https?|xhs?)$", re.I)
 # (provider, host pattern on the normalised host, path prefix a shared host needs, read pattern, send pattern)
 _SEG = r"(?:/[^/]+)"
@@ -1366,7 +1373,7 @@ _MAIL_API_HOSTS = (
      re.compile(r"^/gmail/v1/users/[^/]+" + _SEG + r"*$"),
      re.compile(r"/users/[^/]+/(?:messages|drafts)/send$|/batch/gmail(?:/v1)?$")),
     ("resend", re.compile(r"api\.resend\.com"), None, re.compile(r"^" + _SEG + r"+$"), re.compile(r"/emails(?:/batch)?$")),
-    ("sendgrid", re.compile(r"api\.sendgrid\.com"), None, re.compile(r"^/v3" + _SEG + r"*$"), re.compile(r"/v3/mail/send$")),
+    ("sendgrid", re.compile(r"api(?:\.[a-z0-9-]+)?\.sendgrid\.com"), None, re.compile(r"^/v3" + _SEG + r"*$"), re.compile(r"/v3/mail/send$")),
     ("mailgun", re.compile(r"(?:[a-z0-9-]+\.)*mailgun\.net"), None, re.compile(r"^/v[345]" + _SEG + r"*$"),
      re.compile(r"/v3/[^/]+/messages(?:\.mime)?$")),
     ("postmark", re.compile(r"api\.postmarkapp\.com"), None, re.compile(r"^" + _SEG + r"+$"),
@@ -1379,15 +1386,17 @@ _MAIL_API_HOSTS = (
      re.compile(r"/v3/smtp/email$")),
 )
 _GRAPH_HOST = re.compile(_GRAPH_HOSTS)
-_GRAPH_SEND_PATH = re.compile(r"/(?:me|users/[^/]+)/(?:sendMail|messages/[^/]+/(?:send|reply|replyAll|forward))$", re.I)
+_GRAPH_SEND_PATH = re.compile(r"/(?:me|users/[^/]+)/(?:microsoft\.graph\.)?(?:sendMail|messages/[^/]+/(?:microsoft\.graph\.)?"
+                              r"(?:send|reply|replyAll|forward))$", re.I)
 # the line carries a mail-only API host (Graph is not one)
 _MAIL_API_HOST = re.compile(r"gmail\.googleapis\.com|googleapis\.com(?::[0-9]+)?/(?:upload/|batch/)?gmail(?:/|\b)|api\.resend\.com"
-                            r"|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com|email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com"
+                            r"|api\.(?:[a-z0-9-]+\.)?sendgrid\.com|mailgun\.net|api\.postmarkapp\.com|email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com"
                             r"|api\.mailjet\.com|api\.(?:brevo|sendinblue)\.com", re.I)
-_URL_WORD = re.compile(r"^(?:([A-Za-z][A-Za-z0-9+.-]*)://)?([^/?#]*)([^?#]*)(.*)$", re.S)
-_URL_START = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://|[$`]")
+_URL_WORD = re.compile(r"^(?:((?:[Hh][Tt][Tt][Pp][Ss]?(?=:[/\\]))|(?:[A-Za-z][A-Za-z0-9+.-]*(?=://))):[/\\]+)?"
+                       r"([^/?#]*)([^?#]*)(.*)$", re.S)
+_URL_START = re.compile(r"[Hh][Tt][Tt][Pp][Ss]?:[/\\]|[A-Za-z][A-Za-z0-9+.-]*://|[$`]")
 _HOST_HEADER = re.compile(r"^\s*host\s*:\s*(\S+)", re.I)
-_URL_VALUE_SHORT = frozenset("AbcCdDeEFHKmoOQrTuUwxXYyza")
+_URL_VALUE_SHORT = frozenset("AbcCdDeEFHKmoQrTuUwxXYyz")   # CURLMAILAPI1118: -O and -a take no value (man curl)
 _URL_VALUE_LONG = frozenset((
     "--header", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii", "--json", "--form",
     "--form-string", "--upload-file", "--user", "--output", "--output-document", "--user-agent", "--referer",
@@ -1395,26 +1404,128 @@ _URL_VALUE_LONG = frozenset((
     "--method", "--oauth2-bearer", "--proxy", "--cacert", "--cert", "--key", "--post-data", "--post-file",
     "--body-data", "--body-file", "--auth", "--password", "--http-user", "--http-password"))
 _LINE_MAIL_HOST = [False]   # set per top-level is_send_invocation call from the WHOLE command line
+# CURLMAILAPI1118: options that take a value differ per client. wget -H (span hosts) and --proxy take none, httpie and xh
+# --json / --form take none: the shared curl list skipped the URL after them. An unknown flag takes no value here, so
+# the word after it stays a URL candidate (the fail-closed direction).
+_WGET_VALUE_SHORT = frozenset("oaeiBtOTwQPUlARDIXn")
+_WGET_VALUE_LONG = frozenset((
+    "--output-document", "--output-file", "--append-output", "--post-data", "--post-file", "--body-data", "--body-file",
+    "--input-file", "--directory-prefix", "--tries", "--timeout", "--wait", "--execute", "--base", "--header",
+    "--user-agent", "--method", "--referer", "--user", "--password", "--http-user", "--http-password", "--load-cookies",
+    "--save-cookies", "--ca-certificate", "--certificate", "--private-key"))
+_HTTPIE_VALUE_SHORT = frozenset("aAops")
+_HTTPIE_VALUE_LONG = frozenset((
+    "--auth", "--auth-type", "--output", "--print", "--pretty", "--style", "--session", "--session-read-only",
+    "--timeout", "--max-redirects", "--cert", "--cert-key", "--verify", "--proxy", "--format-options",
+    "--response-charset", "--response-mime", "--boundary", "--ssl", "--ciphers", "--default-scheme"))
 # MAILURLFILE1118: a mail marker for a URL file that cannot be read and for an unparseable command: a mail-only API host
 # or a Microsoft Graph host (of any cloud) anywhere in the text
 _MAIL_MARKER = re.compile(_MAIL_API_HOST.pattern + "|" + _GRAPH_HOSTS, re.I)
 _LINE_CTX = [None, []]   # MAILURLFILE1118: the cwd of the top-level is_send_invocation call and every text it judged
 
 
-def _option_value_word(prev: str) -> bool:
-    """the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL"""
+def _option_value_word(prev: str, prog: str = "curl") -> bool:
+    """the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL.
+    CURLMAILAPI1118: for wget, httpie and xh a word is a value only when BOTH the shared (curl) list and the client's own
+    list say so: the client's list only takes words back from the value side (wget -H, httpie --json), it never skips a
+    word the shared list reads as a URL candidate."""
+    p = (prog or "curl").lower()
+    shared = _value_word_in(prev, _URL_VALUE_LONG, _URL_VALUE_SHORT)
+    if p == "wget":
+        return shared and _value_word_in(prev, _WGET_VALUE_LONG, _WGET_VALUE_SHORT)
+    if _HTTPIE.match(p):
+        return shared and _value_word_in(prev, _HTTPIE_VALUE_LONG, _HTTPIE_VALUE_SHORT)
+    return shared
+
+
+def _value_word_in(prev: str, longs, shorts) -> bool:
     if prev.startswith("--"):
-        return prev in _URL_VALUE_LONG
+        return prev in longs
     if len(prev) < 2 or not prev.startswith("-"):
         return False
     # a short cluster: the first letter that takes a value takes the rest of the word (-XPOST) or, last, the next word
-    k = next((j for j, ch in enumerate(prev[1:], 1) if ch in _URL_VALUE_SHORT), None)
+    k = next((j for j, ch in enumerate(prev[1:], 1) if ch in shorts), None)
     return k == len(prev) - 1
 
 
 def _norm_host(auth: str) -> str:
-    # EVALXARGSMAIL1126 (Revizor M3): blanks around the host (a tab or a space before the path) leave it
-    return re.sub(r":[0-9]*$", "", auth.rsplit("@", 1)[-1].strip()).lower().rstrip(".")
+    """CURLMAILAPI1118: the host as the client resolves it: %-escapes decoded (a %2E dot, a %3A443 port), userinfo and
+    port cut, the IDN dot forms (U+3002, U+FF0E, U+FF61) a dot, a soft hyphen dropped, NFKC (a circled or full-width
+    letter), lower case, trailing dots cut; blanks around the host trimmed (EVALXARGSMAIL1126, Revizor M3)"""
+    host = re.sub(r"%([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), auth)
+    host = re.sub("[\u3002\uff0e\uff61]", ".", host).replace("\u00ad", "")
+    host = unicodedata.normalize("NFKC", host)
+    return re.sub(r":[0-9]*$", "", host.rsplit("@", 1)[-1].strip()).lower().rstrip(".")
+
+
+_GLOB_LIMIT = 64
+
+
+def _curl_glob_expand(t: str):
+    """CURLMAILAPI1118: ("ok", urls) with the URLs a curl glob ({a,b}, [a-c], [1-3], [1-9:2]) stands for; ("bad", None)
+    when it is no valid curl glob (curl refuses the URL, or sends it literally with -g); ("big", None) past the limit.
+    An IPv6-shaped bracket ([::1]) is kept as it stands."""
+    parts, i, n = [[""]], 0, len(t)
+    while i < n:
+        ch = t[i]
+        if ch == "{":
+            j = t.find("}", i)
+            if j < 0:
+                return "bad", None
+            parts.append(t[i + 1:j].split(","))
+            i = j + 1
+            continue
+        if ch == "[":
+            j = t.find("]", i)
+            if j < 0:
+                return "bad", None
+            inner = t[i + 1:j]
+            if ":" in inner and re.fullmatch(r"[0-9A-Fa-f:.]*", inner):
+                parts.append([t[i:j + 1]])
+                i = j + 1
+                continue
+            m = re.fullmatch(r"([0-9]+)-([0-9]+)|([A-Za-z])-([A-Za-z])", inner.split(":", 1)[0])
+            if not m:
+                return "bad", None
+            lo, hi = (int(m.group(1)), int(m.group(2))) if m.group(1) is not None else (ord(m.group(3)), ord(m.group(4)))
+            if hi < lo:
+                return "bad", None
+            if hi - lo >= _GLOB_LIMIT:
+                return "big", None
+            parts.append([str(x) for x in range(lo, hi + 1)] if m.group(1) is not None else [chr(x) for x in range(lo, hi + 1)])
+            i = j + 1
+            continue
+        parts.append([ch])
+        i += 1
+    urls = [""]
+    for alts in parts:
+        urls = [u + a for u in urls for a in alts]
+        if len(urls) > _GLOB_LIMIT:
+            return "big", None
+    return "ok", urls
+
+
+def _glob_mail_host(u: str) -> bool:
+    """CURLMAILAPI1118: a curl glob in the scheme, host or path of URL word `u` (the query cannot change where it goes)
+    whose expansion reaches a mail-only API host, or a Graph host on a send path. A glob that reaches one is a send
+    there, as a glob on a literal mail API host always was. A glob that is no valid curl glob, or one past the limit,
+    is judged as the literal text (stated limit)."""
+    head = re.split(r"[?#]", u, maxsplit=1)[0]
+    if not re.search(r"[{\[]", re.sub(r"\[[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*\]", "", head)):
+        return False
+    status, alts = _curl_glob_expand(head)
+    if status != "ok":
+        return False
+    for a in alts:
+        scheme, auth, path, _query = _URL_WORD.match(a).groups()
+        if _nonliteral_value(auth):
+            continue
+        host, npath = _norm_host(auth), _norm_path(path)
+        if _mail_api_provider(host, npath) is not None:
+            return True
+        if _GRAPH_HOST.fullmatch(host) and _GRAPH_SEND_PATH.search(npath):
+            return True
+    return False
 
 
 def _norm_path(path: str) -> str:
@@ -1459,11 +1570,13 @@ def _inline_mail_api_sends(prog, rest) -> bool:
     host_header = _host_header(rest)
     cannot_tell = False
     for i, t in enumerate(rest):
-        if i and _option_value_word(rest[i - 1]):
+        if i and _option_value_word(rest[i - 1], prog):
             continue
         u = t[len("--url="):] if t.startswith("--url=") else t
         if re.search(r"\s", u) and not _URL_START.match(u):
             continue   # a header or a sentence; a URL or a variable word may hold a substitution with a space
+        if _glob_mail_host(u):
+            return True
         scheme, auth, path, query = _URL_WORD.match(u).groups()
         npath = _norm_path(path)
         if _nonliteral_value(auth):

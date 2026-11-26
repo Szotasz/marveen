@@ -1320,7 +1320,7 @@ const MAIL_API_HOSTS = [
   [/^gmail\.googleapis\.com$/, null, GMAIL_READ, GMAIL_SEND],
   [/^(?:www\.)?googleapis\.com$/, /^\/(?:upload\/|batch\/)?gmail(?:\/|$)/, GMAIL_READ, GMAIL_SEND],
   [/^api\.resend\.com$/, null, new RegExp('^' + SEG + '+$'), /\/emails(?:\/batch)?$/],
-  [/^api\.sendgrid\.com$/, null, new RegExp(String.raw`^\/v3` + SEG + '*$'), /\/v3\/mail\/send$/],
+  [/^api(?:\.[a-z0-9-]+)?\.sendgrid\.com$/, null, new RegExp(String.raw`^\/v3` + SEG + '*$'), /\/v3\/mail\/send$/],
   [/^(?:[a-z0-9-]+\.)*mailgun\.net$/, null, new RegExp(String.raw`^\/v[345]` + SEG + '*$'), /\/v3\/[^/]+\/messages(?:\.mime)?$/],
   [/^api\.postmarkapp\.com$/, null, new RegExp('^' + SEG + '+$'), /\/email(?:\/batch|\/withTemplate|\/batchWithTemplates)?$/],
   [/^email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com$/, null, new RegExp(String.raw`^\/v2\/email` + SEG + '*$'),
@@ -1329,13 +1329,14 @@ const MAIL_API_HOSTS = [
   [/^api\.(?:brevo|sendinblue)\.com$/, null, new RegExp(String.raw`^\/v3` + SEG + '*$'), /\/v3\/smtp\/email$/],
 ]
 const GRAPH_HOST = new RegExp(`^(?:${GRAPH_HOSTS})$`)
-const GRAPH_SEND_PATH = /\/(?:me|users\/[^/]+)\/(?:sendMail|messages\/[^/]+\/(?:send|reply|replyAll|forward))$/i
+const GRAPH_SEND_PATH = /\/(?:me|users\/[^/]+)\/(?:microsoft\.graph\.)?(?:sendMail|messages\/[^/]+\/(?:microsoft\.graph\.)?(?:send|reply|replyAll|forward))$/i
 // the line carries a mail-only API host (Graph is not one)
-const MAIL_API_HOST = /gmail\.googleapis\.com|googleapis\.com(?::[0-9]+)?\/(?:upload\/|batch\/)?gmail(?:\/|\b)|api\.resend\.com|api\.sendgrid\.com|mailgun\.net|api\.postmarkapp\.com|email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com|api\.mailjet\.com|api\.(?:brevo|sendinblue)\.com/i
-const URL_WORD = /^(?:([A-Za-z][A-Za-z0-9+.-]*):\/\/)?([^/?#]*)([^?#]*)([\s\S]*)$/
-const URL_START = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|[$`])/
+const MAIL_API_HOST = /gmail\.googleapis\.com|googleapis\.com(?::[0-9]+)?\/(?:upload\/|batch\/)?gmail(?:\/|\b)|api\.resend\.com|api\.(?:[a-z0-9-]+\.)?sendgrid\.com|mailgun\.net|api\.postmarkapp\.com|email(?:-fips)?\.[a-z0-9-]+\.amazonaws\.com|api\.mailjet\.com|api\.(?:brevo|sendinblue)\.com/i
+// CURLMAILAPI1118: :/ :/// :\\ after http or https; any other word needs :// (a schemeless host:/path keeps its host)
+const URL_WORD = /^(?:((?:[Hh][Tt][Tt][Pp][Ss]?(?=:[/\\]))|(?:[A-Za-z][A-Za-z0-9+.-]*(?=:\/\/))):[/\\]+)?([^/?#]*)([^?#]*)([\s\S]*)$/
+const URL_START = /^(?:[Hh][Tt][Tt][Pp][Ss]?:[/\\]|[A-Za-z][A-Za-z0-9+.-]*:\/\/|[$`])/
 const HOST_HEADER = /^\s*host\s*:\s*(\S+)/i
-const URL_VALUE_SHORT = 'AbcCdDeEFHKmoOQrTuUwxXYyza'
+const URL_VALUE_SHORT = 'AbcCdDeEFHKmoQrTuUwxXYyz' // CURLMAILAPI1118: -O and -a take no value (man curl)
 const URL_VALUE_LONG = new Set([
   '--header', '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii', '--json', '--form',
   '--form-string', '--upload-file', '--user', '--output', '--output-document', '--user-agent', '--referer',
@@ -1343,23 +1344,110 @@ const URL_VALUE_LONG = new Set([
   '--method', '--oauth2-bearer', '--proxy', '--cacert', '--cert', '--key', '--post-data', '--post-file',
   '--body-data', '--body-file', '--auth', '--password', '--http-user', '--http-password'])
 let lineMailHost = false // set per top-level isSendInvocation call from the WHOLE command line
+// CURLMAILAPI1118: options that take a value differ per client (_option_value_word in the python twin)
+const WGET_VALUE_LONG = new Set([
+  '--output-document', '--output-file', '--append-output', '--post-data', '--post-file', '--body-data', '--body-file',
+  '--input-file', '--directory-prefix', '--tries', '--timeout', '--wait', '--execute', '--base', '--header',
+  '--user-agent', '--method', '--referer', '--user', '--password', '--http-user', '--http-password', '--load-cookies',
+  '--save-cookies', '--ca-certificate', '--certificate', '--private-key'])
+const HTTPIE_VALUE_SHORT = 'aAops'
+const HTTPIE_VALUE_LONG = new Set([
+  '--auth', '--auth-type', '--output', '--print', '--pretty', '--style', '--session', '--session-read-only',
+  '--timeout', '--max-redirects', '--cert', '--cert-key', '--verify', '--proxy', '--format-options',
+  '--response-charset', '--response-mime', '--boundary', '--ssl', '--ciphers', '--default-scheme'])
 // MAILURLFILE1118: a mail marker for a URL file that cannot be read and for an unparseable command: a mail-only API host
 // or a Microsoft Graph host (of any cloud) anywhere in the text
 const MAIL_MARKER = new RegExp(MAIL_API_HOST.source + '|' + GRAPH_HOSTS, 'i')
 let lineCtx = { cwd: undefined, texts: [] } // MAILURLFILE1118: the cwd of the top-level isSendInvocation call and every text it judged
 
 // the word after `prev` is that option's value (a header, a body, a user, an output file), not a URL
-function optionValueWord(prev) {
-  if (prev.startsWith('--')) return URL_VALUE_LONG.has(prev)
+// CURLMAILAPI1118: for wget, httpie and xh a word is a value only when BOTH the shared (curl) list and the client's own
+// list say so (_option_value_word in the python twin)
+function optionValueWord(prev, prog = 'curl') {
+  const p = (prog || 'curl').toLowerCase()
+  const shared = valueWordIn(prev, URL_VALUE_LONG, URL_VALUE_SHORT)
+  if (p === 'wget') return shared && valueWordIn(prev, WGET_VALUE_LONG, WGET_VALUE_SHORT)
+  if (HTTPIE.test(p)) return shared && valueWordIn(prev, HTTPIE_VALUE_LONG, HTTPIE_VALUE_SHORT)
+  return shared
+}
+
+function valueWordIn(prev, longs, shorts) {
+  if (prev.startsWith('--')) return longs.has(prev)
   if (prev.length < 2 || !prev.startsWith('-')) return false
   // a short cluster: the first letter that takes a value takes the rest of the word (-XPOST) or, last, the next word
   let k = -1
-  for (let j = 1; j < prev.length; j++) if (URL_VALUE_SHORT.includes(prev[j])) { k = j; break }
+  for (let j = 1; j < prev.length; j++) if (shorts.includes(prev[j])) { k = j; break }
   return k === prev.length - 1
 }
 
-// EVALXARGSMAIL1126 (Revizor M3): blanks around the host (a tab or a space before the path) leave it
-const normHost = (auth) => auth.split('@').pop().trim().replace(/:[0-9]*$/, '').toLowerCase().replace(/\.+$/, '')
+// CURLMAILAPI1118: the host as the client resolves it (_norm_host in the python twin); blanks trimmed (EVALXARGSMAIL1126)
+const normHost = (auth) => auth.replace(/%([0-9A-Fa-f]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)))
+  .replace(/[\u3002\uff0e\uff61]/g, '.').replace(/\u00ad/g, '').normalize('NFKC')
+  .split('@').pop().trim().replace(/:[0-9]*$/, '').toLowerCase().replace(/\.+$/, '')
+
+const GLOB_LIMIT = 64
+
+// CURLMAILAPI1118: ['ok', urls] | ['bad', null] | ['big', null] (_curl_glob_expand in the python twin)
+function curlGlobExpand(t) {
+  const parts = [['']]
+  let i = 0
+  while (i < t.length) {
+    const ch = t[i]
+    if (ch === '{') {
+      const j = t.indexOf('}', i)
+      if (j < 0) return ['bad', null]
+      parts.push(t.slice(i + 1, j).split(','))
+      i = j + 1
+      continue
+    }
+    if (ch === '[') {
+      const j = t.indexOf(']', i)
+      if (j < 0) return ['bad', null]
+      const inner = t.slice(i + 1, j)
+      if (inner.includes(':') && /^[0-9A-Fa-f:.]*$/.test(inner)) { parts.push([t.slice(i, j + 1)]); i = j + 1; continue }
+      const m = /^(?:([0-9]+)-([0-9]+)|([A-Za-z])-([A-Za-z]))$/.exec(inner.split(':')[0])
+      if (!m) return ['bad', null]
+      const num = m[1] !== undefined
+      const lo = num ? parseInt(m[1], 10) : m[3].charCodeAt(0)
+      const hi = num ? parseInt(m[2], 10) : m[4].charCodeAt(0)
+      if (hi < lo) return ['bad', null]
+      if (hi - lo >= GLOB_LIMIT) return ['big', null]
+      const alts = []
+      for (let x = lo; x <= hi; x++) alts.push(num ? String(x) : String.fromCharCode(x))
+      parts.push(alts)
+      i = j + 1
+      continue
+    }
+    parts.push([ch])
+    i++
+  }
+  let urls = ['']
+  for (const alts of parts) {
+    const next = []
+    for (const u of urls) for (const a of alts) next.push(u + a)
+    urls = next
+    if (urls.length > GLOB_LIMIT) return ['big', null]
+  }
+  return ['ok', urls]
+}
+
+// CURLMAILAPI1118: a curl glob in the scheme, host or path whose expansion reaches a mail-only API host, or a Graph host
+// on a send path (_glob_mail_host in the python twin)
+function globMailHost(u) {
+  const head = u.split(/[?#]/)[0]
+  if (!/[{[]/.test(head.replace(/\[[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*\]/g, ''))) return false
+  const [status, alts] = curlGlobExpand(head)
+  if (status !== 'ok') return false
+  for (const a of alts) {
+    const [, , auth, path] = URL_WORD.exec(a)
+    if (nonliteralValue(auth)) continue
+    const host = normHost(auth)
+    const npath = normPath(path)
+    if (mailApiProvider(host, npath) !== null) return true
+    if (GRAPH_HOST.test(host) && GRAPH_SEND_PATH.test(npath)) return true
+  }
+  return false
+}
 
 // %-escapes decoded once, empty and `.` segments dropped, `..` resolved
 function normPath(path) {
@@ -1399,10 +1487,11 @@ function inlineMailApiSends(prog, rest) {
   const headerHost = hostHeader(rest)
   let cannotTell = false
   for (let i = 0; i < rest.length; i++) {
-    if (i && optionValueWord(rest[i - 1])) continue
+    if (i && optionValueWord(rest[i - 1], prog)) continue
     const t = rest[i]
     const u = t.startsWith('--url=') ? t.slice('--url='.length) : t
     if (/\s/.test(u) && !URL_START.test(u)) continue // a header or a sentence; a URL or a variable word may hold a substitution with a space
+    if (globMailHost(u)) return true
     const [, scheme, auth, path, query] = URL_WORD.exec(u)
     const npath = normPath(path)
     if (nonliteralValue(auth)) {
