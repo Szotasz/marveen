@@ -1761,13 +1761,10 @@ export function initDatabase(dbPathOverride?: string): void {
   // a PROVIDER-INDEPENDENT delivery marker. Until this column
   // existed the only record that an approval request had actually reached the
   // owner was a log line ('approval owner notification sent'), and the
-  // telegram_message_id that used to stand in for it carried a value on
-  // exactly two rows in this install's whole history -- both from the Telegram
-  // era. Measured 2026-10-07 on ten rows: from 13:16 onward every row was
-  // NULL, so a DELIVERED request, a FAILED one and an EXPIRED one were
-  // externally indistinguishable, and a sub-agent had already built a rule on
-  // that coincidence. notified_at is written by whichever channel layer
-  // succeeded, so it stays true across providers.
+  // telegram_message_id that stands in for it is filled on the Telegram branch
+  // only. On any other channel a DELIVERED request, a FAILED one and an EXPIRED
+  // one read the same from the row. notified_at is written by whichever channel
+  // layer succeeded, so it stays true across providers.
   try { db.exec('ALTER TABLE approvals ADD COLUMN notified_at INTEGER') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
   // f2c5edb0: the gate only sees a send it can read in the command text, so a

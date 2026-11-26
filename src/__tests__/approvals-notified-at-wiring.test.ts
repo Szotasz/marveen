@@ -21,6 +21,31 @@ vi.mock('../web/telegram.js', () => ({
   sendTelegramMessage: async () => { if (telegramFails) throw new Error('telegram down'); return 42 },
 }))
 
+// The Teams card and the Slack reaction/reply prompt are the two branches that return before the plain send: each is
+// switched on and given a route here, and its own post result is the only thing that decides.
+let teamsCard = { on: false, posted: true }
+vi.mock('../web/approval-teams-card.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/approval-teams-card.js')>()
+  return {
+    ...real,
+    teamsCardsOn: () => teamsCard.on,
+    teamsCardRoute: () => ({ ok: true }),
+    postApprovalCard: async () => teamsCard.posted,
+  }
+})
+
+let prompt = { on: false, posted: true }
+vi.mock('../web/approval-slack-route.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/approval-slack-route.js')>()
+  return {
+    ...real,
+    reactionsOn: () => prompt.on,
+    repliesOn: () => false,
+    reactionRoute: async () => ({ ok: true }),
+    postReactionPrompt: async () => prompt.posted,
+  }
+})
+
 let provider = 'telegram'
 vi.mock('../config.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../config.js')>()
@@ -42,7 +67,7 @@ vi.mock('../owner-chat.js', async (importOriginal) => {
 
 const { tryHandleApprovals } = await import('../web/routes/approvals.js')
 
-function fakePost(path: string, body: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
+function fakePost(path: string, body: unknown, auth?: RouteContext['auth']): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -56,16 +81,19 @@ function fakePost(path: string, body: unknown): { ctx: RouteContext; out: { stat
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path: url.pathname, method: 'POST', url } as RouteContext, out }
+  return { ctx: { req, res, path: url.pathname, method: 'POST', url, auth } as RouteContext, out }
 }
 
-async function request(): Promise<string> {
+// chatApprovedMessageId: the owner already said yes in the chat, so the row is born approved and the owner gets the
+// informative note. That path takes an owner credential, so the call is made as the owner's dashboard session.
+async function request(chatApprovedMessageId?: number): Promise<string> {
   const { ctx, out } = fakePost('/api/approvals', {
     agent_id: 'main-agent',
     category: 'email_send',
     action_description: 'Mail to x@example.com, subject: test',
     timeout_seconds: 600,
-  })
+    ...(chatApprovedMessageId != null ? { owner_approved_message_id: chatApprovedMessageId } : {}),
+  }, chatApprovedMessageId != null ? { kind: 'session', user: 'owner' } as RouteContext['auth'] : undefined)
   await tryHandleApprovals(ctx)
   await new Promise((r) => setTimeout(r, 0))
   expect(out.status).toBe(201)
@@ -83,6 +111,8 @@ describe('notified_at is stamped by the branch that delivered, and only then', (
     ownerSent = { sent: true }
     telegramFails = false
     provider = 'telegram'
+    teamsCard = { on: false, posted: true }
+    prompt = { on: false, posted: true }
   })
 
   it('Slack DM delivered: stamped', async () => {
@@ -112,5 +142,54 @@ describe('notified_at is stamped by the branch that delivered, and only then', (
     expect(notifiedAt(await request())).toEqual(expect.any(Number))
     ownerSent = { sent: false, reason: 'no-token' }
     expect(notifiedAt(await request())).toBeNull()
+  })
+
+  // In the two cases below every later branch is made to fail, so only the branch under test can stamp the row.
+  it('Teams card posted: stamped; card failed: stays NULL', async () => {
+    provider = 'teams'
+    teamsCard = { on: true, posted: true }
+    slack = { attempted: false, sent: false }
+    ownerSent = { sent: false, reason: 'send-failed' }
+    expect(notifiedAt(await request())).toEqual(expect.any(Number))
+    teamsCard = { on: true, posted: false }
+    expect(notifiedAt(await request())).toBeNull()
+  })
+
+  it('Slack reaction/reply prompt posted: stamped; prompt failed: stays NULL', async () => {
+    prompt = { on: true, posted: true }
+    slack = { attempted: false, sent: false }
+    telegramFails = true
+    expect(notifiedAt(await request())).toEqual(expect.any(Number))
+    prompt = { on: true, posted: false }
+    expect(notifiedAt(await request())).toBeNull()
+  })
+})
+
+describe('an informative notice (the owner already approved in the chat) never stamps', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+    slack = { attempted: true, sent: true }
+    ownerSent = { sent: true }
+    telegramFails = false
+    provider = 'telegram'
+    teamsCard = { on: false, posted: true }
+    prompt = { on: false, posted: true }
+  })
+
+  it('delivered on the Slack DM branch: stays NULL', async () => {
+    const id = await request(4001)
+    expect(getApproval(id)!.status).toBe('approved')
+    expect(notifiedAt(id)).toBeNull()
+  })
+
+  it('delivered on the Telegram branch: stays NULL', async () => {
+    slack = { attempted: false, sent: false }
+    expect(notifiedAt(await request(4002))).toBeNull()
+  })
+
+  it('delivered on the provider path: stays NULL', async () => {
+    slack = { attempted: false, sent: false }
+    provider = 'discord'
+    expect(notifiedAt(await request(4003))).toBeNull()
   })
 })
