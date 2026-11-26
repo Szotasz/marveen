@@ -122,8 +122,11 @@ describe('HOOKISOAGENTS1105: the agents\' envelope hook runs isolated, the retir
     const own = { type: 'command', command: 'python3 "/x/own-audit.py"' }
     const s = { hooks: { PostToolUse: [{ matcher: 'mcp__playwright__browser_.*|WebSearch|WebFetch', hooks: [{ type: 'command', command: docs, timeout: 10 }, own] }] as G[] } }
     expect(injectWebSearchEnvelope(s)).toBe(true)
-    expect(s.hooks.PostToolUse).toEqual([{ matcher: 'mcp__playwright__browser_.*|WebSearch|WebFetch', hooks: [
-      { type: 'command', command: 'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py"', timeout: 10 }, own] }])
+    // the operator group stays as it was (upgraded in place); UNTRUSTEDREAD1126 adds a managed group for Read only,
+    // the one managed tool that group does not cover
+    expect(s.hooks.PostToolUse[0]).toEqual({ matcher: 'mcp__playwright__browser_.*|WebSearch|WebFetch', hooks: [
+      { type: 'command', command: 'python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py"', timeout: 10 }, own] })
+    expect(s.hooks.PostToolUse.map((g) => g.matcher)).toEqual(['mcp__playwright__browser_.*|WebSearch|WebFetch', 'Read'])
     expect(injectWebSearchEnvelope(s)).toBe(false)
   })
 

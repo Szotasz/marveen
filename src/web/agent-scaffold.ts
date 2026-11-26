@@ -2646,13 +2646,21 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // gate. MCPUNTRUSTED1114: the catalog's mail, calendar, Drive and browser MCP
 // servers return text anyone can author (an email, an invite, a shared doc, a
 // page), so the managed group covers them too; other MCP servers stay
-// operator-wired (the doc shows how).
+// operator-wired (the doc shows how). UNTRUSTEDREAD1126: Read is in the group too, because a browser snapshot or a
+// download saved to disk is the same external text read back from a file; the hook acts only on files in an
+// untrusted directory (`.playwright-mcp` and the operator's list) and returns silently on every other Read.
 export const WEBSEARCH_ENVELOPE_SCRIPT = 'browser-content-notice.py'
-export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
+export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch', 'Read'] as const
 export const ENVELOPE_MCP_SERVERS = ['gmail', 'gmail-v2', 'google-calendar', 'google-drive', 'playwright', 'stripe'] as const
-export const WEBSEARCH_ENVELOPE_MATCHER = `${ENVELOPE_TOOLS.join('|')}|mcp__(${ENVELOPE_MCP_SERVERS.join('|')})__.*`
+// Read is anchored: the matcher is an unanchored regex (it holds `(` and `.*`), and a bare `Read` alternative would
+// also fire on any tool whose name merely contains it (an MCP `...ReadFile`), which the hook would then wrap as a
+// web payload.
+export const WEBSEARCH_ENVELOPE_MATCHER = `WebSearch|WebFetch|^Read$|mcp__(${ENVELOPE_MCP_SERVERS.join('|')})__.*`
 // The managed matcher before MCPUNTRUSTED1114: still ours, so it is migrated, not kept as an operator group.
 const LEGACY_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
+// UNTRUSTEDREAD1126: the managed matcher before Read joined it. Also ours: an existing sub-agent's group is replaced
+// in place by the new one, not kept beside it as an operator group (which would leave two envelope groups).
+const PRE_READ_ENVELOPE_MATCHER = 'WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright|stripe)__.*'
 
 // A settings.json hook command, not text in a CLAUDE.md: after a host move the
 // startup migration (ensureWebSearchEnvelope) sees the command no longer wired
@@ -2707,7 +2715,7 @@ export function injectWebSearchEnvelope(existing: Record<string, unknown>): bool
   const kept: G[] = []
   for (const g of prev) {
     const managed = typeof g?.matcher === 'string' && (
-      g.matcher === WEBSEARCH_ENVELOPE_MATCHER || g.matcher === LEGACY_ENVELOPE_MATCHER ||
+      g.matcher === WEBSEARCH_ENVELOPE_MATCHER || g.matcher === LEGACY_ENVELOPE_MATCHER || g.matcher === PRE_READ_ENVELOPE_MATCHER ||
       // a single envelope tool name; this also migrates the old WebSearch-only group
       (ENVELOPE_TOOLS as readonly string[]).includes(g.matcher))
     if (!managed || !Array.isArray(g.hooks)) {
