@@ -58,6 +58,21 @@ describe('withBoardColleagues', () => {
     expect(out.find((e) => e.name === 'Fekete Réka')?.aliases).toEqual(['reka'])
   })
 
+  it('a person whose id equals an agent id gets an entry of their own, the agent stays clean', () => {
+    const clash = normaliseBoardAccess({
+      enabled: true,
+      people: { reka: { name: 'Kiss Réka', assignees: ['Kiss Réka', 'reka'] } },
+      agents: {},
+    })
+    const out = withBoardColleagues(base, clash)
+    const agent = out.find((e) => e.name === 'reka')
+    expect(agent?.type).toBe('agent')
+    expect(agent?.aliases).toBeUndefined()
+    const person = out.find((e) => e.name === 'Kiss Réka')
+    expect(person?.type).toBe('colleague')
+    expect(person?.aliases).toEqual(['reka'])
+  })
+
   it('leaves the list untouched when board access is off or broken', () => {
     const off = normaliseBoardAccess({ enabled: false, people: { a: { name: 'A' } } })
     expect(withBoardColleagues(base, off)).toEqual(base)
