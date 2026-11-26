@@ -488,6 +488,44 @@ def _basename(tok: str) -> str:
     return tok.rsplit("/", 1)[-1]
 
 
+def _develop_comment_starts(cmd: str) -> set:
+    """LINECONT1126 (Marveen 5755, structural guard): the indices where develop's mask (before LINECONT1126, unchanged
+    algorithm) starts a comment. _mask_subshell_markers drops a comment ONLY where this develop rule AND the new bash rule
+    both say comment, so the comment handling can never drop more text than develop did: by construction it cannot weaken
+    the gate against develop, the new rule can only keep more text. The JS twin carries the same function
+    (developCommentStarts): develop's JS twin dropped no comment at all, the python rule is the one develop rule there was."""
+    starts = set()
+    q = None
+    i, n = 0, len(cmd)
+    parens = []
+    subst_close_at = -1
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                i += 2; continue
+            if ch == q:
+                q = None
+            i += 1; continue
+        if ch in "'\"":
+            q = ch; i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            i += 2; continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|(" or (cmd[i - 1] == ")" and subst_close_at != i - 1)):
+            starts.add(i)
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s"); i += 2; continue
+        if ch == "(":
+            parens.append("p")
+        elif ch == ")" and parens and parens.pop() == "s":
+            subst_close_at = i
+        i += 1
+    return starts
+
+
 def _mask_subshell_markers(cmd: str) -> str:
     """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
     szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom).
@@ -503,6 +541,8 @@ def _mask_subshell_markers(cmd: str) -> str:
     i, n = 0, len(cmd)
     parens = []  # Bence 69701: "s" for an open $( , "p" for a plain ( -- which ) closes a command substitution
     subst_close_at = -1
+    plain_close_at = -1  # Revizor 5751 J3: the index of the last ) that closed a subshell or (( ))
+    dev_starts = _develop_comment_starts(cmd)   # LINECONT1126 (Marveen 5755): a comment is dropped only where develop dropped one too
     prev = -1         # LINECONT1126: the index of the last character that is not part of a removed line continuation
     prev_esc = False  # LINECONT1126 (Revizor 5744): that character was escaped (`\ #`, `\;#`): it ends no word
     braces = 0        # LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
@@ -516,6 +556,8 @@ def _mask_subshell_markers(cmd: str) -> str:
             if ch == q[-1]:
                 q = None
             out.append(ch); prev = i; prev_esc = False; i += 1; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "$":   # Revizor 5751 J2: $$ is the pid, so $$'a\' is $$ + a plain '...'
+            out.append("$$"); prev = i + 1; prev_esc = False; i += 2; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
             q = "$'"; out.append("$'"); prev = i + 1; prev_esc = False; i += 2; continue
         if ch in "'\"":
@@ -532,12 +574,14 @@ def _mask_subshell_markers(cmd: str) -> str:
         # a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701)
         # LINECONT1126: the character before is the last one that was not removed (`a\<nl>#b` is the one word a#b), it must
         # not be escaped, and only bash's own blanks count (no CR, FF, VT or Unicode space: `a<CR># ; curl` runs curl)
-        if ch == "#" and not braces and (prev < 0 or (not prev_esc and (cmd[prev] in " \t\n;&|("
-                                                                       or (cmd[prev] == ")" and subst_close_at != prev)))):
+        if ch == "#" and i in dev_starts and not braces and (prev < 0 or (not prev_esc and (cmd[prev] in " \t\n;&|("
+                                                                       or (cmd[prev] == ")" and plain_close_at == prev)))):
+            # Revizor 5751 J3: after a ) only when it closes a subshell or (( )); never after a $( , a process
+            # substitution <( ) >( ) or an array assignment x=( ) -- there the # is part of the word, as in bash
             while i < n and cmd[i] != "\n":
                 i += 1
             continue
-        prev_esc = False
+        after_esc, prev_esc = prev_esc, False
         if ch == "\n" or ch == "`":
             out.append(";"); prev = i; i += 1; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
@@ -549,9 +593,14 @@ def _mask_subshell_markers(cmd: str) -> str:
         if ch == "}" and braces:
             braces -= 1
         if ch == "(":
-            parens.append("p")
-        elif ch == ")" and parens and parens.pop() == "s":
-            subst_close_at = i
+            # "x": a process substitution <( >( or an array assignment x=( / x+=( ; "p": a subshell or (( ))
+            parens.append("x" if prev >= 0 and not after_esc and cmd[prev] in "<>=" else "p")
+        elif ch == ")" and parens:
+            kind = parens.pop()
+            if kind == "s":
+                subst_close_at = i
+            elif kind == "p":
+                plain_close_at = i
         out.append(ch); prev = i; i += 1
     return "".join(out)
 
@@ -1243,8 +1292,8 @@ _FLEET_EXEMPT_BLOCK = re.compile(r"@|(?:^|[\s='\"(])~(?!/)|--b?cc\b")
 _FLEET_TOKEN_BLOCK = re.compile(r"--(?:cc?|bc{0,2})(?:=|\Z)|~(?!/)")   # on the DEQUOTED words: `--c""c`, `--\cc` are `--cc` to the program;
 # (v4.1, Merlin 34962) an argparse abbreviation (--c, --b, --bc) is --cc / --bcc to a default-argparse script: a send
 _AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
-_CONT_AFTER_TO = re.compile(r"--to?=?[ \t]*\"?\\\n")   # LINECONT1126: a backslash-newline right after the recipient flag
-# (also as the first thing in a double-quoted value, Revizor 5744 M2: develop's python twin read that as a send)
+_CONT_AFTER_TO = re.compile(r"--to?=?[ \t]*\"?[^\s\"]*\\\n")   # LINECONT1126: a backslash-newline right after the recipient
+# flag or anywhere inside its value, quoted or not (Revizor 5744 M2, 5751 M1: develop read all of these as a send)
 KNOWN_AGENTS_OVERRIDE = None   # the shared conformance list sets it (send-invocation-cases.json known_agents); None = the install
 _LINE_EXEMPT_OK = [False]      # set per top-level is_send_invocation call from the WHOLE command line
 

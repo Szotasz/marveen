@@ -747,7 +747,38 @@ const codeStringSends = (code, lang = null) => {
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
+// LINECONT1126 (Marveen 5755, structural guard; twin of _develop_comment_starts): the indices where develop's comment rule
+// starts a comment. Develop's JS twin dropped no comment at all; the one develop rule there was is the python twin's mask,
+// ported here unchanged. maskSubshellMarkers drops a comment ONLY where this develop rule AND the new bash rule both say
+// comment, so the comment handling can never drop more text than develop's rule did: by construction no weakening.
+export function developCommentStarts(cmd) {
+  const starts = new Set()
+  let q = null
+  const parens = []
+  let substCloseAt = -1
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { i++; continue }
+      if (ch === q) q = null
+      continue
+    }
+    if (ch === "'" || ch === '"') { q = ch; continue }
+    if (ch === '\\' && i + 1 < cmd.length) { i++; continue }
+    if (ch === '#' && (i === 0 || ' \t\n;&|('.includes(cmd[i - 1]) || (cmd[i - 1] === ')' && substCloseAt !== i - 1))) {
+      starts.add(i)
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+      continue
+    }
+    if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); i++; continue }
+    if (ch === '(') parens.push('p')
+    else if (ch === ')' && parens.length && parens.pop() === 's') substCloseAt = i
+  }
+  return starts
+}
+
 export function maskSubshellMarkers(cmd) {
+  const devStarts = developCommentStarts(cmd) // LINECONT1126 (Marveen 5755): a comment is dropped only where develop dropped one too
   let out = ''
   let q = null // null | "'" | '"' | "$'" (LINECONT1126: ANSI-C quoting, where \' does not close)
   let prev = -1 // LINECONT1126: the index of the last character that is not part of a removed line continuation
@@ -755,6 +786,7 @@ export function maskSubshellMarkers(cmd) {
   let braces = 0 // LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
   const parens = [] // 's' for an open $( , 'p' for a plain ( -- which ) closes a command substitution (python twin)
   let substCloseAt = -1
+  let plainCloseAt = -1 // Revizor 5751 J3: the index of the last ) that closed a subshell or (( ))
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]
     if (q) {
@@ -770,6 +802,8 @@ export function maskSubshellMarkers(cmd) {
       prevEsc = false
       continue
     }
+    // Revizor 5751 J2: $$ is the pid, so $$'a\' is $$ followed by a plain '...' (python twin)
+    if (ch === '$' && cmd[i + 1] === '$') { out += '$$'; prev = i + 1; prevEsc = false; i++; continue }
     if (ch === '$' && cmd[i + 1] === "'") { q = "$'"; out += "$'"; prev = i + 1; prevEsc = false; i++; continue }
     if (ch === "'" || ch === '"') { q = ch; out += ch; prev = i; prevEsc = false; continue }
     // LINECONT1126 (twin of _mask_subshell_markers): a backslash-newline is a line continuation, removed before words
@@ -782,19 +816,28 @@ export function maskSubshellMarkers(cmd) {
     }
     // a comment starts only where bash starts one (Revizor 5744 J1): after nothing, or after an UNESCAPED blank (space,
     // tab, newline only: no CR, FF, VT or Unicode space), ; & | ( or a ) that closes no $( ; never inside ${...}
-    if (ch === '#' && !braces && (prev < 0 || (!prevEsc && (' \t\n;&|('.includes(cmd[prev])
-      || (cmd[prev] === ')' && substCloseAt !== prev))))) {
+    if (ch === '#' && devStarts.has(i) && !braces && (prev < 0 || (!prevEsc && (' \t\n;&|('.includes(cmd[prev])
+      || (cmd[prev] === ')' && plainCloseAt === prev))))) {
+      // Revizor 5751 J3: after a ) only when it closes a subshell or (( )); never after a $( , a process substitution
+      // <( ) >( ) or an array assignment x=( ) -- there the # is part of the word, as in bash
       while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
       continue
     }
+    const afterEsc = prevEsc
     prevEsc = false
+    const before = prev
     prev = i
     if (ch === '\n' || ch === '`') { out += ';'; continue }
     if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); out += ';'; prev = i + 1; i++; continue }
     if (ch === '$' && cmd[i + 1] === '{') { braces++; out += '${'; prev = i + 1; i++; continue }
     if (ch === '}' && braces) braces--
-    if (ch === '(') parens.push('p')
-    else if (ch === ')' && parens.length && parens.pop() === 's') substCloseAt = i
+    // 'x': a process substitution <( >( or an array assignment x=( / x+=( ; 'p': a subshell or (( ))
+    if (ch === '(') parens.push(before >= 0 && !afterEsc && '<>='.includes(cmd[before]) ? 'x' : 'p')
+    else if (ch === ')' && parens.length) {
+      const kind = parens.pop()
+      if (kind === 's') substCloseAt = i
+      else if (kind === 'p') plainCloseAt = i
+    }
     out += ch
   }
   return out
@@ -1285,7 +1328,7 @@ function knownAgents() {
 // segment, the substitution-flattened form included. An unparseable line is not clean (fail-closed).
 function lineClean(cmd) {
   if (FLEET_EXEMPT_BLOCK.test(cmd)) return false
-  if (/--to?=?[ \t]*"?\\\n/.test(cmd)) return false // LINECONT1126: a continuation right after --to (or after its opening ") gets no exception (python twin)
+  if (/--to?=?[ \t]*"?[^\s"]*\\\n/.test(cmd)) return false // LINECONT1126: a continuation after --to or inside its value gets no exception (python twin)
   let words
   try {
     words = [cmd, flattenSubstitutions(cmd)].flatMap((c) => segmentsTokens(c).flat())
