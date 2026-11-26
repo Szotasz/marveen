@@ -2078,3 +2078,55 @@ describe('the agent-browser DevTools ports on loopback (CDPSUTI1126)', () => {
     }
   })
 })
+
+// CDPSUTI1126 (P2b, Dani's follow-up on #3165): only the ports file knows an agent browser's port, so the natural
+// one-command form computes it. A loopback host on a computed port ($(...), a backtick, a variable assigned from one)
+// is a destination, and so is any command line that reads agent-browser/ports.json and names a loopback host. A
+// heredoc written to a file is data; $PORT and a literal port stay as they were.
+describe('a computed agent-browser port, and the ports file (CDPSUTI1126 P2b)', () => {
+  const PF = 'store/agent-browser/ports.json'
+  const COMPUTED = [
+    'curl -s "http://127.0.0.1:$(cat /tmp/p)/json/version"',
+    'curl -s "http://localhost:`cat /tmp/p`/json"',
+    'curl -s "http://[::1]:$(cat /tmp/p)/json"',
+    'P=$(cat /tmp/p); curl -s "http://127.0.0.1:$P/json"',
+    'curl -s "http://localhost:$((9400+71))/json"',
+    'curl --connect-to ::127.0.0.1:$(cat /tmp/p) http://localhost/json',
+    'wget -qO- "http://127.0.0.1:$(cat /tmp/p)/json"',
+    `node -e "fetch('http://127.0.0.1:$(cat /tmp/p)/json/version')"`,
+    `python3 -c "import urllib.request as u;u.urlopen('http://127.0.0.1:$(cat /tmp/p)/x')"`,
+  ]
+  const PORTS_FILE = [
+    `curl -s "http://127.0.0.1:$(jq -r .samu ${PF})/json/version"`,
+    `P=$(jq -r .samu ${PF}); curl -s "http://127.0.0.1:$P/json/version"`,
+    `jq -r .samu ${PF} | xargs -I{} curl -s http://127.0.0.1:{}/json/version`,
+    `python3 - <<'PY'\nimport json,urllib.request\np=json.load(open('${PF}'))['samu']\nurllib.request.urlopen(f'http://127.0.0.1:{p}/json/version')\nPY`,
+    `node -e "const p=require('./${PF}').samu; fetch('http://localhost:'+p+'/json')"`,
+    `cd store/agent-browser && P=$(jq -r .samu ports.json) && curl -s http://localhost:$P/json`,
+    // unparseable (an open quote): the whole text is read
+    `echo "open ${PF} 127.0.0.1`,
+  ]
+  const PASS = [
+    'curl -s "http://localhost:$PORT/api/x"',
+    'curl -s "http://localhost:${PORT}/x"',
+    'curl -s http://127.0.0.1:$WEB_PORT/api/x',
+    'curl -s http://localhost:3420/api/messages',
+    'curl -s -X PUT http://localhost:3420/api/x -d "$(cat /tmp/body.json)"',
+    'curl -s "http://localhost:3420/api/agents/$(cat /tmp/n)/status"',
+    'curl -s "http://10.0.0.5:$(cat /tmp/p)/x"',
+    `cat ${PF}`,
+    `jq . ${PF}`,
+    'ls store/agent-browser; curl -s http://localhost:3420/api/x',
+    // a heredoc written to a file is data, even when it quotes the shape above
+    `cat > /tmp/note.txt <<'EOF'\ncurl -s "http://127.0.0.1:$(jq -r .samu ${PF})/json/version"\nEOF`,
+  ]
+  it('denies a loopback host on a computed port', () => {
+    for (const cmd of COMPUTED) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: true })
+  })
+  it('denies a command line that reads the ports file and names a loopback host', () => {
+    for (const cmd of PORTS_FILE) expect({ cmd, r: classify(cmd).reason }).toEqual({ cmd, r: 'agent-browser-ports-file' })
+  })
+  it('keeps $PORT, a literal port, a computed path or body, the ports file alone and a data heredoc', () => {
+    for (const cmd of PASS) expect({ cmd, deny: deny(cmd) }).toEqual({ cmd, deny: false })
+  })
+})

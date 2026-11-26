@@ -559,12 +559,22 @@ export function isLocalHost(host) { return LOCAL_HOSTS.has(host) || isPrivateTar
 const AGENT_BROWSER_PORT_FIRST = 9400
 const AGENT_BROWSER_PORT_LAST = 9499
 function isLoopback(host) { return LOCAL_HOSTS.has(host) || (CANON_IPV4.test(host) && host.startsWith('127.')) }
+// CDPSUTI1126 (P2b): a port a command computes (`$(...)`, a backtick, or a variable assigned from one) reaches this
+// point as liftSubstitutions' `$$...` placeholder. Only the ports file knows an agent browser's port, so a loopback
+// host on a computed port counts as one; a plain variable ($PORT, the dashboard's form) stays unread.
 function isAgentBrowserPort(port) {
-  return /^\d+$/.test(String(port ?? '')) && Number(port) >= AGENT_BROWSER_PORT_FIRST && Number(port) <= AGENT_BROWSER_PORT_LAST
+  const p = String(port ?? '')
+  if (/^\$\$+$/.test(p)) return true
+  return /^\d+$/.test(p) && Number(p) >= AGENT_BROWSER_PORT_FIRST && Number(p) <= AGENT_BROWSER_PORT_LAST
 }
 // A loopback host on an agent-browser port is returned as host:port, which no local / private / vendor rule matches.
 function agentBrowserDest(host, port) { return isLoopback(host) && isAgentBrowserPort(port) ? `${host}:${port}` : host }
-const AUTHORITY_PORT = /^(?:[^@/?#]*@)?(?:\[[^\]]*\]|[^/:?#]*):(\d+)/
+function readsAgentBrowserPorts(text) {
+  return /\bports\.json\b/.test(text) && /agent-browser/.test(text) && LOOPBACK_NAME.test(text)
+}
+const AGENT_BROWSER_PORTS_FILE = { deny: true, reason: 'agent-browser-ports-file', hosts: ['<agent-browser ports.json>'] }
+const LOOPBACK_NAME = /\blocalhost\b|\b127(?:\.\d{1,3}){3}\b|\[::1\]/i
+const AUTHORITY_PORT = /^(?:[^@/?#]*@)?(?:\[[^\]]*\]|[^/:?#]*):(\d+|\$\$+(?![A-Za-z0-9_{]))/
 export function isExternal(url) {
   const h = hostOf(url)
   if (h === null || h === '') return false
@@ -1122,7 +1132,8 @@ function stdinFeeds(orig, masked, herestrings, env) {
     if (nl === -1) continue
     const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
     const rel = endRx.exec(orig.slice(nl + 1))
-    feeds.push({ at: m.index, text: orig.slice(nl + 1, rel ? nl + 1 + rel.index : orig.length), expands: m[3] != null })
+    const end = rel ? nl + 1 + rel.index : orig.length
+    feeds.push({ at: m.index, start: nl + 1, end, text: orig.slice(nl + 1, end), expands: m[3] != null })
   }
   for (const at of herestrings) {
     const raw = hereStringWord(orig, at + 3)
@@ -1904,6 +1915,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     // Since curl https:// and wget can leave the deny list, this hook is their only gate: a command
     // naming either that cannot be parsed denies, like the internal-error path. Anything else keeps
     // the fail-open (#1931 delta review).
+    if (depth === 0 && readsAgentBrowserPorts(norm)) return AGENT_BROWSER_PORTS_FILE
     return fetches ? { deny: true, reason: 'unparseable', hosts: ['<unparseable command>'] } : { deny: false, reason: 'unparseable', hosts: [] }
   }
   // Shell functions (class 1): cut out of the text, judged per call (see functionDefs). defsText is
@@ -1934,6 +1946,17 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   const env = collectAssignments(orig, masked)
   const loops = collectLoops(orig, masked, env)
   const feeds = stdinFeeds(orig, masked, herestrings, env)
+  // CDPSUTI1126 (P2b): a command line (its pipelines included) that reads the agent-browser ports file and names a
+  // loopback host is reaching an agent browser's DevTools port, however the port travels in between. A heredoc body
+  // counts only when a shell or an interpreter runs it: one written to a file (`cat > f <<EOF`) is data.
+  if (depth === 0) {
+    const data = feeds.filter((f) => {
+      if (f.start === undefined) return false
+      const c = commandWordAt(orig, masked, f.at, env)
+      return c !== null && !SHELL.test(c) && !INTERPRETER.test(c.toLowerCase()) && !/[$*?[{]/.test(c) && !funcs.has(c)
+    })
+    if (readsAgentBrowserPorts(blankRanges(norm, data.map((f) => [f.start, f.end])))) return AGENT_BROWSER_PORTS_FILE
+  }
   // A `while read u; do ...; done <<< "URL"` (or `<<EOF` body, or `read u <<< "URL"`) binds u to
   // the fed lines in the same command, exactly like `for u in URL`: the values join the loop values.
   const reads = collectReads(orig, masked)
