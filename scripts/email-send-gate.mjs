@@ -461,7 +461,7 @@ const NODEISH = /^(node|nodejs|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
 const CURLISH = /^(curl|wget|http)$/i
-const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
+const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$|\s)/i // EVALXARGSMAIL1126 (M3): a blank after the host, as in the python twin
 // RESENDGETTWIN1010: port of the python twin's method verdict (RESENDGATE826,
 // outgoing-copy-gate.py :: _curl_resend_verdict). Until now this copy was
 // method-blind and denied a read-only GET /domains the python copy passed.
@@ -839,7 +839,7 @@ const WRAPPERS = new Map([
   ['nice', ['n', ['adjustment'], 0]],
   ['exec', ['a', [], 0]],
   ['command', ['', [], 0]],
-  ['xargs', ['ILnPsdEa', ['arg-file', 'delimiter', 'eof', 'replace', 'max-lines', 'max-args',
+  ['xargs', ['ILJnPsdEa', ['arg-file', 'delimiter', 'eof', 'replace', 'max-lines', 'max-args',
     'max-procs', 'max-chars', 'process-slot-var'], 0]],
   ['timeout', ['sk', ['signal', 'kill-after'], 1]],
   ['setsid', ['', [], 0]],
@@ -1036,12 +1036,21 @@ function xargsReplaceString(toks) {
   }
   return null
 }
+// the template as written, plus (HTTP client) the added word at the end, plus (a replace string) every template with it
+// replaced: these only ADD heads (_xargs_heads in the python twin)
 function xargsHeads(toks, heads) {
   const repl = xargsReplaceString(toks)
-  return heads.map((h) => {
-    if (!h || !h.length || !HTTP_CLIENT.test(basename(h[0]))) return h
-    return repl ? [h[0], ...h.slice(1).map((w) => w.split(repl).join(XARGS_ARG))] : [...h, XARGS_ARG]
-  })
+  const out = []
+  for (const h of heads) {
+    out.push(h)
+    if (!h || !h.length) continue
+    if (HTTP_CLIENT.test(basename(h[0]))) out.push([...h, XARGS_ARG])
+    if (repl) {
+      const hr = [h[0], ...h.slice(1).map((w) => w.split(repl).join(XARGS_ARG))]
+      if (hr.some((w, i) => w !== h[i])) out.push(hr)
+    }
+  }
+  return out
 }
 
 // SUBAGENTMAILGATE1016 (measured on the sub-agent gate, 2026-10-16): the
@@ -1226,14 +1235,17 @@ function headIsSend(toks, depth) {
   if (MAIL_PROG.test(prog) && mailProgSends(rest)) return true
   // MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
   if (CURLISH.test(prog) && rest.some((t) => CURL_SMTP.test(t))) return true
-  // EVALXARGSMAIL1126: eval runs its words, joined with blanks, as a command line
-  if (prog === 'eval' && depth < 3) {
-    const words = rest[0] === '--' ? rest.slice(1) : rest
-    if (words.length && isSendInvocation(words.join(' '), depth + 1)) return true
+  // EVALXARGSMAIL1126: eval runs its words, joined with blanks, as a command line (`builtin eval` too); past the depth
+  // bound the command is out of sight and counts as a send
+  let evalRest = prog === 'eval' ? rest : prog === 'builtin' && rest[0] === 'eval' ? rest.slice(1) : null
+  if (evalRest !== null) {
+    if (evalRest[0] === '--') evalRest = evalRest.slice(1)
+    if (evalRest.length && (depth >= 3 || isSendInvocation(evalRest.join(' '), depth + 1))) return true
   }
-  if (WRAPPER_SHELL.test(prog) && depth < 3) {
+  if (WRAPPER_SHELL.test(prog)) {
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === '-c' && rest[i + 1] && isSendInvocation(rest[i + 1], depth + 1)) return true
+      // EVALXARGSMAIL1126: past the depth bound the -c program is out of sight: it counts as a send
+      if (rest[i] === '-c' && rest[i + 1] && (depth >= 3 || isSendInvocation(rest[i + 1], depth + 1))) return true
     }
   }
   if (PYTHON.test(prog) || NODEISH.test(prog)) {
@@ -1325,7 +1337,8 @@ function optionValueWord(prev) {
   return k === prev.length - 1
 }
 
-const normHost = (auth) => auth.split('@').pop().replace(/:[0-9]*$/, '').toLowerCase().replace(/\.+$/, '')
+// EVALXARGSMAIL1126 (Revizor M3): blanks around the host (a tab or a space before the path) leave it
+const normHost = (auth) => auth.split('@').pop().trim().replace(/:[0-9]*$/, '').toLowerCase().replace(/\.+$/, '')
 
 // %-escapes decoded once, empty and `.` segments dropped, `..` resolved
 function normPath(path) {
@@ -1650,6 +1663,11 @@ function heredocProgramSends(cmd, depth = 0) {
   return writtenThenRun(cmd, written, depth)
 }
 
+// EVALXARGSMAIL1126: a mail-only API host in a shell word of the line once quotes are resolved (_words_mail_host)
+function wordsMailHost(cmd) {
+  try { return segmentsTokens(cmd).some((seg) => seg.some((w) => MAIL_API_HOST.test(w))) } catch { return false }
+}
+
 export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   // MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
   if (depth === 0) lineCtx = { cwd, texts: [] }
@@ -1657,7 +1675,7 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   // FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
   // A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
   lineExemptOk = (depth === 0 || lineExemptOk) && lineClean(cmd)
-  lineMailHost = (depth > 0 && lineMailHost) || MAIL_API_HOST.test(cmd) // MAILCURLSEND1118
+  lineMailHost = (depth > 0 && lineMailHost) || MAIL_API_HOST.test(cmd) || wordsMailHost(cmd) // MAILCURLSEND1118
   if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {
