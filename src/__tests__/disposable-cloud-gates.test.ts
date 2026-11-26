@@ -23,7 +23,7 @@ describe('live-install suite guard', () => {
   afterEach(() => rmSync(root, { recursive: true, force: true }))
 
   it('refuses a checkout with a live marker outside the cloud, also with only one of the two variables', () => {
-    for (const env of [{}, { CLAUDE_CODE_REMOTE: 'true' }, { CLAUDE_CODE_REMOTE_SESSION_ID: 'x' }, { ...CLOUD, CLAUDE_CODE_REMOTE: '1' }]) {
+    for (const env of [{}, { CLAUDE_CODE_REMOTE: 'true' }, { CLAUDE_CODE_REMOTE_SESSION_ID: 'x' }, { ...CLOUD, CLAUDE_CODE_REMOTE: '1' }] as Record<string, string>[]) {
       expect(liveMarkersFound(root, env)).toEqual([join('store', 'claudeclaw.db')])
     }
   })
@@ -48,7 +48,7 @@ describe('db-write-gate', () => {
   const denied = (r: ReturnType<typeof spawnSync>) => String(r.stdout).includes('"permissionDecision":"deny"')
 
   it('denies a git write in the checkout outside the cloud, also with only one of the two variables', () => {
-    for (const extra of [{}, { CLAUDE_CODE_REMOTE: 'true' }, { CLAUDE_CODE_REMOTE_SESSION_ID: 'x' }]) {
+    for (const extra of [{}, { CLAUDE_CODE_REMOTE: 'true' }, { CLAUDE_CODE_REMOTE_SESSION_ID: 'x' }] as Record<string, string>[]) {
       const r = run(extra)
       expect(r.status).toBe(0)
       expect(denied(r)).toBe(true)
