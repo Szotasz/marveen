@@ -221,6 +221,31 @@ describe('a blanked flag argument and a naive-split fragment are no hiding place
     deniedAllowlist(`unzip -o /tmp/a.zip -d "store"`)
     allowed(`curl -s -d '{"note":"local-hooks"}' http://127.0.0.1:3420/api/x`)
   })
+  it('a redirection, a closed substitution, a case pattern or a heredoc body does not fake the owner', () => {
+    mkdirSync(join(root, 'local-hooks'))
+    deniedAllowlist(`cp >& gh -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`cp >| gh -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`unzip -o /tmp/a.zip >| curl -d 'local-hooks'`)
+    deniedAllowlist(`cp $(gh >/dev/null) -t '${root}/local-hooks' /tmp/x`, '/tmp')
+    deniedAllowlist(`case git in (git ) cp -t 'local-hooks' /tmp/x;; esac`)
+    deniedAllowlist(`case git in\ngit ) cp -t 'local-hooks' /tmp/x;;\nesac`)
+    deniedAllowlist(`case curl in (curl ) unzip -o /tmp/a.zip -d 'local-hooks';; esac`)
+    deniedAllowlist(`python3 - <<'E'\ngh = 0; import os; os.system("cp -t 'local-hooks' /tmp/x")\nE`)
+    deniedAllowlist(`python3 - <<'E'\ncurl = 0; import os; os.system("unzip a.zip -d 'local-hooks'")\nE`)
+    // flags are case-sensitive: curl -D writes the response headers to a file
+    deniedAllowlist(`curl -s -D 'store/egress-allowlist.json' http://127.0.0.1:9/`)
+    // controls: the owner itself, past shell keywords and the timeout / env wrappers, is still blanked
+    allowed(`timeout 60 gh pr create --title x --body 'see local-hooks'`)
+    allowed(`timeout 30 curl -s -d '{"n":"local-hooks"}' http://127.0.0.1:3420/api/x`)
+    allowed(`if ! gh pr view 1; then gh pr create --title x --body 'see local-hooks'; fi`)
+    allowed(`if curl -sf -d '{"n":"local-hooks"}' http://127.0.0.1:3420/api/x; then echo ok; fi`)
+    allowed(`env GH_PAGER= gh pr comment 1 -b 'see local-hooks'`)
+    // a file test only reads: its -d argument is still blanked (live command, spirit-bevetel)
+    allowed(`for d in agents/x/*/; do [ -d "$d/.git" ] && echo "$d"; done`)
+    allowed(`[ -d 'local-hooks' ] && echo y; test -d "$X/x" || echo n`)
+    // known cost: a substitution in front of the owner keeps the argument
+    deniedAllowlist(`GH_TOKEN="$(cat /tmp/t)" gh pr comment 1 -b 'see local-hooks'`)
+  })
   it('a naive-split piece that starts inside a quote or a heredoc body is no read', () => {
     mkdirSync(join(root, 'local-hooks'))
     deniedAllowlist(`echo "$(date)"; python3 -c "\ncat = open('store/egress-allowlist.json','w')\n"`)

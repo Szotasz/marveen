@@ -216,3 +216,11 @@ describe('kanban-write-gate wiring', () => {
     expect(JSON.stringify(ptu[0])).toContain('egress-gate.mjs')
   })
 })
+
+describe('kanban-write-gate: a report payload behind a keyword or a timeout wrapper is still data', () => {
+  it('passes the payload of a curl run under timeout or inside an if', () => {
+    const body = `-d '{"c":"x | UPDATE kanban_cards SET status=1"}' http://127.0.0.1:3420/api/messages`
+    expect(bash(`timeout 30 curl -s -X POST ${body}`).deny).toBe(false)
+    expect(bash(`if curl -sf -X POST ${body}; then echo ok; fi`).deny).toBe(false)
+  })
+})

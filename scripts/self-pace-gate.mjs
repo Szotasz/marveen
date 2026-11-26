@@ -1474,54 +1474,42 @@ export function stripProseArguments(seg) {
   // body, a PR comment, a release note). A short flag means different things to
   // different binaries (`tar -t`, `cut -b`, `sort -t`), so blanking it on an
   // unrelated tool would hide real data from the gate (PR #770 review, Szotasz).
-  // Same coarse command-word guard as stripGitCommitMessages just below.
-  if (!/\b(?:gh|git|glab)\b/i.test(s)) return s
-  const head = segmentHeads(s)
-  return s.replace(
-    new RegExp(String.raw`((?:^|\s)(?:${PROSE_FLAGS})(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")`, 'gi'),
-    (full, flag, arg, at) => {
-      const dq = arg.startsWith('"')
-      if (dq && (arg.includes('$(') || arg.includes('`'))) return full
-      // the flag's OWN segment must be gh/git/glab: `git status; cp -t 'local-hooks' x` keeps the cp target
-      if (!/^(?:gh|git|glab)$/i.test(head(at))) return full
-      return flag + (dq ? '""' : "''")
-    },
-  )
+  if (!/\b(?:gh|git|glab)\b/.test(s)) return s
+  return blankOwnedArguments(s, new RegExp(String.raw`((?:^|\s)(?:${PROSE_FLAGS})(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")`, 'g'), PROSE_OWNERS)
 }
+const PROSE_OWNERS = new Set(['gh', 'git', 'glab'])
 
-// segmentHeads(s)(i): the command word of the shell segment that holds offset i of s, '' when it cannot be read.
-// The segment start is the last separator before i in the MASKED text, so a quoted `;` cannot fake one; the word is
-// read from the raw text and must be plain (no quote, `$`, backslash), so `'cp' gh -t ...` is not a gh segment.
-// No mask (unresolved quoting) = '' everywhere: nothing is blanked, which only scans more.
-function segmentHeads(s) {
-  let masked
-  return (i) => {
-    if (masked === undefined) {
-      const src = s.replace(/\\\r?\n/g, (m) => ' '.repeat(m.length)) // keeps the offsets of s
-      masked = maskInertLiterals(src, []) ?? maskInertLiterals(src, [], true)
-      if (masked?.length !== s.length) masked = null
-    }
-    if (masked == null) return ''
-    let start = -1 // `${NAME}` opens no group
-    for (const m of masked.slice(0, i).matchAll(/[;&|\n(]|(?<!\$)\{/g)) start = m.index
-    const w = /^\s*(?:[A-Za-z_]\w*=\S*\s+)*([^\s'"\\$`]+)(?=\s|$)/.exec(s.slice(start + 1, i))?.[1] ?? ''
-    return w.slice(w.lastIndexOf('/') + 1)
-  }
+// What runs the next word as the command: shell keywords, `timeout N`, `env` and NAME=value words (plain values only).
+const HEAD_SKIP_RX = /^\s*(?:(?:if|then|else|elif|do|while|until|time|!)\s+|timeout\s+\d+(?:\.\d+)?[smhd]?\s+|env\s+|[A-Za-z_]\w*=[^\s'"`$\\()]*\s+)*/
+
+// Blank the quoted argument of a flag only where the flag belongs to an owner command (`git status; cp -t
+// 'local-hooks' x` keeps the cp target, `unzip x.zip -d 'local-hooks'` its directory). All of it, else the argument
+// stays: the flag is plain text (not inside a quote or a heredoc body); its segment is cut by protectedSplit's own
+// separators on the masked text (a redirection `>&` / `>|` is no separator, a quoted `;` is none); no substitution,
+// group or case pattern stands between the segment start and the flag; and the segment's first plain word, past
+// HEAD_SKIP_RX, is a bare owner name. Unresolved quoting blanks nothing, which only scans more.
+function blankOwnedArguments(s, flagRx, owners) {
+  const src = s.replace(/\\\r?\n/g, (m) => ' '.repeat(m.length)) // keeps the offsets of s
+  const masked = maskInertLiterals(src, []) ?? maskInertLiterals(src, [], true)
+  if (masked?.length !== s.length) return s
+  return s.replace(flagRx, (full, flag, arg, at) => {
+    const dq = arg.startsWith('"')
+    if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
+    const f = at + flag.search(/\S/)
+    if (masked[f] !== s[f]) return full
+    let start = 0
+    for (const m of masked.slice(0, f).matchAll(SEGMENT_SEP_RX)) start = m.index + m[0].length
+    if (/[`(){}]/.test(masked.slice(start, f).replace(/\$\{\w+\}/g, ''))) return full
+    const head = /^([^\s'"`$\\<>|&;(){}]+)(?=\s)/.exec(src.slice(start, f).replace(HEAD_SKIP_RX, ''))?.[1]
+    return owners.has(head) ? flag + (dq ? '""' : "''") : full
+  })
 }
 
 export function stripDataPayloads(seg) {
-  const s = String(seg ?? '')
-  const head = segmentHeads(s)
-  return s.replace(
-    /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
-    (full, flag, arg, at) => {
-      const dq = arg.startsWith('"')
-      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
-      if (head(at) !== 'curl') return full // `-d` is a directory to unzip/install: `unzip x.zip -d 'local-hooks'`
-      return flag + (dq ? '""' : "''") // literal payload -> blank the content
-    },
-  )
+  // a request body is curl's, and a file test only reads; `-d` is a directory to unzip / install
+  return blankOwnedArguments(String(seg ?? ''), /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/g, DATA_OWNERS)
 }
+const DATA_OWNERS = new Set(['curl', '[', '[[', 'test'])
 
 // Blank out git commit/tag/stash -m/--message LITERAL text before self-pace
 // matching. A commit message is prose, NEVER a shell invocation, so a trigger
