@@ -19232,12 +19232,27 @@ async function bridgeEnrollFromUi() {
       `<div class="auth-form auth-device-minted-row">` +
         `<input id="authBridgeBundleVal" type="text" readonly value="${escapeHtml(data.bundle)}" onclick="this.select()">` +
         `<button class="btn-secondary btn-compact" id="authBridgeCopyBtn">${t('auth.devices.copy')}</button>` +
-      `</div>`
+      `</div>` +
+      (window.isSecureContext ? '' : `<p class="auth-muted">${t('auth.bridge.copy_insecure_hint')}</p>`) +
+      `<p id="authBridgeCopyMsg" class="auth-form-msg err" hidden></p>`
+    // #3160: navigator.clipboard exists only in a secure context (https or localhost). On plain http over a LAN IP it
+    // throws, and the old catch only selected the field: nothing was copied and nothing said so. execCommand('copy')
+    // on the selected field still works there; if it fails too, the message below the field says what to do.
     document.getElementById('authBridgeCopyBtn').addEventListener('click', async () => {
+      const copyBtn = document.getElementById('authBridgeCopyBtn')
+      const copyMsg = document.getElementById('authBridgeCopyMsg')
+      copyMsg.hidden = true
       try {
         await navigator.clipboard.writeText(data.bundle)
-        document.getElementById('authBridgeCopyBtn').textContent = t('auth.devices.copied')
-      } catch { document.getElementById('authBridgeBundleVal').select() }
+        copyBtn.textContent = t('auth.devices.copied')
+        return
+      } catch { /* not a secure context, or no permission: fall back */ }
+      document.getElementById('authBridgeBundleVal').select()
+      let copied = false
+      try { copied = document.execCommand('copy') } catch { copied = false }
+      if (copied) { copyBtn.textContent = t('auth.devices.copied'); return }
+      copyMsg.textContent = t('auth.bridge.copy_failed')
+      copyMsg.hidden = false
     })
     refreshDeviceKeyList()
   } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
