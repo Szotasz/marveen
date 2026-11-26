@@ -293,6 +293,20 @@ describe('PLUGINDIRGIT1125: git verbs on a work tree that holds a named plugin f
   ])('core.worktree cannot be set or passed: %#', (c) => {
     expect(bash(c()).deny).toBe(true)
   })
+  // Geri's second #3156 review, F4b (a gap on develop too): `git config -f <file> <key> <value>`, the value of -f in its
+  // own word, is parsed like --file=<file>: the key is the protected one, not the file name.
+  it.each([
+    () => `git config -f ${join(own(), '.git', 'config')} core.worktree ${repo()}`,
+    () => `git config --file ${join(own(), '.git', 'config')} core.worktree ${repo()}`,
+    () => `git config -f ${join(own(), '.git', 'config')} remote.origin.url ${repo()}`,
+    () => `git config --type path -f ${join(own(), '.git', 'config')} core.worktree ${repo()}`,
+  ])('F4b: a protected key after a separate-word -f / --file value is denied: %#', (c) => {
+    expect(bash(c()).deny).toBe(true)
+  })
+  it('F4b: reading through -f stays free', () => {
+    expect(bash(`git config -f ${join(own(), '.git', 'config')} --get core.worktree`).deny).toBe(false)
+    expect(bash(`git config -f ${join(own(), '.git', 'config')} core.worktree`).deny).toBe(false)
+  })
   it('core.worktree may be read', () => {
     expect(bash(`git -C ${own()} config --get core.worktree`).deny).toBe(false)
     expect(bash(`git -C ${own()} config core.worktree`).deny).toBe(false)
@@ -415,6 +429,33 @@ describe('PLUGINDIRGIT2-1126: core.worktree from the config, and a push to a loc
       // form above lands inside the clone, whose unreadable config fails closed on its own)
       writeFileSync(join(own(), '.git', 'extra.cfg'), `[url "${repo()}"]\n\tpushInsteadOf = ${join(base, 'nowhere')}/\n`)
       expect(bash(`git -C ${own()} push ${join(base, 'nowhere', 'y')} topic`)).toEqual(SUB)
+    })
+    // Geri's second review (#3156): F1 the positional repository wins over --repo (git's own rule), so both are judged;
+    // F2 file://localhost/<path> and file:///<path> are local paths, another host fails closed; F3 send-pack is a push;
+    // F4a `remote add <name> <local path>` is judged like a push to that path.
+    it.each([
+      ['F1 --repo=<url> then a positional local target', () => `git -C ${own()} push --repo=https://example.com/x.git ${repo()} topic`],
+      ['F1 --repo <url> then a positional local target', () => `git -C ${own()} push --repo https://example.com/x.git ${repo()} topic`],
+      ['F2 file://localhost/<path>', () => `git -C ${own()} push file://localhost${repo()} topic`],
+      ['F2 file://LOCALHOST/<path>', () => `git -C ${own()} push file://LOCALHOST${repo()} topic`],
+      ['F2 file://<other host>/<path> fails closed', () => `git -C ${own()} push file://nas${repo()} topic`],
+      ['F3 send-pack to a local path', () => `git -C ${own()} send-pack ${repo()} topic`],
+      ['F3 send-pack with --receive-pack=', () => `git -C ${own()} send-pack --receive-pack=git-receive-pack ${repo()} topic`],
+      ['F3 push with --receive-pack <cmd> in its own word before the target', () => `git -C ${own()} push --receive-pack git-receive-pack ${repo()} topic`],
+      ['F4a remote add <name> <local path>', () => `git -C ${own()} remote add h ${repo()}`],
+      ['F4a remote add with -t and -m', () => `git -C ${own()} remote add -t main -m main h file://${repo()}`],
+    ])('denied: %s', (_n, c) => {
+      expect(bash(c())).toEqual(SUB)
+    })
+    it.each([
+      ['F1 --repo=<url> alone', () => `git -C ${own()} push --repo=https://example.com/x.git topic`],
+      ['F2 file:// to a clean repository', () => `git -C ${own()} push file://localhost${clean()} topic`],
+      ['F2 file://LOCALHOST (any case) to a clean repository', () => `git -C ${own()} push file://LOCALHOST${clean()} topic`],
+      ['F3 send-pack to a network host', () => `git -C ${own()} send-pack git@example.com:x/y.git topic`],
+      ['F4a remote add of a network URL', () => `git -C ${own()} remote add up https://example.com/x.git`],
+      ['F4a remote add of a clean local repository', () => `git -C ${own()} remote add sib ${clean()}`],
+    ])('free: %s', (_n, c) => {
+      expect(bash(c()).deny).toBe(false)
     })
     it('an unknown target fails closed', () => {
       expect(bash(`git -C ${own()} push "$T" topic`)).toEqual(SUB)

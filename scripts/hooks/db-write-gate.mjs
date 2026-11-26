@@ -1998,7 +1998,10 @@ const GIT_URL_RX = /^[A-Za-z][\w+.-]*:\/\/|^[\w.-]+@[\w.-]+:/
 // PLUGINDIRGIT2-1126, what it does NOT see: only the repository's own config is read (config, config.worktree), not
 // the user's global git config or the system one, so a core.worktree or an insteadOf placed there is not seen; those
 // files are on the protected list for writes. `--receive-pack=<cmd>` on a local push runs a command: not a tree write,
-// and a sub-agent can run a command anyway, so no new reach.
+// and a sub-agent can run a command anyway, so no new reach. The config is read before the command runs, so a config
+// written into .git/config by a redirect or another program earlier in the SAME command (`printf ... >> .git/config &&
+// git push ...`) is not seen: a limit of a text-based gate (Geri's #3156 review, F4c). `git config` and `git remote add`
+// writing it in that command are judged on their own.
 // PLUGINDIRGIT2-1126: a repository's git dir and the common dir it shares, from a checkout top (a .git directory, or a
 // linked worktree's `gitdir:` file) or from a git dir given as is. null: unreadable.
 function gitDirsOf({ top, gitDir }) {
@@ -2077,7 +2080,7 @@ function configuredWorkTree(where) {
 }
 
 function dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx, gitDir) {
-  if (!ctx.subAgent || (GIT_TREE_SAFE.has(sub) && sub !== 'push')) return false
+  if (!ctx.subAgent || (GIT_TREE_SAFE.has(sub) && sub !== 'push' && sub !== 'remote')) return false
   const dyn = installTargets(ctx.root, true, ctx.projectDir, ctx.configDir).list.filter((t) => t.dyn)
   if (!dyn.length) return false
   const holds = (p) => { const k = pathKey(p); return dyn.some((t) => underKey(t.key, k)) }
@@ -2089,43 +2092,64 @@ function dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx, gitDir) {
     const cw = configuredWorkTree(where)
     return cw === null ? failClosed() : !!cw && holds(cw)
   }
-  if (sub === 'push') {
+  // Whether a URL names a local repository whose tree (or core.worktree) holds a named folder. file:// with no host or
+  // localhost is a local path, another host fails closed (Geri's #3156 review, F2).
+  const urlHolds = (u) => {
+    if (/[$`\u0000]/.test(u)) return failClosed()
+    let local = u
+    const f = /^file:\/\/([^/]*)(\/.*)?$/i.exec(u)
+    if (f) {
+      if (f[1] !== '' && f[1].toLowerCase() !== 'localhost') return failClosed()
+      local = f[2] || '/'
+    } else if (GIT_URL_RX.test(u)) return false
+    if (!local.startsWith('/') && !local.startsWith('~') && !dir) return failClosed()
+    const p = resolve(dir ?? '/', expandHome(local))
+    const top = existsSync(join(p, '.git')) ? p : repoTop(p)
+    const where = existsSync(join(p, '.git')) ? { top: p } : existsSync(join(p, 'HEAD')) ? { gitDir: p } : top ? { top } : null
+    return holds(p) || (where ? treeHolds(top, where) : false)
+  }
+  // `git remote add <name> <url>`: a later push to that name reaches the URL, in the same command too (F4a). Judged
+  // like a push to it.
+  if (sub === 'remote') {
+    if (args[0] !== 'add') return false
+    const plain = []
+    for (let j = 1; j < args.length; j++) {
+      if (['-t', '-m'].includes(args[j])) { j++; continue }
+      if (!args[j].startsWith('-')) plain.push(args[j])
+    }
+    return plain.length >= 2 && urlHolds(plain[1])
+  }
+  if (sub === 'push' || sub === 'send-pack') {
     // A push to a local repository (a path, ".", file://, or a remote whose URL is one) updates that repository's
     // checked-out tree when it sets receive.denyCurrentBranch=updateInstead. Without a target git pushes to a remote
-    // the config picks: every configured remote is read then (the strict direction).
-    let target
+    // the config picks: every configured remote is read then (the strict direction). send-pack is the same push
+    // (F3). The positional repository wins over --repo in git, so both are judged (F1).
+    const targets = []
+    let positional
     for (let j = 0; j < args.length; j++) {
       const a = args[j]
-      if (a.startsWith('--repo=')) { target ??= a.slice(7); continue }
-      if (['--repo', '-o', '--push-option', '--receive-pack', '--exec'].includes(a)) { if (a === '--repo') target ??= args[j + 1]; j++; continue }
+      if (a.startsWith('--repo=')) { targets.push(a.slice(7)); continue }
+      if (['--repo', '-o', '--push-option', '--receive-pack', '--exec'].includes(a)) { if (a === '--repo' && args[j + 1] !== undefined) targets.push(args[j + 1]); j++; continue }
       if (a.startsWith('-')) continue
-      target ??= a
+      positional = a
       break
     }
+    if (positional !== undefined) targets.push(positional)
     const cur = gitDir === null || dirUnknown ? null : gitDir ? repoConfig({ gitDir }) : (repoTop(dir) ? repoConfig({ top: repoTop(dir) }) : { entries: [] })
     // A config the gate cannot read whole (an [include] may hold a pushInsteadOf) fails closed whatever the target
     // looks like (Samu's #3156 review, second item).
     if (cur === null) return failClosed()
     // url.<base>.insteadOf / pushInsteadOf in the repository's own config rewrite a target that looks like a relative
     // path, a URL or a remote's URL into a local repository (Samu's #3156 review): read as pointing anywhere.
-    if (cur?.entries.some((e) => e.sec === 'url' && (e.key === 'insteadof' || e.key === 'pushinsteadof'))) return failClosed()
-    const remoteUrls = (name) => (cur?.entries ?? []).filter((e) => e.sec === 'remote' && (name === undefined || e.sub === name) && (e.key === 'url' || e.key === 'pushurl')).map((e) => e.value)
-    let urls
-    if (target === undefined || (target && !/^[/.~]/.test(target) && !GIT_URL_RX.test(target) && remoteUrls(target).length)) {
-      if (!cur) return failClosed()
-      urls = remoteUrls(target)
-    } else urls = [target]
-    for (const u of urls) {
-      if (/[$`\u0000]/.test(u)) return failClosed()
-      if (GIT_URL_RX.test(u) && !/^file:\/\//i.test(u)) continue
-      const local = u.replace(/^file:\/\//i, '')
-      if (!local.startsWith('/') && !local.startsWith('~') && !dir) return failClosed()
-      const p = resolve(dir ?? '/', expandHome(local))
-      const top = existsSync(join(p, '.git')) ? p : repoTop(p)
-      const where = existsSync(join(p, '.git')) ? { top: p } : existsSync(join(p, 'HEAD')) ? { gitDir: p } : top ? { top } : null
-      if (holds(p) || (where ? treeHolds(top, where) : false)) return true
+    if (cur.entries.some((e) => e.sec === 'url' && (e.key === 'insteadof' || e.key === 'pushinsteadof'))) return failClosed()
+    const remoteUrls = (name) => cur.entries.filter((e) => e.sec === 'remote' && (name === undefined || e.sub === name) && (e.key === 'url' || e.key === 'pushurl')).map((e) => e.value)
+    const urls = []
+    if (!targets.length) urls.push(...remoteUrls(undefined))
+    for (const t of targets) {
+      if (t && !/^[/.~]/.test(t) && !GIT_URL_RX.test(t) && remoteUrls(t).length) urls.push(...remoteUrls(t))
+      else urls.push(t)
     }
-    return false
+    return urls.some(urlHolds)
   }
   const base = workTree ?? dir
   const paths = (list) => {
@@ -2202,7 +2226,13 @@ export function gitDecision(words, ctx) {
   if (sub === 'branch' && args.some((a) => /^-[A-Za-z]*[fmMcC]|^--(?:force|move|copy)$/.test(a))
     && args.some((a) => /^(?:origin\/|remotes\/|refs\/remotes\/)/.test(a))) return 'deny'
   if (sub === 'config') {
-    const plain = args.filter((a) => !a.startsWith('-'))
+    // The value of an option in its own word (`-f <file>`, `--type path`) is not the key: skipped, so `git config -f
+    // <file> core.worktree <x>` is read like `--file=<file>` (Geri's #3156 review, F4b; a gap on develop too).
+    const plain = []
+    for (let j = 0; j < args.length; j++) {
+      if (['-f', '--file', '--blob', '--type', '--default', '--comment', '--value'].includes(args[j])) { j++; continue }
+      if (!args[j].startsWith('-')) plain.push(args[j])
+    }
     const verb = ['set', 'unset', 'get', 'list', 'edit', 'rename-section', 'remove-section'].includes(plain[0]) ? plain.shift() : null
     const reading = verb === 'get' || verb === 'list' || args.some((a) => /^--(?:get|get-all|get-regexp|get-urlmatch|list)$|^-l$/.test(a))
       || (!verb && plain.length === 1 && !args.some((a) => /^--(?:unset|unset-all|add|replace-all|rename-section|remove-section|edit)$|^-e$/.test(a)))
