@@ -1155,6 +1155,8 @@ class TestClaudeTokenSources(unittest.TestCase):
             self.assertEqual(uc._read_claude_token(), (None, None))
 
     # ISSUE3159: an expired ~/.claude/.credentials.json (a setup-token install's leftover first login) is skipped.
+    # The unit of claudeAiOauth.expiresAt is epoch MILLISECONDS: measured 2026-11-26 on a real credentials file written
+    # by Claude Code (an int of 13 digits; seconds would have 10). Only the digit count was read, never the token.
     def _cred_file(self, oauth):
         cred = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
         cred.write(json.dumps({"claudeAiOauth": oauth}))
