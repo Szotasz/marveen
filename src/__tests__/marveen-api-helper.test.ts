@@ -174,6 +174,30 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect((await run(['kanban-list'])).stdout).toBe('{"error":"x"}\n')
   })
 
+  it('memory-search and memory-list print one row per memory with the whole content; --json the raw answer', async () => {
+    const long = 'első sor ' + 'x'.repeat(2000) + '\nmásodik sor'
+    const rows = [
+      { id: 7, category: 'hot', created_at: 1795572110, updated_at: null, agent_id: 'dani', keywords: 'k1, k2', content: long, embedding_model: 'm', chain_refs: '[]', use_count: 0 },
+      { id: 8, category: 'shared', created_at: 1795572110, updated_at: 1795600000, updated_by: 'eve', agent_id: 'eve', keywords: null, content: 'rövid' },
+    ]
+    reply = { status: 200, body: JSON.stringify(rows), headers: { 'X-Memory-Search': 'strict=false; relaxed=false; hits=2' } }
+    const s = await run(['memory-search', 'dani', 'q'])
+    expect(s.code).toBe(0)
+    const lines = s.stdout.split('\n')
+    expect(lines[0]).toBe('X-Memory-Search: strict=false; relaxed=false; hits=2')
+    expect(lines[1]).toMatch(/^#7 hot \d{4}-\d\d-\d\d \d\d:\d\d dani \[k1, k2\] első sor x+$/)
+    expect(s.stdout).toContain(long)
+    expect(s.stdout).toMatch(/\n#8 shared \S+ \S+ upd \S+ \S+ by eve eve \[\] rövid\n$/)
+    expect(s.stdout).not.toContain('embedding_model')
+    const l = await run(['memory-list', 'dani', 'hot'])
+    expect(l.stdout).toBe(s.stdout.split('\n').slice(1).join('\n'))
+    const j = await run(['memory-list', 'dani', 'hot', '--json'])
+    expect(JSON.parse(j.stdout)).toEqual(rows)
+    expect(new URL(seen[2].url, 'http://x').searchParams.get('limit')).toBe('40')
+    reply = { status: 200, body: '[]' }
+    expect((await run(['memory-list', 'dani', 'hot'])).stdout).toBe('(0 rows)\n')
+  })
+
   it('memory-search: a missing label header is printed as MISSING, also on a 400', async () => {
     reply = { status: 400, body: '' }
     const r = await run(['memory-search', 'dani', 'x'])

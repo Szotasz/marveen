@@ -55,12 +55,13 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   message <from> <to> <content-file> [--priority high|normal]
   message-close <id> [--result-file <file>] [--no-notify] [--failed]
   directive-verify <msg-id>
-  memory-search <agent> <query> [--category hot|warm|cold|shared] [--strict] [--date <expr>] [--since <day>] [--until <day>] [--limit <n>]
+  memory-search <agent> <query> [--category hot|warm|cold|shared] [--strict] [--date <expr>] [--since <day>] [--until <day>] [--limit <n>] [--json]
   memory-save <agent> <hot|warm|cold|shared> <keywords> <content-file> [--supersedes <id>[,<id>...]]
                 (--supersedes: your own older memories this one replaces; the server retracts them)
   memory-retract <memory-id> <agent>
                 (takes back your own memory: it leaves the lists and the search, it is not deleted)
-  memory-list <agent> <hot|warm|cold|shared> [--limit <n>]
+  memory-list <agent> <hot|warm|cold|shared> [--limit <n>] [--json]
+                (search and list print one row per memory, the content whole; --json prints the raw answer)
   memory-move <memory-id> <hot|warm|cold|shared> <updated-by>
   memory-update <memory-id> <updated-by> <content-file>
   daily-log <agent> <content-file>
@@ -324,6 +325,7 @@ def build_request(verb, args):
         # HMACINBOUND1125: a directive row counts only when the server signed it (sig_ok), see main().
         return 'GET', f'/api/messages/{msg_id}', None, headers, {'require_sig_ok': True}
     if verb == 'memory-search':
+        as_json = take_flag(args, '--json')
         category = take_opt(args, '--category')
         strict = take_flag(args, '--strict')
         date = take_opt(args, '--date')
@@ -345,7 +347,7 @@ def build_request(verb, args):
             q['until'] = until
         if limit is not None:
             q['limit'] = check(limit, ID_RE, 'limit')
-        return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {'search_header': True}
+        return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {'search_header': True, 'rows': not as_json}
     if verb == 'memory-save':
         supersedes = take_opt(args, '--supersedes')
         agent, category, keywords, content_file = positional(args, 4, verb)
@@ -370,11 +372,12 @@ def build_request(verb, args):
         headers['X-Agent-Id'] = agent
         return 'POST', f'/api/memories/{mem_id}/retract', {'agent_id': agent}, headers, {}
     if verb == 'memory-list':
+        as_json = take_flag(args, '--json')
         limit = take_opt(args, '--limit')
         agent, category = positional(args, 2, verb)
         check(agent, NAME_RE, 'agent name')
         q = {'agent': agent, 'category': check_category(category), 'limit': check(limit or '40', ID_RE, 'limit')}
-        return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {}
+        return 'GET', '/api/memories?' + urllib.parse.urlencode(q), None, headers, {'rows': not as_json}
     if verb == 'memory-move':
         mem_id, category, updated_by = positional(args, 3, verb)
         check(mem_id, ID_RE, 'memory id')
@@ -725,6 +728,24 @@ def card_rows(text):
         return '(0 cards)'
     return '\n'.join(f"{c.get('id')} {c.get('status')} {c.get('assignee')} {c.get('priority')} {c.get('title')}" for c in cards)
 
+def memory_rows(text):
+    """One memory per row: '#id tier created [upd ...] owner [keywords]' then the WHOLE content (no cut)."""
+    try:
+        rows = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(rows, list):
+        return text
+    if not rows:
+        return '(0 rows)'
+    when = lambda t: datetime.datetime.fromtimestamp(t).strftime('%Y-%m-%d %H:%M')
+    out = []
+    for r in rows:
+        upd = f" upd {when(r['updated_at'])}" + (f" by {r['updated_by']}" if r.get('updated_by') else '') if r.get('updated_at') else ''
+        out.append(f"#{r.get('id')} {r.get('category')} {when(r.get('created_at') or 0)}{upd} {r.get('agent_id')} "
+                   f"[{r.get('keywords') or ''}] {r.get('content')}")
+    return '\n'.join(out)
+
 
 def main(argv):
     if not argv or argv[0] in ('-h', '--help'):
@@ -802,7 +823,7 @@ def main(argv):
                 text = json.dumps(answer, ensure_ascii=False)
             except (ValueError, AttributeError):
                 pass  # not the JSON object we expected: print it as it came
-        print(card_rows(text) if flags.get('card_rows') else text)
+        print(card_rows(text) if flags.get('card_rows') else memory_rows(text) if flags.get('rows') else text)
         if flags.get('require_sig_ok'):
             # HMACINBOUND1125 (Dani 85038, 3): from_agent='system' alone can be written by a raw INSERT; only a row the
             # server signed is a directive. An older dashboard sends no sig_ok: that is a refusal too, not a pass.
