@@ -55,7 +55,7 @@ describe('assignee name normalisation', () => {
 describe('owner filter wiring', () => {
   it('the card filter compares through the normaliser on both sides', () => {
     expect(APP).toContain('const assigneeFilter = assigneeKey(kanbanAssigneeFilter)')
-    expect(APP).toContain('assigneeKey(card.assignee) !== assigneeFilter')
+    expect(APP).toContain('kanbanAssigneeFilterKeys(assigneeFilter).has(assigneeKey(card.assignee))')
   })
 
   it('the button state and the click handler use it too', () => {

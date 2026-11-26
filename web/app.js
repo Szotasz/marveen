@@ -1337,12 +1337,16 @@ function ownerAssigneeName() {
 // on a board where 160 of 246 live cards were on that owner. Decomposing to NFD
 // and dropping the combining marks makes the two comparable without touching the
 // stored data, which is what the cards and the API still see.
+// Spaces, underscores and hyphens fold to one hyphen as well: the owner's
+// display name ("Kovács Éva") and the slug an agent writes ("kovacs-eva")
+// are the same person, and the board listed them as two.
 function assigneeKey(name) {
   return String(name || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .toLowerCase()
+    .replace(/[\s_-]+/g, '-')
 }
 
 // Reflect the active state of the owner quick-toggle button (hidden when there
@@ -1471,8 +1475,19 @@ function kanbanCardMatchesBaseFilters(card) {
   if (!kanbanCardMatchesSearch(card)) return false
   if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) return false
   const assigneeFilter = assigneeKey(kanbanAssigneeFilter)
-  if (assigneeFilter && assigneeKey(card.assignee) !== assigneeFilter) return false
+  if (assigneeFilter && !kanbanAssigneeFilterKeys(assigneeFilter).has(assigneeKey(card.assignee))) return false
   return true
+}
+
+// The keys a selected assignee matches: its own name plus the aliases the
+// /api/kanban/assignees entry carries (a colleague from store/board-access.json
+// is written on cards under several names, e.g. "Tóth Anna" and
+// "szabo-toth-anna").
+function kanbanAssigneeFilterKeys(assigneeFilter) {
+  const keys = new Set([assigneeFilter])
+  const entry = kanbanAssignees.find((a) => a.name === kanbanAssigneeFilter)
+  for (const alias of (entry && Array.isArray(entry.aliases) ? entry.aliases : [])) keys.add(assigneeKey(alias))
+  return keys
 }
 
 // The label-filter dimension itself: a card matches when no label filter is
