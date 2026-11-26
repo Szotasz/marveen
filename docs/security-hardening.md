@@ -516,7 +516,7 @@ servers below itself.
 Since MCPUNTRUSTED1114 the same default group also covers the catalog's
 `gmail`, `gmail-v2`, `google-calendar`, `google-drive` and `playwright` MCP
 servers, and a `stripe` server (payment descriptions and metadata are written by
-customers and third parties) (matcher `WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright|stripe)__.*`):
+customers and third parties) (matcher `WebSearch|WebFetch|^Read$|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright|stripe)__.*`):
 an email, a calendar invite, a shared document or a page is text anyone can
 author, and before this it reached the agent with no envelope and no label. A
 server installed under another name (another browser MCP, `mcp__chrome*`) is
@@ -551,6 +551,49 @@ labelled as external content whose imperatives are data, so an install that
 drives agents from a Drive brief or a forwarded mail will see those instructions
 marked that way. The matcher covers every tool of the five servers, write tools
 (send, draft, create-event) included; for those the label is a token cost only.
+
+#### Files read back from disk (UNTRUSTEDREAD1126)
+
+External text also reaches an agent as a file. The playwright MCP saves a large
+page snapshot to `.playwright-mcp/` in the agent's working directory and the
+agent then reads it with `Read`; a download tool writes a fetched PDF's text or
+a page next to the agent's work. `Read` is not a web tool, so before this none
+of the layers above ran on that path and the page arrived as plain file text.
+
+`Read` is therefore in the default matcher too, and the hook acts **only** when
+the file sits in an untrusted directory; every other `Read` returns at once with
+no label and no log line. Untrusted directories:
+
+- `.playwright-mcp`, as a path component anywhere (built in);
+- `<install root>/store/agent-browser/`, as an absolute prefix (built in): the
+  per-agent browser (`src/web/agent-browser.ts`) starts the playwright MCP with
+  `--output-dir store/agent-browser/<agent>/mcp-out`, and with that flag its
+  snapshots land there instead of `.playwright-mcp/`. It is anchored at the
+  install root rather than matched by the generic name `mcp-out`;
+- `UNTRUSTED_READ_DIRS` in the hook's environment (`os.pathsep`-separated);
+- the `dirs` list of `store/untrusted-read-dirs.json` (path overridable with
+  `UNTRUSTED_READ_CONFIG`), for example
+  `{"dirs": ["downloads", "/srv/shared/fetched"]}`.
+
+An entry that starts with `/` is an absolute directory prefix; any other entry
+is a directory name matched as a path component. Both the path as given and its
+resolved form are checked, so a symlink or a `..` walk does not step around the
+match. The text of the file is wrapped in `file.content` (the rest of the Read
+result is kept byte-identical), the label says the content was saved to disk
+from outside, and the log record keeps no payload, as for the private MCP
+servers: a snapshot can be a logged-in page.
+
+Limits of this layer:
+
+- **Only the `Read` tool.** The same file read another way gets no envelope:
+  `cat`, `head` or `grep` through `Bash`, and the `Grep` tool.
+- **Non-text reads get the label only.** An image, a PDF read natively or a
+  notebook has no text field to wrap; the label is still written (with the
+  result type), and the log record holds no payload, so no base64.
+- **Other download locations depend on the operator list.** The built-in
+  entries cover only the two playwright output folders; a file written
+  elsewhere (`curl -o page.html`, a script's output folder) is covered only
+  once that folder is in `UNTRUSTED_READ_DIRS` or `store/untrusted-read-dirs.json`.
 
 ### The shape rule, and the silent fallback behind it
 

@@ -113,6 +113,20 @@ describe('WebSearch envelope: where it lands', () => {
     expect(envelopeGroups(s4 as any).map((g) => g.matcher)).toEqual(['mcp__playwright__browser_.*', WEBSEARCH_ENVELOPE_MATCHER])
   })
 
+  it('UNTRUSTEDREAD1126: the managed group from before Read joined is migrated in place, not kept beside the new one', () => {
+    const own = { type: 'command', command: 'python3 "/x/own-audit.py"', timeout: 5 }
+    const prev = 'WebSearch|WebFetch|mcp__(gmail|gmail-v2|google-calendar|google-drive|playwright|stripe)__.*'
+    const old = { type: 'command', command: `python3 -I -S "/old/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const s: Record<string, any> = { hooks: { PostToolUse: [{ matcher: prev, hooks: [old, own] }] } }
+    expect(injectWebSearchEnvelope(s)).toBe(true)
+    const groups = envelopeGroups(s as any)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].matcher).toBe(WEBSEARCH_ENVELOPE_MATCHER)
+    expect(WEBSEARCH_ENVELOPE_MATCHER).toContain('|^Read$|')
+    expect(s.hooks.PostToolUse).toContainEqual({ matcher: prev, hooks: [own] })
+    expect(injectWebSearchEnvelope(s)).toBe(false)
+  })
+
   it('empty settings get exactly one managed group, the full managed matcher', () => {
     const s: Record<string, any> = {}
     expect(injectWebSearchEnvelope(s)).toBe(true)
@@ -132,11 +146,11 @@ describe('WebSearch envelope: where it lands', () => {
     expect(s.hooks.PostToolUse).toContainEqual({ matcher: 'WebSearch', hooks: [own] })
   })
 
-  it('an operator group ending in |WebSearch gets a managed WebFetch group only', () => {
+  it('an operator group ending in |WebSearch gets a managed WebFetch|Read group only', () => {
     const theirs = { type: 'command', command: `python3 -I -S "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
     const s: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'mcp__browser.*|WebSearch', hooks: [theirs] }] } }
     expect(injectWebSearchEnvelope(s)).toBe(true)
-    expect(envelopeGroups(s as any).map((g) => g.matcher)).toEqual(['mcp__browser.*|WebSearch', 'WebFetch'])
+    expect(envelopeGroups(s as any).map((g) => g.matcher)).toEqual(['mcp__browser.*|WebSearch', 'WebFetch|Read'])
   })
 
   it.each(['*', ''])('an operator group with matcher %j holding the envelope hook gets no managed group', (matcher) => {
@@ -156,12 +170,14 @@ describe('WebSearch envelope: where it lands', () => {
 
   it.each([
     ['MISSING', false, [undefined]],
-    ['We.', false, ['We.']],
-    ['WebSearch, WebFetch', false, ['WebSearch, WebFetch']],
-    ['WebSearch | WebFetch', false, ['WebSearch | WebFetch']],
-    ['Fetch$', true, ['Fetch$', 'WebSearch']],
+    // UNTRUSTEDREAD1126: Read joined the managed tools, so a group covering only the two web tools gains a Read group
+    ['We.', true, ['We.', 'Read']],
+    ['WebSearch, WebFetch', true, ['WebSearch, WebFetch', 'Read']],
+    ['WebSearch | WebFetch', true, ['WebSearch | WebFetch', 'Read']],
+    ['WebSearch|WebFetch|Read', false, ['WebSearch|WebFetch|Read']],
+    ['Fetch$', true, ['Fetch$', 'WebSearch|Read']],
     ['Web', true, ['Web', WEBSEARCH_ENVELOPE_MATCHER]],
-    ['WebSearch|Web', true, ['WebSearch|Web', 'WebFetch']],
+    ['WebSearch|Web', true, ['WebSearch|Web', 'WebFetch|Read']],
     ['(', true, ['(', WEBSEARCH_ENVELOPE_MATCHER]],
     [5, true, [5, WEBSEARCH_ENVELOPE_MATCHER]],
     [null, true, [null, WEBSEARCH_ENVELOPE_MATCHER]],
@@ -178,10 +194,10 @@ describe('WebSearch envelope: where it lands', () => {
   it('the managed matcher covers the catalog mail/calendar/Drive/browser MCP tools, migrates the old one, and equals the project settings', () => {
     const hit = (tool: string) => new RegExp(WEBSEARCH_ENVELOPE_MATCHER).test(tool)
     for (const tool of ['WebSearch', 'WebFetch', 'mcp__gmail__read_email', 'mcp__gmail__search_emails', 'mcp__gmail-v2__get_thread',
-      'mcp__google-calendar__list-events', 'mcp__google-drive__readGoogleDoc', 'mcp__playwright__browser_snapshot']) {
+      'mcp__google-calendar__list-events', 'mcp__google-drive__readGoogleDoc', 'mcp__playwright__browser_snapshot', 'Read']) {
       expect(hit(tool), tool).toBe(true)
     }
-    for (const tool of ['Bash', 'Read', 'mcp__filesystem__read_file', 'mcp__plugin_telegram_telegram__reply']) {
+    for (const tool of ['Bash', 'NotebookRead', 'mcp__x__ReadFile', 'mcp__filesystem__read_file', 'mcp__plugin_telegram_telegram__reply']) {
       expect(hit(tool), tool).toBe(false)
     }
     const old = { type: 'command', command: `python3 -I -S "${join(PROJECT_ROOT, 'scripts', 'hooks', WEBSEARCH_ENVELOPE_SCRIPT)}"`, timeout: 10 }
