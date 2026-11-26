@@ -285,6 +285,17 @@ class TestCollectClaudeAuthoritative(unittest.TestCase):
         self.assertIn("HTTP 403", err)
         self.assertEqual(seen, ["a"])
 
+    def test_env_setup_token_403_alone_says_the_auth_mode(self):
+        # ISSUE3159: a 403 on the .env setup-token is by design, not a scope to fix: the error says so.
+        opener, seen = self._urlopen_by_token({"setup": 403})
+        with patch.object(uc, "_read_claude_token", side_effect=self._sources({"env_file": "setup"})), \
+             patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+             patch("urllib.request.urlopen", side_effect=opener):
+            windows, err, err_kind = uc._collect_claude_authoritative()
+        self.assertIsNone(windows)
+        self.assertEqual(err_kind, "permanent")
+        self.assertEqual(err, "HTTP 403 (env_file token): not available on this auth mode (the usage endpoint does not accept a setup-token)")
+
     def test_401_then_403_reports_the_401_first(self):
         # Geri #3073: a stale file (401) and a .env setup-token (403 by design) must not read as a scope problem.
         opener, seen = self._urlopen_by_token({"stale": 401, "setup": 403})
@@ -1142,6 +1153,83 @@ class TestClaudeTokenSources(unittest.TestCase):
         with patch.object(uc.sys, "platform", "linux"), \
              patch.object(uc.os.path, "exists", return_value=False):
             self.assertEqual(uc._read_claude_token(), (None, None))
+
+    # ISSUE3159: an expired ~/.claude/.credentials.json (a setup-token install's leftover first login) is skipped.
+    def _cred_file(self, oauth):
+        cred = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        cred.write(json.dumps({"claudeAiOauth": oauth}))
+        cred.close()
+        self.addCleanup(os.unlink, cred.name)
+        return cred.name
+
+    def _read_with_file(self, cred):
+        with patch.object(uc.sys, "platform", "linux"), \
+             patch.object(uc.os.path, "expanduser", return_value=cred), \
+             patch.object(uc, "ENV_PATH", self._tmp.name):
+            return uc._read_claude_token()
+
+    def test_expired_credentials_file_is_skipped_for_the_env_token(self):
+        past_ms = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp() * 1000)
+        cred = self._cred_file({"accessToken": "file-tok", "expiresAt": past_ms})
+        self.assertEqual(self._read_with_file(cred), ("env-tok", "env_file"))
+
+    def test_unexpired_credentials_file_still_wins(self):
+        future_ms = int((datetime.now(timezone.utc) + timedelta(hours=2)).timestamp() * 1000)
+        cred = self._cred_file({"accessToken": "file-tok", "expiresAt": future_ms})
+        self.assertEqual(self._read_with_file(cred), ("file-tok", "credentials_file"))
+
+    def test_credentials_file_without_expiry_is_not_judged(self):
+        cred = self._cred_file({"accessToken": "file-tok"})
+        self.assertEqual(self._read_with_file(cred), ("file-tok", "credentials_file"))
+
+
+class TestSetupTokenInstall(unittest.TestCase):
+    """ISSUE3159 end to end: Linux, the bot on the setup-token, an expired ~/.claude/.credentials.json left over. The
+    collector used to spend a 401 on the stale file and then run the rate-limit header probe with it too, so no reading
+    ever came. Now the stale file is skipped: the usage endpoint says plainly that it does not take a setup-token, and
+    the header probe gets the setup-token. No network, no node: urlopen and subprocess.run are stand-ins."""
+
+    def test_stale_file_skipped_header_probe_gets_the_setup_token(self):
+        tmp = tempfile.mkdtemp(prefix="i3159-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        past_ms = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp() * 1000)
+        cred = os.path.join(tmp, "credentials.json")
+        with open(cred, "w") as f:
+            json.dump({"claudeAiOauth": {"accessToken": "stale-tok", "expiresAt": past_ms}}, f)
+        env = os.path.join(tmp, ".env")
+        with open(env, "w") as f:
+            f.write("CLAUDE_CODE_OAUTH_TOKEN=setup-tok\n")
+        entry = os.path.join(tmp, "entry.js")
+        with open(entry, "w") as f:
+            f.write("//")
+        calls = []
+
+        def urlopen(req, timeout=10):
+            tok = req.headers["Authorization"].split(" ", 1)[1]
+            calls.append(("usage", tok))
+            raise urllib.error.HTTPError(req.full_url, 401 if tok == "stale-tok" else 403, "x", {}, None)
+
+        def run(argv, **kw):
+            if argv[:1] == ["claude"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="2.1.0 (Claude Code)\n", stderr="")
+            tok = kw["env"]["CLAUDE_RATELIMIT_TOKEN"]
+            calls.append(("headers", tok))
+            out = {"ok": True, "windows": {"five_hour": {"used_percent": 12.0}}} if tok == "setup-tok" else {"ok": False, "reason": "HTTP 401"}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(out) + "\n", stderr="")
+
+        real_expanduser = os.path.expanduser
+        with patch.object(uc.sys, "platform", "linux"), \
+             patch.object(uc.os.path, "expanduser", side_effect=lambda p: cred if p.endswith(".credentials.json") else real_expanduser(p)), \
+             patch.object(uc, "ENV_PATH", env), \
+             patch.object(uc, "RATELIMIT_ENTRY", entry), \
+             patch.object(uc, "_read_claude_statusline", return_value=(None, None)), \
+             patch("urllib.request.urlopen", side_effect=urlopen), \
+             patch.object(uc.subprocess, "run", side_effect=run):
+            result = uc.collect_claude()
+        self.assertEqual(calls, [("usage", "setup-tok"), ("headers", "setup-tok")])
+        self.assertEqual(result["source"], "ratelimit_headers")
+        self.assertEqual(result["windows"], {"five_hour": {"used_percent": 12.0}})
+        self.assertTrue(result["auth_error"].startswith("HTTP 403 (env_file token): not available on this auth mode"), result["auth_error"])
 
 
 class TestCodexSnapshotFreshness(unittest.TestCase):
