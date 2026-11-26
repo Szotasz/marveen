@@ -7,7 +7,7 @@ import {
   consumeApproval, consumeCategoryApproval,
   CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
-  createAgentMessage, setApprovalTelegramMessageId, decideApproval,
+  createAgentMessage, setApprovalTelegramMessageId, decideApproval, markApprovalNotified,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -267,6 +267,14 @@ export function _setAgentCreateNotifierForTest(fn: ((approval: Approval, lang: A
 
 function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null, serverFiled = false, filedLang?: ApprovalLang): void {
   const informative = chatApprovedMessageId != null
+  // the delivery leaves a mark ON THE ROW, not only in the log. A log
+  // line is not queryable state -- the row is what every later reader
+  // (dashboard, sub-agent, audit) actually sees. Only the request itself counts:
+  // an informative after-the-fact notice is not the request reaching the owner.
+  const delivered = (): void => {
+    if (informative) return
+    try { markApprovalNotified(approval.id) } catch (err) { logger.warn({ err, approvalId: approval.id }, 'approval notified_at stamp failed') }
+  }
   // APPROVALTAGEN1108: the language is read ONCE per request: the text, the Slack DM, its expiry and the language
   // stored with the post (the words its replies are checked with) are the same one. A server-filed request passes the
   // language its description was worded in (Samu 73350), so the description and the post never differ.
@@ -282,13 +290,13 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     // can verify goes out as the server-rendered card; anything else gets the normal message saying where to decide.
     if (!informative && CHANNEL_PROVIDER === 'teams' && teamsCardsOn(teamsCardDeps.setting)) {
       const route = teamsCardRoute(approval, teamsCardDeps)
-      if (route.ok && await postApprovalCard(approval, route, formatExpiry(approval.timeout_at, lang), lang, teamsCardDeps)) return
+      if (route.ok && await postApprovalCard(approval, route, formatExpiry(approval.timeout_at, lang), lang, teamsCardDeps)) { delivered(); return }
       text += '\n' + OWNER_TEXT[lang].teamsCardOnly(route.ok ? 'teams_post_failed' : route.reason)
     }
     if (!informative && (reactionsOn(reactionDeps.setting) || repliesOn(reactionDeps.setting))) {
       const expires = formatExpiry(approval.timeout_at, lang)
       const route = await reactionRoute(approval, serverFiled, reactionDeps, expires, approvalsPageUrl(), lang)
-      if (route.ok && await postReactionPrompt(approval, route)) return
+      if (route.ok && await postReactionPrompt(approval, route)) { delivered(); return }
       text += '\n' + dashboardOnlyLine(route.ok ? 'slack_post_failed' : route.reason, lang)
     }
     // APPROVALSLACK1030: an owner who moved to Slack (NOTIFY_SLACK_TARGET set) while the channel provider stays
@@ -301,6 +309,7 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     const slack = await sendOwnerSlackDm(text)
     if (slack.attempted) {
       if (slack.sent) {
+        delivered()
         logger.info({ approvalId: approval.id, provider: 'slack', informative }, 'approval owner notification sent')
         return
       }
@@ -343,6 +352,7 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
       try {
         const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, text)
         if (!informative && messageId != null) setApprovalTelegramMessageId(approval.id, messageId)
+        delivered()
         logger.info({ approvalId: approval.id, messageId, informative }, 'approval owner notification sent')
       } catch (err) {
         logger.warn({ err, approvalId: approval.id, informative }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
@@ -362,6 +372,7 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     // caught exactly that when this branch first used a template string.
     const r = await sendOwnerMessage(text)
     if (r.sent) {
+      delivered()
       logger.info({ approvalId: approval.id, provider: CHANNEL_PROVIDER, informative }, 'approval owner notification sent')
       return
     }

@@ -1837,6 +1837,14 @@ export function initDatabase(dbPathOverride?: string): void {
   // authorize two sends.
   try { db.exec('ALTER TABLE approvals ADD COLUMN content_hash TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
+  // a PROVIDER-INDEPENDENT delivery marker. Until this column
+  // existed the only record that an approval request had actually reached the
+  // owner was a log line ('approval owner notification sent'), and the
+  // telegram_message_id that stands in for it is filled on the Telegram branch
+  // only. On any other channel a DELIVERED request, a FAILED one and an EXPIRED
+  // one read the same from the row. notified_at is written by whichever channel
+  // layer succeeded, so it stays true across providers.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN notified_at INTEGER') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
   // f2c5edb0: the gate only sees a send it can read in the command text, so a
   // letter sent by a script (ssh + a mailer run on another host) never flipped
@@ -8374,6 +8382,10 @@ export interface Approval {
   // The sub-agent allowed to consume this row with its own token; NULL = none.
   // Optional in the type only, like consumed_by above.
   for_agent?: string | null
+  /** Unix seconds when the owner notification actually left for the channel,
+   *  or null when it never did (suppressed, failed, or not yet sent).
+   *  Optional in the type only, like consumed_by above. */
+  notified_at?: number | null
 }
 
 export function createApproval(params: {
@@ -8418,6 +8430,7 @@ export function createApproval(params: {
     content_hash: params.content_hash ?? null,
     consumed_at: null,
     for_agent: params.for_agent ?? null,
+    notified_at: null,
   }
 }
 
@@ -8729,6 +8742,18 @@ export function decideApprovalFromTeams(p: {
   })()
   if (res.outcome === 'decided') runApprovalConsumer(p.approvalId)
   return res
+}
+
+/**
+ * Stamp the moment the owner notification left for the channel.
+ * Write-once: a later retry must not overwrite the first successful delivery,
+ * and a row that was never delivered must stay NULL rather than acquire a
+ * timestamp from some adjacent event.
+ */
+export function markApprovalNotified(id: string, at?: number): boolean {
+  const ts = at ?? Math.floor(Date.now() / 1000)
+  return db.prepare('UPDATE approvals SET notified_at = ? WHERE id = ? AND notified_at IS NULL')
+    .run(ts, id).changes > 0
 }
 
 // The CREATE path stamps the owner-notification message id onto the row
