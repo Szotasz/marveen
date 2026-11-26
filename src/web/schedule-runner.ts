@@ -3693,8 +3693,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // local agent whose pane runs OpenAI Codex -- the Claude transcript of
         // those agents never moves, which made every fast task read 'lost' and
         // re-deliver (measured 2026-11-15: 38 duplicate runs in one day).
-        // codexSessionDirsFor returns [] unless the pane pid actually runs
-        // with a CODEX_HOME, so a Claude-Code agent never pays for this.
+        // codexSessionDirsFor returns [] unless the agent's persisted engine config says
+        // codex, so a Claude-Code agent never pays for this.
         let codexMtime: (() => number | null) | undefined
         if (entry.host == null) {
           try {

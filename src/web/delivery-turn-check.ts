@@ -385,7 +385,7 @@ export interface TurnCheckDeps {
   now: () => number
   /**
    * CODEXEVID d72ba2bd: codex rollout roots for the recipient ([] when the
-   * pane runs Claude Code or nothing resolves). Optional so pre-existing
+   * agent's persisted engine is not codex or nothing resolves). Optional so pre-existing
    * callers/tests that pass today's deps keep today's behaviour verbatim.
    */
   codexSessionDirs?: (agent: string) => Promise<string[]>
