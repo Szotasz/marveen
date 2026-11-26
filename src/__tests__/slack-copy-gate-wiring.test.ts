@@ -117,3 +117,25 @@ describe('the final settings file', () => {
     expect(existsSync(agentSettingsPath(TEST_AGENT))).toBe(false)
   })
 })
+
+describe('web.ts wiring', () => {
+  // The boot loop is the only path that carries the matcher to agents scaffolded before it existed: without this
+  // call, the migration tests above pass and no running install is ever patched. Full-line comments are dropped,
+  // so a commented-out call does not count.
+  const src = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8').replace(/^\s*\/\/.*$/gm, '')
+  const call = 'ensureSlackCopyGate(agentName)'
+
+  it('calls the migration exactly once', () => {
+    expect(src.split(call).length - 1).toBe(1)
+  })
+
+  it('the call sits in the per-agent boot loop, next to the Telegram one', () => {
+    const start = src.indexOf('forEachAgentIsolated([MAIN_AGENT_ID, ...listAllAgentNames()], (agentName) => {')
+    expect(start).toBeGreaterThan(-1)
+    const end = src.indexOf("}, (agentName, err) => logger.warn({ err, agent: agentName }, 'Agent hook backfill failed", start)
+    expect(end).toBeGreaterThan(start)
+    const loop = src.slice(start, end)
+    expect(loop).toContain(call)
+    expect(loop).toContain('ensureTelegramCopyGate(agentName)')
+  })
+})

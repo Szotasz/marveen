@@ -401,6 +401,19 @@ def main():
         code, out, err = run_hook(slack_read, rules_file=active)
         check("slack fetch_messages is not audited (exit 0)", code, 0)
 
+        # Slack has no MarkdownV2: a backslash is a literal the author typed, so
+        # 'a \-\- b' reaches the reader as written and is not a prose dash. The
+        # Telegram reply with the same text is the control: there the escapes are
+        # undone, the text becomes ' -- ', and the double-hyphen rule blocks it.
+        # With unescape_mdv2=True on the Slack branch, the first check goes red.
+        backslash = CLEAN_HU_OK + " a \\-\\- b"
+        slack_bs = {"tool_name": "mcp__plugin_slack-channel_slack__reply",
+                    "tool_input": {"chat_id": "D0TEST", "text": backslash}}
+        code, out, err = run_hook(slack_bs, rules_file=active)
+        check("slack keeps a backslash literal: 'a \\-\\- b' passes (exit 0)", code, 0)
+        code, out, err = run_hook(telegram_payload(backslash), rules_file=active)
+        check("control: telegram unescapes 'a \\-\\- b' to ' -- ' and blocks (exit 2)", code, 2)
+
         # --- COPYGATEENT914: HTML-ENTITAS NEM KERULHETI MEG A GONDOLATJEL-TILTAST ---
         # Marveen merese 2026-09-14, egy VALODI vevo-levelen: a hook a TAGEKET
         # szedte ki, de az entitast sehol nem dekodolta, igy a `&mdash;` atment

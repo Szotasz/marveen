@@ -2401,13 +2401,10 @@ export function injectBashEgressParser(existing: Record<string, unknown>): void 
 export const TELEGRAM_COPY_GATE_MATCHER =
   'mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message'
 
-// GATESLACK1015, 2026-10-15. The same two tools on Slack, and this is the path
-// that actually carries text out of the fleet today: the owner channel moved
-// from Telegram to Slack on 2026-10-07. Measured that day: the copy gate was
-// wired for Telegram and Discord and NOT for Slack, and the hook's own dispatch
-// had no slack branch either -- so from the move onward the gate audited zero
-// messages on the only channel in use, while running and exiting 0 on every
-// turn. Nothing broke; the ROAD moved out from under the gate.
+// GATESLACK1015. The same two tools on Slack. The copy gate was wired for
+// Telegram and Discord only, and the hook's own dispatch had no slack branch
+// either, so on an install whose owner talks through Slack the gate audited no
+// message at all, while running and exiting 0 on every turn.
 export const SLACK_COPY_GATE_MATCHER =
   'mcp__plugin_slack-channel_slack__reply|mcp__plugin_slack-channel_slack__edit_message'
 

@@ -5341,13 +5341,11 @@ def main():
         # unescaping (on Discord a backslash is a literal the author typed).
         channel_gate(tool_input, "Discord", unescape_mdv2=False)  # exits; never falls through
     if re.search(r"slack.*__(reply|edit_message)$", tool, re.I):
-        # GATESLACK1015: measured 2026-10-15. The fleet moved its owner channel
-        # from Telegram to Slack on 2026-10-07, and from that day the Hungarian
-        # copy gate audited nothing on the only channel actually in use -- the
-        # matcher named the telegram tool and this dispatch had no slack branch,
-        # so every owner message went out unaudited and the hook still exited 0.
-        # Slack mrkdwn is like Discord: a backslash is a literal the author
-        # typed, so no MarkdownV2 unescaping.
+        # GATESLACK1015: the matcher and this dispatch named the Telegram and
+        # Discord send tools only, so on an install that talks through Slack no
+        # send was audited, and the hook still exited 0. Slack mrkdwn is like
+        # Discord: a backslash is a literal the author typed, so no MarkdownV2
+        # unescaping.
         channel_gate(tool_input, "Slack", unescape_mdv2=False)  # exits; never falls through
     # COPYGATEMATCHER904: the hook is REGISTERED for manage_email, create_draft,
     # update_draft and the Gmail connector's reply/send_message/forward tools,
