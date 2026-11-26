@@ -16,7 +16,7 @@ export const AGENT_PUT_WRITABLE_FIELDS = [
   'engine', 'codexConfigDir',
   'claudeMd', 'soulMd', 'mcpJson', 'model',
   'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
-  'modelProfile', 'customProvider', 'codeMode', 'skillOverrides',
+  'modelProfile', 'customProvider', 'codeMode', 'skillOverrides', 'displayName',
 ] as const
 
 // APIAGENTWRITE1104: the fields that change what an agent is told (CLAUDE.md, SOUL.md), what it runs (.mcp.json: a
@@ -26,11 +26,14 @@ export const AGENT_PUT_WRITABLE_FIELDS = [
 // (skillOverrides: even name-only drops the description that makes a skill trigger). They need the owner, not the
 // shared access token every sub-agent can read. model and modelProfile stay token-writable (Samu 69185): the id is
 // validated and changes neither a target nor an instruction, and the quota and install flows set it with the token.
+// AGENTRENAME1125: displayName is the owner's too. It is what people and other installs read for the agent (the
+// dashboard, the federation roster a peer pulls, Gromzo, a generated Slack manifest), so a sub-agent holding the
+// token must not rename itself or another agent.
 export const AGENT_PUT_OWNER_FIELDS = [
   'engine', 'codexConfigDir',
   'claudeMd', 'soulMd', 'mcpJson',
   'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
-  'customProvider', 'codeMode', 'skillOverrides',
+  'customProvider', 'codeMode', 'skillOverrides', 'displayName',
 ] as const
 
 /** The owner-only fields present in a PUT body, in AGENT_PUT_OWNER_FIELDS order. A field set to null or '' counts:

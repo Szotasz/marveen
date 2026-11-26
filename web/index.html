@@ -2757,7 +2757,22 @@
               </button>
             </div>
             <div class="detail-info">
-              <h3 id="agentDetailName"></h3>
+              <div class="detail-name-row" id="agentDetailNameRow">
+                <h3 id="agentDetailName"></h3>
+                <button type="button" class="detail-rename-btn" id="agentRenameBtn" hidden title="Megjelenített név módosítása" data-i18n-title="agents.rename.btn_title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/>
+                  </svg>
+                </button>
+              </div>
+              <form class="detail-rename-form" id="agentRenameForm" hidden>
+                <div class="detail-rename-fields">
+                  <input type="text" class="input" id="agentRenameInput" maxlength="200" autocomplete="off">
+                  <button type="submit" class="btn-primary btn-compact" id="agentRenameSave" data-i18n="common.btn.save">Mentés</button>
+                  <button type="button" class="btn-secondary btn-compact" id="agentRenameCancel" data-i18n="common.btn.cancel">Mégse</button>
+                </div>
+                <small class="detail-rename-hint" id="agentRenameHint"></small>
+              </form>
               <p id="agentDetailDesc"></p>
             </div>
           </div>

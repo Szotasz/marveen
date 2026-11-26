@@ -25,7 +25,7 @@ import { agentIsolatedConfigDir, setCodeModeCaveats, syncCodeModeMarker } from '
 
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { hasLaunchTrace, hasPackageManifestFile, startsWithPackageShell } from '../agent-package/marker.js'
-import { packageDescription, packageSummaryField } from '../agent-package/install.js'
+import { OWNER_DISPLAY_NAME_MAX_INPUT, ownerDisplayName, packageDescription, packageSummaryField } from '../agent-package/install.js'
 import { readUpdatingTrace } from '../agent-package/update.js'
 
 import { claudeSupportForCli, CLAUDE_MODEL_MIN_CLI } from '../../claude-cli-support.js'
@@ -45,6 +45,7 @@ import {
   writeAgentModelProfile,
   writeAgentModel,
   readAgentDisplayName,
+  writeAgentDisplayName,
   readAgentTagline,
   writeAgentTagline,
   readAgentSecurityProfile,
@@ -2909,6 +2910,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       skillOverrides?: Record<string, string> | null
       modelProfile?: string | null
       customProvider?: string | null
+      displayName?: unknown
     }
 
     // Unknown fields are rejected rather than silently dropped -- see
@@ -2937,6 +2939,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (data.skillOverrides !== undefined && data.skillOverrides !== null) {
       const err = isMainChannelsAgent(name) ? 'skillOverrides is not applicable to the main agent' : skillOverridesError(data.skillOverrides)
       if (err) { json(res, { error: err }, 400); return true }
+    }
+    // AGENTRENAME1125: the display name, cleaned the way the package install dialog cleans the owner's
+    // (ownerDisplayName): one line, no S11 code point, at most 60 code points, no manifest-rule break. Only what people
+    // read changes; the agent id, its folder and every route stay the slug. An empty name clears it (the title-cased id
+    // shows again). Checked here, before the first write.
+    let displayNameNext: string | undefined
+    if (data.displayName !== undefined) {
+      const raw = data.displayName
+      const cleaned = typeof raw === 'string' && Array.from(raw).length <= OWNER_DISPLAY_NAME_MAX_INPUT ? ownerDisplayName(raw) : null
+      if (cleaned === null) { json(res, { error: 'invalid_display_name' }, 400); return true }
+      displayNameNext = cleaned ?? ''
     }
 
     // MIOAGENTINSTALL1114 (plan 4.2, 7.5; Dani B1, B2): a package agent's CLAUDE.md must keep starting with the
@@ -3081,6 +3094,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (data.customProvider !== undefined) {
       writeAgentCustomProvider(name, data.customProvider || null)
     }
+    if (displayNameNext !== undefined) writeAgentDisplayName(name, displayNameNext)
     if (data.authMode !== undefined) {
       writeAgentAuthMode(name, data.authMode)
       if (data.authMode === 'api' && typeof data.apiKey === 'string' && data.apiKey.trim()) {
@@ -3110,7 +3124,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       writeAgentClaudePlan(name, planId)
     }
-    json(res, { ok: true })
+    // The name as stored (cleaned), so the dashboard shows what was saved, not what was typed.
+    json(res, displayNameNext !== undefined ? { ok: true, displayName: readAgentDisplayName(name) } : { ok: true })
     return true
   }
 

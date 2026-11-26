@@ -638,6 +638,7 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
 {
   "model": "claude-sonnet-5",
   "profileId": "developer-senior",
+  "displayName": "Kutató",
   "memoryIsolation": false,
   "team": {
     "role": "member",
@@ -648,6 +649,8 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
   }
 }
 ```
+
+A `displayName` mező (opcionális) az ügynök megjelenített neve: ezt látja az ember a dashboardon, és ezt kapják a föderációs társgépek, a Gromzo és a generált Slack-manifeszt. Az ügynök azonosítója, a mappája és minden útvonal a mappanév marad. Hiányában a mappanév nagy kezdőbetűvel jelenik meg. A dashboardon az ügynök részletei ablakban, a név melletti ceruzával szerkeszthető, tulajdonosi bejelentkezéssel (`PUT /api/agents/<név>` `{"displayName": "..."}`; a megosztott token nem írhatja). A szöveg egy sorba kerül, vezérlőkarakter nélkül, legfeljebb 60 karakterre vágva; az üres név törli a mezőt.
 
 A `memoryIsolation` mező (opcionális, alapértelmezés: kikapcsolva) az ágens fájl-alapú auto-memóriáját választja le a közös, telepítés-szintű memóriáról. Bekapcsolva az ágens indításkor saját git-gyökeret kap (stub .git az agents/<név> alatt), így a Claude Code auto-memory a saját projekt-kulcsa alá kerül, és az ágens nem látja a közös MEMORY.md-t. A megosztott SQLite-emlékek és a CLAUDE.md továbbra is elérnek hozzá.
 

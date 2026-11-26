@@ -89,7 +89,7 @@ describe('PUT /api/agents/:name with the bare shared token', () => {
   const values: Record<string, unknown> = {
     claudeMd: '# injected\n', soulMd: 'injected', mcpJson: '{"mcpServers":{"x":{"command":"true"}}}',
     authMode: 'shared', apiKey: 'k', claudePlan: '', memoryIsolation: true, customProvider: null, codeMode: true,
-    engine: 'codex', codexConfigDir: '/tmp/codex-home-x', skillOverrides: { 'guard-skill': 'name-only' },
+    engine: 'codex', codexConfigDir: '/tmp/codex-home-x', skillOverrides: { 'guard-skill': 'name-only' }, displayName: 'Renamed',
   }
   for (const field of AGENT_PUT_OWNER_FIELDS) {
     it(`${field}: 403 owner_session_required, and no file changed`, async () => {
@@ -122,6 +122,63 @@ describe('PUT /api/agents/:name with the bare shared token', () => {
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, { kind: 'device', scope: 'full', device: 'Bridge' }, { claudeMd: '# x\n' }))).toBe(true)
     expect(refusedByOwnerGate(await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, { kind: 'device', scope: 'operator', device: 'Op' }, { claudeMd: '# x\n' }, ownerCookie()))).toBe(true)
     expect(snapshot()['CLAUDE.md']).toBe(ORIGINAL['CLAUDE.md'])
+  })
+})
+
+// AGENTRENAME1125: the display name is what people and other installs read for the agent, so it is an owner field.
+// Named here on its own as well; the text is cleaned as the package install dialog cleans the owner's name.
+describe('PUT displayName: owner only, cleaned, an empty name clears it', () => {
+  const config = () => JSON.parse(readFileSync(join(DIR, 'agent-config.json'), 'utf-8'))
+
+  it('the bare shared token: 403 owner_session_required, agent-config.json byte-identical', async () => {
+    const before = snapshot()
+    const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, TOKEN, { displayName: 'Renamed' })
+    expect(refusedByOwnerGate(r)).toBe(true)
+    expect(r.body.fields).toEqual(['displayName'])
+    expect(snapshot()).toEqual(before)
+  })
+
+  it('the owner session: 200, the cleaned name stored beside the other keys and given back', async () => {
+    const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { displayName: '  Számlázó\nKati\t\u200b ' + 'x'.repeat(70) })
+    expect(r.status).toBe(200)
+    const stored = config().displayName as string
+    expect(stored.startsWith('Számlázó Kati x')).toBe(true)
+    expect(Array.from(stored)).toHaveLength(60)
+    expect(/[\n\t\u200b]|^\s|\s$/u.test(stored)).toBe(false)
+    expect(r.body).toEqual({ ok: true, displayName: stored })
+    expect(config().model).toBe('claude-opus-5')
+    const detail = await hit(tryHandleAgents, 'GET', `/api/agents/${AGENT}`, TOKEN)
+    expect(detail.body.displayName).toBe(stored)
+  })
+
+  it('an empty name removes the key, and the title-cased id shows again', async () => {
+    expect((await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { displayName: 'Kati' })).status).toBe(200)
+    expect(config().displayName).toBe('Kati')
+    const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { displayName: '  \n ' })
+    expect(r.status).toBe(200)
+    expect(config()).toEqual({ model: 'claude-opus-5' })
+    expect(r.body.displayName).toBe(AGENT.charAt(0).toUpperCase() + AGENT.slice(1))
+  })
+
+  it('not a string, longer than 200, or a manifest-rule break: 400 invalid_display_name, nothing written', async () => {
+    for (const displayName of [5, null, ['x'], 'x'.repeat(201), '@notes/secret.md', 'Kati &#x40; x']) {
+      const before = snapshot()
+      const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { displayName })
+      expect(r, JSON.stringify(displayName)).toMatchObject({ status: 400, body: { error: 'invalid_display_name' } })
+      expect(snapshot()).toEqual(before)
+    }
+  })
+
+  it('a refused name writes nothing else in the same body either (checked before the first write)', async () => {
+    const before = snapshot()
+    const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${AGENT}`, SESSION, { model: 'claude-sonnet-5', displayName: '@notes/secret.md' })
+    expect(r.status).toBe(400)
+    expect(snapshot()).toEqual(before)
+  })
+
+  it('the main agent stays read-only here (its name is BOT_NAME)', async () => {
+    const r = await hit(tryHandleAgents, 'PUT', `/api/agents/${encodeURIComponent(MAIN_AGENT_ID)}`, SESSION, { displayName: 'X' })
+    expect(r.status).toBe(400)
   })
 })
 

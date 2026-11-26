@@ -2956,6 +2956,17 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 
 .detail-info h3 { font-size: 18px; font-weight: 600; }
+/* AGENTRENAME1125: the display name is edited in place, next to the name. */
+.detail-name-row { display: flex; align-items: center; gap: 6px; }
+.detail-name-row[hidden] { display: none; }
+.detail-rename-btn { background: none; border: none; padding: 4px; border-radius: 4px; color: var(--text-muted); cursor: pointer; line-height: 0; }
+.detail-rename-btn:hover { color: var(--text); background: var(--bg-input); }
+.detail-rename-btn[hidden] { display: none; }
+.detail-rename-form { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
+.detail-rename-form[hidden] { display: none; }
+.detail-rename-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.detail-rename-fields .input { flex: 1 1 180px; min-width: 0; }
+.detail-rename-hint { color: var(--text-muted); font-size: 12px; }
 .detail-info p { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
 
 .detail-section { margin-bottom: 24px; }

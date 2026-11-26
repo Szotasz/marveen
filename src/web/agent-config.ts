@@ -218,11 +218,13 @@ export function readAgentDisplayName(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1)
 }
 
+/** An empty name removes the key, so readAgentDisplayName falls back to the title-cased id again (AGENTRENAME1125). */
 export function writeAgentDisplayName(name: string, displayName: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
   config = readJsonObjectForWrite(configPath)
-  config.displayName = displayName
+  if (displayName === '') delete config.displayName
+  else config.displayName = displayName
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
