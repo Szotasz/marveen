@@ -786,7 +786,47 @@ def _command_heads(toks, _d: int = 0):
     heads = []
     for s in starts:
         heads += _command_heads(toks[s + positionals:], _d + 1)
-    return heads
+    return _xargs_heads(toks, heads) if w == "xargs" else heads   # EVALXARGSMAIL1126
+
+
+# EVALXARGSMAIL1126: xargs appends the words it reads to its command template (or puts them where the -I / -J / -i /
+# --replace string stands). For an HTTP client template the added word can be the URL, so it stands in as one
+# undecidable word ($XARGS_ARG): the inline mail API rule then decides it like any variable URL (a mail-only API host
+# elsewhere on the line, or a provider send path, makes it a send). Other templates are unchanged here.
+_XARGS_ARG = "$XARGS_ARG"
+
+
+def _xargs_replace_string(toks):
+    """the replace string of an xargs call (-I X, -IX, -J X, -i[X], --replace[=X]), or None"""
+    for i, t in enumerate(toks[1:], 1):
+        if t == "--":
+            break
+        if t in ("-I", "-J") and i + 1 < len(toks):
+            return toks[i + 1]
+        if t.startswith(("-I", "-J")) and len(t) > 2:
+            return t[2:]
+        if t == "-i" or t == "--replace":
+            return "{}"
+        if t.startswith("-i") and len(t) > 2:
+            return t[2:]
+        if t.startswith("--replace="):
+            return t[len("--replace="):] or "{}"
+        if not t.startswith("-"):
+            break
+    return None
+
+
+def _xargs_heads(toks, heads):
+    repl = _xargs_replace_string(toks)
+    out = []
+    for h in heads:
+        if h and _HTTP_CLIENT.match(_basename(h[0])):
+            if repl:
+                h = [h[0]] + [w.replace(repl, _XARGS_ARG) for w in h[1:]]
+            else:
+                h = h + [_XARGS_ARG]
+        out.append(h)
+    return out
 
 
 # Bence 69517: GNU env reads a long option by any unique prefix (getopt_long): `--c=DIR` is --chdir, `--spl=` is
@@ -1198,6 +1238,11 @@ def _head_is_send(toks, depth: int) -> bool:
     # MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
     if _CURLISH.match(prog) and any(_CURL_SMTP.match(t) for t in rest):
         return True
+    # EVALXARGSMAIL1126: eval runs its words, joined with blanks, as a command line
+    if prog == "eval" and depth < 3:
+        words = rest[1:] if rest[:1] == ["--"] else rest
+        if words and is_send_invocation(" ".join(words), _depth=depth + 1):
+            return True
     # burkolo hejj: a -c string-argumentum maga is parancs -- rekurzio
     if _WRAPPER_SHELL.match(prog) and depth < 3:
         for i, t in enumerate(rest):

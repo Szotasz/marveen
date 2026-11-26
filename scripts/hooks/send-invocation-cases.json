@@ -2183,6 +2183,76 @@
       "name": "JSCDSEND1104: control, gtimeout in front of a non-sender",
       "cmd": "gtimeout 10 ls",
       "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: S03",
+      "cmd": "set -- https://api.resend.com/emails; eval 'curl -A https://api.re\"\"send.com/emails -d @m.json \"$1\"'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: S24",
+      "cmd": "echo https://api.resend.com/emails | xargs curl -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: eval literal send",
+      "cmd": "eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: eval literal send unquoted",
+      "cmd": "eval curl -X POST https://api.resend.com/emails -d x",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: xargs -I",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} curl -d @m.json {}",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: xargs -n1 wget",
+      "cmd": "echo https://api.sendgrid.com/v3/mail/send | xargs -n1 wget --post-file m.json",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: xargs curl, no mail host on the line",
+      "cmd": "cat urls.txt | xargs curl -s -O",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: eval of a read",
+      "cmd": "eval 'curl -s https://api.sendgrid.com/v3/stats'",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: eval ssh-agent",
+      "cmd": "eval \"$(ssh-agent -s)\"",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: xargs grep",
+      "cmd": "echo a | xargs grep -n x",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: eval of a mail program line",
+      "cmd": "eval 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: eval -- before a send",
+      "cmd": "eval -- 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: xargs --replace=URL",
+      "cmd": "echo https://api.resend.com/emails | xargs --replace=URL curl -d @m.json URL",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: xargs curl GET read with a mail host on the line",
+      "cmd": "echo https://api.sendgrid.com/v3/stats | xargs curl -s",
+      "expected": false
     }
   ]
 }

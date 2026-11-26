@@ -1016,7 +1016,32 @@ function commandHeads(toksIn, d = 0) {
     break
   }
   starts.unshift(i)
-  return starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
+  const heads = starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
+  return w === 'xargs' ? xargsHeads(toks, heads) : heads // EVALXARGSMAIL1126
+}
+
+// EVALXARGSMAIL1126: xargs appends the words it reads to an HTTP client template (or puts them where its replace string
+// stands): that word stands in as one undecidable word, see _xargs_heads in the python twin
+const XARGS_ARG = '$XARGS_ARG'
+function xargsReplaceString(toks) {
+  for (let i = 1; i < toks.length; i++) {
+    const t = toks[i]
+    if (t === '--') break
+    if ((t === '-I' || t === '-J') && i + 1 < toks.length) return toks[i + 1]
+    if ((t.startsWith('-I') || t.startsWith('-J')) && t.length > 2) return t.slice(2)
+    if (t === '-i' || t === '--replace') return '{}'
+    if (t.startsWith('-i') && t.length > 2) return t.slice(2)
+    if (t.startsWith('--replace=')) return t.slice('--replace='.length) || '{}'
+    if (!t.startsWith('-')) break
+  }
+  return null
+}
+function xargsHeads(toks, heads) {
+  const repl = xargsReplaceString(toks)
+  return heads.map((h) => {
+    if (!h || !h.length || !HTTP_CLIENT.test(basename(h[0]))) return h
+    return repl ? [h[0], ...h.slice(1).map((w) => w.split(repl).join(XARGS_ARG))] : [...h, XARGS_ARG]
+  })
 }
 
 // SUBAGENTMAILGATE1016 (measured on the sub-agent gate, 2026-10-16): the
@@ -1201,6 +1226,11 @@ function headIsSend(toks, depth) {
   if (MAIL_PROG.test(prog) && mailProgSends(rest)) return true
   // MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
   if (CURLISH.test(prog) && rest.some((t) => CURL_SMTP.test(t))) return true
+  // EVALXARGSMAIL1126: eval runs its words, joined with blanks, as a command line
+  if (prog === 'eval' && depth < 3) {
+    const words = rest[0] === '--' ? rest.slice(1) : rest
+    if (words.length && isSendInvocation(words.join(' '), depth + 1)) return true
+  }
   if (WRAPPER_SHELL.test(prog) && depth < 3) {
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === '-c' && rest[i + 1] && isSendInvocation(rest[i + 1], depth + 1)) return true
