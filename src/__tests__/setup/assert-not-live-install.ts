@@ -27,7 +27,15 @@ const LIVE_MARKERS = [
   join('store', '.claude-oauth-token'),
 ]
 
-const found = LIVE_MARKERS.filter((m) => existsSync(join(repoRoot, m)))
+// DISPOSABLECLOUD1126: a Claude Code cloud session's VM is a throwaway clone with no live install to protect; a
+// marker there was made by the run itself (a test that writes store/), so it stops a harmless run. Both variables come
+// from the cloud runtime; locally neither is set. Same rule as onDisposableCloud in scripts/hooks/db-write-gate.mjs.
+export function liveMarkersFound(root: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  if (env.CLAUDE_CODE_REMOTE === 'true' && env.CLAUDE_CODE_REMOTE_SESSION_ID) return []
+  return LIVE_MARKERS.filter((m) => existsSync(join(root, m)))
+}
+
+const found = liveMarkersFound(repoRoot)
 if (found.length > 0) {
   throw new Error(
     `REFUSING TO RUN TESTS: ${repoRoot} looks like a LIVE install (found: ${found.join(', ')}). ` +
