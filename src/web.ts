@@ -48,6 +48,7 @@ import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startChannelIntakeMonitor } from './web/channel-intake-monitor.js'
+import { startQuotaNotice } from './web/quota-notice.js'
 import { startTelegramInboundReplay } from './web/telegram-inbound-replay.js'
 import { startTeamsCredentialMonitor } from './web/teams-credential-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
@@ -755,6 +756,9 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
 
   // VAULTLOGIN1112: every sub-agent a vault web login allows keeps its own browser running (a no-op with none).
   if (!servicesOff) startAgentBrowserWatchdog()
+
+  // QUOTANOTICE1126: owner notice at QUOTA_NOTICE_PCT and (opt-in) channel auto-replies at the quota wall.
+  if (!servicesOff) startQuotaNotice()
 
   // NOTE: startMcpListChecker() is intentionally NOT called here.
   //
