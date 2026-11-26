@@ -270,8 +270,14 @@ describe('REMOTESAWTURN1022 readRemoteTranscriptMtime: clock order, timeout, fai
 describe('REMOTESAWTURN1022 wiring (fix-revert guards)', () => {
   const src = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
 
+  it('the Codex sweep scopes evidence to the agent workspace and injection time', () => {
+    expect(src).toMatch(/codexAgentRolloutMtime\(codexDirs, entry\.workingDir, entry\.injectedAt\)/)
+  })
+
   it('15. the sweep takes sawTurn from probeTurnEvidence, not from an inline local-only read', () => {
-    expect(src).toMatch(/probeTurnEvidence\(entry, state\)/)
+    // CODEXEVID d72ba2bd: the sweep call may pass an optional third arg (codexMtime hint);
+    // the guarded property is that the sweep calls probeTurnEvidence, not an inline local-only read
+    expect(src).toMatch(/probeTurnEvidence\(entry, state(?:, [^)]+)?\)/)
     // the old inline local read inside the sweep must be gone (it was the blind spot)
     expect(src).not.toMatch(/lastMtimeSeen = readTranscriptMtimeAcrossConfigDirs\(entry\.workingDir, entry\.configDirs\)/)
   })

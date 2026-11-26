@@ -85,6 +85,7 @@ import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig,
 import { enqueueWorksourceItem, worksourceItemStage, worksourcePendingHead, type WorksourceItemStage } from './worksource-queue.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
+import { codexSessionDirsFor, codexAgentRolloutMtime } from './codex-transcript-root.js'
 import { classifyDelivery, readUserPromptsSince, sessionAuthFailedSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
 import { paneTyped } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
@@ -511,6 +512,14 @@ export function settleOnceAfterRun(
  * a transcript. A remote entry without a remoteWorkdir, an unreachable host, or
  * an unreadable directory gives no evidence (never an ssh call without a
  * workdir, never a guess).
+ *
+ * CODEXEVID d72ba2bd: for an agent whose pane runs OpenAI Codex the Claude
+ * transcript never moves, so the mtime probe alone called perfectly healthy
+ * runs 'lost' and re-delivered them (measured 2026-11-15: 38 redeliveries in
+ * one day, 58 since 11-14 -- every one a DUPLICATE task run). An optional
+ * codexMtime reader now supplies the newest CODEX rollout mtime as a second,
+ * local-only signal; the wiring at the call site resolves it from the pane's
+ * CODEX_HOME. Still PURE: every reader is injected, null means no evidence.
  */
 export function probeTurnEvidence(
   entry: Pick<TaskInflightEntry, 'injectedAt' | 'sawTurn' | 'host' | 'workingDir' | 'configDirs' | 'remoteWorkdir'>,
@@ -518,15 +527,21 @@ export function probeTurnEvidence(
   deps: {
     readLocal?: (workingDir: string, configDirs: ReadonlyArray<string | undefined>) => number | null
     readRemote?: (host: string, workdir: string) => number | null
+    /** Newest Codex rollout mtime for the entry's agent (local agents only). */
+    codexMtime?: () => number | null
   } = {},
 ): { sawTurn: boolean; mtimeSeen: number | null } {
   if (entry.sawTurn) return { sawTurn: true, mtimeSeen: null }
   if (paneState === 'busy') return { sawTurn: true, mtimeSeen: null }
   let mtimeSeen: number | null
+  let codexSeen: number | null = null
   if (entry.host == null) {
     mtimeSeen = deps.readLocal
       ? deps.readLocal(entry.workingDir, entry.configDirs)
       : readTranscriptMtimeAcrossConfigDirs(entry.workingDir, entry.configDirs)
+    // Codex evidence only for local hosts, same boundary as readLocal: a
+    // remote agent's CODEX_HOME lives on the remote host, not here.
+    codexSeen = deps.codexMtime != null ? deps.codexMtime() : null
   } else if (entry.remoteWorkdir && paneState != null) {
     // paneState null = the pane capture over ssh already failed (host
     // unreachable): the verdict is 'hold' anyway, so a second ssh (up to 3 s)
@@ -535,7 +550,10 @@ export function probeTurnEvidence(
   } else {
     mtimeSeen = null
   }
-  return { sawTurn: mtimeSeen != null && mtimeSeen > entry.injectedAt, mtimeSeen }
+  return {
+    sawTurn: (mtimeSeen != null && mtimeSeen > entry.injectedAt) || (codexSeen != null && codexSeen > entry.injectedAt),
+    mtimeSeen,
+  }
 }
 
 // True when a queued item's stay in pending/ has lasted long enough to MEAN
@@ -3671,7 +3689,27 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // other side.
       let lastMtimeSeen: number | null = null
       if (!entry.sawTurn) {
-        const probed = probeTurnEvidence(entry, state)
+        // CODEXEVID d72ba2bd: also weigh the newest Codex rollout mtime for a
+        // local agent whose pane runs OpenAI Codex -- the Claude transcript of
+        // those agents never moves, which made every fast task read 'lost' and
+        // re-deliver (measured 2026-11-15: 38 duplicate runs in one day).
+        // Only the agent's own rollouts count (session_meta cwd under its
+        // workspace), so another agent on the same seat cannot suppress 'lost'.
+        // codexSessionDirsFor returns [] unless the agent's persisted engine config says
+        // codex, so a Claude-Code agent never pays for this.
+        let codexMtime: (() => number | null) | undefined
+        if (entry.host == null) {
+          try {
+            const codexDirs = await codexSessionDirsFor(entry.agentName)
+            if (codexDirs.length > 0) {
+              const rolloutMtime = await codexAgentRolloutMtime(codexDirs, entry.workingDir, entry.injectedAt)
+              codexMtime = () => rolloutMtime
+            }
+          } catch {
+            codexMtime = undefined // no codex evidence: behave exactly as before
+          }
+        }
+        const probed = probeTurnEvidence(entry, state, codexMtime != null ? { codexMtime } : {})
         lastMtimeSeen = probed.mtimeSeen
         if (probed.sawTurn) entry.sawTurn = true
       }
