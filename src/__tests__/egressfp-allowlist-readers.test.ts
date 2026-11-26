@@ -260,4 +260,16 @@ describe('a blanked flag argument and a naive-split fragment are no hiding place
     allowed(`cat <<'E' >/tmp/n\nx\nE\ncat store/egress-allowlist.json`)
     allowed(`echo "$(date)"; grep -c a store/egress-allowlist.json`)
   })
+  it('with no mask at all (unresolved quoting), every naive piece after the first is a fragment', () => {
+    const W = `cat = open('store/egress-allowlist.json','w')`
+    deniedAllowlist(`python3 -c "x=1; ${W}"; : <<E`)
+    deniedAllowlist(`python3 - <<'E'\n${W}`)
+    deniedAllowlist(`true $(true)#\npython3 -c "x=1; ${W}"`)
+    // controls: the same write is denied with resolved quoting, and the first piece is still a read
+    deniedAllowlist(`python3 -c "x=1; ${W}"`)
+    deniedAllowlist(`python3 - <<'E'\n${W}\nE`)
+    allowed(`grep -c a store/egress-allowlist.json; : <<E`)
+    // known cost: a real read after the unresolved quote is denied too
+    deniedAllowlist(`: <<E; grep -c a store/egress-allowlist.json`)
+  })
 })

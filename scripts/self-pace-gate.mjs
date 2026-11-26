@@ -655,13 +655,14 @@ export function protectedSplit(command) {
   if (masked == null || masked.length !== src.length || heredocs.length) {
     // The naive split also cuts inside a quote or a heredoc body. A piece that STARTS there is a fragment of another
     // command, never a command of its own, so it is no read: `echo "$(date)"; python3 -c "<newline>cat =
-    // open('<allowlist>','w')"` must not read as `cat`. No mask at all (unresolved quoting): no piece is known as one.
+    // open('<allowlist>','w')"` must not read as `cat`. No mask at all (unresolved quoting, an unterminated heredoc):
+    // no piece after the first is known to start outside a quote, so every one of them is a fragment.
     const mask = masked?.length === src.length ? masked : maskInertLiterals(src, [], true)
     const fragments = []
     let start = 0
     for (const m of [...src.matchAll(/&&|\|\||[;&|]|\r?\n/g), { index: src.length, 0: '' }]) {
       const k = start + /^\s*/.exec(src.slice(start, m.index))[0].length
-      fragments.push(mask?.length === src.length && k < m.index && mask[k] === ' ')
+      fragments.push(mask?.length === src.length ? k < m.index && mask[k] === ' ' : fragments.length > 0)
       start = m.index + m[0].length
     }
     return { segs: splitSegments(command), seps: null, masked: null, quoteAware: false, fragments }
