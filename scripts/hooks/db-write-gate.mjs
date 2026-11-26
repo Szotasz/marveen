@@ -2103,6 +2103,9 @@ function dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx, gitDir) {
       break
     }
     const cur = gitDir === null || dirUnknown ? null : gitDir ? repoConfig({ gitDir }) : (repoTop(dir) ? repoConfig({ top: repoTop(dir) }) : { entries: [] })
+    // A config the gate cannot read whole (an [include] may hold a pushInsteadOf) fails closed whatever the target
+    // looks like (Samu's #3156 review, second item).
+    if (cur === null) return failClosed()
     // url.<base>.insteadOf / pushInsteadOf in the repository's own config rewrite a target that looks like a relative
     // path, a URL or a remote's URL into a local repository (Samu's #3156 review): read as pointing anywhere.
     if (cur?.entries.some((e) => e.sec === 'url' && (e.key === 'insteadof' || e.key === 'pushinsteadof'))) return failClosed()

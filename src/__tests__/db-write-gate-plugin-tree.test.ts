@@ -407,6 +407,15 @@ describe('PLUGINDIRGIT2-1126: core.worktree from the config, and a push to a loc
       cfg(join(own(), '.git'), text())
       expect(bash(c())).toEqual(SUB)
     })
+    it('a config the gate cannot read whole (an include holding a pushInsteadOf) fails a push closed, whatever the target', () => {
+      cfg(join(own(), '.git'), '[include]\n\tpath = extra.cfg\n')
+      writeFileSync(join(own(), '.git', 'extra.cfg'), `[url "${repo()}"]\n\tpushInsteadOf = x:\n`)
+      expect(bash(`git -C ${own()} push x:anything topic`)).toEqual(SUB)
+      // a target that resolves outside every git repository: only the unreadable-config rule stops it (the relative
+      // form above lands inside the clone, whose unreadable config fails closed on its own)
+      writeFileSync(join(own(), '.git', 'extra.cfg'), `[url "${repo()}"]\n\tpushInsteadOf = ${join(base, 'nowhere')}/\n`)
+      expect(bash(`git -C ${own()} push ${join(base, 'nowhere', 'y')} topic`)).toEqual(SUB)
+    })
     it('an unknown target fails closed', () => {
       expect(bash(`git -C ${own()} push "$T" topic`)).toEqual(SUB)
     })
