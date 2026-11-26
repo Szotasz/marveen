@@ -444,6 +444,16 @@ describe('the successes: the step is done', () => {
     expect(body).not.toMatch(/\}\)\s*\n\s*created\+\+/)
     expect(body).toContain("showToast(t('agents.model.cards_failed'), 'error')")
     expect(body).toContain("t('agents.model.cards_partial', { n: created, total: changes.length })")
+    // Geri (review of #3150): the red text alone was pinned, not the condition that reaches it, so `if (false) {`
+    // stayed green and zero cards fell through to an amber "0 / 2" with the button left disabled. The whole
+    // branch is pinned now: zero created, the red toast, the button usable again with its label, and no fall-through.
+    expect(body).toMatch(new RegExp([
+      String.raw`if \(created === 0\) \{\s*(?://[^\n]*\s*)?`,
+      String.raw`showToast\(t\('agents\.model\.cards_failed'\), 'error'\)\s*`,
+      String.raw`createBtn\.disabled = false\s*`,
+      String.raw`createBtn\.textContent = t\('agents\.model\.create_cards_btn'\)\s*`,
+      String.raw`return\s*\}`,
+    ].join('')))
   })
 
   it('a Teams secret that needs care makes the working connection amber', () => {
