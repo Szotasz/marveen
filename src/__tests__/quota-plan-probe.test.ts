@@ -20,12 +20,12 @@ describe('scheduling', () => {
   })
   it('a plan the rotation measured recently is not probed again', () => {
     const fresh = st({ a: { observedAt: NOW - 5 * MIN, source: 'usage-collect', windows: {} } })
-    expect(selectQuotaProbePlans({ plans: [plan('a')], state: fresh, nowMs: NOW, intervalMs: 15 * MIN })).toEqual([])
+    expect(selectQuotaProbePlans({ plans: [plan('a')], state: fresh, nowMs: NOW, intervalMs: 15 * MIN, lastActiveMs: () => NOW })).toEqual([])
     const old = st({ a: { observedAt: NOW - 20 * MIN, source: 'usage-collect', windows: {} } })
-    expect(selectQuotaProbePlans({ plans: [plan('a')], state: old, nowMs: NOW, intervalMs: 15 * MIN }).map((p) => p.id)).toEqual(['a'])
+    expect(selectQuotaProbePlans({ plans: [plan('a')], state: old, nowMs: NOW, intervalMs: 15 * MIN, lastActiveMs: () => NOW }).map((p) => p.id)).toEqual(['a'])
   })
   it('configDir plans are never probed (no token this code may read)', () => {
-    expect(selectQuotaProbePlans({ plans: [plan('dir', false)], state: st(), nowMs: NOW, intervalMs: 15 * MIN })).toEqual([])
+    expect(selectQuotaProbePlans({ plans: [plan('dir', false)], state: st(), nowMs: NOW, intervalMs: 15 * MIN, lastActiveMs: () => NOW })).toEqual([])
   })
 })
 
@@ -48,6 +48,7 @@ describe('runQuotaPlanProbes', () => {
       enabled: () => true, intervalMs: () => 15 * MIN, now: () => NOW,
       plans: () => [plan('a'), plan('b'), plan('dir', false)],
       readState: () => st(),
+      lastActiveMs: () => NOW,
       probeAndRecord: vi.fn(async () => ({ ok: true })),
       ...over,
     }
@@ -83,5 +84,37 @@ describe('freshness merge: what the probe records is what quota-notice reads', (
     expect(planStateSnapshot(failed, NOW / 1000 + 3 * 3600).status).toBe('stale')
     expect(snapshotOfPlan([{ planId: 'ceges', label: 'Céges', snap }], 'ceges').fiveHour?.usedPercentage).toBe(93)
     expect(snapshotOfPlan([{ planId: 'ceges', label: 'Céges', snap }], DEFAULT_PLAN_ID).status).toBe('missing')
+  })
+})
+
+describe('only active plans (owner decision 2026-11-26)', () => {
+  const old = st({ a: { observedAt: NOW - 3 * 60 * MIN, source: 'probe', windows: {}, lastProbe: { at: NOW - 3 * 60 * MIN, ok: true } } })
+  it('a plan whose agents were idle since its last look is not probed, however stale its numbers', () => {
+    expect(selectQuotaProbePlans({ plans: [plan('a')], state: old, nowMs: NOW, intervalMs: 15 * MIN, lastActiveMs: () => NOW - 4 * 60 * MIN })).toEqual([])
+  })
+  it('a never-measured plan with no active agent is not probed', () => {
+    expect(selectQuotaProbePlans({ plans: [plan('a')], state: st(), nowMs: NOW, intervalMs: 15 * MIN, lastActiveMs: () => 0 })).toEqual([])
+  })
+  it('stale then active: probed on the very next tick, no interval wait', () => {
+    expect(selectQuotaProbePlans({ plans: [plan('a')], state: old, nowMs: NOW, intervalMs: 15 * MIN, lastActiveMs: () => NOW - MIN }).map((p) => p.id)).toEqual(['a'])
+  })
+  it('active but measured within the interval: waits for the interval', () => {
+    const recent = st({ a: { observedAt: NOW - 5 * MIN, source: 'probe', windows: {}, lastProbe: { at: NOW - 5 * MIN, ok: true } } })
+    expect(selectQuotaProbePlans({ plans: [plan('a')], state: recent, nowMs: NOW, intervalMs: 15 * MIN, lastActiveMs: () => NOW - MIN })).toEqual([])
+  })
+  it('active, but the last probe was a 429: the backoff still holds', () => {
+    const limited = st({ a: { observedAt: NOW - 60 * MIN, source: 'probe', windows: {}, lastProbe: { at: NOW - 20 * MIN, ok: false, error: 'rate_limited' } } })
+    expect(selectQuotaProbePlans({ plans: [plan('a')], state: limited, nowMs: NOW, intervalMs: 15 * MIN, lastActiveMs: () => NOW - MIN })).toEqual([])
+  })
+  it('two plans, one idle: only the active one is called', async () => {
+    const probeAndRecord = vi.fn(async () => ({ ok: true }))
+    const done = await runQuotaPlanProbes({
+      enabled: () => true, intervalMs: () => 15 * MIN, now: () => NOW,
+      plans: () => [plan('busy'), plan('idle')], readState: () => st(),
+      lastActiveMs: (id) => (id === 'busy' ? NOW - MIN : 0),
+      probeAndRecord,
+    })
+    expect(done).toEqual(['busy'])
+    expect(probeAndRecord).toHaveBeenCalledTimes(1)
   })
 })

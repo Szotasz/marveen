@@ -604,8 +604,13 @@ export function startQuotaNotice(): void {
       const deps = await liveQuotaNoticeDeps()
       if (!deps.config.noticeEnabled && !deps.config.autoReplyEnabled) return
       // Fresh per-plan numbers first (quota-plan-probe.ts), so this tick already judges by them.
-      const [{ liveQuotaPlanProbeDeps, runQuotaPlanProbes }, settings] = await Promise.all([import('./quota-plan-probe.js'), import('../settings-store.js')])
-      const probeDeps = await liveQuotaPlanProbeDeps(() => true, () => Number(settings.getEffectiveSettingValue('QUOTA_PLAN_PROBE_MIN')) || 15)
+      const [{ liveQuotaPlanProbeDeps, runQuotaPlanProbes }, settings, { listAgentNames: agentNames }] = await Promise.all([
+        import('./quota-plan-probe.js'), import('../settings-store.js'), import('./agent-config.js'),
+      ])
+      const probeDeps = await liveQuotaPlanProbeDeps(
+        () => true, () => Number(settings.getEffectiveSettingValue('QUOTA_PLAN_PROBE_MIN')) || 15,
+        deps.planOf, () => [MAIN_AGENT_ID, ...agentNames().filter((n) => n !== MAIN_AGENT_ID)],
+      )
       await runQuotaPlanProbes(probeDeps)
       await runQuotaNoticeTick(deps)
     } catch (err) {

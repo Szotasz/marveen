@@ -53,6 +53,11 @@ rate-limit headers give the 5-hour and weekly used % and reset. The token is nev
 from that plan's own quota (with 2 named plans at 15 minutes: 192 calls a day).
 
 - Both notices off (the default): no call.
+- **Only active plans** (owner decision 2026-11-26): a plan is probed only when at least one agent running on it was
+  active since the plan's last look. Active = the agent's transcript was written (newest `.jsonl` mtime in its
+  transcript dirs, the same files channel-intake-monitor and inbound-probe read): every turn, tool call and channel
+  message lands there. An idle plan is not probed and its last numbers age out. An agent that turns active after a
+  long idle gets its plan probed on the very next tick (the interval counts from the last look).
 - A plan looked at (by the rotation or this probe) within the interval is skipped.
 - Backoff: 429 waits 4 intervals, a rejected token a day, any other error 2 intervals.
 - configDir-mode plans are not probed (no token this code may read); the default plan is not probed (usage-collect
