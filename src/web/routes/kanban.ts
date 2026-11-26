@@ -681,6 +681,12 @@ export function assigneeMatchKey(s: string): string {
  * a match: a person whose id or name equals an agent's id ("reka") gets an entry of
  * their own, and the agent keeps its entry without the person's aliases. Aliases are
  * matched only against the person's own name and id, for the same reason.
+ *
+ * Entry names stay unique by match key, because the board finds an entry by its name
+ * (the filter, the lanes, the assignee pickers). When the person's name folds to an
+ * agent's id, the entry is named after the first of the person's other spellings that
+ * no entry uses ("Réka K."); with no such spelling the person has no name of their own
+ * on the board and is left out, so the agent is not listed twice.
  */
 export function withBoardColleagues(entries: KanbanAssigneeEntry[], cfg: BoardAccessConfig): KanbanAssigneeEntry[] {
   if (!cfg.enabled || cfg.broken) return entries
@@ -689,7 +695,15 @@ export function withBoardColleagues(entries: KanbanAssigneeEntry[], cfg: BoardAc
     const ownKeys = new Set([assigneeMatchKey(person.name), assigneeMatchKey(person.id)])
     const names = [person.name, ...person.assignees]
     const existing = out.find((e) => e.type !== 'agent' && ownKeys.has(assigneeMatchKey(e.name)))
-    const target = existing ?? { name: person.name, type: 'colleague', nickname: nicknameFor(person.name) }
+    let target: KanbanAssigneeEntry
+    if (existing) {
+      target = existing
+    } else {
+      const taken = new Set(out.map((e) => assigneeMatchKey(e.name)))
+      const entryName = names.find((n) => { const k = assigneeMatchKey(n); return k !== '' && !taken.has(k) })
+      if (entryName === undefined) continue
+      target = { name: entryName, type: 'colleague', nickname: nicknameFor(entryName) }
+    }
     const seen = new Set([assigneeMatchKey(target.name), ...(target.aliases ?? []).map(assigneeMatchKey)])
     const aliases = [...(target.aliases ?? [])]
     for (const n of names) {
