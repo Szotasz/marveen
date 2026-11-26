@@ -2957,6 +2957,8 @@ window._i18n.en = {
   'auth.bridge.repaired':          'Device re-paired (its previous key was revoked).',
   'auth.bridge.bundle_hint':       'Copy it now and paste it into the Bridge: the bundle cannot be displayed again. Target host: {host}.',
   'auth.bridge.err_empty':         'Both the key line and the device name are required.',
+  'auth.bridge.copy_failed':       'Copying failed. Select the text in the field and press Ctrl+C (Cmd+C on a Mac).',
+  'auth.bridge.copy_insecure_hint': 'This page is not on https or localhost, so the Copy button may not reach the clipboard here: if the Bridge reports an error, copy the text by hand.',
   // Pairing endpoint failures. The server sends a stable code beside its
   // English sentence; the UI translates on the code and falls back to that
   // sentence when a code has no key here.

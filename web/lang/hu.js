@@ -2959,6 +2959,8 @@ window._i18n.hu = {
   'auth.bridge.repaired':          'Eszköz újrapárosítva (a korábbi kulcsa visszavonva).',
   'auth.bridge.bundle_hint':       'Másold ki most, és illeszd be a Bridge-be, mert a csomag többé nem jeleníthető meg. Cél-cím: {host}.',
   'auth.bridge.err_empty':         'A kulcs-sor és az eszköznév is kötelező.',
+  'auth.bridge.copy_failed':       'A másolás nem sikerült. Jelöld ki a szöveget a mezőben, és nyomj Ctrl+C-t (Macen Cmd+C-t).',
+  'auth.bridge.copy_insecure_hint': 'Ez a lap nem https-en vagy localhoston fut, ezért a Copy gomb itt nem mindig ér el a vágólapig: ha a Bridge hibát jelez, másold ki kézzel.',
   // Pairing endpoint failures. The server sends a stable code beside its
   // English sentence; the UI translates on the code and falls back to that
   // sentence when a code has no key here.
