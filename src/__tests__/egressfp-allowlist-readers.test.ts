@@ -209,6 +209,8 @@ describe('a blanked flag argument and a naive-split fragment are no hiding place
     // a quoted separator or a quoted command word does not fake a gh segment
     deniedAllowlist(`cp -S '; gh ' -t 'local-hooks' /tmp/x`)
     deniedAllowlist(`'cp' gh -t 'local-hooks' /tmp/x`)
+    // a quote glued to the word makes another command: the shell runs `gh x` here, not gh
+    deniedAllowlist(`gh' x' -t 'local-hooks' /tmp/x`)
     // the PR text on gh/git itself is still blanked (the false positive the strip exists for)
     allowed(`gh pr create --title 'x' --body 'edits local-hooks and store/egress-allowlist.json'`)
     allowed(`git status; GH_REPO=a/b gh pr comment 1 -b 'see local-hooks'`)
