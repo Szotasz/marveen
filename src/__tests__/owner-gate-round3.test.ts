@@ -230,6 +230,17 @@ const CASES: Case[] = [
     },
   },
   {
+    label: 'POST /api/agents/:name/pane/size', handler: tryHandleAgentTerminal, method: 'POST', path: `/api/agents/${AGENT}/pane/size`,
+    body: { cols: 180, rows: 48 },
+    // Past the gate, the size check and the running check: the resize-window call is made (the mock fails it: 500),
+    // then the window-size unset is retried on its own.
+    ownerCheck: (r) => {
+      expect(r.status).toBe(500)
+      expect(execFileMock).toHaveBeenCalledTimes(2)
+      expect((execFileMock.mock.calls[0][1] as string[])).toContain('resize-window')
+    },
+  },
+  {
     label: 'POST /api/terminal-input (off)', handler: tryHandleAgentTerminal, method: 'POST', path: '/api/terminal-input',
     body: { enabled: false },
     ownerCheck: (r) => { expect(r.status).toBe(200); expect(r.body.enabled).toBe(false); expect(readTerminalInputEnabled()).toBe(false) },

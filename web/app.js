@@ -23328,8 +23328,38 @@ function openTerminalModal(agentName) {
   terminalInstance = term
   terminalFit = fitAddon
 
+  // The pane below is a capture-pane mirror, so it can never be larger than the
+  // agent's tmux window -- a detached session sits at the tmux default 80x24,
+  // which left a small block in the corner of the modal. Tell the server the
+  // fitted xterm size (on open and on every resize) and it resizes the agent's
+  // window to match; a refusal (e.g. no owner session) just keeps the old size.
+  let sizeTimer = null
+  // Escape and click-outside close the overlay through closeModal(), which keeps
+  // terminalInstance, so the instance check alone would let a hidden modal post.
+  const isShown = () => overlay.classList.contains('active')
+  const reportSize = () => {
+    clearTimeout(sizeTimer)
+    if (!isShown()) return
+    sizeTimer = setTimeout(() => {
+      // modal closed, or reopened for another agent, meanwhile
+      if (terminalInstance !== term || !isShown()) return
+      fetch(`/api/agents/${encodeURIComponent(agentName)}/pane/size`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cols: term.cols, rows: term.rows }),
+      }).catch(() => {})
+    }, 150)
+  }
+  term.onResize(reportSize)
+
   openModal(overlay)
-  setTimeout(() => term.focus(), 50)
+  setTimeout(() => {
+    term.focus()
+    // Fit again now that the modal is visible, and report the size even when the
+    // fit did not change it (the agent's window may still be at 80x24).
+    if (!isShown()) return
+    try { fitAddon.fit() } catch {}
+    reportSize()
+  }, 50)
 
   // SSE pane stream.
   // The pane snapshot now includes scrollback history (server uses
