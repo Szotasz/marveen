@@ -30,6 +30,7 @@ import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, KANBAN_LA
 import { agentDir, listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { shellWord } from '../sanitize.js'
 import { nicknameFor } from '../team-nicknames.js'
+import { readBoardAccess, type BoardAccessConfig } from '../board-access.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch, parseDispatchSkipAgents } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
@@ -658,6 +659,49 @@ export function parseClaimTtl(raw: unknown): number | null {
   return n
 }
 
+export interface KanbanAssigneeEntry {
+  name: string
+  type: string
+  displayName?: string
+  nickname?: string
+  /** Other names the same person is written under on cards (board-access.json). */
+  aliases?: string[]
+}
+
+/** Comparison key shared with web/app.js assigneeKey(): accents, case and separators folded. */
+export function assigneeMatchKey(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[\s_-]+/g, '-')
+}
+
+/**
+ * The colleagues of store/board-access.json join the assignee list, so the board's
+ * assignee filter can select a person, not only an agent. A person who is already
+ * listed (the owner, matched by name or id) gets the aliases on that entry instead
+ * of a second one. Aliases are matched only against the person's own name and id:
+ * an alias such as "reka" may also be an agent's id, and that agent keeps its entry.
+ */
+export function withBoardColleagues(entries: KanbanAssigneeEntry[], cfg: BoardAccessConfig): KanbanAssigneeEntry[] {
+  if (!cfg.enabled || cfg.broken) return entries
+  const out = entries.map((e) => ({ ...e }))
+  for (const person of cfg.people.values()) {
+    const ownKeys = new Set([assigneeMatchKey(person.name), assigneeMatchKey(person.id)])
+    const names = [person.name, ...person.assignees]
+    const existing = out.find((e) => ownKeys.has(assigneeMatchKey(e.name)))
+    const target = existing ?? { name: person.name, type: 'colleague', nickname: nicknameFor(person.name) }
+    const seen = new Set([assigneeMatchKey(target.name), ...(target.aliases ?? []).map(assigneeMatchKey)])
+    const aliases = [...(target.aliases ?? [])]
+    for (const n of names) {
+      const k = assigneeMatchKey(n)
+      if (!k || seen.has(k)) continue
+      seen.add(k)
+      aliases.push(n)
+    }
+    if (aliases.length) target.aliases = aliases
+    if (!existing) out.push(target)
+  }
+  return out
+}
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -985,11 +1029,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       displayName: readAgentDisplayName(name) || name,
       nickname: nicknameFor(name),
     }))
-    json(res, [
+    json(res, withBoardColleagues([
       { name: OWNER_NAME, type: 'owner', nickname: nicknameFor(OWNER_NAME) },
       { name: BOT_NAME, type: 'bot', nickname: nicknameFor(BOT_NAME) },
       ...agents,
-    ])
+    ], readBoardAccess()))
     return true
   }
 
