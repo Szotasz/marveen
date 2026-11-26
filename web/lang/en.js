@@ -1226,6 +1226,7 @@ window._i18n.en = {
   'settings.desc.QUOTA_AUTOREPLY': 'Automatic channel reply when an agent\'s quota is used up: when the agent\'s pane shows the usage-limit banner, or its own subscription reaches QUOTA_AUTOREPLY_PCT, an unanswered message (after QUOTA_AUTOREPLY_GRACE_SEC) gets one reply from the agent\'s own bot saying the quota is used up and when the answer comes. When the quota is back, a still unanswered message is handed back to the agent.',
   'settings.desc.QUOTA_AUTOREPLY_PCT': 'Threshold of the automatic reply in percent, on the agent\'s own subscription (QUOTA_AUTOREPLY).',
   'settings.desc.QUOTA_AUTOREPLY_GRACE_SEC': 'A message unanswered for this many seconds gets the automatic reply (QUOTA_AUTOREPLY), so an agent that is just working is not double-answered.',
+  'settings.desc.QUOTA_PLAN_PROBE_MIN': 'Per-plan quota check interval in minutes: while QUOTA_NOTICE or QUOTA_AUTOREPLY is on, the dashboard reads the 5-hour and weekly window of every named token-mode subscription this often (one minimal API call from that subscription\'s own quota, about 10 tokens). A plan the plan rotation measured recently is skipped; after an error it backs off (429: four times the interval, rejected token: a day). With the notices off no call is made.',
   'settings.col.key':            'Key',
   'settings.col.value':          'Value',
   'settings.col.description':    'Description',

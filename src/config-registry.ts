@@ -1736,6 +1736,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
     ownerGated: true,
   },
+  {
+    key: 'QUOTA_PLAN_PROBE_MIN',
+    type: 'int',
+    default: 15,
+    min: 5,
+    max: 1440,
+    description: 'Planenkénti keret-lekérdezés gyakorisága percben: amíg a QUOTA_NOTICE vagy a QUOTA_AUTOREPLY be van kapcsolva, a dashboard a megnevezett, token-módú előfizetések 5 órás és heti keretét ennyi percenként lekérdezi (egy minimális API-hívás az adott előfizetés saját keretéből, kb. 10 token). A plan-rotáció által nemrég mért plant kihagyja; hibánál ritkít (429: négyszeres idő, elutasított token: egy nap). Kikapcsolt értesítésnél egyetlen hívás sincs.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+    ownerGated: true,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

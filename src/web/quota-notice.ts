@@ -54,7 +54,7 @@ function pctFrom(raw: unknown, dflt: number): number {
 }
 
 /** The registry keys (src/config-registry.ts, module 'claude-plans', owner-gated): the Settings page writes them. */
-export const QUOTA_NOTICE_KEYS = ['QUOTA_NOTICE', 'QUOTA_NOTICE_PCT', 'QUOTA_AUTOREPLY', 'QUOTA_AUTOREPLY_PCT', 'QUOTA_AUTOREPLY_GRACE_SEC'] as const
+export const QUOTA_NOTICE_KEYS = ['QUOTA_NOTICE', 'QUOTA_NOTICE_PCT', 'QUOTA_AUTOREPLY', 'QUOTA_AUTOREPLY_PCT', 'QUOTA_AUTOREPLY_GRACE_SEC', 'QUOTA_PLAN_PROBE_MIN'] as const
 
 /**
  * Both parts are OFF unless switched on (owner decision 2026-11-26). `read` resolves a key the settings way
@@ -197,6 +197,9 @@ export function defaultPlanLabel(lang: NoticeLang): string {
 // (A) Threshold notice
 // ---------------------------------------------------------------------------------------------------------------
 
+/** Two reset instants this close describe the same window. */
+export const RESET_TOLERANCE_SEC = 15 * 60
+
 export interface ThresholdNotice { kind: WindowKind; pct: number; resetsAt: number | null; planLabel?: string }
 
 /**
@@ -212,7 +215,10 @@ export function decideThresholdNotices(
   for (const { kind, window } of openWindows(snap)) {
     if (window.usedPercentage < thresholdPct) continue
     const key = window.resetsAt ?? 0
-    if (notified[kind] === key) continue
+    // The same window, even when two sources (or two readings) round its reset instant differently: a new window
+    // resets at least an hour later than the old one (5-hour or weekly), so a 15-minute tolerance cannot merge two.
+    const prev = notified[kind]
+    if (prev !== undefined && Math.abs(prev - key) <= RESET_TOLERANCE_SEC) continue
     notices.push({ kind, pct: window.usedPercentage, resetsAt: window.resetsAt })
     next[kind] = key
   }
@@ -547,10 +553,13 @@ export async function liveQuotaNoticeDeps(): Promise<QuotaNoticeDeps> {
     lang: () => textLang.agentTextLang(),
     plans: (s) => {
       const lang = textLang.agentTextLang()
+      const probeMin = Number(settings.getEffectiveSettingValue('QUOTA_PLAN_PROBE_MIN')) || 15
+      const planMaxAgeSec = Math.max(DEFAULT_FABLE_MAX_AGE_SEC, 2 * probeMin * 60 + 300)
       const observed = plansState.readClaudePlansState().plans
       return [
         { planId: DEFAULT_PLAN_ID, label: defaultPlanLabel(lang), snap: currentQuotaSnapshot(s) },
-        ...plansReg.readClaudePlans().map((p) => ({ planId: p.id, label: p.label || p.id, snap: planStateSnapshot(observed[p.id], s) })),
+        // A named plan's numbers age between two probes (QUOTA_PLAN_PROBE_MIN): stale only after two missed rounds.
+        ...plansReg.readClaudePlans().map((p) => ({ planId: p.id, label: p.label || p.id, snap: planStateSnapshot(observed[p.id], s, planMaxAgeSec) })),
       ]
     },
     planOf: (agent) =>
@@ -594,6 +603,10 @@ export function startQuotaNotice(): void {
     try {
       const deps = await liveQuotaNoticeDeps()
       if (!deps.config.noticeEnabled && !deps.config.autoReplyEnabled) return
+      // Fresh per-plan numbers first (quota-plan-probe.ts), so this tick already judges by them.
+      const [{ liveQuotaPlanProbeDeps, runQuotaPlanProbes }, settings] = await Promise.all([import('./quota-plan-probe.js'), import('../settings-store.js')])
+      const probeDeps = await liveQuotaPlanProbeDeps(() => true, () => Number(settings.getEffectiveSettingValue('QUOTA_PLAN_PROBE_MIN')) || 15)
+      await runQuotaPlanProbes(probeDeps)
       await runQuotaNoticeTick(deps)
     } catch (err) {
       logger.warn({ err: String(err).slice(0, 300) }, 'quota-notice tick failed')

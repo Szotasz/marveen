@@ -44,11 +44,11 @@ beforeEach(() => {
 })
 
 
-const QUOTA = ['QUOTA_NOTICE', 'QUOTA_NOTICE_PCT', 'QUOTA_AUTOREPLY', 'QUOTA_AUTOREPLY_PCT', 'QUOTA_AUTOREPLY_GRACE_SEC']
-const VALUE: Record<string, string | number> = { QUOTA_NOTICE: '1', QUOTA_NOTICE_PCT: 80, QUOTA_AUTOREPLY: '1', QUOTA_AUTOREPLY_PCT: 90, QUOTA_AUTOREPLY_GRACE_SEC: 60 }
+const QUOTA = ['QUOTA_NOTICE', 'QUOTA_NOTICE_PCT', 'QUOTA_AUTOREPLY', 'QUOTA_AUTOREPLY_PCT', 'QUOTA_AUTOREPLY_GRACE_SEC', 'QUOTA_PLAN_PROBE_MIN']
+const VALUE: Record<string, string | number> = { QUOTA_NOTICE: '1', QUOTA_NOTICE_PCT: 80, QUOTA_AUTOREPLY: '1', QUOTA_AUTOREPLY_PCT: 90, QUOTA_AUTOREPLY_GRACE_SEC: 60, QUOTA_PLAN_PROBE_MIN: 30 }
 
 describe('registry', () => {
-  it('the five keys exist in the claude-plans module, owner-gated, both switches OFF by default', () => {
+  it('the six keys exist in the claude-plans module, owner-gated, both switches OFF by default', () => {
     for (const k of QUOTA) {
       const def = registry.getSettingDefinition(k)!
       expect(def, k).toBeTruthy()

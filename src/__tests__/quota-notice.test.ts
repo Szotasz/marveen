@@ -55,6 +55,10 @@ describe('(A) threshold notice', () => {
     const nextWindow = decideThresholdNotices(snap(92, 30, NOW + 20000), first.next, 90)
     expect(nextWindow.notices.map((n) => n.kind)).toEqual(['five_hour'])
   })
+  it('a reset instant that moved by a few minutes is the same window (no second notice)', () => {
+    const first = decideThresholdNotices(snap(91, 30), {}, 90)
+    expect(decideThresholdNotices(snap(93, 30, NOW + 3600 + 120), first.next, 90).notices).toEqual([])
+  })
   it('both windows, highest first; nothing under the threshold or on a stale reading', () => {
     expect(decideThresholdNotices(snap(93, 95), {}, 90).notices.map((n) => n.kind)).toEqual(['seven_day', 'five_hour'])
     expect(decideThresholdNotices(snap(89, 10), {}, 90).notices).toEqual([])

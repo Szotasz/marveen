@@ -39,9 +39,25 @@ Where the numbers come from:
   (`store/.claude-rate-limits.json`), the observer mod's readings and the usage collector's `store/usage-latest.json`.
   On a setup-token install only the collector gives numbers: switch on the `usage-collect` scheduled task. The
   collector reads one token, the default one.
-- **Named subscription**: `store/claude-plans-state.json`, which the plan rotation writes (the active plan's reading,
-  and the live probe of idle token plans). Without rotation nothing refreshes it: such a plan gets no percentage
-  notice, and its agents are judged by their own pane's limit banner only.
+- **Named subscription**: `store/claude-plans-state.json`. The plan rotation writes it (the active plan's reading, and
+  the live probe of idle token plans), and so does the per-plan probe below. A plan with no fresh numbers gets no
+  percentage notice, and its agents are judged by their own pane's limit banner only.
+
+### Per-plan probe (`src/web/quota-plan-probe.ts`)
+
+While `QUOTA_NOTICE` or `QUOTA_AUTOREPLY` is on, every named **token-mode** plan is read every `QUOTA_PLAN_PROBE_MIN`
+minutes (default 15, owner-gated) with the plan rotation's own probe (`probePlanUsage`): one Messages call
+(`claude-haiku-4-5`, a 2-character prompt, `max_tokens: 5`) with the plan's own token from the vault, whose
+rate-limit headers give the 5-hour and weekly used % and reset. The token is never logged. The result is recorded into
+`claude-plans-state.json` like the rotation's probe. Cost: about 10 input + up to 5 output tokens per plan per probe,
+from that plan's own quota (with 2 named plans at 15 minutes: 192 calls a day).
+
+- Both notices off (the default): no call.
+- A plan looked at (by the rotation or this probe) within the interval is skipped.
+- Backoff: 429 waits 4 intervals, a rejected token a day, any other error 2 intervals.
+- configDir-mode plans are not probed (no token this code may read); the default plan is not probed (usage-collect
+  covers it).
+- A named plan's reading counts as fresh for two probe rounds (at least 45 minutes).
 
 A stale or missing reading triggers nothing.
 

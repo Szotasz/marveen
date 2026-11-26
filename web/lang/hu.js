@@ -1698,6 +1698,7 @@ window._i18n.hu = {
   'settings.desc.QUOTA_AUTOREPLY': 'Automatikus válasz a csatornán, ha egy ügynök kerete elfogyott: ha az ügynök paneljén a keret-limit felirat látszik, vagy az ő előfizetése eléri a QUOTA_AUTOREPLY_PCT küszöböt, a megválaszolatlan üzenetre (QUOTA_AUTOREPLY_GRACE_SEC után) az ügynök saját botja egyszer jelzi, hogy a keret elfogyott és mikor jön a válasz. A keret visszatérésekor a még megválaszolatlan üzenetet a dashboard visszaadja az ügynöknek.',
   'settings.desc.QUOTA_AUTOREPLY_PCT': 'Az automatikus válasz küszöbe százalékban, az ügynök saját előfizetésére (QUOTA_AUTOREPLY).',
   'settings.desc.QUOTA_AUTOREPLY_GRACE_SEC': 'Ennyi másodpercig megválaszolatlan üzenet kap automatikus választ (QUOTA_AUTOREPLY), hogy egy épp dolgozó ügynök ne kapjon dupla választ.',
+  'settings.desc.QUOTA_PLAN_PROBE_MIN': 'Planenkénti keret-lekérdezés gyakorisága percben: amíg a QUOTA_NOTICE vagy a QUOTA_AUTOREPLY be van kapcsolva, a dashboard a megnevezett, token-módú előfizetések 5 órás és heti keretét ennyi percenként lekérdezi (egy minimális API-hívás az adott előfizetés saját keretéből, kb. 10 token). A plan-rotáció által nemrég mért plant kihagyja; hibánál ritkít (429: négyszeres idő, elutasított token: egy nap). Kikapcsolt értesítésnél egyetlen hívás sincs.',
   'settings.col.key':            'Kulcs',
   'settings.col.value':          'Érték',
   'settings.col.description':    'Leírás',
