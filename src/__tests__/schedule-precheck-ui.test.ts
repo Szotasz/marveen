@@ -39,11 +39,25 @@ describe('schedule editor: preCheck and preCheckTimeoutSeconds', () => {
 
   it('save sends each field only when it changed, an emptied one as null', () => {
     const save = between("saveScheduleBtn.addEventListener('click'", 'closeModal(scheduleModalOverlay)')
-    expect(save).toContain('if (preCheckEl.value.trim() !== preCheckEl.defaultValue) advanced.preCheck = preCheckEl.value.trim() || null')
+    expect(save).toContain('if (preCheckEl.value.trim() !== preCheckEl.defaultValue.trim()) advanced.preCheck = preCheckEl.value.trim() || null')
     expect(save).toContain('if (preCheckTimeoutEl.value.trim() !== preCheckTimeoutEl.defaultValue) {')
     expect(save).toContain('advanced.preCheckTimeoutSeconds = preCheckTimeoutEl.value.trim() ? Number(preCheckTimeoutEl.value) : null')
     // the PUT body carries `advanced`
     expect(save).toContain('body: JSON.stringify({ description, prompt, schedule, agent, type, ...advanced })')
+  })
+
+  it('a stored preCheck with surrounding whitespace is not a change (a non-owner save would get a 403)', () => {
+    const save = between("saveScheduleBtn.addEventListener('click'", 'closeModal(scheduleModalOverlay)')
+    const line = save.split('\n').find((l) => l.includes('advanced.preCheck ='))!
+    const run = (value: string, defaultValue: string) => {
+      const advanced: Record<string, unknown> = {}
+      new Function('preCheckEl', 'advanced', line)({ value, defaultValue }, advanced)
+      return advanced
+    }
+    expect(run(' node x.mjs\n', ' node x.mjs\n')).toEqual({})
+    expect(run('node x.mjs', ' node x.mjs ')).toEqual({})
+    expect(run('node y.mjs', ' node x.mjs ')).toEqual({ preCheck: 'node y.mjs' })
+    expect(run('  ', 'node x.mjs')).toEqual({ preCheck: null })
   })
 
   it('both placeholders exist in both language files', () => {

@@ -9346,7 +9346,7 @@ saveScheduleBtn.addEventListener('click', async () => {
   // preCheck / preCheckTimeoutSeconds are owner fields (OWNEREXEC1109): sent only when changed, so a plain edit
   // needs no owner session; an emptied field sends null, which clears it. The server makes the owner check.
   const preCheckEl = document.getElementById('schedulePreCheck')
-  if (preCheckEl.value.trim() !== preCheckEl.defaultValue) advanced.preCheck = preCheckEl.value.trim() || null
+  if (preCheckEl.value.trim() !== preCheckEl.defaultValue.trim()) advanced.preCheck = preCheckEl.value.trim() || null
   const preCheckTimeoutEl = document.getElementById('schedulePreCheckTimeout')
   if (preCheckTimeoutEl.value.trim() !== preCheckTimeoutEl.defaultValue) {
     advanced.preCheckTimeoutSeconds = preCheckTimeoutEl.value.trim() ? Number(preCheckTimeoutEl.value) : null
