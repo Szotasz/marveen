@@ -73,6 +73,57 @@ describe('withBoardColleagues', () => {
     expect(person?.aliases).toEqual(['reka'])
   })
 
+  it('a person whose NAME folds to an agent id is named after another spelling, not listed twice', () => {
+    const clash = normaliseBoardAccess({
+      enabled: true,
+      people: { reka: { assignees: ['reka', 'Réka K.'] } },
+      agents: {},
+    })
+    const out = withBoardColleagues(base, clash)
+    expect(out.filter((e) => assigneeMatchKey(e.name) === 'reka')).toHaveLength(1)
+    expect(out.find((e) => e.name === 'reka')?.type).toBe('agent')
+    expect(out.find((e) => e.name === 'reka')?.aliases).toBeUndefined()
+    const person = out.find((e) => e.name === 'Réka K.')
+    expect(person?.type).toBe('colleague')
+    expect(person?.aliases).toEqual(['reka'])
+  })
+
+  it('a person with no spelling of their own beside an agent of that id is left out', () => {
+    const bare = normaliseBoardAccess({ enabled: true, people: { reka: {} }, agents: {} })
+    const out = withBoardColleagues(base, bare)
+    expect(out.filter((e) => assigneeMatchKey(e.name) === 'reka')).toHaveLength(1)
+    expect(out).toEqual(base)
+  })
+
+  it('a person named like the bot merges into the bot entry', () => {
+    const botLike = normaliseBoardAccess({
+      enabled: true,
+      people: { marveen: { name: 'Marveen', assignees: ['Marveen', 'Marveen bot'] } },
+      agents: {},
+    })
+    const out = withBoardColleagues(base, botLike)
+    expect(out.filter((e) => assigneeMatchKey(e.name) === 'marveen')).toHaveLength(1)
+    const bot = out.find((e) => e.name === 'Marveen')
+    expect(bot?.type).toBe('bot')
+    expect(bot?.aliases).toEqual(['Marveen bot'])
+  })
+
+  it('a second colleague of the same name merges into the earlier colleague', () => {
+    const twice = normaliseBoardAccess({
+      enabled: true,
+      people: {
+        'nagy-anna': { name: 'Nagy Anna', assignees: ['Nagy Anna', 'nagy-anna'] },
+        'anna-n': { name: 'Nagy Anna', assignees: ['Nagy Anna', 'Anna N.'] },
+      },
+      agents: {},
+    })
+    const out = withBoardColleagues(base, twice)
+    const annas = out.filter((e) => assigneeMatchKey(e.name) === 'nagy-anna')
+    expect(annas).toHaveLength(1)
+    expect(annas[0].type).toBe('colleague')
+    expect(annas[0].aliases).toEqual(['Anna N.'])
+  })
+
   it('leaves the list untouched when board access is off or broken', () => {
     const off = normaliseBoardAccess({ enabled: false, people: { a: { name: 'A' } } })
     expect(withBoardColleagues(base, off)).toEqual(base)
