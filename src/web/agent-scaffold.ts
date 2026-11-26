@@ -1376,6 +1376,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectDigestProvenanceGate(existing)
   }
   if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
+  if (agentGetsSlackCopyGate(name)) injectSlackCopyGate(existing)
   const senderRolePolicy = agentGetsSenderRoleGate(name) ? readAgentSenderRoleGatePolicy(name) : null
   if (senderRolePolicy) {
     injectSenderRoleGate(existing, senderRolePolicy)
@@ -2547,6 +2548,13 @@ export function injectBashEgressParser(existing: Record<string, unknown>): void 
 export const TELEGRAM_COPY_GATE_MATCHER =
   'mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message'
 
+// GATESLACK1015. The same two tools on Slack. The copy gate was wired for
+// Telegram and Discord only, and the hook's own dispatch had no slack branch
+// either, so on an install whose owner talks through Slack the gate audited no
+// message at all, while running and exiting 0 on every turn.
+export const SLACK_COPY_GATE_MATCHER =
+  'mcp__plugin_slack-channel_slack__reply|mcp__plugin_slack-channel_slack__edit_message'
+
 // Which agents get the outgoing-copy gate on their Telegram send tools: every
 // sub-agent. The MAIN agent is exempt HERE only because it already carries the
 // same hook in its own committed project settings (.claude/settings.json);
@@ -2561,6 +2569,12 @@ export const TELEGRAM_COPY_GATE_MATCHER =
 // again. A gate that exists only in the main agent's settings is not a gate,
 // it is a habit that happens to be enforced in one place.
 export function agentGetsTelegramCopyGate(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Same rule for Slack: every sub-agent. The main agent carries both matchers in
+// its own committed project settings.
+export function agentGetsSlackCopyGate(name: string): boolean {
   return name !== MAIN_AGENT_ID
 }
 
@@ -2587,6 +2601,29 @@ export function injectTelegramCopyGate(existing: Record<string, unknown>): void 
       const j = JSON.stringify(e)
       if (!j.includes('outgoing-copy-gate.py')) return true
       return (e as { matcher?: unknown })?.matcher !== TELEGRAM_COPY_GATE_MATCHER
+    }),
+    entry,
+  ]
+}
+
+// Same shape as injectTelegramCopyGate, for the Slack send tools.
+export function injectSlackCopyGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: SLACK_COPY_GATE_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => {
+      const j = JSON.stringify(e)
+      if (!j.includes('outgoing-copy-gate.py')) return true
+      return (e as { matcher?: unknown })?.matcher !== SLACK_COPY_GATE_MATCHER
     }),
     entry,
   ]
@@ -3034,6 +3071,31 @@ export function ensureTelegramCopyGate(name: string): boolean {
   })
   if (wiredHere && hookCommandWired(JSON.stringify(ptu), command)) return false
   injectTelegramCopyGate(settings)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Same migration for the Slack send tools (GATESLACK1015).
+export function ensureSlackCopyGate(name: string): boolean {
+  if (!agentGetsSlackCopyGate(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []
+  // Two failure modes, same as the email gate: not wired at all, or wired under
+  // a matcher that no longer names the Slack tools.
+  const wiredHere = ptu.some((e) => {
+    const j = JSON.stringify(e)
+    return j.includes('outgoing-copy-gate.py')
+      && (e as { matcher?: unknown })?.matcher === SLACK_COPY_GATE_MATCHER
+  })
+  if (wiredHere && hookCommandWired(JSON.stringify(ptu), command)) return false
+  injectSlackCopyGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
