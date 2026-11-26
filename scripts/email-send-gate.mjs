@@ -749,39 +749,52 @@ const codeStringSends = (code, lang = null) => {
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
 export function maskSubshellMarkers(cmd) {
   let out = ''
-  let q = null
+  let q = null // null | "'" | '"' | "$'" (LINECONT1126: ANSI-C quoting, where \' does not close)
   let prev = -1 // LINECONT1126: the index of the last character that is not part of a removed line continuation
+  let prevEsc = false // LINECONT1126 (Revizor 5744): that character was escaped (`\ #`, `\;#`): it ends no word
+  let braces = 0 // LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
+  const parens = [] // 's' for an open $( , 'p' for a plain ( -- which ) closes a command substitution (python twin)
+  let substCloseAt = -1
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]
     if (q) {
-      if (ch === '\\' && q === '"' && i + 1 < cmd.length) {
-        if (cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1 } // LINECONT1126: removed inside "..." too
+      if (ch === '\\' && (q === '"' || q === "$'") && i + 1 < cmd.length) {
+        // LINECONT1126: inside "..." a backslash-newline is removed too (bash)
+        if (q === "$'" || cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1 }
         i++
         continue
       }
-      if (ch === q) q = null
+      if (ch === q[q.length - 1]) q = null
       out += ch
       prev = i
+      prevEsc = false
       continue
     }
-    if (ch === "'" || ch === '"') { q = ch; out += ch; prev = i; continue }
+    if (ch === '$' && cmd[i + 1] === "'") { q = "$'"; out += "$'"; prev = i + 1; prevEsc = false; i++; continue }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; prev = i; prevEsc = false; continue }
     // LINECONT1126 (twin of _mask_subshell_markers): a backslash-newline is a line continuation, removed before words
-    // are split, so `sudo \<nl> curl ...` and `curl\<nl> -d ...` are the one-line commands. A comment (an unquoted #
-    // at the start of a word, the last kept character decides) is dropped up to its newline as bash does (and as the
-    // python twin's mask), so a backslash at its end continues nothing and the newline still separates.
+    // are split, so `sudo \<nl> ...` and `prog\<nl> -d ...` are the one-line commands. A comment is dropped up to
+    // its newline as bash does (and as the python twin's mask), so a backslash at its end continues nothing.
     if (ch === '\\' && i + 1 < cmd.length) {
-      if (cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1 }
+      if (cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1; prevEsc = true }
       i++
       continue
     }
-    if (ch === '#' && (prev < 0 || /[\s;&|(]/.test(cmd[prev]))) {
+    // a comment starts only where bash starts one (Revizor 5744 J1): after nothing, or after an UNESCAPED blank (space,
+    // tab, newline only: no CR, FF, VT or Unicode space), ; & | ( or a ) that closes no $( ; never inside ${...}
+    if (ch === '#' && !braces && (prev < 0 || (!prevEsc && (' \t\n;&|('.includes(cmd[prev])
+      || (cmd[prev] === ')' && substCloseAt !== prev))))) {
       while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
-      prev = i
       continue
     }
+    prevEsc = false
     prev = i
     if (ch === '\n' || ch === '`') { out += ';'; continue }
-    if (ch === '$' && cmd[i + 1] === '(') { out += ';'; i++; continue }
+    if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); out += ';'; prev = i + 1; i++; continue }
+    if (ch === '$' && cmd[i + 1] === '{') { braces++; out += '${'; prev = i + 1; i++; continue }
+    if (ch === '}' && braces) braces--
+    if (ch === '(') parens.push('p')
+    else if (ch === ')' && parens.length && parens.pop() === 's') substCloseAt = i
     out += ch
   }
   return out
@@ -1272,7 +1285,7 @@ function knownAgents() {
 // segment, the substitution-flattened form included. An unparseable line is not clean (fail-closed).
 function lineClean(cmd) {
   if (FLEET_EXEMPT_BLOCK.test(cmd)) return false
-  if (/--to?=?[ \t]*\\\n/.test(cmd)) return false // LINECONT1126: a continuation right after --to gets no exception (python twin)
+  if (/--to?=?[ \t]*"?\\\n/.test(cmd)) return false // LINECONT1126: a continuation right after --to (or after its opening ") gets no exception (python twin)
   let words
   try {
     words = [cmd, flattenSubstitutions(cmd)].flatMap((c) => segmentsTokens(c).flat())

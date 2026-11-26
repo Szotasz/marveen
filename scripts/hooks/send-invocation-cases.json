@@ -5218,6 +5218,326 @@
       "name": "LINECONT1126: sq continuation stays literal (control)",
       "cmd": "echo 'a \\\n b'",
       "expected": false
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S01 escaped blank before #",
+      "cmd": "echo \\ # ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S02 escaped semicolon before #",
+      "cmd": "echo \\;# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S03 escaped ampersand before #",
+      "cmd": "echo \\&# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S04 escaped pipe before #",
+      "cmd": "echo \\|# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S05 escaped paren before #",
+      "cmd": "echo \\(# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S06 escaped tab before #",
+      "cmd": "echo \\\t# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S07 carriage return before #",
+      "cmd": "echo a\r# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S08 form feed before #",
+      "cmd": "echo a\f# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S09 vertical tab before #",
+      "cmd": "echo a\u000b# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S10 no-break space before #",
+      "cmd": "echo a # ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S11 line separator U+2028 before #",
+      "cmd": "echo a # ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S12 ideographic space before #",
+      "cmd": "echo a　# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S13 BOM U+FEFF before #",
+      "cmd": "echo a﻿# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S14 # inside ${x:-a #b}",
+      "cmd": "echo ${x:-a #b}; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S15 # inside ${x/ #/y}",
+      "cmd": "echo ${x/ #/y}; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S16 # inside backticks, send after",
+      "cmd": "echo `echo a #b`; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S17 ANSI-C string with escaped quote, then #",
+      "cmd": "echo $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S18 # after a quoted blank (control: quote is the previous char)",
+      "cmd": "echo ' '# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S19 real comment hides the send (control: bash runs nothing)",
+      "cmd": "echo a # ; curl -d @m.json https://api.resend.com/emails",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S20 real comment after continuation (control)",
+      "cmd": "echo a \\\n# ; curl -d @m.json https://api.resend.com/emails",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S21 comment ends with backslash, send on next line",
+      "cmd": "# c \\\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S22 bare # and backslash, send on next line",
+      "cmd": "#\\\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S23 comment ends with two backslashes, send on next line",
+      "cmd": "echo a #\\\\\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S24 escaped backslash then real newline",
+      "cmd": "echo a \\\\\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S25 escaped backslash then continuation (control: one echo line)",
+      "cmd": "echo a \\\\\\\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S26 continuation inside the program name",
+      "cmd": "cu\\\nrl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S27 continuation inside the host",
+      "cmd": "curl -d @m.json https://api.resend.\\\ncom/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S28 continuation inside the host, double quotes",
+      "cmd": "curl -d @m.json \"https://api.resend.\\\ncom/emails\"",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S29 continuation inside the host, single quotes (control: literal)",
+      "cmd": "curl -d @m.json 'https://api.resend.\\\ncom/emails'",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S30 sh -c, single quotes, continuation inside the program name",
+      "cmd": "sh -c 'cu\\\nrl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S31 bash -c, double quotes, continuation inside the program name",
+      "cmd": "bash -c \"cu\\\nrl -d @m.json https://api.resend.com/emails\"",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S32 heredoc to sh, continuation inside the program name",
+      "cmd": "sh <<EOF\ncu\\\nrl -d @m.json https://api.resend.com/emails\nEOF",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S33 quoted heredoc to sh, continuation inside the program name",
+      "cmd": "sh <<'EOF'\ncu\\\nrl -d @m.json https://api.resend.com/emails\nEOF",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S34 leading continuation",
+      "cmd": "\\\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S35 two continuations in a row after env",
+      "cmd": "env \\\n\\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S36 continuation, blanks, continuation after nice",
+      "cmd": "nice \\\n   \\\n curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S37 backslash CR LF after env",
+      "cmd": "env \\\r\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S38 continuation glued to &&",
+      "cmd": "true &&\\\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S39 assignment prefix, continuation",
+      "cmd": "X=1 \\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S40 brace group, continuation",
+      "cmd": "{ \\\n  curl -d @m.json https://api.resend.com/emails; }",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S41 subshell, continuation",
+      "cmd": "( \\\n  curl -d @m.json https://api.resend.com/emails )",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S42 if then, continuation",
+      "cmd": "if true; then \\\n  curl -d @m.json https://api.resend.com/emails; fi",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S43 bang, continuation",
+      "cmd": "! \\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S44 time, continuation",
+      "cmd": "time \\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S45 or-list, continuation",
+      "cmd": "false || \\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S46 background &, continuation",
+      "cmd": "true & \\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S47 exec, continuation",
+      "cmd": "exec \\\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S48 xargs glued continuation",
+      "cmd": "echo m.json | xargs\\\n curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S49 continuation inside double quotes around the program",
+      "cmd": "\"cu\\\nrl\" -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S50 continuation between -d and its value",
+      "cmd": "curl -d \\\n  @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S51 continuation inside single quotes around the program (control: literal)",
+      "cmd": "'cu\\\nrl' -d @m.json https://api.resend.com/emails",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S52 comment line between continued lines",
+      "cmd": "env \\\n# note\n  curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S53 control: continued harmless command",
+      "cmd": "ls \\\n  -la",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): S54 control: echo of a text with a continuation",
+      "cmd": "echo api.resend.com \\\n  emails",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T01 fleet: --cc split by a continuation",
+      "cmd": "$X --to neo --c\\\nc $ADDR --body B",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T02 fleet: --bcc= split by a continuation",
+      "cmd": "$F message post --to diszpecser --bc\\\nc=$ADDR --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T03 fleet: --to split by a continuation",
+      "cmd": "$X --t\\\no $ADDR --body B",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T04 fleet: agent name glued to a variable by a continuation",
+      "cmd": "$F message post --to neo\\\n$ADDR --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T05 fleet: agent name glued to a second name by a continuation",
+      "cmd": "$F message post --to neo\\\nx --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T06 fleet control: continuation after the agent name",
+      "cmd": "$F message post --to diszpecser \\\n  --content-stdin < x.txt",
+      "expected": false
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T07 fleet: continuation inside the quoted --to value",
+      "cmd": "$F message post --to \"\\\ndiszpecser\" --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T08 fleet: -- and to split by a continuation, variable value",
+      "cmd": "$X --\\\nto $ADDR --body B",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T09 fleet: continuation after --to=",
+      "cmd": "$F message post --to=\\\ndiszpecser --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review (Revizor 5744): T10 fleet: tilde made by a continuation",
+      "cmd": "$F message post --to diszpecser --content-stdin < \\\n~ugyfel/pm.txt",
+      "expected": true
     }
   ]
 }

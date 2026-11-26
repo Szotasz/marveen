@@ -499,23 +499,27 @@ def _mask_subshell_markers(cmd: str) -> str:
     inside a word (`echo a#b; sendmail x` lost the send). The word-start set matches the JS twin's
     stripShellComments (whitespace and ;&|())."""
     out = []
-    q = None  # None | "'" | '"'
+    q = None  # None | "'" | '"' | "$'" (LINECONT1126: ANSI-C quoting, where \' does not close)
     i, n = 0, len(cmd)
     parens = []  # Bence 69701: "s" for an open $( , "p" for a plain ( -- which ) closes a command substitution
     subst_close_at = -1
-    prev = -1  # LINECONT1126: the index of the last character that is not part of a removed line continuation
+    prev = -1         # LINECONT1126: the index of the last character that is not part of a removed line continuation
+    prev_esc = False  # LINECONT1126 (Revizor 5744): that character was escaped (`\ #`, `\;#`): it ends no word
+    braces = 0        # LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
     while i < n:
         ch = cmd[i]
         if q:
-            if ch == "\\" and q == '"' and i + 1 < n:
-                if cmd[i + 1] != "\n":       # LINECONT1126: inside "..." a backslash-newline is removed too (bash)
+            if ch == "\\" and q in ('"', "$'") and i + 1 < n:
+                if q == "$'" or cmd[i + 1] != "\n":   # LINECONT1126: inside "..." a backslash-newline is removed too (bash)
                     out.append(cmd[i:i + 2]); prev = i + 1
                 i += 2; continue
-            if ch == q:
+            if ch == q[-1]:
                 q = None
-            out.append(ch); prev = i; i += 1; continue
+            out.append(ch); prev = i; prev_esc = False; i += 1; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
+            q = "$'"; out.append("$'"); prev = i + 1; prev_esc = False; i += 2; continue
         if ch in "'\"":
-            q = ch; out.append(ch); prev = i; i += 1; continue
+            q = ch; out.append(ch); prev = i; prev_esc = False; i += 1; continue
         if ch == "\\" and i + 1 < n:
             # LINECONT1126: a backslash-newline is a line continuation: bash removes both characters before it splits
             # words, so `sudo \<nl> curl ...`, `true && \<nl> curl ...` and `curl\<nl> -d ...` are the one-line commands.
@@ -523,19 +527,27 @@ def _mask_subshell_markers(cmd: str) -> str:
             # to the word ("curl\n", "-exec\n"), and the send was not seen. A comment is cut below first, so a backslash
             # at the end of a comment is no continuation (bash: the comment ends at the newline).
             if cmd[i + 1] != "\n":
-                out.append(cmd[i:i + 2]); prev = i + 1
+                out.append(cmd[i:i + 2]); prev = i + 1; prev_esc = True
             i += 2; continue
         # a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701)
-        # LINECONT1126: the character before is the last one that was not removed: `a\<nl>#b` is the one word a#b
-        if ch == "#" and (prev < 0 or cmd[prev] in " \t\n;&|(" or (cmd[prev] == ")" and subst_close_at != prev)):
+        # LINECONT1126: the character before is the last one that was not removed (`a\<nl>#b` is the one word a#b), it must
+        # not be escaped, and only bash's own blanks count (no CR, FF, VT or Unicode space: `a<CR># ; curl` runs curl)
+        if ch == "#" and not braces and (prev < 0 or (not prev_esc and (cmd[prev] in " \t\n;&|("
+                                                                       or (cmd[prev] == ")" and subst_close_at != prev)))):
             while i < n and cmd[i] != "\n":
                 i += 1
             continue
+        prev_esc = False
         if ch == "\n" or ch == "`":
             out.append(";"); prev = i; i += 1; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
             parens.append("s")
             out.append(";"); prev = i + 1; i += 2; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "{":
+            braces += 1
+            out.append("${"); prev = i + 1; i += 2; continue
+        if ch == "}" and braces:
+            braces -= 1
         if ch == "(":
             parens.append("p")
         elif ch == ")" and parens and parens.pop() == "s":
@@ -1231,7 +1243,8 @@ _FLEET_EXEMPT_BLOCK = re.compile(r"@|(?:^|[\s='\"(])~(?!/)|--b?cc\b")
 _FLEET_TOKEN_BLOCK = re.compile(r"--(?:cc?|bc{0,2})(?:=|\Z)|~(?!/)")   # on the DEQUOTED words: `--c""c`, `--\cc` are `--cc` to the program;
 # (v4.1, Merlin 34962) an argparse abbreviation (--c, --b, --bc) is --cc / --bcc to a default-argparse script: a send
 _AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
-_CONT_AFTER_TO = re.compile(r"--to?=?[ \t]*\\\n")   # LINECONT1126: a backslash-newline right after the recipient flag
+_CONT_AFTER_TO = re.compile(r"--to?=?[ \t]*\"?\\\n")   # LINECONT1126: a backslash-newline right after the recipient flag
+# (also as the first thing in a double-quoted value, Revizor 5744 M2: develop's python twin read that as a send)
 KNOWN_AGENTS_OVERRIDE = None   # the shared conformance list sets it (send-invocation-cases.json known_agents); None = the install
 _LINE_EXEMPT_OK = [False]      # set per top-level is_send_invocation call from the WHOLE command line
 
