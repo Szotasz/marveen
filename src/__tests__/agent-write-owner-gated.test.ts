@@ -89,7 +89,7 @@ describe('PUT /api/agents/:name with the bare shared token', () => {
   const values: Record<string, unknown> = {
     claudeMd: '# injected\n', soulMd: 'injected', mcpJson: '{"mcpServers":{"x":{"command":"true"}}}',
     authMode: 'shared', apiKey: 'k', claudePlan: '', memoryIsolation: true, customProvider: null, codeMode: true,
-    engine: 'codex', codexConfigDir: '/tmp/codex-home-x',
+    engine: 'codex', codexConfigDir: '/tmp/codex-home-x', skillOverrides: { 'guard-skill': 'name-only' },
   }
   for (const field of AGENT_PUT_OWNER_FIELDS) {
     it(`${field}: 403 owner_session_required, and no file changed`, async () => {

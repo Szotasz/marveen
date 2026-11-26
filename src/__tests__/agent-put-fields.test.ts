@@ -67,7 +67,7 @@ describe('checkAgentPutFields', () => {
       'engine', 'codexConfigDir',
       'claudeMd', 'soulMd', 'mcpJson', 'model',
       'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
-      'modelProfile', 'customProvider', 'codeMode',
+      'modelProfile', 'customProvider', 'codeMode', 'skillOverrides',
     ])
     expect(AGENT_PUT_WRITABLE_FIELDS).not.toContain('securityProfile')
   })

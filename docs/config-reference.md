@@ -598,6 +598,8 @@ A `memoryIsolation` mező (opcionális, alapértelmezés: kikapcsolva) az ágens
 
 Mikor kapcsold be: több-felhasználós (több megbízós) telepítésen, ágensenként, hogy az egyes megbízók memóriái ne szivárogjanak át egymáshoz. Egy-felhasználós telepítésen hagyd kikapcsolva: ott a közös MEMORY.md a flotta-szabályok szándékolt terítő-csatornája. Életbe lépés: az ágens következő (újra)indítása. Visszavonás: a mező törlése és az `agents/<név>/.git` stub eltávolítása. A fő ágensre nem alkalmazható (a dashboard el is rejti ott a kapcsolót).
 
+A `skillOverrides` mező (opcionális) az ágens saját Claude Code skill-listázása: skill-név -> `"name-only"` (név leírás nélkül, a skill hívható marad), `"user-invocable-only"` vagy `"off"`. Indításkor skill-név szerint fésülődik a közös `~/.claude/settings.json` `skillOverrides`-ára, ütközésnél az ágensé nyer. Írása: `PUT /api/agents/<név>` `{"skillOverrides": {...}}` (null törli); csak `"name-only"` értékkel a közös tokennel is, `"off"` vagy `"user-invocable-only"` értékkel tulajdonosi bejelentkezéssel. A fő ágensre nem vonatkozik. Új indításkor lép életbe.
+
 ---
 
 ## Linux OAuth-token race + CLAUDE_CREDENTIALS_GUARD
