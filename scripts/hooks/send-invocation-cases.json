@@ -2183,6 +2183,501 @@
       "name": "JSCDSEND1104: control, gtimeout in front of a non-sender",
       "cmd": "gtimeout 10 ls",
       "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: S03",
+      "cmd": "set -- https://api.resend.com/emails; eval 'curl -A https://api.re\"\"send.com/emails -d @m.json \"$1\"'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: S24",
+      "cmd": "echo https://api.resend.com/emails | xargs curl -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: eval literal send",
+      "cmd": "eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: eval literal send unquoted",
+      "cmd": "eval curl -X POST https://api.resend.com/emails -d x",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: xargs -I",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} curl -d @m.json {}",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: xargs -n1 wget",
+      "cmd": "echo https://api.sendgrid.com/v3/mail/send | xargs -n1 wget --post-file m.json",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: xargs curl, no mail host on the line",
+      "cmd": "cat urls.txt | xargs curl -s -O",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: eval of a read",
+      "cmd": "eval 'curl -s https://api.sendgrid.com/v3/stats'",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: eval ssh-agent",
+      "cmd": "eval \"$(ssh-agent -s)\"",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: xargs grep",
+      "cmd": "echo a | xargs grep -n x",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: eval of a mail program line",
+      "cmd": "eval 'sendmail a@b.hu < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: eval -- before a send",
+      "cmd": "eval -- 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: xargs --replace=URL",
+      "cmd": "echo https://api.resend.com/emails | xargs --replace=URL curl -d @m.json URL",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: xargs curl GET read with a mail host on the line",
+      "cmd": "echo https://api.sendgrid.com/v3/stats | xargs curl -s",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: a host split by quotes in the assignment of a variable URL",
+      "cmd": "X=https://api.re''send.com/emails; curl -d @m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: a host split by double quotes in the assignment, wget",
+      "cmd": "X=\"https://api.send\"grid.com/v3/mail/send; wget --post-file m.json \"$X\"",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: control: an assignment without a mail host, variable URL",
+      "cmd": "X=https://example.test/hook; curl -d @m.json \"$X\"",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: M3: a tab after the host in a quoted URL (Resend)",
+      "cmd": "curl -d @m.json 'https://api.resend.com\t/emails'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: M3: a space after the host in a quoted URL (Resend)",
+      "cmd": "curl -d @m.json 'https://api.resend.com /emails'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: M3: a tab after the host in a quoted URL (SendGrid)",
+      "cmd": "curl -d @m.json 'https://api.sendgrid.com\t/v3/mail/send'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: M3: control: a space after a foreign host",
+      "cmd": "curl -d @m.json 'https://example.test /hook'",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E01 eval nested four times",
+      "cmd": "eval eval eval eval curl -X POST https://api.resend.com/emails -d x",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E02 eval nested three times",
+      "cmd": "eval eval eval curl -X POST https://api.resend.com/emails -d x",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E03 eval nested twice",
+      "cmd": "eval eval curl -X POST https://api.resend.com/emails -d x",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E04 builtin eval",
+      "cmd": "builtin eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E05 command eval",
+      "cmd": "command eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E06 escaped eval",
+      "cmd": "\\eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E07 quoted eval",
+      "cmd": "'eval' 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E08 eval after an env assignment",
+      "cmd": "X=1 eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E09 eval inside bash -c",
+      "cmd": "bash -c \"eval 'curl -X POST https://api.resend.com/emails -d x'\"",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E10 bash -c inside eval",
+      "cmd": "eval \"bash -c 'curl -X POST https://api.resend.com/emails -d x'\"",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E11 eval inside bash -c inside eval inside bash -c",
+      "cmd": "bash -c 'eval \"bash -c \\\"eval curl -X POST https://api.resend.com/emails -d x\\\"\"'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E12 eval with a semicolon list",
+      "cmd": "eval 'true; curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E13 eval with words split over arguments",
+      "cmd": "eval curl -X POST 'https://api.resend.com'/emails -d x",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E14 eval after && in a group",
+      "cmd": "{ true && eval 'curl -X POST https://api.sendgrid.com/v3/mail/send -d @m.json'; }",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E17 eval nested four times around bash -c",
+      "cmd": "eval eval eval \"bash -c 'curl -X POST https://api.resend.com/emails -d x'\"",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: E18 control: eval of a harmless line",
+      "cmd": "eval 'echo hello'",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X01 xargs -I with the body flag as the replace string",
+      "cmd": "echo -d | xargs -I -d curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X02 xargs -I with the method flag as the replace string",
+      "cmd": "echo -X | xargs -I -X curl -X POST https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X03 xargs -I, replace string is the Graph action word",
+      "cmd": "echo sendMail | xargs -I sendMail curl -X POST -d @m.json https://graph.microsoft.com/v1.0/me/sendMail",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X04 xargs -I, replace string is a piece of the mail host",
+      "cmd": "echo resend | xargs -I resend curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X05 xargs -I, replace string is the body flag, SendGrid",
+      "cmd": "echo -d | xargs -I -d curl -d @m.json https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X06 xargs -I, replace string is the body flag, Graph",
+      "cmd": "echo -d | xargs -I -d curl -d @m.json https://graph.microsoft.com/v1.0/me/sendMail",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X07 xargs -I, replace string POST",
+      "cmd": "echo POST | xargs -I POST curl -X POST https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X08 xargs -I, replace string is --post-file (wget)",
+      "cmd": "echo --post-file | xargs -I --post-file wget --post-file m.json https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X09 xargs -I, replace string is the method word (httpie)",
+      "cmd": "echo POST | xargs -I POST http POST https://api.resend.com/emails a=b",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X10 xargs -I, replace string is the item (httpie)",
+      "cmd": "echo a=b | xargs -I a=b http https://api.resend.com/emails a=b",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X11 xargs -I, replace string is the Gmail send word",
+      "cmd": "echo send | xargs -I send curl -X POST -d @m.json https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X12 xargs -I, replace string is the Graph host label",
+      "cmd": "echo graph | xargs -I graph curl -X POST -d @m.json https://graph.microsoft.com/v1.0/me/sendMail",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X13 control: literal send through xargs, no replace",
+      "cmd": "echo x | xargs curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X14 control: literal send through xargs -I{}",
+      "cmd": "echo x | xargs -I{} curl -d @m.json https://api.resend.com/emails -H 'X: {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X16 xargs with a full path to curl",
+      "cmd": "echo https://api.resend.com/emails | xargs /usr/bin/curl -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X17 xargs through env",
+      "cmd": "echo https://api.resend.com/emails | xargs env curl -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X18 xargs through sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs sh -c 'curl -d @m.json \"$0\"'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X19 xargs -0 -n 1 -P 2",
+      "cmd": "printf 'https://api.resend.com/emails' | xargs -0 -n 1 -P 2 curl -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X20 xargs -a file template",
+      "cmd": "xargs -a urls.txt curl -d @m.json # https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X21 xargs --replace then eval",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} sh -c 'eval curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X22 xargs -J (BSD) with the body flag as the replace string",
+      "cmd": "echo -d | xargs -J -d curl -d @m.json https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X23 xargs -I glued, replace string is the body flag",
+      "cmd": "echo -d | xargs -I-d curl -d @m.json https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review: X24 xargs -I, replace string is the at-file",
+      "cmd": "echo @m.json | xargs -I @m.json curl -d @m.json https://api.sendgrid.com/v3/mail/send",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F01 xargs -I % sh -c with double quotes",
+      "cmd": "echo https://api.resend.com/emails | xargs -I % sh -c \"curl -d @m.json %\"",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F02 xargs -n1 sh -c with $1 and a dummy $0",
+      "cmd": "echo https://api.resend.com/emails | xargs -n1 sh -c 'curl -d @m.json \"$1\"' _",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F03 xargs -I{} env X={} bash -c",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} env X={} bash -c 'curl -d @m.json \"$X\"'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F04 xargs -I{} with -- before the template",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} -- curl -d @m.json {}",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F05 xargs --replace (default braces)",
+      "cmd": "echo https://api.resend.com/emails | xargs --replace curl -d @m.json {}",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F06 xargs -i (default braces)",
+      "cmd": "echo https://api.resend.com/emails | xargs -i curl -d @m.json {}",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F07 xargs -s 100 -I{} curl",
+      "cmd": "echo https://api.resend.com/emails | xargs -s 1000 -I{} curl -d @m.json {}",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F08 xargs -L1 -I{} wget",
+      "cmd": "echo https://api.sendgrid.com/v3/mail/send | xargs -L1 -I{} wget --post-file m.json {}",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F09 xargs -d newline -I{} curl",
+      "cmd": "echo https://api.resend.com/emails | xargs -d '\\n' -I{} curl -d @m.json {}",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F10 xargs --max-args=1 curl",
+      "cmd": "echo https://api.resend.com/emails | xargs --max-args=1 curl -d @m.json",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F11 xargs -n 1 -I {} sh -c nested eval",
+      "cmd": "echo https://api.resend.com/emails | xargs -n 1 -I {} sh -c 'eval \"curl -d @m.json {}\"'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F12 xargs -I{} bash -lc",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} bash -lc 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F13 xargs -I{} sh -c, host only in the fed word, sendmail inside",
+      "cmd": "echo a@b.example | xargs -I{} sh -c 'sendmail {} < m.txt'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F14 xargs python -c style foreign template, mail host fed in",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} echo {}",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F15 builtin builtin eval",
+      "cmd": "builtin builtin eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F16 command -p eval",
+      "cmd": "command -p eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F17 builtin command eval",
+      "cmd": "builtin command eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F18 command -- eval",
+      "cmd": "command -- eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F19 builtin -- eval",
+      "cmd": "builtin -- eval 'curl -X POST https://api.resend.com/emails -d x'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F20 eval five deep, harmless inside (false stop check)",
+      "cmd": "eval eval eval eval eval echo hello",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F21 sh -c five deep, harmless inside (false stop check)",
+      "cmd": "sh -c 'sh -c \"sh -c \\\"sh -c echo\\\\ hi\\\"\"'",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F22 control: xargs grep with a mail host fed in",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} grep -c x {}",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F23 control: xargs curl read, -I{}",
+      "cmd": "echo https://api.sendgrid.com/v3/stats | xargs -I{} curl -s {}",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F26 host followed by a space inside quotes",
+      "cmd": "curl -X POST -d @m.json 'https://api.sendgrid.com /v3/mail/send'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F27 xargs -J % (BSD) appended form",
+      "cmd": "echo https://api.resend.com/emails | xargs -J % curl -d @m.json %",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F28 xargs with replace string equal to the client name",
+      "cmd": "echo curl | xargs -I curl curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: F32 control: xargs rm",
+      "cmd": "ls *.tmp | xargs rm -f",
+      "expected": false
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G01 bash -lc with a literal send",
+      "cmd": "bash -lc 'curl -d @m.json https://api.resend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G02 xargs -I{} bash -c (control, expected stop)",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} bash -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G04 xargs -I{} bash -l -c",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} bash -l -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G06 xargs -I{} sh -c eval double-quoted",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} sh -c 'eval \"curl -d @m.json {}\"'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G07 xargs -n 1 -I {} sh -c eval unquoted",
+      "cmd": "echo https://api.resend.com/emails | xargs -n 1 -I {} sh -c 'eval curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G08 xargs -I {} sh -c plain",
+      "cmd": "echo https://api.resend.com/emails | xargs -I {} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G09 xargs -n 1 -I{} sh -c plain",
+      "cmd": "echo https://api.resend.com/emails | xargs -n 1 -I{} sh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G10 eval double-quoted variable URL, no xargs",
+      "cmd": "U=https://api.resend.com/emails; eval \"curl -d @m.json $U\"",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G11 sh -c eval double-quoted with $0",
+      "cmd": "sh -c 'eval \"curl -d @m.json $0\"' https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G12 xargs -I{} zsh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} zsh -c 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G13 xargs -I{} sh -ec",
+      "cmd": "echo https://api.resend.com/emails | xargs -I{} sh -ec 'curl -d @m.json {}'",
+      "expected": true
+    },
+    {
+      "name": "EVALXARGSMAIL1126: review 3: G14 xargs --replace=R sh -c",
+      "cmd": "echo https://api.resend.com/emails | xargs --replace=R sh -c 'curl -d @m.json R'",
+      "expected": true
     }
   ]
 }

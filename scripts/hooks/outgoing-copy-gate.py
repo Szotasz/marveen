@@ -615,7 +615,7 @@ _WRAPPERS = {
     "nice": ("n", ("adjustment",), 0),
     "exec": ("a", (), 0),
     "command": ("", (), 0),
-    "xargs": ("ILnPsdEa", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args",
+    "xargs": ("ILJnPsdEa", ("arg-file", "delimiter", "eof", "max-lines", "max-args",
                            "max-procs", "max-chars", "process-slot-var"), 0),
     "timeout": ("sk", ("signal", "kill-after"), 1),
     # setsid: for future use and symmetry. NOT measured local traffic: the hits the
@@ -786,7 +786,78 @@ def _command_heads(toks, _d: int = 0):
     heads = []
     for s in starts:
         heads += _command_heads(toks[s + positionals:], _d + 1)
-    return heads
+    return _xargs_heads(toks, heads) if w == "xargs" else heads   # EVALXARGSMAIL1126
+
+
+# EVALXARGSMAIL1126: xargs appends the words it reads to its command template (or puts them where the -I / -J / -i /
+# --replace string stands). The template is judged as written (as on develop), and in addition: an HTTP client
+# template with one undecidable word ($XARGS_ARG) appended, which the inline mail API rule decides like any variable
+# URL (a mail-only API host elsewhere on the line, or a provider send path, makes it a send); and any template with the
+# replace string replaced by that word (an inner `sh -c '... {}'` string too). These only ADD heads: a replace string
+# that is a piece of the template (-I -d) cannot hide the template's own send.
+_XARGS_ARG = "$XARGS_ARG"
+
+
+# EVALXARGSMAIL1126: past the depth bound of 3 an eval line or a shell -c program is out of sight. It counts as a send
+# when its text carries a send marker: a mail-only API host, a Microsoft Graph host, or a sender literal. The same
+# pattern in both twins (DEPTH_SEND_MARK).
+_DEPTH_SEND_MARK = []   # compiled on first use: _MAIL_MARKER is defined further down
+
+
+def _deeper_sends(text: str, depth: int) -> bool:
+    if depth >= 3:
+        if not _DEPTH_SEND_MARK:
+            _DEPTH_SEND_MARK.append(re.compile(
+                _MAIL_MARKER.pattern + r"|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://", re.I))
+        return bool(_DEPTH_SEND_MARK[0].search(text))
+    return is_send_invocation(text, _depth=depth + 1)
+
+
+def _xargs_replace_string(toks):
+    """the replace string of an xargs call (-I X, -IX, -J X, -i[X], --replace[=X]), or None. The value of another
+    value-taking option (-n 1, -d '\\n', --max-args 1) is stepped over."""
+    skip = False
+    for i, t in enumerate(toks[1:], 1):
+        if skip:
+            skip = False
+            continue
+        if t == "--":
+            break
+        if t in ("-I", "-J") and i + 1 < len(toks):
+            return toks[i + 1]
+        if t.startswith(("-I", "-J")) and len(t) > 2:
+            return t[2:]
+        if t == "-i" or t == "--replace":
+            return "{}"
+        if t.startswith("-i") and len(t) > 2:
+            return t[2:]
+        if t.startswith("--replace="):
+            return t[len("--replace="):] or "{}"
+        if not t.startswith("-"):
+            break
+        if (len(t) == 2 and t[1] in _XARGS_VALUE_SHORT) or t[2:] in _XARGS_VALUE_LONG:
+            skip = True
+    return None
+
+
+_XARGS_VALUE_SHORT = "adELnPsRS"   # GNU and BSD xargs short options that take a separate value (I / J handled above)
+_XARGS_VALUE_LONG = ("arg-file", "delimiter", "max-lines", "max-args", "max-procs", "max-chars", "process-slot-var")
+
+
+def _xargs_heads(toks, heads):
+    repl = _xargs_replace_string(toks)
+    out = []
+    for h in heads:
+        out.append(h)
+        if not h:
+            continue
+        if _HTTP_CLIENT.match(_basename(h[0])):
+            out.append(h + [_XARGS_ARG])
+        if repl:
+            hr = [h[0]] + [w.replace(repl, _XARGS_ARG) for w in h[1:]]
+            if hr != h:
+                out.append(hr)
+    return out
 
 
 # Bence 69517: GNU env reads a long option by any unique prefix (getopt_long): `--c=DIR` is --chdir, `--spl=` is
@@ -1198,11 +1269,28 @@ def _head_is_send(toks, depth: int) -> bool:
     # MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
     if _CURLISH.match(prog) and any(_CURL_SMTP.match(t) for t in rest):
         return True
+    # EVALXARGSMAIL1126: eval runs its words, joined with blanks, as a command line (`builtin eval` too). Past the
+    # depth bound the command is out of sight, so it counts as a send, as a wrapper at the bound does.
+    p, r = prog, rest
+    while p in ("builtin", "command") and r:
+        while r and r[0] in ("--", "-p"):
+            r = r[1:]
+        if not r:
+            break
+        p, r = _basename(r[0]), r[1:]
+    if p == "eval":
+        prog, rest = "eval", r
+    if prog == "eval":
+        words = rest[1:] if rest[:1] == ["--"] else rest
+        if words and _deeper_sends(" ".join(words), depth):
+            return True
     # burkolo hejj: a -c string-argumentum maga is parancs -- rekurzio
-    if _WRAPPER_SHELL.match(prog) and depth < 3:
+    if _WRAPPER_SHELL.match(prog):
         for i, t in enumerate(rest):
-            if t == "-c" and i + 1 < len(rest):
-                if is_send_invocation(rest[i + 1], _depth=depth + 1):
+            # EVALXARGSMAIL1126: -c in a cluster (bash -lc, sh -ec) takes the program as well
+            if (t == "-c" or _SHELL_C_FLAG.match(t)) and i + 1 < len(rest):
+                # past the bound the marker reads every word of the shell call, its arguments too
+                if _deeper_sends(" ".join(rest) if depth >= 3 else rest[i + 1], depth):
                     return True
     # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
     if _PYTHON.match(prog) or _NODEISH.match(prog):
@@ -1325,7 +1413,8 @@ def _option_value_word(prev: str) -> bool:
 
 
 def _norm_host(auth: str) -> str:
-    return re.sub(r":[0-9]*$", "", auth.rsplit("@", 1)[-1]).lower().rstrip(".")
+    # EVALXARGSMAIL1126 (Revizor M3): blanks around the host (a tab or a space before the path) leave it
+    return re.sub(r":[0-9]*$", "", auth.rsplit("@", 1)[-1].strip()).lower().rstrip(".")
 
 
 def _norm_path(path: str) -> str:
@@ -1692,6 +1781,15 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
     return _written_then_run(cmd, written, depth)
 
 
+def _words_mail_host(cmd: str) -> bool:
+    """EVALXARGSMAIL1126: a mail-only API host in a shell word of the line once quotes are resolved
+    (X=https://api.re''send.com/emails), which the raw text does not show"""
+    try:
+        return any(_MAIL_API_HOST.search(w) for seg in _segments_tokens(cmd) for w in seg)
+    except ValueError:
+        return False
+
+
 def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     # MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
     if _depth == 0:
@@ -1700,7 +1798,7 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     # FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
     # A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
     _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and _line_clean(cmd)
-    _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or bool(_MAIL_API_HOST.search(cmd))   # MAILCURLSEND1118
+    _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or bool(_MAIL_API_HOST.search(cmd)) or _words_mail_host(cmd)   # MAILCURLSEND1118
     if _heredoc_program_sends(cmd, _depth):
         return True
     try:
