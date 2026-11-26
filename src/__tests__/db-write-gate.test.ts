@@ -221,7 +221,8 @@ describe('2. file-level writes of the database', () => {
 
 describe('3. this install\'s gate wiring and autonomy levels', () => {
   const REL = ['.claude/settings.json', '.claude/settings.local.json', 'scripts/hooks/gate.py', 'scripts/hooks/new.py',
-    'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
+    // MAINEXTRAHOOKS1123: store/extra-hooks.json moved to the sub-agent list (db-write-gate-main-extra-hooks.test.ts)
+    'scripts/self-pace-gate.mjs', 'store/autonomy-config.json',
     // GROMZOGATECONF1030 (c), Samu 59516: the sub-agents' sender-role gates, only the dashboard writes them.
     'store/agent-sender-role-gates.json',
     // APPROVALSLACK1030, Samu 66026: NOTIFY_SLACK_TARGET there names where the owner's approval requests go.
@@ -246,7 +247,7 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     'store/colleague-accounts.json']
   it('the protected list is the decided one', () => {
     expect(PROTECTED_INSTALL_PATHS.map((t: { rel?: string, home?: string }) => t.rel ?? `~/${t.home}`)).toEqual(['.claude/settings.json',
-      '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/extra-hooks.json', 'store/autonomy-config.json',
+      '.claude/settings.local.json', 'scripts/hooks', 'scripts/self-pace-gate.mjs', 'store/autonomy-config.json',
       'store/agent-sender-role-gates.json', 'store/config-overrides.json', 'store/.owner-slack-target', 'store/.net-target-hosts.json', 'store/custom-providers.json', 'store/context-guard.json', 'store/.dashboard-totp.json', 'store/.inbound-sig-key', 'store/.dashboard-node', 'store/.platform', 'store/bash-sandbox', 'store/code-mode', 'store/board-access.json', 'store/colleague-accounts.json', '.git/config', '.git/packed-refs', '.git/refs/remotes', '.git/hooks', '~/.gitconfig', '~/git/config',
       // ENVRELAXGATE1104 (Samu 67797): every agent's own Claude settings, one-segment patterns
       'agents/*/.claude/settings.json', 'agents/*/.claude/settings.local.json', 'agents/*/.claude-config/settings.json',
@@ -353,7 +354,7 @@ describe('3. this install\'s gate wiring and autonomy levels', () => {
     ['cp', `cp /tmp/x .claude/settings.json`],
     ['mv', `mv /tmp/x scripts/hooks/gate.py`],
     ['tee', `echo '{}' | tee store/autonomy-config.json`],
-    ['a redirect', `echo '{}' > store/extra-hooks.json`],
+    ['a redirect', `echo '{}' > store/config-overrides.json`],
     ['an append', `echo x >> scripts/self-pace-gate.mjs`],
     ['sed -i', `sed -i '' 's/a/b/' .claude/settings.local.json`],
     ['python writing it', `python3 -c "open('store/autonomy-config.json','w').write('{}')"`],

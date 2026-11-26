@@ -25,7 +25,7 @@ Ezek a fájlok a dashboard által kezelt, futásidőben módosuló konfiguráci�
 | `store/config-overrides.json` | dashboard UI | Beállítások-oldal által mentett felülbírálatok (plain értékek, sosem tartalmaz titkokat) |
 | `store/update.pid` | automatikus | Frissítési folyamat PID fájl (concurrency lock) |
 | `store/telegram-topics.json` | `/topic new <név>` (Telegram) | A fő chat elnevezett témái: `{ "chatId", "topics": { "<név>": <message_thread_id> } }` (0600); csak `TELEGRAM_TOPICS_ENABLED` mellett íródik |
-| `store/extra-hooks.json` | kézzel (opcionális) | Telepítés-helyi plusz hookok minden sub-ágens generált `settings.json`-jába, a beépített kapuk után -- ld. lent |
+| `store/extra-hooks.json` | kézzel vagy a fő ágens (opcionális) | Telepítés-helyi plusz hookok minden sub-ágens generált `settings.json`-jába, a beépített kapuk után -- ld. lent |
 
 ### A dashboard nyelve
 
@@ -514,8 +514,12 @@ beépített injektorok fájlnév alapján találják meg a saját bejegyzésüke
 át kell nevezni.
 
 Ki írhatja: a `store/extra-hooks.json` és a `local-hooks/` dönti el, mi fut MINDEN sub-ágens
-sessionjében. A szándékolt írók a gazda és a fő ágens, ezeken a sub-ágensek self-pace kapuja nem
-fut. Amit ez a kapu garantál, az szűkebb annál, hogy „a sub-ágens nem írhatja”, ezért pontosan:
+sessionjében. Az írók a gazda és a fő ágens (MAINEXTRAHOOKS1123: a fő ágens a gazda kérésére
+maga teszi be a bejegyzést és a szkriptet, natív eszközzel vagy Bash-sel); ezeken a sub-ágensek
+self-pace kapuja nem fut, a `db-write-gate` pedig a párt csak sub-ágensre tiltja, valódi útvonal
+szerint (fájleszköz, MCP-fájleszköz, Bash). A többi telepítési kapu-fájl (`.claude/settings*.json`,
+`scripts/hooks/`, `store/autonomy-config.json`, ...) a fő ágensre is tiltott marad. Amit a self-pace
+kapu garantál, az szűkebb annál, hogy „a sub-ágens nem írhatja”, ezért pontosan:
 
 - Tiltja a sub-ágens natív fájleszközös írását (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`)
   bármelyikre, név és feloldott valódi útvonal szerint.

@@ -24,7 +24,7 @@ These files are managed by the dashboard and change at runtime. They are not che
 | `store/config-overrides.json` | dashboard UI | Settings-page overrides (plain values only, never contains secrets) |
 | `store/update.pid` | automatic | Update process PID file (concurrency lock) |
 | `store/telegram-topics.json` | `/topic new <name>` (Telegram) | The named topics of the main chat: `{ "chatId", "topics": { "<name>": <message_thread_id> } }` (0600); written only while `TELEGRAM_TOPICS_ENABLED` is on |
-| `store/extra-hooks.json` | by hand (optional) | Install-local extra hooks for every sub-agent's generated `settings.json`, after the built-in gates -- see below |
+| `store/extra-hooks.json` | by hand or the main agent (optional) | Install-local extra hooks for every sub-agent's generated `settings.json`, after the built-in gates -- see below |
 
 ### Dashboard language
 
@@ -458,9 +458,13 @@ contains a file name of `scripts/` or `scripts/hooks/`, where the built-in gates
 built-in injectors find their own entries by script name); rename a script whose name collides.
 
 Who may write it: `store/extra-hooks.json` and `local-hooks/` decide what runs in EVERY
-sub-agent's session. The intended writers are the operator and the main agent, which do not run
-the sub-agents' self-pace gate. What that gate guarantees is narrower than "a sub-agent cannot
-write them", so here is exactly what it does:
+sub-agent's session. The writers are the operator and the main agent (MAINEXTRAHOOKS1123: the
+main agent installs the entry and the script itself on the owner's request, with its native tools
+or Bash). Neither runs the sub-agents' self-pace gate, and the `db-write-gate` denies the pair to
+sub-agents only, by real path (file tools, MCP file tools, Bash). Every other install gate file
+(`.claude/settings*.json`, `scripts/hooks/`, `store/autonomy-config.json`, ...) stays denied to the
+main agent as well. What the self-pace gate guarantees is narrower than "a sub-agent cannot write
+them", so here is exactly what it does:
 
 - It denies a sub-agent's native file-tool write (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`)
   to either, by name and by resolved real path.

@@ -17,8 +17,10 @@
 //      sqlite3 dot-command that replaces or runs files, a native Write/Edit.
 //   3. A write of this gate's own wiring and of the autonomy levels, in THIS
 //      INSTALL: .claude/settings.json, .claude/settings.local.json,
-//      scripts/hooks/, scripts/self-pace-gate.mjs, store/extra-hooks.json,
-//      store/autonomy-config.json. "This install" is the root this file sits in
+//      scripts/hooks/, scripts/self-pace-gate.mjs,
+//      store/autonomy-config.json (store/extra-hooks.json and local-hooks/ are
+//      a sub-agent-only pair: the main agent installs the extras,
+//      MAINEXTRAHOOKS1123). "This install" is the root this file sits in
 //      (scripts/hooks/ -> ../..), never the cwd: the same Edit in a worktree's
 //      own copy passes, and every path is compared after realpath (symlinks and
 //      ".." resolved, case folded as a case-insensitive volume reads it). An
@@ -200,7 +202,7 @@ export const PROTECTED_INSTALL_PATHS = [
   { rel: '.claude/settings.local.json' },
   { rel: 'scripts/hooks', dir: true },
   { rel: 'scripts/self-pace-gate.mjs' },
-  { rel: 'store/extra-hooks.json' },
+  // store/extra-hooks.json is on the sub-agent list below (MAINEXTRAHOOKS1123): the main agent writes it.
   { rel: 'store/autonomy-config.json' },
   // The sub-agents' sender-role gates (GROMZOGATECONF1030 (c), Samu 59516): only the dashboard writes them, so no
   // agent can widen its own gate for its next restart.
@@ -422,6 +424,16 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: 'store/plan-token-launch', dir: true },
   // INSTRSURFACE1118: the instruction surfaces other sessions load (see instructionSurfaceTargets)
   ...instructionSurfaceTargets(),
+  // The install-local extra hooks (MAINEXTRAHOOKS1123, owner decision 2026-11-23): store/extra-hooks.json lists them and
+  // local-hooks/ holds their scripts; the dashboard wires them into every sub-agent's settings (and the "main"-scope ones
+  // into the main agent's .claude/settings.local.json) at its start and on every sub-agent spawn. The writers are the
+  // operator and the MAIN agent (on the owner's word), so the file left the common list above. A sub-agent writes neither:
+  // its code would run in every other agent's session. The scripts/self-pace-gate.mjs rule for the same pair stays (it
+  // runs for sub-agents only); this entry adds the real-path reading. The whole directory, as a directory.
+  // What the main agent still cannot do through an extra, by construction (extra-hook-entries.ts): replace, remove or
+  // reorder a built-in gate, or point outside local-hooks/.
+  { rel: 'store/extra-hooks.json' },
+  { rel: 'local-hooks', dir: true },
 ]
 
 // Is the hook's caller a sub-agent? The main agent runs in the install root (its CLAUDE_PROJECT_DIR), a sub-agent in
@@ -632,7 +644,9 @@ export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.js
   // CHANSTATEWRITE1104: the channel state dirs' trust directories, from their parent
   'progress', 'approved',
   // SUBPLANTOKEN1110 (Dani 75621): the token-plan launch status dir, from its parent (`cd store && rm -rf plan-token-launch`)
-  'plan-token-launch'])
+  'plan-token-launch',
+  // MAINEXTRAHOOKS1123: the extras' script dir, from its parent (`cd .. && rm -rf local-hooks`)
+  'local-hooks'])
 const GLOB_CHAR_RX = /[*?[{]/
 // A shell glob does not match a leading-dot name unless its own segment starts with a dot (bash without dotglob,
 // zsh without GLOB_DOTS). Without this, a bare `*` in a sub-agent's own directory matched its .mcp.json

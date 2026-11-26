@@ -24,9 +24,14 @@
  *     isUnsafeHookCommand).
  *
  * Trust: store/extra-hooks.json and local-hooks/ decide what runs in EVERY
- * sub-agent's session, and the writers are meant to be the operator and the
- * main agent. What is actually enforced is narrower than "a sub-agent cannot
- * write them", and it is stated here so nobody reads more into it:
+ * sub-agent's session, and the writers are the operator and the main agent
+ * (MAINEXTRAHOOKS1123: the main agent installs an extra on the owner's word,
+ * with its native tools or Bash; the db-write-gate lists the pair for
+ * sub-agents only). What is actually enforced is narrower than "a sub-agent
+ * cannot write them", and it is stated here so nobody reads more into it:
+ *   - the db-write-gate (every agent) denies a sub-agent's write of either by
+ *     resolved real path (its SUBAGENT_PROTECTED_INSTALL_PATHS), in the file
+ *     tools, MCP file tools and Bash;
  *   - the sub-agents' self-pace gate denies a native file-tool write to either
  *     (by name and by resolved real path), and a Bash command that SPELLS a
  *     protected name: in plain text, through quoting, escapes or literal string
