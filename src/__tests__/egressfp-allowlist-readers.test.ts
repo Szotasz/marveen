@@ -197,3 +197,93 @@ describe('Dani 71554 / Samu 71567: programs a reader runs, and names the shell r
     expect(rgReadOnly(['x'], true)).toBe(false)
   })
 })
+
+// Reviewer suspicions measured on develop 6c4c5b40 (Marveen 18400): a flag argument blanked for the wrong command, and
+// a naive-split piece read as a command of its own, let a write onto a protected name through.
+describe('a blanked flag argument and a naive-split fragment are no hiding place', () => {
+  it('a prose flag is blanked only on the gh/git/glab segment that owns it', () => {
+    mkdirSync(join(root, 'local-hooks'))
+    deniedAllowlist(`git status; cp -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`gh pr list; mv -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`git log -1 && install -t "local-hooks" /tmp/x`)
+    // a quoted separator or a quoted command word does not fake a gh segment
+    deniedAllowlist(`cp -S '; gh ' -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`'cp' gh -t 'local-hooks' /tmp/x`)
+    // a quote glued to the word makes another command: the shell runs `gh x` here, not gh
+    deniedAllowlist(`gh' x' -t 'local-hooks' /tmp/x`)
+    // the PR text on gh/git itself is still blanked (the false positive the strip exists for)
+    allowed(`gh pr create --title 'x' --body 'edits local-hooks and store/egress-allowlist.json'`)
+    allowed(`git status; GH_REPO=a/b gh pr comment 1 -b 'see local-hooks'`)
+    allowed(`gh pr create \\\n  --title 'x; y' \\\n  --body 'see local-hooks'`)
+    allowed(`T=x; gh pr create --title \${T} --body 'see local-hooks'`)
+  })
+  it('a data payload is blanked only on curl', () => {
+    mkdirSync(join(root, 'local-hooks'))
+    deniedAllowlist(`unzip -o /tmp/a.zip -d 'local-hooks'`)
+    deniedAllowlist(`unzip -o /tmp/a.zip -d "store"`)
+    allowed(`curl -s -d '{"note":"local-hooks"}' http://127.0.0.1:3420/api/x`)
+  })
+  it('a redirection, a closed substitution, a case pattern or a heredoc body does not fake the owner', () => {
+    mkdirSync(join(root, 'local-hooks'))
+    deniedAllowlist(`cp >& gh -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`cp >| gh -t 'local-hooks' /tmp/x`)
+    deniedAllowlist(`unzip -o /tmp/a.zip >| curl -d 'local-hooks'`)
+    deniedAllowlist(`cp $(gh >/dev/null) -t '${root}/local-hooks' /tmp/x`, '/tmp')
+    deniedAllowlist(`case git in (git ) cp -t 'local-hooks' /tmp/x;; esac`)
+    deniedAllowlist(`case git in\ngit ) cp -t 'local-hooks' /tmp/x;;\nesac`)
+    deniedAllowlist(`case curl in (curl ) unzip -o /tmp/a.zip -d 'local-hooks';; esac`)
+    deniedAllowlist(`python3 - <<'E'\ngh = 0; import os; os.system("cp -t 'local-hooks' /tmp/x")\nE`)
+    deniedAllowlist(`python3 - <<'E'\ncurl = 0; import os; os.system("unzip a.zip -d 'local-hooks'")\nE`)
+    // flags are case-sensitive: curl -D writes the response headers to a file
+    deniedAllowlist(`curl -s -D 'store/egress-allowlist.json' http://127.0.0.1:9/`)
+    // controls: the owner itself, past shell keywords and the timeout / env wrappers, is still blanked
+    allowed(`timeout 60 gh pr create --title x --body 'see local-hooks'`)
+    allowed(`timeout 30 curl -s -d '{"n":"local-hooks"}' http://127.0.0.1:3420/api/x`)
+    allowed(`if ! gh pr view 1; then gh pr create --title x --body 'see local-hooks'; fi`)
+    allowed(`if curl -sf -d '{"n":"local-hooks"}' http://127.0.0.1:3420/api/x; then echo ok; fi`)
+    allowed(`env GH_PAGER= gh pr comment 1 -b 'see local-hooks'`)
+    // a file test only reads: its -d argument is still blanked (live command, spirit-bevetel)
+    allowed(`for d in agents/x/*/; do [ -d "$d/.git" ] && echo "$d"; done`)
+    allowed(`[ -d 'local-hooks' ] && echo y; test -d "$X/x" || echo n`)
+    // known cost: a substitution in front of the owner keeps the argument
+    deniedAllowlist(`GH_TOKEN="$(cat /tmp/t)" gh pr comment 1 -b 'see local-hooks'`)
+  })
+  it('a naive-split piece that starts inside a quote or a heredoc body is no read', () => {
+    mkdirSync(join(root, 'local-hooks'))
+    deniedAllowlist(`echo "$(date)"; python3 -c "\ncat = open('store/egress-allowlist.json','w')\n"`)
+    deniedAllowlist(`echo "$(date)"; python3 -c "\nif 1:\n  cat = open('store/egress-allowlist.json','w')\n"`)
+    deniedAllowlist(`cat <<'E' >/tmp/n\nx\nE\npython3 -c "\ncat = open('store/egress-allowlist.json','w')\n"`)
+    deniedAllowlist(`python3 - <<'E'\ncat = open('store/egress-allowlist.json','w')\nE`)
+    deniedAllowlist(`echo "$(date)"; node -e "\nhead = require('fs').writeFileSync('local-hooks/x', '')\n"`)
+    expect(bash(`echo "$(date)"; python3 -c "\ncat = open('store/config-overrides.json','w')\n"`)).toEqual({ deny: true, reason: 'protected-store-file' })
+    // a real read next to a resolved heredoc is still a read
+    allowed(`cat <<'E' >/tmp/n\nx\nE\ncat store/egress-allowlist.json`)
+    // after a "$(...)" in double quotes the lenient mask decides (no # or <<): a real read is still a read
+    allowed(`echo "$(date)"; grep -c a store/egress-allowlist.json`)
+  })
+  it('with no mask at all (unresolved quoting), every naive piece after the first is a fragment', () => {
+    const W = `cat = open('store/egress-allowlist.json','w')`
+    deniedAllowlist(`python3 -c "x=1; ${W}"; : <<E`)
+    deniedAllowlist(`python3 - <<'E'\n${W}`)
+    deniedAllowlist(`true $(true)#\npython3 -c "x=1; ${W}"`)
+    // controls: the same write is denied with resolved quoting, and the first piece is still a read
+    deniedAllowlist(`python3 -c "x=1; ${W}"`)
+    deniedAllowlist(`python3 - <<'E'\n${W}\nE`)
+    allowed(`grep -c a store/egress-allowlist.json; : <<E`)
+    // known cost: a real read after the unresolved quote is denied too
+    deniedAllowlist(`: <<E; grep -c a store/egress-allowlist.json`)
+  })
+  it('the lenient mask decides a naive piece only without # and <<: it misreads a comment or heredoc inside "$(...)"', () => {
+    const W = `cat = open('store/egress-allowlist.json','w')`
+    // bash runs the python3 -c code here (measured on a dummy file); the lenient mask saw `cat = open(...)` as a command
+    deniedAllowlist(`echo "$(true #)"\n)"; python3 -c "\n${W}\n" #"`)
+    deniedAllowlist(`echo "$(cat <<E\n)\nE\n)"; python3 -c "\n${W}\n"`)
+    deniedAllowlist(`echo "$(cat <<'E'\n"\nE\n)"; python3 -c "\n${W}\n"`)
+    // the `&` or `|` of a redirection is no separator: the piece after it is the redirect's operand, no read
+    deniedAllowlist(`echo "$(date)"; cp /tmp/x >& cat store/egress-allowlist.json`)
+    deniedAllowlist(`echo "$(date)"; cp /tmp/x >| cat store/egress-allowlist.json`)
+    deniedAllowlist(`echo "$(date)"; cp /tmp/x &> cat store/egress-allowlist.json`)
+    // control: a stderr redirect in front of a real read leaves the read a read
+    allowed(`echo "$(date)" 2>&1; grep -c a store/egress-allowlist.json`)
+  })
+})
