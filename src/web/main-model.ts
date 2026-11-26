@@ -38,12 +38,11 @@ import { notifyChannel } from '../notify.js'
 import { registerCommand, parseCommand, resolveCommand } from './commands.js'
 import { queuePendingWrite, readPendingWrite, runPendingWrite, clearPendingWrite, PENDING_WRITE_FILE, PENDING_WRITE_TTL_MS } from './pending-write.js'
 import { formatDayClock, formatSpan, modelsDiffer, formatTokens } from './system-status.js'
+import { EFFORT_LEVELS } from '../config-registry.js'
 
 export const DEFAULT_HOLD_MINUTES = 120
 export const BLOCK_ALERT_MS = 30 * 60_000
-// What Claude Code 2.1.110 accepts (`/effort [low|medium|high|max|auto]`,
-// measured in the binary): `xhigh` is not there and would fail silently.
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const
+export { EFFORT_LEVELS }
 // Claude Code decides effort support per model (2.1.110, measured in the
 // binary: a capability table first, then every `haiku` id -> no effort). A
 // `/effort` sent while haiku runs is stored and ignored, so the reply must not

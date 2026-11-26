@@ -193,6 +193,31 @@ export function skillListingBudgetFraction(v: string): number | null {
   const n = Number(t)
   return n > 0 && n <= 1 ? n : null
 }
+// What Claude Code 2.1.110 accepts (`/effort [low|medium|high|max|auto]`,
+// measured in the binary): `xhigh` is not there and would fail silently.
+// Lives here (a leaf module) so the registry can validate AGENT_EFFORT_LEVEL; main-model.ts re-exports it.
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const
+
+/** AGENT_EFFORT_LEVEL as name -> level ('*' = every agent; a bare level is '*'), or null when it is not valid. */
+function agentEffortLevelMap(v: string): Map<string, string> | null {
+  const t = v.trim()
+  const isLevel = (l: string) => (EFFORT_LEVELS as readonly string[]).includes(l)
+  if (t === '') return new Map()
+  if (isLevel(t)) return new Map([['*', t]])
+  const map = new Map<string, string>()
+  for (const part of t.split(',')) {
+    const [name, level, extra] = part.split('=').map((s) => s.trim())
+    if (extra !== undefined || !name || !(name === '*' || AGENT_NAME_RE.test(name)) || !isLevel(level ?? '')) return null
+    map.set(name, level)
+  }
+  return map
+}
+
+/** The effort level AGENT_EFFORT_LEVEL gives this agent (an explicit name beats '*'), or null: empty, invalid, or not covered. */
+export function effortLevelFor(settingValue: string, agentName: string): string | null {
+  const map = agentEffortLevelMap(settingValue)
+  return map?.get(agentName) ?? map?.get('*') ?? null
+}
 function validAgentNameList(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -1146,6 +1171,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
         ? null
         : 'Tört 0 és 1 között, ponttal írva (pl. 0.005), vagy üresen a Claude Code saját értéke (0.01) él.',
     description: 'Mekkora részét kaphatja a kontextusablaknak (karakterben) a skill-lista, amit a Claude Code minden al-ügynök munkamenetének elküld. Üresen a Claude Code saját értéke él (0.01, vagyis 1%). Kisebb érték kevesebb tokent jelent hívásonként: ha a lista nem fér bele, a legritkábban használt skillek LEÍRÁSA marad ki (a nevük megmarad és hívhatók), a többié teljes marad. Az al-ügynökök settings.json-jába kerül (skillListingBudgetFraction), a fő ágensébe nem; az érték törlésekor a következő indításnál kikerül onnan. A módosítás az ügynök következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'AGENT_EFFORT_LEVEL',
+    type: 'string',
+    default: '',
+    validate: (v) =>
+      agentEffortLevelMap(v) !== null
+        ? null
+        : `Egy szint (${EFFORT_LEVELS.join(', ')}) minden ügynökre, vagy vesszővel elválasztott név=szint párok, ahol a név * is lehet (pl. *=medium,uzemelteto=high).`,
+    description: `Az ügynökök munkamenetének gondolkodási szintje (effort), kézi settings.json-szerkesztés nélkül. Üresen (alapértelmezés) a dashboard nem nyúl az efforthoz, a fájlok változatlanok. Egy szint (${EFFORT_LEVELS.join(', ')}) minden ügynökre érvényes; név=szint párokkal ügynökönként állítható, a * minden ügynököt jelent, és a név szerinti pár erősebb a *-nál (pl. *=medium,uzemelteto=high). Az al-ügynök projekt-settings.json-jába effortLevel kerül, a saját config-gyökerének settings.json-jába pedig env.CLAUDE_CODE_EFFORT_LEVEL (ez nyer minden más effort-beállítás felett). A fő ágensnél csak akkor ír, ha saját config-gyökéren fut (MAIN_AGENT_ISOLATED_CONFIG vagy MAIN_AGENT_CONFIG_DIR); ha a közös ~/.claude-ot használja, nem nyúl hozzá. A beállítás törlése NEM veszi ki a korábban beírt értéket: visszaállni a régi szint kifejezett megadásával lehet. A módosítás az ügynök következő indításakor lép életbe.`,
     module: 'system',
     secret: false,
     requiresRestart: true,

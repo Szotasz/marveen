@@ -11,7 +11,7 @@ import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync, writeMcpJsonFile } from './atomic-write.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { isAbsoluteHttpUrl, skillListingBudgetFraction } from '../config-registry.js'
+import { isAbsoluteHttpUrl, skillListingBudgetFraction, effortLevelFor } from '../config-registry.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
@@ -1409,6 +1409,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     if (fraction !== null) existing.skillListingBudgetFraction = fraction
     else delete existing.skillListingBudgetFraction
   }
+  // AGENT_EFFORT_LEVEL: effortLevel is the project-scope path (env would be stripped below); the config-root env entry,
+  // which wins over it, is set to the same level by the isolated-config provisioner. Null leaves effortLevel as it is.
+  const effort = name !== MAIN_AGENT_ID ? agentEffortLevel(name) : null
+  if (effort) existing.effortLevel = effort
   // ENVRELAXGATE1104 (Samu 67797 (b)): keys that switch the gate hooks off or rewrite their environment are dropped on
   // every spawn; every other key the file carries (effortLevel, emojiCompletionEnabled, enabledPlugins: measured on the
   // live fleet) stays. The gate hooks themselves are put back by the inject* calls above.
@@ -1475,6 +1479,35 @@ export function sanitizeAgentLocalSettings(name: string, permissionMode?: string
   if (!dropped.length) return 'clean'
   atomicWriteFileSync(p, JSON.stringify(obj, null, 2))
   return 'stripped'
+}
+
+/** AGENT_EFFORT_LEVEL resolved for this agent; an unreadable or invalid setting counts as empty (null). */
+export function agentEffortLevel(name: string): string | null {
+  try { return effortLevelFor(String(getEffectiveSettingValue('AGENT_EFFORT_LEVEL')), name) } catch { return null }
+}
+
+/** Sets env.CLAUDE_CODE_EFFORT_LEVEL (measured to win over effortLevel) and keeps every other env entry as it is. */
+export function setEffortEnv(settings: Record<string, unknown>, level: string): void {
+  const env = settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env) ? settings.env : {}
+  settings.env = { ...env, CLAUDE_CODE_EFFORT_LEVEL: level }
+}
+
+/**
+ * The same env entry in a config-root settings.json the provisioner does not rewrite (the main agent's own config dir,
+ * MAIN_AGENT_CONFIG_DIR). Null level, a missing folder, an unparseable file or one already at the level: not written.
+ */
+export function ensureEffortEnvInSettingsFile(settingsPath: string, level: string | null): boolean {
+  if (!level || !existsSync(dirname(settingsPath))) return false
+  let parsed: unknown = {}
+  if (existsSync(settingsPath)) {
+    try { parsed = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+  const obj = parsed as Record<string, unknown>
+  if ((obj.env as Record<string, unknown> | undefined)?.CLAUDE_CODE_EFFORT_LEVEL === level) return false
+  setEffortEnv(obj, level)
+  atomicWriteFileSync(settingsPath, JSON.stringify(obj, null, 2))
+  return true
 }
 
 // Install-local extra hook entries (store/extra-hooks.json), see
