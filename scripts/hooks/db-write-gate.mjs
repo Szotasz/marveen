@@ -1994,11 +1994,163 @@ function repoTop(dir) {
 const GIT_TREE_SAFE = new Set([...GIT_ROOT_READS, 'add', 'commit', 'fetch', 'push', 'tag', 'notes', 'branch', 'remote', 'config',
   'gc', 'fsck', 'prune', 'reflog', 'count-objects'])
 const GIT_URL_RX = /^[A-Za-z][\w+.-]*:\/\/|^[\w.-]+@[\w.-]+:/
-function dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx) {
-  if (!ctx.subAgent || GIT_TREE_SAFE.has(sub)) return false
+
+// PLUGINDIRGIT2-1126, what it does NOT see: only the repository's own config is read (config, config.worktree), not
+// the user's global git config or the system one, so a core.worktree or an insteadOf placed there is not seen; those
+// files are on the protected list for writes. `--receive-pack=<cmd>` on a local push runs a command: not a tree write,
+// and a sub-agent can run a command anyway, so no new reach. The config is read before the command runs, so a config
+// written into .git/config by a redirect or another program earlier in the SAME command (`printf ... >> .git/config &&
+// git push ...`) is not seen: a limit of a text-based gate (Geri's #3156 review, F4c). `git config` and `git remote add`
+// writing it in that command are judged on their own.
+// PLUGINDIRGIT2-1126: a repository's git dir and the common dir it shares, from a checkout top (a .git directory, or a
+// linked worktree's `gitdir:` file) or from a git dir given as is. null: unreadable.
+function gitDirsOf({ top, gitDir }) {
+  try {
+    let gd = gitDir
+    if (!gd) {
+      const dotgit = join(top, '.git')
+      if (statSync(dotgit).isDirectory()) gd = dotgit
+      else {
+        const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotgit, 'utf-8'))
+        if (!m) return null
+        gd = resolve(top, m[1])
+      }
+    }
+    let common = gd
+    if (existsSync(join(gd, 'commondir'))) common = resolve(gd, readFileSync(join(gd, 'commondir'), 'utf-8').trim())
+    return { gitDir: gd, common }
+  } catch {
+    return null
+  }
+}
+
+// The entries of a repository's config files ({ sec, sub, key, value }, section and key lower-cased), read as plain
+// INI. null when a file is there but not read whole: unreadable, an [include]/[includeIf] (the file it pulls in is not
+// read), or a line continuation. A missing file is no entries.
+function gitConfigEntries(files) {
+  const out = []
+  for (const f of files) {
+    if (!existsSync(f)) continue
+    let text
+    try { text = readFileSync(f, 'utf-8') } catch { return null }
+    let sec = ''
+    let sub = null
+    for (const raw of text.split(/\r?\n/)) {
+      let line = raw.trim()
+      if (!line || line[0] === '#' || line[0] === ';') continue
+      const h = /^\[\s*([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\]/.exec(line)
+      if (h) {
+        const name = h[1].toLowerCase()
+        if (h[2] !== undefined) { sec = name; sub = h[2].replace(/\\(.)/g, '$1') } else if (name.includes('.')) { sec = name.slice(0, name.indexOf('.')); sub = name.slice(name.indexOf('.') + 1) } else { sec = name; sub = null }
+        if (sec === 'include' || sec === 'includeif') return null
+        line = line.slice(h[0].length).trim()
+        if (!line) continue
+      }
+      if (/\\$/.test(line)) return null
+      const kv = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/.exec(line)
+      if (!kv) continue
+      let value = ''
+      let quoted = false
+      for (const ch of kv[2] ?? '') {
+        if (ch === '"') { quoted = !quoted; continue }
+        if (!quoted && (ch === '#' || ch === ';')) break
+        value += ch
+      }
+      out.push({ sec, sub, key: kv[1].toLowerCase(), value: value.trim() })
+    }
+  }
+  return out
+}
+
+// The config entries of the repository at `where` (see gitDirsOf), null when unreadable.
+function repoConfig(where) {
+  const d = gitDirsOf(where)
+  if (!d) return null
+  const entries = gitConfigEntries([join(d.common, 'config'), join(d.gitDir, 'config.worktree')])
+  return entries === null ? null : { ...d, entries }
+}
+
+// core.worktree of the repository at `where`: the tree path (relative to the git dir), undefined when not set, null
+// when the config cannot be read.
+function configuredWorkTree(where) {
+  const c = repoConfig(where)
+  if (!c) return null
+  const v = c.entries.filter((e) => e.sec === 'core' && e.sub === null && e.key === 'worktree').pop()
+  return v ? resolve(c.gitDir, expandHome(v.value)) : undefined
+}
+
+function dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx, gitDir) {
+  if (!ctx.subAgent || (GIT_TREE_SAFE.has(sub) && sub !== 'push' && sub !== 'remote')) return false
   const dyn = installTargets(ctx.root, true, ctx.projectDir, ctx.configDir).list.filter((t) => t.dyn)
   if (!dyn.length) return false
   const holds = (p) => { const k = pathKey(p); return dyn.some((t) => underKey(t.key, k)) }
+  const failClosed = () => dyn.some((t) => repoTop(t.abs) !== null)
+  // PLUGINDIRGIT2-1126: a repository's work tree as git writes it: its checkout top, and core.worktree from its config
+  // when that is set (an unreadable config counts as pointing anywhere).
+  const treeHolds = (top, where) => {
+    if (top && holds(top)) return true
+    const cw = configuredWorkTree(where)
+    return cw === null ? failClosed() : !!cw && holds(cw)
+  }
+  // Whether a URL names a local repository whose tree (or core.worktree) holds a named folder. file:// with no host or
+  // localhost is a local path, another host fails closed (Geri's #3156 review, F2).
+  const urlHolds = (u) => {
+    if (/[$`\u0000]/.test(u)) return failClosed()
+    let local = u
+    const f = /^file:\/\/([^/]*)(\/.*)?$/i.exec(u)
+    if (f) {
+      if (f[1] !== '' && f[1].toLowerCase() !== 'localhost') return failClosed()
+      local = f[2] || '/'
+    } else if (GIT_URL_RX.test(u)) return false
+    if (!local.startsWith('/') && !local.startsWith('~') && !dir) return failClosed()
+    const p = resolve(dir ?? '/', expandHome(local))
+    const top = existsSync(join(p, '.git')) ? p : repoTop(p)
+    const where = existsSync(join(p, '.git')) ? { top: p } : existsSync(join(p, 'HEAD')) ? { gitDir: p } : top ? { top } : null
+    return holds(p) || (where ? treeHolds(top, where) : false)
+  }
+  // `git remote add <name> <url>`: a later push to that name reaches the URL, in the same command too (F4a). Judged
+  // like a push to it.
+  if (sub === 'remote') {
+    if (args[0] !== 'add') return false
+    const plain = []
+    for (let j = 1; j < args.length; j++) {
+      if (['-t', '-m'].includes(args[j])) { j++; continue }
+      if (!args[j].startsWith('-')) plain.push(args[j])
+    }
+    return plain.length >= 2 && urlHolds(plain[1])
+  }
+  if (sub === 'push' || sub === 'send-pack') {
+    // A push to a local repository (a path, ".", file://, or a remote whose URL is one) updates that repository's
+    // checked-out tree when it sets receive.denyCurrentBranch=updateInstead. Without a target git pushes to a remote
+    // the config picks: every configured remote is read then (the strict direction). send-pack is the same push
+    // (F3). The positional repository wins over --repo in git, so both are judged (F1).
+    const targets = []
+    let positional
+    for (let j = 0; j < args.length; j++) {
+      const a = args[j]
+      if (a.startsWith('--repo=')) { targets.push(a.slice(7)); continue }
+      if (['--repo', '-o', '--push-option', '--receive-pack', '--exec'].includes(a)) { if (a === '--repo' && args[j + 1] !== undefined) targets.push(args[j + 1]); j++; continue }
+      if (a.startsWith('-')) continue
+      positional = a
+      break
+    }
+    if (positional !== undefined) targets.push(positional)
+    const cur = gitDir === null || dirUnknown ? null : gitDir ? repoConfig({ gitDir }) : (repoTop(dir) ? repoConfig({ top: repoTop(dir) }) : { entries: [] })
+    // A config the gate cannot read whole (an [include] may hold a pushInsteadOf) fails closed whatever the target
+    // looks like (Samu's #3156 review, second item).
+    if (cur === null) return failClosed()
+    // url.<base>.insteadOf / pushInsteadOf in the repository's own config rewrite a target that looks like a relative
+    // path, a URL or a remote's URL into a local repository (Samu's #3156 review): read as pointing anywhere.
+    if (cur.entries.some((e) => e.sec === 'url' && (e.key === 'insteadof' || e.key === 'pushinsteadof'))) return failClosed()
+    const remoteUrls = (name) => cur.entries.filter((e) => e.sec === 'remote' && (name === undefined || e.sub === name) && (e.key === 'url' || e.key === 'pushurl')).map((e) => e.value)
+    const urls = []
+    if (!targets.length) urls.push(...remoteUrls(undefined))
+    for (const t of targets) {
+      if (t && !/^[/.~]/.test(t) && !GIT_URL_RX.test(t) && remoteUrls(t).length) urls.push(...remoteUrls(t))
+      else urls.push(t)
+    }
+    return urls.some(urlHolds)
+  }
   const base = workTree ?? dir
   const paths = (list) => {
     const out = []
@@ -2020,10 +2172,17 @@ function dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx) {
     const ps = paths(plain)
     return ps === null || ps.some(holds)
   }
-  // a verb that writes the work tree: the tree is --work-tree, else the checkout the directory belongs to
-  if (workTree === null || (dirUnknown && !workTree)) return dyn.some((t) => repoTop(t.abs) !== null)
-  const top = workTree ?? repoTop(dir)
-  return !!top && holds(top)
+  // a verb that writes the work tree: the tree is --work-tree, else the checkout the directory belongs to, or the one
+  // core.worktree in that repository's config names (PLUGINDIRGIT2-1126); with --git-dir, its core.worktree, else the
+  // current directory
+  if (workTree === null || (dirUnknown && !workTree) || gitDir === null) return failClosed()
+  if (workTree) return holds(workTree)
+  if (gitDir) {
+    const cw = configuredWorkTree({ gitDir })
+    return cw === null ? failClosed() : holds(cw ?? dir)
+  }
+  const top = repoTop(dir)
+  return !!top && treeHolds(top, { top })
 }
 
 // 'deny', 'allow' (an allowed write in the main checkout: decided, no path rule after it), or null (judge as any other).
@@ -2034,6 +2193,7 @@ export function gitDecision(words, ctx) {
   let dirUnknown = !ctx.cwd
   let pointsIn = false
   let workTree   // undefined: none given; null: given but unreadable
+  let gitDir     // the same for --git-dir (PLUGINDIRGIT2-1126)
   const configs = []
   let i = 1
   for (; i < words.length && words[i].value.startsWith('-'); i++) {
@@ -2053,6 +2213,7 @@ export function gitDecision(words, ctx) {
       if (!known) pointsIn = true
       else if (inRootDir(resolve(ctx.cwd ?? '/', expandHome(d)))) pointsIn = true
       if (v.startsWith('--work-tree')) workTree = known ? resolve(ctx.cwd ?? '/', expandHome(d)) : null
+      else gitDir = known ? resolve(ctx.cwd ?? '/', expandHome(d)) : null
     }
   }
   const sub = words[i]?.value ?? ''
@@ -2065,7 +2226,13 @@ export function gitDecision(words, ctx) {
   if (sub === 'branch' && args.some((a) => /^-[A-Za-z]*[fmMcC]|^--(?:force|move|copy)$/.test(a))
     && args.some((a) => /^(?:origin\/|remotes\/|refs\/remotes\/)/.test(a))) return 'deny'
   if (sub === 'config') {
-    const plain = args.filter((a) => !a.startsWith('-'))
+    // The value of an option in its own word (`-f <file>`, `--type path`) is not the key: skipped, so `git config -f
+    // <file> core.worktree <x>` is read like `--file=<file>` (Geri's #3156 review, F4b; a gap on develop too).
+    const plain = []
+    for (let j = 0; j < args.length; j++) {
+      if (['-f', '--file', '--blob', '--type', '--default', '--comment', '--value'].includes(args[j])) { j++; continue }
+      if (!args[j].startsWith('-')) plain.push(args[j])
+    }
     const verb = ['set', 'unset', 'get', 'list', 'edit', 'rename-section', 'remove-section'].includes(plain[0]) ? plain.shift() : null
     const reading = verb === 'get' || verb === 'list' || args.some((a) => /^--(?:get|get-all|get-regexp|get-urlmatch|list)$|^-l$/.test(a))
       || (!verb && plain.length === 1 && !args.some((a) => /^--(?:unset|unset-all|add|replace-all|rename-section|remove-section|edit)$|^-e$/.test(a)))
@@ -2074,7 +2241,7 @@ export function gitDecision(words, ctx) {
   }
   if (sub === 'remote' && ['set-url', 'rename', 'remove', 'rm', 'set-branches', 'set-head'].includes(args[0] ?? '')) return 'deny'
   if (sub === 'remote' && args[0] === 'add' && args.includes('origin')) return 'deny'
-  if (dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx)) return 'deny'
+  if (dynGitDeny(sub, args, dir, dirUnknown, workTree, ctx, gitDir)) return 'deny'
   // the main checkout
   const inRoot = pointsIn || dirUnknown || inRootDir(dir)
   if (!inRoot) return null

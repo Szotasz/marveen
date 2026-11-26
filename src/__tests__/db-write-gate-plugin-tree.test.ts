@@ -293,6 +293,20 @@ describe('PLUGINDIRGIT1125: git verbs on a work tree that holds a named plugin f
   ])('core.worktree cannot be set or passed: %#', (c) => {
     expect(bash(c()).deny).toBe(true)
   })
+  // Geri's second #3156 review, F4b (a gap on develop too): `git config -f <file> <key> <value>`, the value of -f in its
+  // own word, is parsed like --file=<file>: the key is the protected one, not the file name.
+  it.each([
+    () => `git config -f ${join(own(), '.git', 'config')} core.worktree ${repo()}`,
+    () => `git config --file ${join(own(), '.git', 'config')} core.worktree ${repo()}`,
+    () => `git config -f ${join(own(), '.git', 'config')} remote.origin.url ${repo()}`,
+    () => `git config --type path -f ${join(own(), '.git', 'config')} core.worktree ${repo()}`,
+  ])('F4b: a protected key after a separate-word -f / --file value is denied: %#', (c) => {
+    expect(bash(c()).deny).toBe(true)
+  })
+  it('F4b: reading through -f stays free', () => {
+    expect(bash(`git config -f ${join(own(), '.git', 'config')} --get core.worktree`).deny).toBe(false)
+    expect(bash(`git config -f ${join(own(), '.git', 'config')} core.worktree`).deny).toBe(false)
+  })
   it('core.worktree may be read', () => {
     expect(bash(`git -C ${own()} config --get core.worktree`).deny).toBe(false)
     expect(bash(`git -C ${own()} config core.worktree`).deny).toBe(false)
@@ -301,6 +315,165 @@ describe('PLUGINDIRGIT1125: git verbs on a work tree that holds a named plugin f
     rmSync(join(repo(), '.git'), { recursive: true, force: true })
     expect(bash(`git -C ${repo()} checkout .`).deny).toBe(false)
     expect(bash(`git clone https://example.com/x/y.git ${repo()}`).deny).toBe(true)   // clone INTO the folder's parent: still
+  })
+})
+
+// PLUGINDIRGIT2-1126 (Samu 85549/85602, Geri 85548): two more ways a git writes a work tree the command does not name.
+// core.worktree in the repository's own config (already there, written earlier or with the Write tool) moves the tree a
+// tree-writing verb rewrites; a push to a local repository (a path, ".", file://, a remote whose URL is local) updates
+// that repository's checked-out tree when it sets receive.denyCurrentBranch=updateInstead. Both are measured on the tree
+// git would really write.
+describe('PLUGINDIRGIT2-1126: core.worktree from the config, and a push to a local repository', () => {
+  const repo = () => join(base, 'ext-repo')
+  const own = () => join(base, 'own-wt')
+  const clean = () => join(base, 'clean-repo')
+  const cfg = (dir: string, text: string) => writeFileSync(join(dir, 'config'), text)
+  beforeEach(() => {
+    mkdirSync(join(repo(), '.git'), { recursive: true })
+    mkdirSync(join(repo(), 'mods', 'm'), { recursive: true })
+    mkdirSync(join(own(), '.git'), { recursive: true })
+    mkdirSync(join(clean(), '.git'), { recursive: true })
+    const f = join(root, 'agents', 'tomi', '.claude-config', 'settings.json')
+    mkdirSync(join(f, '..'), { recursive: true })
+    writeFileSync(f, JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: join(repo(), 'mods', 'm') } }))
+  })
+
+  describe('core.worktree read from the repository config', () => {
+    it.each([
+      ['absolute', () => `[core]\n\tbare = false\n\tworktree = ${repo()}\n`],
+      ['relative to the .git directory', () => '[core]\n\tworktree = ../../ext-repo\n'],
+      ['quoted, mixed-case key and section', () => `[Core]\n\tWorkTree = "${repo()}" ; moved\n`],
+      ['old-style section on one line with the key', () => `[core] worktree = ${repo()}\n`],
+    ])('a tree-writing verb in a checkout whose config points at the folder\'s tree: denied (%s)', (_n, text) => {
+      cfg(join(own(), '.git'), text())
+      expect(bash(`git -C ${own()} checkout .`)).toEqual(SUB)
+      expect(bash(`cd ${own()} && git reset --hard HEAD~1`)).toEqual(SUB)
+    })
+    it('a linked worktree: its config.worktree and the shared config are both read', () => {
+      const wt = join(base, 'linked')
+      const gd = join(own(), '.git', 'worktrees', 'linked')
+      mkdirSync(gd, { recursive: true })
+      mkdirSync(wt, { recursive: true })
+      writeFileSync(join(wt, '.git'), `gitdir: ${gd}\n`)
+      writeFileSync(join(gd, 'commondir'), '../..\n')
+      writeFileSync(join(gd, 'config.worktree'), `[core]\n\tworktree = ${repo()}\n`)
+      expect(bash(`git -C ${wt} checkout .`)).toEqual(SUB)
+      rmSync(join(gd, 'config.worktree'))
+      cfg(join(own(), '.git'), `[core]\n\tworktree = ${repo()}\n`)
+      expect(bash(`git -C ${wt} checkout .`)).toEqual(SUB)
+    })
+    it('--git-dir: its core.worktree, else the current directory, is the tree', () => {
+      cfg(join(own(), '.git'), `[core]\n\tworktree = ${repo()}\n`)
+      expect(bash(`cd ${base} && git --git-dir=${join(own(), '.git')} checkout .`)).toEqual(SUB)
+      cfg(join(own(), '.git'), '[core]\n\tbare = false\n')
+      expect(bash(`cd ${repo()} && git --git-dir=${join(own(), '.git')} checkout -f .`)).toEqual(SUB)
+      expect(bash(`cd ${clean()} && git --git-dir=${join(own(), '.git')} checkout -f .`).deny).toBe(false)
+    })
+    it('a config the gate cannot read whole (an include) fails closed', () => {
+      cfg(join(own(), '.git'), '[include]\n\tpath = ../elsewhere.cfg\n')
+      expect(bash(`git -C ${own()} checkout .`)).toEqual(SUB)
+    })
+    it.each([
+      ['core.worktree points at a tree without a named folder', () => { cfg(join(own(), '.git'), `[core]\n\tworktree = ${clean()}\n`) }, () => `git -C ${own()} checkout .`],
+      ['--work-tree overrides the config', () => { cfg(join(own(), '.git'), `[core]\n\tworktree = ${repo()}\n`) }, () => `git -C ${own()} --work-tree=${clean()} checkout -- .`],
+      ['a read in a checkout pointed at the folder\'s tree', () => { cfg(join(own(), '.git'), `[core]\n\tworktree = ${repo()}\n`) }, () => `git -C ${own()} status`],
+      ['the key in another section', () => { cfg(join(own(), '.git'), `[remote "origin"]\n\tworktree = ${repo()}\n\turl = https://example.com/x.git\n`) }, () => `git -C ${own()} checkout .`],
+    ])('free: %s', (_n, setup, c) => {
+      setup()
+      expect(bash(c()).deny).toBe(false)
+    })
+  })
+
+  describe('a push to a local repository (receive.denyCurrentBranch=updateInstead)', () => {
+    it.each([
+      () => `git -C ${own()} push ${repo()} HEAD:main`,
+      () => `git -C ${own()} push file://${repo()} topic`,
+      () => `git -C ${own()} push --repo=${repo()}`,
+      () => `git -C ${own()} push -o ci.skip ${repo()} topic`,
+      () => `git -C ${repo()} push . HEAD:main`,
+      () => `cd ${base} && git push ext-repo topic`,
+      () => `git -C ${own()} push ../ext-repo topic`,
+    ])('denied: %#', (c) => {
+      expect(bash(c())).toEqual(SUB)
+    })
+    it('a remote whose URL is local, named or as the default (no target: every remote, the strict direction)', () => {
+      cfg(join(own(), '.git'), `[remote "loc"]\n\turl = ${repo()}\n\tfetch = +refs/heads/*:refs/remotes/loc/*\n`)
+      expect(bash(`git -C ${own()} push loc topic`)).toEqual(SUB)
+      expect(bash(`git -C ${own()} push`)).toEqual(SUB)
+      cfg(join(own(), '.git'), `[remote "origin"]\n\turl = https://example.com/x.git\n\tpushurl = ${repo()}\n`)
+      expect(bash(`git -C ${own()} push origin topic`)).toEqual(SUB)
+    })
+    it('a target repository whose own core.worktree points at the folder\'s tree', () => {
+      const bare = join(base, 'bare.git')
+      mkdirSync(bare, { recursive: true })
+      writeFileSync(join(bare, 'HEAD'), 'ref: refs/heads/main\n')
+      cfg(bare, `[core]\n\tbare = false\n\tworktree = ${repo()}\n`)
+      expect(bash(`git -C ${own()} push ${bare} topic`)).toEqual(SUB)
+    })
+    // Samu's #3156 review: url.<base>.insteadOf / pushInsteadOf in the clone's own config rewrite a target into a local
+    // repository; any such entry fails closed for a push.
+    it.each([
+      ['insteadOf, a target that looks like a relative path', () => `[url "${repo()}"]\n\tinsteadOf = x:\n`, () => `git -C ${own()} push x:anything topic`],
+      ['pushInsteadOf, a target that looks like a relative path', () => `[url "${repo()}"]\n\tpushInsteadOf = x:\n`, () => `git -C ${own()} push x:anything topic`],
+      ['pushInsteadOf, a network-looking URL', () => `[url "${repo()}"]\n\tpushInsteadOf = https://example.com/\n`, () => `git -C ${own()} push https://example.com/y.git topic`],
+      ['insteadOf, mixed case, under a remote with a network URL', () => `[url "${repo()}"]\n\tInsteadOf = https://example.com/\n[remote "origin"]\n\turl = https://example.com/y.git\n`, () => `git -C ${own()} push origin topic`],
+    ])('a url rewrite in the repository config fails closed: %s', (_n, text, c) => {
+      cfg(join(own(), '.git'), text())
+      expect(bash(c())).toEqual(SUB)
+    })
+    it('a config the gate cannot read whole (an include holding a pushInsteadOf) fails a push closed, whatever the target', () => {
+      cfg(join(own(), '.git'), '[include]\n\tpath = extra.cfg\n')
+      writeFileSync(join(own(), '.git', 'extra.cfg'), `[url "${repo()}"]\n\tpushInsteadOf = x:\n`)
+      expect(bash(`git -C ${own()} push x:anything topic`)).toEqual(SUB)
+      // a target that resolves outside every git repository: only the unreadable-config rule stops it (the relative
+      // form above lands inside the clone, whose unreadable config fails closed on its own)
+      writeFileSync(join(own(), '.git', 'extra.cfg'), `[url "${repo()}"]\n\tpushInsteadOf = ${join(base, 'nowhere')}/\n`)
+      expect(bash(`git -C ${own()} push ${join(base, 'nowhere', 'y')} topic`)).toEqual(SUB)
+    })
+    // Geri's second review (#3156): F1 the positional repository wins over --repo (git's own rule), so both are judged;
+    // F2 file://localhost/<path> and file:///<path> are local paths, another host fails closed; F3 send-pack is a push;
+    // F4a `remote add <name> <local path>` is judged like a push to that path.
+    it.each([
+      ['F1 --repo=<url> then a positional local target', () => `git -C ${own()} push --repo=https://example.com/x.git ${repo()} topic`],
+      ['F1 --repo <url> then a positional local target', () => `git -C ${own()} push --repo https://example.com/x.git ${repo()} topic`],
+      ['F2 file://localhost/<path>', () => `git -C ${own()} push file://localhost${repo()} topic`],
+      ['F2 file://LOCALHOST/<path>', () => `git -C ${own()} push file://LOCALHOST${repo()} topic`],
+      ['F2 file://<other host>/<path> fails closed', () => `git -C ${own()} push file://nas${repo()} topic`],
+      ['F3 send-pack to a local path', () => `git -C ${own()} send-pack ${repo()} topic`],
+      ['F3 send-pack with --receive-pack=', () => `git -C ${own()} send-pack --receive-pack=git-receive-pack ${repo()} topic`],
+      ['F3 push with --receive-pack <cmd> in its own word before the target', () => `git -C ${own()} push --receive-pack git-receive-pack ${repo()} topic`],
+      ['F4a remote add <name> <local path>', () => `git -C ${own()} remote add h ${repo()}`],
+      ['F4a remote add with -t and -m', () => `git -C ${own()} remote add -t main -m main h file://${repo()}`],
+    ])('denied: %s', (_n, c) => {
+      expect(bash(c())).toEqual(SUB)
+    })
+    it.each([
+      ['F1 --repo=<url> alone', () => `git -C ${own()} push --repo=https://example.com/x.git topic`],
+      ['F2 file:// to a clean repository', () => `git -C ${own()} push file://localhost${clean()} topic`],
+      ['F2 file://LOCALHOST (any case) to a clean repository', () => `git -C ${own()} push file://LOCALHOST${clean()} topic`],
+      ['F3 send-pack to a network host', () => `git -C ${own()} send-pack git@example.com:x/y.git topic`],
+      ['F4a remote add of a network URL', () => `git -C ${own()} remote add up https://example.com/x.git`],
+      ['F4a remote add of a clean local repository', () => `git -C ${own()} remote add sib ${clean()}`],
+    ])('free: %s', (_n, c) => {
+      expect(bash(c()).deny).toBe(false)
+    })
+    it('an unknown target fails closed', () => {
+      expect(bash(`git -C ${own()} push "$T" topic`)).toEqual(SUB)
+    })
+    it.each([
+      ['a network remote', () => { cfg(join(own(), '.git'), '[remote "origin"]\n\turl = https://example.com/x.git\n') }, () => `git -C ${own()} push origin topic`],
+      ['a URL', () => {}, () => `git -C ${own()} push https://example.com/x.git topic`],
+      ['an scp-style remote', () => {}, () => `git -C ${own()} push git@example.com:x/y.git topic`],
+      ['"." in a checkout without a named folder', () => {}, () => `git -C ${own()} push . topic:other`],
+      ['a local repository without a named folder', () => {}, () => `git -C ${own()} push ${clean()} topic`],
+      ['the default push with only network remotes', () => { cfg(join(own(), '.git'), '[remote "origin"]\n\turl = https://example.com/x.git\n') }, () => `git -C ${own()} push`],
+    ])('free: %s', (_n, setup, c) => {
+      setup()
+      expect(bash(c()).deny).toBe(false)
+    })
+    it('the main agent is not under this rule', () => {
+      expect(bash(`git -C ${own()} push ${repo()} HEAD:main`, { subAgent: false, cwd: root }).deny).toBe(false)
+    })
   })
 })
 
