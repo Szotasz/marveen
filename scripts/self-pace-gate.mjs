@@ -655,15 +655,18 @@ export function protectedSplit(command) {
   if (masked == null || masked.length !== src.length || heredocs.length) {
     // The naive split also cuts inside a quote or a heredoc body. A piece that STARTS there is a fragment of another
     // command, never a command of its own, so it is no read: `echo "$(date)"; python3 -c "<newline>cat =
-    // open('<allowlist>','w')"` must not read as `cat`. Only the strict mask is trusted for that: the lenient one
-    // misreads a comment or a heredoc inside "$(...)". No strict mask: no piece after the first is known to start
-    // outside a quote, so every one of them is a fragment.
-    const mask = masked?.length === src.length ? masked : null
+    // open('<allowlist>','w')"` must not read as `cat`. The strict mask decides; the lenient one only when the command
+    // has no `#` and no `<<`, because it misreads a comment or a heredoc inside "$(...)". No usable mask: no piece
+    // after the first is known to start outside a quote, so every one of them is a fragment.
+    const mask = masked?.length === src.length ? masked : /#|<</.test(src) ? null : maskInertLiterals(src, [], true)
     const fragments = []
     let start = 0
+    let redirect = false
     for (const m of [...src.matchAll(/&&|\|\||[;&|]|\r?\n/g), { index: src.length, 0: '' }]) {
       const k = start + /^\s*/.exec(src.slice(start, m.index))[0].length
-      fragments.push(mask ? k < m.index && mask[k] === ' ' : fragments.length > 0)
+      fragments.push(redirect || (mask?.length === src.length ? k < m.index && mask[k] === ' ' : fragments.length > 0))
+      // the `&` or `|` of `>&`, `<&`, `>|`, `&>` is a redirection, not a separator: the next piece is its operand
+      redirect = /^[&|]$/.test(m[0]) && (/[<>]/.test(src[m.index - 1] ?? '') || (m[0] === '&' && src[m.index + 1] === '>'))
       start = m.index + m[0].length
     }
     return { segs: splitSegments(command), seps: null, masked: null, quoteAware: false, fragments }

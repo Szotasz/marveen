@@ -258,8 +258,8 @@ describe('a blanked flag argument and a naive-split fragment are no hiding place
     expect(bash(`echo "$(date)"; python3 -c "\ncat = open('store/config-overrides.json','w')\n"`)).toEqual({ deny: true, reason: 'protected-store-file' })
     // a real read next to a resolved heredoc is still a read
     allowed(`cat <<'E' >/tmp/n\nx\nE\ncat store/egress-allowlist.json`)
-    // known cost: after a "$(...)" in double quotes there is no strict mask, so a later read is a fragment too
-    deniedAllowlist(`echo "$(date)"; grep -c a store/egress-allowlist.json`)
+    // after a "$(...)" in double quotes the lenient mask decides (no # or <<): a real read is still a read
+    allowed(`echo "$(date)"; grep -c a store/egress-allowlist.json`)
   })
   it('with no mask at all (unresolved quoting), every naive piece after the first is a fragment', () => {
     const W = `cat = open('store/egress-allowlist.json','w')`
@@ -273,12 +273,17 @@ describe('a blanked flag argument and a naive-split fragment are no hiding place
     // known cost: a real read after the unresolved quote is denied too
     deniedAllowlist(`: <<E; grep -c a store/egress-allowlist.json`)
   })
-  it('only the strict mask decides a naive piece: the lenient one misreads a comment or heredoc inside "$(...)"', () => {
+  it('the lenient mask decides a naive piece only without # and <<: it misreads a comment or heredoc inside "$(...)"', () => {
     const W = `cat = open('store/egress-allowlist.json','w')`
     // bash runs the python3 -c code here (measured on a dummy file); the lenient mask saw `cat = open(...)` as a command
     deniedAllowlist(`echo "$(true #)"\n)"; python3 -c "\n${W}\n" #"`)
     deniedAllowlist(`echo "$(cat <<E\n)\nE\n)"; python3 -c "\n${W}\n"`)
     deniedAllowlist(`echo "$(cat <<'E'\n"\nE\n)"; python3 -c "\n${W}\n"`)
+    // the `&` or `|` of a redirection is no separator: the piece after it is the redirect's operand, no read
     deniedAllowlist(`echo "$(date)"; cp /tmp/x >& cat store/egress-allowlist.json`)
+    deniedAllowlist(`echo "$(date)"; cp /tmp/x >| cat store/egress-allowlist.json`)
+    deniedAllowlist(`echo "$(date)"; cp /tmp/x &> cat store/egress-allowlist.json`)
+    // control: a stderr redirect in front of a real read leaves the read a read
+    allowed(`echo "$(date)" 2>&1; grep -c a store/egress-allowlist.json`)
   })
 })
