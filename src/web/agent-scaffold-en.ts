@@ -1131,7 +1131,7 @@ export function compactLinesEn(id: string, name: string, isMain: boolean, F: Sca
       '## Autonomy and approval',
       'Before acting on your own, check the category\'s level in store/autonomy-config.json.',
       '- 1: only notify the main agent in an inter-agent message, do not perform the action, and stop.',
-      '- 2: before acting, request approval with the helper (`approval-request`, then `approval-status`); once approved, `approval-consume`, and act only on exit code 0. On rejection, timeout, 403 or 409, do not act. The email_send and data_delete categories are an exception: see the details.',
+      '- 2: before acting, request approval with the helper (`approval-request`, then `approval-status`); once approved, `approval-consume`, and act only on exit code 0. On rejection, timeout, 403 or 409, do not act. Exception: for the email_send and data_delete categories do NOT call `approval-consume` (409 wrong_category); the send or the delete path consumes it itself.',
       '- 3: do it, then report to the main agent.',
     ]
     case 'skills-path-trap': return isMain ? [

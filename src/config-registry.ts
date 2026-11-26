@@ -1577,9 +1577,6 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
-  // Opt-in (#1705 maintainer decision, 2026-10-14): read per spawn by
-  // agent-scaffold.ts (ytDlpIngestOnly / bashEgressDeny). Off == the generated
-  // settings are byte-identical to an install without the switch.
   // Opt-in, read per start by agent-scaffold.ts (claudeMdCompactEnabled). Off == every CLAUDE.md byte-identical.
   {
     key: 'CLAUDEMD_COMPACT',
@@ -1590,6 +1587,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // Opt-in (#1705 maintainer decision, 2026-10-14): read per spawn by
+  // agent-scaffold.ts (ytDlpIngestOnly / bashEgressDeny). Off == the generated
+  // settings are byte-identical to an install without the switch.
   {
     key: 'YT_DLP_INGEST_ONLY',
     type: 'boolean',

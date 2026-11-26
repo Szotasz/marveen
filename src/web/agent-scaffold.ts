@@ -154,7 +154,7 @@ function compactLines(id: string, name: string): string[] {
       '## Autonómia és jóváhagyás',
       'Önálló lépés előtt nézd meg a kategória szintjét a store/autonomy-config.json-ban.',
       '- 1: csak jelzel a fő ágensnek inter-agent üzenetben, a műveletet nem végzed el, és megállsz.',
-      '- 2: cselekvés előtt jóváhagyást kérsz a segéddel (`approval-request`, majd `approval-status`); jóváhagyás után `approval-consume`, és csak 0-s kilépési kódnál cselekszel. Elutasítás, lejárat, 403 vagy 409 esetén nem cselekszel. Az email_send és a data_delete kategória kivétel: lásd a részleteket.',
+      '- 2: cselekvés előtt jóváhagyást kérsz a segéddel (`approval-request`, majd `approval-status`); jóváhagyás után `approval-consume`, és csak 0-s kilépési kódnál cselekszel. Elutasítás, lejárat, 403 vagy 409 esetén nem cselekszel. Kivétel: email_send és data_delete kategóriánál az `approval-consume`-ot NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
       '- 3: elvégzed, majd jelented a fő ágensnek.',
     ]
     case 'skills-path-trap': return name === MAIN_AGENT_ID ? [

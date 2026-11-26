@@ -129,6 +129,7 @@ describe('CLAUDEMD_COMPACT on, Hungarian sub-agent', () => {
     expect(blockOf(md, 'memory-fact-change')).toContain(`memory-search ${n} KULCSSZO --strict`)
     expect(blockOf(md, 'skills-path-trap')).toContain(`agents/${n}/.claude/skills`)
     expect(blockOf(md, 'autonomy-wiring')).toMatch(/approval-consume[\s\S]*csak 0-s kilépési kódnál/)
+    expect(blockOf(md, 'autonomy-wiring')).toMatch(/email_send és data_delete kategóriánál az `approval-consume`-ot NE hívd/)
     expect(blockOf(md, 'fleet-auth')).toMatch(/soha ne másold/)
     // A CLAUDE.md reads an at-sign plus path as an import: the compact text carries none.
     expect(blockOf(md, 'pane-at-escape')).not.toContain('@')
@@ -173,6 +174,7 @@ describe('CLAUDEMD_COMPACT on, English', () => {
     }
     expect(blockOf(md, 'message-close')).toContain('message-close <id> --no-notify')
     expect(blockOf(md, 'memory-fact-change')).toContain(`memory-search ${n} KULCSSZO --strict`)
+    expect(blockOf(md, 'autonomy-wiring')).toMatch(/email_send and data_delete categories do NOT call `approval-consume`/)
     setLang('hu')
   })
 })
