@@ -6757,7 +6757,8 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
         let created = 0
         for (const r of changes) {
           try {
-            await fetch('/api/kanban', {
+            // A refused card (4xx/5xx) is not created: fetch only throws on a network error.
+            const res = await fetch('/api/kanban', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -6768,11 +6769,20 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
                 status: 'planned',
               }),
             })
-            created++
+            if (res.ok) created++
           } catch { /* skip failed card */ }
         }
-        showToast(t('agents.model.cards_created', { n: created }), 'success')
-        createBtn.textContent = t('agents.model.cards_created', { n: created })
+        if (created === 0) {
+          // Nothing was created: say so in red and let the owner try again.
+          showToast(t('agents.model.cards_failed'), 'error')
+          createBtn.disabled = false
+          createBtn.textContent = t('agents.model.create_cards_btn')
+          return
+        }
+        const all = created === changes.length
+        const msg = all ? t('agents.model.cards_created', { n: created }) : t('agents.model.cards_partial', { n: created, total: changes.length })
+        showToast(msg, all ? 'success' : 'warn')
+        createBtn.textContent = msg
       })
     }
   } catch { panel.innerHTML = '<p style="color:var(--error);font-size:13px">' + t('agents.model.error') + '</p>' }
@@ -7108,7 +7118,7 @@ document.getElementById('saveProfileBtn').addEventListener('click', async () => 
     })
     if (!res.ok) throw new Error()
     const body = await res.json()
-    showToast(body.requiresRestart ? t('agents.toast.profile_saved_restart') : t('agents.toast.profile_saved'), 'success')
+    showToast(body.requiresRestart ? t('agents.toast.profile_saved_restart') : t('agents.toast.profile_saved'), body.requiresRestart ? 'warn' : 'success')
     loadAgents()
   } catch { showToast(t('agents.toast.profile_error'), 'error') }
 })
@@ -21171,7 +21181,7 @@ async function resetSettingToDefault(def, row, btn, errorEl) {
   updateSettingsSaveBar()
   loadClaudePlansReadiness()
   const base = result.source === 'env' ? t('settings.toast.reset_env') : t('settings.toast.reset_default')
-  showToast(result.requiresRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base, 'success')
+  showToast(result.requiresRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base, result.requiresRestart ? 'warn' : 'success')
 }
 
 // One button per tab: every overridden row of this group back to its default.
@@ -21360,7 +21370,7 @@ async function resetSettingsGroupToDefault(group) {
     showToast(t('settings.toast.reset_tab_partial'), { kind: 'error', duration: 6000 })
   } else {
     const base = t('settings.toast.reset_tab')
-    showToast(needsRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base, 'success')
+    showToast(needsRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base, needsRestart ? 'warn' : 'success')
   }
 }
 
@@ -21416,7 +21426,7 @@ async function saveAllSettings() {
   if (errors.length) {
     showToast(t('settings.toast.partial_error'), 'error')
   } else {
-    showToast(needsRestart ? t('settings.toast.saved_restart') : t('settings.toast.saved'), 'success')
+    showToast(needsRestart ? t('settings.toast.saved_restart') : t('settings.toast.saved'), needsRestart ? 'warn' : 'success')
   }
 }
 

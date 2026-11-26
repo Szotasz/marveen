@@ -1678,6 +1678,8 @@ window._i18n.en = {
   'agents.model.analyzing':			'Analyzing...',
   'agents.model.analyzing_all':			'Analysis in progress...',
   'agents.model.cards_created':			'{n} cards created',
+  'agents.model.cards_partial':			'{n} of {total} cards created, the rest failed',
+  'agents.model.cards_failed':			'No card could be created',
   'agents.model.changes_n':			'{n} change(s) advised:',
   'agents.model.create_cards_btn':			'Create Kanban cards',
   'agents.model.details':			'details',

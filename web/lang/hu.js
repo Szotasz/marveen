@@ -533,6 +533,8 @@ window._i18n.hu = {
   'agents.model.details':          'részletek',
   'agents.model.create_cards_btn': 'Kanban kártyák létrehozása',
   'agents.model.cards_created':    '{n} kártya létrehozva',
+  'agents.model.cards_partial':    '{n} / {total} kártya jött létre, a többi nem sikerült',
+  'agents.model.cards_failed':     'Egy kártyát sem sikerült létrehozni',
   'agents.claude_md_generating':   'CLAUDE.md generálás...',
   'agents.soul_md_generating':     'SOUL.md generálás...',
   'agents.main_auth.label': 'Hitelesítés',

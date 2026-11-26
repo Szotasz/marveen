@@ -361,14 +361,51 @@ describe('the successes: the step is done', () => {
   ]
   const withKey = (k: string) => TOASTS.filter(c => c.msg.includes(`'${k}'`))
 
-  it('the plain successes are green', () => {
-    expect(TOASTS.filter(c => c.kind === 'success').length).toBeGreaterThanOrEqual(100)
-    for (const k of ['kanban.toast.card_created', 'agents.toast.deleted', 'common.toast.copied', 'tasks.toast.updated',
-      'vault.weblogin.toast.deleted', 'settings.toast.saved', 'updates.toast.success', 'notes.toast.added']) {
+  // Szabolcs (review of #3091): a floor of 100 green calls let up to four plain successes lose their kind unseen. Every
+  // key a plain success says is listed instead, so a lost 'success' fails here, while a new success call breaks nothing.
+  const SUCCESS_KEYS = [
+    'agentCatalog.connect.done', 'agents.auth.toast_success', 'agents.claude_md_saved', 'agents.export.done',
+    'agents.export.done_secrets', 'agents.export_all.done', 'agents.export_all.done_secrets', 'agents.mcp_json_saved',
+    'agents.model.toast_active', 'agents.model.toast_restarted', 'agents.soul_md_saved',
+    'agents.toast.auth_mode_saved', 'agents.toast.auto_restart_saved', 'agents.toast.avatar_updated',
+    'agents.toast.avatar_uploaded', 'agents.toast.code_mode_off', 'agents.toast.code_mode_on',
+    'agents.toast.ctx_guard_saved', 'agents.toast.deleted', 'agents.toast.host_oauth_restart',
+    'agents.toast.idle_flush_saved', 'agents.toast.marveen_restarted', 'agents.toast.memory_isolation_off',
+    'agents.toast.memory_isolation_on', 'agents.toast.plan_saved', 'agents.toast.started', 'agents.toast.stopped',
+    'agents.voice.saved', 'agents.wizard.created', 'bgTasks.toast.started', 'bgTasks.toast.stopped',
+    'channel.toast.approved', 'channel.toast.disconnected', 'channel.toast.invite_copied',
+    'channel.toast.invite_revoked', 'channel.toast.pairing_approved', 'channel.toast.reconnect_ok', 'common.saved',
+    'common.toast.copied', 'common.toast.removed', 'connectors.toast.added', 'connectors.toast.assignment_updated',
+    'connectors.toast.created', 'connectors.toast.deleted', 'connectors.toast.installed',
+    'connectors.toast.mcp_refreshed', 'connectors.toast.removed', 'federation.toast.applied',
+    'federation.toast.disabled', 'federation.toast.enabled', 'federation.toast.peer_added',
+    'federation.toast.peer_deleted', 'federation.toast.peer_saved', 'federation.toast.removed',
+    'federation.toast.rotated', 'federation.toast.share_cap_off', 'federation.toast.share_cap_on',
+    'federation.toast.token_copied', 'fleet.export.success', 'fleet_freeze.toast.frozen',
+    'fleet_freeze.toast.unfrozen', 'ideas.detail.attach.uploaded', 'ideas.toast.score_saved',
+    'kanban.breakdown.created_count', 'kanban.breakdown.promoted', 'kanban.toast.assignee_updated',
+    'kanban.toast.card_archived', 'kanban.toast.card_created', 'kanban.toast.card_deleted',
+    'kanban.toast.card_updated', 'kanban.toast.status_updated', 'kanban.toast.subtask_created',
+    'kanban.toast.subtask_deleted', 'memories.stale.moved', 'memories.toast.created', 'memories.toast.deleted',
+    'memories.toast.imported', 'memories.toast.updated', 'memories.toast.vector_count', 'notes.toast.added',
+    'notes.toast.deleted', 'settings.claude_plans.login.copied', 'settings.claude_plans.switch_done',
+    'skills.pending.approved', 'skills.toast.deleted', 'skills.toast.saved', 'tasks.expand.done',
+    'tasks.toast.created', 'tasks.toast.deleted', 'tasks.toast.run_started', 'tasks.toast.toggled_paused',
+    'tasks.toast.toggled_resumed', 'tasks.toast.updated', 'team.drop.saved', 'terminal.input_disabled',
+    'terminal.input_enabled', 'updates.toast.success', 'vault.scan.imported', 'vault.ssh.toast.server_added',
+    'vault.ssh.toast.server_updated', 'vault.sync.updated', 'vault.toast.label_updated', 'vault.toast.updated_synced',
+    'vault.weblogin.toast.added', 'vault.weblogin.toast.deleted', 'vault.weblogin.toast.unlocked',
+    'vault.weblogin.toast.updated',
+  ]
+
+  it('every plain success is listed by its key, and each call that says it is green', () => {
+    const bad: string[] = []
+    for (const k of SUCCESS_KEYS) {
       const hits = withKey(k)
-      expect(hits.length, k).toBeGreaterThanOrEqual(1)
-      expect(hits.every(c => c.text.includes("'success'")), k).toBe(true)
+      if (!hits.length) bad.push(`${k}: not found`)
+      for (const c of hits) if (c.kind !== 'success') bad.push(`${c.line}: ${c.text}`)
     }
+    expect(bad).toEqual([])
   })
 
   it('a key that says it is done is green wherever it is said, a new one too', () => {
@@ -390,7 +427,23 @@ describe('the successes: the step is done', () => {
       "t('team.save_ok'), warningMsg ? 'warn' : 'success')",
       "'approvals.toast.rejected'), decision === 'approved' ? 'success' : undefined)",
       "{ label: data.label || data.id }), data.verified ? 'success' : 'warn')",
+      // Szabolcs (review of #3091): saved, but a restart is still needed to take effect, is amber, like
+      // agents.main_auth.saved_not_restarted above.
+      "t('agents.toast.profile_saved'), body.requiresRestart ? 'warn' : 'success')",
+      "t('settings.toast.saved'), needsRestart ? 'warn' : 'success')",
+      "t('settings.toast.reset_restart_suffix') : base, result.requiresRestart ? 'warn' : 'success')",
+      "t('settings.toast.reset_restart_suffix') : base, needsRestart ? 'warn' : 'success')",
+      "showToast(msg, all ? 'success' : 'warn')",
     ]) expect(APP, piece).toContain(piece)
+  })
+
+  it('the model-change cards count only the cards the server took, and none created is red', () => {
+    const i = APP.indexOf("t('agents.model.creating_cards')")
+    const body = APP.slice(i, APP.indexOf("createBtn.textContent = msg", i))
+    expect(body).toContain('if (res.ok) created++')
+    expect(body).not.toMatch(/\}\)\s*\n\s*created\+\+/)
+    expect(body).toContain("showToast(t('agents.model.cards_failed'), 'error')")
+    expect(body).toContain("t('agents.model.cards_partial', { n: created, total: changes.length })")
   })
 
   it('a Teams secret that needs care makes the working connection amber', () => {
