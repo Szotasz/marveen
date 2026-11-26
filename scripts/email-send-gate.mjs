@@ -777,10 +777,38 @@ export function developCommentStarts(cmd) {
   return starts
 }
 
+// Revizor 5756 J4 (twin of _bash_ansi_c_indices): the indices inside a bash/zsh ANSI-C string $'...' (where \' does not
+// close it). Used ONLY as a veto on a comment: the mask's quote tracking stays develop's, because a shell that knows no
+// $'...' (dash, a POSIX sh) reads $'a\' as $ and a closed '...', and a newline after it then separates commands.
+export function bashAnsiCIndices(cmd) {
+  const out = new Set()
+  let q = null
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q === 'A') {
+      out.add(i)
+      if (ch === '\\' && i + 1 < cmd.length) { out.add(i + 1); i++; continue }
+      if (ch === "'") q = null
+      continue
+    }
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { i++; continue }
+      if (ch === q) q = null
+      continue
+    }
+    if (ch === '\\' && i + 1 < cmd.length) { i++; continue }
+    if (ch === '$' && cmd[i + 1] === '$') { i++; continue } // $$ is the pid: $$'...' is no ANSI-C string
+    if (ch === '$' && cmd[i + 1] === "'") { q = 'A'; out.add(i); out.add(i + 1); i++; continue }
+    if (ch === "'" || ch === '"') q = ch
+  }
+  return out
+}
+
 export function maskSubshellMarkers(cmd) {
   const devStarts = developCommentStarts(cmd) // LINECONT1126 (Marveen 5755): a comment is dropped only where develop dropped one too
+  const ansi = bashAnsiCIndices(cmd) // Revizor 5756 J4: inside a bash $'...' a # is no comment (a veto only)
   let out = ''
-  let q = null // null | "'" | '"' | "$'" (LINECONT1126: ANSI-C quoting, where \' does not close)
+  let q = null // null | "'" | '"' -- develop's quote tracking (Revizor 5756 J4: $'...' is NOT followed here)
   let prev = -1 // LINECONT1126: the index of the last character that is not part of a removed line continuation
   let prevEsc = false // LINECONT1126 (Revizor 5744): that character was escaped (`\ #`, `\;#`): it ends no word
   let braces = 0 // LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
@@ -790,13 +818,13 @@ export function maskSubshellMarkers(cmd) {
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]
     if (q) {
-      if (ch === '\\' && (q === '"' || q === "$'") && i + 1 < cmd.length) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) {
         // LINECONT1126: inside "..." a backslash-newline is removed too (bash)
-        if (q === "$'" || cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1 }
+        if (cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1 }
         i++
         continue
       }
-      if (ch === q[q.length - 1]) q = null
+      if (ch === q) q = null
       out += ch
       prev = i
       prevEsc = false
@@ -804,7 +832,6 @@ export function maskSubshellMarkers(cmd) {
     }
     // Revizor 5751 J2: $$ is the pid, so $$'a\' is $$ followed by a plain '...' (python twin)
     if (ch === '$' && cmd[i + 1] === '$') { out += '$$'; prev = i + 1; prevEsc = false; i++; continue }
-    if (ch === '$' && cmd[i + 1] === "'") { q = "$'"; out += "$'"; prev = i + 1; prevEsc = false; i++; continue }
     if (ch === "'" || ch === '"') { q = ch; out += ch; prev = i; prevEsc = false; continue }
     // LINECONT1126 (twin of _mask_subshell_markers): a backslash-newline is a line continuation, removed before words
     // are split, so `sudo \<nl> ...` and `prog\<nl> -d ...` are the one-line commands. A comment is dropped up to
@@ -816,7 +843,7 @@ export function maskSubshellMarkers(cmd) {
     }
     // a comment starts only where bash starts one (Revizor 5744 J1): after nothing, or after an UNESCAPED blank (space,
     // tab, newline only: no CR, FF, VT or Unicode space), ; & | ( or a ) that closes no $( ; never inside ${...}
-    if (ch === '#' && devStarts.has(i) && !braces && (prev < 0 || (!prevEsc && (' \t\n;&|('.includes(cmd[prev])
+    if (ch === '#' && devStarts.has(i) && !ansi.has(i) && !braces && (prev < 0 || (!prevEsc && (' \t\n;&|('.includes(cmd[prev])
       || (cmd[prev] === ')' && plainCloseAt === prev))))) {
       // Revizor 5751 J3: after a ) only when it closes a subshell or (( )); never after a $( , a process substitution
       // <( ) >( ) or an array assignment x=( ) -- there the # is part of the word, as in bash

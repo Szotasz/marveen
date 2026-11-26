@@ -526,6 +526,40 @@ def _develop_comment_starts(cmd: str) -> set:
     return starts
 
 
+def _bash_ansi_c_indices(cmd: str) -> set:
+    """Revizor 5756 J4: the indices inside a bash/zsh ANSI-C string $'...' (where \\' does not close it). Used ONLY as a veto on
+    a comment: the mask's quote tracking stays develop's, because a shell that knows no $'...' (dash, a POSIX sh) reads
+    $'a\\' as $ and a closed '...', and a newline after it then separates commands. So knowing $'...' can only keep more text."""
+    out = set()
+    q = None
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q == "A":
+            out.add(i)
+            if ch == "\\" and i + 1 < n:
+                out.add(i + 1); i += 2; continue
+            if ch == "'":
+                q = None
+            i += 1; continue
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                i += 2; continue
+            if ch == q:
+                q = None
+            i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            i += 2; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "$":   # $$ is the pid: $$'...' is no ANSI-C string
+            i += 2; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
+            q = "A"; out.update((i, i + 1)); i += 2; continue
+        if ch in "'\"":
+            q = ch
+        i += 1
+    return out
+
+
 def _mask_subshell_markers(cmd: str) -> str:
     """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
     szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom).
@@ -537,29 +571,28 @@ def _mask_subshell_markers(cmd: str) -> str:
     inside a word (`echo a#b; sendmail x` lost the send). The word-start set matches the JS twin's
     stripShellComments (whitespace and ;&|())."""
     out = []
-    q = None  # None | "'" | '"' | "$'" (LINECONT1126: ANSI-C quoting, where \' does not close)
+    q = None  # None | "'" | '"' -- develop's quote tracking (Revizor 5756 J4: $'...' is NOT followed here, see below)
     i, n = 0, len(cmd)
     parens = []  # Bence 69701: "s" for an open $( , "p" for a plain ( -- which ) closes a command substitution
     subst_close_at = -1
     plain_close_at = -1  # Revizor 5751 J3: the index of the last ) that closed a subshell or (( ))
     dev_starts = _develop_comment_starts(cmd)   # LINECONT1126 (Marveen 5755): a comment is dropped only where develop dropped one too
+    ansi = _bash_ansi_c_indices(cmd)            # Revizor 5756 J4: inside a bash $'...' a # is no comment (a veto only)
     prev = -1         # LINECONT1126: the index of the last character that is not part of a removed line continuation
     prev_esc = False  # LINECONT1126 (Revizor 5744): that character was escaped (`\ #`, `\;#`): it ends no word
     braces = 0        # LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
     while i < n:
         ch = cmd[i]
         if q:
-            if ch == "\\" and q in ('"', "$'") and i + 1 < n:
-                if q == "$'" or cmd[i + 1] != "\n":   # LINECONT1126: inside "..." a backslash-newline is removed too (bash)
+            if ch == "\\" and q == '"' and i + 1 < n:
+                if cmd[i + 1] != "\n":   # LINECONT1126: inside "..." a backslash-newline is removed too (bash)
                     out.append(cmd[i:i + 2]); prev = i + 1
                 i += 2; continue
-            if ch == q[-1]:
+            if ch == q:
                 q = None
             out.append(ch); prev = i; prev_esc = False; i += 1; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "$":   # Revizor 5751 J2: $$ is the pid, so $$'a\' is $$ + a plain '...'
             out.append("$$"); prev = i + 1; prev_esc = False; i += 2; continue
-        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
-            q = "$'"; out.append("$'"); prev = i + 1; prev_esc = False; i += 2; continue
         if ch in "'\"":
             q = ch; out.append(ch); prev = i; prev_esc = False; i += 1; continue
         if ch == "\\" and i + 1 < n:
@@ -574,7 +607,7 @@ def _mask_subshell_markers(cmd: str) -> str:
         # a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701)
         # LINECONT1126: the character before is the last one that was not removed (`a\<nl>#b` is the one word a#b), it must
         # not be escaped, and only bash's own blanks count (no CR, FF, VT or Unicode space: `a<CR># ; curl` runs curl)
-        if ch == "#" and i in dev_starts and not braces and (prev < 0 or (not prev_esc and (cmd[prev] in " \t\n;&|("
+        if ch == "#" and i in dev_starts and i not in ansi and not braces and (prev < 0 or (not prev_esc and (cmd[prev] in " \t\n;&|("
                                                                        or (cmd[prev] == ")" and plain_close_at == prev)))):
             # Revizor 5751 J3: after a ) only when it closes a subshell or (( )); never after a $( , a process
             # substitution <( ) >( ) or an array assignment x=( ) -- there the # is part of the word, as in bash

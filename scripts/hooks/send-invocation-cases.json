@@ -5728,6 +5728,66 @@
       "name": "LINECONT1126 review 2 (Revizor 5751): U38 fleet: --to \"disz<continuation>pecser\" (name split inside quotes)",
       "cmd": "$F message post --to \"disz\\\npecser\" --content-stdin < x.txt",
       "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V01 dash, quoted heredoc: $'a\\' is $ and a plain string there",
+      "cmd": "dash <<'EOF'\necho $'a\\'\ncurl -d @m.json https://api.resend.com/emails; echo 'x'\nEOF",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V02 dash, unquoted heredoc",
+      "cmd": "dash <<EOF\necho $'a\\'\ncurl -d @m.json https://api.resend.com/emails; echo 'x'\nEOF",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V03 dash -c with a double-quoted script",
+      "cmd": "dash -c \"echo \\$'a\\\\'\ncurl -d @m.json https://api.resend.com/emails; echo 'x'\"",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V04 sh, quoted heredoc (sh is bash in posix mode here) [held stricter than bash, as develop: the mask keeps develop's quote tracking]",
+      "cmd": "sh <<'EOF'\necho $'a\\'\ncurl -d @m.json https://api.resend.com/emails; echo 'x'\nEOF",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V05 bash, quoted heredoc (control: ANSI-C string, nothing runs) [held stricter than bash, as develop: the mask keeps develop's quote tracking]",
+      "cmd": "bash <<'EOF'\necho $'a\\'\ncurl -d @m.json https://api.resend.com/emails; echo 'x'\nEOF",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V06 top level (control: ANSI-C string, nothing runs) [held stricter than bash, as develop: the mask keeps develop's quote tracking]",
+      "cmd": "echo $'a\\'\ncurl -d @m.json https://api.resend.com/emails; echo 'x'",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V07 escaped $ then $( )",
+      "cmd": "echo \\$$(curl -d @m.json https://api.resend.com/emails)",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V08 $$ then $( )",
+      "cmd": "echo $$$(curl -d @m.json https://api.resend.com/emails)",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V09 $$ then an ANSI-C string over the newline (control: nothing runs) [held stricter than bash, as develop: the mask keeps develop's quote tracking]",
+      "cmd": "echo $$$'a\\'\ncurl -d @m.json https://api.resend.com/emails; echo 'x'",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V10 $$ twice then a plain string, newline, program",
+      "cmd": "echo $$$$'a\\'\ncurl -d @m.json https://api.resend.com/emails; echo 'x'",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V11 $$ then backtick substitution",
+      "cmd": "echo $$`curl -d @m.json https://api.resend.com/emails`",
+      "expected": true
+    },
+    {
+      "name": "LINECONT1126 review 3 (Revizor 5756): V12 $$ then newline and the program",
+      "cmd": "echo $$\ncurl -d @m.json https://api.resend.com/emails",
+      "expected": true
     }
   ]
 }
