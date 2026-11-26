@@ -35,7 +35,17 @@ export function liveMarkersFound(root: string, env: NodeJS.ProcessEnv = process.
   return LIVE_MARKERS.filter((m) => existsSync(join(root, m)))
 }
 
-const found = liveMarkersFound(repoRoot)
+// The cloud verdict is read once per worker process (a reused worker re-runs this file after the variables are gone);
+// then both are dropped, so the gates under test, and the hooks a test spawns with process.env, decide as on a local
+// machine instead of standing down and answering nothing.
+const proc = process as NodeJS.Process & { disposableCloudEnv?: NodeJS.ProcessEnv }
+proc.disposableCloudEnv ??= {
+  CLAUDE_CODE_REMOTE: process.env.CLAUDE_CODE_REMOTE,
+  CLAUDE_CODE_REMOTE_SESSION_ID: process.env.CLAUDE_CODE_REMOTE_SESSION_ID,
+}
+delete process.env.CLAUDE_CODE_REMOTE
+delete process.env.CLAUDE_CODE_REMOTE_SESSION_ID
+const found = liveMarkersFound(repoRoot, proc.disposableCloudEnv)
 if (found.length > 0) {
   throw new Error(
     `REFUSING TO RUN TESTS: ${repoRoot} looks like a LIVE install (found: ${found.join(', ')}). ` +
