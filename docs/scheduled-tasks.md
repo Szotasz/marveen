@@ -97,8 +97,9 @@ gate.
 **What does not apply.** The typing-specific machinery is skipped: the idle
 wait before typing, the post-send resubmit chain, the delivery-integrity check
 and the lost re-injection. The queue's reader owns the delivery from here: the
-agent acknowledges each item with `work_complete`, and the reader re-offers any
-item left unacknowledged past its timeout or across a restart.
+agent confirms each item with `work_received` on arrival and acknowledges it with
+`work_complete` when done. The reader re-offers an unconfirmed item past its
+timeout, a confirmed but unfinished one past the longer hold, and any item across a restart.
 
 **What still applies.** Every gate before the send runs unchanged (restart in
 flight, missing session and auto-start, readiness and busy checks, forceSend
