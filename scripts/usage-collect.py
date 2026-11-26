@@ -440,6 +440,18 @@ def _read_keychain_token():
     return oauth.get("accessToken") or data.get("accessToken") or None
 
 
+def _oauth_expired(oauth, now_ms=None):
+    """True when the login's expiresAt (epoch ms) has passed (ISSUE3159). Such an access token answers 401 anyway, and
+    on a setup-token install nothing refreshes ~/.claude/.credentials.json, so it stays stale for good. A login with no
+    expiresAt is not judged here (the 401 path still catches it)."""
+    exp = oauth.get("expiresAt") if isinstance(oauth, dict) else None
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        return False
+    if now_ms is None:
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    return exp <= now_ms
+
+
 def _read_claude_token(skip=()):
     """Return (token, token_source) or (None, None). Never logs the value.
 
@@ -458,7 +470,9 @@ def _read_claude_token(skip=()):
                 data = json.load(f)
             oauth = data.get("claudeAiOauth") or {}
             token = oauth.get("accessToken") or data.get("accessToken")
-            if token:
+            # ISSUE3159: an expired file (a leftover of the first `claude` login on a setup-token install) is skipped,
+            # so it neither costs a 401 here nor hides the setup-token from the rate-limit header probe.
+            if token and not _oauth_expired(oauth):
                 return token, "credentials_file"
         except Exception:
             pass
@@ -573,6 +587,10 @@ def _collect_claude_authoritative():
             # refresh the token. Report both, the 401 first, and keep it a permanent (token) failure.
             if last_401 is not None:
                 return None, f"{last_401}; then {err}", "permanent"
+            # ISSUE3159: the .env token is the setup-token, which this endpoint refuses by design. Say so, instead of a
+            # bare 403 that reads as a scope problem to fix.
+            if e.code == 403 and token_source == "env_file":
+                err += ": not available on this auth mode (the usage endpoint does not accept a setup-token)"
             return None, err, kind
         except Exception as e:
             return None, f"{type(e).__name__}: {e}", "transient"
