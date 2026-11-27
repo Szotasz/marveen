@@ -1836,9 +1836,21 @@ function ansiCBares(cmd) {
   const plain = cmd.replaceAll('\\\n', '').replace(/["'\\#]/g, '')
   return [...new Set([decoded, plain])]
 }
+// Revizor 5907 J6: every $' decoded on its own, up to its own closing quote; only for the mark search (see _ansi_c_each)
+function ansiCEach(cmd) {
+  const flat = cmd.replaceAll('\\\n', '')
+  const each = []
+  for (let i = flat.indexOf("$'"); i >= 0; i = flat.indexOf("$'", i + 2)) {
+    let j = i + 2
+    while (j < flat.length && flat[j] !== "'") j += flat[j] === '\\' ? 2 : 1
+    each.push(ansiCBody(flat.slice(i + 2, Math.min(j, flat.length))))
+  }
+  return each.join(' ').replace(/["'\\#]/g, '')
+}
 function ansiCSendMark(cmd) {
-  const bares = ansiCBares(cmd)
-  if (!bares.length) return false
+  const found = ansiCBares(cmd)
+  if (!found.length) return false
+  const bares = [...found, ansiCEach(cmd)]
   // the union (Marveen 5902): raw, raw without quote and backslash characters (the round-4 input), after the
   // backslash-newlines are removed, and the bare texts
   const looked = [...new Set([cmd, cmd.replace(/["'\\]/g, ''), cmd.replaceAll('\\\n', ''), ...bares])]

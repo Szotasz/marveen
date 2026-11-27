@@ -1998,10 +1998,28 @@ def _ansi_c_bares(cmd: str) -> tuple:
     return tuple(dict.fromkeys((decoded, plain)))
 
 
+def _ansi_c_each(cmd: str) -> str:
+    """ANSICQUOTE1127, Revizor 5907 J6: a `$'` bash reads as plain text (`"$'"`, a comment, a heredoc line) shifts the
+    pairing of _ansi_c_bare by one, and the real $'...' word after it stays encoded. Here every $' is decoded on its
+    own, up to its own closing quote, whatever came before it; the bodies joined, quote, backslash and `#` characters
+    taken out. Only the mark search reads it (_ansi_c_send_mark). Twin: ansiCEach."""
+    flat = cmd.replace("\\\n", "")
+    each = []
+    i = flat.find("$'")
+    while i >= 0:
+        j = i + 2
+        while j < len(flat) and flat[j] != "'":
+            j += 2 if flat[j] == "\\" else 1
+        each.append(_ansi_c_body(flat[i + 2:min(j, len(flat))]))
+        i = flat.find("$'", i + 2)
+    return re.sub(r"[\"'\\#]", "", " ".join(each))
+
+
 def _ansi_c_send_mark(cmd: str) -> bool:
     bares = _ansi_c_bares(cmd)
     if not bares:
         return False
+    bares = bares + (_ansi_c_each(cmd),)
     # the union (Marveen 5902): the raw text and the raw text without quote and backslash characters (the round-4
     # input, c4871c2c), the text after the backslash-newlines are removed, and the bare texts
     looked = tuple(dict.fromkeys((cmd, re.sub(r"[\"'\\]", "", cmd), cmd.replace("\\\n", "")) + bares))

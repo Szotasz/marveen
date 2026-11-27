@@ -4343,6 +4343,41 @@
       "name": "ANSICQUOTE1127 round 5 review (Revizor 5892 J5): H11 trigger, shift, \"$'\" pair around: mail host with a backslash-letter, curl",
       "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; echo $'a\\' # ' ; echo \"$'\" ; curl -d @m.json https://api.\\resend.com/emails ; echo \"'\"",
       "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I01 trigger, shift, \"$'\" before: --to=addr in one hex string",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; $X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I02 trigger, shift, \"$'\" before and between: flag and address in two hex strings",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; $X $'-\\x2dto' \"$'\" $'a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I04 trigger, shift, \"$'\" before: sendmail in hex",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; $'s\\x65ndmail' -t < m.json",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I05 comment '# price $' as trigger and opener, shift, --to=addr in one hex string",
+      "cmd": "# price $'\necho $[1<<2]\n$X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I06 heredoc body with $' as trigger and opener, shift, --to=addr in one hex string",
+      "cmd": "cat <<EOF\ncost $'\nEOF\necho $[1<<2]\n$X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I08 trigger, shift, \"$'\" before, B shape, then --to=addr in one hex string",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; echo $'a\\' # ' ; echo \"$'\" ; $X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I09 trigger, if(( prefix, \"$'\" before: --to=addr in one hex string",
+      "cmd": "# it's\nif((1<<1)); then true; fi\necho \"$'\" ; $X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
     }
   ]
 }
