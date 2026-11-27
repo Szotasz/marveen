@@ -35,6 +35,7 @@ describe('self-pace-gate: the remote command of ssh', () => {
       'ssh -o KnownHostsCommand="crontab -r" box',
       `ssh -o 'Match exec "crontab -r"' box`,
       'ssh box -o LocalCommand="crontab -r" -o PermitLocalCommand=yes uptime',
+      'ssh box -o LocalCommand="at now" -o PermitLocalCommand=yes uptime',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
