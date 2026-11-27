@@ -26,6 +26,10 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
     'sh_curl.sh': 'set -e\ncurl -s https://example.org/a\n',
     'sh_local.sh': 'curl -s http://localhost:3420/api/kanban\n',
     'sh_comment.sh': '# see: curl https://example.org/a\necho ok\n',
+    'sh_py.sh': "python3 -c 'import urllib.request; urllib.request.urlopen(\"https://example.org/a\")'\n",
+    'sh_node.sh': "node -e 'fetch(\"https://example.org/a\")'\n",
+    'js_under.mjs': "await fetch('https://my_host.example.org/a')\n",
+    'js_idn.mjs': "await fetch('https://bücher.example/a')\n",
     'sh_arg.sh': 'curl -s "$1"\n',
     'sh_shift_local.sh': 'verb=$1; shift\ncurl -s "http://localhost:3420/api/$verb" -d "$*"\n',
   }
@@ -64,7 +68,11 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
   it('passes a JS file to localhost, one that only mentions a URL, a listed vendor host, and non-run subcommands', () => {
     expect(verdict('node js_local.mjs').deny).toBe(false)
     expect(verdict('node js_plain.mjs').deny).toBe(false)
-    expect(verdict('node js_junk.mjs').deny).toBe(false)   // `...` is no host: it cannot be listed, and only fills the log
+    expect(verdict('node js_junk.mjs').deny).toBe(false)
+    expect(verdict('node js_under.mjs').hosts).toEqual(['my_host.example.org'])
+    expect(verdict('node js_idn.mjs').deny).toBe(true)
+    expect(verdict('node --check js_fetch.mjs').deny).toBe(false)   // a syntax check runs nothing
+    expect(verdict('node -c js_fetch.mjs').deny).toBe(false)   // `...` is no host: it cannot be listed, and only fills the log
     expect(verdict('node js_fetch.mjs', ['example.org']).deny).toBe(false)
     expect(verdict('deno fmt ts_fetch.ts').deny).toBe(false)
     expect(verdict('bun install').deny).toBe(false)
@@ -82,6 +90,10 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
     expect(verdict('bash sh_local.sh').deny).toBe(false)
     expect(verdict('bash sh_comment.sh').deny).toBe(false)
     expect(verdict('bash -n sh_curl.sh').deny).toBe(false)
+    // an interpreter one-liner in the file is judged too (Dani, #3180 delta review)
+    expect(verdict('bash sh_py.sh').deny).toBe(true)
+    expect(verdict('bash sh_node.sh').deny).toBe(true)
+    expect(verdict('zsh -oerrexit sh_curl.sh').deny).toBe(true)
     expect(verdict('bash sh_curl.sh', ['example.org']).deny).toBe(false)
     // a helper that shifts its arguments and builds a localhost URL passes (Dani, #3180 review: the
     // fleet's own scripts/marveen-api.sh was denied as "positional", then as "unparseable")
@@ -108,5 +120,8 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
     expect(shellScriptIndex(['-o', 'pipefail', 'f.sh'])).toBe(2)
     expect(shellScriptIndex(['--', 'f.sh'])).toBe(1)
     expect(shellScriptIndex(['-ex', 'f.sh'])).toBe(1)
+    expect(shellScriptIndex(['-oerrexit', 'f.sh'], 'zsh')).toBe(1)
+    expect(shellScriptIndex(['-oerrexit', 'x', 'f.sh'], 'bash')).toBe(2)
+    expect(jsScriptIndex('node', ['--check', 'f.js'])).toBe(-1)
   })
 })

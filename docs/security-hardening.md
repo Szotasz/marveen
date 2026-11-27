@@ -426,7 +426,8 @@ This is a deny list, not a sandbox.
   line of python, node / deno / bun and bash / sh / zsh / dash / ksh, and
   denies an external URL it would fetch, a curl / wget the file starts as a
   child program included; `"log"` records the same without blocking. A shell
-  script file is read as text: its curl / wget code is judged on the literal
+  script file is read as text: its curl / wget lines and network-using
+  interpreter one-liners are judged on the literal
   external URLs in it and in the run's arguments, so a destination built at run
   time passes, and a script it calls in turn is not followed. The default is
   `"off"`: then `python3 fetch.py` and the like pass unread. Even on, these

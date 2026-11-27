@@ -473,6 +473,7 @@ export function jsScriptIndex(cmd, args) {
     if (w === '--') { k++; break }
     if (!w.startsWith('-')) break
     if (/^-(?:e|p|pe|ep)$|^--(?:eval|print)(?:=|$)/.test(w)) return -1
+    if (cmd !== 'deno' && cmd !== 'bun' && (w === '-c' || w === '--check')) return -1   // node: syntax check, no run
     if (JS_VALUE_FLAG.has(w)) k++
   }
   if (k >= args.length) return -1
@@ -481,14 +482,14 @@ export function jsScriptIndex(cmd, args) {
 }
 // EGRESSZKRIPTFAJL1127: the program file of a `bash|sh|zsh|dash|ksh [options] file [args]` run. A -c run
 // is judged as a command string elsewhere; -s (stdin) and -n (no execution) read no file here.
-export function shellScriptIndex(args) {
+export function shellScriptIndex(args, shell = 'bash') {
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
     if (w === '-') return -1
     if (w === '--') return k + 1 < args.length ? k + 1 : -1
     if (!w.startsWith('-') && !w.startsWith('+')) return k
     if (/^[-+][A-Za-z]+$/.test(w) && /[csn]/.test(w.slice(1))) return -1
-    k += shellOptionValues(w)
+    k += shellOptionValues(w, shell)
   }
   return -1
 }
@@ -501,6 +502,7 @@ const JS_NO_RUN_SUB = new Set(['fmt', 'lint', 'check', 'doc', 'info', 'install',
   'upgrade', 'init', 'create', 'types', 'compile', 'bundle', 'build', 'outdated', 'pm', 'link', 'unlink', 'publish', 'completions'])
 export function jsScriptRuns(cmd, args, base) {
   if ((cmd === 'deno' || cmd === 'bun') && JS_NO_RUN_SUB.has(args.find((w) => !w.startsWith('-')) ?? '')) return []
+  if (cmd !== 'deno' && cmd !== 'bun' && args.some((w) => w === '-c' || w === '--check')) return []
   const seen = new Set()
   const runs = []
   const k = jsScriptIndex(cmd, args)
@@ -2248,7 +2250,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         const external = (text, runArgs) => [...new Set([...`${text}\n${runArgs.join('\n')}`.matchAll(URL_RE)]
           .map((m) => m[0]).filter(isExternal).map(hostOf).map((h) => h.replace(/[.,;:]+$/, '')))]
           // Text that is not a host (`.`, `...`, a regex piece) cannot go on the vendor list and only fills the log.
-          .filter((h) => /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/i.test(h))
+          .filter((h) => /^(?:[\p{L}\p{N}_-]+(?:\.[\p{L}\p{N}_-]+)*|\[[0-9a-f:.]+\])$/iu.test(h))
           .filter((h) => !PLACEHOLDER_HOST.test(h) && !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
         let found = null
         if (PYTHON.test(lc)) {
@@ -2272,10 +2274,11 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
           // agent-msg-get.sh: "unparseable", Dani #3180). A file whose code (comment lines dropped) names
           // curl / wget is judged on the external URLs in it and in the run's arguments; a destination
           // built at run time passes, as in a Python file.
-          const run = scriptFileAt(args, shellScriptIndex(args), base())
+          const run = scriptFileAt(args, shellScriptIndex(args, cmd), base())
           if (run !== null) {
             const code = run.body.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
-            if (DOWNLOADER_WORD.test(code)) found = { run, hosts: external(code, run.args), reason: 'script-file-shell-external' }
+            // a curl / wget line, or an interpreter one-liner using a network primitive (`python3 -c 'urllib...'`)
+            if (DOWNLOADER_WORD.test(code) || NET_PRIMITIVE.test(code)) found = { run, hosts: external(code, run.args), reason: 'script-file-shell-external' }
           }
         }
         if (found !== null && found.hosts.length) {
