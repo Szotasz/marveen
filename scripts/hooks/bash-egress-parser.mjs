@@ -84,11 +84,15 @@
 //
 // WHAT THIS DOES NOT CLOSE -- said here so nobody reads "merged" as "closed" (owner/Marveen 29047):
 // the name-and-shape list will never be complete. Still open, by family:
-//   - network calls INSIDE a script file: only a PYTHON file named on the command line is read
-//     (EGRESSPYFILE1113, `python3 f.py`), and only when the install turned it on ("script_files" in
-//     the vendor-hosts file; OFF by default, "log" records without blocking); a shell / node / other
-//     script, a module it imports, a file the same command writes first, a path computed at run
-//     time, and a host that is a format placeholder (`%s`, `{x}`) are not;
+//   - network calls INSIDE a script file: only a file named on the command line of python
+//     (EGRESSPYFILE1113, `python3 f.py`), node / deno / bun or bash / sh / zsh / dash / ksh
+//     (EGRESSZKRIPTFAJL1127) is read, a downloader the Python or JS file starts as a child program
+//     included, and only when the install turned it on ("script_files" in the vendor-hosts file; OFF
+//     by default, "log" records without blocking). A shell file is read as TEXT (literal external URLs
+//     in its curl / wget code), so a script it calls in turn is not followed. Not read: a script run
+//     by its own name (`./f.sh`) or sourced (`source` / `.`), a file over 1 MiB, a `~/` path, any other
+//     interpreter, a module it imports, a file the same command writes first, a path computed at run
+//     time, and a host that is a format placeholder (`%s`, `{x}`);
 //   - a program that reaches an interpreter through a PIPE or a file rather than through a heredoc /
 //     here-string attached to the interpreter itself;
 //   - for an INTERPRETER one-liner (not curl / wget): values bound by builtins other than `for` and a
@@ -451,7 +455,77 @@ function readPyFile(abs) {
   } catch { return null }
 }
 function pythonScriptRun(args, base) {
-  const k = pythonScriptIndex(args)
+  return scriptFileAt(args, pythonScriptIndex(args), base)
+}
+// EGRESSZKRIPTFAJL1127: the program file of a `node|deno|bun [options] file [args]` run. -e / -p / eval
+// runs are one-liners (judged elsewhere). deno and bun take a file only after `run` or as a word with a
+// JS / TS extension: their other subcommands (fmt, test, install ...) are not a program run.
+const JS_RUNTIME = /^(?:node(?:js)?|deno|bun)$/
+const JS_VALUE_FLAG = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions',
+  '--input-type', '--env-file', '--title', '--stack-size'])
+export function jsScriptIndex(cmd, args) {
+  let k = 0
+  const sub = cmd === 'deno' || cmd === 'bun'
+  if (sub && args[0] === 'run') k = 1
+  for (; k < args.length; k++) {
+    const w = args[k]
+    if (w === '-') return -1
+    if (w === '--') { k++; break }
+    if (!w.startsWith('-')) break
+    if (/^-(?:e|p|pe|ep)$|^--(?:eval|print)(?:=|$)/.test(w)) return -1
+    if (cmd !== 'deno' && cmd !== 'bun' && (w === '-c' || w === '--check')) return -1   // node: syntax check, no run
+    if (JS_VALUE_FLAG.has(w)) k++
+  }
+  if (k >= args.length) return -1
+  if (sub && args[0] !== 'run' && !/\.[cm]?[jt]sx?$/.test(args[k])) return -1
+  return k
+}
+// EGRESSZKRIPTFAJL1127: the program file of a `bash|sh|zsh|dash|ksh [options] file [args]` run. A -c run
+// is judged as a command string elsewhere; -s (stdin) and -n (no execution) read no file here.
+export function shellScriptIndex(args, shell = 'bash') {
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]
+    if (w === '-') return -1
+    if (w === '--') return k + 1 < args.length ? k + 1 : -1
+    if (!w.startsWith('-') && !w.startsWith('+')) return k
+    if (/^[-+][A-Za-z]+$/.test(w) && /[csn]/.test(w.slice(1))) return -1
+    k += shellOptionValues(w, shell)
+  }
+  return -1
+}
+// The JS / TS program files of a node / deno / bun run: the one jsScriptIndex places, and every other
+// word named like a JS / TS file. A runtime option that takes a value (`--inspect-port N`, `deno -c
+// deno.json`, `bun --cwd .`, and the ones a later runtime adds) can hide the program from the index;
+// it cannot hide a file named `*.js` / `*.ts`. Extra arguments read here are only judged, never run.
+// node -c / --check among node's OWN options (before the program file) is a syntax check: nothing runs. The same
+// word after the program file is the script's argument, and the script runs (Dani, #3180 review: argv = ['-c', ...]).
+function nodeSyntaxCheck(args) {
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]
+    if (w === '--' || !w.startsWith('-')) return false
+    if (w === '-c' || w === '--check') return true
+    if (JS_VALUE_FLAG.has(w)) k++
+  }
+  return false
+}
+// deno / bun subcommands that read source without running it.
+const JS_NO_RUN_SUB = new Set(['fmt', 'lint', 'check', 'doc', 'info', 'install', 'i', 'add', 'remove', 'rm', 'uninstall',
+  'upgrade', 'init', 'create', 'types', 'compile', 'bundle', 'build', 'outdated', 'pm', 'link', 'unlink', 'publish', 'completions'])
+export function jsScriptRuns(cmd, args, base) {
+  if ((cmd === 'deno' || cmd === 'bun') && JS_NO_RUN_SUB.has(args.find((w) => !w.startsWith('-')) ?? '')) return []
+  if (cmd !== 'deno' && cmd !== 'bun' && nodeSyntaxCheck(args)) return []
+  const seen = new Set()
+  const runs = []
+  const k = jsScriptIndex(cmd, args)
+  for (let i = 0; i < args.length; i++) {
+    if (i !== k && (args[i].startsWith('-') || !/\.[cm]?[jt]sx?$/.test(args[i]))) continue
+    const run = scriptFileAt(args, i, base)
+    if (run !== null && !seen.has(run.file)) { seen.add(run.file); runs.push(run) }
+  }
+  return runs
+}
+// The program file at args[k], read from disk; null when there is none to read (see pythonScriptRun).
+function scriptFileAt(args, k, base) {
   if (k === -1) return null
   // The word as written first (a quoted name may hold a `>`); then without a redirect glued to it
   // (`fetch.py>out.txt`, review of #2736): the words here are already unquoted, so the two cannot
@@ -531,6 +605,12 @@ export function commandIndex(mw) {
 // this list: it is the fleet's mandated browser-verify path on its own domains, and an own-domain
 // allowlist is direction (b). Stated as open, measured, and left to the owner.
 const NET_PRIMITIVE = /\b(?:urllib|requests\.|http\.client|httplib|httpx|aiohttp|urlopen|socket\.|fetch\s*\(|https?\.(?:get|request)\s*\(|axios|node-fetch|undici|got\s*\(|LWP::|HTTP::Tiny|Net::HTTP|open-uri|IO::Socket|file_get_contents|curl_exec|Invoke-WebRequest|WebSocket|websockets?\.)|-M(?:LWP|HTTP::Tiny|IO::Socket|Net::HTTP)/
+// EGRESSZKRIPTFAJL1127: a script FILE that starts a downloader as a child program. Only for files (behind
+// "script_files"): a one-liner carrying `subprocess` + curl to localhost is the fleet's message path, and
+// for a file too only an EXTERNAL URL in it denies.
+const DOWNLOADER_WORD = /\b(?:curl|wget)\b/
+const PY_RUNS_PROGRAM = /\b(?:subprocess|os\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|pty\.spawn)\b/
+const JS_RUNS_PROGRAM = /\b(?:child_process|execSync|execFileSync|spawnSync|execa|Bun\.spawn|Deno\.Command|Deno\.run)\b/
 
 export function hostOf(url) {
   const m = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/i.exec(url)
@@ -2172,20 +2252,51 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       else if (INTERPRETER.test(cmd.toLowerCase()) && hasCodeFlag(cmd, mw.slice(i + 1)) && usesNetwork(cmd, text)) target = 'one-liner'
       // EGRESSPYFILE1113: a Python program run from a FILE (`python3 fetch.py [args]`). Its body is read
       // from disk and judged like a heredoc body (4.), with the URLs of the run's own arguments added.
-      if (!target && scriptFileMode !== 'off' && PYTHON.test(cmd.toLowerCase())) {
-        const run = pythonScriptRun(args, cwdAt(masked, orig, a))
-        if (run !== null && pythonUsesNetwork(run.body)) {
-          // A URL in a COMMENT is not a destination: comments are blanked when the scan can vouch for
-          // where the strings end (the whole body otherwise).
-          const text = pythonCodeOnly(run.body.normalize('NFKC'), true) ?? run.body
-          const found = [...`${text}\n${run.args.join('\n')}`.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
-          const hosts = [...new Set(found)].filter((h) => !PLACEHOLDER_HOST.test(h) && !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
-          if (hosts.length && scriptFileMode === 'on') return { deny: true, reason: 'script-file-external', hosts, file: run.file }
-          if (hosts.length) {
-            const seen = scriptFileFindings.find((f) => f.file === run.file)
-            if (seen) for (const h of hosts) seen.hosts.add(h)
-            else scriptFileFindings.push({ file: run.file, hosts: new Set(hosts) })
+      // EGRESSZKRIPTFAJL1127: a downloader the file STARTS (`subprocess.run(["curl", URL])`, measured
+      // 2026-11-27: passed even with the switch on), a node / deno / bun file, and a shell script file
+      // are read the same way, behind the same switch.
+      if (!target && scriptFileMode !== 'off') {
+        const lc = cmd.toLowerCase()
+        const base = () => cwdAt(masked, orig, a)
+        const external = (text, runArgs) => [...new Set([...`${text}\n${runArgs.join('\n')}`.matchAll(URL_RE)]
+          .map((m) => m[0]).filter(isExternal).map(hostOf).map((h) => h.replace(/[.,;:]+$/, '')))]
+          // Text that is not a host (`.`, `...`, a regex piece) cannot go on the vendor list and only fills the log.
+          .filter((h) => /^(?:[\p{L}\p{N}_-]+(?:\.[\p{L}\p{N}_-]+)*|\[[0-9a-f:.]+\])$/iu.test(h))
+          .filter((h) => !PLACEHOLDER_HOST.test(h) && !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
+        let found = null
+        if (PYTHON.test(lc)) {
+          const run = pythonScriptRun(args, base())
+          if (run !== null) {
+            // A URL in a COMMENT is not a destination: comments are blanked when the scan can vouch for
+            // where the strings end (the whole body otherwise).
+            const text = pythonCodeOnly(run.body.normalize('NFKC'), true) ?? run.body
+            const starts = PY_RUNS_PROGRAM.test(text) && DOWNLOADER_WORD.test(text)
+            if (pythonUsesNetwork(run.body) || starts) found = { run, hosts: external(text, run.args), reason: 'script-file-external' }
           }
+        } else if (JS_RUNTIME.test(lc)) {
+          for (const run of jsScriptRuns(lc, args, base())) {
+            if (!NET_PRIMITIVE.test(run.body) && !(JS_RUNS_PROGRAM.test(run.body) && DOWNLOADER_WORD.test(run.body))) continue
+            const hosts = external(run.body, run.args)
+            if (hosts.length) { found = { run, hosts, reason: 'script-file-external' }; break }
+          }
+        } else if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null) {
+          // A whole script file is read as TEXT, not through classify(): the command analysis is built for
+          // one command line and fails closed on a real script (measured on scripts/marveen-api.sh and
+          // agent-msg-get.sh: "unparseable", Dani #3180). A file whose code (comment lines dropped) names
+          // curl / wget is judged on the external URLs in it and in the run's arguments; a destination
+          // built at run time passes, as in a Python file.
+          const run = scriptFileAt(args, shellScriptIndex(args, cmd), base())
+          if (run !== null) {
+            const code = run.body.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+            // a curl / wget line, or an interpreter one-liner using a network primitive (`python3 -c 'urllib...'`)
+            if (DOWNLOADER_WORD.test(code) || NET_PRIMITIVE.test(code)) found = { run, hosts: external(code, run.args), reason: 'script-file-shell-external' }
+          }
+        }
+        if (found !== null && found.hosts.length) {
+          if (scriptFileMode === 'on') return { deny: true, reason: found.reason, hosts: found.hosts, file: found.run.file }
+          const seen = scriptFileFindings.find((f) => f.file === found.run.file)
+          if (seen) for (const h of found.hosts) seen.hosts.add(h)
+          else scriptFileFindings.push({ file: found.run.file, hosts: new Set(found.hosts) })
         }
       }
       if (!target) continue
