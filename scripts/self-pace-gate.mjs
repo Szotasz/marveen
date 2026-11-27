@@ -4107,7 +4107,8 @@ const ARG_SCHED_NAME = String.raw`(?:crontab(?!\s+-l\b)|launchctl(?!\s+(?:list|p
 const ARG_SCHED_NAME_RX = new RegExp(String.raw`(?<!\b(?:command\s+-[vVp]+|which|type|hash)\s+)(?<![\w/.%-])${ARG_SCHED_NAME}`, 'gi')
 const ARG_SCHED_PATH_RX = new RegExp(String.raw`/${ARG_SCHED_NAME}(?=\s+\S|['"\x60])`, 'i')
 const AT_SPEC = String.raw`(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))`
-const AT_NAME = String.raw`(?:[\w./-]*/)?(?:at|batch)`
+// a path to it starts at / or ./ or ../ (s/at 17:13/ in a sed script is not one)
+const AT_NAME = String.raw`(?:(?:\.{1,2})?/(?:[\w.-]+/)*)?(?:at|batch)`
 const ARG_AT_RX = new RegExp(
   // a command string: at the start of the word, of a quoted string, or after a pipe or separator
   String.raw`(?:^|['"\x60]|[|;&]\s*|\$\(\s*)${AT_NAME}(?=\s+-|\s*<|\s+${AT_SPEC})` +

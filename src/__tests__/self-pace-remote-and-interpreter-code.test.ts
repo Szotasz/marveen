@@ -83,6 +83,7 @@ describe('self-pace-gate: a scheduler in interpreter code', () => {
   it('ALLOWS the shapes measured on the fleet\'s own commands: (at), a key, a read, a lookup, a file path', () => {
     for (const cmd of [
       "sed 's/@/(AT)/g' notes.txt",
+      "sed -i '' 's/at 17:13 (x)/at 17:11 (x)/' notes.md",
       `python3 -c "import json; d=json.load(open('x.json')); print(d.get('at'), d['at'])"`,
       `python3 -c "f=open('x'); at=0; print(f.read(at, 10))"`,
       `sqlite3 x.db "SELECT replace(content,'@','(at)') FROM t WHERE title LIKE '%launchctl%'"`,
