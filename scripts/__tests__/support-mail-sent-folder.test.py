@@ -130,6 +130,11 @@ FakeIMAP.list_reply = ("OK", COURIER)
 out, err = run_main()
 check("our Courier-style mailbox keeps INBOX.Sent", FakeIMAP.appended and FakeIMAP.appended[0][0] == "INBOX.Sent", FakeIMAP.appended)
 
+FakeIMAP.list_reply = ("OK", [b'() "/" INBOX', (b'(\\HasNoChildren \\Sent) "/" {13}', b"Sent Messages")])
+out, err = run_main()
+check("a \\Sent mailbox with a space in its name is appended to as a quoted string",
+      FakeIMAP.appended and FakeIMAP.appended[0][0] == '"Sent Messages"', FakeIMAP.appended)
+
 print()
 print("support-mail-sent-folder: " + ("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED"))
 sys.exit(1 if FAILS else 0)
