@@ -467,6 +467,21 @@ export function checkTaskAuthFailure(
   }
 }
 
+// SCHEDDONEB1127: the outcome a closing run is recorded with. A 'done' decision says the session took a turn
+// and went idle; it says nothing about WHAT arrived. Unless the delivery is verified (the same bar as a once
+// task's success, isOnceRunSuccess: 'intact' or 'intact-queued', or a remote or worksource-acknowledged run
+// where no verdict can exist), the run is closed as 'done-unverified', not 'done': a damaged prompt
+// ('spliced', 'tail-lost', 'paste-wrapped', ...) can still get a short reply that ends the turn. Duration
+// statistics and the status summary count only 'done' as a success. 'abandoned' passes through unchanged.
+export function closedRunOutcome(
+  decision: 'done' | 'abandoned',
+  deliveryVerdict: DeliveryVerdict | undefined,
+  delivery: { remote: boolean; worksourceAcked: boolean },
+): 'done' | 'done-unverified' | 'abandoned' {
+  if (decision !== 'done') return decision
+  return isOnceRunSuccess(decision, deliveryVerdict, delivery) ? 'done' : 'done-unverified'
+}
+
 // Card 7d2b49b4: a once task is switched off after its first SUCCESSFUL run (isOnceRunSuccess: the run
 // closed 'done' and the transcript shows the prompt intact). The config is read fresh here, at the end of
 // the run, so a once flag removed in the meantime is respected. Bookkeeping only, like the delivery verdict
@@ -3837,7 +3852,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // task_runs kept every row open for ever.
         if (entry.runId != null) {
           try {
-            markTaskRunCompleted(entry.runId, decision, now)
+            markTaskRunCompleted(entry.runId, closedRunOutcome(decision, entry.deliveryVerdict, { remote: entry.host != null, worksourceAcked: worksourceStage === 'done' }), now)
           } catch (err) {
             // Bookkeeping must never take down the sweep: the next tick still
             // needs to watch the remaining entries.

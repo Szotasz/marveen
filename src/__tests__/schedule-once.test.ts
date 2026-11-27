@@ -138,6 +138,12 @@ describe('settleOnceAfterRun: the sweep\'s done branch, behaviour on a real task
     expect(cfgOf('local-once-unchecked').enabled).toBe(true)
     expect(onceLogs(warn)).toHaveLength(1)
   })
+  it('a local done run with a SPLICED delivery leaves the once task on (SCHEDDONEB1127: recorded done-unverified)', () => {
+    fixture('local-once-spliced', { schedule: '0 5 22 9 *', agent: 'c3po', enabled: true, once: true })
+    runner.settleOnceAfterRun('local-once-spliced', 'done', 'spliced', NOW, false)
+    expect(cfgOf('local-once-spliced').enabled).toBe(true)
+    expect(onceLogs(warn)).toHaveLength(1)
+  })
   it('a local done run delivered intact switches the once task off', () => {
     fixture('local-once-intact', { schedule: '0 5 22 9 *', agent: 'c3po', enabled: true, once: true })
     runner.settleOnceAfterRun('local-once-intact', 'done', 'intact', NOW, false)
