@@ -420,6 +420,16 @@ This is a deny list, not a sandbox.
 - Still open, by construction: plain-http external fetches, an interpreter
   one-liner (`python3 -c`, `node -e`), and a URL hidden in a shell variable.
   Closing those needs a Bash `PreToolUse` hook that parses the command.
+- **A script file is read only when the install turns it on.** With
+  `"script_files": "on"` in `store/egress-vendor-hosts.json` the parser hook
+  (`scripts/hooks/bash-egress-parser.mjs`) reads the file named on the command
+  line of python, node / deno / bun and bash / sh / zsh / dash / ksh, and
+  denies an external URL it would fetch, a curl / wget the file starts as a
+  child program included; `"log"` records the same without blocking. The
+  default is `"off"`: then `python3 fetch.py` and the like pass unread. Even on,
+  a script run by its own name (`./fetch.sh`), a file the same command writes
+  first, an imported module and a path computed at run time pass: closing those
+  needs a network-level control, not a parser.
 - Known collateral: an internal POST whose **double-quoted** payload quotes an
   `https://` URL matches the `curl` rule. Single-quoted payloads do not (the
   permission engine excludes single-quoted content). Use single quotes or
