@@ -371,15 +371,15 @@ describe('the dashboard button (source contract)', () => {
     const { readFileSync } = await import('node:fs')
     const APP = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf-8')
     const fn = APP.slice(APP.indexOf('async function _resolveApproval(id, decision) {'), APP.indexOf('// === Settings (central config registry) ==='))
-    expect(fn).toContain("if (row && row.category === 'agent_create' && decision === 'approved') {")
+    expect(fn).toContain("if (row && (row.category === 'agent_create' || row.category === 'schedule_change') && decision === 'approved') {")
     expect(fn).toContain('pre.textContent = row.action_description')
-    expect(fn).toContain("t('approvals.agent_create.confirm_message', { code: String(row.content_hash || '').slice(0, 8) })")
+    expect(fn).toContain("t(`approvals.${row.category}.confirm_message`, { code: String(row.content_hash || '').slice(0, 8) })")
     expect(fn).toContain('if (!ok) return')
     expect(fn).toContain('payload.content_hash = row.content_hash')
     expect(fn).toContain('body: JSON.stringify(payload),')
     for (const lang of ['hu', 'en']) {
       const L = readFileSync(new URL(`../../web/lang/${lang}.js`, import.meta.url), 'utf-8')
-      for (const k of ['confirm_title', 'confirm_message', 'confirm_ok']) expect(L).toContain(`'approvals.agent_create.${k}':`)
+      for (const c of ['agent_create', 'schedule_change']) for (const k of ['confirm_title', 'confirm_message', 'confirm_ok']) expect(L).toContain(`'approvals.${c}.${k}':`)
     }
   })
 })

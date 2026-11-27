@@ -28,6 +28,7 @@ import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import { approverScopeFor, mayApprove } from '../approver-access.js'
 import type { RouteContext } from './types.js'
 import { fileAgentSpecRequest, AGENT_CREATE_CATEGORY } from '../agent-create-approval.js'
+import { fileScheduleChange, SCHEDULE_CHANGE_CATEGORY } from '../schedule-change-approval.js'
 import { readVaultAcl, isAgentReadableDecodedVaultId, claimedAgentOf } from '../vault-acl.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
@@ -306,6 +307,7 @@ function notifyOwner(approval: Approval, chatApprovedMessageId: number | string 
     // AGENTCREATEPR3-1119 (Samu 81756, 2): an agent_create text longer than one Slack message is never split; the DM is a
     // short pointer to the dashboard (no post row: no reply to it approves anything).
     if (approval.category === 'agent_create' && text.length > reactionDeps.chunk) text = OWNER_TEXT[lang].agentCreateTooLong(approval.id, approvalsPageUrl())
+    if (approval.category === SCHEDULE_CHANGE_CATEGORY && text.length > reactionDeps.chunk) text = OWNER_TEXT[lang].scheduleChangeTooLong(approval.id, approvalsPageUrl())
     const slack = await sendOwnerSlackDm(text)
     if (slack.attempted) {
       if (slack.sent) {
@@ -583,6 +585,31 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // POST /api/schedule-proposals -- SCHEDPROPOSAL1126: an agent (a sub-agent's own token too: nothing is written to the
+  // task here) proposes a change to an existing scheduled task, owner fields included. The server validates and stores
+  // it and opens a schedule_change approval bound to its hash; only the owner's approval applies it.
+  if (path === '/api/schedule-proposals' && method === 'POST') {
+    const raw = await readBodyOrRefuse(req, res, { maxBytes: 256 * 1024 })
+    if (!raw) return true
+    let body: unknown
+    try { body = JSON.parse(raw.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    const header = req.headers['x-agent-id']
+    const declared = typeof header === 'string' && /^[a-z0-9_-]{1,64}$/i.test(header) ? header : 'unknown'
+    const requestedBy = ctx.auth?.kind === 'token' ? (ctx.auth.tokenAgent ?? claimedAgentOf(ctx.auth) ?? declared) : declared
+    const lang = approvalTextLang()
+    const r = fileScheduleChange(body, requestedBy, lang)
+    if (r.status === 201 && typeof r.body.approvalId === 'string') {
+      try {
+        const approval = getApproval(r.body.approvalId)
+        if (approval) notifyOwner(approval, null, true, lang)
+      } catch (err) {
+        logger.error({ approvalId: r.body.approvalId, err: err instanceof Error ? err.message : String(err) }, 'schedule_change proposal filed, but the owner could NOT be notified on a channel: it is on the dashboard only')
+      }
+    }
+    json(res, r.body, r.status)
+    return true
+  }
+
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
     let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown; owner_approved_message_id?: unknown; for_agent?: unknown }
@@ -604,8 +631,9 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
     // D3(b): second_review rows are filed by the server only (routes/review-action.ts), with the
     // exact call as payload. A caller-filed row could carry a call's hash under a harmless text.
-    if (category.trim() === 'second_review') {
-      json(res, { error: 'category second_review is reserved for the server' }, 403)
+    // SCHEDPROPOSAL1126: likewise schedule_change (filed by POST /api/schedule-proposals with its stored spec).
+    if (category.trim() === 'second_review' || category.trim() === SCHEDULE_CHANGE_CATEGORY) {
+      json(res, { error: `category ${category.trim()} is reserved for the server` }, 403)
       return true
     }
     if (typeof action_description !== 'string' || !action_description.trim()) {
@@ -896,15 +924,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // AGENTCREATEPR2-1119 (Samu 81167): an agent_create request is approved here only by the owner's session (the owner
     // gate above), and only through the decision core with the hash the dashboard showed the owner: never by a plain
     // status write. Rejecting it stays a status write.
-    if (target?.category === AGENT_CREATE_CATEGORY && status === 'approved') {
+    // SCHEDPROPOSAL1126: a schedule_change proposal the same way.
+    if ((target?.category === AGENT_CREATE_CATEGORY || target?.category === SCHEDULE_CHANGE_CATEGORY) && status === 'approved') {
       const shown = body.content_hash
       if (typeof shown !== 'string' || !/^[0-9a-f]{64}$/.test(shown)) {
-        json(res, { error: 'content_hash (the hash the owner was shown) is required to approve an agent_create request' }, 400)
+        json(res, { error: `content_hash (the hash the owner was shown) is required to approve this ${target.category} request` }, 400)
         return true
       }
       const d = decideApproval({ approvalId: target.id, status: 'approved', evidence: { channel: 'dashboard', mode: 'owner' }, expectedContentHash: shown })
       if (d.outcome !== 'decided') { json(res, { error: `Not approved: ${d.outcome}` }, 409); return true }
-      logger.info({ id: target.id }, 'agent_create approved by the owner on the dashboard')
+      logger.info({ id: target.id }, `${target.category} approved by the owner on the dashboard`)
       json(res, d.approval)
       return true
     }

@@ -3221,7 +3221,7 @@ const LIMIT_MSG =
 
 export const DB_GATE_MSG =
   'Biztonsagi DB-iras TILTOTT (APPROVALDBGATE1030, minden ugynokre, a fo ugynokre is). NEM irhatod a ' +
-  'dashboard adatbazisanak biztonsagi tablait (approvals, approval_events, approval_slack_posts, approval_teams_cards, approval_gromzo_posts, agent_create_specs, auth_sessions, dashboard_users, ' +
+  'dashboard adatbazisanak biztonsagi tablait (approvals, approval_events, approval_slack_posts, approval_teams_cards, approval_gromzo_posts, agent_create_specs, schedule_change_specs, auth_sessions, dashboard_users, ' +
   'device_keys, vault_ssh_keys, support_consents, support_password_state, approver_scopes, custom_commands, inbound_sig_log) semmilyen programmal (sqlite3, python, node, heredoc), ' +
   'az agent_messages-be NEM irhatsz foglalt vagy ismeretlen feladot (koordinator, hangcsatorna, system, gazda-hangu id) es kezbesitesi jelzot ' +
   '(stop_authorized, urgent, priority, affects_current_work), mas feladojanak sorat nem irhatod at (CHANINBOUNDFORGE1125), es NEM irhatod fajl ' +

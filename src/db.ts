@@ -1922,6 +1922,23 @@ export function initDatabase(dbPathOverride?: string): void {
       outcome_at INTEGER
     )
   `)
+  // SCHEDPROPOSAL1126: the stored proposal behind a schedule_change approval (schedule-change-approval.ts). spec_json is
+  // the canonical {task, base_hash, changes} the owner was shown, content_hash its sha256 (equal to the approvals row's),
+  // base_hash the task's registry hash when it was filed. A security table, like agent_create_specs.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schedule_change_specs (
+      approval_id TEXT PRIMARY KEY,
+      task_name TEXT NOT NULL,
+      spec_json TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      base_hash TEXT NOT NULL,
+      requested_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      consumed_at INTEGER,
+      outcome TEXT,
+      outcome_at INTEGER
+    )
+  `)
   // A security table: the db-write-gate denies an agent's write on it, like approvals.
   db.exec(`
     CREATE TABLE IF NOT EXISTS approval_teams_cards (
@@ -8483,7 +8500,7 @@ export type ApprovalDecideOutcome = 'decided' | 'not_pending' | 'content_changed
  * request is approved only when it carries a content hash AND the adapter showed the owner exactly that hash; a missing
  * hash on either side is never an approval. A rejection needs neither.
  */
-export const HASH_BOUND_APPROVAL_CATEGORIES: ReadonlySet<string> = new Set(['agent_create'])
+export const HASH_BOUND_APPROVAL_CATEGORIES: ReadonlySet<string> = new Set(['agent_create', 'schedule_change'])
 
 function decideApprovalInTx(p: {
   approvalId: string; status: 'approved' | 'rejected'; resolvedBy: string; expectedContentHash?: string; now: number
@@ -8874,8 +8891,9 @@ export const CATEGORY_CONSUME_MAX_WINDOW_S = 24 * 3600
 // by the send path (consumeApproval above / the gate), data_delete by the
 // memory DELETE route. The generic consume below never touches them, so a
 // tool cannot spend a letter's or a memory delete's approval by naming the
-// category in a generic call.
-export const SERVER_CONSUMED_CATEGORIES: readonly string[] = ['email_send', 'data_delete']
+// category in a generic call. schedule_change: its consumer applies the
+// proposal (schedule-change-approval.ts); the filing agent must not burn it.
+export const SERVER_CONSUMED_CATEGORIES: readonly string[] = ['email_send', 'data_delete', 'schedule_change']
 
 // Categories that are a STANDING decision, not a one-off permission: the owner's
 // LAST resolved decision on the anchor wins, and a later rejection revokes it
