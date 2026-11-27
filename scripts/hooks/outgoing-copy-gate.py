@@ -128,7 +128,7 @@ _PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
 # (_NODE_INTERPRETERS, maintainer decision) is unchanged on purpose.
 _NODEISH = re.compile(r"^(node|nodejs|tsx|ts-node|deno|bun|npx)$", re.I)
 _GRAPHMAIL = re.compile(r"^graph-mail(\.ts|\.js)?$", re.I)
-_WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash)$", re.I)
+_WRAPPER_SHELL = re.compile(r"^(sh|bash|zsh|dash|ksh|mksh)$", re.I)   # MAILRUNTIMECMD1126: ksh, mksh
 _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
 # Interpreter kod-string argumentum (python -c / node -e): az interpreternek
 # atadott kod MUVELET, nem tartalom -- a kod-szintu kuldes-hivasokra szurunk.
@@ -488,8 +488,49 @@ def _basename(tok: str) -> str:
     return tok.rsplit("/", 1)[-1]
 
 
-def _mask_subshell_markers(cmd: str) -> str:
-    """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
+def _develop_comment_starts(cmd: str) -> set:
+    """LINECONT1126 (Marveen 5755, structural guard): the indices where develop's mask (before LINECONT1126, unchanged
+    algorithm) starts a comment. _mask_subshell_markers drops a comment ONLY where this develop rule AND the new bash rule
+    both say comment, so the comment handling can never drop more text than develop did: by construction it cannot weaken
+    the gate against develop, the new rule can only keep more text. The JS twin carries the same function
+    (developCommentStarts): develop's JS twin dropped no comment at all, the python rule is the one develop rule there was."""
+    starts = set()
+    q = None
+    i, n = 0, len(cmd)
+    parens = []
+    subst_close_at = -1
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                i += 2; continue
+            if ch == q:
+                q = None
+            i += 1; continue
+        if ch in "'\"":
+            q = ch; i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            i += 2; continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|(" or (cmd[i - 1] == ")" and subst_close_at != i - 1)):
+            starts.add(i)
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s"); i += 2; continue
+        if ch == "(":
+            parens.append("p")
+        elif ch == ")" and parens and parens.pop() == "s":
+            subst_close_at = i
+        i += 1
+    return starts
+
+
+def _mask_subshell_markers_develop(cmd: str) -> str:
+    """LINECONT1126 (Marveen 5771): develop's mask, copied UNCHANGED (only renamed). is_send_invocation ORs the verdict
+    of this reading with the new one, so the new mask can never weaken the gate against develop.
+
+    Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
     szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom).
 
     MAINGATENLCOMMENT1104: a shell comment is dropped HERE, as bash does: an unquoted `#` at the start of a word, up
@@ -533,10 +574,98 @@ def _mask_subshell_markers(cmd: str) -> str:
     return "".join(out)
 
 
-def _segments_tokens(cmd: str):
-    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
+def _mask_subshell_markers(cmd: str) -> str:
+    """Idezojelen KIVULI ujsor/`$(`/backtick -> `;` szeparator, hogy a shlex
+    szegmens-hatarkent lassa; idezojelen BELUL a szoveg erintetlen (tartalom).
+
+    MAINGATENLCOMMENT1104: a shell comment is dropped HERE, as bash does: an unquoted `#` at the start of a word, up
+    to the newline (the newline itself still becomes `;`). shlex's own comment handling is off (_segments_tokens):
+    after this mask there is no newline left, so a shlex comment ran to the end of the command and swallowed the next
+    line's send; an apostrophe inside a comment flipped this mask into quote mode; and shlex starts a comment at a `#`
+    inside a word (`echo a#b; sendmail x` lost the send). The word-start set matches the JS twin's
+    stripShellComments (whitespace and ;&|())."""
+    out = []
+    q = None  # None | "'" | '"' -- develop's quote tracking (Revizor 5756 J4: a shell without $'...' reads it as $ + '...')
+    i, n = 0, len(cmd)
+    parens = []  # Bence 69701: "s" for an open $( , "p" for a plain ( -- which ) closes a command substitution
+    subst_close_at = -1
+    plain_close_at = -1  # Revizor 5751 J3: the index of the last ) that closed a subshell or (( ))
+    dev_starts = _develop_comment_starts(cmd)   # LINECONT1126 (Marveen 5755): a comment is dropped only where develop dropped one too
+    prev = -1         # LINECONT1126: the index of the last character that is not part of a removed line continuation
+    prev_esc = False  # LINECONT1126 (Revizor 5744): that character was escaped (`\ #`, `\;#`): it ends no word
+    braces = 0        # LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                if cmd[i + 1] != "\n":   # LINECONT1126: inside "..." a backslash-newline is removed too (bash)
+                    out.append(cmd[i:i + 2]); prev = i + 1
+                i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); prev = i; prev_esc = False; i += 1; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "$":   # Revizor 5751 J2: $$ is the pid, so $$'a\' is $$ + a plain '...'
+            out.append("$$"); prev = i + 1; prev_esc = False; i += 2; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); prev = i; prev_esc = False; i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            # LINECONT1126: a backslash-newline is a line continuation: bash removes both characters before it splits
+            # words, so `sudo \<nl> curl ...`, `true && \<nl> curl ...` and `curl\<nl> -d ...` are the one-line commands.
+            # Kept, shlex made the newline a word of its own (the command head `sudo`'s program became "\n") or glued it
+            # to the word ("curl\n", "-exec\n"), and the send was not seen. A comment is cut below first, so a backslash
+            # at the end of a comment is no continuation (bash: the comment ends at the newline).
+            if cmd[i + 1] != "\n":
+                out.append(cmd[i:i + 2]); prev = i + 1; prev_esc = True
+            i += 2; continue
+        # a ) that closes a $( ends no word: `$(echo a)#x` is one word (Bence 69701)
+        # LINECONT1126: the character before is the last one that was not removed (`a\<nl>#b` is the one word a#b), it must
+        # not be escaped, and only bash's own blanks count (no CR, FF, VT or Unicode space: `a<CR># ; curl` runs curl)
+        if ch == "#" and i in dev_starts and not braces and (prev < 0 or (not prev_esc and (cmd[prev] in " \t\n;&|("
+                                                                       or (cmd[prev] == ")" and plain_close_at == prev)))):
+            # Revizor 5751 J3: after a ) only when it closes a subshell or (( )); never after a $( , a process
+            # substitution <( ) >( ) or an array assignment x=( ) -- there the # is part of the word, as in bash
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
+        if ch == "#" and i in dev_starts:
+            # Revizor 5766 J5: develop dropped this comment, the new rule keeps it (bash may run it). Kept as NEUTRAL words:
+            # its quotes, backslashes and backticks become "_", so the kept text can never open a quote, continue a line or
+            # start a substitution that develop never saw, and the newline at its end still separates as it did on develop.
+            # Everything after it is then read with develop's quote state: keeping this text can only add words.
+            while i < n and cmd[i] != "\n":
+                out.append("_" if cmd[i] in "'\"\\`" else cmd[i]); prev = i; i += 1
+            prev_esc = False
+            continue
+        after_esc, prev_esc = prev_esc, False
+        if ch == "\n" or ch == "`":
+            out.append(";"); prev = i; i += 1; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s")
+            out.append(";"); prev = i + 1; i += 2; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "{":
+            braces += 1
+            out.append("${"); prev = i + 1; i += 2; continue
+        if ch == "}" and braces:
+            braces -= 1
+        if ch == "(":
+            # "x": a process substitution <( >( or an array assignment x=( / x+=( ; "p": a subshell or (( ))
+            parens.append("x" if prev >= 0 and not after_esc and cmd[prev] in "<>=" else "p")
+        elif ch == ")" and parens:
+            kind = parens.pop()
+            if kind == "s":
+                subst_close_at = i
+            elif kind == "p":
+                plain_close_at = i
+        out.append(ch); prev = i; i += 1
+    return "".join(out)
+
+
+def _segments_tokens(cmd: str, develop: bool = False):
+    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve.
+    develop=True: develop's reading (LINECONT1126, Marveen 5771: the verdict is the OR of both readings)."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_HEREDOC.sub(r"\1", cmd)),
+    mask = _mask_subshell_markers_develop if develop else _mask_subshell_markers
+    lex = shlex.shlex(mask(_HEREDOC.sub(r"\1", cmd)),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     lex.commenters = ""  # MAINGATENLCOMMENT1104: the mask drops comments as bash does; shlex's would not
@@ -618,6 +747,10 @@ _WRAPPERS = {
     "command": ("", (), 0),
     "xargs": ("ILJnPsdEa", ("arg-file", "delimiter", "eof", "max-lines", "max-args",
                            "max-procs", "max-chars", "process-slot-var"), 0),
+    # MAILRUNTIMECMD1126: GNU parallel runs its command template like xargs (its value options)
+    "parallel": ("jaIdENPsSC", ("jobs", "arg-file", "delimiter", "eof", "max-args", "max-replace-args", "max-procs",
+                                "sshlogin", "colsep", "tmpdir", "results", "joblog", "timeout", "delay", "retries",
+                                "tagstring", "basefile", "workdir", "env", "memfree", "load"), 0),
     "timeout": ("sk", ("signal", "kill-after"), 1),
     # setsid: for future use and symmetry. NOT measured local traffic: the hits the
     # first count found all sat inside quoted remote (ssh) command strings or heredoc
@@ -755,6 +888,26 @@ def _command_heads(toks, _d: int = 0):
         return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
     if w in ("env", "genv"):
         return _env_heads(toks, _d)
+    if w in ("find", "gfind"):   # MAILRUNTIMECMD1126 (gfind: GNU find under its homebrew name)
+        return [toks] + _find_exec_heads(toks, _d)
+    if w == "busybox" and len(toks) > 1:   # LINECONT1126 (Revizor 5686 Q15): busybox runs its applet, find and sendmail too
+        return [toks] + _command_heads(toks[1:], _d + 1)
+    if w in ("fd", "fdfind"):   # LINECONT1126 (Revizor 5686 Q14): fd -x / -X runs the rest as a command template
+        heads = [toks]
+        for k, t in enumerate(toks):
+            if t in ("-x", "--exec", "-X", "--exec-batch") or t.startswith(("--exec=", "--exec-batch=")):
+                rest = toks[k + 1:] if "=" not in t else [t.split("=", 1)[1]] + toks[k + 1:]
+                end = next((j for j, x in enumerate(rest) if x in (";", "\\;")), len(rest))
+                heads += _command_heads(rest[:end], _d + 1)
+        return heads
+    # a backslash-newline continuation can leave a word of blanks only in front: the first real word decides
+    first = next((t for t in toks if not t or t.strip()), "")
+    if ((first.startswith("-") or first in ("!", "(", ")", "\\(", "\\)", ","))
+            and any(t in ("-exec", "-execdir", "-ok", "-okdir") for t in toks)):
+        # MAILRUNTIMECMD1126 (review): the tokenizer may end a segment at an escaped `\;`; the rest of the find
+        # expression (-print -exec ..., -o -exec ..., ! -name x -exec ..., \( ... \)) then starts a segment of its own.
+        # No command starts with an option word, `!`, a parenthesis or a comma: it is read as the find continuation.
+        return [toks] + _find_exec_heads(["find"] + toks, _d)
     launcher = _LAUNCHERS.get(w)
     if launcher is not None:
         return _launcher_heads(toks, launcher, _d)
@@ -762,6 +915,25 @@ def _command_heads(toks, _d: int = 0):
     if spec is None:
         return [toks]
     short_val, long_val, positionals = spec
+    starts = _wrapper_starts(toks, w, short_val, long_val)
+    if starts is None:
+        return []
+    if w == "xargs":
+        # MAILRUNTIMECMD1126 (review): BSD -S / -R take a value, GNU xargs has no such options: both readings
+        starts += [s for s in (_wrapper_starts(toks, w, short_val + "SR", long_val) or []) if s not in starts]
+    heads = []
+    for s in starts:
+        heads += _command_heads(toks[s + positionals:], _d + 1)
+    if w in ("xargs", "parallel"):   # EVALXARGSMAIL1126, MAILRUNTIMECMD1126
+        # the added word joins the template BEFORE it is unwrapped: `xargs env` then runs $XARGS_ARG as its program
+        for s in starts:
+            heads += _command_heads(toks[s + positionals:] + [_XARGS_ARG], _d + 1)
+        return _xargs_heads(toks, heads, w == "parallel")
+    return heads
+
+
+def _wrapper_starts(toks, w, short_val, long_val):
+    """the positions where a wrapper's command can start (None: `command -v`, which runs nothing)"""
     i, starts = 1, []
     while i < len(toks):
         t = toks[i]
@@ -778,16 +950,13 @@ def _command_heads(toks, _d: int = 0):
             continue
         if t.startswith("-") and len(t) > 1:
             if w == "command" and ("v" in t or "V" in t):
-                return []
+                return None
             k = next((j for j, ch in enumerate(t[1:], 1) if ch in short_val), -1)
             i += 2 if k == len(t) - 1 else 1
             continue
         break
     starts.insert(0, i)
-    heads = []
-    for s in starts:
-        heads += _command_heads(toks[s + positionals:], _d + 1)
-    return _xargs_heads(toks, heads) if w == "xargs" else heads   # EVALXARGSMAIL1126
+    return starts
 
 
 # EVALXARGSMAIL1126: xargs appends the words it reads to its command template (or puts them where the -I / -J / -i /
@@ -807,11 +976,104 @@ _DEPTH_SEND_MARK = []   # compiled on first use: _MAIL_MARKER is defined further
 
 def _deeper_sends(text: str, depth: int) -> bool:
     if depth >= 3:
-        if not _DEPTH_SEND_MARK:
-            _DEPTH_SEND_MARK.append(re.compile(
-                _MAIL_MARKER.pattern + r"|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://", re.I))
-        return bool(_DEPTH_SEND_MARK[0].search(text))
+        return _marked(text)   # MAILRUNTIMECMD1126: the shared send marker, quotes resolved too
     return is_send_invocation(text, _depth=depth + 1)
+
+# MAILRUNTIMECMD1126: a command that comes into being only at run time (a program from a variable, $e / "$CMD" / "$@",
+# an eval of an expansion, a word xargs or find supplies) cannot be read. It counts as a send when the line carries a
+# mail API marker: a mail-only API host or a Microsoft Graph host, quotes resolved too (_line_send_mark). A sender
+# literal (send.py, sendmail) there stays data, as develop's controls fix ($X --to x --attachment /tmp/send.py).
+# Past the depth bound, where the command text itself is out of sight, the wider send marker decides (_marked): those
+# hosts or a sender literal (send.py, sendmail, msmtp, swaks, smtplib, an smtp:// URL, mail -s, mutt). Both twins use
+# the same patterns (email-send-gate.mjs: sendMarkRe, lineSendMark).
+_SEND_MARK = []   # compiled on first use: _MAIL_MARKER is defined further down
+_LINE_GRAPH_SEND = [False]   # the top-level line names a Microsoft Graph send URL
+_GRAPH_SEND_URL = re.compile(r"(?:graph\.microsoft\.(?:com|us|de)|microsoftgraph\.chinacloudapi\.cn|graph\.svc\.sovcloud\.fr)(?::[0-9]+)?/[^\s'\"]*?/(?:me|users/[^/\s'\"]+)/(?:microsoft\.graph\.)?(?:sendMail|messages/[^/\s'\"]+/(?:microsoft\.graph\.)?(?:send|reply|replyAll|forward))", re.I)
+
+
+def _send_mark_re():
+    if not _SEND_MARK:
+        _SEND_MARK.append(re.compile(_MAIL_MARKER.pattern + r"|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://|\bmailx?\s+-s\b|\bmutt\b", re.I))
+    return _SEND_MARK[0]
+
+
+def _marked(text: str) -> bool:
+    """the text, or its shell words with quotes resolved, carries a send marker"""
+    if _send_mark_re().search(text):
+        return True
+    try:
+        return any(_send_mark_re().search(w) for seg in _segments_tokens(text) for w in seg)
+    except ValueError:
+        return False
+
+
+def _line_send_mark() -> bool:
+    if _LINE_MAIL_HOST[0] or _LINE_GRAPH_SEND[0]:
+        return True
+    texts = _LINE_CTX[1]
+    if not texts:
+        return False
+    if _MAIL_MARKER.search(texts[0]):
+        return True
+    try:
+        return any(_MAIL_MARKER.search(w) for seg in _segments_tokens(texts[0]) for w in seg)
+    except ValueError:
+        return False
+
+
+# MAILRUNTIMECMD1126: the program string of a shell call that runs one: -c alone or in a cluster (-lc, -cl, -ec, -lic).
+# Options are read only up to the first operand (`bash run.sh -lc ...` runs run.sh with arguments); -o / -O and a
+# cluster ending in o / O take the next word (`-euo pipefail`), as do --rcfile / --init-file; the program is the first
+# operand after the options (`bash -c -l 'cmd'`, `bash -c -- 'cmd'`).
+_SHELL_VALUE_LONG = ("--rcfile", "--init-file")
+
+
+def _shell_c_program(rest):
+    has_c, i = False, 0
+    while i < len(rest):
+        t = rest[i]
+        if t == "--":
+            i += 1
+            break
+        if t in _SHELL_VALUE_LONG:
+            i += 2
+            continue
+        if t.startswith("--"):
+            i += 1
+            continue
+        if len(t) > 1 and t[0] in "-+" and t[1:].isalpha():
+            if t[0] == "-" and "c" in t[1:]:
+                has_c = True
+            # each o / O in the cluster takes the next word (-oc pipefail, -euo pipefail, -oo a b)
+            i += 1 + sum(ch in "oO" for ch in t[1:])
+            continue
+        break
+    return rest[i] if has_c and i < len(rest) else None
+
+
+# MAILRUNTIMECMD1126: find -exec / -execdir / -ok / -okdir runs a command up to `;` or `+`, with `{}` the found path.
+_FIND_ARG = "$FIND_ARG"
+
+
+def _find_exec_heads(toks, _d):
+    toks = [t for t in toks if not t or t.strip()]   # blank-only words (a backslash-newline continuation) are dropped
+    heads, i = [], 1
+    while i < len(toks):
+        if toks[i] in ("-exec", "-execdir", "-ok", "-okdir"):
+            j = i + 1
+            while j < len(toks) and toks[j].strip() not in (";", "\\;", "+"):   # `;\n`: a continuation glued on
+                j += 1
+            seg = toks[i + 1:j]
+            if seg:
+                heads += _command_heads(seg, _d + 1)
+                sub = [w.replace("{}", _FIND_ARG) for w in seg]
+                if sub != seg:
+                    heads += _command_heads(sub, _d + 1)
+            i = j + 1
+            continue
+        i += 1
+    return heads
+
 
 
 def _xargs_replace_string(toks):
@@ -845,15 +1107,19 @@ _XARGS_VALUE_SHORT = "adELnPsRS"   # GNU and BSD xargs short options that take a
 _XARGS_VALUE_LONG = ("arg-file", "delimiter", "max-lines", "max-args", "max-procs", "max-chars", "process-slot-var")
 
 
-def _xargs_heads(toks, heads):
-    repl = _xargs_replace_string(toks)
+def _xargs_heads(toks, heads, parallel=False):
+    # MAILRUNTIMECMD1126: parallel replaces {} without -I; every template gets the added word (xargs env, a program
+    # that comes from the input, is then a run-time program)
+    repl = _xargs_replace_string(toks) or ("{}" if parallel else None)
     out = []
     for h in heads:
         out.append(h)
         if not h:
             continue
-        if _HTTP_CLIENT.match(_basename(h[0])):
-            out.append(h + [_XARGS_ARG])
+        if parallel and re.search(r"\s", h[0]):
+            # MAILRUNTIMECMD1126 (review): a parallel template given as one quoted word runs through a shell
+            text = " ".join([h[0].replace(repl, _XARGS_ARG) if repl else h[0]] + h[1:])
+            out.append(["sh", "-c", text])
         if repl:
             hr = [h[0]] + [w.replace(repl, _XARGS_ARG) for w in h[1:]]
             if hr != h:
@@ -1083,6 +1349,8 @@ _FLEET_EXEMPT_BLOCK = re.compile(r"@|(?:^|[\s='\"(])~(?!/)|--b?cc\b")
 _FLEET_TOKEN_BLOCK = re.compile(r"--(?:cc?|bc{0,2})(?:=|\Z)|~(?!/)")   # on the DEQUOTED words: `--c""c`, `--\cc` are `--cc` to the program;
 # (v4.1, Merlin 34962) an argparse abbreviation (--c, --b, --bc) is --cc / --bcc to a default-argparse script: a send
 _AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
+_CONT_AFTER_TO = re.compile(r"--to?=?[ \t]*\"?[^\s\"]*\\\n")   # LINECONT1126: a backslash-newline right after the recipient
+# flag or anywhere inside its value, quoted or not (Revizor 5744 M2, 5751 M1: develop read all of these as a send)
 KNOWN_AGENTS_OVERRIDE = None   # the shared conformance list sets it (send-invocation-cases.json known_agents); None = the install
 _LINE_EXEMPT_OK = [False]      # set per top-level is_send_invocation call from the WHOLE command line
 
@@ -1126,8 +1394,14 @@ def _line_clean(cmd: str) -> bool:
     An unparseable line is not clean (fail-closed)."""
     if _FLEET_EXEMPT_BLOCK.search(cmd):
         return False
+    if _CONT_AFTER_TO.search(cmd):
+        # LINECONT1126: the tokenizer now removes a backslash-newline as bash does, so `--to \<nl> name` reads as `--to name`.
+        # The exception stays as it was on develop (FLEETTOFLAG1025 v4: a continuation between --to and its value is a send);
+        # a continuation elsewhere in the line (after the name, M1c) changes nothing.
+        return False
     try:
-        words = [t for c in (cmd, flatten_substitutions(cmd)) for seg in _segments_tokens(c) for t in seg]
+        words = [t for c in (cmd, flatten_substitutions(cmd)) for dev in (False, True)   # LINECONT1126: both readings clean
+                 for seg in _segments_tokens(c, develop=dev) for t in seg]
     except ValueError:
         return False
     return not any("@" in w or _FLEET_TOKEN_BLOCK.match(_tok(w)) for w in words)
@@ -1265,6 +1539,9 @@ def _head_is_send(toks, depth: int) -> bool:
     rest = toks[1:]
     if _SENDER_PROG.match(prog):
         return True
+    # MAILRUNTIMECMD1126: the program itself comes from a variable or a substitution ($e '...', "$CMD", $XARGS_ARG)
+    if _nonliteral_value(toks[0]) and _line_send_mark():
+        return True
     if _MAIL_PROG.match(prog) and _mail_prog_sends(rest):
         return True
     # MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
@@ -1285,14 +1562,21 @@ def _head_is_send(toks, depth: int) -> bool:
         words = rest[1:] if rest[:1] == ["--"] else rest
         if words and _deeper_sends(" ".join(words), depth):
             return True
+        # MAILRUNTIMECMD1126: an eval of an expansion ("$@", "$(...)", $X) runs a command made at run time
+        if any(_nonliteral_value(w) for w in words) and _line_send_mark():
+            return True
     # burkolo hejj: a -c string-argumentum maga is parancs -- rekurzio
     if _WRAPPER_SHELL.match(prog):
-        for i, t in enumerate(rest):
-            # EVALXARGSMAIL1126: -c in a cluster (bash -lc, sh -ec) takes the program as well
-            if (t == "-c" or _SHELL_C_FLAG.match(t)) and i + 1 < len(rest):
-                # past the bound the marker reads every word of the shell call, its arguments too
-                if _deeper_sends(" ".join(rest) if depth >= 3 else rest[i + 1], depth):
-                    return True
+        # EVALXARGSMAIL1126 / MAILRUNTIMECMD1126: -c alone or in a cluster; past the bound the marker reads every word
+        # MAILRUNTIMECMD1126 (review): the option parser and develop's reading (the word after any -c flag) are both
+        # judged; a shell option the parser does not know (-oe pipefail, zsh --emulate sh, zsh -5) cannot hide a program
+        programs = [rest[i + 1] for i, t in enumerate(rest[:-1]) if t == "-c" or _SHELL_C_FLAG.match(t)]
+        program = _shell_c_program(rest)
+        if program is not None:
+            programs.append(program)
+        for prog_text in programs:
+            if _deeper_sends(" ".join(rest) if depth >= 3 else prog_text, depth):
+                return True
     # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
     if _PYTHON.match(prog) or _NODEISH.match(prog):
         for i, t in enumerate(rest):
@@ -1581,7 +1865,7 @@ def _inline_mail_api_sends(prog, rest) -> bool:
         npath = _norm_path(path)
         if _nonliteral_value(auth):
             if (scheme or u.startswith(("$", "`"))) and (
-                    _LINE_MAIL_HOST[0] or _GRAPH_SEND_PATH.search(npath)
+                    _LINE_MAIL_HOST[0] or _LINE_GRAPH_SEND[0] or _GRAPH_SEND_PATH.search(npath)
                     or any(send.search(npath) for *_x, send in _MAIL_API_HOSTS)):
                 cannot_tell = True
             continue
@@ -1908,31 +2192,32 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     if _depth == 0:
         _LINE_CTX[:] = [cwd, []]
     _LINE_CTX[1].append(cmd)
+    if _depth == 0:
+        _LINE_GRAPH_SEND[0] = bool(_GRAPH_SEND_URL.search(cmd))   # MAILRUNTIMECMD1126
     # FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
     # A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
     _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and _line_clean(cmd)
     _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or bool(_MAIL_API_HOST.search(cmd)) or _words_mail_host(cmd)   # MAILCURLSEND1118
     if _heredoc_program_sends(cmd, _depth):
         return True
-    try:
-        segments = _segments_tokens(cmd)
-    except ValueError:
-        # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
-        # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
-        # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
-        # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
-        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))   # MAILURLFILE1118: a mail host too
-    if any(_segment_is_send(toks, _depth) for toks in segments):
-        return True
-    # the same command with every substitution as one undecidable word
-    # (flatten_substitutions): the outer command keeps the word it would run
+    # LINECONT1126 (Marveen 5771): the new logic can only tighten. The verdict is the OR of the new reading and develop's
+    # reading (_mask_subshell_markers_develop, copied unchanged); everything after the tokenizer only gained sends in this
+    # change (busybox / fd heads, a narrower fleet exception), so per twin there is no weakening against develop by construction.
+    # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani. Konzervativ visszaeses: csak akkor auditalunk, ha
+    # eros kuldes-literal all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at neman (either reading failing to
+    # parse brings the fallback in, as develop's own reading did).
+    # The same command with every substitution as one undecidable word (flatten_substitutions): the outer command keeps
+    # the word it would run.
     flat = flatten_substitutions(cmd)
-    if flat == cmd:
-        return False
-    try:
-        return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
-    except ValueError:
-        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))
+    fallback = False
+    for text in ((cmd,) if flat == cmd else (cmd, flat)):
+        for develop in (False, True):
+            try:
+                if any(_segment_is_send(toks, _depth) for toks in _segments_tokens(text, develop=develop)):
+                    return True
+            except ValueError:
+                fallback = True
+    return bool(fallback and (_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd)))   # MAILURLFILE1118: a mail host too
 
 # MAILGATESCRIPT1027: a mail send done by a SCRIPT FILE. is_send_invocation sees the command text only,
 # so `node send-it.mjs` or `python3 notify.py` ran a mail past the main agent's approval gate. This is the

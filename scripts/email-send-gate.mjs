@@ -459,7 +459,7 @@ const PYTHON = /^python(3(\.\d+t?)?)?$/i
 // (NODE_INTERPRETERS, maintainer decision) is unchanged on purpose.
 const NODEISH = /^(node|nodejs|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
-const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
+const WRAPPER_SHELL = /^(sh|bash|zsh|dash|ksh|mksh)$/i // MAILRUNTIMECMD1126: ksh, mksh
 const CURLISH = /^(curl|wget|http)$/i
 const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$|\s)/i // EVALXARGSMAIL1126 (M3): a blank after the host, as in the python twin
 // RESENDGETTWIN1010: port of the python twin's method verdict (RESENDGATE826,
@@ -747,7 +747,39 @@ const codeStringSends = (code, lang = null) => {
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
-export function maskSubshellMarkers(cmd) {
+// LINECONT1126 (Marveen 5755, structural guard; twin of _develop_comment_starts): the indices where develop's comment rule
+// starts a comment. Develop's JS twin dropped no comment at all; the one develop rule there was is the python twin's mask,
+// ported here unchanged. maskSubshellMarkers drops a comment ONLY where this develop rule AND the new bash rule both say
+// comment, so the comment handling can never drop more text than develop's rule did: by construction no weakening.
+export function developCommentStarts(cmd) {
+  const starts = new Set()
+  let q = null
+  const parens = []
+  let substCloseAt = -1
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { i++; continue }
+      if (ch === q) q = null
+      continue
+    }
+    if (ch === "'" || ch === '"') { q = ch; continue }
+    if (ch === '\\' && i + 1 < cmd.length) { i++; continue }
+    if (ch === '#' && (i === 0 || ' \t\n;&|('.includes(cmd[i - 1]) || (cmd[i - 1] === ')' && substCloseAt !== i - 1))) {
+      starts.add(i)
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+      continue
+    }
+    if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); i++; continue }
+    if (ch === '(') parens.push('p')
+    else if (ch === ')' && parens.length && parens.pop() === 's') substCloseAt = i
+  }
+  return starts
+}
+
+// LINECONT1126 (Marveen 5771): develop's mask, copied UNCHANGED (only renamed). isSendInvocation ORs the verdict of
+// this reading with the new one, so the new mask can never weaken the gate against develop (python twin).
+export function maskSubshellMarkersDevelop(cmd) {
   let out = ''
   let q = null
   for (let i = 0; i < cmd.length; i++) {
@@ -767,13 +799,88 @@ export function maskSubshellMarkers(cmd) {
   return out
 }
 
+export function maskSubshellMarkers(cmd) {
+  const devStarts = developCommentStarts(cmd) // LINECONT1126 (Marveen 5755): a comment is dropped only where develop dropped one too
+  let out = ''
+  let q = null // null | "'" | '"' -- develop's quote tracking (Revizor 5756 J4: a shell without $'...' reads it as $ + '...')
+  let prev = -1 // LINECONT1126: the index of the last character that is not part of a removed line continuation
+  let prevEsc = false // LINECONT1126 (Revizor 5744): that character was escaped (`\ #`, `\;#`): it ends no word
+  let braces = 0 // LINECONT1126 (Revizor 5744): inside ${...} a # is part of the expansion (${x:-a #b}, ${x/ #/y})
+  const parens = [] // 's' for an open $( , 'p' for a plain ( -- which ) closes a command substitution (python twin)
+  let substCloseAt = -1
+  let plainCloseAt = -1 // Revizor 5751 J3: the index of the last ) that closed a subshell or (( ))
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) {
+        // LINECONT1126: inside "..." a backslash-newline is removed too (bash)
+        if (cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1 }
+        i++
+        continue
+      }
+      if (ch === q) q = null
+      out += ch
+      prev = i
+      prevEsc = false
+      continue
+    }
+    // Revizor 5751 J2: $$ is the pid, so $$'a\' is $$ followed by a plain '...' (python twin)
+    if (ch === '$' && cmd[i + 1] === '$') { out += '$$'; prev = i + 1; prevEsc = false; i++; continue }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; prev = i; prevEsc = false; continue }
+    // LINECONT1126 (twin of _mask_subshell_markers): a backslash-newline is a line continuation, removed before words
+    // are split, so `sudo \<nl> ...` and `prog\<nl> -d ...` are the one-line commands. A comment is dropped up to
+    // its newline as bash does (and as the python twin's mask), so a backslash at its end continues nothing.
+    if (ch === '\\' && i + 1 < cmd.length) {
+      if (cmd[i + 1] !== '\n') { out += cmd[i] + cmd[i + 1]; prev = i + 1; prevEsc = true }
+      i++
+      continue
+    }
+    // a comment starts only where bash starts one (Revizor 5744 J1): after nothing, or after an UNESCAPED blank (space,
+    // tab, newline only: no CR, FF, VT or Unicode space), ; & | ( or a ) that closes no $( ; never inside ${...}
+    if (ch === '#' && devStarts.has(i) && !braces && (prev < 0 || (!prevEsc && (' \t\n;&|('.includes(cmd[prev])
+      || (cmd[prev] === ')' && plainCloseAt === prev))))) {
+      // Revizor 5751 J3: after a ) only when it closes a subshell or (( )); never after a $( , a process substitution
+      // <( ) >( ) or an array assignment x=( ) -- there the # is part of the word, as in bash
+      while (i + 1 < cmd.length && cmd[i + 1] !== '\n') i++
+      continue
+    }
+    if (ch === '#' && devStarts.has(i)) {
+      // Revizor 5766 J5 (python twin): develop dropped this comment, the new rule keeps it. Kept as NEUTRAL words: quotes,
+      // backslashes and backticks become "_", so it can never open a quote, continue a line or start a substitution that
+      // develop never saw, and the newline at its end still separates. Keeping it can only add words.
+      while (i < cmd.length && cmd[i] !== '\n') { out += `'"\\\``.includes(cmd[i]) ? '_' : cmd[i]; prev = i; i++ }
+      i--
+      prevEsc = false
+      continue
+    }
+    const afterEsc = prevEsc
+    prevEsc = false
+    const before = prev
+    prev = i
+    if (ch === '\n' || ch === '`') { out += ';'; continue }
+    if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); out += ';'; prev = i + 1; i++; continue }
+    if (ch === '$' && cmd[i + 1] === '{') { braces++; out += '${'; prev = i + 1; i++; continue }
+    if (ch === '}' && braces) braces--
+    // 'x': a process substitution <( >( or an array assignment x=( / x+=( ; 'p': a subshell or (( ))
+    if (ch === '(') parens.push(before >= 0 && !afterEsc && '<>='.includes(cmd[before]) ? 'x' : 'p')
+    else if (ch === ')' && parens.length) {
+      const kind = parens.pop()
+      if (kind === 's') substCloseAt = i
+      else if (kind === 'p') plainCloseAt = i
+    }
+    out += ch
+  }
+  return out
+}
+
 // Quote-aware tokenizer -> [[token, ...], ...] per segment. Throws on an
 // unbalanced quote (the caller falls back to the legacy content patterns).
 const PROC_SUBST_OPENERS = ['<', '>', '=']
 const PROC_SUBST_WORD = '$__SUBST__' // the undecidable word flattenSubstitutions writes for a substitution
 
-export function segmentsTokens(cmd) {
-  const s = maskSubshellMarkers(cmd.replace(HEREDOC_RE, '$1'))
+export function segmentsTokens(cmd, develop = false) {
+  // develop=true: develop's reading (LINECONT1126, Marveen 5771: the verdict is the OR of both readings)
+  const s = (develop ? maskSubshellMarkersDevelop : maskSubshellMarkers)(cmd.replace(HEREDOC_RE, '$1'))
   const segments = []
   let cur = []
   let tok = ''
@@ -841,6 +948,10 @@ const WRAPPERS = new Map([
   ['command', ['', [], 0]],
   ['xargs', ['ILJnPsdEa', ['arg-file', 'delimiter', 'eof', 'max-lines', 'max-args',
     'max-procs', 'max-chars', 'process-slot-var'], 0]],
+  // MAILRUNTIMECMD1126: GNU parallel runs its command template like xargs (its value options)
+  ['parallel', ['jaIdENPsSC', ['jobs', 'arg-file', 'delimiter', 'eof', 'max-args', 'max-replace-args', 'max-procs',
+    'sshlogin', 'colsep', 'tmpdir', 'results', 'joblog', 'timeout', 'delay', 'retries', 'tagstring', 'basefile',
+    'workdir', 'env', 'memfree', 'load'], 0]],
   ['timeout', ['sk', ['signal', 'kill-after'], 1]],
   ['setsid', ['', [], 0]],
   // ENVOPTHEAD1104 (Bence 69481): launchers whose value options were read as the program (see the python twin)
@@ -990,11 +1101,48 @@ function commandHeads(toksIn, d = 0) {
   if (w === 'function') return commandHeads(toks.slice(2), d + 1)
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
   if (w === 'env' || w === 'genv') return envHeads(toks, d)
+  if (w === 'find' || w === 'gfind') return [toks, ...findExecHeads(toks, d)] // MAILRUNTIMECMD1126 (gfind: GNU find, homebrew)
+  // LINECONT1126 (Revizor 5686 Q15, Q14; python twin): busybox runs its applet; fd -x / -X runs the rest as a template
+  if (w === 'busybox' && toks.length > 1) return [toks, ...commandHeads(toks.slice(1), d + 1)]
+  if (w === 'fd' || w === 'fdfind') {
+    const heads = [toks]
+    toks.forEach((t, k) => {
+      if (['-x', '--exec', '-X', '--exec-batch'].includes(t) || t.startsWith('--exec=') || t.startsWith('--exec-batch=')) {
+        const rest = t.includes('=') ? [t.split('=').slice(1).join('='), ...toks.slice(k + 1)] : toks.slice(k + 1)
+        let end = rest.findIndex((x) => x === ';' || x === '\\;')
+        if (end < 0) end = rest.length
+        heads.push(...commandHeads(rest.slice(0, end), d + 1))
+      }
+    })
+    return heads
+  }
+  // MAILRUNTIMECMD1126 (review): a segment that starts with a find action is the find continuation (python twin)
+  // a backslash-newline continuation can leave a word of blanks only in front: the first real word decides
+  const first = toks.find((t) => !t || t.trim()) ?? ''
+  if ((first.startsWith('-') || ['!', '(', ')', '\\(', '\\)', ','].includes(first))
+    && toks.some((t) => ['-exec', '-execdir', '-ok', '-okdir'].includes(t))) return [toks, ...findExecHeads(['find', ...toks], d)]
   const launcher = LAUNCHERS.get(w)
   if (launcher) return launcherHeads(toks, launcher, d)
   const spec = WRAPPERS.get(w)
   if (!spec) return [toks]
   const [shortVal, longVal, positionals] = spec
+  const starts = wrapperStarts(toks, w, shortVal, longVal)
+  if (starts === null) return []
+  if (w === 'xargs') {
+    // MAILRUNTIMECMD1126 (review): BSD -S / -R take a value, GNU xargs has no such options: both readings
+    for (const s of wrapperStarts(toks, w, shortVal + 'SR', longVal) ?? []) if (!starts.includes(s)) starts.push(s)
+  }
+  const heads = starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
+  if (w === 'xargs' || w === 'parallel') { // EVALXARGSMAIL1126, MAILRUNTIMECMD1126
+    // the added word joins the template BEFORE it is unwrapped: `xargs env` then runs $XARGS_ARG as its program
+    for (const s of starts) heads.push(...commandHeads([...toks.slice(s + positionals), XARGS_ARG], d + 1))
+    return xargsHeads(toks, heads, w === 'parallel')
+  }
+  return heads
+}
+
+// the positions where a wrapper's command can start (null: `command -v`, which runs nothing)
+function wrapperStarts(toks, w, shortVal, longVal) {
   let i = 1
   const starts = []
   while (i < toks.length) {
@@ -1007,7 +1155,7 @@ function commandHeads(toksIn, d = 0) {
       continue
     }
     if (t.startsWith('-') && t.length > 1) {
-      if (w === 'command' && (t.includes('v') || t.includes('V'))) return []
+      if (w === 'command' && (t.includes('v') || t.includes('V'))) return null
       let k = -1
       for (let j = 1; j < t.length; j++) if (shortVal.includes(t[j])) { k = j; break }
       i += k === t.length - 1 ? 2 : 1
@@ -1016,8 +1164,7 @@ function commandHeads(toksIn, d = 0) {
     break
   }
   starts.unshift(i)
-  const heads = starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
-  return w === 'xargs' ? xargsHeads(toks, heads) : heads // EVALXARGSMAIL1126
+  return starts
 }
 
 // EVALXARGSMAIL1126: xargs appends the words it reads to an HTTP client template (or puts them where its replace string
@@ -1042,21 +1189,88 @@ function xargsReplaceString(toks) {
 
 // EVALXARGSMAIL1126: past the depth bound of 3 an eval line or a shell -c program counts as a send when its text carries
 // a send marker (_deeper_sends / _DEPTH_SEND_MARK in the python twin)
-let depthSendMark = null // built on first use: MAIL_MARKER is defined further down
 function deeperSends(text, depth) {
   if (depth < 3) return isSendInvocation(text, depth + 1)
-  depthSendMark ??= new RegExp(MAIL_MARKER.source + String.raw`|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?:\/\/`, 'i')
-  return depthSendMark.test(text)
+  return marked(text) // MAILRUNTIMECMD1126: the shared send marker, quotes resolved too
 }
+
+// MAILRUNTIMECMD1126: a command made at run time counts as a send when the line carries a send marker; the rule, the
+// marker and the shell -c reading are written out in the python twin (_send_mark_re, _line_send_mark, _shell_c_program,
+// _find_exec_heads)
+let sendMark = null // built on first use: MAIL_MARKER is defined further down
+let lineGraphSend = false // the top-level line names a Microsoft Graph send URL
+const GRAPH_SEND_URL = new RegExp(String.raw`(?:graph\.microsoft\.(?:com|us|de)|microsoftgraph\.chinacloudapi\.cn|graph\.svc\.sovcloud\.fr)(?::[0-9]+)?/[^\s'\"]*?/(?:me|users/[^/\s'\"]+)/(?:microsoft\.graph\.)?(?:sendMail|messages/[^/\s'\"]+/(?:microsoft\.graph\.)?(?:send|reply|replyAll|forward))`, 'i')
+function sendMarkRe() {
+  sendMark ??= new RegExp(MAIL_MARKER.source + String.raw`|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://|\bmailx?\s+-s\b|\bmutt\b`, 'i')
+  return sendMark
+}
+function marked(text) {
+  if (sendMarkRe().test(text)) return true
+  try { return segmentsTokens(text).some((seg) => seg.some((w) => sendMarkRe().test(w))) } catch { return false }
+}
+// a mail-only API host or a Microsoft Graph host on the line, quotes resolved too; a sender literal stays data here
+function lineSendMark() {
+  if (lineMailHost || lineGraphSend) return true
+  if (!lineCtx.texts.length) return false
+  const t = lineCtx.texts[0]
+  if (MAIL_MARKER.test(t)) return true
+  try { return segmentsTokens(t).some((seg) => seg.some((w) => MAIL_MARKER.test(w))) } catch { return false }
+}
+const SHELL_VALUE_LONG = ['--rcfile', '--init-file']
+function shellCProgram(rest) {
+  let hasC = false
+  let i = 0
+  while (i < rest.length) {
+    const t = rest[i]
+    if (t === '--') { i++; break }
+    if (SHELL_VALUE_LONG.includes(t)) { i += 2; continue }
+    if (t.startsWith('--')) { i++; continue }
+    if (t.length > 1 && (t[0] === '-' || t[0] === '+') && /^[A-Za-z]+$/.test(t.slice(1))) {
+      if (t[0] === '-' && t.slice(1).includes('c')) hasC = true
+      // each o / O in the cluster takes the next word (-oc pipefail, -euo pipefail, -oo a b)
+      i += 1 + [...t.slice(1)].filter((ch) => ch === 'o' || ch === 'O').length
+      continue
+    }
+    break
+  }
+  return hasC && i < rest.length ? rest[i] : null
+}
+const FIND_ARG = '$FIND_ARG'
+function findExecHeads(toksIn, d) {
+  const toks = toksIn.filter((t) => !t || t.trim()) // blank-only words (a backslash-newline continuation) are dropped
+  const heads = []
+  let i = 1
+  while (i < toks.length) {
+    if (['-exec', '-execdir', '-ok', '-okdir'].includes(toks[i])) {
+      let j = i + 1
+      while (j < toks.length && ![';', '\\;', '+'].includes(toks[j].trim())) j++ // `;\n`: a continuation glued on
+      const seg = toks.slice(i + 1, j)
+      if (seg.length) {
+        heads.push(...commandHeads(seg, d + 1))
+        const sub = seg.map((w) => w.split('{}').join(FIND_ARG))
+        if (sub.some((w, k) => w !== seg[k])) heads.push(...commandHeads(sub, d + 1))
+      }
+      i = j + 1
+      continue
+    }
+    i++
+  }
+  return heads
+}
+
 // the template as written, plus (HTTP client) the added word at the end, plus (a replace string) every template with it
 // replaced: these only ADD heads (_xargs_heads in the python twin)
-function xargsHeads(toks, heads) {
-  const repl = xargsReplaceString(toks)
+function xargsHeads(toks, heads, parallel = false) {
+  // MAILRUNTIMECMD1126: parallel replaces {} without -I; every template gets the added word
+  const repl = xargsReplaceString(toks) ?? (parallel ? '{}' : null)
   const out = []
   for (const h of heads) {
     out.push(h)
     if (!h || !h.length) continue
-    if (HTTP_CLIENT.test(basename(h[0]))) out.push([...h, XARGS_ARG])
+    if (parallel && /\s/.test(h[0])) {
+      // MAILRUNTIMECMD1126 (review): a parallel template given as one quoted word runs through a shell
+      out.push(['sh', '-c', [repl ? h[0].split(repl).join(XARGS_ARG) : h[0], ...h.slice(1)].join(' ')])
+    }
     if (repl) {
       const hr = [h[0], ...h.slice(1).map((w) => w.split(repl).join(XARGS_ARG))]
       if (hr.some((w, i) => w !== h[i])) out.push(hr)
@@ -1145,9 +1359,10 @@ function knownAgents() {
 // segment, the substitution-flattened form included. An unparseable line is not clean (fail-closed).
 function lineClean(cmd) {
   if (FLEET_EXEMPT_BLOCK.test(cmd)) return false
+  if (/--to?=?[ \t]*"?[^\s"]*\\\n/.test(cmd)) return false // LINECONT1126: a continuation after --to or inside its value gets no exception (python twin)
   let words
   try {
-    words = [cmd, flattenSubstitutions(cmd)].flatMap((c) => segmentsTokens(c).flat())
+    words = [cmd, flattenSubstitutions(cmd)].flatMap((c) => [false, true].flatMap((d) => segmentsTokens(c, d).flat())) // LINECONT1126: both readings clean
   } catch { return false }
   return !words.some((w) => w.includes('@') || FLEET_TOKEN_BLOCK.test(tok(w)))
 }
@@ -1244,6 +1459,8 @@ function headIsSend(toks, depth) {
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (SENDER_PROG.test(prog)) return true
+  // MAILRUNTIMECMD1126: the program itself comes from a variable or a substitution
+  if (nonliteralValue(toks[0]) && lineSendMark()) return true
   if (MAIL_PROG.test(prog) && mailProgSends(rest)) return true
   // MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
   if (CURLISH.test(prog) && rest.some((t) => CURL_SMTP.test(t))) return true
@@ -1261,13 +1478,17 @@ function headIsSend(toks, depth) {
   if (evalRest !== null) {
     if (evalRest[0] === '--') evalRest = evalRest.slice(1)
     if (evalRest.length && deeperSends(evalRest.join(' '), depth)) return true
+    // MAILRUNTIMECMD1126: an eval of an expansion runs a command made at run time
+    if (evalRest.some((w) => nonliteralValue(w)) && lineSendMark()) return true
   }
   if (WRAPPER_SHELL.test(prog)) {
-    for (let i = 0; i < rest.length; i++) {
-      // EVALXARGSMAIL1126: -c in a cluster (bash -lc, sh -ec) takes the program as well
-      // past the bound the marker reads every word of the shell call, its arguments too
-      if ((rest[i] === '-c' || SHELL_C_FLAG.test(rest[i])) && rest[i + 1] && deeperSends(depth >= 3 ? rest.join(' ') : rest[i + 1], depth)) return true
-    }
+    // EVALXARGSMAIL1126 / MAILRUNTIMECMD1126: -c alone or in a cluster; past the bound the marker reads every word
+    // MAILRUNTIMECMD1126 (review): the option parser and develop's reading (the word after any -c flag) are both judged
+    const programs = []
+    for (let i = 0; i + 1 < rest.length; i++) if (rest[i] === '-c' || SHELL_C_FLAG.test(rest[i])) programs.push(rest[i + 1])
+    const program = shellCProgram(rest)
+    if (program !== null) programs.push(program)
+    for (const text of programs) if (deeperSends(depth >= 3 ? rest.join(' ') : text, depth)) return true
   }
   if (PYTHON.test(prog) || NODEISH.test(prog)) {
     for (let i = 0; i < rest.length; i++) {
@@ -1496,7 +1717,7 @@ function inlineMailApiSends(prog, rest) {
     const npath = normPath(path)
     if (nonliteralValue(auth)) {
       if ((scheme || u.startsWith('$') || u.startsWith('`')) && (
-        lineMailHost || GRAPH_SEND_PATH.test(npath) || MAIL_API_HOSTS.some((row) => row[3].test(npath)))) cannotTell = true
+        lineMailHost || lineGraphSend || GRAPH_SEND_PATH.test(npath) || MAIL_API_HOSTS.some((row) => row[3].test(npath)))) cannotTell = true
       continue
     }
     const host = normHost(auth)
@@ -1782,29 +2003,27 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   // MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
   if (depth === 0) lineCtx = { cwd, texts: [] }
   lineCtx.texts.push(cmd)
+  if (depth === 0) lineGraphSend = GRAPH_SEND_URL.test(cmd) // MAILRUNTIMECMD1126
   // FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
   // A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
   lineExemptOk = (depth === 0 || lineExemptOk) && lineClean(cmd)
   lineMailHost = (depth > 0 && lineMailHost) || MAIL_API_HOST.test(cmd) || wordsMailHost(cmd) // MAILCURLSEND1118
   if (heredocProgramSends(cmd, depth)) return true
-  let segments
-  try {
-    segments = segmentsTokens(cmd)
-  } catch {
-    // Unparseable command: fall back to the LEGACY content patterns, so on
-    // this path the gate is exactly as strict as before -- never weaker.
-    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd) // MAILURLFILE1118: a mail host too
-  }
-  if (segments.some((toks) => segmentIsSend(toks, depth))) return true
-  // The same command with every substitution as one undecidable word (see
-  // flattenSubstitutions): the outer command keeps the word it would run.
+  // LINECONT1126 (Marveen 5771, python twin): the new logic can only tighten. The verdict is the OR of the new reading and
+  // develop's reading (maskSubshellMarkersDevelop, copied unchanged); everything after the tokenizer only gained sends in
+  // this change, so per twin there is no weakening against develop by construction. An unparseable reading brings in the
+  // LEGACY content patterns, as develop's own reading did. The same command with every substitution as one undecidable
+  // word (see flattenSubstitutions): the outer command keeps the word it would run.
   const flat = flattenSubstitutions(cmd)
-  if (flat === cmd) return false
-  try {
-    return segmentsTokens(flat).some((toks) => segmentIsSend(toks, depth))
-  } catch {
-    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd)
+  let fallback = false
+  for (const text of flat === cmd ? [cmd] : [cmd, flat]) {
+    for (const develop of [false, true]) {
+      try {
+        if (segmentsTokens(text, develop).some((toks) => segmentIsSend(toks, depth))) return true
+      } catch { fallback = true }
+    }
   }
+  return fallback && (SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd)) // MAILURLFILE1118: a mail host too
 }
 
 // EMAILGATESUBST1116: a send command built by process substitution, a here-string, a stdin heredoc or xargs is
