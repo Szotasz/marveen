@@ -1780,9 +1780,9 @@ function wordsMailHost(cmd) {
 
 export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   // ANSICQUOTE1127 (card 41df3b8a, Revizor 5788 M1): the command is judged in two readings, as written and with every
-  // unquoted bash $'...' as the single-quoted text bash makes of it (decodeAnsiC); a send when EITHER reading sends, and
+  // unquoted bash $'...' as the single-quoted text bash makes of it (decodeAnsiCSh); a send when EITHER reading sends, and
   // the line state is the stricter of the two. See the python twin (is_send_invocation) for the two shapes it closes.
-  const dec = decodeAnsiC(cmd)
+  const dec = decodeAnsiCSh(cmd)
   const texts = dec === cmd ? [cmd] : [cmd, dec]
   // MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
   if (depth === 0) lineCtx = { cwd, texts: [] }
@@ -3349,6 +3349,85 @@ function decodeAnsiC(cmd) {
     if (ch === "'" || ch === '"') q = ch
     out += ch
     i++
+  }
+  return out
+}
+
+const HEREDOC_OP = /<<(-?)[ \t]*((?:[^\s;&|()<>'"\\]|\\.|'[^']*'|"[^"]*")+)/y
+// ANSICQUOTE1127 (Revizor 5843 J1): decodeAnsiC as bash scans the line: a comment is dropped and a heredoc body is copied
+// as it is (their quotes open nothing), a $$ is the pid. Only isSendInvocation reads it; see _decode_ansi_c_sh in the python twin.
+function decodeAnsiCSh(cmd) {
+  if (!cmd.includes("$'") && !cmd.includes('$"')) return cmd
+  let out = ''
+  let q = null
+  const n = cmd.length
+  const parens = []
+  let substCloseAt = -1
+  let wordStart = true
+  let pending = []
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < n) { out += cmd.slice(i, i + 2); i += 2; continue }
+      if (ch === q) q = null
+      out += ch
+      i++
+      continue
+    }
+    if (ch === '\\' && i + 1 < n) { out += cmd.slice(i, i + 2); i += 2; wordStart = false; continue }
+    if (ch === '#' && wordStart) {
+      let j = cmd.indexOf('\n', i)
+      i = j < 0 ? n : j // dropped, as bash drops it (the JS tokenizer knows no comment)
+      continue
+    }
+    if (ch === '\n') {
+      out += ch
+      i++
+      wordStart = true
+      for (const [delim, strip] of pending) {
+        while (i < n) {
+          let j = cmd.indexOf('\n', i)
+          j = j < 0 ? n : j + 1
+          const line = cmd.slice(i, j)
+          out += line
+          i = j
+          const bare = line.replace(/\n$/, '')
+          if ((strip ? bare.replace(/^\t+/, '') : bare) === delim) break
+        }
+      }
+      pending = []
+      continue
+    }
+    if (ch === '<' && cmd.startsWith('<<', i) && !cmd.startsWith('<<<', i)) {
+      HEREDOC_OP.lastIndex = i
+      const m = HEREDOC_OP.exec(cmd)
+      if (m) {
+        const delim = m[2].replace(/'([^']*)'|"([^"]*)"/g, (_, a, b) => a ?? b ?? '').replace(/\\(.)/g, '$1')
+        pending.push([delim, m[1] === '-'])
+        out += m[0]
+        i += m[0].length
+        wordStart = false
+        continue
+      }
+    }
+    if (ch === '$' && cmd.startsWith('$$', i)) { out += '$$'; i += 2; wordStart = false; continue }
+    if (ch === '$' && cmd[i + 1] === "'") {
+      let j = i + 2
+      while (j < n && cmd[j] !== "'") j += cmd[j] === '\\' ? 2 : 1
+      const text = ansiCBody(cmd.slice(i + 2, Math.min(j, n)))
+      out += "'" + text.replaceAll("'", "'\\''") + "'"
+      i = j + 1
+      wordStart = false
+      continue
+    }
+    if (ch === '$' && cmd[i + 1] === '"') { i++; continue } // a locale $"..." string is the "..." string
+    if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); out += '$('; i += 2; wordStart = true; continue }
+    if (ch === '(') parens.push('p')
+    else if (ch === ')' && parens.length && parens.pop() === 's') substCloseAt = i
+    if (ch === "'" || ch === '"') q = ch
+    out += ch
+    i++
+    wordStart = ' \t;&|('.includes(ch) || (ch === ')' && substCloseAt !== i - 1)
   }
   return out
 }

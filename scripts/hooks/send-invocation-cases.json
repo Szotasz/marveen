@@ -4033,6 +4033,111 @@
       "name": "ANSICQUOTE1127 (card 41df3b8a): control: a read-only line with an escaped quote in $'...'",
       "cmd": "echo $'it\\'s fine' && ls",
       "expected": false
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z01x B after a comment line with an apostrophe",
+      "cmd": "# it's\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z01c B after a comment line with an apostrophe",
+      "cmd": "# it's\necho $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z02x A after a comment line with an apostrophe",
+      "cmd": "# it's\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z03x B after a trailing comment with an apostrophe",
+      "cmd": "true # don't\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z04x A after a trailing comment with an apostrophe",
+      "cmd": "true # don't\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z05x B after a comment line with a double quote",
+      "cmd": "# say \"hi\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z06x A after a comment line with a double quote",
+      "cmd": "# say \"hi\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z08x B, apostrophe comment AFTER the program",
+      "cmd": "echo $'a\\' # ' ; $X --to a@example.com --body B # it's",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z09x B after an unquoted heredoc body with an apostrophe",
+      "cmd": "cat <<EOF\nit's\nEOF\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z10x A after an unquoted heredoc body with an apostrophe",
+      "cmd": "cat <<EOF\nit's\nEOF\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z11x B after a quoted heredoc body with an apostrophe",
+      "cmd": "cat <<'EOF'\nit's\nEOF\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z12x B after a heredoc body with a double quote",
+      "cmd": "cat <<EOF\nsay \"hi\nEOF\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z34x B after a comment apostrophe, inside bash -c",
+      "cmd": "bash -c \"# it's\necho \\$'a\\\\' # ' ; $X --to a@example.com --body B\"",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z35x B after a comment apostrophe, inside a heredoc for bash",
+      "cmd": "bash <<'EOF'\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B\nEOF",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z36x B after a comment apostrophe, inside $( )",
+      "cmd": "x=$(\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B\n)",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z58x B: apostrophe comment line BETWEEN two B lines",
+      "cmd": "echo $'a\\' # ' ; true\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z59x B after an apostrophe in a comment on the SAME line as a previous command",
+      "cmd": "echo a # isn't\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z60x A after an apostrophe inside a case pattern comment",
+      "cmd": "case x in\n  x) : ;; # don't\nesac\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): K20x comment apostrophe, B, closing apostrophe comment (even count)",
+      "cmd": "# it's\necho $'a\\' # ' ; $X --to a@example.com --body B\n# it's",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): K22x comment apostrophe AFTER B on the next line",
+      "cmd": "echo $'a\\' # ' ; $X --to a@example.com --body B\n# it's",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): K24x unbalanced double quote in a comment, then A",
+      "cmd": "# 5\" disk\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
     }
   ]
 }

@@ -814,10 +814,16 @@ def _deeper_sends(text: str, depth: int) -> bool:
     # ANSICQUOTE1127: shlex keeps the backslash of \$ and \` inside double quotes, bash and the JS tokenizer drop it, so
     # in `bash -c "echo \$'a\\'b'<newline>P"` this twin read the program as `echo \$'a\'b'...` (a plain quote that swallows
     # the newline). The program is judged as given and with those two escapes undone; a send when either reading sends.
-    return any(is_send_invocation(t, _depth=depth + 1) for t in dict.fromkeys((text, _DQ_KEPT_ESCAPE.sub(r"\1", text))))
+    return _program_sends(text, depth + 1)
 
 
 _DQ_KEPT_ESCAPE = re.compile(r"\\([$`])")
+
+
+def _program_sends(text: str, depth: int = 0) -> bool:
+    """ANSICQUOTE1127: is_send_invocation on a program text taken from a shell word (a -c or eval program, a printed or
+    here-string program for a shell), judged as given and with the \\$ and \\` escapes shlex keeps in double quotes undone."""
+    return any(is_send_invocation(t, _depth=depth) for t in dict.fromkeys((text, _DQ_KEPT_ESCAPE.sub(r"\1", text))))
 
 
 def _xargs_replace_string(toks):
@@ -1915,9 +1921,9 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     # newline, `;` or `&&` before a send was swallowed), and in `echo $'a\' # ' ; P` the quote ended before a `#` that
     # bash reads inside the string, so the send after it became a comment. The command is judged in two readings: as
     # written (the reading so far: dash and a quoted heredoc body read $' as a plain quote) and with every unquoted
-    # $'...' as the single-quoted text bash makes of it (_decode_ansi_c). It is a send when EITHER reading sends, and
+    # $'...' as the single-quoted text bash makes of it (_decode_ansi_c_sh). It is a send when EITHER reading sends, and
     # the line state below is the stricter of the two, so no command judged a send before passes now. Twin: isSendInvocation.
-    dec = _decode_ansi_c(cmd)
+    dec = _decode_ansi_c_sh(cmd)
     texts = (cmd,) if dec == cmd else (cmd, dec)
     # MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
     if _depth == 0:
@@ -3177,7 +3183,7 @@ def _uv_program_text_sends(kind, text, cwd, depth, texts) -> bool:
     if text is None or _UV_WHOLE_EXPANSION.match(text):
         return True   # cannot be told: counts as a send
     if kind in ("sh", "src"):
-        return bool(is_send_invocation(text) or script_run_sends(text, cwd)
+        return bool(_program_sends(text) or script_run_sends(text, cwd)
                     or (depth < _SHELL_C_DEPTH and _uv_sends(text, cwd, depth + 1, texts)))
     return _heredoc_body_sends(text, kind)
 
@@ -3402,7 +3408,7 @@ def _uv_xargs_sends(words, cwd, texts, parallel=False) -> bool:
             if repl:
                 text = text.replace(repl, _UV_PROBE_ADDR)
             text = _UV_POSITIONAL.sub(_UV_PROBE_ADDR, text)
-            if is_send_invocation(text) or script_run_sends(text, cwd):
+            if _program_sends(text) or script_run_sends(text, cwd):
                 return True
     return False
 
@@ -4086,6 +4092,83 @@ def _decode_ansi_c(cmd: str) -> str:
         if ch in "'\"":
             q = ch
         out.append(ch); i += 1
+    return "".join(out)
+
+
+_HEREDOC_OP = re.compile(r"<<(-?)[ \t]*((?:[^\s;&|()<>'\"\\]|\\.|'[^']*'|\"[^\"]*\")+)")
+
+
+def _decode_ansi_c_sh(cmd: str) -> str:
+    """ANSICQUOTE1127 (Revizor 5843 J1): _decode_ansi_c as bash scans the line. A comment (an unquoted `#` at the start
+    of a word, up to the newline) is dropped and a heredoc body (the lines after the operator's line, up to the
+    delimiter line) is copied as it is: their quotes open nothing, so an apostrophe in `# it's` or in a heredoc line no longer
+    stops the $'...' words after it from being decoded. A $$ is the pid and moves on as one unit. A body for a shell
+    is judged on its own (_heredoc_program_sends), where it is decoded in turn. Only is_send_invocation reads this, as
+    its second reading next to the text as written. Twin: decodeAnsiCSh."""
+    if "$'" not in cmd and '$"' not in cmd:
+        return cmd
+    out = []
+    q = None
+    i, n = 0, len(cmd)
+    parens = []           # "s" for an open $( , "p" for a plain ( : a ) that closes a $( ends no word
+    subst_close_at = -1
+    word_start = True     # the next character starts a word (a `#` there opens a comment)
+    pending = []          # heredocs opened on this line: (delimiter, strip leading tabs)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; word_start = False; continue
+        if ch == "#" and word_start:
+            j = cmd.find("\n", i)
+            i = n if j < 0 else j   # dropped, as bash drops it (the JS tokenizer knows no comment)
+            continue
+        if ch == "\n":
+            out.append(ch); i += 1; word_start = True
+            for delim, strip in pending:
+                while i < n:
+                    j = cmd.find("\n", i)
+                    j = n if j < 0 else j + 1
+                    line = cmd[i:j]
+                    out.append(line); i = j
+                    if (line.rstrip("\n").lstrip("\t") if strip else line.rstrip("\n")) == delim:
+                        break
+            pending = []
+            continue
+        if ch == "<" and cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+            m = _HEREDOC_OP.match(cmd, i)
+            if m:
+                delim = re.sub(r"\\(.)", r"\1", re.sub(r"'([^']*)'|\"([^\"]*)\"", lambda x: x.group(1) or x.group(2) or "", m.group(2)))
+                pending.append((delim, m.group(1) == "-"))
+                out.append(m.group(0)); i = m.end(); word_start = False; continue
+        if ch == "$" and cmd.startswith("$$", i):
+            out.append("$$"); i += 2; word_start = False; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
+            j = i + 2
+            while j < n and cmd[j] != "'":
+                j += 2 if cmd[j] == "\\" else 1
+            text = _ansi_c_body(cmd[i + 2:min(j, n)])
+            out.append("'" + text.replace("'", "'\\''") + "'")
+            i = j + 1; word_start = False
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == '"':
+            i += 1   # a locale $"..." string is the "..." string
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s"); out.append("$("); i += 2; word_start = True; continue
+        if ch == "(":
+            parens.append("p")
+        elif ch == ")" and parens and parens.pop() == "s":
+            subst_close_at = i
+        if ch in "'\"":
+            q = ch
+        out.append(ch); i += 1
+        word_start = ch in " \t;&|(" or (ch == ")" and subst_close_at != i - 1)
     return "".join(out)
 
 
