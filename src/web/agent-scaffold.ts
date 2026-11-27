@@ -1510,6 +1510,11 @@ export function ensureEffortEnvInSettingsFile(settingsPath: string, level: strin
   return true
 }
 
+/** AGENT_EFFORT_LEVEL for the main agent: only into its own config dir; null (the shared ~/.claude, the owner's too) is never touched. */
+export function ensureMainAgentEffortEnv(ownConfigDir: string | null): boolean {
+  return !!ownConfigDir && ensureEffortEnvInSettingsFile(join(ownConfigDir, 'settings.json'), agentEffortLevel(MAIN_AGENT_ID))
+}
+
 // Install-local extra hook entries (store/extra-hooks.json), see
 // extra-hook-entries.ts. The commands are built by the SAME builders and the
 // same registration guard as the built-in gates.

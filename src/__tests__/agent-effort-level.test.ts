@@ -1,8 +1,11 @@
 // AGENT_EFFORT_LEVEL (opt-in, default empty): the dashboard sets the session effort of the agents at spawn.
 // Pins: the grammar (empty, bare level, name=level pairs, '*', explicit name beats '*', invalid), the sub-agent's
 // project effortLevel, and the config-root env writer (other keys and env entries kept; null = byte-identical).
+// #3176 review: the isolated-config provisioner's env entry (E1), the main agent's own-config-dir path (E2), a name
+// that breaks AGENT_NAME_RE (E5), and no effortLevel in the main agent's project settings.json (E6).
 import { it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 // Same sandbox as skill-listing-budget.test.ts: PROJECT_ROOT is a temp dir, the checkout is never written.
@@ -25,7 +28,8 @@ vi.mock('../config.js', async (importOriginal) => {
   return { ...actual, PROJECT_ROOT: sandbox.root, STORE_DIR: join(sandbox.root, 'store') }
 })
 
-import { writeAgentSettingsFromProfile, ensureEffortEnvInSettingsFile, agentEffortLevel } from '../web/agent-scaffold.js'
+import { writeAgentSettingsFromProfile, ensureEffortEnvInSettingsFile, agentEffortLevel, ensureMainAgentEffortEnv } from '../web/agent-scaffold.js'
+import { ensureIsolatedChannelConfigDir } from '../web/agent-process.js'
 import { agentDir } from '../web/agent-config.js'
 import { loadProfileTemplate } from '../web/profiles.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -66,6 +70,11 @@ it(`${KEY}: grammar -- empty, bare level, pairs, '*', explicit name beats '*', i
   expect(def.default).toBe('')
   for (const ok of ['', 'low', 'max', '*=medium,uzemelteto=high', 'a=low']) expect(validateSettingValue(def, ok).ok, ok).toBe(true)
   for (const bad of ['xhigh', 'a=', 'a=high,', 'medium,high']) expect(validateSettingValue(def, bad).ok, bad).toBe(false)
+  // a name that breaks AGENT_NAME_RE is refused, also when looked up by that same name
+  for (const name of ['a/b', '..', '../x']) {
+    expect(effortLevelFor(`${name}=high`, name), name).toBeNull()
+    expect(validateSettingValue(def, `${name}=high`).ok, name).toBe(false)
+  }
 })
 
 it(`${KEY}: unset writes no effortLevel, and a hand-written one stays untouched`, () => {
@@ -121,4 +130,48 @@ it(`${KEY}: config-root writer keeps every other key and env entry; null and sam
   // no folder -> nothing created
   expect(ensureEffortEnvInSettingsFile(join(sandbox.root, 'nope', 'settings.json'), 'low')).toBe(false)
   expect(existsSync(join(sandbox.root, 'nope'))).toBe(false)
+})
+
+it(`${KEY}: the isolated-config provisioner writes env.CLAUDE_CODE_EFFORT_LEVEL into the config-root settings.json, and not when unset`, () => {
+  const realHome = process.env.HOME
+  const home = mkdtempSync(join(tmpdir(), 'effort-home-'))
+  process.env.HOME = home
+  try {
+    mkdirSync(join(home, '.claude'))
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ env: { FOO: '1' } }))
+    const cfgSettings = () => JSON.parse(readFileSync(join(agentDir(NAME), '.claude-config', 'settings.json'), 'utf-8'))
+    expect(ensureIsolatedChannelConfigDir(NAME, null)).not.toBeNull()
+    expect(cfgSettings().env).not.toHaveProperty('CLAUDE_CODE_EFFORT_LEVEL')
+    expect(setOverride(KEY, `*=low,${NAME}=max`)).toEqual({ ok: true })
+    expect(ensureIsolatedChannelConfigDir(NAME, null)).not.toBeNull()
+    expect(cfgSettings().env).toEqual({ FOO: '1', CLAUDE_CODE_EFFORT_LEVEL: 'max' })
+  } finally {
+    process.env.HOME = realHome
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+it(`${KEY}: the main agent gets its level only in its own config dir; with the shared one (null) nothing is written`, () => {
+  expect(setOverride(KEY, `*=low,${MAIN_AGENT_ID}=high`)).toEqual({ ok: true })
+  expect(ensureMainAgentEffortEnv(null)).toBe(false)
+  const dir = mkdtempSync(join(sandbox.root, 'main-cfg-'))
+  expect(ensureMainAgentEffortEnv(dir)).toBe(true)
+  expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8'))).toEqual({ env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } })
+  // web.ts calls it for the main agent with its own config dir only (mainAgentConfigDirIfSeparate: null = the shared ~/.claude)
+  const web = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
+  expect(web).toMatch(/const bashDenyDir = agentName === MAIN_AGENT_ID \? mainAgentConfigDirIfSeparate\(\) : null/)
+  expect(web).toMatch(/if \(agentName === MAIN_AGENT_ID && ensureMainAgentEffortEnv\(bashDenyDir\)\)/)
+})
+
+it(`${KEY}: a main-agent spawn leaves its project settings.json without effortLevel`, () => {
+  const main = join(agentDir(MAIN_AGENT_ID), '.claude', 'settings.json')
+  if (existsSync(agentDir(MAIN_AGENT_ID))) throw new Error(`refusing: ${agentDir(MAIN_AGENT_ID)} already exists`)
+  mkdirSync(agentDir(MAIN_AGENT_ID), { recursive: true })
+  try {
+    expect(setOverride(KEY, 'high')).toEqual({ ok: true })
+    writeAgentSettingsFromProfile(MAIN_AGENT_ID, loadProfileTemplate('default'))
+    expect(JSON.parse(readFileSync(main, 'utf-8'))).not.toHaveProperty('effortLevel')
+  } finally {
+    rmSync(agentDir(MAIN_AGENT_ID), { recursive: true, force: true })
+  }
 })
