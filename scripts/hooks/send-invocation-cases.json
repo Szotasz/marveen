@@ -4505,9 +4505,9 @@
       "expected": false
     },
     {
-      "name": "KNOWNLIMITS1127 (card 2104b499): control: mutt version",
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -v is a send now (only `mutt -f <mailbox>` is not)",
       "cmd": "mutt -v",
-      "expected": false
+      "expected": true
     },
     {
       "name": "KNOWNLIMITS1127 (card 2104b499): control: himalaya lists the inbox",
@@ -4638,6 +4638,126 @@
       "name": "KNOWNLIMITS1127 review 2 (Revizor 5939): C05 tab-stripping heredoc with an apostrophe, plain send",
       "cmd": "cat <<-EOF\n\tit's\n\tEOF\n$X --to a@example.com --body B",
       "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I06 input redirect with no space",
+      "cmd": "mutt -f inbox<m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I07 input redirect before the command",
+      "cmd": "< m.json mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I10 piped into a subshell",
+      "cmd": "cat m.json | (mutt -f inbox)",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I11 piped into a brace group",
+      "cmd": "cat m.json | { mutt -f inbox; }",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I12 piped through env",
+      "cmd": "cat m.json | env mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I13 piped through command",
+      "cmd": "cat m.json | command mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): A04 xargs adds a recipient",
+      "cmd": "echo tom@example.com | xargs mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I22 exec < then mutt on the next line",
+      "cmd": "exec < m.json\nmutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): M08 bare mutt opens the composer path",
+      "cmd": "mutt",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): M12 -Q with no mailbox",
+      "cmd": "mutt -Q sort",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): M13 attached -finbox",
+      "cmd": "mutt -finbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): A06 mailbox from a variable",
+      "cmd": "mutt -f \"$F\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972 M-b): an output redirect word next to mutt stays a send (stricter than needed)",
+      "cmd": "mutt -f inbox > out.txt",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): -F next to -f is a send",
+      "cmd": "mutt -F ~/.muttrc -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -h is a send",
+      "cmd": "mutt -h",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972 I07): a redirect before sendmail",
+      "cmd": "< m.eml sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3: control: a redirect before a read-only program",
+      "cmd": "< notes.txt wc -l",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): M09 mutt -V",
+      "cmd": "mutt -V",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -f in a subshell, no input",
+      "cmd": "(mutt -f inbox)",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -f after env",
+      "cmd": "env mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -f after command",
+      "cmd": "command mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -f with a quoted mailbox",
+      "cmd": "mutt -f 'inbox'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): control: mutt -f with a path mailbox",
+      "cmd": "mutt -f ~/Mail/inbox",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): control: mutt -f after another command",
+      "cmd": "cd ~/Mail; mutt -f inbox",
+      "expected": false
     }
   ]
 }

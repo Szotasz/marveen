@@ -102,11 +102,12 @@ _CURL_SMTP = re.compile(r"^(?:smtps?://|--mail-(?:rcpt|from)(?:=|$))", re.I)
 # osascript whose script text names the Mail application (`application`, `app`, JavaScript `Application(...)`) with
 # `send`, its -e text or, with no -e, the line's text (a heredoc or file script). Twin: muaHeadSends.
 _MUA_PROG = re.compile(r"^(mutt|neomutt)$", re.I)
-# Revizor 5939 P1, Marveen 5934 / 5941: the one loosening is `mutt -f <mailbox>`, with only -F <config>, -Q <query>, -v, -V,
-# -h or -D next to it, and no input (no redirect, here-string, heredoc or pipe into it); any other mutt call is a send
-_MUA_INFO = frozenset(("-v", "-vv", "-V", "-h", "-D", "--version", "--help"))
-_MUA_VALUE = frozenset(("-f", "-F", "-Q"))   # take a value: a mailbox, a config, a query
-_MUA_PIPED = re.compile(r"\|&?\s*(?:\S*/)?(?:neo)?mutt\b", re.I)
+# Revizor 5939 P1, 5972 P1 and M-a, Marveen 5934 / 5941 / 5982: no send ONLY for exactly `mutt -f <mailbox>`, the mailbox
+# one literal word (no quote, variable, backtick, brace or glob), and only when the whole command text has no pipe, no
+# `<` of any kind (redirect, here-string, heredoc, process substitution), no xargs / exec / env / command word, no
+# parenthesis and no brace. Every other mutt call is a send: bare `mutt`, -v, -V, -h, -Q, -F, -finbox, -f "$F" too.
+_MUA_INPUT = re.compile(r"""[|<(){}'"`]|\b(?:xargs|exec|env|command)\b""", re.I)   # a quote too: the words come dequoted
+_MUA_PLAIN = re.compile(r"[^\s$`(){}\[\]*?;&|<>\\'\"]+")
 _OSA_WORDS = re.compile(r"\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b", re.I)
 # the same as a mark on a reading whose quotes may be gone (KNOWNLIMITS1127, F26): osascript ... application Mail ... send
 _OSA_BARE = re.compile(r"\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)", re.I)
@@ -115,19 +116,10 @@ _OSA_BARE = re.compile(r"\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)", r
 def _mua_head_sends(prog: str, rest) -> bool:
     p = prog.lower()
     if _MUA_PROG.match(p):
-        # any word that is not -f <mailbox> or an info option (a recipient, -s, -a, -b, -c, -p, -e, -m, -A, -R, -y, -Z,
-        # -z, -n, an input redirect) is a send, and so is a mutt that a pipe feeds
-        skip = False
-        for w in rest:
-            if skip:
-                skip = False
-                continue
-            if w in _MUA_VALUE:
-                skip = True
-                continue
-            if w not in _MUA_INFO and not (w[:2] in _MUA_VALUE and len(w) > 2):
-                return True
-        return any(_MUA_PIPED.search(s) for s in _LINE_CTX[1])
+        # the words must be exactly `-f <literal mailbox>`; anything else, or a command text that could feed it, is a send
+        if len(rest) != 2 or rest[0] != "-f" or not _MUA_PLAIN.fullmatch(rest[1]):
+            return True
+        return any(_MUA_INPUT.search(s) for s in _LINE_CTX[1])
     if p == "himalaya":
         return "send" in rest
     if p in ("gws", "gog"):
@@ -1315,11 +1307,31 @@ def _python_head_sends(rest) -> bool:
     return False
 
 
+# Revizor 5972 I07: a redirection word before the program; an operator alone takes the next word as its target
+_LEAD_REDIR_OP = re.compile(r"^\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])$")
+_LEAD_REDIR_ATTACHED = re.compile(r"^\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])\S")
+
+
+def _strip_lead_redirects(toks):
+    i = 0
+    while i < len(toks):
+        if _LEAD_REDIR_OP.match(toks[i]):
+            i += 2
+        elif _LEAD_REDIR_ATTACHED.match(toks[i]):
+            i += 1
+        else:
+            break
+    return toks[i:]
+
+
 def _head_is_send(toks, depth: int) -> bool:
     if toks is None:  # the depth bound was hit on a wrapper: audit it
         return True
     if not toks:
         return False
+    lead = _strip_lead_redirects(toks)   # Revizor 5972 I07: an added reading, the original one below still decides too
+    if len(lead) < len(toks) and _head_is_send(lead, depth):
+        return True
     prog = _basename(toks[0])
     rest = toks[1:]
     if _SENDER_PROG.match(prog):

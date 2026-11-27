@@ -434,22 +434,18 @@ const MAIL_SEND_OPT = /^-[A-Za-z]*[sbcrtaAq]/
 const CURL_SMTP = /^(?:smtps?:\/\/|--mail-(?:rcpt|from)(?:=|$))/i
 // KNOWNLIMITS1127 (card 2104b499): mail clients that passed in plain form; see _mua_head_sends in the python twin
 const MUA_PROG = /^(mutt|neomutt)$/i
-// Revizor 5939 P1: only `mutt -f <mailbox>` (with -F, -Q, -v, -V, -h, -D) and no input is no send; see _MUA_INFO
-const MUA_INFO = new Set(['-v', '-vv', '-V', '-h', '-D', '--version', '--help'])
-const MUA_VALUE = new Set(['-f', '-F', '-Q'])
-const MUA_PIPED = /\|&?\s*(?:\S*\/)?(?:neo)?mutt\b/i
+// Revizor 5939 P1, 5972 P1 and M-a, Marveen 5982: no send ONLY for exactly `mutt -f <literal mailbox>`, with no pipe,
+// `<`, xargs / exec / env / command word, parenthesis or brace anywhere in the command text; see _MUA_INPUT (python twin)
+const MUA_INPUT = /[|<(){}'"`]|\b(?:xargs|exec|env|command)\b/i // a quote too: the words come dequoted
+const MUA_PLAIN = /^[^\s$`(){}[\]*?;&|<>\\'"]+$/
 const OSA_WORDS = /\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b/i
 const OSA_BARE = /\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)/i // see _OSA_BARE
 function muaHeadSends(prog, rest) {
   const p = prog.toLowerCase()
   if (MUA_PROG.test(p)) {
-    let skip = false
-    for (const w of rest) {
-      if (skip) { skip = false; continue }
-      if (MUA_VALUE.has(w)) { skip = true; continue }
-      if (!MUA_INFO.has(w) && !(MUA_VALUE.has(w.slice(0, 2)) && w.length > 2)) return true
-    }
-    return lineCtx.texts.some((s) => MUA_PIPED.test(s)) // a pipe feeds it
+    // exactly `-f <literal mailbox>`; anything else, or a command text that could feed it, is a send
+    if (rest.length !== 2 || rest[0] !== '-f' || !MUA_PLAIN.test(rest[1])) return true
+    return lineCtx.texts.some((s) => MUA_INPUT.test(s))
   }
   if (p === 'himalaya') return rest.includes('send')
   if (p === 'gws' || p === 'gog') return rest.some((w) => w === 'send' || w === '+send')
@@ -1266,9 +1262,24 @@ function segmentIsSend(toksIn, depth) {
   return commandHeads(toksIn).some((h) => headIsSend(h, depth))
 }
 
+// Revizor 5972 I07: a redirection word before the program; see _strip_lead_redirects in the python twin
+const LEAD_REDIR_OP = /^\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])$/
+const LEAD_REDIR_ATTACHED = /^\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])\S/
+function stripLeadRedirects(toks) {
+  let i = 0
+  while (i < toks.length) {
+    if (LEAD_REDIR_OP.test(toks[i])) i += 2
+    else if (LEAD_REDIR_ATTACHED.test(toks[i])) i += 1
+    else break
+  }
+  return toks.slice(i)
+}
+
 function headIsSend(toks, depth) {
   if (toks === null) return true // the depth bound was hit on a wrapper: audit it
   if (!toks.length) return false
+  const lead = stripLeadRedirects(toks) // Revizor 5972 I07: an added reading; the original one below still decides too
+  if (lead.length < toks.length && headIsSend(lead, depth)) return true
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (SENDER_PROG.test(prog)) return true
