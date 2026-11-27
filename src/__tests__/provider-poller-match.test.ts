@@ -4,8 +4,8 @@
 // the broad substring matching even if the integration path moves.
 //
 // All POSITIVE cmdlines are taken VERBATIM from a live `ps -axo pid,command`
-// snapshot captured on the EFi production host on 2026-06-09 (two plugins
-// resident: the upstream telegram plugin + an EFi-local synology-chat worker).
+// snapshot captured on a production host on 2026-06-09 (two plugins
+// resident: the upstream telegram plugin + a locally installed synology-chat worker).
 
 import { describe, it, expect } from 'vitest'
 import { matchesProviderPollerCmd } from '../channel-coordinator/provider-poller-match.js'
@@ -16,8 +16,8 @@ const TELEGRAM_CACHE_CMD =
 const TELEGRAM_MARKETPLACE_CMD =
   'bun run --cwd /home/user/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/telegram --shell=bun --silent start'
 const SYNOLOGY_CHAT_CMD =
-  'bun run --cwd /home/user/.claude/plugins/efi-src/synology-chat --shell=bun --silent start'
-// Slack live snapshot was not available on the EFi host (telegram is the
+  'bun run --cwd /home/user/.claude/plugins/local-src/synology-chat --shell=bun --silent start'
+// Slack live snapshot was not available on that host (telegram is the
 // production provider). The cmdline below mirrors the marveen-marketplace
 // `slack-channel@marveen-marketplace` plugin layout documented in
 // scripts/channels.sh (PLUGIN_ID) -- adjust if the upstream slack plugin
@@ -54,7 +54,7 @@ describe('matchesProviderPollerCmd', () => {
       // Behavior-preserving for the pre-fix cross-tree scan which accepted
       // `socket-mode` as a Slack liveness signal regardless of plugin path.
       // Covers slack pollers whose cwd does not reflect the plugin install
-      // dir (reparented orphan, unusual upstream layout). EFiveen 2026-06-09
+      // dir (reparented orphan, unusual upstream layout). 2026-06-09
       // review catch: the original fix narrowed slack matching to the path
       // slug only and dropped this signal.
       const cmd = 'node /opt/some-other-layout/bolt-app --mode socket-mode'
