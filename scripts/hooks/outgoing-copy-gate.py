@@ -102,8 +102,11 @@ _CURL_SMTP = re.compile(r"^(?:smtps?://|--mail-(?:rcpt|from)(?:=|$))", re.I)
 # osascript whose script text names the Mail application (`application`, `app`, JavaScript `Application(...)`) with
 # `send`, its -e text or, with no -e, the line's text (a heredoc or file script). Twin: muaHeadSends.
 _MUA_PROG = re.compile(r"^(mutt|neomutt)$", re.I)
-_MUA_INFO = frozenset(("-v", "-vv", "-V", "-h", "-D", "-R", "-y", "-Z", "-z", "-n", "-p", "--version", "--help"))
-_MUA_VALUE = frozenset(("-f", "-F", "-e", "-m", "-Q", "-A"))   # take a value: a mailbox, a config, a command, a query
+# Revizor 5939 P1, Marveen 5934 / 5941: the one loosening is `mutt -f <mailbox>`, with only -F <config>, -Q <query>, -v, -V,
+# -h or -D next to it, and no input (no redirect, here-string, heredoc or pipe into it); any other mutt call is a send
+_MUA_INFO = frozenset(("-v", "-vv", "-V", "-h", "-D", "--version", "--help"))
+_MUA_VALUE = frozenset(("-f", "-F", "-Q"))   # take a value: a mailbox, a config, a query
+_MUA_PIPED = re.compile(r"\|&?\s*(?:\S*/)?(?:neo)?mutt\b", re.I)
 _OSA_WORDS = re.compile(r"\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b", re.I)
 # the same as a mark on a reading whose quotes may be gone (KNOWNLIMITS1127, F26): osascript ... application Mail ... send
 _OSA_BARE = re.compile(r"\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)", re.I)
@@ -112,7 +115,8 @@ _OSA_BARE = re.compile(r"\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)", r
 def _mua_head_sends(prog: str, rest) -> bool:
     p = prog.lower()
     if _MUA_PROG.match(p):
-        # a word that is no option (a recipient) or an option that is no read / info one (-s, -a, -c, -b, -H, -i ...)
+        # any word that is not -f <mailbox> or an info option (a recipient, -s, -a, -b, -c, -p, -e, -m, -A, -R, -y, -Z,
+        # -z, -n, an input redirect) is a send, and so is a mutt that a pipe feeds
         skip = False
         for w in rest:
             if skip:
@@ -123,7 +127,7 @@ def _mua_head_sends(prog: str, rest) -> bool:
                 continue
             if w not in _MUA_INFO and not (w[:2] in _MUA_VALUE and len(w) > 2):
                 return True
-        return False
+        return any(_MUA_PIPED.search(s) for s in _LINE_CTX[1])
     if p == "himalaya":
         return "send" in rest
     if p in ("gws", "gog"):
@@ -2231,8 +2235,13 @@ def _bash_pre(cmd: str) -> str:
     """Revizor 5927 L1-L3: the command with its heredoc bodies taken out (_HEREDOC, as the tokenizer does) and its
     comments dropped by bash's rule (_strip_comments_bash), BEFORE any other added scanner runs: an apostrophe in
     `# it's` or in a heredoc line then cannot open a quote for them. Twin: bashPre."""
-    pre = _HEREDOC.sub(r"\1", cmd) if "<<" in cmd else cmd
+    pre = _HEREDOC_TABS.sub(r"\1", cmd) if "<<" in cmd else cmd
     return _strip_comments_bash(pre) if "#" in pre else pre
+
+
+# Revizor 5939 P2 b: a `<<-` heredoc ends at its delimiter after leading tabs; taking a body out a line early only adds
+# command text, so the tabs are allowed for `<<` too in this reading
+_HEREDOC_TABS = re.compile(r"(<<-?\s*['\"]?(\w+)['\"]?[^\n]*)\n.*?\n\t*\2(?=\s|$)", re.S)
 
 
 def _subst_bodies(plain) -> list:

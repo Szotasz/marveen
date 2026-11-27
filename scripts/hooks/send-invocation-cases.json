@@ -4618,6 +4618,26 @@
       "name": "KNOWNLIMITS1127 review 1: control: osascript talks to Finder by app name",
       "cmd": "osascript -e 'tell app \"Finder\" to get name of every disk'",
       "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 2 (Revizor 5939): W02 mutt -f inbox with piped input (Marveen 5934: a send)",
+      "cmd": "cat m.json | mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 2 (Revizor 5939): W04 mutt -p (resumes a postponed message)",
+      "cmd": "mutt -p",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 2 (Revizor 5939): W07 mutt -e with a mail macro and an address",
+      "cmd": "mutt -e 'push \"<mail>tom@example.com<enter>\"'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 2 (Revizor 5939): C05 tab-stripping heredoc with an apostrophe, plain send",
+      "cmd": "cat <<-EOF\n\tit's\n\tEOF\n$X --to a@example.com --body B",
+      "expected": true
     }
   ]
 }

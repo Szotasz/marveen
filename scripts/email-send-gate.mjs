@@ -434,8 +434,10 @@ const MAIL_SEND_OPT = /^-[A-Za-z]*[sbcrtaAq]/
 const CURL_SMTP = /^(?:smtps?:\/\/|--mail-(?:rcpt|from)(?:=|$))/i
 // KNOWNLIMITS1127 (card 2104b499): mail clients that passed in plain form; see _mua_head_sends in the python twin
 const MUA_PROG = /^(mutt|neomutt)$/i
-const MUA_INFO = new Set(['-v', '-vv', '-V', '-h', '-D', '-R', '-y', '-Z', '-z', '-n', '-p', '--version', '--help'])
-const MUA_VALUE = new Set(['-f', '-F', '-e', '-m', '-Q', '-A'])
+// Revizor 5939 P1: only `mutt -f <mailbox>` (with -F, -Q, -v, -V, -h, -D) and no input is no send; see _MUA_INFO
+const MUA_INFO = new Set(['-v', '-vv', '-V', '-h', '-D', '--version', '--help'])
+const MUA_VALUE = new Set(['-f', '-F', '-Q'])
+const MUA_PIPED = /\|&?\s*(?:\S*\/)?(?:neo)?mutt\b/i
 const OSA_WORDS = /\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b/i
 const OSA_BARE = /\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)/i // see _OSA_BARE
 function muaHeadSends(prog, rest) {
@@ -447,7 +449,7 @@ function muaHeadSends(prog, rest) {
       if (MUA_VALUE.has(w)) { skip = true; continue }
       if (!MUA_INFO.has(w) && !(MUA_VALUE.has(w.slice(0, 2)) && w.length > 2)) return true
     }
-    return false
+    return lineCtx.texts.some((s) => MUA_PIPED.test(s)) // a pipe feeds it
   }
   if (p === 'himalaya') return rest.includes('send')
   if (p === 'gws' || p === 'gog') return rest.some((w) => w === 'send' || w === '+send')
@@ -2017,8 +2019,9 @@ function stripCommentsBash(cmd, drop = true) {
   return out
 }
 // Revizor 5927 L1-L3: heredoc bodies out and bash's comments dropped before any other added scanner; see _bash_pre
+const HEREDOC_TABS = /(<<-?\s*['"]?(\w+)['"]?[^\n]*)\n[\s\S]*?\n\t*\2(?=\s|$)/g // Revizor 5939 P2 b; see _HEREDOC_TABS
 function bashPre(cmd) {
-  const pre = cmd.includes('<<') ? cmd.replace(HEREDOC_RE, '$1') : cmd
+  const pre = cmd.includes('<<') ? cmd.replace(HEREDOC_TABS, '$1') : cmd
   return pre.includes('#') ? stripCommentsBash(pre) : pre
 }
 function extraReadings(cmd) {
