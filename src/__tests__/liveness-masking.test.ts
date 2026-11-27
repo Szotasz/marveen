@@ -25,7 +25,7 @@ const SYNOLOGY_BUN_PID = 3000
 const TELEGRAM_CMD =
   'bun run --cwd /home/user/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6 --shell=bun --silent start'
 const SYNOLOGY_CMD =
-  'bun run --cwd /home/user/.claude/plugins/efi-src/synology-chat --shell=bun --silent start'
+  'bun run --cwd /home/user/.claude/plugins/local-src/synology-chat --shell=bun --silent start'
 
 const ALL_PIDS_ALIVE = () => true
 const NO_PIDS_ALIVE = () => false
