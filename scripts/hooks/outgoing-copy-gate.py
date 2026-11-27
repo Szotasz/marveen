@@ -1943,6 +1943,11 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
         bool(_MAIL_API_HOST.search(t)) or _words_mail_host(t) for t in texts)   # MAILCURLSEND1118
     if _ansi_c_send_mark(cmd):
         return True
+    bare = _ansi_c_bare(cmd)
+    if bare is not None and bare not in texts:
+        _LINE_CTX[1].append(bare)
+        _LINE_EXEMPT_OK[0] = _LINE_EXEMPT_OK[0] and _line_clean(bare)
+        texts = texts + (bare,)
     return any(_reading_sends(t, _depth) for t in texts)
 
 
@@ -1957,10 +1962,33 @@ _ANSI_C_ADDRESS_FLAG = re.compile(r"--(?:to?|cc?|b(?:cc?)?)(?![\w-])", re.A)
 _ANSI_C_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.A)
 
 
+def _ansi_c_bare(cmd: str):
+    """ANSICQUOTE1127 round 5 (Revizor 5865 J4, Marveen 5870): None when the command has no bash $'...' string, even
+    once its backslash-newlines are removed as bash removes them (J4 c: `$\\<newline>'...`). Otherwise the text the
+    rule looks at: the backslash-newlines removed, every $'...' decoded by the plain ANSI-C rules with no quote reading
+    at all (J4 a: `$'--t\\x6f'` is --to), and every quote, backslash and `#` character taken out, so no quote or
+    comment reading can hide a word. Twin: ansiCBare."""
+    flat = cmd.replace("\\\n", "")
+    if "$'" not in flat:
+        return None
+    out = []
+    i, n = 0, len(flat)
+    while i < n:
+        if flat.startswith("$'", i):
+            j = i + 2
+            while j < n and flat[j] != "'":
+                j += 2 if flat[j] == "\\" else 1
+            out.append(_ansi_c_body(flat[i + 2:min(j, n)]))
+            i = j + 1
+            continue
+        out.append(flat[i]); i += 1
+    return re.sub(r"[\"'\\#]", "", "".join(out))
+
+
 def _ansi_c_send_mark(cmd: str) -> bool:
-    if "$'" not in cmd:
+    bare = _ansi_c_bare(cmd)
+    if bare is None:
         return False
-    bare = re.sub(r"[\"'\\]", "", cmd)
     return bool(_depth_send_mark().search(cmd) or _depth_send_mark().search(bare) or _ANSI_C_ADDRESS_FLAG.search(bare)
                 or _ANSI_C_EMAIL.search(bare))
 
@@ -4020,6 +4048,10 @@ def _outside_bodies(cmd: str, lo: int, hi: int) -> str:
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
     if read_script is None:
         read_script = _read_script_head
+    # ANSICQUOTE1127 round 5 (J4 b): a script run behind a $'...' form is also judged on the bare text (_ansi_c_bare)
+    bare = _ansi_c_bare(cmd)
+    if bare is not None and bare != cmd and script_run_sends(bare, cwd, read_script, depth, _cd_words):
+        return True
     cmd = _decode_ansi_c(cmd)   # Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'` read as the shell reads them
     cmd = _bind_literal_vars(cmd)
     written = _written_scripts(cmd, cwd)
