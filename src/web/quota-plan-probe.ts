@@ -1,5 +1,5 @@
-// QUOTANOTICE1126 per-plan probe: fresh 5-hour / weekly numbers for every NAMED subscription, so the quota notice and
-// the auto-reply can judge an agent by the plan it really runs on.
+// QUOTANOTICE1126 per-plan probe: fresh 5-hour / weekly numbers for every NAMED subscription, so the quota notice can
+// tell the owner about each plan, not only the default one.
 //
 // Why: a named plan's numbers live in store/claude-plans-state.json, and only the plan rotation refreshes them (the
 // active plan every heartbeat, idle plans only near a limit). Without rotation a named plan had no numbers at all, and
@@ -8,10 +8,10 @@
 // How: the rotation's own live probe, unchanged (src/claude-plan-usage-probe.ts probePlanUsage: ONE minimal Messages
 // call with the plan's own token, read from the vault, never logged; the result is recorded with observationFromProbe
 // into claude-plans-state.json, the file quota-notice already reads). Rules:
-//   - runs only while QUOTA_NOTICE or QUOTA_AUTOREPLY is on: off by default, so an install that did not ask for it
+//   - runs only while QUOTA_NOTICE is on: off by default, so an install that did not ask for it
 //     makes no call;
 //   - only a plan with an agent ACTIVE since its last look (selectQuotaProbePlans); an idle plan is not probed;
-//   - token-mode plans only: a configDir plan has no token this code may read (its agents keep the pane fallback);
+//   - token-mode plans only: a configDir plan has no token this code may read (it gets no percentage notice);
 //   - at most once per QUOTA_PLAN_PROBE_MIN per plan, counted from the plan's LAST look of any kind, so a plan the
 //     rotation measured recently is not probed again;
 //   - backoff after a failed probe: a 429 waits 4 intervals, a rejected token a day, any other error 2 intervals

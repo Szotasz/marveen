@@ -1,38 +1,66 @@
-# Plan usage notices (QUOTANOTICE1126)
+# Plan usage notice (QUOTANOTICE1126)
 
-The fleet shares one Claude subscription. When its 5-hour or weekly window runs out, every agent stops answering,
-and before this change nobody was told: the owner saw silence, and a person writing to an agent got no reply and no
-reason. `src/web/quota-notice.ts` runs in the dashboard process every minute and costs no model tokens.
+The fleet shares one Claude subscription (or a few). When its 5-hour or weekly window runs out, every agent on it
+stops answering, and before this change nobody was told: the owner saw silence. `src/web/quota-notice.ts` runs in the
+dashboard process every minute and costs no model tokens.
 
 ## What it does
 
-Both parts are **off by default**. Switch them on in the dashboard: Settings > Claude plans (`QUOTA_NOTICE`,
-`QUOTA_NOTICE_PCT`, `QUOTA_AUTOREPLY`, `QUOTA_AUTOREPLY_PCT`, `QUOTA_AUTOREPLY_GRACE_SEC`). The keys are owner-gated:
-the shared fleet token cannot change them. They are read every minute, no restart.
+The notice is **off by default**. Switch it on in the dashboard: Settings > Claude plans (`QUOTA_NOTICE`,
+`QUOTA_NOTICE_PCT`, `QUOTA_PLAN_PROBE_MIN`). The keys are owner-gated: the shared fleet token cannot change them. They
+are read every minute, no restart.
 
-1. **Owner notice** (`QUOTA_NOTICE`). When a window reaches `QUOTA_NOTICE_PCT` (default 90), the owner gets one
-   message on the install's owner channel (the same route as other owner alerts, `notifyOwner`) with the percentage
-   and the local reset time. One message per window: the window's reset instant is the key, so the next window
-   re-arms it. The threshold the window was announced at is kept too (`notifiedPct`): raising the threshold within
-   the same window (back to 90 after a test at 50) re-arms the notice, lowering it does not. A message that could not be delivered is tried again on the next tick.
-2. **Channel auto-reply** (opt-in, `QUOTA_AUTOREPLY=1`). An agent counts as walled when its own pane shows the CLI's
-   usage-limit banner, or when the shared plan is at `QUOTA_AUTOREPLY_PCT` (default 95) or more. Then every channel
-   message that has stayed unanswered for `QUOTA_AUTOREPLY_GRACE_SEC` (default 120) gets one automatic reply from
-   the agent's own bot: the quota is used up, it resets at the given time, the answer comes then. One reply per agent,
-   chat and wall.
-3. **Hand-back.** When the wall lifts and such a message is still unanswered, the dashboard types one short notice
-   into the agent's session (`[KVOTA-VISSZATERES]` / `[QUOTA-RESUME]`, with chat id, message id and the quoted
-   message as data), so the agent answers it without the sender writing again. A chat that got an answer meanwhile
-   is closed without a hand-back.
+When a window reaches `QUOTA_NOTICE_PCT` (default 90), the owner gets one message on the install's owner channel (the
+same route as other owner alerts, `notifyOwner`) with the subscription, the percentage and the local reset time. One
+message per subscription and window: the window's reset instant is the key, so the next window re-arms it. The
+threshold the window was announced at is kept too (`notifiedPct`): raising the threshold within the same window (back
+to 90 after a test at 50) re-arms the notice, lowering it does not. A message that could not be delivered is tried
+again on the next tick.
 
-Unanswered messages are read from the agent's own transcript (the channel envelope in, a `*__reply` tool call out),
-so it works for every channel agent, not only those with the conversation ledger.
+The notice only tells the owner. It sends nothing to the people who write to the agents, and it types nothing into
+any agent's session.
+
+## One notice per event: scripts/limit-monitor.sh
+
+`scripts/limit-monitor.sh` (an operator-installed systemd `--user` timer; the repo ships no unit or installer for it)
+alerts the owner on the same event for the **default** plan: it reads the statusLine numbers
+(`store/.claude-rate-limits.json`) through `scripts/lib/quota-check.py` and alerts at its own `QUOTA_WARN_PCT`.
+Without coordination the owner would get two messages. The rule, for the default plan only:
+
+- **Already delivered:** limit-monitor writes `store/.limit-monitor-quota-state` only after a confirmed send. Its
+  content is the HIT key of `quota-check.py`: `<kind>:<level>:<resets_at>` per hit window, joined by `|` (e.g.
+  `five_hour:90:1795710000`). If an entry has our window's kind, a reset instant within 15 minutes of ours, and a
+  level at or above `QUOTA_NOTICE_PCT`, our notice is dropped and the window recorded as notified (one log line:
+  `default plan skipped, scripts/limit-monitor.sh already alerted the owner for this window`).
+- **Active, not yet delivered:** limit-monitor counts as active when it ran in the last 30 minutes (the epoch in
+  `store/.limit-monitor-heartbeat`, written on quiet runs, or the mtime of `store/limit-monitor.log`, written on every
+  run that saw a signal). Then our notice is held for up to 15 minutes from the first tick that wanted to send it
+  (one log line, `default plan held ...`), waiting for the stamp above. No stamp by then: ours is sent.
+- **Not active** (no run in 30 minutes, or never installed): ours is sent at once.
+
+Named plans are always notified by the dashboard: limit-monitor reads only the default plan's numbers.
+
+Why 30 and 15 minutes: the repo has no timer for limit-monitor (searched 2026-11-27), so its interval is the
+operator's choice and not knowable here. The two constants (`LIMIT_MONITOR_ACTIVE_MAX_AGE_SEC`,
+`LIMIT_MONITOR_GRACE_SEC`) assume a tick of at most about 15 minutes. With a slower timer the worst case is two
+notices for one event, never none.
+
+### limit-monitor on an install without Telegram
+
+limit-monitor can only send through the Telegram Bot API. When it finds no Telegram bot token (a Discord or Slack
+install), it no longer drops the alert: it writes it into `store/owner-alert-outbox/<epoch>-<pid>-<tag>.txt` (temp
+file + rename, mode 600, at most 4000 bytes) and counts it as handled, so its dedupe stamp is written and the rule
+above works there too. The dashboard checks the outbox every minute (whether or not `QUOTA_NOTICE` is on: the files
+only exist where limit-monitor runs), delivers each file through `notifyOwner`, and deletes it only after a confirmed
+delivery; a failed delivery stays for the next minute. A file older than 24 hours is dropped with a log line. The
+content is delivered as plain text, control characters removed, capped at 1900 characters (under Discord's limit).
+With a Telegram token limit-monitor behaves as before. Its exit without an owner chat (`no ALLOWED_CHAT_ID`) is
+unchanged.
 
 ## Per subscription (plan)
 
 An install can register several Claude subscriptions (Settings > Claude plans) and point agents at them. The notice
-names the subscription and fires once per subscription and window; an agent's auto-reply uses the numbers of the
-subscription THAT agent runs on (the rotation's active plan, else its `claudePlan`, else the default plan).
+names the subscription and fires once per subscription and window.
 
 Where the numbers come from:
 
@@ -42,18 +70,18 @@ Where the numbers come from:
   collector reads one token, the default one.
 - **Named subscription**: `store/claude-plans-state.json`. The plan rotation writes it (the active plan's reading, and
   the live probe of idle token plans), and so does the per-plan probe below. A plan with no fresh numbers gets no
-  percentage notice, and its agents are judged by their own pane's limit banner only.
+  percentage notice.
 
 ### Per-plan probe (`src/web/quota-plan-probe.ts`)
 
-While `QUOTA_NOTICE` or `QUOTA_AUTOREPLY` is on, every named **token-mode** plan is read every `QUOTA_PLAN_PROBE_MIN`
+While `QUOTA_NOTICE` is on, every named **token-mode** plan is read every `QUOTA_PLAN_PROBE_MIN`
 minutes (default 15, owner-gated) with the plan rotation's own probe (`probePlanUsage`): one Messages call
 (`claude-haiku-4-5`, a 2-character prompt, `max_tokens: 5`) with the plan's own token from the vault, whose
 rate-limit headers give the 5-hour and weekly used % and reset. The token is never logged. The result is recorded into
 `claude-plans-state.json` like the rotation's probe. Cost: about 10 input + up to 5 output tokens per plan per probe,
 from that plan's own quota (with 2 named plans at 15 minutes: 192 calls a day).
 
-- Both notices off (the default): no call.
+- Notice off (the default): no call.
 - **Only active plans** (owner decision 2026-11-26): a plan is probed only when at least one agent running on it was
   active since the plan's last look. Active = the agent's transcript was written (newest `.jsonl` mtime in its
   transcript dirs, the same files channel-intake-monitor and inbound-probe read): every turn, tool call and channel
@@ -69,13 +97,6 @@ A stale or missing reading triggers nothing.
 
 ## Trying it safely
 
-`QUOTA_NOTICE_DRY_RUN=1` logs every owner notice, auto-reply and hand-back (`quota-notice DRY-RUN: ...` in the
-dashboard log) instead of performing it. State lives in `store/quota-notice-state.json`.
-
-## Limits
-
-- The 95 % threshold is a shared-plan reading: an agent on its own plan (per-agent `claudeConfigDir`) is judged by
-  the shared plan's numbers unless its pane shows the banner.
-- Between 95 % and the wall the agents still answer on their own; the auto-reply only fires for a message left
-  unanswered for the grace period, so a working agent is not double-answered.
-- Only the newest unanswered message per chat is replied to and handed back.
+`QUOTA_NOTICE_DRY_RUN=1` logs every owner notice (`quota-notice DRY-RUN: ...` in the dashboard log) instead of
+sending it; outbox files are logged once and kept for a real run. State lives in `store/quota-notice-state.json`
+(an older file with an `autoReplies` list is read fine; the list is ignored and dropped on the next save).

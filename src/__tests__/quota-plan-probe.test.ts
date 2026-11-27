@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { nextProbeAt, selectQuotaProbePlans, runQuotaPlanProbes, type QuotaPlanProbeDeps } from '../web/quota-plan-probe.js'
-import { planStateSnapshot, snapshotOfPlan, DEFAULT_PLAN_ID } from '../web/quota-notice.js'
+import { planStateSnapshot } from '../web/quota-notice.js'
 import { observationFromProbe } from '../claude-plan-usage-probe.js'
 import type { ClaudePlan } from '../web/claude-plans.js'
 import type { ClaudePlansState } from '../web/claude-plans-state.js'
@@ -82,8 +82,6 @@ describe('freshness merge: what the probe records is what quota-notice reads', (
     const failed = observationFromProbe({ ok: false, error: 'network', message: 'x' } as never, obs, NOW + 10 * MIN)
     expect(planStateSnapshot(failed, NOW / 1000 + 600)).toMatchObject({ status: 'ok', fiveHour: { usedPercentage: 93 } })
     expect(planStateSnapshot(failed, NOW / 1000 + 3 * 3600).status).toBe('stale')
-    expect(snapshotOfPlan([{ planId: 'ceges', label: 'Céges', snap }], 'ceges').fiveHour?.usedPercentage).toBe(93)
-    expect(snapshotOfPlan([{ planId: 'ceges', label: 'Céges', snap }], DEFAULT_PLAN_ID).status).toBe('missing')
   })
 })
 

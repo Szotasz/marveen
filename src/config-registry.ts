@@ -1677,9 +1677,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
-  // QUOTANOTICE1126 (src/web/quota-notice.ts): plan usage notices. Both parts OFF by default (owner decision
-  // 2026-11-26); read every minute, no restart. Owner-gated: the owner's alert and messages sent on the agents'
-  // behalf to the people who write to them are the owner's call, not a fleet-token caller's.
+  // QUOTANOTICE1126 (src/web/quota-notice.ts): plan usage notice to the owner. OFF by default (owner decision
+  // 2026-11-26); read every minute, no restart. Owner-gated: the owner's alert, and the API calls the per-plan probe
+  // makes from each plan's own quota, are the owner's call, not a fleet-token caller's.
   {
     key: 'QUOTA_NOTICE',
     type: 'boolean',
@@ -1703,46 +1703,12 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     ownerGated: true,
   },
   {
-    key: 'QUOTA_AUTOREPLY',
-    type: 'boolean',
-    default: '0',
-    description: 'Automatikus válasz a csatornán, ha egy ügynök kerete elfogyott: ha az ügynök paneljén a keret-limit felirat látszik, vagy az ő előfizetése eléri a QUOTA_AUTOREPLY_PCT küszöböt, a megválaszolatlan üzenetre (QUOTA_AUTOREPLY_GRACE_SEC után) az ügynök saját botja egyszer jelzi, hogy a keret elfogyott és mikor jön a válasz. A keret visszatérésekor a még megválaszolatlan üzenetet a dashboard visszaadja az ügynöknek.',
-    module: 'claude-plans',
-    secret: false,
-    requiresRestart: false,
-    ownerGated: true,
-  },
-  {
-    key: 'QUOTA_AUTOREPLY_PCT',
-    type: 'int',
-    default: 95,
-    min: 50,
-    max: 100,
-    description: 'Az automatikus válasz küszöbe százalékban, az ügynök saját előfizetésére (QUOTA_AUTOREPLY).',
-    module: 'claude-plans',
-    secret: false,
-    requiresRestart: false,
-    ownerGated: true,
-  },
-  {
-    key: 'QUOTA_AUTOREPLY_GRACE_SEC',
-    type: 'int',
-    default: 120,
-    min: 0,
-    max: 3600,
-    description: 'Ennyi másodpercig megválaszolatlan üzenet kap automatikus választ (QUOTA_AUTOREPLY), hogy egy épp dolgozó ügynök ne kapjon dupla választ.',
-    module: 'claude-plans',
-    secret: false,
-    requiresRestart: false,
-    ownerGated: true,
-  },
-  {
     key: 'QUOTA_PLAN_PROBE_MIN',
     type: 'int',
     default: 15,
     min: 5,
     max: 1440,
-    description: 'Planenkénti keret-lekérdezés gyakorisága percben: amíg a QUOTA_NOTICE vagy a QUOTA_AUTOREPLY be van kapcsolva, a dashboard a megnevezett, token-módú előfizetések 5 órás és heti keretét ennyi percenként lekérdezi (egy minimális API-hívás az adott előfizetés saját keretéből, kb. 10 token). A plan-rotáció által nemrég mért plant kihagyja; hibánál ritkít (429: négyszeres idő, elutasított token: egy nap). Kikapcsolt értesítésnél egyetlen hívás sincs.',
+    description: 'Planenkénti keret-lekérdezés gyakorisága percben: amíg a QUOTA_NOTICE be van kapcsolva, a dashboard a megnevezett, token-módú előfizetések 5 órás és heti keretét ennyi percenként lekérdezi (egy minimális API-hívás az adott előfizetés saját keretéből, kb. 10 token). A plan-rotáció által nemrég mért plant kihagyja; hibánál ritkít (429: négyszeres idő, elutasított token: egy nap). Kikapcsolt értesítésnél egyetlen hívás sincs.',
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,

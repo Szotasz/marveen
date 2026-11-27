@@ -4,7 +4,9 @@
 # WHY bash and not a Claude scheduled-task: a Claude agent invocation itself
 # consumes the very quota we're guarding. This runs as a plain shell script,
 # greps for limit signals, and alerts the owner via the Telegram Bot API.
-# Zero Claude tokens.
+# Zero Claude tokens. Without a Telegram bot token (a Discord/Slack install) the
+# alert goes to store/owner-alert-outbox/ and the dashboard delivers it through
+# the install's own owner route (QUOTANOTICE1126, see queue_owner_alert below).
 #
 # Signals: rate-limit / usage-limit / 429 / "resets at" in the channels+dashboard
 # logs AND in the live tmux panes of the WHOLE fleet (where Claude Code prints
@@ -66,6 +68,18 @@ fi
 # Callers MUST stamp their dedupe state only when this returns 0.
 . "$INSTALL_DIR/scripts/lib/send-telegram.sh"
 
+# The outbox file: plain text, at most 4000 bytes, mode 600, written to a temp name and renamed so the dashboard never
+# reads a half-written file (it skips dot-files). The name carries the epoch (the dashboard drops a file older than
+# 24 hours) and the tag, reduced to [A-Za-z0-9_-].
+queue_owner_alert() {
+  local msg="$1" tag="$2" dir="$STORE/owner-alert-outbox" safe tmp
+  safe="$(printf '%s' "$tag" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-60)"
+  mkdir -p "$dir" 2>>"$LOG" && chmod 700 "$dir" 2>>"$LOG" || return 1
+  tmp="$dir/.tmp.$$"
+  ( umask 077; printf '%s' "$msg" | head -c 4000 > "$tmp" ) 2>>"$LOG" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dir/$(date +%s)-$$-${safe:-alert}.txt" 2>>"$LOG" || { rm -f "$tmp"; return 1; }
+}
+
 send_alert() {
   local msg="$1" tag="$2" token
   # #915: install-scoped state dir once migrated, legacy shared otherwise.
@@ -76,7 +90,16 @@ send_alert() {
   fi
   token="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$chan_dir/.env" 2>/dev/null | head -1)"
   if [ -z "$token" ]; then
-    log "ALERT wanted but no bot token found: $tag"
+    # QUOTANOTICE1126: no Telegram bot token = a Discord/Slack/other install, where this used to log and drop the
+    # alert. It goes into the dashboard's owner-alert outbox instead (src/web/quota-notice.ts delivers it through
+    # notifyOwner, the install's own owner route, and deletes it only after a confirmed delivery). A queued alert
+    # counts as handled, so the caller stamps its dedupe state and the dashboard's own quota notice for the default
+    # plan sees the stamp and stays quiet (docs/quota-notice.md).
+    if queue_owner_alert "$msg" "$tag"; then
+      log "ALERT wanted but no bot token found: $tag -- queued for the dashboard (store/owner-alert-outbox)"
+      return 0
+    fi
+    log "ALERT wanted but no bot token found: $tag -- and the dashboard outbox could not be written"
     return 1
   fi
   if send_telegram_message "$token" "$CHAT_ID" "$msg" \

@@ -757,7 +757,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   // VAULTLOGIN1112: every sub-agent a vault web login allows keeps its own browser running (a no-op with none).
   if (!servicesOff) startAgentBrowserWatchdog()
 
-  // QUOTANOTICE1126: owner notice at QUOTA_NOTICE_PCT and (opt-in) channel auto-replies at the quota wall.
+  // QUOTANOTICE1126: owner notice at QUOTA_NOTICE_PCT (opt-in), and limit-monitor.sh's owner-alert outbox.
   if (!servicesOff) startQuotaNotice()
 
   // NOTE: startMcpListChecker() is intentionally NOT called here.

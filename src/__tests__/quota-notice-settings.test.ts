@@ -1,4 +1,4 @@
-// QUOTANOTICE1126: the quota notice / auto-reply settings are OFF by default and owner-gated: the shared fleet token
+// QUOTANOTICE1126: the quota notice settings are OFF by default and owner-gated: the shared fleet token
 // can neither switch them nor move their thresholds; the owner session can.
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 
@@ -44,11 +44,11 @@ beforeEach(() => {
 })
 
 
-const QUOTA = ['QUOTA_NOTICE', 'QUOTA_NOTICE_PCT', 'QUOTA_AUTOREPLY', 'QUOTA_AUTOREPLY_PCT', 'QUOTA_AUTOREPLY_GRACE_SEC', 'QUOTA_PLAN_PROBE_MIN']
-const VALUE: Record<string, string | number> = { QUOTA_NOTICE: '1', QUOTA_NOTICE_PCT: 80, QUOTA_AUTOREPLY: '1', QUOTA_AUTOREPLY_PCT: 90, QUOTA_AUTOREPLY_GRACE_SEC: 60, QUOTA_PLAN_PROBE_MIN: 30 }
+const QUOTA = ['QUOTA_NOTICE', 'QUOTA_NOTICE_PCT', 'QUOTA_PLAN_PROBE_MIN']
+const VALUE: Record<string, string | number> = { QUOTA_NOTICE: '1', QUOTA_NOTICE_PCT: 80, QUOTA_PLAN_PROBE_MIN: 30 }
 
 describe('registry', () => {
-  it('the six keys exist in the claude-plans module, owner-gated, both switches OFF by default', () => {
+  it('the three keys exist in the claude-plans module, owner-gated, the switch OFF by default', () => {
     for (const k of QUOTA) {
       const def = registry.getSettingDefinition(k)!
       expect(def, k).toBeTruthy()
@@ -57,9 +57,9 @@ describe('registry', () => {
       expect(def.requiresRestart, k).toBe(false)
     }
     expect(registry.getSettingDefinition('QUOTA_NOTICE')!.default).toBe('0')
-    expect(registry.getSettingDefinition('QUOTA_AUTOREPLY')!.default).toBe('0')
     expect(registry.getSettingDefinition('QUOTA_NOTICE_PCT')!.default).toBe(90)
-    expect(registry.getSettingDefinition('QUOTA_AUTOREPLY_PCT')!.default).toBe(95)
+    // The auto-reply was removed from this PR (maintainer review): its keys must be gone.
+    for (const k of ['QUOTA_AUTOREPLY', 'QUOTA_AUTOREPLY_PCT', 'QUOTA_AUTOREPLY_GRACE_SEC']) expect(registry.getSettingDefinition(k), k).toBeUndefined()
   })
   it('a threshold outside 50..100 is refused', () => {
     expect(registry.validateSettingValue(registry.getSettingDefinition('QUOTA_NOTICE_PCT')!, 120).ok).toBe(false)

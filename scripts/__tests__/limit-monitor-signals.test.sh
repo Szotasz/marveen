@@ -457,6 +457,89 @@ else
   fail "ALLOWED_CHAT_ID=0 + two DM entries -> expected no send + reason: curl=$(cat "$C/fakebin/curl.log" 2>/dev/null) log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
 
+echo "(g) QUOTANOTICE1126: no Telegram bot token -> the dashboard owner-alert outbox"
+# A Discord/Slack install has no Telegram bot token: the alert used to be logged
+# and dropped. It now goes into store/owner-alert-outbox/ for the dashboard to
+# deliver (src/web/quota-notice.ts), and counts as handled.
+C="$(new_case outbox_quota)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+OB="$C/store/owner-alert-outbox"
+OBF="$(find "$OB" -maxdepth 1 -type f -name '[0-9]*-*.txt' 2>/dev/null | head -1)"
+if [ -n "$OBF" ] && grep -q "5 oras keret: 94%" "$OBF"; then
+  pass "the quota alert is queued as an outbox file with the alert text"
+else
+  fail "no outbox file with the alert text: $(ls -la "$OB" 2>&1) log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
+fi
+if grep -q "queued for the dashboard" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "the log says the alert was queued"
+else
+  fail "the queued alert left no log line"
+fi
+if [ -n "$OBF" ] && [ "$(stat -c '%a' "$OBF" 2>/dev/null || stat -f '%Lp' "$OBF")" = "600" ]; then
+  pass "the outbox file is mode 600"
+else
+  fail "the outbox file is not mode 600"
+fi
+if find "$OB" -maxdepth 1 -name '.tmp.*' 2>/dev/null | grep -q .; then
+  fail "a temp file was left behind"
+else
+  pass "no temp file left behind (atomic rename)"
+fi
+case "$(basename "${OBF:-x}")" in
+  *[!A-Za-z0-9_.-]*) fail "the outbox file name carries characters outside [A-Za-z0-9_.-]: $(basename "$OBF")" ;;
+  *) pass "the outbox file name is sanitized" ;;
+esac
+# Queued = handled: the dedupe stamp is written, so the dashboard's own quota
+# notice sees it, and the next tick does not queue the same window again.
+if [ "$(cat "$C/store/.limit-monitor-quota-state" 2>/dev/null)" = "five_hour:90:$reset" ]; then
+  pass "a queued alert writes the dedupe stamp (five_hour:90:<reset>)"
+else
+  fail "no / wrong dedupe stamp after queueing: $(cat "$C/store/.limit-monitor-quota-state" 2>/dev/null)"
+fi
+: > "$C/store/limit-monitor.log"
+run_case "$C"
+if [ "$(find "$OB" -maxdepth 1 -type f -name '*.txt' | wc -l | tr -d ' ')" = "1" ] && grep -q "quota signal unchanged" "$C/store/limit-monitor.log"; then
+  pass "the same window is not queued twice"
+else
+  fail "the same window was queued again"
+fi
+
+# Oversize text is capped at 4000 bytes in the file.
+C="$(new_case outbox_big)"
+python3 -c 'print("Claude usage limit reached. " + "x" * 9000)' > "$C/store/channels.log"
+run_case "$C"
+OBF="$(find "$C/store/owner-alert-outbox" -maxdepth 1 -type f -name '*.txt' 2>/dev/null | head -1)"
+if [ -n "$OBF" ] && [ "$(wc -c < "$OBF" | tr -d ' ')" -le 4000 ]; then
+  pass "a text-signal alert is queued too, capped at 4000 bytes"
+else
+  fail "the text-signal outbox file is missing or over 4000 bytes: $(wc -c < "${OBF:-/dev/null}")"
+fi
+
+# An outbox that cannot be written: the alert is NOT counted as handled.
+C="$(new_case outbox_unwritable)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+: > "$C/store/owner-alert-outbox"   # a FILE where the directory should be
+run_case "$C"
+if grep -q "outbox could not be written" "$C/store/limit-monitor.log" 2>/dev/null && [ ! -s "$C/store/.limit-monitor-quota-state" ]; then
+  pass "an unwritable outbox is logged and leaves no stamp (the next tick retries)"
+else
+  fail "an unwritable outbox: log=$(cat "$C/store/limit-monitor.log" 2>/dev/null) stamp=$(cat "$C/store/.limit-monitor-quota-state" 2>/dev/null)"
+fi
+
+# With a Telegram token nothing changes: sent through the Bot API, no outbox.
+C="$(deliver_case outbox_not_with_token ok)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if grep -q "ALERT sent" "$C/store/limit-monitor.log" && [ ! -e "$C/store/owner-alert-outbox" ]; then
+  pass "with a Telegram token the alert is sent as before, no outbox"
+else
+  fail "with a Telegram token: log=$(cat "$C/store/limit-monitor.log" 2>/dev/null) outbox=$(ls "$C/store/owner-alert-outbox" 2>&1)"
+fi
+
 echo ""
 if [ "$FAILED" = 0 ]; then echo "ALL PASS"; else echo "FAILURES"; fi
 exit "$FAILED"
