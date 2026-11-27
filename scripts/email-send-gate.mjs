@@ -436,15 +436,30 @@ const CURL_SMTP = /^(?:smtps?:\/\/|--mail-(?:rcpt|from)(?:=|$))/i
 const MUA_PROG = /^(mutt|neomutt)$/i
 // Revizor 5939 P1, 5972 P1 and M-a, Marveen 5982: no send ONLY for exactly `mutt -f <literal mailbox>`, with no pipe,
 // `<`, xargs / exec / env / command word, parenthesis or brace anywhere in the command text; see _MUA_INPUT (python twin)
-const MUA_INPUT = /[|<(){}'"`]|\b(?:xargs|exec|env|command)\b/i // a quote too: the words come dequoted
+const MUA_INPUT = /[|<(){}'"`#]|\b(?:xargs|exec|env|command)\b/i // a quote too: the words come dequoted; # (Revizor 5994 J2)
 const MUA_PLAIN = /^[^\s$`(){}[\]*?;&|<>\\'"]+$/
+// Marveen 6012 (Revizor 5994 M1, M2): every mutt / neomutt word must be a whole `mutt -f <mailbox>` command at a command
+// start; see _mua_first_word_ok in the python twin
+const MUA_WORD = /(?:neo)?mutt/gi
+const MUA_FIRST_TAIL = /^mutt[ \t]+-f[ \t]+(?!-)[^\s$`(){}[\]*?;&|<>\\'"#]+[ \t]*(?:$|;|\n|&&|\|\|)/
+function muaFirstWordOk(texts) {
+  for (const s of texts) {
+    for (const m of s.matchAll(MUA_WORD)) {
+      const before = s.slice(0, m.index).replace(/[ \t]+$/, '')
+      if (!(before === '' || before.endsWith(';') || before.endsWith('\n') || before.endsWith('&&') || before.endsWith('||'))) return false
+      if (!MUA_FIRST_TAIL.test(s.slice(m.index))) return false
+    }
+  }
+  return true
+}
 const OSA_WORDS = /\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b/i
 const OSA_BARE = /\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)/i // see _OSA_BARE
 function muaHeadSends(prog, rest) {
   const p = prog.toLowerCase()
   if (MUA_PROG.test(p)) {
     // exactly `-f <literal mailbox>`; anything else, or a command text that could feed it, is a send
-    if (rest.length !== 2 || rest[0] !== '-f' || !MUA_PLAIN.test(rest[1])) return true
+    if (rest.length !== 2 || rest[0] !== '-f' || !MUA_PLAIN.test(rest[1]) || rest[1].startsWith('-')) return true
+    if (!muaFirstWordOk(lineCtx.texts)) return true // Marveen 6012: mutt must be the command's first word
     return lineCtx.texts.some((s) => MUA_INPUT.test(s))
   }
   if (p === 'himalaya') return rest.includes('send')
@@ -1297,6 +1312,7 @@ function headIsSend(toks, depth) {
     p = basename(r[0])
     r = r.slice(1)
   }
+  if (p !== prog && (muaHeadSends(p, r) || (MAIL_PROG.test(p) && mailProgSends(r)))) return true // Revizor 5994 M2
   let evalRest = p === 'eval' ? r : null
   if (evalRest !== null) {
     if (evalRest[0] === '--') evalRest = evalRest.slice(1)
@@ -2044,8 +2060,13 @@ function extraReadings(cmd) {
     if (base.includes('{') && base.includes(',')) out.push(braceExpand(base))
     if (base.includes('#')) out.push(stripCommentsBash(base))
   }
+  for (const o of [cmd, ...out]) { // Revizor 5994 J1: the leading redirections dropped at every command start
+    if (o.includes('<') || o.includes('>')) out.push(o.replace(LEAD_REDIR_TEXT, (m, a, b) => a + b))
+  }
   return [...new Set(out)].filter((o) => o !== cmd)
 }
+// Revizor 5994 J1: see _LEAD_REDIR_TEXT in the python twin
+const LEAD_REDIR_TEXT = /(^|[;&|\n({])([ \t]*)(?:\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])[ \t]*(?:\d+|-|[^\s;&|<>(){}]+)?[ \t]*)+/gm
 // KNOWNLIMITS1127: the substitution bodies bash runs that the tokenizer keeps as text; see _subst_bodies
 function substBodies(plain) {
   const out = []

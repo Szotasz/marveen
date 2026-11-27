@@ -4758,6 +4758,166 @@
       "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): control: mutt -f after another command",
       "cmd": "cd ~/Mail; mutt -f inbox",
       "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 P03 2>&1 before sendmail",
+      "cmd": "2>&1 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 >&2 before sendmail",
+      "cmd": ">&2 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 <&0 before sendmail",
+      "cmd": "<&0 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 2>&- before sendmail",
+      "cmd": "2>&- sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 >| before sendmail",
+      "cmd": ">| log.txt sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 >|attached before sendmail",
+      "cmd": ">|log.txt sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 two redirections before sendmail",
+      "cmd": "> log.txt 2>&1 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 2>&1 before mutt -s",
+      "cmd": "2>&1 mutt -s hi tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 2>&1 before msmtp",
+      "cmd": "2>&1 msmtp tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 >| before curl smtp",
+      "cmd": ">| log.txt curl smtp://mail.example.com --mail-rcpt tom@example.com -T m.eml",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 after a separator",
+      "cmd": "echo a; 2>&1 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J2 mutt -f with a trailing comment",
+      "cmd": "mutt -f inbox # megnezem",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J2 mutt -f with a glued comment",
+      "cmd": "mutt -f inbox #megnezem",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): control: 2>&1 before a read-only program",
+      "cmd": "2>&1 ls -la",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): control: >| before a read-only program",
+      "cmd": ">| out.txt echo done",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X01 in a while loop",
+      "cmd": "while read l; do mutt -f inbox; done < list.txt",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X02 after time",
+      "cmd": "time mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X03 after nohup",
+      "cmd": "nohup mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X04 backslash mutt",
+      "cmd": "\\mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X05 builtin command",
+      "cmd": "builtin command mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X06 in an if",
+      "cmd": "if true; then mutt -f inbox; fi",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X07 coproc",
+      "cmd": "coproc mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X08 after timeout",
+      "cmd": "timeout 5 mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X09 after sudo",
+      "cmd": "sudo mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X10 after eval",
+      "cmd": "eval mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): a variable assignment first",
+      "cmd": "LANG=C mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): in the background",
+      "cmd": "mutt -f inbox &",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): full path",
+      "cmd": "/usr/bin/mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): neomutt",
+      "cmd": "neomutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): control: after cd and &&",
+      "cmd": "cd ~/Mail && mutt -f inbox",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): control: followed by ; echo",
+      "cmd": "mutt -f inbox; echo done",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994 L15): a mailbox word that looks like an option",
+      "cmd": "mutt -f -p",
+      "expected": true
     }
   ]
 }

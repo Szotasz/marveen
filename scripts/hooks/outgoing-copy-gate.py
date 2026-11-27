@@ -106,8 +106,23 @@ _MUA_PROG = re.compile(r"^(mutt|neomutt)$", re.I)
 # one literal word (no quote, variable, backtick, brace or glob), and only when the whole command text has no pipe, no
 # `<` of any kind (redirect, here-string, heredoc, process substitution), no xargs / exec / env / command word, no
 # parenthesis and no brace. Every other mutt call is a send: bare `mutt`, -v, -V, -h, -Q, -F, -finbox, -f "$F" too.
-_MUA_INPUT = re.compile(r"""[|<(){}'"`]|\b(?:xargs|exec|env|command)\b""", re.I)   # a quote too: the words come dequoted
+_MUA_INPUT = re.compile(r"""[|<(){}'"`#]|\b(?:xargs|exec|env|command)\b""", re.I)   # a quote too: the words come dequoted; # (Revizor 5994 J2)
 _MUA_PLAIN = re.compile(r"[^\s$`(){}\[\]*?;&|<>\\'\"]+")
+# Marveen 6012 (Revizor 5994 M1, M2): every mutt / neomutt word in a reading must be a whole `mutt -f <mailbox>` command
+# at a command start; see _mua_first_word_ok. Twin: MUA_WORD, MUA_FIRST_TAIL.
+_MUA_WORD = re.compile(r"(?:neo)?mutt", re.I)
+_MUA_FIRST_TAIL = re.compile(r"mutt[ \t]+-f[ \t]+(?!-)[^\s$`(){}\[\]*?;&|<>\\'\"#]+[ \t]*(?:$|;|\n|&&|\|\|)")
+
+
+def _mua_first_word_ok(texts) -> bool:
+    for s in texts:
+        for m in _MUA_WORD.finditer(s):
+            before = s[:m.start()].rstrip(" \t")
+            if not (before == "" or before.endswith((";", "\n", "&&", "||"))):
+                return False
+            if not _MUA_FIRST_TAIL.match(s, m.start()):
+                return False
+    return True
 _OSA_WORDS = re.compile(r"\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b", re.I)
 # the same as a mark on a reading whose quotes may be gone (KNOWNLIMITS1127, F26): osascript ... application Mail ... send
 _OSA_BARE = re.compile(r"\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)", re.I)
@@ -117,7 +132,9 @@ def _mua_head_sends(prog: str, rest) -> bool:
     p = prog.lower()
     if _MUA_PROG.match(p):
         # the words must be exactly `-f <literal mailbox>`; anything else, or a command text that could feed it, is a send
-        if len(rest) != 2 or rest[0] != "-f" or not _MUA_PLAIN.fullmatch(rest[1]):
+        if len(rest) != 2 or rest[0] != "-f" or not _MUA_PLAIN.fullmatch(rest[1]) or rest[1].startswith("-"):
+            return True
+        if not _mua_first_word_ok(_LINE_CTX[1]):   # Marveen 6012: mutt must be the command's first word
             return True
         return any(_MUA_INPUT.search(s) for s in _LINE_CTX[1])
     if p == "himalaya":
@@ -1352,6 +1369,8 @@ def _head_is_send(toks, depth: int) -> bool:
         if not r:
             break
         p, r = _basename(r[0]), r[1:]
+    if p != prog and (_mua_head_sends(p, r) or (_MAIL_PROG.match(p) and _mail_prog_sends(r))):   # Revizor 5994 M2
+        return True
     if p == "eval":
         prog, rest = "eval", r
     if prog == "eval":
@@ -2240,7 +2259,15 @@ def _extra_readings(cmd: str) -> tuple:
             out.append(_brace_expand(base))
         if "#" in base:
             out.append(_strip_comments_bash(base))
+    for o in [cmd] + out:   # Revizor 5994 J1: the leading redirections dropped at every command start (_LEAD_REDIR_TEXT)
+        if "<" in o or ">" in o:
+            out.append(_LEAD_REDIR_TEXT.sub(lambda m: m.group(1) + m.group(2), o))
     return tuple(o for o in dict.fromkeys(out) if o != cmd)
+
+
+# Revizor 5994 J1: redirections before the program at a command start (`2>&1 P`, `>| f P`, `<&0 P`, `> f 2>&1 P`); the
+# tokenizer cuts these at their own & or |, so they go before it. Twin: LEAD_REDIR_TEXT.
+_LEAD_REDIR_TEXT = re.compile(r"(^|[;&|\n({])([ \t]*)(?:\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])[ \t]*(?:\d+|-|[^\s;&|<>(){}]+)?[ \t]*)+", re.M)
 
 
 def _bash_pre(cmd: str) -> str:
