@@ -434,19 +434,24 @@ const MAIL_SEND_OPT = /^-[A-Za-z]*[sbcrtaAq]/
 const CURL_SMTP = /^(?:smtps?:\/\/|--mail-(?:rcpt|from)(?:=|$))/i
 // KNOWNLIMITS1127 (card 2104b499): mail clients that passed in plain form; see _mua_head_sends in the python twin
 const MUA_PROG = /^(mutt|neomutt)$/i
-const MUA_INFO = new Set(['-v', '-vv', '-V', '-h', '-D', '-Q', '-A', '--version', '--help'])
-const OSA_MAIL = /\bapplication\s+(?:id\s+)?"(?:Mail|com\.apple\.mail)"/i
-const OSA_SEND = /\bsend\b/i
-const OSA_BARE = /\bosascript\b[\s\S]*\bapplication\s+(?:id\s+)?"?(?:Mail|com\.apple\.mail)\b[\s\S]*\bsend\b/i // see _OSA_BARE
+const MUA_INFO = new Set(['-v', '-vv', '-V', '-h', '-D', '-R', '-y', '-Z', '-z', '-n', '-p', '--version', '--help'])
+const MUA_VALUE = new Set(['-f', '-F', '-e', '-m', '-Q', '-A'])
+const OSA_WORDS = /\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b/i
+const OSA_BARE = /\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)/i // see _OSA_BARE
 function muaHeadSends(prog, rest) {
   const p = prog.toLowerCase()
-  if (MUA_PROG.test(p)) return rest.some((w) => !MUA_INFO.has(w))
+  if (MUA_PROG.test(p)) {
+    let skip = false
+    for (const w of rest) {
+      if (skip) { skip = false; continue }
+      if (MUA_VALUE.has(w)) { skip = true; continue }
+      if (!MUA_INFO.has(w) && !(MUA_VALUE.has(w.slice(0, 2)) && w.length > 2)) return true
+    }
+    return false
+  }
   if (p === 'himalaya') return rest.includes('send')
   if (p === 'gws' || p === 'gog') return rest.some((w) => w === 'send' || w === '+send')
-  if (p === 'osascript') {
-    const text = rest.join(' ')
-    return OSA_MAIL.test(text) && OSA_SEND.test(text)
-  }
+  if (p === 'osascript') return [rest.join(' '), ...lineCtx.texts].some((s) => OSA_WORDS.test(s)) // Mail + send anywhere
   return false
 }
 
@@ -1805,8 +1810,8 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   // unquoted bash $'...' as the single-quoted text bash makes of it (decodeAnsiC, and decodeAnsiCSh, which skips comments
   // and heredoc bodies as bash does; Revizor 5852 J2: both stay); a send when ANY reading sends, and the line state is the
   // strictest of them. See the python twin (is_send_invocation) for the shapes it closes.
-  const extras = extraReadings(cmd)
-  const plain = [cmd, decodeAnsiC(cmd), decodeAnsiCSh(cmd)]
+  const plain = [...new Set([cmd, decodeAnsiC(cmd), decodeAnsiCSh(cmd)])]
+  const extras = [...new Set(plain.flatMap((p) => extraReadings(p)))]
   const texts = [...new Set([...plain, ...extras])]
   // MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
   if (depth === 0) lineCtx = { cwd, texts: [] }
@@ -1824,7 +1829,8 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   }
   if (texts.some((t) => readingSends(t, depth, plain.includes(t) || !extras.includes(t)))) return true
   // KNOWNLIMITS1127 (M1): a $( ) or `...` inside double quotes runs too; its body is judged like a -c program
-  if (depth < 3 && dqSubstBodies(cmd).some((b) => [...new Set([b, undoDquoteEscapes(b)])].some((x) => isSendInvocation(x, depth + 1)))) return true
+  if (depth < 3 && substBodies(plain).some((b) =>
+    [...new Set([b, undoDquoteEscapes(b)])].some((x) => isSendInvocation(x, depth + 1)))) return true
   return dynamicHeadMark(texts)
 }
 
@@ -1875,7 +1881,7 @@ function ansiCEach(cmd) {
 function ansiCInplace(cmd) {
   const flat = cmd.replaceAll('\\\n', '')
   const starts = []
-  for (let i = flat.indexOf("$'"); i >= 0 && starts.length < 32; i = flat.indexOf("$'", i + 1)) starts.push(i)
+  for (let i = flat.indexOf("$'"); i >= 0 && starts.length < 128; i = flat.indexOf("$'", i + 1)) starts.push(i)
   const out = []
   const n = flat.length
   for (const k of starts) {
@@ -1908,7 +1914,6 @@ function ansiCSendMark(cmd) {
 // KNOWNLIMITS1127 (card 2104b499): more readings, each only ADDED: backslash-newlines removed (K04), simple brace
 // words expanded (K03), comments dropped by the develop rule (M2), a `#` inside ${...} escaped (M4). See _extra_readings.
 const BRACE_WORD = /([^\s'"{}]*)\{([^\s'"{}]*(?:,[^\s'"{}]*)+)\}([^\s'"]*)/g
-const DOLLAR_BRACE = /\$\{[^{}]*\}/g
 function braceExpand(cmd) {
   let out = cmd
   for (let k = 0; k < 4; k++) {
@@ -2011,13 +2016,59 @@ function stripCommentsBash(cmd, drop = true) {
   }
   return out
 }
+// Revizor 5927 L1-L3: heredoc bodies out and bash's comments dropped before any other added scanner; see _bash_pre
+function bashPre(cmd) {
+  const pre = cmd.includes('<<') ? cmd.replace(HEREDOC_RE, '$1') : cmd
+  return pre.includes('#') ? stripCommentsBash(pre) : pre
+}
 function extraReadings(cmd) {
-  let base = cmd.includes('\\') ? escapeNeutral(removeContinuations(cmd)) : cmd
-  if (base.includes('#')) base = stripCommentsBash(base, false)
-  const out = [base]
-  if (base.includes('{') && base.includes(',')) out.push(braceExpand(base))
-  if (base.includes('#')) out.push(stripCommentsBash(base))
+  const out = []
+  for (const src of new Set([cmd, bashPre(cmd)])) {
+    let base = src.includes('\\') ? escapeNeutral(removeContinuations(src)) : src
+    if (base.includes('#')) base = stripCommentsBash(base, false)
+    out.push(base)
+    if (base.includes('{') && base.includes(',')) out.push(braceExpand(base))
+    if (base.includes('#')) out.push(stripCommentsBash(base))
+  }
   return [...new Set(out)].filter((o) => o !== cmd)
+}
+// KNOWNLIMITS1127: the substitution bodies bash runs that the tokenizer keeps as text; see _subst_bodies
+function substBodies(plain) {
+  const out = []
+  for (const p of plain) {
+    for (const src of new Set([p, bashPre(p)])) out.push(...dqSubstBodies(src))
+    out.push(...heredocSubstBodies(p))
+  }
+  return [...new Set(out)]
+}
+const HEREDOC_QUOTED = /<<-?\s*['"\\]/
+// Revizor 5927 M2 (J14): $( ) and `...` in an unquoted heredoc body; see _heredoc_subst_bodies
+function heredocSubstBodies(cmd) {
+  if (!cmd.includes('<<')) return []
+  const out = []
+  for (const m of cmd.matchAll(HEREDOC_RE)) {
+    if (HEREDOC_QUOTED.test(m[1])) continue
+    const body = m[0].slice(m[1].length + 1)
+    const n = body.length
+    for (let i = 0; i < n;) {
+      if (body[i] === '\\') { i += 2; continue }
+      if (body.startsWith('$(', i)) {
+        const j = dqCloseParen(body, i + 2)
+        out.push(body.slice(i + 2, j))
+        i = j + 1
+        continue
+      }
+      if (body[i] === '`') {
+        let j = i + 1
+        while (j < n && body[j] !== '`') j += body[j] === '\\' ? 2 : 1
+        out.push(body.slice(i + 1, j))
+        i = j + 1
+        continue
+      }
+      i++
+    }
+  }
+  return out
 }
 function dqCloseParen(cmd, i) {
   let depth = 1
@@ -2054,7 +2105,7 @@ function dqSubstBodies(cmd) {
     if (ch === '\\') { i += 2; continue }
     if (q === null) { if (ch === "'" || ch === '"') q = ch; i++; continue }
     if (ch === '"') { q = null; i++; continue }
-    if (cmd.startsWith('$(', i) && !cmd.startsWith('$((', i)) {
+    if (cmd.startsWith('$(', i)) { // `$((` too, see the python twin
       const j = dqCloseParen(cmd, i + 2)
       out.push(cmd.slice(i + 2, j))
       i = j + 1
@@ -2087,6 +2138,8 @@ function dynamicHeadMark(texts) {
         while (w.length && (w[0] === 'builtin' || w[0] === 'command')) w = w.slice(1)
         if (w.length && w[0] === 'eval' && w.slice(1).some((x) => x.includes('$') || x.includes('`'))) kinds.add('eval') // a static eval line: EVALXARGSMAIL1126
         else if (w.length && DYNAMIC_HEAD.test(w[0])) kinds.add('var')
+        else if (w.length && WRAPPER_SHELL.test(basename(w[0])) && w.some((x, k) => (x === '-c' || SHELL_C_FLAG.test(x)) &&
+          k + 1 < w.length && (w[k + 1].startsWith('$') || w[k + 1].startsWith('`')))) kinds.add('var') // Revizor 5927 M3 (J41)
       }
     }
   }

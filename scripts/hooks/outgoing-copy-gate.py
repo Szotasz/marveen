@@ -96,29 +96,42 @@ _MAIL_SEND_OPT = re.compile(r"^-[A-Za-z]*[sbcrtaAq]")
 _CURL_SMTP = re.compile(r"^(?:smtps?://|--mail-(?:rcpt|from)(?:=|$))", re.I)
 
 
-# KNOWNLIMITS1127 (card 2104b499, Revizor 5865 and 5892): mail clients that passed in plain form. mutt / neomutt with
-# any word other than an info option (version, help, a config dump or query) sends or opens the composer; himalaya with
+# KNOWNLIMITS1127 (card 2104b499, Revizor 5865, 5892, 5927): mail clients that passed in plain form. mutt / neomutt with a recipient word or a
+# composing option sends or opens the composer (reading a mailbox, -f, and the info options do not); himalaya with
 # a `send` word (message send, template send); the Google Workspace CLIs gws / gog with a `send` or `+send` word; and
-# osascript whose script text names the Mail application together with `send`. Twin: muaHeadSends.
+# osascript whose script text names the Mail application (`application`, `app`, JavaScript `Application(...)`) with
+# `send`, its -e text or, with no -e, the line's text (a heredoc or file script). Twin: muaHeadSends.
 _MUA_PROG = re.compile(r"^(mutt|neomutt)$", re.I)
-_MUA_INFO = frozenset(("-v", "-vv", "-V", "-h", "-D", "-Q", "-A", "--version", "--help"))
-_OSA_MAIL = re.compile(r"\bapplication\s+(?:id\s+)?\"(?:Mail|com\.apple\.mail)\"", re.I)
-_OSA_SEND = re.compile(r"\bsend\b", re.I)
+_MUA_INFO = frozenset(("-v", "-vv", "-V", "-h", "-D", "-R", "-y", "-Z", "-z", "-n", "-p", "--version", "--help"))
+_MUA_VALUE = frozenset(("-f", "-F", "-e", "-m", "-Q", "-A"))   # take a value: a mailbox, a config, a command, a query
+_OSA_WORDS = re.compile(r"\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b", re.I)
 # the same as a mark on a reading whose quotes may be gone (KNOWNLIMITS1127, F26): osascript ... application Mail ... send
-_OSA_BARE = re.compile(r"\bosascript\b[\s\S]*\bapplication\s+(?:id\s+)?\"?(?:Mail|com\.apple\.mail)\b[\s\S]*\bsend\b", re.I)
+_OSA_BARE = re.compile(r"\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)", re.I)
 
 
 def _mua_head_sends(prog: str, rest) -> bool:
     p = prog.lower()
     if _MUA_PROG.match(p):
-        return any(w not in _MUA_INFO for w in rest)
+        # a word that is no option (a recipient) or an option that is no read / info one (-s, -a, -c, -b, -H, -i ...)
+        skip = False
+        for w in rest:
+            if skip:
+                skip = False
+                continue
+            if w in _MUA_VALUE:
+                skip = True
+                continue
+            if w not in _MUA_INFO and not (w[:2] in _MUA_VALUE and len(w) > 2):
+                return True
+        return False
     if p == "himalaya":
         return "send" in rest
     if p in ("gws", "gog"):
         return any(w in ("send", "+send") for w in rest)
     if p == "osascript":
-        text = " ".join(rest)
-        return bool(_OSA_MAIL.search(text) and _OSA_SEND.search(text))
+        # Marveen 5931 / 5934, the audit direction: with any -l language, -e text, stdin or heredoc script, `Mail` and
+        # `send` anywhere in the script text (the line's own text, heredoc bodies included) make it a send
+        return any(_OSA_WORDS.search(s) for s in [" ".join(rest)] + list(_LINE_CTX[1]))
     return False
 
 
@@ -1959,8 +1972,9 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     # (_ansi_c_send_mark, round 4). Twin: isSendInvocation.
     # Revizor 5852 J2: the plain decoding stays a reading of its own next to the shell-scanning one, so a form the
     # scanner reads unlike bash is still judged as the first round judged it
-    extras = _extra_readings(cmd)
-    texts = tuple(dict.fromkeys((cmd, _decode_ansi_c(cmd), _decode_ansi_c_sh(cmd)) + extras))
+    plain = tuple(dict.fromkeys((cmd, _decode_ansi_c(cmd), _decode_ansi_c_sh(cmd))))
+    extras = tuple(dict.fromkeys(x for p in plain for x in _extra_readings(p)))
+    texts = tuple(dict.fromkeys(plain + extras))
     # MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
     if _depth == 0:
         _LINE_CTX[:] = [cwd, []]
@@ -1977,11 +1991,10 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
             _LINE_CTX[1].append(bare)
             _LINE_EXEMPT_OK[0] = _LINE_EXEMPT_OK[0] and _line_clean(bare)
             texts = texts + (bare,)
-    plain = (cmd, _decode_ansi_c(cmd), _decode_ansi_c_sh(cmd))
     if any(_reading_sends(t, _depth, fallback=t in plain or t not in extras) for t in texts):
         return True
     # KNOWNLIMITS1127 (M1): a $( ) or `...` inside double quotes runs too; its body is judged like a -c program
-    if _depth < _SHELL_C_DEPTH and any(_program_sends(x, _depth + 1) for b in _dq_subst_bodies(cmd)
+    if _depth < _SHELL_C_DEPTH and any(_program_sends(x, _depth + 1) for b in _subst_bodies(plain)
                                        for x in dict.fromkeys((b, _undo_dquote_escapes(b)))):
         return True
     return _dynamic_head_mark(texts)
@@ -2057,7 +2070,7 @@ def _ansi_c_inplace(cmd: str) -> tuple:
     characters taken out: `s$'\\x65ndmail'` and `$'s\\x65nd'$'m\\x61il'` read `sendmail`. Only the mark search reads
     it. Twin: ansiCInplace."""
     flat = cmd.replace("\\\n", "")
-    starts = [m.start() for m in re.finditer(r"\$'", flat)][:32]
+    starts = [m.start() for m in re.finditer(r"\$'", flat)][:128]
     out = []
     n = len(flat)
     for k in starts:
@@ -2093,7 +2106,6 @@ def _ansi_c_send_mark(cmd: str) -> bool:
 # (K03, `--t{o,}`), the comments dropped by the develop rule (M2: the JS tokenizer knows no comment) and a `#` inside
 # ${...} written escaped (M4: `${x:- # y}` is no comment, the python mask read one). Twin: extraReadings.
 _BRACE_WORD = re.compile(r"([^\s'\"{}]*)\{([^\s'\"{}]*(?:,[^\s'\"{}]*)+)\}([^\s'\"]*)")
-_DOLLAR_BRACE = re.compile(r"\$\{[^{}]*\}")
 
 
 def _brace_expand(cmd: str) -> str:
@@ -2201,16 +2213,71 @@ def _strip_comments_bash(cmd: str, drop: bool = True) -> str:
 def _extra_readings(cmd: str) -> tuple:
     """the backslash-newlines removed, the other escapes outside quotes neutral (_escape_neutral) and every `#` that
     starts no bash comment written `_` (M4: `${x:- # y}`), then that text as it is, with its simple brace words expanded
-    and with bash's comments dropped."""
-    base = _escape_neutral(_remove_continuations(cmd)) if "\\" in cmd else cmd
-    if "#" in base:
-        base = _strip_comments_bash(base, drop=False)
-    out = [base]
-    if "{" in base and "," in base:
-        out.append(_brace_expand(base))
-    if "#" in base:
-        out.append(_strip_comments_bash(base))
+    and with bash's comments dropped; all of it once on the command and once on _bash_pre of it."""
+    out = []
+    for src in dict.fromkeys((cmd, _bash_pre(cmd))):
+        base = _escape_neutral(_remove_continuations(src)) if "\\" in src else src
+        if "#" in base:
+            base = _strip_comments_bash(base, drop=False)
+        out.append(base)
+        if "{" in base and "," in base:
+            out.append(_brace_expand(base))
+        if "#" in base:
+            out.append(_strip_comments_bash(base))
     return tuple(o for o in dict.fromkeys(out) if o != cmd)
+
+
+def _bash_pre(cmd: str) -> str:
+    """Revizor 5927 L1-L3: the command with its heredoc bodies taken out (_HEREDOC, as the tokenizer does) and its
+    comments dropped by bash's rule (_strip_comments_bash), BEFORE any other added scanner runs: an apostrophe in
+    `# it's` or in a heredoc line then cannot open a quote for them. Twin: bashPre."""
+    pre = _HEREDOC.sub(r"\1", cmd) if "<<" in cmd else cmd
+    return _strip_comments_bash(pre) if "#" in pre else pre
+
+
+def _subst_bodies(plain) -> list:
+    """KNOWNLIMITS1127: the substitution bodies bash runs that the tokenizer keeps as text: inside double quotes (M1),
+    of every plain reading and of its _bash_pre, and inside an unquoted heredoc body (J14)."""
+    out = []
+    for p in plain:
+        for src in dict.fromkeys((p, _bash_pre(p))):
+            out += _dq_subst_bodies(src)
+        out += _heredoc_subst_bodies(p)
+    return list(dict.fromkeys(out))
+
+
+_HEREDOC_QUOTED = re.compile(r"<<-?\s*['\"\\]")
+
+
+def _heredoc_subst_bodies(cmd: str) -> list:
+    """Revizor 5927 M2 (J14): in an UNQUOTED heredoc body bash expands $( ) and `...`, so their bodies run; quotes in
+    the body are plain text there. Twin: heredocSubstBodies."""
+    if "<<" not in cmd:
+        return []
+    out = []
+    for m in _HEREDOC.finditer(cmd):
+        if _HEREDOC_QUOTED.search(m.group(1)):
+            continue
+        body = m.group(0)[len(m.group(1)) + 1:]
+        i, n = 0, len(body)
+        while i < n:
+            if body[i] == "\\":
+                i += 2
+                continue
+            if body.startswith("$(", i):
+                j = _dq_close_paren(body, i + 2)
+                out.append(body[i + 2:j])
+                i = j + 1
+                continue
+            if body[i] == "`":
+                j = i + 1
+                while j < n and body[j] != "`":
+                    j += 2 if body[j] == "\\" else 1
+                out.append(body[i + 1:j])
+                i = j + 1
+                continue
+            i += 1
+    return out
 
 
 def _dq_close_paren(cmd: str, i: int) -> int:
@@ -2265,7 +2332,7 @@ def _dq_subst_bodies(cmd: str) -> list:
             q = None
             i += 1
             continue
-        if cmd.startswith("$(", i) and not cmd.startswith("$((", i):
+        if cmd.startswith("$(", i):   # `$((` too: when it is no arithmetic, bash runs it as a substitution
             j = _dq_close_paren(cmd, i + 2)
             out.append(cmd[i + 2:j])
             i = j + 1
@@ -2314,6 +2381,10 @@ def _dynamic_head_mark(texts) -> bool:
                     kinds.add("eval")   # a static eval line is judged word by word (EVALXARGSMAIL1126)
                 elif w and _DYNAMIC_HEAD.match(w[0]):
                     kinds.add("var")
+                elif w and _WRAPPER_SHELL.match(_basename(w[0])) and any(
+                        (x == "-c" or _SHELL_C_FLAG.match(x)) and k + 1 < len(w) and w[k + 1].startswith(("$", "`"))
+                        for k, x in enumerate(w)):
+                    kinds.add("var")   # Revizor 5927 M3 (J41): a shell -c program taken from a variable
     if not kinds:
         return False
     looked = [s for t in texts for s in (t, re.sub(r"[\"'\\]", "", t))]

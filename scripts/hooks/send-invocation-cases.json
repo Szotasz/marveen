@@ -4538,6 +4538,86 @@
       "name": "KNOWNLIMITS1127 (card 2104b499): control: a hash inside ${...} with no program after it",
       "cmd": "echo ${x:- # y}",
       "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J01 comment apostrophe, then K04 (mark split by continuations)",
+      "cmd": "# it's\n$X --t\\\no a@exam\\\nple.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J02 comment apostrophe, then K03 (brace expansion)",
+      "cmd": "# it's\n$X --t{o,} a@example.{com,} --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J03 heredoc body apostrophe, then K04",
+      "cmd": "cat <<EOF\nit's\nEOF\n$X --t\\\no a@exam\\\nple.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J06 comment apostrophe, then curl host split by a continuation",
+      "cmd": "# it's\ncurl -d @m.json https://api.re\\\nsend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J13 double-quoted substitution that starts with two parens: $((P) piped to cat)",
+      "cmd": "echo \"$(($X --to a@example.com --body B) | cat)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J19 comment apostrophe, then double-quoted $( )",
+      "cmd": "# it's\necho \"$($X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J20 comment apostrophe, then double-quoted backticks",
+      "cmd": "# it's\necho \"`$X --to a@example.com --body B`\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J21 heredoc body apostrophe, then double-quoted $( )",
+      "cmd": "cat <<EOF\nit's\nEOF\necho \"$($X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J22 comment apostrophe, then double-quoted $( ), curl",
+      "cmd": "# it's\necho \"$(curl -d @m.json https://api.resend.com/emails)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J23 osascript: tell app \"Mail\" to send",
+      "cmd": "osascript -e 'tell app \"Mail\" to send m'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J24 osascript JXA: Application(\"Mail\") ... send()",
+      "cmd": "osascript -l JavaScript -e 'Application(\"Mail\").outgoingMessages[0].send()'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J25 osascript script in a heredoc: Mail send",
+      "cmd": "osascript <<EOF\ntell application \"Mail\" to send m\nEOF",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J26 osascript script in a quoted heredoc: Mail send",
+      "cmd": "osascript <<'EOF'\ntell application \"Mail\" to send m\nEOF",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J41 program text in a variable, bash -c \"$c\", curl",
+      "cmd": "c='curl -d @m.json https://api.resend.com/emails'; bash -c \"$c\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1: control: mutt opening a mailbox (Revizor 5927 M7)",
+      "cmd": "mutt -f inbox",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1: control: osascript talks to Finder by app name",
+      "cmd": "osascript -e 'tell app \"Finder\" to get name of every disk'",
+      "expected": false
     }
   ]
 }
