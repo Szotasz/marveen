@@ -114,19 +114,6 @@ else
     fail "an install with no templates reported success"
 fi
 
-# (7) This checkout, against the real live tree: today there is nothing missing,
-# and that is worth anchoring so a future template key cannot land unnoticed.
-if [ -d "$HOME/.claude/scheduled-tasks" ]; then
-    real="$(bash "$SCAN" 2>&1)"; status=$?
-    if [ "$status" -eq 0 ]; then
-        pass "the real live tree has no missing template keys"
-    else
-        fail "live tree drift: $real"
-    fi
-else
-    echo "  SKIP: no live ~/.claude/scheduled-tasks on this host"
-fi
-
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

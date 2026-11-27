@@ -112,7 +112,7 @@ def render(v):
     return v
 
 # `agent` is the one key whose value is SUPPOSED to differ: the templates ship
-# under the upstream default agent id and the live copy runs under ours. Treating
+# under the upstream default agent id and the live copy runs under the install's own. Treating
 # it as drift would put a line in every report forever, which is how a report
 # stops being read.
 ALWAYS_EXPECTED = {"agent", "createdAt"}
