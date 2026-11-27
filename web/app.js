@@ -9035,6 +9035,31 @@ const RUN_STATUS_CLASS = {
   skipped: 'badge-paused',
 }
 
+// SCHEDDONEB1127: how the run ENDED (task_runs.outcome), next to how it was dispatched. 'done-unverified' is a
+// run that went idle after a turn while its prompt's delivery was not verified intact; the delivery verdict is
+// shown beside it, so the reader sees what arrived. An outcome without a label here is shown as it is.
+const RUN_OUTCOME_LABEL = {
+  done: () => t('tasks.outcome.done'),
+  'done-unverified': () => t('tasks.outcome.done_unverified'),
+  failed: () => t('tasks.outcome.failed'),
+}
+const RUN_OUTCOME_CLASS = {
+  done: 'badge-active',
+  'done-unverified': 'badge-paused',
+  failed: 'badge-not-firing',
+  lost: 'badge-not-firing',
+  unauth: 'badge-not-firing',
+}
+
+function runOutcomeCell(run) {
+  if (run.outcome == null) return run.completed_at == null ? escapeHtml(t('tasks.outcome.open')) : '-'
+  const labelFn = RUN_OUTCOME_LABEL[run.outcome]
+  const label = labelFn ? labelFn() : run.outcome
+  const cls = RUN_OUTCOME_CLASS[run.outcome] || 'badge-paused'
+  const delivery = run.delivery ? `<div class="hint" style="font-size:11px;overflow-wrap:anywhere">${escapeHtml(run.delivery)}</div>` : ''
+  return `<span class="badge ${cls}">${escapeHtml(label)}</span>${delivery}`
+}
+
 async function openScheduleRunHistory(taskName) {
   document.getElementById('scheduleRunHistoryTitle').textContent = t('tasks.history.title', { name: taskName })
   const body = document.getElementById('scheduleRunHistoryBody')
@@ -9058,6 +9083,7 @@ async function openScheduleRunHistory(taskName) {
       return `<tr>
         <td style="white-space:nowrap">${date} ${time}</td>
         <td><span class="badge ${cls}">${escapeHtml(label)}</span></td>
+        <td>${runOutcomeCell(run)}</td>
         <td style="text-align:right;font-variant-numeric:tabular-nums">${tokens}</td>
       </tr>`
     }).join('')
@@ -9065,6 +9091,7 @@ async function openScheduleRunHistory(taskName) {
       <thead><tr>
         <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.time')}</th>
         <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.status')}</th>
+        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.outcome')}</th>
         <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.tokens')}</th>
       </tr></thead>
       <tbody>${rows}</tbody>

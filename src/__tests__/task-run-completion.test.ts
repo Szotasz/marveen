@@ -76,7 +76,9 @@ describe('the two ending kinds stay distinct', () => {
 describe('every run that opens also closes', () => {
   it('the sweep closes the row it opened, for both ending kinds', () => {
     expect(RUNNER_SRC).toMatch(/decision === 'done' \|\| decision === 'abandoned'/)
-    expect(RUNNER_SRC).toMatch(/markTaskRunCompleted\(entry\.runId, decision, now\)/)
+    // SCHEDDONEB1127: the outcome is closedRunOutcome's (a 'done' with an unverified delivery is
+    // 'done-unverified'); pinned in schedule-run-outcome-delivery.test.ts.
+    expect(RUNNER_SRC).toMatch(/markTaskRunCompleted\(entry\.runId, closedRunOutcome\(decision, /)
   })
 
   it('the lost path closes the original row too, not just appends a lost one', () => {

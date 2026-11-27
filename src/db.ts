@@ -6438,8 +6438,10 @@ export function appendTaskRun(name: string, agent: string, status = 'fired'): nu
  * filter on 'done' and must not count it.
  * 'failed' (SCHEDDONEA1127): a command task whose command did not succeed (non-zero exit, timeout, spawn error).
  * Not 'done' either, for the same reason.
+ * 'done-unverified' (SCHEDDONEB1127): the session took a turn and went idle, but the prompt's delivery was not
+ * verified intact (closedRunOutcome, schedule-runner.ts). Not counted as a success either.
  */
-export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted' | 'unauth' | 'failed'
+export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted' | 'unauth' | 'failed' | 'done-unverified'
 
 /**
  * Close a run. Idempotent by design: the WHERE clause refuses to overwrite an
