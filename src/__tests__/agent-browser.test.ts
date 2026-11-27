@@ -3,7 +3,7 @@
 // the marveen-browser MCP entry added for an allowed agent and removed for every other one (their other servers
 // kept), the output-folder cleanup by time, and the CDP port kept per agent.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync, chmodSync, symlinkSync, statSync, closeSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -217,4 +217,39 @@ describe('a real failed start reaches the log with Chrome\'s own words', () => {
     expect(JSON.stringify(w?.obj.stderr)).toMatch(/No usable sandbox/)
     expect(readFileSync(ab.agentBrowserStderrPath('geri'), 'utf-8')).toMatch(/No usable sandbox/)
   }, 30_000)
+})
+
+// Dani, #3194 review: the stderr file must not be opened through a symlink, and must be 0600 even when it existed.
+describe('the stderr log file is opened safely', () => {
+  it('refuses a symlink planted at the path: the target is not truncated or written', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ab-link-'))
+    const target = join(dir, 'victim.txt')
+    writeFileSync(target, 'keep me')
+    const link = join(dir, 'chrome-stderr.log')
+    symlinkSync(target, link)
+    expect(ab.openStderrLog(link)).toBeNull()
+    expect(readFileSync(target, 'utf-8')).toBe('keep me')
+  })
+  it('an existing loose file becomes 0600 and is truncated', () => {
+    const p = join(mkdtempSync(join(tmpdir(), 'ab-loose-')), 'chrome-stderr.log')
+    writeFileSync(p, 'old content')
+    chmodSync(p, 0o644)
+    const fd = ab.openStderrLog(p)
+    expect(fd).not.toBeNull()
+    writeSync(fd as number, 'new')
+    closeSync(fd as number)
+    expect(statSync(p).mode & 0o777).toBe(0o600)
+    expect(readFileSync(p, 'utf-8')).toBe('new')
+  })
+})
+
+describe('error lines carry no URL detail', () => {
+  it('keeps scheme and host, drops userinfo, path, query', () => {
+    const f = ab.chromeStartFailure('ERROR: load failed https://user:pass@idp.example.com/cb?code=abc&access_token=xyz#frag\n')
+    expect(f.lines[0]).toContain('https://idp.example.com/<redacted>')
+    expect(f.lines[0]).not.toMatch(/user:pass|code=abc|access_token|frag/)
+  })
+  it('a "TypeError" line is not an ERROR line by itself', () => {
+    expect(ab.chromeStartFailure('TypeError: something at https://x.example/a?t=1\n').lines).toEqual([])
+  })
 })

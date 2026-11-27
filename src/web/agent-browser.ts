@@ -10,7 +10,7 @@
 // The agent reaches it through the Playwright MCP server attached over CDP (the marveen-browser entry this module
 // writes into the agent's .mcp.json); the vault-login filler attaches to the same browser in the dashboard process.
 import { spawn } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { closeSync, constants as fsConstants, existsSync, fchmodSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
@@ -84,13 +84,33 @@ export function agentBrowserStderrPath(agent: string): string {
 }
 
 /**
+ * Chrome's stderr file, opened for this start: never through a symlink (O_NOFOLLOW: a link planted at the path would
+ * otherwise have the dashboard truncate and write its target with the dashboard's rights; Dani, #3194 review), and
+ * 0600 also when the file already existed. Null when it cannot be opened that way: the start then goes on without it.
+ */
+export function openStderrLog(path: string): number | null {
+  try {
+    const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 0o600)
+    try { fchmodSync(fd, 0o600) } catch { /* the open itself is what matters */ }
+    return fd
+  } catch {
+    return null
+  }
+}
+
+/** A URL in a log line keeps its scheme and host only: no userinfo, path, query or fragment (a token or code rides there). */
+export function redactUrls(line: string): string {
+  return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@]*@)?([^\s/?#'"<>]+)[^\s'"<>]*/gi, '$1$2/<redacted>')
+}
+
+/**
  * What a failed start tells the owner, from the tail of Chrome's stderr. Only error-looking lines, capped, so a page
  * URL in an ordinary log line does not reach the dashboard log. Ubuntu 23.10+ restricts unprivileged user namespaces
  * through AppArmor, and a Chrome/Chromium without an AppArmor profile (Playwright's Chromium, a manual build) then
  * stops at once with "No usable sandbox!": that case gets its own hint.
  */
 export function chromeStartFailure(stderr: string): { reason: string; lines: string[] } {
-  const lines = stderr.split('\n').map((l) => l.trim()).filter((l) => /FATAL|ERROR|sandbox|cannot|failed/i.test(l)).slice(-5).map((l) => l.slice(0, 300))
+  const lines = stderr.split('\n').map((l) => l.trim()).filter((l) => /\bFATAL\b|\bERROR\b|sandbox|cannot|failed/i.test(l)).slice(-5).map((l) => redactUrls(l).slice(0, 300))
   if (/No usable sandbox/i.test(stderr)) {
     return {
       reason: 'Chrome has no usable sandbox (on Ubuntu 23.10+ the AppArmor user-namespace restriction): install Google Chrome from its .deb (it ships an AppArmor profile), or point AGENT_BROWSER_CHROME at a browser that has one',
@@ -161,8 +181,7 @@ export async function ensureAgentBrowser(agent: string): Promise<string | null> 
   mkdirSync(agentBrowserOutputDir(agent), { recursive: true })
   writePasswordManagerOff(profile)
   const stderrPath = agentBrowserStderrPath(agent)
-  let errFd: number | 'ignore' = 'ignore'
-  try { errFd = openSync(stderrPath, 'w', 0o600) } catch { errFd = 'ignore' }
+  const errFd: number | 'ignore' = openStderrLog(stderrPath) ?? 'ignore'
   const child = spawn(chrome, agentBrowserArgs(profile, port), { detached: true, stdio: ['ignore', 'ignore', errFd] })
   if (typeof errFd === 'number') closeSync(errFd)
   child.on('error', (err) => logger.warn({ agent, err: err.message }, 'agent-browser: start failed'))

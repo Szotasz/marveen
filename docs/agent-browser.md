@@ -41,4 +41,5 @@ and hand-built ones are affected. Two fixes:
 - Point `AGENT_BROWSER_CHROME` at another browser that has a profile.
 
 Turning the sandbox off (a wrapper adding `--no-sandbox`) also makes it start. It removes Chrome's own isolation
-for every page the agent opens, so it is the owner's decision, not a default.
+for every page the agent opens, so it is the owner's decision, not a default. This browser also holds the signed-in
+sessions of the vault logins: without the sandbox, a renderer bug reaches the profile's cookies too.
