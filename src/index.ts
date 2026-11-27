@@ -18,7 +18,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { parseStoreWatchExclude } from './config-registry.js'
 import { ownerAlertChatOverride, resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
-import { runDecaySweep, runDailyDigest, msUntilNextDigest } from './memory.js'
+import { runDecaySweep, runDailyDigest, armDailyDigest } from './memory.js'
 import { scheduleDecaySweep } from './decay-schedule.js'
 import { DECAY_SWEEP_INTERVAL_MS } from './db.js'
 import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
@@ -589,14 +589,10 @@ async function main(): Promise<void> {
   sweepScheduledRunSnapshots()
   scheduledRunSnapshotSweepInterval = setInterval(() => sweepScheduledRunSnapshots(), LOG_ROTATION_SWEEP_MS)
 
-  // Daily digest at 23:00 local time, re-armed after every run so a
-  // daylight-saving change does not shift it. The handle is kept so shutdown can
-  // drop it.
-  function scheduleDailyDigest(afterRun = false) {
-    // After a run, look from a minute later: a timer that fires a hair early must
-    // not find "23:00 today" still ahead and run twice.
-    const slack = afterRun ? 60_000 : 0
-    const msUntil = msUntilNextDigest(new Date(Date.now() + slack)) + slack
+  // Daily digest at 23:00 local time, re-armed after every run (armDailyDigest)
+  // so a daylight-saving change does not shift it and a failing run does not stop
+  // it. The handle is kept so shutdown can drop it.
+  function scheduleDailyDigest() {
     // Resolved per run, not captured once: a wizard install pairs AFTER boot,
     // so a value read at startup would stay the placeholder for the life of
     // the process and the first digest would go nowhere.
@@ -608,11 +604,10 @@ async function main(): Promise<void> {
       }
       runDailyDigest(chatId).catch((err) => logger.error({ err }, 'Napi naplo hiba'))
     }
-    digestTimer = setTimeout(() => {
-      runDigest()
-      scheduleDailyDigest(true)
-    }, msUntil)
-    logger.info({ nextRun: new Date(Date.now() + msUntil).toLocaleString('hu-HU') }, 'Napi naplo utemezve')
+    armDailyDigest(runDigest, (timer, msUntil) => {
+      digestTimer = timer
+      logger.info({ nextRun: new Date(Date.now() + msUntil).toLocaleString('hu-HU') }, 'Napi naplo utemezve')
+    })
   }
   scheduleDailyDigest()
 

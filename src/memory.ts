@@ -159,6 +159,33 @@ export function msUntilNextDigest(now: Date = new Date()): number {
   return target.getTime() - now.getTime()
 }
 
+// Arms the digest timer for the next local 23:00 and re-arms it after every run.
+// The re-arm sits in a finally: if runDigest throws synchronously (resolving the
+// owner chat, for instance), the next night must still be scheduled -- otherwise
+// the digest stops until the next restart. The throw is logged, not rethrown: an
+// exception escaping a timer callback would take the whole process down.
+// onArm receives each new timer handle (so shutdown can clear it) and its delay.
+export function armDailyDigest(
+  runDigest: () => void,
+  onArm: (timer: NodeJS.Timeout, msUntil: number) => void,
+  afterRun = false,
+): void {
+  // After a run, look from a minute later: a timer that fires a hair early must
+  // not find "23:00 today" still ahead and run twice.
+  const slack = afterRun ? 60_000 : 0
+  const msUntil = msUntilNextDigest(new Date(Date.now() + slack)) + slack
+  const timer = setTimeout(() => {
+    try {
+      runDigest()
+    } catch (err) {
+      logger.error({ err }, 'Napi naplo hiba')
+    } finally {
+      armDailyDigest(runDigest, onArm, true)
+    }
+  }, msUntil)
+  onArm(timer, msUntil)
+}
+
 export async function runDailyDigest(chatId: string): Promise<string | null> {
   // Collect today's episodic memories (last 24h)
   const oneDayAgo = Math.floor(Date.now() / 1000) - 86400
