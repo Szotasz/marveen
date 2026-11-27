@@ -462,7 +462,7 @@ function pythonScriptRun(args, base) {
 // JS / TS extension: their other subcommands (fmt, test, install ...) are not a program run.
 const JS_RUNTIME = /^(?:node(?:js)?|deno|bun)$/
 const JS_VALUE_FLAG = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions',
-  '--input-type', '--env-file', '--title', '--stack-size'])
+  '--input-type', '--env-file', '--env-file-if-exists', '--title', '--stack-size'])
 export function jsScriptIndex(cmd, args) {
   let k = 0
   const sub = cmd === 'deno' || cmd === 'bun'
