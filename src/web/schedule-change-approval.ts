@@ -88,6 +88,10 @@ export function fileScheduleChange(body: unknown, requestedBy: string, lang: 'hu
   if (!task || sanitizeScheduleName(task) !== task) return { status: 400, body: { error: 'task must be an existing task name' } }
   const current = readScheduledTask(task)
   if (!current?.contentHash) return { status: 404, body: { error: 'Schedule not found (a proposal changes an existing task only)' } }
+  // Own tasks only (Marveen 19025): an injected agent must not put another agent's schedule before the owner.
+  if (requestedBy !== MAIN_AGENT_ID && current.agent !== requestedBy) {
+    return { status: 403, body: { error: `A sub-agent proposes changes to its own tasks only; ${task} belongs to ${current.agent}` } }
+  }
   const keys = Object.keys(body.changes)
   if (keys.length === 0) return { status: 400, body: { error: 'changes is empty' } }
   const unknown = keys.filter((k) => !(FIELDS as readonly string[]).includes(k))
@@ -125,6 +129,12 @@ export function fileScheduleChange(body: unknown, requestedBy: string, lang: 'hu
   if (!filed) return { status: 429, body: { error: 'Too many open schedule_change proposals; wait for the owner to decide the open ones.' } }
   logger.info({ approvalId: id, requestedBy, task, fields: keys }, 'schedule_change proposal filed; waiting for the owner')
   return { status: 201, body: { ok: true, approvalId: id, contentHash: hash } }
+}
+
+/** The stored outcome of a proposal (applied, refused:..., failed:...), null while none is recorded. */
+export function scheduleChangeOutcome(approvalId: string): string | null {
+  const row = getDb().prepare('SELECT outcome FROM schedule_change_specs WHERE approval_id = ?').get(approvalId) as { outcome: string | null } | undefined
+  return row?.outcome ?? null
 }
 
 function setOutcome(approvalId: string, outcome: string): void {

