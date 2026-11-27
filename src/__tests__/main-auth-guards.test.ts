@@ -63,9 +63,21 @@ describe('rotation and the shared-login notices', () => {
   })
   it('the respawn guard sends no isolate-advice for a main that runs on a key (the effective mode, as channels.sh)', () => {
     const src = readSrc('src', 'web', 'main-config-decision.ts')
-    const quiet = src.indexOf("onKey = decideMainAuth(gatherMainAuthInputs('shared', null)).effective === 'api'")
-    expect(quiet).toBeGreaterThan(-1)
+    const decided = src.indexOf("const dec = decideMainAuth(gatherMainAuthInputs('shared', null))")
+    const quiet = src.indexOf("onKey = dec.effective === 'api'")
+    expect(decided).toBeGreaterThan(-1)
+    expect(quiet).toBeGreaterThan(decided)
     expect(quiet).toBeLessThan(src.indexOf("createAgentMessage('respawn-guard'"))
+  })
+  it('MAINLOGINAUTH1127: nor for a main that runs on the /login session by choice, in the guard and in channels.sh', () => {
+    const src = readSrc('src', 'web', 'main-config-decision.ts')
+    const quiet = src.indexOf('if (onLogin) {')
+    expect(quiet).toBeGreaterThan(src.indexOf("onLogin = dec.login === true"))
+    expect(quiet).toBeLessThan(src.indexOf("createAgentMessage('respawn-guard'"))
+    const sh = readSrc('scripts', 'channels.sh')
+    const flag = sh.indexOf(`grep -q 'CLAUDE_CODE_OAUTH_TOKEN' "$INSTALL_DIR/store/.channels-pane-auth-post"`)
+    expect(flag).toBeGreaterThan(sh.indexOf('MAIN_AUTH_APPLIED=1'))
+    expect(flag).toBeLessThan(sh.indexOf('[ -z "$_ma_login" ] && [ ! -d "$INSTALL_DIR/.channels-config" ]'))
   })
 })
 

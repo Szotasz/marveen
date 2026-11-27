@@ -34,6 +34,25 @@ describe('decideMainAuth', () => {
     })
     expect(decideMainAuth(base({ installMode: 'keyonly', oauthToken: '', envKey: ENV_KEY, cfgKind: 'own-login', cfgDir: '/c' })).stampTarget).toBeNull()
   })
+  it('MAINLOGINAUTH1127: login mode on the shared root withholds the token and unsets it after CFG_ENV', () => {
+    expect(decideMainAuth(base({ useLogin: true, envKey: ENV_KEY }))).toMatchObject({
+      configured: 'shared', effective: 'subscription', key: '', token: '', postUnset: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'],
+      stampTarget: null, login: true,
+    })
+  })
+  it('MAINLOGINAUTH1127: login mode does not touch an isolated or plan-token main, nor the api mode', () => {
+    for (const o of [{ cfgKind: 'isolated' as const, cfgDir: '/iso' }, { cfgKind: 'plan-token' as const, cfgDir: '/plan' }]) {
+      const d = decideMainAuth(base({ useLogin: true, ...o }))
+      expect(d.token).toBe(TOKEN)
+      expect(d.login).toBeUndefined()
+    }
+    expect(decideMainAuth(base({ useLogin: true, authMode: 'api', vaultKey: KEY }))).toMatchObject({ effective: 'api', token: '' })
+    expect(decideMainAuth(base({ useLogin: true, authMode: 'api', vaultKey: KEY })).login).toBeUndefined()
+  })
+  it('MAINLOGINAUTH1127: off by default (the token, as before)', () => {
+    expect(decideMainAuth(base()).token).toBe(TOKEN)
+    expect(decideMainAuth(base()).login).toBeUndefined()
+  })
   it('shared with nothing: none', () => {
     expect(decideMainAuth(base({ installMode: 'none', oauthToken: '' }))).toMatchObject({ effective: 'none', key: '', token: '', postUnset: [] })
   })
