@@ -6381,9 +6381,16 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 // 'fired_busy' (AUDITBORITEKVESZ918) belongs here with the other two: it is a
 // DELIVERED run whose prompt went into a busy pane, so it is open until the
 // watchdog sweep closes it. Left out, appendTaskRun would stamp completed_at at
-// injection time and a run that has not even started would read as finished --
-// and the authentication path that proves a wrapper-less prompt really came from
-// the scheduler (see docs + the boritek-nelkuli skill) looks for an OPEN run.
+// injection time and a run that has not even started would read as finished.
+//
+// Checking that a wrapper-less prompt really came from the scheduler by finding
+// its OPEN run is a procedure-level rule: no code does it today (the only
+// readers of open rows are queue-view, the restart reconcile and
+// markTaskRunCompleted). Only an open run of a PROMPT task counts there (task
+// type not 'command'). A command task's row is open, as 'fired', while its
+// command runs (SCHEDDONEA1127), but a command task never sends a prompt, so
+// its open row proves nothing. If the check is ever automated, the
+// type != 'command' condition is part of it.
 export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late', 'fired_busy'])
 
 // HBFABRIC1003 gap guard: did a heartbeat digest (first line "## Heartbeat ")
@@ -6429,8 +6436,10 @@ export function appendTaskRun(name: string, agent: string, status = 'fired'): nu
  * 'unauth' (DOCKERUNAUTHRUN1118): the session took the prompt and went idle, but its only reply was Claude Code's
  * "Not logged in" authentication error, so nothing ran. Not 'done': duration statistics and once-task success
  * filter on 'done' and must not count it.
+ * 'failed' (SCHEDDONEA1127): a command task whose command did not succeed (non-zero exit, timeout, spawn error).
+ * Not 'done' either, for the same reason.
  */
-export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted' | 'unauth'
+export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted' | 'unauth' | 'failed'
 
 /**
  * Close a run. Idempotent by design: the WHERE clause refuses to overwrite an

@@ -85,8 +85,10 @@ describe('every run that opens also closes', () => {
     expect(RUNNER_SRC).toMatch(/markTaskRunCompleted\(entry\.runId, 'lost', now\)/)
   })
 
-  it('synchronous command tasks close immediately -- the pane watchdog never sees them', () => {
-    expect(COMMAND_SRC).toMatch(/markTaskRunCompleted\(runId, "done"\)/)
+  it('command tasks close their own run -- the pane watchdog never sees them', () => {
+    // SCHEDDONEA1127: closed with the command's own result, not a fixed 'done'.
+    // The behaviour is pinned in command-task-run-outcome.test.ts.
+    expect(COMMAND_SRC).toMatch(/markTaskRunCompleted\(runId, ok \? "done" : "failed"\)/)
   })
 
   it('a restart cannot leave rows open for ever', () => {
