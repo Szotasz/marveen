@@ -1043,10 +1043,13 @@ function xargsReplaceString(toks) {
 // EVALXARGSMAIL1126: past the depth bound of 3 an eval line or a shell -c program counts as a send when its text carries
 // a send marker (_deeper_sends / _DEPTH_SEND_MARK in the python twin)
 let depthSendMark = null // built on first use: MAIL_MARKER is defined further down
+function depthMark() {
+  depthSendMark ??= new RegExp(MAIL_MARKER.source + String.raw`|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?:\/\/`, 'i')
+  return depthSendMark
+}
 function deeperSends(text, depth) {
   if (depth < 3) return isSendInvocation(text, depth + 1)
-  depthSendMark ??= new RegExp(MAIL_MARKER.source + String.raw`|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?:\/\/`, 'i')
-  return depthSendMark.test(text)
+  return depthMark().test(text)
 }
 // the template as written, plus (HTTP client) the added word at the end, plus (a replace string) every template with it
 // replaced: these only ADD heads (_xargs_heads in the python twin)
@@ -1791,7 +1794,19 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   // A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
   lineExemptOk = (depth === 0 || lineExemptOk) && texts.every((t) => lineClean(t))
   lineMailHost = (depth > 0 && lineMailHost) || texts.some((t) => MAIL_API_HOST.test(t) || wordsMailHost(t)) // MAILCURLSEND1118
+  if (ansiCSendMark(cmd)) return true // round 4: a $' and a send mark is a send outright
   return texts.some((t) => readingSends(t, depth))
+}
+
+// ANSICQUOTE1127 round 4 (Revizor 5858 J3, Marveen 5862): a command with a $' in it is a send when it also carries a send
+// mark anywhere: the depth mark (mail host, sender literal), an address flag or an e-mail address, the last two with the
+// quote and backslash characters taken out. See _ansi_c_send_mark in the python twin for why.
+const ANSI_C_ADDRESS_FLAG = /--(?:to?|cc?|b(?:cc?)?)(?![\w-])/
+const ANSI_C_EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/
+function ansiCSendMark(cmd) {
+  if (!cmd.includes("$'")) return false
+  const bare = cmd.replace(/["'\\]/g, '')
+  return depthMark().test(cmd) || depthMark().test(bare) || ANSI_C_ADDRESS_FLAG.test(bare) || ANSI_C_EMAIL.test(bare)
 }
 
 // isSendInvocation for ONE reading of the command (ANSICQUOTE1127); the line state is set by the caller

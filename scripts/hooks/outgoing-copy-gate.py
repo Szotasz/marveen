@@ -805,12 +805,16 @@ _XARGS_ARG = "$XARGS_ARG"
 _DEPTH_SEND_MARK = []   # compiled on first use: _MAIL_MARKER is defined further down
 
 
+def _depth_send_mark():
+    if not _DEPTH_SEND_MARK:
+        _DEPTH_SEND_MARK.append(re.compile(
+            _MAIL_MARKER.pattern + r"|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://", re.I))
+    return _DEPTH_SEND_MARK[0]
+
+
 def _deeper_sends(text: str, depth: int) -> bool:
     if depth >= 3:
-        if not _DEPTH_SEND_MARK:
-            _DEPTH_SEND_MARK.append(re.compile(
-                _MAIL_MARKER.pattern + r"|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://", re.I))
-        return bool(_DEPTH_SEND_MARK[0].search(text))
+        return bool(_depth_send_mark().search(text))
     # ANSICQUOTE1127: shlex keeps the backslash of \$ and \` inside double quotes, bash and the JS tokenizer drop it, so
     # in `bash -c "echo \$'a\\'b'<newline>P"` this twin read the program as `echo \$'a\'b'...` (a plain quote that swallows
     # the newline). The program is judged as given and with those two escapes undone; a send when either reading sends.
@@ -1923,7 +1927,8 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     # written (the reading so far: dash and a quoted heredoc body read $' as a plain quote) and with every unquoted
     # $'...' as the single-quoted text bash makes of it (_decode_ansi_c, and _decode_ansi_c_sh, which skips comments and
     # heredoc bodies as bash does). It is a send when ANY reading sends, and the line state below is the strictest of
-    # them, so no command judged a send before passes now. Twin: isSendInvocation.
+    # them, so no command judged a send before passes now. A command with a $' and a send mark is a send outright
+    # (_ansi_c_send_mark, round 4). Twin: isSendInvocation.
     # Revizor 5852 J2: the plain decoding stays a reading of its own next to the shell-scanning one, so a form the
     # scanner reads unlike bash is still judged as the first round judged it
     texts = tuple(dict.fromkeys((cmd, _decode_ansi_c(cmd), _decode_ansi_c_sh(cmd))))
@@ -1936,7 +1941,28 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and all(_line_clean(t) for t in texts)
     _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or any(
         bool(_MAIL_API_HOST.search(t)) or _words_mail_host(t) for t in texts)   # MAILCURLSEND1118
+    if _ansi_c_send_mark(cmd):
+        return True
     return any(_reading_sends(t, _depth) for t in texts)
+
+
+# ANSICQUOTE1127 round 4 (Revizor 5858 J3 and its structural note, Marveen 5862): three review rounds showed that a
+# reading of where a $'...' string ends can be wrong in more than one way at once (a quote in a comment or heredoc
+# body, an arithmetic `<<`, a `(` inside ${...}), and then every reading misses the send. So a command with a $' in
+# it is a send, whatever the readings say, when it also carries a send mark anywhere in its text: a mail host or
+# sender literal (_depth_send_mark, the pattern both twins already use past the depth bound), an address flag
+# (--to / --cc / --bcc or an argparse prefix of one) or an e-mail address, the last two looked for with the quote and
+# backslash characters taken out (`--t''o` is --to). This only ever adds sends. Twin: ansiCSendMark.
+_ANSI_C_ADDRESS_FLAG = re.compile(r"--(?:to?|cc?|b(?:cc?)?)(?![\w-])", re.A)
+_ANSI_C_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.A)
+
+
+def _ansi_c_send_mark(cmd: str) -> bool:
+    if "$'" not in cmd:
+        return False
+    bare = re.sub(r"[\"'\\]", "", cmd)
+    return bool(_depth_send_mark().search(cmd) or _depth_send_mark().search(bare) or _ANSI_C_ADDRESS_FLAG.search(bare)
+                or _ANSI_C_EMAIL.search(bare))
 
 
 def _reading_sends(cmd: str, _depth: int) -> bool:

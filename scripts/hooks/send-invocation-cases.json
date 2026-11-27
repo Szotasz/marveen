@@ -4020,14 +4020,14 @@
       "expected": true
     },
     {
-      "name": "ANSICQUOTE1127 (card 41df3b8a): control: the $'...' string runs over the newline and closes later, nothing runs",
+      "name": "ANSICQUOTE1127 (card 41df3b8a): held stricter than bash (round 4 rule: a $' and a send mark is a send): the $'...' string runs over the newline and closes later, nothing runs",
       "cmd": "echo $'a\\'\n$X --to a@example.com --body B'",
-      "expected": false
+      "expected": true
     },
     {
-      "name": "ANSICQUOTE1127 (card 41df3b8a): control: the program is text inside the $'...' string, nothing runs",
+      "name": "ANSICQUOTE1127 (card 41df3b8a): held stricter than bash (round 4 rule: a $' and a send mark is a send): the program is text inside the $'...' string, nothing runs",
       "cmd": "echo $'a\\' ; $X --to a@example.com --body B'",
-      "expected": false
+      "expected": true
     },
     {
       "name": "ANSICQUOTE1127 (card 41df3b8a): control: a read-only line with an escaped quote in $'...'",
@@ -4202,6 +4202,66 @@
     {
       "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D07x let with a quoted shift before B (control)",
       "cmd": "let \"x=1<<2\"\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E01x trigger, $[1<<2], B",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E01c trigger, $[1<<2], B",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E02x trigger, a[1<<2]=x, B",
+      "cmd": "# it's\na[1<<2]=x\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E03x trigger, ${a[1<<2]}, B",
+      "cmd": "# it's\na=(1 2 3 4 5); echo ${a[1<<2]}\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E04x trigger, ${x:1<<1}, B",
+      "cmd": "# it's\nx=abcdef; echo ${x:1<<1}\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E05x trigger, if((1<<1)), B",
+      "cmd": "# it's\nif((1<<1)); then true; fi\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E06x trigger, for((i=0;i<1<<1;i++)), B",
+      "cmd": "# it's\nfor((i=0;i<1<<1;i++)); do true; done\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E07x trigger, while((0<<1)), B",
+      "cmd": "# it's\nwhile((0<<1)); do true; done\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E08x trigger, $[1<<2], A",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E17x ${x:-(} then case, then trigger, B",
+      "cmd": "echo ${x:-(}\ncase x in x) true ;; esac\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E31x heredoc apostrophe, $[1<<2], B",
+      "cmd": "cat <<EOF\nit's\nEOF\necho $[1<<2]\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E32x heredoc apostrophe, if((1<<1)), A",
+      "cmd": "cat <<EOF\nit's\nEOF\nif((1<<1)); then true; fi\necho $'a\\'b'\n$X --to a@example.com --body B",
       "expected": true
     }
   ]
