@@ -13,7 +13,8 @@ the shared fleet token cannot change them. They are read every minute, no restar
 1. **Owner notice** (`QUOTA_NOTICE`). When a window reaches `QUOTA_NOTICE_PCT` (default 90), the owner gets one
    message on the install's owner channel (the same route as other owner alerts, `notifyOwner`) with the percentage
    and the local reset time. One message per window: the window's reset instant is the key, so the next window
-   re-arms it. A message that could not be delivered is tried again on the next tick.
+   re-arms it. The threshold the window was announced at is kept too (`notifiedPct`): raising the threshold within
+   the same window (back to 90 after a test at 50) re-arms the notice, lowering it does not. A message that could not be delivered is tried again on the next tick.
 2. **Channel auto-reply** (opt-in, `QUOTA_AUTOREPLY=1`). An agent counts as walled when its own pane shows the CLI's
    usage-limit banner, or when the shared plan is at `QUOTA_AUTOREPLY_PCT` (default 95) or more. Then every channel
    message that has stayed unanswered for `QUOTA_AUTOREPLY_GRACE_SEC` (default 120) gets one automatic reply from

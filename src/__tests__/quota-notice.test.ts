@@ -59,6 +59,19 @@ describe('(A) threshold notice', () => {
     const first = decideThresholdNotices(snap(91, 30), {}, 90)
     expect(decideThresholdNotices(snap(93, 30, NOW + 3600 + 120), first.next, 90).notices).toEqual([])
   })
+  it('raising the threshold within a window re-arms the notice, lowering it does not (live test 2026-11-27)', () => {
+    const atFifty = decideThresholdNotices(snap(10, 51), {}, 50)
+    expect(atFifty.notices.map((n) => n.kind)).toEqual(['seven_day'])
+    // Back to 90: the same window reaching 90 % must be announced again.
+    expect(decideThresholdNotices(snap(10, 85), atFifty.next, 90, atFifty.nextPct).notices).toEqual([])
+    const atNinety = decideThresholdNotices(snap(10, 91), atFifty.next, 90, atFifty.nextPct)
+    expect(atNinety.notices.map((n) => n.kind)).toEqual(['seven_day'])
+    expect(atNinety.nextPct.seven_day).toBe(90)
+    // Lowering to 80 after the 90 notice: already announced, no second message.
+    expect(decideThresholdNotices(snap(10, 92), atNinety.next, 80, atNinety.nextPct).notices).toEqual([])
+    // An older state without thresholds counts as announced at any threshold.
+    expect(decideThresholdNotices(snap(10, 91), atFifty.next, 90).notices).toEqual([])
+  })
   it('both windows, highest first; nothing under the threshold or on a stale reading', () => {
     expect(decideThresholdNotices(snap(93, 95), {}, 90).notices.map((n) => n.kind)).toEqual(['seven_day', 'five_hour'])
     expect(decideThresholdNotices(snap(89, 10), {}, 90).notices).toEqual([])
@@ -291,5 +304,12 @@ describe('multi-plan', () => {
     const f = join(dir, 's.json')
     writeFileSync(f, JSON.stringify({ notified: { five_hour: 123, ceges: { seven_day: 5 } }, autoReplies: [] }))
     expect(loadQuotaNoticeState(f).notified).toEqual({ [DEFAULT_PLAN_ID]: { five_hour: 123 }, ceges: { seven_day: 5 } })
+  })
+
+  it('the announced threshold survives a save and load', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qn-state-'))
+    const f = join(dir, 's.json')
+    writeFileSync(f, JSON.stringify({ notified: { default: { seven_day: 5 } }, notifiedPct: { default: { seven_day: 50 } }, autoReplies: [] }))
+    expect(loadQuotaNoticeState(f).notifiedPct).toEqual({ default: { seven_day: 50 } })
   })
 })

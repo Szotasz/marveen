@@ -206,11 +206,16 @@ export interface ThresholdNotice { kind: WindowKind; pct: number; resetsAt: numb
  * Which windows cross the threshold for the first time in their life. `notified` maps a window kind to the reset
  * instant of the window already notified, so a window is announced once and the NEXT window (a new reset instant)
  * re-arms the notice. A window without a reset instant is keyed by 0 (announced once until one appears).
+ * `notifiedPct` keeps the threshold each window was announced at: raising the threshold within the same window
+ * (e.g. back to 90 after a test at 50) re-arms the notice for the higher threshold, lowering it does not. A window
+ * recorded without a threshold (older state) counts as announced at any threshold.
  */
 export function decideThresholdNotices(
   snap: QuotaSnapshot, notified: Partial<Record<WindowKind, number>>, thresholdPct: number,
-): { notices: ThresholdNotice[]; next: Partial<Record<WindowKind, number>> } {
+  notifiedPct: Partial<Record<WindowKind, number>> = {},
+): { notices: ThresholdNotice[]; next: Partial<Record<WindowKind, number>>; nextPct: Partial<Record<WindowKind, number>> } {
   const next = { ...notified }
+  const nextPct = { ...notifiedPct }
   const notices: ThresholdNotice[] = []
   for (const { kind, window } of openWindows(snap)) {
     if (window.usedPercentage < thresholdPct) continue
@@ -218,11 +223,14 @@ export function decideThresholdNotices(
     // The same window, even when two sources (or two readings) round its reset instant differently: a new window
     // resets at least an hour later than the old one (5-hour or weekly), so a 15-minute tolerance cannot merge two.
     const prev = notified[kind]
-    if (prev !== undefined && Math.abs(prev - key) <= RESET_TOLERANCE_SEC) continue
+    const prevPct = notifiedPct[kind]
+    const sameWindow = prev !== undefined && Math.abs(prev - key) <= RESET_TOLERANCE_SEC
+    if (sameWindow && (prevPct === undefined || prevPct >= thresholdPct)) continue
     notices.push({ kind, pct: window.usedPercentage, resetsAt: window.resetsAt })
     next[kind] = key
+    nextPct[kind] = thresholdPct
   }
-  return { notices, next }
+  return { notices, next, nextPct }
 }
 
 /** Local wall-clock time of a reset: "19:20" today, "dec. 2. 00:00" / "Dec 2, 00:00" on another day. */
@@ -426,22 +434,33 @@ export function newestTranscriptLines(dirs: string[], tailBytes = TRANSCRIPT_TAI
 // State + runner
 // ---------------------------------------------------------------------------------------------------------------
 
-/** `notified`: per plan id, per window kind, the reset instant of the window already announced. */
-export interface QuotaNoticeState { notified: Record<string, Partial<Record<WindowKind, number>>>; autoReplies: AutoReplyRecord[] }
+/**
+ * `notified`: per plan id, per window kind, the reset instant of the window already announced. `notifiedPct`: the
+ * threshold it was announced at (absent in older state files).
+ */
+export interface QuotaNoticeState {
+  notified: Record<string, Partial<Record<WindowKind, number>>>
+  notifiedPct?: Record<string, Partial<Record<WindowKind, number>>>
+  autoReplies: AutoReplyRecord[]
+}
 
 const STATE_FILE = 'quota-notice-state.json'
 const RECORD_KEEP_MS = 8 * 24 * 60 * 60 * 1000
 
 export function loadQuotaNoticeState(file = join(STORE_DIR, STATE_FILE)): QuotaNoticeState {
   try {
-    const d = JSON.parse(readFileSync(file, 'utf-8')) as { notified?: Record<string, unknown>; autoReplies?: unknown }
+    const d = JSON.parse(readFileSync(file, 'utf-8')) as { notified?: Record<string, unknown>; notifiedPct?: Record<string, unknown>; autoReplies?: unknown }
     const notified: QuotaNoticeState['notified'] = {}
     for (const [k, v] of Object.entries(d.notified ?? {})) {
       // The first (single-plan) shape kept the window kinds at the top level: that was the default plan.
       if ((k === 'five_hour' || k === 'seven_day') && typeof v === 'number') (notified[DEFAULT_PLAN_ID] ??= {})[k] = v
       else if (v && typeof v === 'object') notified[k] = { ...(notified[k] ?? {}), ...(v as Partial<Record<WindowKind, number>>) }
     }
-    return { notified, autoReplies: Array.isArray(d.autoReplies) ? d.autoReplies as AutoReplyRecord[] : [] }
+    const notifiedPct: NonNullable<QuotaNoticeState['notifiedPct']> = {}
+    for (const [k, v] of Object.entries(d.notifiedPct ?? {})) {
+      if (v && typeof v === 'object') notifiedPct[k] = { ...(v as Partial<Record<WindowKind, number>>) }
+    }
+    return { notified, notifiedPct, autoReplies: Array.isArray(d.autoReplies) ? d.autoReplies as AutoReplyRecord[] : [] }
   } catch {
     return { notified: {}, autoReplies: [] }
   }
@@ -482,12 +501,17 @@ export async function runQuotaNoticeTick(deps: QuotaNoticeDeps): Promise<void> {
 
   if (cfg.noticeEnabled) {
     for (const plan of plans) {
-      const { notices, next } = decideThresholdNotices(plan.snap, state.notified[plan.planId] ?? {}, cfg.noticePct)
+      const { notices, next, nextPct } = decideThresholdNotices(
+        plan.snap, state.notified[plan.planId] ?? {}, cfg.noticePct, state.notifiedPct?.[plan.planId] ?? {})
       for (const n of notices) {
         const text = formatThresholdNotice({ ...n, planLabel: plan.label }, lang, nowSec)
         const ok = cfg.dryRun ? (logger.info({ plan: plan.planId, text }, 'quota-notice DRY-RUN: owner notice'), true) : await deps.notifyOwner(text)
         // Record only a delivered notice: a lost one is tried again next tick.
-        if (ok) { (state.notified[plan.planId] ??= {})[n.kind] = next[n.kind]; dirty = true }
+        if (ok) {
+          (state.notified[plan.planId] ??= {})[n.kind] = next[n.kind]
+          ;((state.notifiedPct ??= {})[plan.planId] ??= {})[n.kind] = nextPct[n.kind]
+          dirty = true
+        }
       }
     }
   }
