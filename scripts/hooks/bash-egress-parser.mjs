@@ -88,9 +88,11 @@
 //     (EGRESSPYFILE1113, `python3 f.py`), node / deno / bun or bash / sh / zsh / dash / ksh
 //     (EGRESSZKRIPTFAJL1127) is read, a downloader the Python or JS file starts as a child program
 //     included, and only when the install turned it on ("script_files" in the vendor-hosts file; OFF
-//     by default, "log" records without blocking); a script run by its own name (`./f.sh`), any other
+//     by default, "log" records without blocking). A shell file is read as TEXT (literal external URLs
+//     in its curl / wget code), so a script it calls in turn is not followed. Not read: a script run
+//     by its own name (`./f.sh`) or sourced (`source` / `.`), a file over 1 MiB, a `~/` path, any other
 //     interpreter, a module it imports, a file the same command writes first, a path computed at run
-//     time, and a host that is a format placeholder (`%s`, `{x}`) are not;
+//     time, and a host that is a format placeholder (`%s`, `{x}`);
 //   - a program that reaches an interpreter through a PIPE or a file rather than through a heredoc /
 //     here-string attached to the interpreter itself;
 //   - for an INTERPRETER one-liner (not curl / wget): values bound by builtins other than `for` and a

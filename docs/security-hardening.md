@@ -425,11 +425,17 @@ This is a deny list, not a sandbox.
   (`scripts/hooks/bash-egress-parser.mjs`) reads the file named on the command
   line of python, node / deno / bun and bash / sh / zsh / dash / ksh, and
   denies an external URL it would fetch, a curl / wget the file starts as a
-  child program included; `"log"` records the same without blocking. The
-  default is `"off"`: then `python3 fetch.py` and the like pass unread. Even on,
-  a script run by its own name (`./fetch.sh`), a file the same command writes
-  first, an imported module and a path computed at run time pass: closing those
-  needs a network-level control, not a parser.
+  child program included; `"log"` records the same without blocking. A shell
+  script file is read as text: its curl / wget code is judged on the literal
+  external URLs in it and in the run's arguments, so a destination built at run
+  time passes, and a script it calls in turn is not followed. The default is
+  `"off"`: then `python3 fetch.py` and the like pass unread. Even on, these
+  pass: a script run by its own name (`./fetch.sh`) or sourced (`source f.sh`,
+  `. f.sh`), a file over 1 MiB, a path starting with `~/` or holding a variable,
+  a file the same command writes first, an imported module, and a node / deno /
+  bun program whose name does not end in `.js` / `.ts` and sits behind an
+  option value the reader does not know. Closing those needs a network-level
+  control, not a parser.
 - Known collateral: an internal POST whose **double-quoted** payload quotes an
   `https://` URL matches the `curl` rule. Single-quoted payloads do not (the
   permission engine excludes single-quoted content). Use single quotes or

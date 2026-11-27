@@ -21,6 +21,7 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
     'js_child.js': "const { execSync } = require('child_process')\nexecSync('curl -s https://example.org/a')\n",
     'js_local.mjs': "await fetch('http://localhost:3420/api/kanban')\n",
     'js_plain.mjs': "console.log('docs: https://example.org/manual')\n",
+    'js_junk.mjs': "await fetch(base + '/x')\nconst shape = 'https://.../x'\n",
     'ts_fetch.ts': "await fetch('https://example.org/a')\n",
     'sh_curl.sh': 'set -e\ncurl -s https://example.org/a\n',
     'sh_local.sh': 'curl -s http://localhost:3420/api/kanban\n',
@@ -63,6 +64,7 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
   it('passes a JS file to localhost, one that only mentions a URL, a listed vendor host, and non-run subcommands', () => {
     expect(verdict('node js_local.mjs').deny).toBe(false)
     expect(verdict('node js_plain.mjs').deny).toBe(false)
+    expect(verdict('node js_junk.mjs').deny).toBe(false)   // `...` is no host: it cannot be listed, and only fills the log
     expect(verdict('node js_fetch.mjs', ['example.org']).deny).toBe(false)
     expect(verdict('deno fmt ts_fetch.ts').deny).toBe(false)
     expect(verdict('bun install').deny).toBe(false)
