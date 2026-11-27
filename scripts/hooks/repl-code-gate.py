@@ -57,7 +57,10 @@ import sys
 
 # The seal measurement: card CODEMODEFLAG1119, comment 33384, 2026-11-19 (Dani's
 # probe A block). Add a version here only after re-running that measurement on it.
-MEASURED_VERSIONS = {"2.1.326"}
+# 2.1.332: re-measured 2026-11-26/27 (start-cm1 + seal2 probes): dynamic and static
+# import refused as a whole block, process/fetch undefined, the Function constructor
+# and this.constructor.constructor refuse code generation from strings.
+MEASURED_VERSIONS = {"2.1.326", "2.1.332"}
 
 TAG = "CODEMODEFLAG1119"
 CHUNK = 64 * 1024
