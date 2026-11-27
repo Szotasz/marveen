@@ -175,3 +175,18 @@ it(`${KEY}: a main-agent spawn leaves its project settings.json without effortLe
     rmSync(agentDir(MAIN_AGENT_ID), { recursive: true, force: true })
   }
 })
+
+it(`${KEY}: the main agent's /model hold reads the level it set (own config dir), never on the shared ~/.claude`, async () => {
+  const proc = await import('../web/agent-process.js')
+  const { readConfiguredEffort } = await import('../web/main-model.js')
+  const dir = vi.spyOn(proc, 'mainAgentConfigDirIfSeparate').mockReturnValue(join(sandbox.root, 'main-cfg'))
+  try {
+    expect(setOverride(KEY, `${MAIN_AGENT_ID}=max`)).toEqual({ ok: true })
+    // the hold's revert_effort is configuredEffort() -> readConfiguredEffort() (main-model.test.ts covers the revert)
+    expect(readConfiguredEffort()).toEqual({ value: 'max', source: KEY })
+    dir.mockReturnValue(null) // no own config dir: the level was never written, so it is not the session's level
+    expect(readConfiguredEffort()?.source).not.toBe(KEY)
+  } finally {
+    dir.mockRestore()
+  }
+})

@@ -32,7 +32,8 @@ import { readActiveModelFromProjectDir } from './active-model.js'
 import { configDirFor } from './main-transcript-root.js'
 import { readConfiguredMainModel } from './channel-monitor.js'
 import { gatherGateInputs, sendSlashCommand, sendKey, mainSessionName } from './context-restart-gate-runner.js'
-import { capturePane } from './agent-process.js'
+import { capturePane, mainAgentConfigDirIfSeparate } from './agent-process.js'
+import { agentEffortLevel } from './agent-scaffold.js'
 import { switchVerdict, humanBusy, SWITCH_TURN_QUIET_MS, type QuietVerdict } from './session-control.js'
 import { notifyChannel } from '../notify.js'
 import { registerCommand, parseCommand, resolveCommand } from './commands.js'
@@ -652,8 +653,11 @@ export async function setEffort(level: string | undefined, deps: ModelDeps = liv
 // session.
 export const EFFORT_SENT_FILE = join(STORE_DIR, 'main-effort-last-sent.json')
 
-/** The configured effort for the session: env first, then .claude/settings.json. */
+/** The configured effort for the session: AGENT_EFFORT_LEVEL when the main agent runs on its own config dir (that is
+ * where the level is written, as env.CLAUDE_CODE_EFFORT_LEVEL), then the dashboard's env, then .claude/settings.json. */
 export function readConfiguredEffort(): { value: string; source: string } | null {
+  const own = mainAgentConfigDirIfSeparate() !== null ? agentEffortLevel(MAIN_AGENT_ID) : null
+  if (own) return { value: own, source: 'AGENT_EFFORT_LEVEL' }
   if (process.env.CLAUDE_CODE_EFFORT_LEVEL) return { value: process.env.CLAUDE_CODE_EFFORT_LEVEL, source: 'env CLAUDE_CODE_EFFORT_LEVEL' }
   try {
     const s = JSON.parse(readFileSync(join(PROJECT_ROOT, '.claude', 'settings.json'), 'utf-8'))
