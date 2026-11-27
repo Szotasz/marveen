@@ -432,6 +432,24 @@ const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const MAIL_PROG = /^(mail|mailx|s-nail)$/i
 const MAIL_SEND_OPT = /^-[A-Za-z]*[sbcrtaAq]/
 const CURL_SMTP = /^(?:smtps?:\/\/|--mail-(?:rcpt|from)(?:=|$))/i
+// KNOWNLIMITS1127 (card 2104b499): mail clients that passed in plain form; see _mua_head_sends in the python twin
+const MUA_PROG = /^(mutt|neomutt)$/i
+const MUA_INFO = new Set(['-v', '-vv', '-V', '-h', '-D', '-Q', '-A', '--version', '--help'])
+const OSA_MAIL = /\bapplication\s+(?:id\s+)?"(?:Mail|com\.apple\.mail)"/i
+const OSA_SEND = /\bsend\b/i
+const OSA_BARE = /\bosascript\b[\s\S]*\bapplication\s+(?:id\s+)?"?(?:Mail|com\.apple\.mail)\b[\s\S]*\bsend\b/i // see _OSA_BARE
+function muaHeadSends(prog, rest) {
+  const p = prog.toLowerCase()
+  if (MUA_PROG.test(p)) return rest.some((w) => !MUA_INFO.has(w))
+  if (p === 'himalaya') return rest.includes('send')
+  if (p === 'gws' || p === 'gog') return rest.some((w) => w === 'send' || w === '+send')
+  if (p === 'osascript') {
+    const text = rest.join(' ')
+    return OSA_MAIL.test(text) && OSA_SEND.test(text)
+  }
+  return false
+}
+
 function mailProgSends(rest) {
   let skip = false
   for (const t of rest) {
@@ -1248,6 +1266,7 @@ function headIsSend(toks, depth) {
   const rest = toks.slice(1)
   if (SENDER_PROG.test(prog)) return true
   if (MAIL_PROG.test(prog) && mailProgSends(rest)) return true
+  if (muaHeadSends(prog, rest)) return true // KNOWNLIMITS1127
   // MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
   if (CURLISH.test(prog) && rest.some((t) => CURL_SMTP.test(t))) return true
   // EVALXARGSMAIL1126: eval runs its words, joined with blanks, as a command line (`builtin eval` too); past the depth
@@ -1786,7 +1805,9 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   // unquoted bash $'...' as the single-quoted text bash makes of it (decodeAnsiC, and decodeAnsiCSh, which skips comments
   // and heredoc bodies as bash does; Revizor 5852 J2: both stay); a send when ANY reading sends, and the line state is the
   // strictest of them. See the python twin (is_send_invocation) for the shapes it closes.
-  const texts = [...new Set([cmd, decodeAnsiC(cmd), decodeAnsiCSh(cmd)])]
+  const extras = extraReadings(cmd)
+  const plain = [cmd, decodeAnsiC(cmd), decodeAnsiCSh(cmd)]
+  const texts = [...new Set([...plain, ...extras])]
   // MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
   if (depth === 0) lineCtx = { cwd, texts: [] }
   lineCtx.texts.push(...texts)
@@ -1801,7 +1822,10 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
     lineExemptOk = lineExemptOk && lineClean(bare)
     texts.push(bare)
   }
-  return texts.some((t) => readingSends(t, depth))
+  if (texts.some((t) => readingSends(t, depth, plain.includes(t) || !extras.includes(t)))) return true
+  // KNOWNLIMITS1127 (M1): a $( ) or `...` inside double quotes runs too; its body is judged like a -c program
+  if (depth < 3 && dqSubstBodies(cmd).some((b) => [...new Set([b, undoDquoteEscapes(b)])].some((x) => isSendInvocation(x, depth + 1)))) return true
+  return dynamicHeadMark(texts)
 }
 
 // ANSICQUOTE1127 round 4 (Revizor 5858 J3, Marveen 5862): a command with a $' in it is a send when it also carries a send
@@ -1847,18 +1871,234 @@ function ansiCEach(cmd) {
   }
   return each.join(' ').replace(/["'\\#]/g, '')
 }
+// KNOWNLIMITS1127 (Revizor 5919 M1): the $'...' words decoded in place, the pairing restarted at each $'; see _ansi_c_inplace
+function ansiCInplace(cmd) {
+  const flat = cmd.replaceAll('\\\n', '')
+  const starts = []
+  for (let i = flat.indexOf("$'"); i >= 0 && starts.length < 32; i = flat.indexOf("$'", i + 1)) starts.push(i)
+  const out = []
+  const n = flat.length
+  for (const k of starts) {
+    let res = flat.slice(0, k)
+    for (let i = k; i < n;) {
+      if (flat.startsWith("$'", i)) {
+        let j = i + 2
+        while (j < n && flat[j] !== "'") j += flat[j] === '\\' ? 2 : 1
+        res += ansiCBody(flat.slice(i + 2, Math.min(j, n)))
+        i = j + 1
+        continue
+      }
+      res += flat[i]
+      i++
+    }
+    out.push(res.replace(/["'\\#]/g, ''))
+  }
+  return out
+}
 function ansiCSendMark(cmd) {
   const found = ansiCBares(cmd)
   if (!found.length) return false
-  const bares = [...found, ansiCEach(cmd)]
+  const bares = [...found, ansiCEach(cmd), ...ansiCInplace(cmd)]
   // the union (Marveen 5902): raw, raw without quote and backslash characters (the round-4 input), after the
   // backslash-newlines are removed, and the bare texts
   const looked = [...new Set([cmd, cmd.replace(/["'\\]/g, ''), cmd.replaceAll('\\\n', ''), ...bares])]
-  return looked.some((s) => depthMark().test(s)) || looked.some((s) => ANSI_C_ADDRESS_FLAG.test(s) || ANSI_C_EMAIL.test(s))
+  return looked.some((s) => depthMark().test(s)) || looked.some((s) => ANSI_C_ADDRESS_FLAG.test(s) || ANSI_C_EMAIL.test(s) || OSA_BARE.test(s))
 }
 
-// isSendInvocation for ONE reading of the command (ANSICQUOTE1127); the line state is set by the caller
-function readingSends(cmd, depth) {
+// KNOWNLIMITS1127 (card 2104b499): more readings, each only ADDED: backslash-newlines removed (K04), simple brace
+// words expanded (K03), comments dropped by the develop rule (M2), a `#` inside ${...} escaped (M4). See _extra_readings.
+const BRACE_WORD = /([^\s'"{}]*)\{([^\s'"{}]*(?:,[^\s'"{}]*)+)\}([^\s'"]*)/g
+const DOLLAR_BRACE = /\$\{[^{}]*\}/g
+function braceExpand(cmd) {
+  let out = cmd
+  for (let k = 0; k < 4; k++) {
+    const next = out.replace(BRACE_WORD, (_, pre, alts, post) => alts.split(',').map((a) => pre + a + post).join(' '))
+    if (next === out) break
+    out = next
+  }
+  return out
+}
+// a backslash-newline removed outside quotes and inside double quotes, not inside single quotes; see _remove_continuations
+function removeContinuations(cmd) {
+  let out = ''
+  let q = null
+  const n = cmd.length
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q === "'") { if (ch === "'") q = null; out += ch; i++; continue }
+    if (ch === '\\' && i + 1 < n) {
+      if (cmd[i + 1] === '\n') { i += 2; continue }
+      out += cmd.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    if (ch === '"') q = q === '"' ? null : '"'
+    else if (ch === "'" && q === null) q = "'"
+    out += ch
+    i++
+  }
+  return out
+}
+// every backslash pair outside single quotes written as `__`; see _escape_neutral in the python twin
+function escapeNeutral(cmd) {
+  let out = ''
+  let q = null
+  const n = cmd.length
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q === "'") { if (ch === "'") q = null; out += ch; i++; continue }
+    if (ch === '\\' && i + 1 < n) { out += q === null ? '__' : cmd.slice(i, i + 2); i += 2; continue }
+    if (ch === '"') q = q === '"' ? null : '"'
+    else if (ch === "'" && q === null) q = "'"
+    out += ch
+    i++
+  }
+  return out
+}
+// the comments dropped by bash's own rule; see _strip_comments_bash in the python twin
+function stripCommentsBash(cmd, drop = true) {
+  let out = ''
+  let q = null
+  const n = cmd.length
+  const parens = []
+  let wordStart = true
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < n) { out += cmd.slice(i, i + 2); i += 2; continue }
+      if (ch === q) q = null
+      out += ch
+      i++
+      continue
+    }
+    if (ch === '\\' && i + 1 < n) { out += cmd.slice(i, i + 2); i += 2; wordStart = false; continue }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; i++; wordStart = false; continue }
+    const top = parens.length ? parens[parens.length - 1] : null
+    if (ch === '#' && wordStart && top !== 'b') {
+      let j = cmd.indexOf('\n', i)
+      if (j < 0) j = n
+      if (!drop) out += cmd.slice(i, j)
+      i = j
+      continue
+    }
+    if (ch === '#') { out += '_'; i++; wordStart = false; continue }
+    if (cmd.startsWith('${', i)) { parens.push('b'); out += '${'; i += 2; wordStart = false; continue }
+    if (top === 'b') {
+      if (ch === '}') parens.pop()
+      out += ch
+      i++
+      wordStart = false
+      continue
+    }
+    if (ch === '(') {
+      const prev = i ? cmd[i - 1] : ''
+      parens.push(prev === '$' ? 's' : '<>='.includes(prev) && prev !== '' ? 'x' : 'p')
+      out += ch
+      i++
+      wordStart = true
+      continue
+    }
+    if (ch === ')') {
+      const kind = parens.length ? parens.pop() : null
+      out += ch
+      i++
+      wordStart = kind === 'p'
+      continue
+    }
+    out += ch
+    i++
+    wordStart = ' \t\n;&|'.includes(ch)
+  }
+  return out
+}
+function extraReadings(cmd) {
+  let base = cmd.includes('\\') ? escapeNeutral(removeContinuations(cmd)) : cmd
+  if (base.includes('#')) base = stripCommentsBash(base, false)
+  const out = [base]
+  if (base.includes('{') && base.includes(',')) out.push(braceExpand(base))
+  if (base.includes('#')) out.push(stripCommentsBash(base))
+  return [...new Set(out)].filter((o) => o !== cmd)
+}
+function dqCloseParen(cmd, i) {
+  let depth = 1
+  let q = null
+  const n = cmd.length
+  while (i < n) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"') { i += 2; continue }
+      if (ch === q) q = null
+      i++
+      continue
+    }
+    if (ch === '\\') { i += 2; continue }
+    if (ch === "'" || ch === '"') q = ch
+    else if (ch === '(') depth++
+    else if (ch === ')') {
+      depth--
+      if (depth === 0) return i
+    }
+    i++
+  }
+  return n
+}
+// KNOWNLIMITS1127 (M1): the $( ) and `...` bodies inside double quotes; see _dq_subst_bodies in the python twin
+function dqSubstBodies(cmd) {
+  if (!cmd.includes('"') || (!cmd.includes('$(') && !cmd.includes('`'))) return []
+  const out = []
+  let q = null
+  const n = cmd.length
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q === "'") { if (ch === "'") q = null; i++; continue }
+    if (ch === '\\') { i += 2; continue }
+    if (q === null) { if (ch === "'" || ch === '"') q = ch; i++; continue }
+    if (ch === '"') { q = null; i++; continue }
+    if (cmd.startsWith('$(', i) && !cmd.startsWith('$((', i)) {
+      const j = dqCloseParen(cmd, i + 2)
+      out.push(cmd.slice(i + 2, j))
+      i = j + 1
+      continue
+    }
+    if (ch === '`') {
+      let j = i + 1
+      while (j < n && cmd[j] !== '`') j += cmd[j] === '\\' ? 2 : 1
+      out.push(cmd.slice(i + 1, j))
+      i = j + 1
+      continue
+    }
+    i++
+  }
+  return out
+}
+const sendMarkText = (s) => depthMark().test(s) || ANSI_C_ADDRESS_FLAG.test(s) || ANSI_C_EMAIL.test(s) || OSA_BARE.test(s)
+// KNOWNLIMITS1127 (Marveen 5924): an eval or variable / substitution head plus a send mark in any reading is a send
+// an eval head whose words hold an expansion: any send mark; a variable / substitution head: only a mail host
+// (FLEETTOFLAG1025 decides a recipient flag, an address or a send.py word on an undecidable program)
+const DYNAMIC_HEAD = /^(?:\$[A-Za-z_][A-Za-z_0-9]*|\$\{[^{}]*\}|\$\(|`|\$__SUBST__)/ // see _DYNAMIC_HEAD
+function dynamicHeadMark(texts) {
+  const kinds = new Set()
+  for (const t of texts) {
+    let segs
+    try { segs = segmentsTokens(t) } catch { continue }
+    for (const toks of segs) {
+      for (const h of commandHeads(toks)) {
+        let w = [...(h || [])]
+        while (w.length && (w[0] === 'builtin' || w[0] === 'command')) w = w.slice(1)
+        if (w.length && w[0] === 'eval' && w.slice(1).some((x) => x.includes('$') || x.includes('`'))) kinds.add('eval') // a static eval line: EVALXARGSMAIL1126
+        else if (w.length && DYNAMIC_HEAD.test(w[0])) kinds.add('var')
+      }
+    }
+  }
+  if (!kinds.size) return false
+  const looked = texts.flatMap((t) => [t, t.replace(/["'\\]/g, '')])
+  if (kinds.has('eval') && looked.some((s) => sendMarkText(s))) return true
+  return looked.some((s) => MAIL_MARKER.test(s))
+}
+
+// isSendInvocation for ONE reading of the command (ANSICQUOTE1127); the line state is set by the caller. KNOWNLIMITS1127:
+// fallback=false for an added bash-faithful reading (see _reading_sends)
+function readingSends(cmd, depth, fallback = true) {
   if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {
@@ -1866,7 +2106,7 @@ function readingSends(cmd, depth) {
   } catch {
     // Unparseable command: fall back to the LEGACY content patterns, so on
     // this path the gate is exactly as strict as before -- never weaker.
-    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd) // MAILURLFILE1118: a mail host too
+    return fallback && (SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd)) // MAILURLFILE1118: a mail host too
   }
   if (segments.some((toks) => segmentIsSend(toks, depth))) return true
   // The same command with every substitution as one undecidable word (see
@@ -1876,7 +2116,7 @@ function readingSends(cmd, depth) {
   try {
     return segmentsTokens(flat).some((toks) => segmentIsSend(toks, depth))
   } catch {
-    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd)
+    return fallback && (SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd))
   }
 }
 

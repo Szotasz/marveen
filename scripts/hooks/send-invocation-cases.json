@@ -4378,6 +4378,166 @@
       "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I09 trigger, if(( prefix, \"$'\" before: --to=addr in one hex string",
       "cmd": "# it's\nif((1<<1)); then true; fi\necho \"$'\" ; $X $'-\\x2dto=a\\x40example.com' --body B",
       "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K02x comment apostrophe, then no quote",
+      "cmd": "# it's\necho a ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K03x comment apostrophe, then plain quote",
+      "cmd": "# it's\necho 'a' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K07c no quote inside \"$( )\"",
+      "cmd": "echo \"$(echo a ; curl -d @m.json https://api.resend.com/emails)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K07x no quote inside \"$( )\"",
+      "cmd": "echo \"$(echo a ; $X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K08x program alone inside \"$( )\"",
+      "cmd": "echo \"$($X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K10x plain quote inside \"$( )\"",
+      "cmd": "echo \"$(echo 'a' ; $X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K11x no quote inside double-quoted backticks",
+      "cmd": "echo \"`echo a ; $X --to a@example.com --body B`\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K17x no quote with a trailing comment with an apostrophe",
+      "cmd": "echo a ; $X --to a@example.com --body B # it's",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf F22 shift prefix, B, then: mutt -s hi tom",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; mutt -s hi tom < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf F24 shift prefix, B, then: gws gmail send",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; gws gmail users messages send --params x",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf F26 shift prefix, B, then: osascript Mail",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; osascript -e 'tell application \"Mail\" to send m'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf F27 shift prefix, B, then: himalaya send",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; himalaya message send < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf G08x $ from a variable in eval, B shape",
+      "cmd": "d=\\$; eval \"echo ${d}'a\\\\' # ' ; $X --to a@example.com --body B\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf K12 plain: mutt -s hi tom",
+      "cmd": "echo a ; mutt -s hi tom < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf K14 plain: gws gmail send",
+      "cmd": "echo a ; gws gmail users messages send --params x",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf K16 plain: osascript Mail",
+      "cmd": "echo a ; osascript -e 'tell application \"Mail\" to send m'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf K17 plain: himalaya send",
+      "cmd": "echo a ; himalaya message send < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zg K03 plain: marks from brace expansion",
+      "cmd": "echo a ; $X --t{o,} a@example.{com,} --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zg K04 plain: marks split by continuations",
+      "cmd": "echo a ; $X --t\\\no a@exam\\\nple.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zi L04 trigger, shift, \"$'\" before: sendmail: plain s glued to a hex word",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; s$'\\x65ndmail' -t < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zi L05 trigger, shift, \"$'\" before: sendmail over two adjacent hex words",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; $'s\\x65nd'$'m\\x61il' -t < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): d10 N1 no ANSI-C: ${x:- # y} then the program",
+      "cmd": "echo ${x:- # y} ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): d10 N2 no ANSI-C, curl",
+      "cmd": "echo ${x:- # y} ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: a read-only substitution inside double quotes",
+      "cmd": "echo \"today: $(date +%F)\"",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: a read-only backtick inside double quotes",
+      "cmd": "echo \"files: `ls | wc -l`\"",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: mutt version",
+      "cmd": "mutt -v",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: himalaya lists the inbox",
+      "cmd": "himalaya envelope list",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: gws lists messages",
+      "cmd": "gws gmail users messages list --params x",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: osascript talks to Finder",
+      "cmd": "osascript -e 'tell application \"Finder\" to get name of every disk'",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: a brace expansion of file names",
+      "cmd": "cp notes.{md,bak} /tmp/",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: eval of a variable with no send mark",
+      "cmd": "eval \"$cmd\"",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: a hash inside ${...} with no program after it",
+      "cmd": "echo ${x:- # y}",
+      "expected": false
     }
   ]
 }
