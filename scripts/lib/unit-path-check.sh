@@ -37,6 +37,9 @@ unit_path_of() {
   esac
 }
 
+# guard_path_dirs: the dirs the guard scripts add to their own PATH (ISSUE3201).
+. "${INSTALL_DIR:-${BASH_SOURCE[0]%/*}/../..}/scripts/lib/guard-path.sh"
+
 # _upc_brew_prefix_bin <PATH> -- the #2578 rule: <prefix>/bin of the first node@NN keg entry
 # (<prefix>/opt/node@NN/bin) whose <prefix>/bin exists and is not a fixed dir.
 _upc_brew_prefix_bin() {
@@ -115,6 +118,9 @@ $_upc_f
         channels|dashboard|app)
           _upc_bp="$(_upc_brew_prefix_bin "$_upc_p")"
           _upc_p="$_upc_p:$HOME/.local/bin${_upc_bp:+:$_upc_bp}:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" ;;
+        channel-watchdog|stuck-modal-guard|channel-keepalive-probe)
+          # ISSUE3201: these scripts append the guard dirs to their PATH themselves (scripts/lib/guard-path.sh).
+          _upc_p="$_upc_p:$(guard_path_dirs | tr '\n' ':')" ;;
       esac
       case ":$_upc_p:" in
         *":$_upc_dir:"*|*":$_upc_dir/:"*) continue ;;

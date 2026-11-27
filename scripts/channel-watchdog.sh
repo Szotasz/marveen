@@ -47,6 +47,10 @@
 set -u
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# ISSUE3201: the unit's fixed PATH may lack the dir tmux/claude/node live in
+# (Homebrew on Linux); widen it before the first lookup (scripts/lib/guard-path.sh).
+. "$INSTALL_DIR/scripts/lib/guard-path.sh"
+guard_path_widen
 STORE="$INSTALL_DIR/store"
 KEEPALIVE_FILE="$STORE/.channel-keepalive"
 RESPAWN_STAMP="$STORE/.channel-last-respawn"
@@ -190,8 +194,11 @@ EXTRA_SETTINGS_FLAG="${EXTRA_SETTINGS_FLAG}$(main_disallowed_tools_flag "$INSTAL
 TMUX_BIN="$(command -v tmux)"
 CLAUDE="$(command -v claude)"
 if [ -z "$TMUX_BIN" ] || [ -z "$CLAUDE" ]; then
+  # ISSUE3201: not exit 0. A watchdog that cannot act must not look like one that
+  # found nothing to do: the non-zero exit marks the unit failed
+  # (systemctl --user --failed), and the log line names the PATH it searched.
   log "tmux or claude not on PATH; cannot act. PATH=$PATH"
-  exit 0
+  exit 1
 fi
 
 now=$(date +%s)

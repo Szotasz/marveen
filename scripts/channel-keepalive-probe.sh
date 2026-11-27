@@ -28,6 +28,10 @@
 set -u
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# ISSUE3201: the unit's fixed PATH may lack the dir tmux/claude/node live in
+# (Homebrew on Linux); widen it before the first lookup (scripts/lib/guard-path.sh).
+. "$INSTALL_DIR/scripts/lib/guard-path.sh"
+guard_path_widen
 STORE="$INSTALL_DIR/store"
 KEEPALIVE_FILE="$STORE/.channel-keepalive"
 # ISSUE1891 (b): the probe's OWN stamps. store/.channel-keepalive cannot tell
