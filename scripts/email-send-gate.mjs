@@ -1779,11 +1779,11 @@ function wordsMailHost(cmd) {
 }
 
 export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
-  // ANSICQUOTE1127 (card 41df3b8a, Revizor 5788 M1): the command is judged in two readings, as written and with every
-  // unquoted bash $'...' as the single-quoted text bash makes of it (decodeAnsiCSh); a send when EITHER reading sends, and
-  // the line state is the stricter of the two. See the python twin (is_send_invocation) for the two shapes it closes.
-  const dec = decodeAnsiCSh(cmd)
-  const texts = dec === cmd ? [cmd] : [cmd, dec]
+  // ANSICQUOTE1127 (card 41df3b8a, Revizor 5788 M1): the command is judged in three readings, as written and with every
+  // unquoted bash $'...' as the single-quoted text bash makes of it (decodeAnsiC, and decodeAnsiCSh, which skips comments
+  // and heredoc bodies as bash does; Revizor 5852 J2: both stay); a send when ANY reading sends, and the line state is the
+  // strictest of them. See the python twin (is_send_invocation) for the shapes it closes.
+  const texts = [...new Set([cmd, decodeAnsiC(cmd), decodeAnsiCSh(cmd)])]
   // MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
   if (depth === 0) lineCtx = { cwd, texts: [] }
   lineCtx.texts.push(...texts)
@@ -3355,12 +3355,14 @@ function decodeAnsiC(cmd) {
 
 const HEREDOC_OP = /<<(-?)[ \t]*((?:[^\s;&|()<>'"\\]|\\.|'[^']*'|"[^"]*")+)/y
 // ANSICQUOTE1127 (Revizor 5843 J1): decodeAnsiC as bash scans the line: a comment is dropped and a heredoc body is copied
-// as it is (their quotes open nothing), a $$ is the pid. Only isSendInvocation reads it; see _decode_ansi_c_sh in the python twin.
+// as it is (their quotes open nothing), a $$ is the pid. Revizor 5852 J2: `<<<` is a here-string, `<<` in arithmetic a
+// shift, a comment in backticks ends at the backtick, a backslash-newline keeps the word state, `#` in ${...} is no comment. Only isSendInvocation reads it; see _decode_ansi_c_sh in the python twin.
 function decodeAnsiCSh(cmd) {
   if (!cmd.includes("$'") && !cmd.includes('$"')) return cmd
   let out = ''
   let q = null
   const n = cmd.length
+  // open constructs, innermost last: 's' $( , 'p' plain ( , 'a' arithmetic (( / $(( , 'b' ${ , 't' a backtick
   const parens = []
   let substCloseAt = -1
   let wordStart = true
@@ -3374,10 +3376,19 @@ function decodeAnsiCSh(cmd) {
       i++
       continue
     }
-    if (ch === '\\' && i + 1 < n) { out += cmd.slice(i, i + 2); i += 2; wordStart = false; continue }
-    if (ch === '#' && wordStart) {
-      let j = cmd.indexOf('\n', i)
-      i = j < 0 ? n : j // dropped, as bash drops it (the JS tokenizer knows no comment)
+    const top = parens.length ? parens[parens.length - 1] : null
+    if (ch === '\\' && i + 1 < n) {
+      // a backslash-newline is removed by bash: the word state goes on as before it (Revizor 5852 J2 d)
+      out += cmd.slice(i, i + 2)
+      i += 2
+      if (cmd[i - 1] !== '\n') wordStart = false
+      continue
+    }
+    if (ch === '#' && wordStart && top !== 'a' && top !== 'b') {
+      // a comment ends at the newline, or inside backticks at the closing backtick (Revizor 5852 J2 c, e)
+      let j = i
+      while (j < n && cmd[j] !== '\n' && !(cmd[j] === '`' && parens.includes('t'))) j++
+      i = j // dropped, as bash drops it (the JS tokenizer knows no comment)
       continue
     }
     if (ch === '\n') {
@@ -3398,7 +3409,14 @@ function decodeAnsiCSh(cmd) {
       pending = []
       continue
     }
-    if (ch === '<' && cmd.startsWith('<<', i) && !cmd.startsWith('<<<', i)) {
+    if (ch === '`') {
+      if (top === 't') { parens.pop(); wordStart = false } else { parens.push('t'); wordStart = true }
+      out += ch
+      i++
+      continue
+    }
+    if (cmd.startsWith('<<<', i)) { out += '<<<'; i += 3; wordStart = false; continue } // a here-string (Revizor 5852 J2 a)
+    if (cmd.startsWith('<<', i) && !parens.includes('a')) { // in (( )) / $(( )) it is a shift (J2 b)
       HEREDOC_OP.lastIndex = i
       const m = HEREDOC_OP.exec(cmd)
       if (m) {
@@ -3421,13 +3439,20 @@ function decodeAnsiCSh(cmd) {
       continue
     }
     if (ch === '$' && cmd[i + 1] === '"') { i++; continue } // a locale $"..." string is the "..." string
+    if (cmd.startsWith('$((', i)) { parens.push('a'); out += '$(('; i += 3; wordStart = false; continue }
+    if (cmd.startsWith('((', i) && wordStart) { parens.push('a'); out += '(('; i += 2; wordStart = false; continue }
+    if (top === 'a' && cmd.startsWith('))', i)) { parens.pop(); out += '))'; i += 2; wordStart = false; continue }
+    if (cmd.startsWith('${', i)) { parens.push('b'); out += '${'; i += 2; wordStart = false; continue }
+    if (ch === '}' && top === 'b') { parens.pop(); out += ch; i++; wordStart = false; continue }
+    // Revizor 5852 J2 e: no comment inside ${...}; written escaped (the same word to bash) for the tokenizer's comment rule
+    if (ch === '#' && top === 'b' && i > 0 && ' \t\n;&|('.includes(cmd[i - 1])) { out += '\\#'; i++; continue }
     if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); out += '$('; i += 2; wordStart = true; continue }
     if (ch === '(') parens.push('p')
-    else if (ch === ')' && parens.length && parens.pop() === 's') substCloseAt = i
+    else if (ch === ')' && (top === 's' || top === 'p') && parens.pop() === 's') substCloseAt = i
     if (ch === "'" || ch === '"') q = ch
     out += ch
     i++
-    wordStart = ' \t;&|('.includes(ch) || (ch === ')' && substCloseAt !== i - 1)
+    wordStart = top !== 'a' && top !== 'b' && (' \t;&|('.includes(ch) || (ch === ')' && substCloseAt !== i - 1))
   }
   return out
 }

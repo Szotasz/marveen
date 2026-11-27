@@ -4138,6 +4138,71 @@
       "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): K24x unbalanced double quote in a comment, then A",
       "cmd": "# 5\" disk\necho $'a\\'b'\n$X --to a@example.com --body B",
       "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D01x arithmetic shift on the line before B",
+      "cmd": "echo $((1<<2))\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D01c arithmetic shift on the line before B",
+      "cmd": "echo $((1<<2))\necho $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D02x arithmetic shift on the line before A",
+      "cmd": "echo $((1<<2))\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D04x (( x <<= 1 )) on the line before B",
+      "cmd": "(( x <<= 1 )) ; true\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D05x arithmetic shift with spaces before B",
+      "cmd": "echo $(( 8 >> 1 << 1 ))\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D06x here-string line before B (control)",
+      "cmd": "cat <<< x\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D08x backtick with a comment on the same line as B",
+      "cmd": "echo `true # x` ; echo $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D08c backtick with a comment on the same line as B",
+      "cmd": "echo `true # x` ; echo $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D09x comment right after an opening backtick, apostrophe",
+      "cmd": "echo `# it's\ntrue`\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D10x space-hash inside ${x:- } before B",
+      "cmd": "echo ${x:- # y} ; echo $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D11x line continuation, then a comment with an apostrophe",
+      "cmd": "echo a \\\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D03x arithmetic shift on the same line as B (control)",
+      "cmd": "x=$((1<<2)) ; echo $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D07x let with a quoted shift before B (control)",
+      "cmd": "let \"x=1<<2\"\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
     }
   ]
 }

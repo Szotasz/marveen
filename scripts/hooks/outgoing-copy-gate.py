@@ -1919,12 +1919,14 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     # ANSICQUOTE1127 (card 41df3b8a, Revizor 5788 M1): the tokenizers read a bash $'...' string as a plain '...' one, so a
     # backslash-escaped quote inside it (`$'a\'b'`) ended the quote early (the rest of the line became quoted and a
     # newline, `;` or `&&` before a send was swallowed), and in `echo $'a\' # ' ; P` the quote ended before a `#` that
-    # bash reads inside the string, so the send after it became a comment. The command is judged in two readings: as
+    # bash reads inside the string, so the send after it became a comment. The command is judged in three readings: as
     # written (the reading so far: dash and a quoted heredoc body read $' as a plain quote) and with every unquoted
-    # $'...' as the single-quoted text bash makes of it (_decode_ansi_c_sh). It is a send when EITHER reading sends, and
-    # the line state below is the stricter of the two, so no command judged a send before passes now. Twin: isSendInvocation.
-    dec = _decode_ansi_c_sh(cmd)
-    texts = (cmd,) if dec == cmd else (cmd, dec)
+    # $'...' as the single-quoted text bash makes of it (_decode_ansi_c, and _decode_ansi_c_sh, which skips comments and
+    # heredoc bodies as bash does). It is a send when ANY reading sends, and the line state below is the strictest of
+    # them, so no command judged a send before passes now. Twin: isSendInvocation.
+    # Revizor 5852 J2: the plain decoding stays a reading of its own next to the shell-scanning one, so a form the
+    # scanner reads unlike bash is still judged as the first round judged it
+    texts = tuple(dict.fromkeys((cmd, _decode_ansi_c(cmd), _decode_ansi_c_sh(cmd))))
     # MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
     if _depth == 0:
         _LINE_CTX[:] = [cwd, []]
@@ -4103,14 +4105,17 @@ def _decode_ansi_c_sh(cmd: str) -> str:
     of a word, up to the newline) is dropped and a heredoc body (the lines after the operator's line, up to the
     delimiter line) is copied as it is: their quotes open nothing, so an apostrophe in `# it's` or in a heredoc line no longer
     stops the $'...' words after it from being decoded. A $$ is the pid and moves on as one unit. A body for a shell
-    is judged on its own (_heredoc_program_sends), where it is decoded in turn. Only is_send_invocation reads this, as
-    its second reading next to the text as written. Twin: decodeAnsiCSh."""
+    is judged on its own (_heredoc_program_sends), where it is decoded in turn. Revizor 5852 J2: `<<<` is a here-string,
+    `<<` inside (( )) / $(( )) is a shift, a comment inside backticks ends at the closing backtick, a backslash-newline
+    keeps the word state, and a `#` inside ${...} or arithmetic is no comment. Only is_send_invocation reads this, as
+    its third reading next to the text as written and _decode_ansi_c. Twin: decodeAnsiCSh."""
     if "$'" not in cmd and '$"' not in cmd:
         return cmd
     out = []
     q = None
     i, n = 0, len(cmd)
-    parens = []           # "s" for an open $( , "p" for a plain ( : a ) that closes a $( ends no word
+    # open constructs, innermost last: "s" $( , "p" plain ( , "a" arithmetic (( / $(( , "b" ${ , "t" a backtick
+    parens = []
     subst_close_at = -1
     word_start = True     # the next character starts a word (a `#` there opens a comment)
     pending = []          # heredocs opened on this line: (delimiter, strip leading tabs)
@@ -4122,11 +4127,19 @@ def _decode_ansi_c_sh(cmd: str) -> str:
             if ch == q:
                 q = None
             out.append(ch); i += 1; continue
+        top = parens[-1] if parens else None
         if ch == "\\" and i + 1 < n:
-            out.append(cmd[i:i + 2]); i += 2; word_start = False; continue
-        if ch == "#" and word_start:
-            j = cmd.find("\n", i)
-            i = n if j < 0 else j   # dropped, as bash drops it (the JS tokenizer knows no comment)
+            # a backslash-newline is removed by bash: the word state goes on as before it (Revizor 5852 J2 d)
+            out.append(cmd[i:i + 2]); i += 2
+            if cmd[i - 1] != "\n":
+                word_start = False
+            continue
+        if ch == "#" and word_start and top not in ("a", "b"):
+            # a comment ends at the newline, or inside backticks at the closing backtick (Revizor 5852 J2 c, e)
+            j = i
+            while j < n and cmd[j] != "\n" and not (cmd[j] == "`" and "t" in parens):
+                j += 1
+            i = j   # dropped, as bash drops it (the JS tokenizer knows no comment)
             continue
         if ch == "\n":
             out.append(ch); i += 1; word_start = True
@@ -4140,7 +4153,15 @@ def _decode_ansi_c_sh(cmd: str) -> str:
                         break
             pending = []
             continue
-        if ch == "<" and cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+        if ch == "`":
+            if top == "t":
+                parens.pop(); word_start = False
+            else:
+                parens.append("t"); word_start = True
+            out.append(ch); i += 1; continue
+        if cmd.startswith("<<<", i):
+            out.append("<<<"); i += 3; word_start = False; continue   # a here-string (Revizor 5852 J2 a)
+        if cmd.startswith("<<", i) and "a" not in parens:   # in (( )) / $(( )) it is a shift (J2 b)
             m = _HEREDOC_OP.match(cmd, i)
             if m:
                 delim = re.sub(r"\\(.)", r"\1", re.sub(r"'([^']*)'|\"([^\"]*)\"", lambda x: x.group(1) or x.group(2) or "", m.group(2)))
@@ -4159,16 +4180,30 @@ def _decode_ansi_c_sh(cmd: str) -> str:
         if ch == "$" and i + 1 < n and cmd[i + 1] == '"':
             i += 1   # a locale $"..." string is the "..." string
             continue
+        if cmd.startswith("$((", i):
+            parens.append("a"); out.append("$(("); i += 3; word_start = False; continue
+        if cmd.startswith("((", i) and word_start:
+            parens.append("a"); out.append("(("); i += 2; word_start = False; continue
+        if top == "a" and cmd.startswith("))", i):
+            parens.pop(); out.append("))"); i += 2; word_start = False; continue
+        if cmd.startswith("${", i):
+            parens.append("b"); out.append("${"); i += 2; word_start = False; continue
+        if ch == "}" and top == "b":
+            parens.pop(); out.append(ch); i += 1; word_start = False; continue
+        if ch == "#" and top == "b" and i > 0 and cmd[i - 1] in " \t\n;&|(":
+            # Revizor 5852 J2 e: no comment inside ${...}; written escaped (the same word to bash) so that the
+            # tokenizer's comment rule does not drop the rest of the line either
+            out.append("\\#"); i += 1; continue
         if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
             parens.append("s"); out.append("$("); i += 2; word_start = True; continue
         if ch == "(":
             parens.append("p")
-        elif ch == ")" and parens and parens.pop() == "s":
+        elif ch == ")" and parens and parens[-1] in ("s", "p") and parens.pop() == "s":
             subst_close_at = i
         if ch in "'\"":
             q = ch
         out.append(ch); i += 1
-        word_start = ch in " \t;&|(" or (ch == ")" and subst_close_at != i - 1)
+        word_start = top not in ("a", "b") and (ch in " \t;&|(" or (ch == ")" and subst_close_at != i - 1))
     return "".join(out)
 
 
