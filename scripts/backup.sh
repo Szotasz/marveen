@@ -269,14 +269,21 @@ fi
 # every local branch that origin does not already have closes the gap for a few
 # hundred KB (the full history is 26 MB, but the shared part is recoverable by
 # cloning origin). Restore, after cloning origin:
-#   git fetch <restored>/repo/local-commits.bundle 'refs/heads/*:refs/heads/*'
+#   git fetch <restored>/repo/local-commits.bundle 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+#
+# --tags as well as --branches: a rollback point is often a tag cut before a
+# rebase or a reset, and a commit that ONLY a tag points at is reached by neither
+# --branches nor origin's tracking refs. With a branch-only selection such a tag
+# lives on this disk and in no backup, and nothing says so. Measured on a live
+# install: a few of its tags were exactly that; taking them in added about 70 KB
+# to a 4.4 MB bundle.
 if command -v git >/dev/null 2>&1 && [[ -d "${REPO_ROOT}/.git" ]]; then
   BUNDLE="$(mktemp -t claudeclaw-bundle.XXXXXX)"
   # An empty ref set makes `git bundle` refuse with "empty bundle", which is
   # the GOOD case (everything is already pushed), not an error -- so a failure
   # here just drops the file instead of failing the backup.
   if git -C "${REPO_ROOT}" bundle create "${BUNDLE}" \
-       --branches --not --remotes=origin >/dev/null 2>&1; then
+       --branches --tags --not --remotes=origin >/dev/null 2>&1; then
     echo "backup: local-commits.bundle $(wc -c < "${BUNDLE}" | awk '{print $1}') bytes"
   else
     rm -f "${BUNDLE}"; BUNDLE=""
@@ -298,7 +305,7 @@ fi
   echo "See docs/MIGRATION.md for the full runbook (TCC, launchd paths, one-bot-one-poller, venv rebuild)."
   echo "--- repo/ ---"; sed 's,^,repo/,' "${REPOLIST}" 2>/dev/null || true
   if [[ -n "${BUNDLE}" ]]; then
-    echo "repo/local-commits.bundle   (git bundle: local branches absent from origin)"
+    echo "repo/local-commits.bundle   (git bundle: local branches and tags absent from origin)"
   fi
   echo "--- home/ ---"; sed 's,^,home/,' "${HOMELIST}" 2>/dev/null || true
 } > "${MANIFEST}"
