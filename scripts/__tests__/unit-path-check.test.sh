@@ -118,6 +118,16 @@ out="$(run "$LIB" "$H6" Linux)"
 echo "$out" | grep -q "Fix: bash scripts/install-telegram-progress-hook.sh$" \
   && pass "linux progress watchdog fix names its install script" || fail "linux watchdog fix not as expected: $out"
 
+echo "--- Linux: the guard units add the guard dirs themselves (ISSUE3201, scripts/lib/guard-path.sh) ---"
+H7="$FIX/h7"; mkdir -p "$H7/.local/bin"
+for t in tmux claude; do printf '#!/bin/sh\nexit 0\n' > "$H7/.local/bin/$t"; chmod +x "$H7/.local/bin/$t"; done
+unit "$H7" marveen-channel-watchdog "Environment=PATH=/usr/bin:/bin"
+unit "$H7" marveen-disk-space-guard "Environment=PATH=/usr/bin:/bin"
+out="$(HOME="$H7" PATH="$H7/.local/bin:/usr/bin:/bin" INSTALL_DIR="$INSTALL_DIR" /bin/bash -c ". \"$LIB\"; unit_path_check Linux marveen" 2>&1)"
+echo "$out" | grep -q "^warn|tmux: $H7/.local/bin .* PATH of marveen-disk-space-guard, so these jobs may not find it." \
+  && ! echo "$out" | grep -q "marveen-channel-watchdog" \
+  && pass "the watchdog unit is not flagged (its script widens PATH), another unit still is" || fail "guard unit line not as expected: $out"
+
 echo "--- no unit, no tool: skip / nothing flagged ---"
 out="$(run "$LIB" "$FIX/empty" Darwin)"
 [ "$out" = "skip|no installed unit found to compare" ] && pass "no unit: skip" || fail "no unit must skip: $out"
