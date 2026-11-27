@@ -24,9 +24,9 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
     'ts_fetch.ts': "await fetch('https://example.org/a')\n",
     'sh_curl.sh': 'set -e\ncurl -s https://example.org/a\n',
     'sh_local.sh': 'curl -s http://localhost:3420/api/kanban\n',
-    'sh_nested.sh': 'bash sh_curl.sh\n',
-    'sh_self.sh': 'bash sh_self.sh\n',
+    'sh_comment.sh': '# see: curl https://example.org/a\necho ok\n',
     'sh_arg.sh': 'curl -s "$1"\n',
+    'sh_shift_local.sh': 'verb=$1; shift\ncurl -s "http://localhost:3420/api/$verb" -d "$*"\n',
   }
   for (const [n, body] of Object.entries(files)) writeFileSync(join(dir, n), body)
   beforeEach(() => { setHookCwd(dir); setScriptFileMode('on') })
@@ -49,7 +49,11 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
   })
   it('denies a node / deno / bun file that fetches or starts curl toward an external URL', () => {
     for (const c of ['node js_fetch.mjs', 'node --no-warnings js_fetch.mjs', 'node -r dotenv/config js_child.js',
-      'deno run --allow-net ts_fetch.ts', 'deno ts_fetch.ts', 'bun run js_fetch.mjs', 'bun ts_fetch.ts', 'cd . && node js_child.js']) {
+      'deno run --allow-net ts_fetch.ts', 'deno ts_fetch.ts', 'bun run js_fetch.mjs', 'bun ts_fetch.ts', 'cd . && node js_child.js',
+      // a runtime option that takes a value does not hide the program (Dani, #3180 review)
+      'node --disable-warning ExperimentalWarning js_fetch.mjs', 'node --inspect-port 9229 js_fetch.mjs',
+      'node --unhandled-rejections strict js_fetch.mjs', 'deno run -c deno.json ts_fetch.ts', 'deno -q run ts_fetch.ts',
+      'bun --cwd . js_fetch.mjs', 'deno test ts_fetch.ts', 'bun test ts_fetch.ts']) {
       const r = verdict(c)
       expect(r.deny, c).toBe(true)
       expect(r.reason, c).toBe('script-file-external')
@@ -63,22 +67,23 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
     expect(verdict('deno fmt ts_fetch.ts').deny).toBe(false)
     expect(verdict('bun install').deny).toBe(false)
   })
-  it('judges a shell script file like the command itself, nested files included', () => {
+  it('judges a shell script file on the external URLs its curl / wget code and its arguments carry', () => {
     const r = verdict('bash sh_curl.sh')
     expect(r.deny).toBe(true)
-    expect(r.reason).toMatch(/^script-file-shell-curl/)
+    expect(r.reason).toBe('script-file-shell-external')
     expect(r.hosts).toEqual(['example.org'])
     expect(verdict('sh -e sh_curl.sh').deny).toBe(true)
-    expect(verdict('bash sh_nested.sh').deny).toBe(true)
     expect(verdict('bash sh_arg.sh https://example.org/a').deny).toBe(true)
+    expect(verdict('bash -eo pipefail sh_curl.sh').deny).toBe(true)
+    expect(verdict('bash --rcfile /dev/null sh_curl.sh').deny).toBe(true)
     expect(verdict('bash sh_arg.sh http://localhost:3420/x').deny).toBe(false)
     expect(verdict('bash sh_local.sh').deny).toBe(false)
+    expect(verdict('bash sh_comment.sh').deny).toBe(false)
     expect(verdict('bash -n sh_curl.sh').deny).toBe(false)
-  })
-  it('a script that runs itself stops at the nesting limit, closed', () => {
-    const r = verdict('bash sh_self.sh')
-    expect(r.deny).toBe(true)
-    expect(r.reason).toBe('script-file-shell-nesting-limit')
+    expect(verdict('bash sh_curl.sh', ['example.org']).deny).toBe(false)
+    // a helper that shifts its arguments and builds a localhost URL passes (Dani, #3180 review: the
+    // fleet's own scripts/marveen-api.sh was denied as "positional", then as "unparseable")
+    expect(verdict('bash sh_shift_local.sh message a b').deny).toBe(false)
   })
   it('stays a setting: off reads nothing, "log" records without blocking', () => {
     setScriptFileMode('off')

@@ -486,9 +486,28 @@ export function shellScriptIndex(args) {
     if (w === '--') return k + 1 < args.length ? k + 1 : -1
     if (!w.startsWith('-') && !w.startsWith('+')) return k
     if (/^[-+][A-Za-z]+$/.test(w) && /[csn]/.test(w.slice(1))) return -1
-    if (w === '-o' || w === '+o' || w === '-O' || w === '+O') k++
+    k += shellOptionValues(w)
   }
   return -1
+}
+// The JS / TS program files of a node / deno / bun run: the one jsScriptIndex places, and every other
+// word named like a JS / TS file. A runtime option that takes a value (`--inspect-port N`, `deno -c
+// deno.json`, `bun --cwd .`, and the ones a later runtime adds) can hide the program from the index;
+// it cannot hide a file named `*.js` / `*.ts`. Extra arguments read here are only judged, never run.
+// deno / bun subcommands that read source without running it.
+const JS_NO_RUN_SUB = new Set(['fmt', 'lint', 'check', 'doc', 'info', 'install', 'i', 'add', 'remove', 'rm', 'uninstall',
+  'upgrade', 'init', 'create', 'types', 'compile', 'bundle', 'build', 'outdated', 'pm', 'link', 'unlink', 'publish', 'completions'])
+export function jsScriptRuns(cmd, args, base) {
+  if ((cmd === 'deno' || cmd === 'bun') && JS_NO_RUN_SUB.has(args.find((w) => !w.startsWith('-')) ?? '')) return []
+  const seen = new Set()
+  const runs = []
+  const k = jsScriptIndex(cmd, args)
+  for (let i = 0; i < args.length; i++) {
+    if (i !== k && (args[i].startsWith('-') || !/\.[cm]?[jt]sx?$/.test(args[i]))) continue
+    const run = scriptFileAt(args, i, base)
+    if (run !== null && !seen.has(run.file)) { seen.add(run.file); runs.push(run) }
+  }
+  return runs
 }
 // The program file at args[k], read from disk; null when there is none to read (see pythonScriptRun).
 function scriptFileAt(args, k, base) {
@@ -2225,7 +2244,9 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         const lc = cmd.toLowerCase()
         const base = () => cwdAt(masked, orig, a)
         const external = (text, runArgs) => [...new Set([...`${text}\n${runArgs.join('\n')}`.matchAll(URL_RE)]
-          .map((m) => m[0]).filter(isExternal).map(hostOf))]
+          .map((m) => m[0]).filter(isExternal).map(hostOf).map((h) => h.replace(/[.,;:]+$/, '')))]
+          // Text that is not a host (`.`, `...`, a regex piece) cannot go on the vendor list and only fills the log.
+          .filter((h) => /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/i.test(h))
           .filter((h) => !PLACEHOLDER_HOST.test(h) && !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
         let found = null
         if (PYTHON.test(lc)) {
@@ -2238,19 +2259,21 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
             if (pythonUsesNetwork(run.body) || starts) found = { run, hosts: external(text, run.args), reason: 'script-file-external' }
           }
         } else if (JS_RUNTIME.test(lc)) {
-          const run = scriptFileAt(args, jsScriptIndex(lc, args), base())
-          if (run !== null && (NET_PRIMITIVE.test(run.body) || (JS_RUNS_PROGRAM.test(run.body) && DOWNLOADER_WORD.test(run.body)))) {
-            found = { run, hosts: external(run.body, run.args), reason: 'script-file-external' }
+          for (const run of jsScriptRuns(lc, args, base())) {
+            if (!NET_PRIMITIVE.test(run.body) && !(JS_RUNS_PROGRAM.test(run.body) && DOWNLOADER_WORD.test(run.body))) continue
+            const hosts = external(run.body, run.args)
+            if (hosts.length) { found = { run, hosts, reason: 'script-file-external' }; break }
           }
         } else if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null) {
+          // A whole script file is read as TEXT, not through classify(): the command analysis is built for
+          // one command line and fails closed on a real script (measured on scripts/marveen-api.sh and
+          // agent-msg-get.sh: "unparseable", Dani #3180). A file whose code (comment lines dropped) names
+          // curl / wget is judged on the external URLs in it and in the run's arguments; a destination
+          // built at run time passes, as in a Python file.
           const run = scriptFileAt(args, shellScriptIndex(args), base())
           if (run !== null) {
-            if (depth >= MAX_DEPTH) return NESTING_LIMIT
-            const body = positionalBody(run.body, [run.file, ...run.args])   // $0 is the script file
-            const r = body === null
-              ? { deny: true, reason: 'positional', hosts: ['<curl/wget argument from $1..$9, $@ or $*>'] }
-              : classify(body, depth + 1, vendorHosts, vendorDomains)
-            if (r.deny) found = { run, hosts: r.hosts.length ? r.hosts : [`<${run.file}>`], reason: r.reason.startsWith('script-file-') ? r.reason : `script-file-shell-${r.reason}` }
+            const code = run.body.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+            if (DOWNLOADER_WORD.test(code)) found = { run, hosts: external(code, run.args), reason: 'script-file-shell-external' }
           }
         }
         if (found !== null && found.hosts.length) {
