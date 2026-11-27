@@ -372,6 +372,36 @@ describe('marveen-api.sh: what each verb sends', () => {
     expect(seen).toEqual([])
   })
 
+  it('kanban-project, note-add, note-list, note-done: the Projects and Notes pages through the helper', async () => {
+    let r = await run(['kanban-project', 'card-1', 'Spirit Lelle'])
+    expect(r.code, r.stderr).toBe(0)
+    expect([seen.at(-1)!.method, seen.at(-1)!.url, JSON.parse(seen.at(-1)!.body)]).toEqual(['PUT', '/api/kanban/card-1', { project: 'Spirit Lelle' }])
+    r = await run(['note-add', 'dani', 'Sára Tüttő', file('note.txt', ' hívd vissza \n'), '--due', '2026-12-01'])
+    expect(r.code, r.stderr).toBe(0)
+    expect([seen.at(-1)!.method, seen.at(-1)!.url]).toEqual(['POST', '/api/notes'])
+    expect(JSON.parse(seen.at(-1)!.body)).toEqual({ created_by: 'dani', assignee: 'Sára Tüttő', content: 'hívd vissza', due_date: '2026-12-01' })
+    r = await run(['note-list', '--assignee', 'dani'])
+    expect([r.code, seen.at(-1)!.method, seen.at(-1)!.url]).toEqual([0, 'GET', '/api/notes?assignee=dani'])
+    r = await run(['note-list'])
+    expect([r.code, seen.at(-1)!.url]).toEqual([0, '/api/notes'])
+    r = await run(['note-done', 'a1b2c3', 'dani', '--reason-file', file('why.txt', 'kész')])
+    expect(r.code, r.stderr).toBe(0)
+    expect([seen.at(-1)!.method, seen.at(-1)!.url, JSON.parse(seen.at(-1)!.body)]).toEqual(['DELETE', '/api/notes/a1b2c3', { by: 'dani', reason: 'kész' }])
+  })
+
+  it('kanban-project, note-add, note-done: a bad id, name, date, empty or multi-line value exits 2 and sends nothing', async () => {
+    for (const args of [
+      ['kanban-project', 'card/1', 'P'], ['kanban-project', 'card-1', ''], ['kanban-project', 'card-1', 'a\nb'], ['kanban-project', 'card-1', 'x'.repeat(101)],
+      ['note-add', 'Bad Name', 'dani', file('n1.txt', 'x')], ['note-add', 'dani', 'dani', file('n2.txt', '  ')],
+      ['note-add', 'dani', 'dani', file('n3.txt', 'x'), '--due', '1.12'], ['note-add', 'dani', 'dani', file('n4.txt', 'x'.repeat(2001))],
+      ['note-done', '../x', 'dani'], ['note-done', 'a1', 'Bad Name'], ['note-list', 'extra'],
+    ]) {
+      const r = await run(args)
+      expect(r.code, JSON.stringify(args)).toBe(2)
+    }
+    expect(seen).toEqual([])
+  })
+
   it('message: goes through agent-msg.sh with the text from the file', async () => {
     reply = { status: 200, body: '{"id":99}' }
     const r = await run(['message', 'dani', 'samu', file('msg.txt', 'Szia, "idézet" és `kód`')])
@@ -638,6 +668,7 @@ describe('marveen-api.sh: schedules are read only', () => {
     '        "kanban-comment": ["c-1", "dani", f], "kanban-assign": ["c-1", "dani"], "kanban-archive": ["c-1"],',
     '        "kanban-done-since": ["1700000000"], "agents-list": [], "vault-login": ["dani", "shop-example-com"], "vault-logins": [],',
     '        "agent-restart": ["dani"], "federation-directory": [], "daily-log-read": ["dani"], "memory-backfill": [],',
+    '        "kanban-project": ["c-1", "Spirit"], "note-add": ["dani", "dani", f], "note-list": [], "note-done": ["n1", "dani"],',
     '    }',
     '    verbs = re.findall(r"^ {2}([a-z-]+)(?= |$)", m.USAGE, re.M)',
     '    built = [[v] + list(m.build_request(v, s[v])[:2]) for v in verbs if v != "message"]',

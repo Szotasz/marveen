@@ -85,6 +85,11 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   vault-login <agent> <web-login-id>   (logs in, in the agent's own browser; prints the outcome only)
   vault-logins                         (the web logins: id, origin, username, allowed agents; never a password)
   kanban-assign <card-id> <assignee> [--actor <name>]
+  kanban-project <card-id> <project>
+  note-add <author> <assignee> <content-file> [--due YYYY-MM-DD]
+  note-list [--assignee <name>]
+  note-done <note-id> <by> [--reason-file <file>]
+                (the note leaves the list; the server keeps it, soft-deleted, with who and why)
   kanban-done-since <epoch> [--assignee-team <leader>]
                 (read only: the cards now done whose last status change came at or after <epoch>; JSON with count and ids)
   agents-list
@@ -590,6 +595,40 @@ def build_request(verb, args):
             fail_usage('kanban-comment: the content is empty')
         # The answer echoes the whole comment back; the caller wrote it from its own file.
         return 'POST', f'/api/kanban/{card}/comments', {'author': author, 'content': content}, headers, {} if as_json else {'drop_echo': 'content'}
+    if verb == 'kanban-project':
+        # The dashboard's Projects page groups cards by this field; PUT /api/kanban/<id> already accepts it.
+        card, project = positional(args, 2, verb)
+        check(card, CARD_ID_RE, 'card id')
+        project = project.strip()
+        if not project or len(project) > 100 or any(ord(c) < 32 for c in project):
+            fail_usage('kanban-project: the project name must be 1-100 characters on one line')
+        return 'PUT', f'/api/kanban/{card}', {'project': project}, headers, {}
+    if verb == 'note-add':
+        # POST /api/notes: a token caller names itself in created_by (the route takes no X-Agent-Id).
+        due = take_opt(args, '--due')
+        author, assignee, content_file = positional(args, 3, verb)
+        body = {'created_by': check(author, NAME_RE, 'agent name'),
+                'assignee': check(assignee, ASSIGNEE_RE, 'assignee'), 'content': read_text(content_file).strip()}
+        if not body['content']:
+            fail_usage('note-add: the content is empty')
+        if len(body['content']) > 2000:
+            fail_usage('note-add: the content is longer than 2000 characters (the server refuses it)')
+        if due is not None:
+            body['due_date'] = check(due, DATE_RE, 'date (YYYY-MM-DD)')
+        return 'POST', '/api/notes', body, headers, {}
+    if verb == 'note-list':
+        assignee = take_opt(args, '--assignee')
+        positional(args, 0, verb)
+        q = '?' + urllib.parse.urlencode({'assignee': check(assignee, ASSIGNEE_RE, 'assignee')}) if assignee is not None else ''
+        return 'GET', '/api/notes' + q, None, headers, {}
+    if verb == 'note-done':
+        reason_file = take_opt(args, '--reason-file')
+        note, by = positional(args, 2, verb)
+        body = {'by': check(by, NAME_RE, 'agent name')}
+        check(note, CARD_ID_RE, 'note id')
+        if reason_file is not None:
+            body['reason'] = read_text(reason_file).strip()
+        return 'DELETE', f'/api/notes/{note}', body, headers, {}
     if verb == 'kanban-archive':
         # KANBANARCHIVEVERB1122: the audit's archive step (POST /api/kanban/<id>/archive, empty body).
         # Without a verb the level-3 archive could only go through a raw token curl, so it did not run.
