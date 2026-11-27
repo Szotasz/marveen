@@ -1269,9 +1269,17 @@ export function shellCommandCall(cmd, text) {
     if (w === '--' || w === '-') return sawC && k + 1 < argv.length ? { body: argv[k + 1], args: argv.slice(k + 2) } : null
     if (!w.startsWith('-') && !w.startsWith('+')) return sawC ? { body: w, args: argv.slice(k + 1) } : null
     if (/^[-+][A-Za-z]+$/.test(w) && w.includes('c')) sawC = true
-    if (w === '-o' || w === '+o' || w === '-O' || w === '+O') k++
+    k += shellOptionValues(w)
   }
   return null
+}
+// How many of the following words a shell option word takes as its value. In a cluster every o / O takes
+// one, wherever it stands and in order (`-eo pipefail`, `-oe pipefail`, `-oc pipefail '...'`, `-oO a b`:
+// measured with bash, sh and zsh); bash's --rcfile / --init-file and zsh's --emulate take one too.
+const SHELL_LONG_VALUE = new Set(['--rcfile', '--init-file', '--emulate'])
+export function shellOptionValues(w) {
+  if (SHELL_LONG_VALUE.has(w)) return 1
+  return /^[-+][A-Za-z]+$/.test(w) ? (w.slice(1).match(/[oO]/g) ?? []).length : 0
 }
 export function shellCommandBody(cmd, text) {
   return shellCommandCall(cmd, text)?.body ?? null
@@ -1575,7 +1583,7 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
       continue
     }
     if (k <= ci || operandSeen) continue
-    if (w === '-o' || w === '+o' || w === '-O' || w === '+O') { k++; continue }
+    if (shellOptionValues(w)) { k += shellOptionValues(w); continue }
     if ((w.startsWith('-') || w.startsWith('+')) && w !== '-' && w !== '--') continue
     if (w === '--' || w === '-') continue
     operandSeen = true
@@ -1622,7 +1630,7 @@ function shellInputs(masked, orig, a, b) {
     wordEnd = start + raw.length
     const kind = shellWordKind(raw)
     if (kind === null) { undecided = true; continue }
-    if (kind === '-o' || kind === '+o' || kind === '-O' || kind === '+O') { k++; continue }
+    if (shellOptionValues(kind)) { k += shellOptionValues(kind); continue }
     if (/^-[A-Za-z]*s[A-Za-z]*$/.test(kind)) readsStdin = true
     if (kind.startsWith('-') || kind.startsWith('+')) continue
     operand = true
