@@ -45,6 +45,13 @@ describe('shell option values are skipped like the shell skips them', () => {
     expect(classify(`echo 'curl -s ${U}' | bash -eo pipefail`).deny).toBe(true)
     expect(classify(`echo 'curl -s ${U}' | bash --rcfile /dev/null`).deny).toBe(true)
   })
+  it('an option value is not the program file: a substitution behind it is still the program', () => {
+    for (const c of [`bash -eo pipefail <(echo x)`, `bash --rcfile /dev/null <(echo x)`, `bash -o pipefail <(echo x)`]) {
+      const r = classify(c)
+      expect(r.deny, c).toBe(true)
+      expect(r.reason, c).toBe('shell-substitution')
+    }
+  })
   it('passes the same shapes toward localhost', () => {
     expect(classify(`bash -eo pipefail -c 'curl -s ${L}'`).deny).toBe(false)
     expect(classify(`bash --rcfile /dev/null -c 'curl -s ${L}'`).deny).toBe(false)
