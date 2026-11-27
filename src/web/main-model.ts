@@ -32,18 +32,18 @@ import { readActiveModelFromProjectDir } from './active-model.js'
 import { configDirFor } from './main-transcript-root.js'
 import { readConfiguredMainModel } from './channel-monitor.js'
 import { gatherGateInputs, sendSlashCommand, sendKey, mainSessionName } from './context-restart-gate-runner.js'
-import { capturePane } from './agent-process.js'
+import { capturePane, mainAgentConfigDirIfSeparate } from './agent-process.js'
+import { agentEffortLevel } from './agent-scaffold.js'
 import { switchVerdict, humanBusy, SWITCH_TURN_QUIET_MS, type QuietVerdict } from './session-control.js'
 import { notifyChannel } from '../notify.js'
 import { registerCommand, parseCommand, resolveCommand } from './commands.js'
 import { queuePendingWrite, readPendingWrite, runPendingWrite, clearPendingWrite, PENDING_WRITE_FILE, PENDING_WRITE_TTL_MS } from './pending-write.js'
 import { formatDayClock, formatSpan, modelsDiffer, formatTokens } from './system-status.js'
+import { EFFORT_LEVELS } from '../config-registry.js'
 
 export const DEFAULT_HOLD_MINUTES = 120
 export const BLOCK_ALERT_MS = 30 * 60_000
-// What Claude Code 2.1.110 accepts (`/effort [low|medium|high|max|auto]`,
-// measured in the binary): `xhigh` is not there and would fail silently.
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const
+export { EFFORT_LEVELS }
 // Claude Code decides effort support per model (2.1.110, measured in the
 // binary: a capability table first, then every `haiku` id -> no effort). A
 // `/effort` sent while haiku runs is stored and ignored, so the reply must not
@@ -653,8 +653,11 @@ export async function setEffort(level: string | undefined, deps: ModelDeps = liv
 // session.
 export const EFFORT_SENT_FILE = join(STORE_DIR, 'main-effort-last-sent.json')
 
-/** The configured effort for the session: env first, then .claude/settings.json. */
+/** The configured effort for the session: AGENT_EFFORT_LEVEL when the main agent runs on its own config dir (that is
+ * where the level is written, as env.CLAUDE_CODE_EFFORT_LEVEL), then the dashboard's env, then .claude/settings.json. */
 export function readConfiguredEffort(): { value: string; source: string } | null {
+  const own = mainAgentConfigDirIfSeparate() !== null ? agentEffortLevel(MAIN_AGENT_ID) : null
+  if (own) return { value: own, source: 'AGENT_EFFORT_LEVEL' }
   if (process.env.CLAUDE_CODE_EFFORT_LEVEL) return { value: process.env.CLAUDE_CODE_EFFORT_LEVEL, source: 'env CLAUDE_CODE_EFFORT_LEVEL' }
   try {
     const s = JSON.parse(readFileSync(join(PROJECT_ROOT, '.claude', 'settings.json'), 'utf-8'))
