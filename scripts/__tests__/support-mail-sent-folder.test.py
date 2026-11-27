@@ -45,9 +45,14 @@ check("a literal name arrives as a tuple", P((b'(\\Sent) "/" {13}', b"Sent Messa
 check("garbage does not parse", P(b"* garbage") is None and P(b'(\\Sent) "/"') is None)
 
 DOVECOT = [b'(\\HasNoChildren) "/" INBOX', b'(\\HasNoChildren \\Sent) "/" Sent', b'(\\HasNoChildren) "/" "INBOX.Sent"']
-COURIER = [b'(\\HasChildren) "." "INBOX"', b'(\\HasNoChildren \\Sent) "." "INBOX.Sent"', b'(\\HasNoChildren \\Trash) "." "INBOX.Trash"']
+# The shape of the LIST reply measured on our own (Hostinger) support mailbox, 2026-11-27: bare atoms, "." delimiter.
+COURIER = [b'(\\HasChildren) "." INBOX', b'(\\HasNoChildren \\UnMarked \\Trash) "." INBOX.Trash',
+           b'(\\HasNoChildren \\UnMarked \\Sent) "." INBOX.Sent', b'(\\HasNoChildren \\UnMarked \\Junk) "." INBOX.Junk',
+           b'(\\HasNoChildren \\UnMarked \\Drafts) "." INBOX.Drafts']
 check("Dovecot shape: the \\Sent mailbox, not the plain INBOX.Sent", send.sent_folder_from_list(DOVECOT) == "Sent")
 check("Courier shape: INBOX.Sent stays", send.sent_folder_from_list(COURIER) == "INBOX.Sent")
+check("our measured reply picks INBOX.Sent through its \\Sent flag, not the fallback",
+      send.choose_sent_folder("", COURIER) == ("INBOX.Sent", "\\Sent"))
 check("a \\Noselect \\Sent mailbox is skipped", send.sent_folder_from_list([b'(\\Noselect \\Sent) "/" X', b'(\\Sent) "/" Y']) == "Y")
 check("no \\Sent flag: None", send.sent_folder_from_list([b'() "/" INBOX']) is None)
 
