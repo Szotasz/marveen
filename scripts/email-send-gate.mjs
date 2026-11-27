@@ -1779,13 +1779,23 @@ function wordsMailHost(cmd) {
 }
 
 export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
+  // ANSICQUOTE1127 (card 41df3b8a, Revizor 5788 M1): the command is judged in two readings, as written and with every
+  // unquoted bash $'...' as the single-quoted text bash makes of it (decodeAnsiC); a send when EITHER reading sends, and
+  // the line state is the stricter of the two. See the python twin (is_send_invocation) for the two shapes it closes.
+  const dec = decodeAnsiC(cmd)
+  const texts = dec === cmd ? [cmd] : [cmd, dec]
   // MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
   if (depth === 0) lineCtx = { cwd, texts: [] }
-  lineCtx.texts.push(cmd)
+  lineCtx.texts.push(...texts)
   // FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
   // A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
-  lineExemptOk = (depth === 0 || lineExemptOk) && lineClean(cmd)
-  lineMailHost = (depth > 0 && lineMailHost) || MAIL_API_HOST.test(cmd) || wordsMailHost(cmd) // MAILCURLSEND1118
+  lineExemptOk = (depth === 0 || lineExemptOk) && texts.every((t) => lineClean(t))
+  lineMailHost = (depth > 0 && lineMailHost) || texts.some((t) => MAIL_API_HOST.test(t) || wordsMailHost(t)) // MAILCURLSEND1118
+  return texts.some((t) => readingSends(t, depth))
+}
+
+// isSendInvocation for ONE reading of the command (ANSICQUOTE1127); the line state is set by the caller
+function readingSends(cmd, depth) {
   if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {

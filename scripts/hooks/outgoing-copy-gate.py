@@ -811,7 +811,13 @@ def _deeper_sends(text: str, depth: int) -> bool:
             _DEPTH_SEND_MARK.append(re.compile(
                 _MAIL_MARKER.pattern + r"|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://", re.I))
         return bool(_DEPTH_SEND_MARK[0].search(text))
-    return is_send_invocation(text, _depth=depth + 1)
+    # ANSICQUOTE1127: shlex keeps the backslash of \$ and \` inside double quotes, bash and the JS tokenizer drop it, so
+    # in `bash -c "echo \$'a\\'b'<newline>P"` this twin read the program as `echo \$'a\'b'...` (a plain quote that swallows
+    # the newline). The program is judged as given and with those two escapes undone; a send when either reading sends.
+    return any(is_send_invocation(t, _depth=depth + 1) for t in dict.fromkeys((text, _DQ_KEPT_ESCAPE.sub(r"\1", text))))
+
+
+_DQ_KEPT_ESCAPE = re.compile(r"\\([$`])")
 
 
 def _xargs_replace_string(toks):
@@ -1904,14 +1910,29 @@ def _words_mail_host(cmd: str) -> bool:
 
 
 def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
+    # ANSICQUOTE1127 (card 41df3b8a, Revizor 5788 M1): the tokenizers read a bash $'...' string as a plain '...' one, so a
+    # backslash-escaped quote inside it (`$'a\'b'`) ended the quote early (the rest of the line became quoted and a
+    # newline, `;` or `&&` before a send was swallowed), and in `echo $'a\' # ' ; P` the quote ended before a `#` that
+    # bash reads inside the string, so the send after it became a comment. The command is judged in two readings: as
+    # written (the reading so far: dash and a quoted heredoc body read $' as a plain quote) and with every unquoted
+    # $'...' as the single-quoted text bash makes of it (_decode_ansi_c). It is a send when EITHER reading sends, and
+    # the line state below is the stricter of the two, so no command judged a send before passes now. Twin: isSendInvocation.
+    dec = _decode_ansi_c(cmd)
+    texts = (cmd,) if dec == cmd else (cmd, dec)
     # MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
     if _depth == 0:
         _LINE_CTX[:] = [cwd, []]
-    _LINE_CTX[1].append(cmd)
+    _LINE_CTX[1].extend(texts)
     # FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
     # A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
-    _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and _line_clean(cmd)
-    _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or bool(_MAIL_API_HOST.search(cmd)) or _words_mail_host(cmd)   # MAILCURLSEND1118
+    _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and all(_line_clean(t) for t in texts)
+    _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or any(
+        bool(_MAIL_API_HOST.search(t)) or _words_mail_host(t) for t in texts)   # MAILCURLSEND1118
+    return any(_reading_sends(t, _depth) for t in texts)
+
+
+def _reading_sends(cmd: str, _depth: int) -> bool:
+    """is_send_invocation for ONE reading of the command (ANSICQUOTE1127); the line state is set by the caller."""
     if _heredoc_program_sends(cmd, _depth):
         return True
     try:
