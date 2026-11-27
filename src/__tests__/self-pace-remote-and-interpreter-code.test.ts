@@ -25,6 +25,32 @@ describe('self-pace-gate: the remote command of ssh', () => {
     }
   })
 
+  it('DENIES a scheduler in a command-valued -o option (ProxyCommand and LocalCommand run on this host)', () => {
+    for (const cmd of [
+      'ssh -o ProxyCommand="crontab -r" box',
+      'ssh -oProxyCommand="at now" box',
+      'ssh -o PermitLocalCommand=yes -o LocalCommand="crontab -r" box',
+      'ssh -o RemoteCommand="crontab -r" box',
+      'ssh -o "proxycommand crontab -r" box',
+      'ssh -o KnownHostsCommand="crontab -r" box',
+      `ssh -o 'Match exec "crontab -r"' box`,
+      'ssh box -o LocalCommand="crontab -r" -o PermitLocalCommand=yes uptime',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS command-valued -o options without a scheduler, and other -o options', () => {
+    for (const cmd of [
+      'ssh -o ProxyCommand="nc -X 5 -x proxy:1080 %h %p" box uptime',
+      'ssh -o RemoteCommand="crontab -l" box',
+      'ssh -o BatchMode=yes -o ConnectTimeout=10 box hostname',
+      'ssh box -p 22 uptime',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
   it('DENIES an ssh option it does not know (the host position is not certain)', () => {
     expect(deny('ssh -Z box uptime')).toBe(true)
   })

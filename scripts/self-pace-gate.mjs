@@ -4051,22 +4051,51 @@ function shellWordRuns(words, i, strictStdin = false) {
 // parser does not know, so the host position is not certain (the caller fails closed).
 const SSH_FLAG_OPTS = '46AaCfGgKkMNnqsTtVvXxYy'
 const SSH_VALUE_OPTS = 'BbcDEeFIiJLlmOoPpQRSWw'
+// The -o options whose value is a command line: ProxyCommand, LocalCommand and KnownHostsCommand run on THIS host,
+// RemoteCommand on the remote one, and a Match exec runs its command here too. `Key=value` and `Key value`, any
+// case. A config file (-F) is not read: its content is not in the command.
+const SSH_OPTION_COMMAND_RX = /^\s*(?:proxycommand|localcommand|remotecommand|knownhostscommand)\s*(?:=\s*|\s+)([\s\S]*)$/i
+const SSH_MATCH_EXEC_RX = /^\s*match\b[\s\S]*?\bexec\s*(?:=\s*|\s+)([\s\S]*)$/i
+function sshOptionCommand(value, ansi) {
+  const m = SSH_OPTION_COMMAND_RX.exec(value) ?? SSH_MATCH_EXEC_RX.exec(value)
+  if (!m) return null
+  const code = m[1].trim().replace(/^(["'])([\s\S]*)\1$/, '$2')
+  return code ? { value: code, ansi } : null
+}
+// What ssh runs: { codes } the remote command (the words after the host, joined by spaces, as the remote shell gets
+// them) and the command-valued -o options. Options may also stand after the host, before the command (OpenSSH
+// parses them there too). false: an option this parser does not know, so the host position is not certain.
 function sshRemoteCommand(words, i) {
+  const codes = []
+  let host = -1
   let j = i + 1
   for (; j < words.length; j++) {
     const v = words[j].value
-    if (v === '--') { j++; break }
-    if (!/^-./.test(v)) break
+    if (v === '--') {
+      if (host >= 0) { j++; break }
+      continue
+    }
+    if (!/^-./.test(v)) {
+      if (host >= 0) break
+      host = j
+      continue
+    }
     for (let k = 1; k < v.length; k++) {
       if (SSH_FLAG_OPTS.includes(v[k])) continue
       if (!SSH_VALUE_OPTS.includes(v[k])) return false
-      if (k === v.length - 1) j++ // the value is the next word
+      const attached = k < v.length - 1
+      const val = attached ? { value: v.slice(k + 1), ansi: words[j].ansi } : words[j + 1]
+      if (!attached) j++ // the value is the next word
+      if (v[k] === 'o' && val) {
+        const c = sshOptionCommand(val.value, val.ansi)
+        if (c) codes.push(c)
+      }
       break
     }
   }
-  const rest = words.slice(j + 1) // words[j] is the host
-  if (!rest.length) return null
-  return { value: rest.map((w) => w.value).join(' '), ansi: rest.some((w) => w.ansi) }
+  const rest = host >= 0 ? words.slice(j) : []
+  if (rest.length) codes.push({ value: rest.map((w) => w.value).join(' '), ansi: rest.some((w) => w.ansi) })
+  return { codes }
 }
 
 // SELFPACEQUOTE1127: a scheduler call inside an ARGUMENT word: the code of `python3 -c`, `node -e`, `perl -e`,
@@ -4798,7 +4827,7 @@ function scanShellCode(command, strictStdin = false) {
         const remote = sshRemoteCommand(args, i)
         // an unknown option fails closed where ssh is the command; elsewhere `ssh` may be an argument (journalctl -u ssh)
         if (remote === false) { if (i === cmdIndex) bad = true }
-        else if (remote) push(remote)
+        else for (const c of remote.codes) push(c)
       }
       if (!SHELL_NAMES.has(base)) continue
       const runs = shellWordRuns(args, i, strictStdin)
