@@ -199,7 +199,7 @@
         "hook": "fleet-freeze-gate",
         "gate": true,
         "purpose": "PreToolUse hook (matcher \"*\"), KILLSWITCH1022: while the fleet is frozen (store/fleet-freeze.json exists), every tool call is denied with exit 2.",
-        "fingerprint": "e83e478547d089ac67e2183b0eb99986d30958973f219e6f33d3beed99706381"
+        "fingerprint": "c7cb1909406764a7a8601e52431853a40ed4aad78e4b50d4f0ba1c4987f4e207"
       },
       {
         "index": 1,

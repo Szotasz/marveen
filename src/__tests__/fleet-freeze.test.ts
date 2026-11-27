@@ -371,6 +371,31 @@ describe('the tool-call hook', () => {
     expect(existsSync(FLEET_FREEZE_PATH)).toBe(true)
   })
 
+  // A gate that cannot run (file missing: bash exits 127; the template's old form exited 0) must block, not let every
+  // call through while the fleet is frozen: all three wirings carry the fail-closed tail.
+  it('a missing gate file blocks (exit 2, fail-closed) in the template, the project settings and the worker settings', async () => {
+    const { WORKER_FREEZE_GATE_CMD } = await import('../web/agent-worker.js')
+    const { GATE_FAIL_CLOSED_TAG } = await import('../web/agent-scaffold.js')
+    const real = join(REPO, 'scripts', 'hooks', 'fleet-freeze-gate.sh')
+    const missing = join(ROOT, 'nincs', 'fleet-freeze-gate.sh')
+    const template = hookCommandFrom(readFileSync(join(REPO, 'templates', 'settings.json.template'), 'utf-8').split('{{PROJECT_ROOT}}').join(REPO))
+    const project = hookCommandFrom(readFileSync(join(REPO, '.claude', 'settings.json'), 'utf-8')).split('$CLAUDE_PROJECT_DIR').join(REPO)
+    const worker = WORKER_FREEZE_GATE_CMD.split(join(ROOT, 'scripts', 'hooks', 'fleet-freeze-gate.sh')).join(real)
+    rmSync(FLEET_FREEZE_PATH, { force: true })
+    for (const cmd of [template, project, worker]) {
+      expect(cmd).toContain(real)
+      expect(run(cmd).status).toBe(0)
+      const r = run(cmd.split(real).join(missing))
+      expect(r.status, cmd).toBe(2)
+      expect(r.stderr).toContain(GATE_FAIL_CLOSED_TAG)
+    }
+    writeFileSync(FLEET_FREEZE_PATH, '{}')
+    const r = run(worker)
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/FLOTTA FAGYASZTVA/)
+    expect(r.stderr).not.toContain(GATE_FAIL_CLOSED_TAG)
+  })
+
   it('without the override the gate watches <install>/store/fleet-freeze.json', () => {
     const script = readFileSync(join(REPO, 'scripts', 'hooks', 'fleet-freeze-gate.sh'), 'utf-8')
     expect(script).toContain('FREEZE="${FLEET_FREEZE_FILE:-$ROOT/store/fleet-freeze.json}"')
