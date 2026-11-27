@@ -24,7 +24,7 @@ or SMTP is touched, and once more, consuming, after the SMTP login.
 """
 import sys, os, ssl, smtplib, argparse, imaplib, time, hashlib, mimetypes, stat
 from email.message import EmailMessage
-from email.utils import getaddresses
+from email.utils import getaddresses, formatdate, make_msgid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib
 
@@ -169,6 +169,89 @@ def read_attachments(paths):
     return out
 
 
+# ISSUE3181SENDPY (#3181): the audit copy's folder. It used to be a fixed
+# "INBOX.Sent", which is the Sent folder on a Courier-style server (ours) but
+# only an ordinary folder on, for example, a Dovecot server whose Sent folder is
+# "Sent". Order: the SUPPORT_SENT_FOLDER config value; else the mailbox the
+# server flags \Sent in its LIST reply (RFC 6154 special-use); else "INBOX.Sent".
+SENT_FALLBACK = "INBOX.Sent"
+
+
+def _list_line_text(item):
+    """One imaplib LIST item as text. A name sent as a literal arrives as a
+    tuple (b'(\\Sent) "/" {13}', b'Sent Messages'): the literal is the name."""
+    if isinstance(item, tuple):
+        head = item[0].decode("utf-8", "replace") if isinstance(item[0], bytes) else str(item[0])
+        lit = item[1].decode("utf-8", "replace") if isinstance(item[1], bytes) else str(item[1])
+        head = head.rsplit("{", 1)[0].rstrip()
+        return head + " " + '"' + lit.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return item.decode("utf-8", "replace") if isinstance(item, bytes) else str(item)
+
+
+def parse_list_line(item):
+    """(flags, name) of one LIST reply line, or None when it does not parse.
+    flags are lower-cased (\\sent, \\noselect, ...); the name is unquoted
+    (quoted with \\-escapes, or a bare atom); the delimiter is not needed."""
+    text = _list_line_text(item).strip()
+    if not text.startswith("("):
+        return None
+    close = text.find(")")
+    if close < 0:
+        return None
+    flags = {f.lower() for f in text[1:close].split()}
+    rest = text[close + 1:].lstrip()
+    # the delimiter: a quoted single char ("." "/" or an escaped one) or NIL
+    if rest.upper().startswith("NIL"):
+        rest = rest[3:].lstrip()
+    elif rest.startswith('"'):
+        end = rest.find('"', 2 if rest[1:2] == "\\" else 1)
+        if end < 0:
+            return None
+        rest = rest[end + 1:].lstrip()
+    else:
+        return None
+    if not rest:
+        return None
+    if rest.startswith('"'):
+        out, i = [], 1
+        while i < len(rest):
+            c = rest[i]
+            if c == "\\" and i + 1 < len(rest):
+                out.append(rest[i + 1]); i += 2; continue
+            if c == '"':
+                return flags, "".join(out)
+            out.append(c); i += 1
+        return None
+    return flags, rest.split()[0]
+
+
+def sent_folder_from_list(items):
+    """The first selectable mailbox the LIST reply flags \\Sent, else None."""
+    for item in items or []:
+        parsed = parse_list_line(item)
+        if parsed and "\\sent" in parsed[0] and "\\noselect" not in parsed[0]:
+            return parsed[1]
+    return None
+
+
+def choose_sent_folder(configured, list_items):
+    """(folder, source): the configured value, else the \\Sent mailbox, else the fallback."""
+    if configured and configured.strip():
+        return configured.strip(), "SUPPORT_SENT_FOLDER"
+    flagged = sent_folder_from_list(list_items)
+    if flagged:
+        return flagged, "\\Sent"
+    return SENT_FALLBACK, "fallback"
+
+
+def imap_mailbox_arg(name):
+    """The mailbox as an IMAP argument: imaplib sends it as given, so a name
+    with a space or a quote must be a quoted string."""
+    if name and all(c.isalnum() or c in "._-/&+" for c in name):
+        return name
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def main():
     # allow_abbrev=False: with argparse's default prefix matching, `--t x` /
     # `--c x` silently meant --to / --cc, so a recipient arrived under a
@@ -212,6 +295,11 @@ def main():
     if a.cc:
         msg["Cc"] = a.cc
     msg["Subject"] = a.subject
+    # ISSUE3181SENDPY: Date and Message-ID before the send, so the delivered
+    # letter and the audit copy carry the same ones (smtplib adds neither). They
+    # are not part of `letter` below, so the approval anchor does not change.
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=lib.FROM_ADDRESS.rsplit("@", 1)[-1] if "@" in (lib.FROM_ADDRESS or "") else None)
     if a.html_wrap:
         import html_wrap
         msg.set_content(body)
@@ -288,16 +376,29 @@ def main():
     # auditable. Fail-safe: the mail is ALREADY sent by this point, so an append
     # error is logged (stderr) but never raised -- the reply must not be treated
     # as failed just because its audit copy could not be filed.
+    folder = SENT_FALLBACK
     try:
         M = imaplib.IMAP4_SSL(lib.IMAP_HOST, lib.IMAP_PORT,
                               ssl_context=ssl.create_default_context())
         M.login(lib.EMAIL, pw)
-        M.append("INBOX.Sent", "(\\Seen)",
+        configured = lib.SENT_FOLDER
+        list_items = []
+        if not configured:
+            # A failed LIST never stops the copy: the fallback folder is used, and said.
+            try:
+                typ, list_items = M.list()
+                if typ != "OK":
+                    list_items = []
+            except Exception as e:  # noqa: BLE001
+                print(f"audit: LIST failed ({e}), using {SENT_FALLBACK}", file=sys.stderr)
+                list_items = []
+        folder, source = choose_sent_folder(configured, list_items)
+        M.append(imap_mailbox_arg(folder), "(\\Seen)",
                  imaplib.Time2Internaldate(time.time()), msg.as_bytes())
         M.logout()
-        print("audit: copy appended to INBOX.Sent")
+        print(f"audit: copy appended to {folder} ({source})")
     except Exception as e:
-        print(f"audit: Sent-append FAILED (mail WAS sent to {a.to}): {e}", file=sys.stderr)
+        print(f"audit: Sent-append to {folder} FAILED (mail WAS sent to {a.to}): {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

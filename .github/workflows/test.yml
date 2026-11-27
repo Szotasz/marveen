@@ -126,6 +126,10 @@ jobs:
       # over-report GROWS with every consolidation round, which is why this
       # runs here and not by hand. Hermetic: throwaway fixture dir.
       - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # ISSUE3181SENDPY (#3181): the support mailbox's audit-copy folder and the
+      # Date / Message-ID headers. Hermetic: SMTP, IMAP, the vault and the
+      # approval check are replaced in-process; nothing leaves the runner.
+      - run: python3 scripts/__tests__/support-mail-sent-folder.test.py
       # ENDASHGATE1030 follow-up: the outgoing copy gate (em dash, spaced en dash,
       # double hyphen, accents, homoglyphs, names) decides what may go out to a
       # customer, yet none of its tests ran here, so a green CI said nothing about
