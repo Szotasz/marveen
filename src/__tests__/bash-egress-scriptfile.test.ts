@@ -72,7 +72,11 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
     expect(verdict('node js_under.mjs').hosts).toEqual(['my_host.example.org'])
     expect(verdict('node js_idn.mjs').deny).toBe(true)
     expect(verdict('node --check js_fetch.mjs').deny).toBe(false)   // a syntax check runs nothing
-    expect(verdict('node -c js_fetch.mjs').deny).toBe(false)   // `...` is no host: it cannot be listed, and only fills the log
+    expect(verdict('node -c js_fetch.mjs').deny).toBe(false)
+    // after the program file, -c / --check is the script's own argument, and the script runs
+    expect(verdict('node js_fetch.mjs -c config.json').deny).toBe(true)
+    expect(verdict('node js_fetch.mjs --check').deny).toBe(true)
+    expect(verdict('node --no-warnings --check js_fetch.mjs').deny).toBe(false)   // `...` is no host: it cannot be listed, and only fills the log
     expect(verdict('node js_fetch.mjs', ['example.org']).deny).toBe(false)
     expect(verdict('deno fmt ts_fetch.ts').deny).toBe(false)
     expect(verdict('bun install').deny).toBe(false)

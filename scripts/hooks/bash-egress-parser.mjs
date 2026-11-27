@@ -497,12 +497,23 @@ export function shellScriptIndex(args, shell = 'bash') {
 // word named like a JS / TS file. A runtime option that takes a value (`--inspect-port N`, `deno -c
 // deno.json`, `bun --cwd .`, and the ones a later runtime adds) can hide the program from the index;
 // it cannot hide a file named `*.js` / `*.ts`. Extra arguments read here are only judged, never run.
+// node -c / --check among node's OWN options (before the program file) is a syntax check: nothing runs. The same
+// word after the program file is the script's argument, and the script runs (Dani, #3180 review: argv = ['-c', ...]).
+function nodeSyntaxCheck(args) {
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]
+    if (w === '--' || !w.startsWith('-')) return false
+    if (w === '-c' || w === '--check') return true
+    if (JS_VALUE_FLAG.has(w)) k++
+  }
+  return false
+}
 // deno / bun subcommands that read source without running it.
 const JS_NO_RUN_SUB = new Set(['fmt', 'lint', 'check', 'doc', 'info', 'install', 'i', 'add', 'remove', 'rm', 'uninstall',
   'upgrade', 'init', 'create', 'types', 'compile', 'bundle', 'build', 'outdated', 'pm', 'link', 'unlink', 'publish', 'completions'])
 export function jsScriptRuns(cmd, args, base) {
   if ((cmd === 'deno' || cmd === 'bun') && JS_NO_RUN_SUB.has(args.find((w) => !w.startsWith('-')) ?? '')) return []
-  if (cmd !== 'deno' && cmd !== 'bun' && args.some((w) => w === '-c' || w === '--check')) return []
+  if (cmd !== 'deno' && cmd !== 'bun' && nodeSyntaxCheck(args)) return []
   const seen = new Set()
   const runs = []
   const k = jsScriptIndex(cmd, args)
