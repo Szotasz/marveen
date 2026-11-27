@@ -1269,17 +1269,24 @@ export function shellCommandCall(cmd, text) {
     if (w === '--' || w === '-') return sawC && k + 1 < argv.length ? { body: argv[k + 1], args: argv.slice(k + 2) } : null
     if (!w.startsWith('-') && !w.startsWith('+')) return sawC ? { body: w, args: argv.slice(k + 1) } : null
     if (/^[-+][A-Za-z]+$/.test(w) && w.includes('c')) sawC = true
-    k += shellOptionValues(w)
+    k += shellOptionValues(w, cmd)
   }
   return null
 }
-// How many of the following words a shell option word takes as its value. In a cluster every o / O takes
-// one, wherever it stands and in order (`-eo pipefail`, `-oe pipefail`, `-oc pipefail '...'`, `-oO a b`:
-// measured with bash, sh and zsh); bash's --rcfile / --init-file and zsh's --emulate take one too.
+// How many of the following words a shell option word takes as its value (measured 2026-11-27 with the
+// real shells). bash, sh and dash: every o / O in a cluster takes one, wherever it stands and in order
+// (`-eo pipefail`, `-oe pipefail`, `-oc pipefail '...'`, `-oO a b`). zsh and ksh: the rest of the word
+// after the first o / O is the option name (`-oerrexit`, `-eoerrexit`), so only an o / O that ENDS the
+// word takes the next one (Dani, #3182 review). bash's --rcfile / --init-file and zsh's --emulate take one.
 const SHELL_LONG_VALUE = new Set(['--rcfile', '--init-file', '--emulate'])
-export function shellOptionValues(w) {
+export function shellOptionValues(w, shell = 'bash') {
   if (SHELL_LONG_VALUE.has(w)) return 1
-  return /^[-+][A-Za-z]+$/.test(w) ? (w.slice(1).match(/[oO]/g) ?? []).length : 0
+  if (!/^[-+][A-Za-z]+$/.test(w)) return 0
+  if (/^(?:zsh|ksh)$/.test(String(shell).split('/').pop())) {
+    const at = w.slice(1).search(/[oO]/)
+    return at !== -1 && at === w.length - 2 ? 1 : 0
+  }
+  return (w.slice(1).match(/[oO]/g) ?? []).length
 }
 export function shellCommandBody(cmd, text) {
   return shellCommandCall(cmd, text)?.body ?? null
@@ -1564,7 +1571,7 @@ const STDIN_PATH = /^(?:\/dev\/(?:stdin|fd\/0)|\/proc\/[^/\s]+\/fd\/0)$/
 // The substitution a shell in span [a, b) reads its program from -- its first operand, or the target
 // of a `<` redirection -- as its source text (`<(...)`), or null. Read on the masked words with their
 // offsets, against the lifted substitutions' ranges.
-function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
+function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }, shell) {
   const toks = [...masked.slice(a, b).matchAll(/\S+/g)].map((m) => ({ w: m[0], s: a + m.index, e: a + m.index + m[0].length }))
   const subst = (t) => {
     const n = innerAts.findIndex((p, x) => p < t.e && innerEnds[x] > t.s)
@@ -1583,7 +1590,7 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
       continue
     }
     if (k <= ci || operandSeen) continue
-    if (shellOptionValues(w)) { k += shellOptionValues(w); continue }
+    if (shellOptionValues(w, shell)) { k += shellOptionValues(w, shell); continue }
     if ((w.startsWith('-') || w.startsWith('+')) && w !== '-' && w !== '--') continue
     if (w === '--' || w === '-') continue
     operandSeen = true
@@ -1601,7 +1608,7 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
 // run-time value cannot be told here (an unquoted expansion, which may split or vanish, or a word
 // that is nothing but an expansion) names no script file, so the shell may still read stdin; a
 // quoted option is an option.
-function shellInputs(masked, orig, a, b) {
+function shellInputs(masked, orig, a, b, shell) {
   const words = [...masked.slice(a, b)].map((ch, x) => (ch === ' ' && /\S/.test(orig[a + x]) ? 'q' : ch)).join('')
   const spans = [...words.matchAll(/\S+/g)]
   const toks = spans.map((m) => m[0])
@@ -1630,7 +1637,7 @@ function shellInputs(masked, orig, a, b) {
     wordEnd = start + raw.length
     const kind = shellWordKind(raw)
     if (kind === null) { undecided = true; continue }
-    if (shellOptionValues(kind)) { k += shellOptionValues(kind); continue }
+    if (shellOptionValues(kind, shell)) { k += shellOptionValues(kind, shell); continue }
     if (/^-[A-Za-z]*s[A-Za-z]*$/.test(kind)) readsStdin = true
     if (kind.startsWith('-') || kind.startsWith('+')) continue
     operand = true
@@ -2124,7 +2131,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         // cannot be read here: the same source as the pipe below, so it denies the same way, curl named
         // or not (#1931 delta review 5572280679, 3). `source <(...)` is denied in envIndirect.
         if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null) {
-          const src = shellProgramFromSubstitution(masked, a, b, lifted)
+          const src = shellProgramFromSubstitution(masked, a, b, lifted, cmd)
           if (src) return { deny: true, reason: 'shell-substitution', hosts: [`<${cmd} runs the output of ${src}>`] }
           // A program FILE that is a file descriptor (/dev/stdin, /dev/fd/N, /proc/PID/fd/N) is whatever
           // the redirections, a pipe or an earlier `exec 3< <(...)` opened (#1931 review 6): it cannot
@@ -2139,13 +2146,13 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         // (`exec 3< <(...); bash <&3`) runs whatever that descriptor was opened on, which cannot be read
         // here: it denies, curl named or not, like the pipe below (#1931 review 7).
         if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null) {
-          const { operand, stdinDup } = shellInputs(masked, orig, a, b)
+          const { operand, stdinDup } = shellInputs(masked, orig, a, b, cmd)
           if (!operand && stdinDup) return { deny: true, reason: 'shell-stdin-dup', hosts: [`<${cmd} reads its commands from ${stdinDup}>`] }
         }
         // A shell that reads its program from stdin (no -c string, no script file) runs whatever the
         // pipe or redirection hands it: `echo 'curl URL' | sh`. A heredoc / here-string feed is judged
         // above; any other input cannot be read here, so with curl or wget in sight it denies.
-        if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null && !shellInputs(masked, orig, a, b).operand
+        if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null && !shellInputs(masked, orig, a, b, cmd).operand
           && !shellNoExec(masked, orig, a, b) && !feeds.some((f) => f.at >= a && f.at <= b) && (fetches || stdinTainted || /(?:^|[^|])\|&?\s*$/.test(masked.slice(0, a)))) {
           return { deny: true, reason: 'shell-stdin', hosts: [`<${cmd} reads its commands from stdin>`] }
         }

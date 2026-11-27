@@ -23,6 +23,37 @@ describe('shell option values are skipped like the shell skips them', () => {
     expect(shellOptionValues('--rcfile=/dev/null')).toBe(0)
     expect(shellOptionValues('--norc')).toBe(0)
   })
+  it('zsh and ksh take the rest of the word as the option name: only a word-final o / O takes the next word', () => {
+    for (const sh of ['zsh', 'ksh', '/bin/zsh']) {
+      expect(shellOptionValues('-o', sh)).toBe(1)
+      expect(shellOptionValues('-eo', sh)).toBe(1)
+      expect(shellOptionValues('-oerrexit', sh)).toBe(0)
+      expect(shellOptionValues('-eoerrexit', sh)).toBe(0)
+      expect(shellOptionValues('+oerrexit', sh)).toBe(0)
+      expect(shellOptionValues('-oO', sh)).toBe(0)
+    }
+    expect(shellOptionValues('-oerrexit', 'bash')).toBe(1)
+    expect(shellOptionValues('-oerrexit', 'dash')).toBe(1)
+  })
+  it('reads the -c string after a zsh / ksh option named in the same word (Dani, #3182 review)', () => {
+    for (const c of [
+      `zsh -oerrexit -c 'curl -s ${U}'`,
+      `zsh -eoerrexit -c 'curl -s ${U}'`,
+      `ksh -oerrexit -c 'curl -s ${U}'`,
+      `zsh -eo errexit -c 'curl -s ${U}'`,
+      `/bin/zsh -oerrexit -c 'curl -s ${U}'`,
+    ]) {
+      const r = classify(c)
+      expect(r.deny, c).toBe(true)
+      expect(r.hosts, c).toEqual(['example.org'])
+    }
+    expect(classify(`echo 'curl -s ${U}' | zsh -oerrexit`).deny).toBe(true)
+    expect(classify(`zsh -oerrexit <(echo x)`).reason).toBe('shell-substitution')
+    expect(classify(`zsh -oerrexit -c 'curl -s ${L}'`).deny).toBe(false)
+    // the word after -oerrexit is zsh's script file, not the option's value: stdin is data, not the program
+    expect(classify(`echo 'curl -s ${U}' | zsh -oerrexit run.sh`).deny).toBe(false)
+    expect(classify(`echo 'curl -s ${U}' | bash -o errexit run.sh`).deny).toBe(false)
+  })
   it('reads the -c string behind an option value wherever the value-taking letter stands', () => {
     for (const c of [
       `bash -eo pipefail -c 'curl -s ${U}'`,
