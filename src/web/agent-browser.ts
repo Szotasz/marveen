@@ -10,7 +10,7 @@
 // The agent reaches it through the Playwright MCP server attached over CDP (the marveen-browser entry this module
 // writes into the agent's .mcp.json); the vault-login filler attaches to the same browser in the dashboard process.
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
@@ -77,6 +77,29 @@ export async function agentBrowserPort(agent: string): Promise<number> {
   throw new Error('no free port for the agent browser')
 }
 
+/** Chrome's stderr of the last start (truncated at every start). A file, not a pipe: the browser is detached and
+ *  outlives a dashboard restart, and a closed pipe would hand it a SIGPIPE. */
+export function agentBrowserStderrPath(agent: string): string {
+  return join(agentBrowserDir(agent), 'chrome-stderr.log')
+}
+
+/**
+ * What a failed start tells the owner, from the tail of Chrome's stderr. Only error-looking lines, capped, so a page
+ * URL in an ordinary log line does not reach the dashboard log. Ubuntu 23.10+ restricts unprivileged user namespaces
+ * through AppArmor, and a Chrome/Chromium without an AppArmor profile (Playwright's Chromium, a manual build) then
+ * stops at once with "No usable sandbox!": that case gets its own hint.
+ */
+export function chromeStartFailure(stderr: string): { reason: string; lines: string[] } {
+  const lines = stderr.split('\n').map((l) => l.trim()).filter((l) => /FATAL|ERROR|sandbox|cannot|failed/i.test(l)).slice(-5).map((l) => l.slice(0, 300))
+  if (/No usable sandbox/i.test(stderr)) {
+    return {
+      reason: 'Chrome has no usable sandbox (on Ubuntu 23.10+ the AppArmor user-namespace restriction): install Google Chrome from its .deb (it ships an AppArmor profile), or point AGENT_BROWSER_CHROME at a browser that has one',
+      lines,
+    }
+  }
+  return { reason: lines.length ? 'Chrome exited or did not open its CDP port' : 'Chrome did not open its CDP port (no error on stderr)', lines }
+}
+
 export function chromeExecutable(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | null {
   const override = env.AGENT_BROWSER_CHROME?.trim()
   const candidates = override
@@ -137,7 +160,11 @@ export async function ensureAgentBrowser(agent: string): Promise<string | null> 
   mkdirSync(profile, { recursive: true })
   mkdirSync(agentBrowserOutputDir(agent), { recursive: true })
   writePasswordManagerOff(profile)
-  const child = spawn(chrome, agentBrowserArgs(profile, port), { detached: true, stdio: 'ignore' })
+  const stderrPath = agentBrowserStderrPath(agent)
+  let errFd: number | 'ignore' = 'ignore'
+  try { errFd = openSync(stderrPath, 'w', 0o600) } catch { errFd = 'ignore' }
+  const child = spawn(chrome, agentBrowserArgs(profile, port), { detached: true, stdio: ['ignore', 'ignore', errFd] })
+  if (typeof errFd === 'number') closeSync(errFd)
   child.on('error', (err) => logger.warn({ agent, err: err.message }, 'agent-browser: start failed'))
   child.unref()
   for (let i = 0; i < 40; i++) {
@@ -147,7 +174,10 @@ export async function ensureAgentBrowser(agent: string): Promise<string | null> 
     }
     await new Promise((r) => setTimeout(r, 250))
   }
-  logger.warn({ agent, port }, 'agent-browser: did not answer on its CDP port')
+  let stderr = ''
+  try { stderr = readFileSync(stderrPath, 'utf-8').slice(-8192) } catch { stderr = '' }
+  const failure = chromeStartFailure(stderr)
+  logger.warn({ agent, port, chrome, stderr: failure.lines }, `agent-browser: did not answer on its CDP port: ${failure.reason}`)
   return null
 }
 

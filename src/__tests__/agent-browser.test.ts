@@ -15,6 +15,11 @@ vi.mock('../web/agent-config.js', async (orig) => ({
   listAgentNames: () => [...h.agents],
 }))
 vi.mock('../web/vault-web-logins.js', () => ({ agentsWithWebLogins: () => [...h.allowed] }))
+const warns = vi.hoisted(() => [] as { obj: Record<string, unknown>; msg: string }[])
+vi.mock('../logger.js', async (orig) => {
+  const real = (await orig<typeof import('../logger.js')>()).logger
+  return { logger: new Proxy(real, { get: (t, k) => (k === 'warn' ? (obj: Record<string, unknown>, msg: string) => { warns.push({ obj, msg }) } : Reflect.get(t, k)) }) }
+})
 
 const ab = await import('../web/agent-browser.js')
 
@@ -164,4 +169,52 @@ setTimeout(() => { srv.close(); process.exit(0) }, 4000)
       else process.env.AGENT_BROWSER_CHROME = saved
     }
   })
+})
+
+// KOKAIVAULTSSO1127: a failed start said only "did not answer on its CDP port"; Chrome's stderr went to /dev/null.
+describe('start failure diagnosis', () => {
+  it('names the missing sandbox (Ubuntu 23.10+ AppArmor userns) with its fix', () => {
+    const f = ab.chromeStartFailure('[1127/101010.1:FATAL:zygote_host_impl_linux.cc(128)] No usable sandbox! Update your kernel or see ...\n')
+    expect(f.reason).toMatch(/no usable sandbox/i)
+    expect(f.reason).toMatch(/AGENT_BROWSER_CHROME/)
+    expect(f.lines).toHaveLength(1)
+    expect(f.lines[0]).toMatch(/FATAL/)
+  })
+  it('passes only error-looking lines, at most five, each capped', () => {
+    const noise = Array.from({ length: 20 }, (_, i) => `[INFO] visiting https://example.org/page?token=secret${i}`).join('\n')
+    const errs = Array.from({ length: 7 }, (_, i) => `ERROR: thing ${i} ${'x'.repeat(400)}`).join('\n')
+    const f = ab.chromeStartFailure(`${noise}\n${errs}`)
+    expect(f.lines).toHaveLength(5)
+    expect(f.lines.every((l) => l.startsWith('ERROR') && l.length <= 300)).toBe(true)
+    expect(f.lines.join('\n')).not.toContain('token=secret')
+    expect(f.reason).toMatch(/exited or did not open/)
+  })
+  it('says so when stderr was empty', () => {
+    expect(ab.chromeStartFailure('').reason).toMatch(/no error on stderr/)
+    expect(ab.chromeStartFailure('').lines).toEqual([])
+  })
+  it('keeps the stderr log in the agent\'s own browser folder', () => {
+    expect(ab.agentBrowserStderrPath('geri')).toBe(join(h.store, 'agent-browser', 'geri', 'chrome-stderr.log'))
+  })
+})
+
+describe('a real failed start reaches the log with Chrome\'s own words', () => {
+  it('a browser that dies with "No usable sandbox!" is named in the warning, and its stderr is in the agent folder', async () => {
+    const fake = join(mkdtempSync(join(tmpdir(), 'ab-fake-')), 'chrome')
+    writeFileSync(fake, '#!/bin/sh\necho "[1:1:FATAL:zygote_host_impl_linux.cc(128)] No usable sandbox! see crbug.com/638180" >&2\nexit 1\n')
+    chmodSync(fake, 0o755)
+    const prev = process.env.AGENT_BROWSER_CHROME
+    process.env.AGENT_BROWSER_CHROME = fake
+    warns.length = 0
+    try {
+      expect(await ab.ensureAgentBrowser('geri')).toBeNull()
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_BROWSER_CHROME
+      else process.env.AGENT_BROWSER_CHROME = prev
+    }
+    const w = warns.find((x) => x.msg.startsWith('agent-browser: did not answer on its CDP port'))
+    expect(w?.msg).toMatch(/no usable sandbox/i)
+    expect(JSON.stringify(w?.obj.stderr)).toMatch(/No usable sandbox/)
+    expect(readFileSync(ab.agentBrowserStderrPath('geri'), 'utf-8')).toMatch(/No usable sandbox/)
+  }, 30_000)
 })
