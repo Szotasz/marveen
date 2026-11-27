@@ -101,11 +101,25 @@ echo "(c) limit-monitor without ALLOWED_CHAT_ID"
 CASE="$TMPDIR_BASE/nochat"; mkdir -p "$CASE/scripts" "$CASE/store"
 cp "$INSTALL_DIR/scripts/limit-monitor.sh" "$CASE/scripts/"
 printf 'MAIN_AGENT_ID=somebot\n' > "$CASE/.env"
-(cd "$CASE" && bash scripts/limit-monitor.sh >/dev/null 2>&1)
+# A Telegram install: a bot token exists, only the owner chat is missing.
+# (Without any bot token the alerts go to the dashboard outbox instead, see
+# the second half of this case; QUOTANOTICE1126.)
+mkdir -p "$CASE/tg"; printf 'TELEGRAM_BOT_TOKEN=123456:testtoken\n' > "$CASE/tg/.env"
+(cd "$CASE" && TELEGRAM_STATE_DIR="$CASE/tg" bash scripts/limit-monitor.sh >/dev/null 2>&1)
 if grep -q "no ALLOWED_CHAT_ID" "$CASE/store/limit-monitor.log" 2>/dev/null; then
   pass "exits with a logged reason instead of guessing a chat"
 else
   fail "no explanatory log line for the missing chat id"
+fi
+CASE="$TMPDIR_BASE/nochat-nobot"; mkdir -p "$CASE/scripts" "$CASE/store" "$CASE/tg"
+cp "$INSTALL_DIR/scripts/limit-monitor.sh" "$CASE/scripts/"
+printf 'MAIN_AGENT_ID=somebot\n' > "$CASE/.env"
+(cd "$CASE" && TELEGRAM_STATE_DIR="$CASE/tg" bash scripts/limit-monitor.sh >/dev/null 2>&1)
+if grep -q "alerts go to the dashboard outbox" "$CASE/store/limit-monitor.log" 2>/dev/null \
+   && ! grep -q "no ALLOWED_CHAT_ID" "$CASE/store/limit-monitor.log" 2>/dev/null; then
+  pass "without a Telegram bot it hands alerts to the dashboard outbox instead of exiting"
+else
+  fail "no-bot install did not take the outbox path"
 fi
 
 # ---------------------------------------------------------------------------
