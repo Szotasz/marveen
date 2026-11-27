@@ -57,6 +57,8 @@ A "gentle decay": a régi emlékek nem zavarják a keresést, de mindig visszake
 
 Append-only, ágensenként: automatikus bejegyzések napközben + 23:00-kor napi összefoglaló. Nem módosul — kronológiai archívum, ez kerül reggel a napindítóba.
 
+A 23:00 helyi idő: az időzítő minden futás után újraszámolja a következő 23:00-t, ezért nyári/téli időszámítás-váltáskor sem csúszik el egy órával. Az összefoglaló a saját korábbi kimenetét (a `[Napi naplo ...]` kezdetű bejegyzéseket) nem olvassa vissza bemenetként, így egy csendes napon nem a tegnapi összefoglaló íródik újra.
+
 #### Kereshető tükör a memóriában
 
 Minden `POST /api/daily-log` bejegyzés ugyanabban az SQLite-tranzakcióban egy `memories` sort is létrehoz, ezért a napló a memória-keresésben (`GET /api/memories`, kulcsszavas és `mode=hybrid` is) azonnal megtalálható; a vektor az embedding elkészülte után (másodpercek) csatlakozik, Ollama nélkül a meglévő embedding-backfill pótolja.

@@ -140,12 +140,33 @@ export function runDecaySweep(): void {
 
 // --- Daily digest ---
 
+// The digest is saved as an episodic memory and runs once a day, so the previous
+// night's digest sits exactly on the next window's lower edge. Counted as input it
+// lifted a quiet day over the threshold, and the model wrote yesterday's summary up
+// again as today's. Digests are never input.
+export const DAILY_DIGEST_PREFIX = '[Napi naplo '
+
+// Milliseconds from `now` to the next local 23:00, the digest's hour. Worked out
+// again for every run: a fixed 24 h interval keeps the first run's UTC offset and
+// drifts an hour at each daylight-saving change until the next restart.
+export function msUntilNextDigest(now: Date = new Date()): number {
+  const target = new Date(now)
+  target.setHours(23, 0, 0, 0)
+  if (target <= now) {
+    target.setDate(target.getDate() + 1)
+    target.setHours(23, 0, 0, 0)
+  }
+  return target.getTime() - now.getTime()
+}
+
 export async function runDailyDigest(chatId: string): Promise<string | null> {
   // Collect today's episodic memories (last 24h)
   const oneDayAgo = Math.floor(Date.now() / 1000) - 86400
   // MEMCHATID1123: the day's rows from the whole store; the chat id only names where the digest is saved.
   const allRecent = getMemoriesForChat(50)
-  const todayMemories = allRecent.filter((m) => m.created_at >= oneDayAgo)
+  const todayMemories = allRecent.filter(
+    (m) => m.created_at >= oneDayAgo && !m.content.startsWith(DAILY_DIGEST_PREFIX),
+  )
 
   if (todayMemories.length < 2) {
     logger.info({ chatId, count: todayMemories.length }, 'Napi naplo: tul keves emlek, kihagyjuk')
@@ -181,7 +202,7 @@ ${memoryLines}`
 
     const digest = text.trim()
     const today = new Date().toLocaleDateString('hu-HU')
-    saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic', undefined, MAIN_AGENT_ID)
+    saveMemory(chatId, `${DAILY_DIGEST_PREFIX}${today}] ${digest}`, 'episodic', undefined, MAIN_AGENT_ID)
     logger.info({ chatId, digestCwd, digestConfigDir }, `Napi naplo mentve: ${today}`)
     return digest
   } catch (err) {
