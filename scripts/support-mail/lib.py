@@ -57,6 +57,9 @@ FROM_NAME = _env("SUPPORT_FROM_NAME", "Support")
 # Outgoing From address; may differ from the login mailbox (e.g. a product
 # alias hosted on a primary account). Defaults to the login address.
 FROM_ADDRESS = _env("SUPPORT_FROM_ADDRESS") or EMAIL
+# The IMAP folder send.py files its audit copy in (#3181). Empty: the mailbox the
+# server flags \Sent in its LIST reply, else "INBOX.Sent".
+SENT_FOLDER = _env("SUPPORT_SENT_FOLDER")
 WEB_PORT = _env("WEB_PORT", "3420")
 
 
