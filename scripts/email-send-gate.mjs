@@ -1795,8 +1795,8 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   lineExemptOk = (depth === 0 || lineExemptOk) && texts.every((t) => lineClean(t))
   lineMailHost = (depth > 0 && lineMailHost) || texts.some((t) => MAIL_API_HOST.test(t) || wordsMailHost(t)) // MAILCURLSEND1118
   if (ansiCSendMark(cmd)) return true // round 4: a $' and a send mark is a send outright
-  const bare = ansiCBare(cmd) // round 5 (J4 b): the bare text judged by the existing recognition too
-  if (bare !== null && !texts.includes(bare)) {
+  for (const bare of ansiCBares(cmd)) { // round 5 (J4 b): the bare texts judged by the existing recognition too
+    if (texts.includes(bare)) continue
     lineCtx.texts.push(bare)
     lineExemptOk = lineExemptOk && lineClean(bare)
     texts.push(bare)
@@ -1829,10 +1829,20 @@ function ansiCBare(cmd) {
   }
   return out.replace(/["'\\#]/g, '')
 }
+// Revizor 5892 J5: the decoded bare text and the same text not decoded; see _ansi_c_bares in the python twin
+function ansiCBares(cmd) {
+  const decoded = ansiCBare(cmd)
+  if (decoded === null) return []
+  const plain = cmd.replaceAll('\\\n', '').replace(/["'\\#]/g, '')
+  return [...new Set([decoded, plain])]
+}
 function ansiCSendMark(cmd) {
-  const bare = ansiCBare(cmd)
-  if (bare === null) return false
-  return depthMark().test(cmd) || depthMark().test(bare) || ANSI_C_ADDRESS_FLAG.test(bare) || ANSI_C_EMAIL.test(bare)
+  const bares = ansiCBares(cmd)
+  if (!bares.length) return false
+  // the union (Marveen 5902): raw, raw without quote and backslash characters (the round-4 input), after the
+  // backslash-newlines are removed, and the bare texts
+  const looked = [...new Set([cmd, cmd.replace(/["'\\]/g, ''), cmd.replaceAll('\\\n', ''), ...bares])]
+  return looked.some((s) => depthMark().test(s)) || looked.some((s) => ANSI_C_ADDRESS_FLAG.test(s) || ANSI_C_EMAIL.test(s))
 }
 
 // isSendInvocation for ONE reading of the command (ANSICQUOTE1127); the line state is set by the caller
@@ -3302,8 +3312,8 @@ export function writtenScripts(cmd, cwd) {
 }
 
 export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
-  const bare = ansiCBare(cmdIn) // ANSICQUOTE1127 round 5 (J4 b): a script run behind a $'...' form, on the bare text too
-  if (bare !== null && bare !== cmdIn && scriptRunSends(bare, cwd, readScript, depth, cdWords)) return true
+  // ANSICQUOTE1127 round 5 (J4 b): a script run behind a $'...' form, on the bare texts too
+  for (const bare of ansiCBares(cmdIn)) if (bare !== cmdIn && scriptRunSends(bare, cwd, readScript, depth, cdWords)) return true
   const bound = bindLiteralVars(decodeAnsiC(cmdIn)) // Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'`
   const allWritten = writtenScripts(bound, cwd)
   // Dani (review of #2586): a P that exists now may survive the write: its body is judged next to the file on disk
