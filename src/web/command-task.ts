@@ -184,9 +184,17 @@ export function runCommandTask(task: ScheduledTask, now: number): void {
   }
   const map = load()
   inFlight.add(task.name)
+  // SCHEDDONEA1127: the run row opens when the command FIRES, not when it
+  // ends. Opened in finish(), ts was the end time and completed_at - ts was
+  // always 0, so neither the fire time nor the duration was ever recorded.
+  // While the command runs the row is open like any dispatched run; a restart
+  // in that window ends the command group (DETACHEDSHUTDOWN1007) and the
+  // startup reconcile closes the row as 'interrupted'.
+  let runId: number | null = null
+  try { runId = appendTaskRun(task.name, task.agent || "system") } catch { /* non-fatal */ }
   void runCommand(resolveCommandPlaceholders(task.command), timeoutMs, task.name)
-    .then(({ ok, detail }) => finish(task, now, failThreshold, map, ok, detail))
-    .catch((err) => finish(task, now, failThreshold, map, false, (err as Error).message))
+    .then(({ ok, detail }) => finish(task, now, failThreshold, map, ok, detail, runId))
+    .catch((err) => finish(task, now, failThreshold, map, false, (err as Error).message, runId))
     .finally(() => inFlight.delete(task.name))
 }
 
@@ -201,14 +209,17 @@ function finish(
   map: HealthMap,
   ok: boolean,
   detail: string,
+  runId: number | null,
 ): void {
   const { next, action } = evaluateCommandResult(map[task.name], ok, failThreshold, now)
   map[task.name] = next
   persist()
-  try {
-    const runId = appendTaskRun(task.name, task.agent || "system")
-    markTaskRunCompleted(runId, "done")
-  } catch { /* non-fatal */ }
+  // The outcome is the command's own result: exit 0 is 'done', anything else
+  // (non-zero exit, timeout, spawn error) is 'failed'. Every run used to be
+  // closed as 'done', so a failed command read as a success in task_runs.
+  if (runId !== null) {
+    try { markTaskRunCompleted(runId, ok ? "done" : "failed") } catch { /* non-fatal */ }
+  }
   logger.info({ task: task.name, ok, detail, fails: next.fails, action }, "command task ran")
   // Card 7d2b49b4: a once command task is switched off after its first successful run (exit 0). A failed run
   // leaves it on, so the failure alert above still has something to point at.

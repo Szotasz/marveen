@@ -6429,8 +6429,10 @@ export function appendTaskRun(name: string, agent: string, status = 'fired'): nu
  * 'unauth' (DOCKERUNAUTHRUN1118): the session took the prompt and went idle, but its only reply was Claude Code's
  * "Not logged in" authentication error, so nothing ran. Not 'done': duration statistics and once-task success
  * filter on 'done' and must not count it.
+ * 'failed' (SCHEDDONEA1127): a command task whose command did not succeed (non-zero exit, timeout, spawn error).
+ * Not 'done' either, for the same reason.
  */
-export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted' | 'unauth'
+export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted' | 'unauth' | 'failed'
 
 /**
  * Close a run. Idempotent by design: the WHERE clause refuses to overwrite an
