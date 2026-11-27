@@ -6384,6 +6384,10 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 // injection time and a run that has not even started would read as finished --
 // and the authentication path that proves a wrapper-less prompt really came from
 // the scheduler (see docs + the boritek-nelkuli skill) looks for an OPEN run.
+// A command task's run (command-task.ts) is also open, as 'fired', while its
+// command runs (SCHEDDONEA1127), but a command task never sends a prompt: an
+// open run vouches for a wrapper-less prompt only when the task is a prompt
+// task (its task-config type is not 'command').
 export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late', 'fired_busy'])
 
 // HBFABRIC1003 gap guard: did a heartbeat digest (first line "## Heartbeat ")
