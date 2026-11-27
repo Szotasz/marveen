@@ -1122,3 +1122,75 @@ then:
 bash {{PROJECT_ROOT}}/scripts/marveen-api.sh taskstate-save SAJAT_NEVED api-payload.json
 
 IMPORTANT: doneSteps = what you have ALREADY done (do NOT repeat it), alreadyDelegated = what you have ALREADY handed to another agent (do NOT send it again), nextAction = the next concrete step. If there is NO active task (only conversation/idle), skip this step completely -- then no record is needed.`
+
+// ---- CLAUDEMD_COMPACT: the short rules (the English twin of compactLines in agent-scaffold.ts) ----
+export function compactLinesEn(id: string, name: string, isMain: boolean, F: ScaffoldFrags): string[] {
+  const memoryPath = 'Do not derive your memory directory from the folder name: the memory path in your system prompt decides, resolved with `readlink -f`.'
+  switch (id) {
+    case 'autonomy-wiring': return [
+      '## Autonomy and approval',
+      'Before acting on your own, check the category\'s level in store/autonomy-config.json.',
+      '- 1: only notify the main agent in an inter-agent message, do not perform the action, and stop.',
+      '- 2: before acting, request approval with the helper (`approval-request`, then `approval-status`); once approved, `approval-consume`, and act only on exit code 0. On rejection, timeout, 403 or 409, do not act. Exception: for the email_send and data_delete categories do NOT call `approval-consume` (409 wrong_category); the send or the delete path consumes it itself.',
+      '- 3: do it, then report to the main agent.',
+    ]
+    case 'skills-path-trap': return isMain ? [
+      '## Skill paths',
+      'You have no private skill folder: every agent sees ~/.claude/skills and the project root\'s .claude/skills, and a folder written under agents/ would be invisible to you too.',
+      'So never write to either directly: every new or fixed skill goes only as a proposal (`POST /api/skills/propose`).',
+      memoryPath,
+    ] : [
+      '## Skill paths',
+      `Your own skill, meant only for you: agents/${name}/.claude/skills/<skill>/SKILL.md (in your working directory); only this folder is yours.`,
+      '~/.claude/skills (global) and the project root\'s .claude/skills belong to the fleet: never write to either directly; a new or fixed global skill goes only as a proposal (`POST /api/skills/propose`).',
+      memoryPath,
+    ]
+    case 'fleet-auth': return [
+      '## Fleet-wide AUTH rule',
+      '- On "Not logged in" the fix is the token source, never a hand-placed or symlinked `.credentials.json`.',
+      '- Never copy another agent\'s token or credentials; a new agent gets its own token and its own external-service setup.',
+    ]
+    case 'mcp-list-channel': return [
+      '## `claude mcp list` and a child `claude`',
+      'In a channel-owning session, do not run `claude mcp list` and do not start a child `claude` with the inherited environment: it stops the session\'s channel poller. A hook blocks this for you.',
+      'If you do need a child `claude`: give it its own plugin-free `CLAUDE_CONFIG_DIR` and point `TELEGRAM_STATE_DIR` at an empty folder; never unset `TELEGRAM_STATE_DIR` (the plugin would then kill the main bot\'s poller).',
+    ]
+    case 'message-close': return [
+      '## Closing a message',
+      '- An incoming report or notification (the sender expects no reply): `message-close <id> --no-notify` with the helper.',
+      '- A delegated task (the sender waits for the result): `--result-file` with your own folder\'s api-eredmeny.txt instead of `--no-notify`, after writing what you did into it; on failure `--failed`.',
+      '- A 409 on an already closed message is not an error: do not repeat or report it.',
+    ]
+    case 'agent-id-header': return [
+      '## The X-Agent-Id header',
+      '- On memory writes the helper sends your name; this is self-declared identification, not authentication: writing someone else\'s row gets an `owner_mismatch` warning from the server, but it does not stop you.',
+      '- An overwrite is versioned, a delete is final (it takes the versions too); the helper has no delete verb, a delete is the owner\'s decision (data_delete).',
+    ]
+    case 'background-checkpoint': return [
+      '## Long background work',
+      '- A background sub-agent or background command expected to run over 15 minutes saves its partial result about every 10 minutes into a git-ignored subfolder of your working directory (not the session-bound /tmp); put the file path into the brief.',
+      '- Never put a secret, token or personal data into the save.',
+      '- After a restart, read the saved part first and continue from it; one line on the card or in HANDOFF.md: where the save is, what the next step is.',
+    ]
+    // No at-sign in this text: a CLAUDE.md reads an at-sign plus path as an import.
+    case 'pane-at-escape': return [
+      '## Backslash before an at-sign',
+      '- The delivery layer puts a backslash before the at-sign in the text it types into your pane; it is not part of the original text.',
+      '- Drop it from a package name, handle, id or command you copy onward. The original text is in the message queue row.',
+    ]
+    case 'memory-fact-change': return [
+      '## When a fact changes',
+      `- Before saving a memory that changes a state, find the old one (\`memory-search ${name} KULCSSZO --strict\`) and fix it in the same round: your own fully stale row with \`--supersedes <old-id>\` or \`memory-retract <id> ${name}\`; a partly valid one with \`memory-update\`, sending the full old text with a dated OUTDATED note.`,
+      '- Do not retract or rewrite someone else\'s row: tell its owner. Never retract a row that carries a Q/D/B id, and do not name it in `supersedes` either.',
+      '- Retract only if every piece of the row exists elsewhere; when in doubt, the OUTDATED note. If the fact is also written in a skill or CLAUDE.md, fix that too; do not save a rule as a memory that is already written there word for word. Save a present-tense state with its date.',
+    ]
+    case 'api-helper': return [
+      '## Dashboard calls: the helper',
+      `- Every dashboard call goes through the helper: \`${F.apiHelper} <verb>\` (verbs: \`--help\`). This overrides the token curl recipes in this file: do not run a token curl.`,
+      '- Text goes only through a file (Write into your own folder\'s api-memoria.txt, api-naplo.txt, api-uzenet.txt); one file, one send: never prepare two in parallel.',
+      `- Common: \`memory-save ${name} <tier> "<keywords>" <file>\`, \`memory-search ${name} KULCSSZO [--strict]\`, \`memory-move <ID> <tier> ${name}\`, \`daily-log ${name} <file>\`, \`message ${name} <recipient> <file>\`. The first line of a search is the \`X-Memory-Search\` header: \`relaxed=true\` is an approximation, not evidence; \`MISSING\`: the search never ran.`,
+      '- Only the main agent writes schedules; there is no delete verb (owner\'s decision). Exit: 0 fine; 1 server error; 2 bad call or no token, nothing was sent; 3 unreachable (on a write, read back before retrying).',
+    ]
+    default: throw new Error(`compactLinesEn: unknown section ${id}`)
+  }
+}

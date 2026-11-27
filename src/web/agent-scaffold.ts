@@ -30,7 +30,7 @@ import {
   buildBackgroundCheckpointBodyEn, buildPaneAtEscapeBodyEn, buildSkillsPathTrapBodyEn, buildSystemDirectiveAuthBodyEn, buildAgentIdHeaderBodyEn,
   buildMemorySearchLabelBodyEn, buildMemoryFactChangeBodyEn, buildFleetAuthBodyEn, buildStrictApiBodyEn, buildApiHelperBodyEn,
   type PromptRecipes, strictPromptRecipesEn, SKILL_SECTION_HEADING_EN, buildSkillSectionEn, buildClaudeMdPromptEn,
-  buildSoulPromptEn, buildSkillPromptEn, PRECOMPACT_PROMPT_EN_TPL, fleetBaseRulesEn,
+  buildSoulPromptEn, buildSkillPromptEn, PRECOMPACT_PROMPT_EN_TPL, fleetBaseRulesEn, compactLinesEn,
 } from './agent-scaffold-en.js'
 import { FLEET_ROSTER_BEGIN, PACKAGE_SHELL_PREFIX_TEXT, hasPackageManifestFile } from './agent-package/marker.js'
 import { EXTRA_HOOKS_DIR, EXTRA_HOOKS_FILE, EXTRA_HOOKS_SWITCH_KEY, applyExtraHookEntries, checkExtraHooksDigestState, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps, type ExtraHookEntry } from './extra-hook-entries.js'
@@ -132,6 +132,115 @@ export function scaffoldFrags(name: string): ScaffoldFrags {
     payload: (kind) => shellWord(apiPayloadPath(name, kind)),
     ledgerScript: join(PROJECT_ROOT, 'scripts', 'recipient-ledger.mjs'),
   }
+}
+
+/** CLAUDEMD_COMPACT (config-registry.ts, default off), read at call time like AGENT_TOKENS; an unreadable setting is off. */
+export function claudeMdCompactEnabled(): boolean {
+  try {
+    return ['1', 'true', 'yes', 'on'].includes(String(getEffectiveSettingValue('CLAUDEMD_COMPACT')).trim().toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+// CLAUDEMD_COMPACT: the short rule a compactable section carries in CLAUDE.md (heading included, pointer excluded).
+// Every hard prohibition of the full body stays as a clause; recipes, measurements and rationale live in the details file.
+// The callers pass `id` only where the short text is true for the agent (helper verbs only for a helper agent).
+function compactLines(id: string, name: string): string[] {
+  if (agentTextLang() === 'en') return compactLinesEn(id, name, name === MAIN_AGENT_ID, scaffoldFrags(name))
+  const memoryPath = 'A memória-könyvtáradat ne a mappanévből vezesd le: a rendszerprompt memória-útja a mérvadó, `readlink -f`-fel feloldva.'
+  switch (id) {
+    case 'autonomy-wiring': return [
+      '## Autonómia és jóváhagyás',
+      'Önálló lépés előtt nézd meg a kategória szintjét a store/autonomy-config.json-ban.',
+      '- 1: csak jelzel a fő ágensnek inter-agent üzenetben, a műveletet nem végzed el, és megállsz.',
+      '- 2: cselekvés előtt jóváhagyást kérsz a segéddel (`approval-request`, majd `approval-status`); jóváhagyás után `approval-consume`, és csak 0-s kilépési kódnál cselekszel. Elutasítás, lejárat, 403 vagy 409 esetén nem cselekszel. Kivétel: email_send és data_delete kategóriánál az `approval-consume`-ot NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
+      '- 3: elvégzed, majd jelented a fő ágensnek.',
+    ]
+    case 'skills-path-trap': return name === MAIN_AGENT_ID ? [
+      '## Skill-útvonal',
+      'Neked nincs privát skill-mappád: a ~/.claude/skills és a projekt-gyökér .claude/skills mappáját minden ágens látja, egy agents/ alá írt mappát pedig te magad sem látnál.',
+      'Ezért közvetlenül egyikbe se írj: minden új vagy javított skill csak javaslatként megy (`POST /api/skills/propose`).',
+      memoryPath,
+    ] : [
+      '## Skill-útvonal',
+      `Saját, csak neked szóló skill helye: agents/${name}/.claude/skills/<skill>/SKILL.md (a munkakönyvtáradban); csak ez a mappa a tiéd.`,
+      'A ~/.claude/skills (globális) és a projekt-gyökér .claude/skills mappája a flottáé: közvetlenül egyikbe se írj; új vagy javított globális skill csak javaslatként megy (`POST /api/skills/propose`).',
+      memoryPath,
+    ]
+    case 'fleet-auth': return [
+      '## Flotta-szintű AUTH-szabály',
+      '- "Not logged in" esetén a javítás a token-forrás, soha nem kézzel elhelyezett vagy symlinkelt `.credentials.json`.',
+      '- Másik agent tokenjét vagy credentialját soha ne másold át; új agent saját tokent és saját külső-szolgáltatás setupot kap.',
+    ]
+    case 'mcp-list-channel': return [
+      '## `claude mcp list` és gyerek-`claude`',
+      'Csatornát birtokló sessionben ne futtasd a `claude mcp list`-et, és ne indíts gyerek-`claude`-ot az örökölt környezettel: leállítja a session csatorna-pollerét. Nálad egy hook ezt tiltja.',
+      'Ha mégis kell gyerek-`claude`: saját, plugin nélküli `CLAUDE_CONFIG_DIR` és üres mappára állított `TELEGRAM_STATE_DIR` kell; a `TELEGRAM_STATE_DIR`-t soha ne töröld (akkor a fő bot pollerét lövi le).',
+    ]
+    case 'message-close': return [
+      '## Üzenet lezárása',
+      '- Bejövő riport vagy értesítés (a feladó nem vár választ): `message-close <id> --no-notify` a segéddel.',
+      '- Delegált feladat (a feladó az eredményre vár): a `--no-notify` helyett `--result-file` a saját mappád api-eredmeny.txt fájljával, amibe előbb beírod, mit csináltál; hibánál `--failed`.',
+      '- Már lezárt üzenetre a 409 nem hiba: ne ismételd, ne jelentsd.',
+    ]
+    case 'agent-id-header': return [
+      '## X-Agent-Id fejléc',
+      '- A memória-írásnál a segéd elküldi a neved; ez önbevallott azonosítás, nem hitelesítés: idegen sor írásakor a szerver `owner_mismatch`-csel figyelmeztet, de nem állít meg.',
+      '- A felülírás verziózott, a törlés végleges (a verziókat is viszi); a segédnek nincs törlő igéje, a törlés gazda-döntés (data_delete).',
+    ]
+    case 'background-checkpoint': return [
+      '## Hosszú háttér-munka',
+      '- A 15 percnél tovább futó háttér-alügynök vagy háttér-parancs kb. 10 percenként mentse a részeredményt a munkakönyvtárad egy .gitignore-os almappájába (nem a session-hez kötött /tmp-be); a briefbe írd bele a fájl útját.',
+      '- A mentésbe soha ne kerüljön titok, token vagy személyes adat.',
+      '- Újraindulás után előbb a mentett részt olvasd be, és onnan folytasd; a lapra vagy a HANDOFF.md-be egy sor: hol a mentés, mi a következő lépés.',
+    ]
+    // No at-sign in this text: a CLAUDE.md reads an at-sign plus path as an import.
+    case 'pane-at-escape': return [
+      '## Fordított perjel a kukac előtt',
+      '- A kézbesítő a paneledbe gépelt szövegben a kukac elé fordított perjelet tesz; ez nem része az eredeti szövegnek.',
+      '- Továbbmásolt csomagnévből, kezelőnévből, azonosítóból vagy parancsból hagyd el. Az eredeti szöveg az üzenetsor sorában áll.',
+    ]
+    case 'memory-fact-change': return [
+      '## Ha egy tény megváltozik',
+      `- Állapotot változtató emlék mentése előtt keresd meg a régit (\`memory-search ${name} KULCSSZO --strict\`), és ugyanabban a körben javítsd: a saját, teljesen elavult sort \`--supersedes <régi-id>\` kapcsolóval vagy \`memory-retract <id> ${name}\`; a részben érvényeset \`memory-update\`-tel, a teljes régi szöveggel és dátumos ELAVULT-jelöléssel.`,
+      '- Idegen sort ne vonj vissza és ne írj át: szólj a gazdájának. Q/D/B azonosítós sort soha ne vonj vissza, és `supersedes`-ben se add meg.',
+      '- Csak akkor vonj vissza, ha a sor minden adata megvan máshol; kétség esetén ELAVULT-jelölés. Ha a tény skillben vagy CLAUDE.md-ben is áll, azt is javítsd; ott szó szerint álló szabályt ne ments emlékként. Jelen idejű állapotot dátummal ments.',
+    ]
+    case 'api-helper': return [
+      '## Dashboard-hívások: a segéd',
+      `- Minden dashboard-hívás a segéden megy: \`${apiHelper} <ige>\` (igék: \`--help\`). Ez felülírja a fájl tokenes curl-receptjeit: tokenes curl-t ne futtass.`,
+      '- A szöveget csak fájlból adod át (Write a saját mappád api-memoria.txt, api-naplo.txt, api-uzenet.txt fájljába); egy fájl, egy küldés: kettőt párhuzamosan ne készíts elő.',
+      `- Gyakori: \`memory-save ${name} <tier> "<kulcsszavak>" <fájl>\`, \`memory-search ${name} KULCSSZO [--strict]\`, \`memory-move <ID> <tier> ${name}\`, \`daily-log ${name} <fájl>\`, \`message ${name} <címzett> <fájl>\`. A keresés első sora az \`X-Memory-Search\` fejléc: \`relaxed=true\` közelítés, nem bizonyíték; \`MISSING\`: a keresés el sem indult.`,
+      '- Ütemezést csak a fő ágens ír; törlő ige nincs (gazda-döntés). Kilépés: 0 rendben; 1 szerverhiba; 2 rossz hívás vagy nincs token, semmi nem ment el; 3 nem érhető el (írásnál ismétlés előtt olvass vissza).',
+    ]
+    default: throw new Error(`compactLines: unknown section ${id}`)
+  }
+}
+
+// The block a compactable section writes into CLAUDE.md. Switch off, or `id` null (this agent keeps the full text):
+// the full block, as before. Switch on: the full block is upserted into CLAUDE-details.md beside the CLAUDE.md
+// (code-owned, not auto-loaded by Claude Code), and CLAUDE.md gets the compact text plus a pointer to it. A details
+// file that cannot be read or written keeps the full block in CLAUDE.md: never a short rule without its full text.
+function sectionBlock(claudeMdPath: string, begin: string, end: string, re: RegExp, full: string, id: string | null, name: string): string {
+  const fullBlock = `${begin}\n${full}\n${end}`
+  if (id === null || !claudeMdCompactEnabled()) return fullBlock
+  const details = join(dirname(claudeMdPath), 'CLAUDE-details.md')
+  try {
+    const existing = existsSync(details) ? readFileSync(details, 'utf-8') : ''
+    const updated = re.test(existing)
+      ? existing.replace(re, () => fullBlock)
+      : (existing.trim() ? existing.trimEnd() + '\n\n' : '') + fullBlock + '\n'
+    if (updated !== existing) atomicWriteFileSync(details, updated)
+  } catch (err) {
+    logger.warn({ err, details }, 'CLAUDEMD_COMPACT: details file not written; the section keeps its full text')
+    return fullBlock
+  }
+  const heading = full.split('\n')[0].replace(/^#+\s*/, '')
+  const pointer = agentTextLang() === 'en'
+    ? `Full text: ${details}, section "${heading}".`
+    : `Teljes szöveg: ${details}, "${heading}" szakasz.`
+  return `${begin}\n${[...compactLines(id, name), pointer].join('\n')}\n${end}`
 }
 
 // The verbs the generated sections run; a deny rule that hits any of them keeps the agent on the old recipes.
@@ -4412,7 +4521,11 @@ export function ensureMcpListChannelSection(name: string, hasChannel: (name: str
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MCPLIST_BEGIN}\n${hasChannel(name) ? buildMcpListChannelBody() : buildMcpListChannelShortBody()}\n${MCPLIST_END}`
+  // Compact only the full body, and only where the child-claude guard hook enforces the rule; the main agent keeps the
+  // full text. The no-channel short body is already short.
+  const channel = hasChannel(name)
+  const block = sectionBlock(claudeMdPath, MCPLIST_BEGIN, MCPLIST_END, MCPLIST_BLOCK_RE,
+    channel ? buildMcpListChannelBody() : buildMcpListChannelShortBody(), channel && agentGetsChildClaudeGuard(name) ? 'mcp-list-channel' : null, name)
 
   let existing: string
   try {
@@ -4495,7 +4608,8 @@ export function ensureMessageCloseSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(agentUsesApiHelper(name), name)}\n${MSGCLOSE_END}`
+  const helper = agentUsesApiHelper(name)
+  const block = sectionBlock(claudeMdPath, MSGCLOSE_BEGIN, MSGCLOSE_END, MSGCLOSE_BLOCK_RE, buildMessageCloseBody(helper, name), helper ? 'message-close' : null, name)
 
   let existing: string
   try {
@@ -4557,7 +4671,7 @@ export function ensureBackgroundCheckpointSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${BGCHECKPOINT_BEGIN}\n${buildBackgroundCheckpointBody()}\n${BGCHECKPOINT_END}`
+  const block = sectionBlock(claudeMdPath, BGCHECKPOINT_BEGIN, BGCHECKPOINT_END, BGCHECKPOINT_BLOCK_RE, buildBackgroundCheckpointBody(), 'background-checkpoint', name)
 
   let existing: string
   try {
@@ -4613,7 +4727,7 @@ export function ensurePaneAtEscapeSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${PANEATESC_BEGIN}\n${buildPaneAtEscapeBody()}\n${PANEATESC_END}`
+  const block = sectionBlock(claudeMdPath, PANEATESC_BEGIN, PANEATESC_END, PANEATESC_BLOCK_RE, buildPaneAtEscapeBody(), 'pane-at-escape', name)
 
   let existing: string
   try {
@@ -4644,8 +4758,9 @@ export function ensureAutonomySection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const body = buildAutonomyBody(name, agentUsesApiHelper(name), agentRunsStrict(name))
-  const block = `${AUTONOMY_BEGIN}\n${body}\n${AUTONOMY_END}`
+  const helper = agentUsesApiHelper(name)
+  const body = buildAutonomyBody(name, helper, agentRunsStrict(name))
+  const block = sectionBlock(claudeMdPath, AUTONOMY_BEGIN, AUTONOMY_END, AUTONOMY_BLOCK_RE, body, helper ? 'autonomy-wiring' : null, name)
 
   let existing: string
   try {
@@ -4934,7 +5049,7 @@ export function ensureSkillsPathTrapSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${SKILLS_TRAP_BEGIN}\n${buildSkillsPathTrapBody(name)}\n${SKILLS_TRAP_END}`
+  const block = sectionBlock(claudeMdPath, SKILLS_TRAP_BEGIN, SKILLS_TRAP_END, SKILLS_TRAP_BLOCK_RE, buildSkillsPathTrapBody(name), 'skills-path-trap', name)
 
   let existing: string
   try {
@@ -5204,7 +5319,8 @@ export function ensureAgentIdHeaderSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(name, agentUsesApiHelper(name))}\n${AGENT_ID_HEADER_END}`
+  const helper = agentUsesApiHelper(name)
+  const block = sectionBlock(claudeMdPath, AGENT_ID_HEADER_BEGIN, AGENT_ID_HEADER_END, AGENT_ID_HEADER_BLOCK_RE, buildAgentIdHeaderBody(name, helper), helper ? 'agent-id-header' : null, name)
 
   let existing: string
   try {
@@ -5676,7 +5792,8 @@ export function ensureMemoryFactChangeSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MEMFACTCHANGE_BEGIN}\n${buildMemoryFactChangeBody(name, agentUsesApiHelper(name))}\n${MEMFACTCHANGE_END}`
+  const helper = agentUsesApiHelper(name)
+  const block = sectionBlock(claudeMdPath, MEMFACTCHANGE_BEGIN, MEMFACTCHANGE_END, MEMFACTCHANGE_BLOCK_RE, buildMemoryFactChangeBody(name, helper), helper ? 'memory-fact-change' : null, name)
 
   let existing: string
   try {
@@ -5783,7 +5900,7 @@ export function ensureFleetAuthSection(name: string): void {
   // Hand-written copy already present and no block of ours: leave it alone.
   if (!hasBlock && /AUTH-szabály/i.test(existing)) return
 
-  const block = `${FLEET_AUTH_BEGIN}\n${buildFleetAuthBody()}\n${FLEET_AUTH_END}`
+  const block = sectionBlock(claudeMdPath, FLEET_AUTH_BEGIN, FLEET_AUTH_END, FLEET_AUTH_BLOCK_RE, buildFleetAuthBody(), 'fleet-auth', name)
   const updated = hasBlock
     ? existing.replace(FLEET_AUTH_BLOCK_RE, () => block)
     : existing.trimEnd() + '\n\n' + block + '\n'
@@ -5909,7 +6026,7 @@ export function ensureApiHelperSection(name: string): void {
   const hasBlock = API_HELPER_BLOCK_RE.test(existing)
   let updated: string
   if (!agentRunsStrict(name) && agentUsesApiHelper(name)) {
-    const block = `${API_HELPER_BEGIN}\n${buildApiHelperBody(name)}\n${API_HELPER_END}`
+    const block = sectionBlock(claudeMdPath, API_HELPER_BEGIN, API_HELPER_END, API_HELPER_BLOCK_RE, buildApiHelperBody(name), 'api-helper', name)
     updated = hasBlock
       ? existing.replace(API_HELPER_BLOCK_RE, () => block)
       : existing.trimEnd() + '\n\n' + block + '\n'

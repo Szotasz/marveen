@@ -106,7 +106,8 @@ describe('mcp-list channel warning: the short form for a channel-less agent', ()
   })
 
   it('the ensure function picks it when the agent carries no channel, the full block otherwise', () => {
-    expect(SCAFFOLD).toContain('hasChannel(name) ? buildMcpListChannelBody() : buildMcpListChannelShortBody()')
+    expect(SCAFFOLD).toContain('const channel = hasChannel(name)')
+    expect(SCAFFOLD).toContain('channel ? buildMcpListChannelBody() : buildMcpListChannelShortBody()')
   })
 })
 

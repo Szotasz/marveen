@@ -49,6 +49,8 @@ tmp.*
 
 # Generated from template (personal config)
 CLAUDE.md
+# Full text of the compacted generated sections (CLAUDEMD_COMPACT)
+CLAUDE-details.md
 
 # Agent persona / soul (per-operator personality; never ship upstream)
 SOUL.md
