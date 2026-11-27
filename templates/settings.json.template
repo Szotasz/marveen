@@ -200,7 +200,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/fleet-freeze-gate.sh ] && exec bash {{PROJECT_ROOT}}/scripts/hooks/fleet-freeze-gate.sh; exit 0'",
+            "command": "if command -v timeout >/dev/null 2>&1; then timeout -k 1 13 bash \"{{PROJECT_ROOT}}/scripts/hooks/fleet-freeze-gate.sh\"; else bash \"{{PROJECT_ROOT}}/scripts/hooks/fleet-freeze-gate.sh\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): fleet-freeze-gate.sh: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 15
           }
         ]

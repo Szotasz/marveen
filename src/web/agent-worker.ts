@@ -28,7 +28,7 @@ import { notifyChannel } from '../notify.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { shouldRunBackgroundServices, ALLOW_SECOND_INSTANCE_SERVICES_KEY } from './hook-registration-guard.js'
 import { exactTmuxTarget } from '../tmux-target.js'
-import { injectDbWriteGate, injectEmailSendGate, pythonHookCommand, isUnsafeHookCommand, EMAIL_GATE_MATCHER } from './agent-scaffold.js'
+import { injectDbWriteGate, injectEmailSendGate, pythonHookCommand, isUnsafeHookCommand, EMAIL_GATE_MATCHER, failClosedGateRun } from './agent-scaffold.js'
 
 // =============================================================================
 // Interactive-tmux agent worker (jun.15 subscription migration).
@@ -493,8 +493,9 @@ function lstatSyncSafe(p: string): ReturnType<typeof lstatSync> | null {
 
 interface WorkerSettings { enabledPlugins?: Record<string, boolean>; [k: string]: unknown }
 
-/** The fleet-freeze PreToolUse gate in the worker's own settings (KILLSWITCH1022). */
-export const WORKER_FREEZE_GATE_CMD = `bash "${join(PROJECT_ROOT, 'scripts', 'hooks', 'fleet-freeze-gate.sh')}"`
+/** The fleet-freeze PreToolUse gate in the worker's own settings (KILLSWITCH1022), fail-closed: a missing or broken
+ * gate file (exit 127/1), a signal or a timeout blocks the call instead of letting it through while the fleet is frozen. */
+export const WORKER_FREEZE_GATE_CMD = failClosedGateRun(`bash "${join(PROJECT_ROOT, 'scripts', 'hooks', 'fleet-freeze-gate.sh')}"`, 'fleet-freeze-gate.sh', 15)
 
 /**
  * KILLSWITCH1022: the worker runs tools too (--dangerously-skip-permissions),
