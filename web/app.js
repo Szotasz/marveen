@@ -9056,7 +9056,7 @@ function runOutcomeCell(run) {
   const labelFn = RUN_OUTCOME_LABEL[run.outcome]
   const label = labelFn ? labelFn() : run.outcome
   const cls = RUN_OUTCOME_CLASS[run.outcome] || 'badge-paused'
-  const delivery = run.delivery ? ` <span class="hint">${escapeHtml(run.delivery)}</span>` : ''
+  const delivery = run.delivery ? `<div class="hint" style="font-size:11px;overflow-wrap:anywhere">${escapeHtml(run.delivery)}</div>` : ''
   return `<span class="badge ${cls}">${escapeHtml(label)}</span>${delivery}`
 }
 

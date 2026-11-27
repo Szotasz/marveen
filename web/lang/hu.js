@@ -835,7 +835,7 @@ window._i18n.hu = {
   'tasks.history.tokens':        'Token (kb.)',
   'tasks.history.outcome':       'Kimenet',
   'tasks.outcome.done':          'Lefutott',
-  'tasks.outcome.done_unverified': 'Lefutott, a kézbesítés nem igazolt',
+  'tasks.outcome.done_unverified': 'Nem igazolt',
   'tasks.outcome.failed':        'Sikertelen',
   'tasks.outcome.open':          'fut',
   'tasks.run_status.fired':      'Rendben',

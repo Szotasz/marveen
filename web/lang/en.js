@@ -2051,7 +2051,7 @@ window._i18n.en = {
   'tasks.history.tokens':			'Tokens (est.)',
   'tasks.history.outcome':			'Outcome',
   'tasks.outcome.done':			'Done',
-  'tasks.outcome.done_unverified':			'Done, delivery not verified',
+  'tasks.outcome.done_unverified':			'Unverified',
   'tasks.outcome.failed':			'Failed',
   'tasks.outcome.open':			'running',
   'tasks.modal.edit_title':			'Edit task',
