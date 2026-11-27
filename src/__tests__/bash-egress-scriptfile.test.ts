@@ -76,7 +76,10 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
     // after the program file, -c / --check is the script's own argument, and the script runs
     expect(verdict('node js_fetch.mjs -c config.json').deny).toBe(true)
     expect(verdict('node js_fetch.mjs --check').deny).toBe(true)
-    expect(verdict('node --no-warnings --check js_fetch.mjs').deny).toBe(false)   // `...` is no host: it cannot be listed, and only fills the log
+    expect(verdict('node --no-warnings --check js_fetch.mjs').deny).toBe(false)
+    // --env-file-if-exists takes a value: `-c` there is its file name, not a syntax check (Dani, #3180 review)
+    expect(verdict('node --env-file-if-exists -c js_fetch.mjs').deny).toBe(true)
+    expect(verdict('node --env-file-if-exists .env js_fetch.mjs').deny).toBe(true)   // `...` is no host: it cannot be listed, and only fills the log
     expect(verdict('node js_fetch.mjs', ['example.org']).deny).toBe(false)
     expect(verdict('deno fmt ts_fetch.ts').deny).toBe(false)
     expect(verdict('bun install').deny).toBe(false)
@@ -127,5 +130,6 @@ describe('script files beyond the Python network primitives are read (EGRESSZKRI
     expect(shellScriptIndex(['-oerrexit', 'f.sh'], 'zsh')).toBe(1)
     expect(shellScriptIndex(['-oerrexit', 'x', 'f.sh'], 'bash')).toBe(2)
     expect(jsScriptIndex('node', ['--check', 'f.js'])).toBe(-1)
+    expect(jsScriptIndex('node', ['--env-file-if-exists', '-c', 'f.mjs'])).toBe(2)
   })
 })
