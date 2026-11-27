@@ -4766,7 +4766,10 @@ export function substitutionInCommandPosition(command, { heredoc: asHeredocBody 
   return found
 }
 
-function scanShellCode(command, strictStdin = false) {
+// ssh (SELFPACEQUOTE1127): also return what ssh runs (its remote command and command-valued -o options). Only the
+// self-pace decision asks for it; shellCodeStrings (the db-write-gate's reader) keeps its earlier reading, so an
+// ssh-run install on a customer machine stays outside the plugin-tree rule (its stated limit).
+function scanShellCode(command, strictStdin = false, ssh = false) {
   const segs = codeSegments(command)
   const codes = []
   const seen = new Set()
@@ -4823,7 +4826,7 @@ function scanShellCode(command, strictStdin = false) {
       const base = baseName(v)
       if (base === 'tmux') for (const c of tmuxGlobalOptions(args, i + 1).codes) push(c)
       // SELFPACEQUOTE1127: ssh hands the words after the host to the remote shell, which parses them again
-      if (base === 'ssh' && !(cmdWord && EVAL_QUOTING_COMMANDS.has(cmdWord.value))) {
+      if (ssh && base === 'ssh' && !(cmdWord && EVAL_QUOTING_COMMANDS.has(cmdWord.value))) {
         const remote = sshRemoteCommand(args, i)
         // an unknown option fails closed where ssh is the command; elsewhere `ssh` may be an argument (journalctl -u ssh)
         if (remote === false) { if (i === cmdIndex) bad = true }
@@ -5083,7 +5086,7 @@ function decide(toolName, toolInput, opts = {}) {
       const inner = decide('Bash', { command: body }, { ...opts, depth: depth + 1, vars: dequoted.vars })
       if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
     }
-    const scan = scanShellCode(rawCommand)
+    const scan = scanShellCode(rawCommand, false, true)
     for (const code of scan.codes) {
       if (code.ansi) return { deny: true, reason: 'shell-code' }
       if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
