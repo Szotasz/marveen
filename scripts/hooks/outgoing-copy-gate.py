@@ -96,6 +96,58 @@ _MAIL_SEND_OPT = re.compile(r"^-[A-Za-z]*[sbcrtaAq]")
 _CURL_SMTP = re.compile(r"^(?:smtps?://|--mail-(?:rcpt|from)(?:=|$))", re.I)
 
 
+# KNOWNLIMITS1127 (card 2104b499, Revizor 5865, 5892, 5927): mail clients that passed in plain form. mutt / neomutt with a recipient word or a
+# composing option sends or opens the composer (reading a mailbox, -f, and the info options do not); himalaya with
+# a `send` word (message send, template send); the Google Workspace CLIs gws / gog with a `send` or `+send` word; and
+# osascript whose script text names the Mail application (`application`, `app`, JavaScript `Application(...)`) with
+# `send`, its -e text or, with no -e, the line's text (a heredoc or file script). Twin: muaHeadSends.
+_MUA_PROG = re.compile(r"^(mutt|neomutt)$", re.I)
+# Revizor 5939 P1, 5972 P1 and M-a, Marveen 5934 / 5941 / 5982: no send ONLY for exactly `mutt -f <mailbox>`, the mailbox
+# one literal word (no quote, variable, backtick, brace or glob), and only when the whole command text has no pipe, no
+# `<` of any kind (redirect, here-string, heredoc, process substitution), no xargs / exec / env / command word, no
+# parenthesis and no brace. Every other mutt call is a send: bare `mutt`, -v, -V, -h, -Q, -F, -finbox, -f "$F" too.
+_MUA_INPUT = re.compile(r"""[|<(){}'"`#]|\b(?:xargs|exec|env|command)\b""", re.I)   # a quote too: the words come dequoted; # (Revizor 5994 J2)
+_MUA_PLAIN = re.compile(r"[^\s$`(){}\[\]*?;&|<>\\'\"]+")
+# Marveen 6012 (Revizor 5994 M1, M2): every mutt / neomutt word in a reading must be a whole `mutt -f <mailbox>` command
+# at a command start; see _mua_first_word_ok. Twin: MUA_WORD, MUA_FIRST_TAIL.
+_MUA_WORD = re.compile(r"(?:neo)?mutt", re.I)
+_MUA_FIRST_TAIL = re.compile(r"mutt[ \t]+-f[ \t]+(?!-)[^\s$`(){}\[\]*?;&|<>\\'\"#]+[ \t]*(?:$|;|\n|&&|\|\|)")
+
+
+def _mua_first_word_ok(texts) -> bool:
+    for s in texts:
+        for m in _MUA_WORD.finditer(s):
+            before = s[:m.start()].rstrip(" \t")
+            if not (before == "" or before.endswith((";", "\n", "&&", "||"))):
+                return False
+            if not _MUA_FIRST_TAIL.match(s, m.start()):
+                return False
+    return True
+_OSA_WORDS = re.compile(r"\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b", re.I)
+# the same as a mark on a reading whose quotes may be gone (KNOWNLIMITS1127, F26): osascript ... application Mail ... send
+_OSA_BARE = re.compile(r"\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)", re.I)
+
+
+def _mua_head_sends(prog: str, rest) -> bool:
+    p = prog.lower()
+    if _MUA_PROG.match(p):
+        # the words must be exactly `-f <literal mailbox>`; anything else, or a command text that could feed it, is a send
+        if len(rest) != 2 or rest[0] != "-f" or not _MUA_PLAIN.fullmatch(rest[1]) or rest[1].startswith("-"):
+            return True
+        if not _mua_first_word_ok(_LINE_CTX[1]):   # Marveen 6012: mutt must be the command's first word
+            return True
+        return any(_MUA_INPUT.search(s) for s in _LINE_CTX[1])
+    if p == "himalaya":
+        return "send" in rest
+    if p in ("gws", "gog"):
+        return any(w in ("send", "+send") for w in rest)
+    if p == "osascript":
+        # Marveen 5931 / 5934, the audit direction: with any -l language, -e text, stdin or heredoc script, `Mail` and
+        # `send` anywhere in the script text (the line's own text, heredoc bodies included) make it a send
+        return any(_OSA_WORDS.search(s) for s in [" ".join(rest)] + list(_LINE_CTX[1]))
+    return False
+
+
 def _mail_prog_sends(rest) -> bool:
     skip = False
     for t in rest:
@@ -805,13 +857,29 @@ _XARGS_ARG = "$XARGS_ARG"
 _DEPTH_SEND_MARK = []   # compiled on first use: _MAIL_MARKER is defined further down
 
 
+def _depth_send_mark():
+    if not _DEPTH_SEND_MARK:
+        _DEPTH_SEND_MARK.append(re.compile(
+            _MAIL_MARKER.pattern + r"|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://", re.I))
+    return _DEPTH_SEND_MARK[0]
+
+
 def _deeper_sends(text: str, depth: int) -> bool:
     if depth >= 3:
-        if not _DEPTH_SEND_MARK:
-            _DEPTH_SEND_MARK.append(re.compile(
-                _MAIL_MARKER.pattern + r"|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?://", re.I))
-        return bool(_DEPTH_SEND_MARK[0].search(text))
-    return is_send_invocation(text, _depth=depth + 1)
+        return bool(_depth_send_mark().search(text))
+    # ANSICQUOTE1127: shlex keeps the backslash of \$ and \` inside double quotes, bash and the JS tokenizer drop it, so
+    # in `bash -c "echo \$'a\\'b'<newline>P"` this twin read the program as `echo \$'a\'b'...` (a plain quote that swallows
+    # the newline). The program is judged as given and with those two escapes undone; a send when either reading sends.
+    return _program_sends(text, depth + 1)
+
+
+_DQ_KEPT_ESCAPE = re.compile(r"\\([$`])")
+
+
+def _program_sends(text: str, depth: int = 0) -> bool:
+    """ANSICQUOTE1127: is_send_invocation on a program text taken from a shell word (a -c or eval program, a printed or
+    here-string program for a shell), judged as given and with the \\$ and \\` escapes shlex keeps in double quotes undone."""
+    return any(is_send_invocation(t, _depth=depth) for t in dict.fromkeys((text, _DQ_KEPT_ESCAPE.sub(r"\1", text))))
 
 
 def _xargs_replace_string(toks):
@@ -1256,16 +1324,38 @@ def _python_head_sends(rest) -> bool:
     return False
 
 
+# Revizor 5972 I07: a redirection word before the program; an operator alone takes the next word as its target
+_LEAD_REDIR_OP = re.compile(r"^\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])$")
+_LEAD_REDIR_ATTACHED = re.compile(r"^\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])\S")
+
+
+def _strip_lead_redirects(toks):
+    i = 0
+    while i < len(toks):
+        if _LEAD_REDIR_OP.match(toks[i]):
+            i += 2
+        elif _LEAD_REDIR_ATTACHED.match(toks[i]):
+            i += 1
+        else:
+            break
+    return toks[i:]
+
+
 def _head_is_send(toks, depth: int) -> bool:
     if toks is None:  # the depth bound was hit on a wrapper: audit it
         return True
     if not toks:
         return False
+    lead = _strip_lead_redirects(toks)   # Revizor 5972 I07: an added reading, the original one below still decides too
+    if len(lead) < len(toks) and _head_is_send(lead, depth):
+        return True
     prog = _basename(toks[0])
     rest = toks[1:]
     if _SENDER_PROG.match(prog):
         return True
     if _MAIL_PROG.match(prog) and _mail_prog_sends(rest):
+        return True
+    if _mua_head_sends(prog, rest):   # KNOWNLIMITS1127
         return True
     # MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
     if _CURLISH.match(prog) and any(_CURL_SMTP.match(t) for t in rest):
@@ -1279,6 +1369,8 @@ def _head_is_send(toks, depth: int) -> bool:
         if not r:
             break
         p, r = _basename(r[0]), r[1:]
+    if p != prog and (_mua_head_sends(p, r) or (_MAIL_PROG.match(p) and _mail_prog_sends(r))):   # Revizor 5994 M2
+        return True
     if p == "eval":
         prog, rest = "eval", r
     if prog == "eval":
@@ -1904,14 +1996,455 @@ def _words_mail_host(cmd: str) -> bool:
 
 
 def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
+    # ANSICQUOTE1127 (card 41df3b8a, Revizor 5788 M1): the tokenizers read a bash $'...' string as a plain '...' one, so a
+    # backslash-escaped quote inside it (`$'a\'b'`) ended the quote early (the rest of the line became quoted and a
+    # newline, `;` or `&&` before a send was swallowed), and in `echo $'a\' # ' ; P` the quote ended before a `#` that
+    # bash reads inside the string, so the send after it became a comment. The command is judged in three readings: as
+    # written (the reading so far: dash and a quoted heredoc body read $' as a plain quote) and with every unquoted
+    # $'...' as the single-quoted text bash makes of it (_decode_ansi_c, and _decode_ansi_c_sh, which skips comments and
+    # heredoc bodies as bash does). It is a send when ANY reading sends, and the line state below is the strictest of
+    # them, so no command judged a send before passes now. A command with a $' and a send mark is a send outright
+    # (_ansi_c_send_mark, round 4). Twin: isSendInvocation.
+    # Revizor 5852 J2: the plain decoding stays a reading of its own next to the shell-scanning one, so a form the
+    # scanner reads unlike bash is still judged as the first round judged it
+    plain = tuple(dict.fromkeys((cmd, _decode_ansi_c(cmd), _decode_ansi_c_sh(cmd))))
+    extras = tuple(dict.fromkeys(x for p in plain for x in _extra_readings(p)))
+    texts = tuple(dict.fromkeys(plain + extras))
     # MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
     if _depth == 0:
         _LINE_CTX[:] = [cwd, []]
-    _LINE_CTX[1].append(cmd)
+    _LINE_CTX[1].extend(texts)
     # FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
     # A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
-    _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and _line_clean(cmd)
-    _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or bool(_MAIL_API_HOST.search(cmd)) or _words_mail_host(cmd)   # MAILCURLSEND1118
+    _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and all(_line_clean(t) for t in texts)
+    _LINE_MAIL_HOST[0] = (_depth > 0 and _LINE_MAIL_HOST[0]) or any(
+        bool(_MAIL_API_HOST.search(t)) or _words_mail_host(t) for t in texts)   # MAILCURLSEND1118
+    if _ansi_c_send_mark(cmd):
+        return True
+    for bare in _ansi_c_bares(cmd):
+        if bare not in texts:
+            _LINE_CTX[1].append(bare)
+            _LINE_EXEMPT_OK[0] = _LINE_EXEMPT_OK[0] and _line_clean(bare)
+            texts = texts + (bare,)
+    if any(_reading_sends(t, _depth, fallback=t in plain or t not in extras) for t in texts):
+        return True
+    # KNOWNLIMITS1127 (M1): a $( ) or `...` inside double quotes runs too; its body is judged like a -c program
+    if _depth < _SHELL_C_DEPTH and any(_program_sends(x, _depth + 1) for b in _subst_bodies(plain)
+                                       for x in dict.fromkeys((b, _undo_dquote_escapes(b)))):
+        return True
+    return _dynamic_head_mark(texts)
+
+
+# ANSICQUOTE1127 round 4 (Revizor 5858 J3 and its structural note, Marveen 5862): three review rounds showed that a
+# reading of where a $'...' string ends can be wrong in more than one way at once (a quote in a comment or heredoc
+# body, an arithmetic `<<`, a `(` inside ${...}), and then every reading misses the send. So a command with a $' in
+# it is a send, whatever the readings say, when it also carries a send mark anywhere in its text: a mail host or
+# sender literal (_depth_send_mark, the pattern both twins already use past the depth bound), an address flag
+# (--to / --cc / --bcc or an argparse prefix of one) or an e-mail address, the last two looked for with the quote and
+# backslash characters taken out (`--t''o` is --to). This only ever adds sends. Twin: ansiCSendMark.
+_ANSI_C_ADDRESS_FLAG = re.compile(r"--(?:to?|cc?|b(?:cc?)?)(?![\w-])", re.A)
+_ANSI_C_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.A)
+
+
+def _ansi_c_bare(cmd: str):
+    """ANSICQUOTE1127 round 5 (Revizor 5865 J4, Marveen 5870): None when the command has no bash $'...' string, even
+    once its backslash-newlines are removed as bash removes them (J4 c: `$\\<newline>'...`). Otherwise the text the
+    rule looks at: the backslash-newlines removed, every $'...' decoded by the plain ANSI-C rules with no quote reading
+    at all (J4 a: `$'--t\\x6f'` is --to), and every quote, backslash and `#` character taken out, so no quote or
+    comment reading can hide a word. Twin: ansiCBare."""
+    flat = cmd.replace("\\\n", "")
+    if "$'" not in flat:
+        return None
+    out = []
+    i, n = 0, len(flat)
+    while i < n:
+        if flat.startswith("$'", i):
+            j = i + 2
+            while j < n and flat[j] != "'":
+                j += 2 if flat[j] == "\\" else 1
+            out.append(_ansi_c_body(flat[i + 2:min(j, n)]))
+            i = j + 1
+            continue
+        out.append(flat[i]); i += 1
+    return re.sub(r"[\"'\\#]", "", "".join(out))
+
+
+def _ansi_c_bares(cmd: str) -> tuple:
+    """ANSICQUOTE1127 round 5, review (Revizor 5892 J5): the decoder of _ansi_c_bare also opens a "string" at a `$'`
+    bash reads as plain text (`"$'"`), and then a backslash-written mark (`--\\to`, `api.\\resend.com`) decodes into a
+    tab or a carriage return. So the rule looks at two bare texts: the decoded one, and the same text NOT decoded (the
+    backslash-newlines and the quote, backslash and `#` characters taken out). Empty when the command has no $'.
+    Twin: ansiCBares."""
+    decoded = _ansi_c_bare(cmd)
+    if decoded is None:
+        return ()
+    plain = re.sub(r"[\"'\\#]", "", cmd.replace("\\\n", ""))
+    return tuple(dict.fromkeys((decoded, plain)))
+
+
+def _ansi_c_each(cmd: str) -> str:
+    """ANSICQUOTE1127, Revizor 5907 J6: a `$'` bash reads as plain text (`"$'"`, a comment, a heredoc line) shifts the
+    pairing of _ansi_c_bare by one, and the real $'...' word after it stays encoded. Here every $' is decoded on its
+    own, up to its own closing quote, whatever came before it; the bodies joined, quote, backslash and `#` characters
+    taken out. Only the mark search reads it (_ansi_c_send_mark). Twin: ansiCEach."""
+    flat = cmd.replace("\\\n", "")
+    each = []
+    i = flat.find("$'")
+    while i >= 0:
+        j = i + 2
+        while j < len(flat) and flat[j] != "'":
+            j += 2 if flat[j] == "\\" else 1
+        each.append(_ansi_c_body(flat[i + 2:min(j, len(flat))]))
+        i = flat.find("$'", i + 2)
+    return re.sub(r"[\"'\\#]", "", " ".join(each))
+
+
+def _ansi_c_inplace(cmd: str) -> tuple:
+    """KNOWNLIMITS1127 (Revizor 5919 M1, L04 / L05): the text with the $'...' words decoded IN PLACE, the pairing
+    restarted at each $' occurrence (so a plain-text `$'` before it cannot shift it), the quote, backslash and `#`
+    characters taken out: `s$'\\x65ndmail'` and `$'s\\x65nd'$'m\\x61il'` read `sendmail`. Only the mark search reads
+    it. Twin: ansiCInplace."""
+    flat = cmd.replace("\\\n", "")
+    starts = [m.start() for m in re.finditer(r"\$'", flat)][:128]
+    out = []
+    n = len(flat)
+    for k in starts:
+        res, i = [flat[:k]], k
+        while i < n:
+            if flat.startswith("$'", i):
+                j = i + 2
+                while j < n and flat[j] != "'":
+                    j += 2 if flat[j] == "\\" else 1
+                res.append(_ansi_c_body(flat[i + 2:min(j, n)]))
+                i = j + 1
+                continue
+            res.append(flat[i])
+            i += 1
+        out.append(re.sub(r"[\"'\\#]", "", "".join(res)))
+    return tuple(out)
+
+
+def _ansi_c_send_mark(cmd: str) -> bool:
+    bares = _ansi_c_bares(cmd)
+    if not bares:
+        return False
+    bares = bares + (_ansi_c_each(cmd),) + _ansi_c_inplace(cmd)
+    # the union (Marveen 5902): the raw text and the raw text without quote and backslash characters (the round-4
+    # input, c4871c2c), the text after the backslash-newlines are removed, and the bare texts
+    looked = tuple(dict.fromkeys((cmd, re.sub(r"[\"'\\]", "", cmd), cmd.replace("\\\n", "")) + bares))
+    return any(_depth_send_mark().search(s) for s in looked) or any(
+        _ANSI_C_ADDRESS_FLAG.search(s) or _ANSI_C_EMAIL.search(s) or _OSA_BARE.search(s) for s in looked)
+
+
+# KNOWNLIMITS1127 (card 2104b499): more readings of the same command, each only ADDED to the others (a send when any
+# reading sends): the backslash-newlines removed (K04, a mark split by continuations), simple brace words expanded
+# (K03, `--t{o,}`), the comments dropped by the develop rule (M2: the JS tokenizer knows no comment) and a `#` inside
+# ${...} written escaped (M4: `${x:- # y}` is no comment, the python mask read one). Twin: extraReadings.
+_BRACE_WORD = re.compile(r"([^\s'\"{}]*)\{([^\s'\"{}]*(?:,[^\s'\"{}]*)+)\}([^\s'\"]*)")
+
+
+def _brace_expand(cmd: str) -> str:
+    out = cmd
+    for _ in range(4):
+        new = _BRACE_WORD.sub(lambda m: " ".join(m.group(1) + a + m.group(3) for a in m.group(2).split(",")), out)
+        if new == out:
+            break
+        out = new
+    return out
+
+
+def _remove_continuations(cmd: str) -> str:
+    """a backslash-newline removed as bash removes it: outside quotes and inside double quotes, not inside single
+    quotes (LINECONT1126 S29 / S51). Twin: removeContinuations."""
+    out, q, i, n = [], None, 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q == "'":
+            if ch == "'":
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            if cmd[i + 1] == "\n":
+                i += 2; continue
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == '"':
+            q = None if q == '"' else '"'
+        elif ch == "'" and q is None:
+            q = "'"
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _escape_neutral(cmd: str) -> str:
+    """every backslash pair outside quotes written as `__`: to bash an escaped character there never opens a quote,
+    splits a word or starts a comment, and neither does `__`, so the quote and word structure stays as bash sees it while
+    the develop comment rule can no longer start a comment after an escaped blank or `;`. Inside double quotes the pair
+    stays (it is program text, e.g. a python -c string). Twin: escapeNeutral."""
+    out, q, i, n = [], None, 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q == "'":
+            if ch == "'":
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append("__" if q is None else cmd[i:i + 2]); i += 2; continue
+        if ch == '"':
+            q = None if q == '"' else '"'
+        elif ch == "'" and q is None:
+            q = "'"
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _strip_comments_bash(cmd: str, drop: bool = True) -> str:
+    """bash's own comment rule (not develop's): a `#` starts a comment only at a word start, after an unescaped blank,
+    newline, `;`, `&`, `|` or `(`, or after a `)` that closes a plain subshell (not $( ), <( ), >( ), =( )), and never
+    inside ${...}. drop=True drops the comments; either way an unquoted `#` that starts none is written `_` (the same
+    literal to bash), so the develop comment rule of the tokenizer cannot start one there. Twin: stripCommentsBash."""
+    out, q, i, n = [], None, 0, len(cmd)
+    parens = []
+    word_start = True
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; word_start = False; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; word_start = False; continue
+        top = parens[-1] if parens else None
+        if ch == "#" and word_start and top != "b":
+            j = cmd.find("\n", i)
+            j = n if j < 0 else j
+            if not drop:
+                out.append(cmd[i:j])
+            i = j
+            continue
+        if ch == "#":
+            out.append("_"); i += 1; word_start = False; continue
+        if cmd.startswith("${", i):
+            parens.append("b"); out.append("${"); i += 2; word_start = False; continue
+        if top == "b":
+            if ch == "}":
+                parens.pop()
+            out.append(ch); i += 1; word_start = False; continue
+        if ch == "(":
+            prev = cmd[i - 1] if i else ""
+            parens.append("s" if prev == "$" else "x" if prev and prev in "<>=" else "p")
+            out.append(ch); i += 1; word_start = True; continue
+        if ch == ")":
+            kind = parens.pop() if parens else None
+            out.append(ch); i += 1; word_start = kind == "p"; continue
+        out.append(ch); i += 1
+        word_start = ch in " \t\n;&|"
+    return "".join(out)
+
+
+def _extra_readings(cmd: str) -> tuple:
+    """the backslash-newlines removed, the other escapes outside quotes neutral (_escape_neutral) and every `#` that
+    starts no bash comment written `_` (M4: `${x:- # y}`), then that text as it is, with its simple brace words expanded
+    and with bash's comments dropped; all of it once on the command and once on _bash_pre of it."""
+    out = []
+    for src in dict.fromkeys((cmd, _bash_pre(cmd))):
+        base = _escape_neutral(_remove_continuations(src)) if "\\" in src else src
+        if "#" in base:
+            base = _strip_comments_bash(base, drop=False)
+        out.append(base)
+        if "{" in base and "," in base:
+            out.append(_brace_expand(base))
+        if "#" in base:
+            out.append(_strip_comments_bash(base))
+    for o in [cmd] + out:   # Revizor 5994 J1: the leading redirections dropped at every command start (_LEAD_REDIR_TEXT)
+        if "<" in o or ">" in o:
+            out.append(_LEAD_REDIR_TEXT.sub(lambda m: m.group(1) + m.group(2), o))
+    return tuple(o for o in dict.fromkeys(out) if o != cmd)
+
+
+# Revizor 5994 J1: redirections before the program at a command start (`2>&1 P`, `>| f P`, `<&0 P`, `> f 2>&1 P`); the
+# tokenizer cuts these at their own & or |, so they go before it. Twin: LEAD_REDIR_TEXT.
+_LEAD_REDIR_TEXT = re.compile(r"(^|[;&|\n({])([ \t]*)(?:\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])[ \t]*(?:\d+|-|[^\s;&|<>(){}]+)?[ \t]*)+", re.M)
+
+
+def _bash_pre(cmd: str) -> str:
+    """Revizor 5927 L1-L3: the command with its heredoc bodies taken out (_HEREDOC, as the tokenizer does) and its
+    comments dropped by bash's rule (_strip_comments_bash), BEFORE any other added scanner runs: an apostrophe in
+    `# it's` or in a heredoc line then cannot open a quote for them. Twin: bashPre."""
+    pre = _HEREDOC_TABS.sub(r"\1", cmd) if "<<" in cmd else cmd
+    return _strip_comments_bash(pre) if "#" in pre else pre
+
+
+# Revizor 5939 P2 b: a `<<-` heredoc ends at its delimiter after leading tabs; taking a body out a line early only adds
+# command text, so the tabs are allowed for `<<` too in this reading
+_HEREDOC_TABS = re.compile(r"(<<-?\s*['\"]?(\w+)['\"]?[^\n]*)\n.*?\n\t*\2(?=\s|$)", re.S)
+
+
+def _subst_bodies(plain) -> list:
+    """KNOWNLIMITS1127: the substitution bodies bash runs that the tokenizer keeps as text: inside double quotes (M1),
+    of every plain reading and of its _bash_pre, and inside an unquoted heredoc body (J14)."""
+    out = []
+    for p in plain:
+        for src in dict.fromkeys((p, _bash_pre(p))):
+            out += _dq_subst_bodies(src)
+        out += _heredoc_subst_bodies(p)
+    return list(dict.fromkeys(out))
+
+
+_HEREDOC_QUOTED = re.compile(r"<<-?\s*['\"\\]")
+
+
+def _heredoc_subst_bodies(cmd: str) -> list:
+    """Revizor 5927 M2 (J14): in an UNQUOTED heredoc body bash expands $( ) and `...`, so their bodies run; quotes in
+    the body are plain text there. Twin: heredocSubstBodies."""
+    if "<<" not in cmd:
+        return []
+    out = []
+    for m in _HEREDOC.finditer(cmd):
+        if _HEREDOC_QUOTED.search(m.group(1)):
+            continue
+        body = m.group(0)[len(m.group(1)) + 1:]
+        i, n = 0, len(body)
+        while i < n:
+            if body[i] == "\\":
+                i += 2
+                continue
+            if body.startswith("$(", i):
+                j = _dq_close_paren(body, i + 2)
+                out.append(body[i + 2:j])
+                i = j + 1
+                continue
+            if body[i] == "`":
+                j = i + 1
+                while j < n and body[j] != "`":
+                    j += 2 if body[j] == "\\" else 1
+                out.append(body[i + 1:j])
+                i = j + 1
+                continue
+            i += 1
+    return out
+
+
+def _dq_close_paren(cmd: str, i: int) -> int:
+    depth, q, n = 1, None, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"':
+                i += 2
+                continue
+            if ch == q:
+                q = None
+            i += 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if ch in "'\"":
+            q = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return n
+
+
+def _dq_subst_bodies(cmd: str) -> list:
+    """KNOWNLIMITS1127 (M1): the bodies of the $( ) and `...` substitutions that stand inside double quotes (bash runs
+    them; the tokenizers kept them as quoted text). Twin: dqSubstBodies."""
+    if '"' not in cmd or ("$(" not in cmd and "`" not in cmd):
+        return []
+    out, q, i, n = [], None, 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q == "'":
+            if ch == "'":
+                q = None
+            i += 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if q is None:
+            if ch in "'\"":
+                q = ch
+            i += 1
+            continue
+        if ch == '"':
+            q = None
+            i += 1
+            continue
+        if cmd.startswith("$(", i):   # `$((` too: when it is no arithmetic, bash runs it as a substitution
+            j = _dq_close_paren(cmd, i + 2)
+            out.append(cmd[i + 2:j])
+            i = j + 1
+            continue
+        if ch == "`":
+            j = i + 1
+            while j < n and cmd[j] != "`":
+                j += 2 if cmd[j] == "\\" else 1
+            out.append(cmd[i + 1:j])
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+
+def _send_mark_text(s: str) -> bool:
+    return bool(_depth_send_mark().search(s) or _ANSI_C_ADDRESS_FLAG.search(s) or _ANSI_C_EMAIL.search(s)
+                or _OSA_BARE.search(s))
+
+
+# a whole expansion as the command word: $NAME, ${...} with its brace, a $( ) / backtick substitution or the
+# tokenizer's word for one (a fragment such as `${x:-a` that a misread line split off is not one)
+_DYNAMIC_HEAD = re.compile(r"^(?:\$[A-Za-z_][A-Za-z_0-9]*|\$\{[^{}]*\}|\$\(|`|\$__SUBST__)")
+
+
+def _dynamic_head_mark(texts) -> bool:
+    """KNOWNLIMITS1127 (Marveen 5924): text made at run time cannot be read, so a command whose head is eval is a send
+    when any reading also carries a send mark (_send_mark_text, also with the quote and backslash characters taken
+    out), and one whose head is a variable / substitution (`$X`, `${X}`, `$(...)`, a backtick) when any reading
+    carries a mail host or sender literal. Twin: dynamicHeadMark."""
+    # an eval head whose words hold an expansion: any send mark; a variable / substitution head: only a mail host,
+    # because a recipient flag, an address or a send.py word on an undecidable program is FLEETTOFLAG1025's call (a
+    # fleet CLI in a variable with an agent name after --to stays no send)
+    kinds = set()
+    for t in texts:
+        try:
+            segs = _segments_tokens(t)
+        except ValueError:
+            continue
+        for toks in segs:
+            for h in _command_heads(toks):
+                w = list(h or [])
+                while w and w[0] in ("builtin", "command"):
+                    w = w[1:]
+                if w and w[0] == "eval" and any("$" in x or "`" in x for x in w[1:]):
+                    kinds.add("eval")   # a static eval line is judged word by word (EVALXARGSMAIL1126)
+                elif w and _DYNAMIC_HEAD.match(w[0]):
+                    kinds.add("var")
+                elif w and _WRAPPER_SHELL.match(_basename(w[0])) and any(
+                        (x == "-c" or _SHELL_C_FLAG.match(x)) and k + 1 < len(w) and w[k + 1].startswith(("$", "`"))
+                        for k, x in enumerate(w)):
+                    kinds.add("var")   # Revizor 5927 M3 (J41): a shell -c program taken from a variable
+    if not kinds:
+        return False
+    looked = [s for t in texts for s in (t, re.sub(r"[\"'\\]", "", t))]
+    if "eval" in kinds and any(_send_mark_text(s) for s in looked):
+        return True
+    return any(_MAIL_MARKER.search(s) for s in looked)
+
+
+def _reading_sends(cmd: str, _depth: int, fallback: bool = True) -> bool:
+    """is_send_invocation for ONE reading of the command (ANSICQUOTE1127); the line state is set by the caller.
+    KNOWNLIMITS1127: fallback=False for an added bash-faithful reading: when it cannot be split (an unclosed quote,
+    which bash refuses too), it says nothing; the text as written keeps develop's literal fallback."""
     if _heredoc_program_sends(cmd, _depth):
         return True
     try:
@@ -1921,7 +2454,7 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
         # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
         # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
         # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
-        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))   # MAILURLFILE1118: a mail host too
+        return fallback and bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))   # MAILURLFILE1118: a mail host too
     if any(_segment_is_send(toks, _depth) for toks in segments):
         return True
     # the same command with every substitution as one undecidable word
@@ -1932,7 +2465,7 @@ def is_send_invocation(cmd: str, _depth: int = 0, cwd=None) -> bool:
     try:
         return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
     except ValueError:
-        return bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))
+        return fallback and bool(_FALLBACK_LITERALS.search(cmd) or _MAIL_MARKER.search(cmd))
 
 # MAILGATESCRIPT1027: a mail send done by a SCRIPT FILE. is_send_invocation sees the command text only,
 # so `node send-it.mjs` or `python3 notify.py` ran a mail past the main agent's approval gate. This is the
@@ -3156,7 +3689,7 @@ def _uv_program_text_sends(kind, text, cwd, depth, texts) -> bool:
     if text is None or _UV_WHOLE_EXPANSION.match(text):
         return True   # cannot be told: counts as a send
     if kind in ("sh", "src"):
-        return bool(is_send_invocation(text) or script_run_sends(text, cwd)
+        return bool(_program_sends(text) or script_run_sends(text, cwd)
                     or (depth < _SHELL_C_DEPTH and _uv_sends(text, cwd, depth + 1, texts)))
     return _heredoc_body_sends(text, kind)
 
@@ -3381,7 +3914,7 @@ def _uv_xargs_sends(words, cwd, texts, parallel=False) -> bool:
             if repl:
                 text = text.replace(repl, _UV_PROBE_ADDR)
             text = _UV_POSITIONAL.sub(_UV_PROBE_ADDR, text)
-            if is_send_invocation(text) or script_run_sends(text, cwd):
+            if _program_sends(text) or script_run_sends(text, cwd):
                 return True
     return False
 
@@ -3965,6 +4498,10 @@ def _outside_bodies(cmd: str, lo: int, hi: int) -> str:
 def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
     if read_script is None:
         read_script = _read_script_head
+    # ANSICQUOTE1127 round 5 (J4 b): a script run behind a $'...' form is also judged on the bare text (_ansi_c_bare)
+    for bare in _ansi_c_bares(cmd):
+        if bare != cmd and script_run_sends(bare, cwd, read_script, depth, _cd_words):
+            return True
     cmd = _decode_ansi_c(cmd)   # Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'` read as the shell reads them
     cmd = _bind_literal_vars(cmd)
     written = _written_scripts(cmd, cwd)
@@ -4065,6 +4602,116 @@ def _decode_ansi_c(cmd: str) -> str:
         if ch in "'\"":
             q = ch
         out.append(ch); i += 1
+    return "".join(out)
+
+
+_HEREDOC_OP = re.compile(r"<<(-?)[ \t]*((?:[^\s;&|()<>'\"\\]|\\.|'[^']*'|\"[^\"]*\")+)")
+
+
+def _decode_ansi_c_sh(cmd: str) -> str:
+    """ANSICQUOTE1127 (Revizor 5843 J1): _decode_ansi_c as bash scans the line. A comment (an unquoted `#` at the start
+    of a word, up to the newline) is dropped and a heredoc body (the lines after the operator's line, up to the
+    delimiter line) is copied as it is: their quotes open nothing, so an apostrophe in `# it's` or in a heredoc line no longer
+    stops the $'...' words after it from being decoded. A $$ is the pid and moves on as one unit. A body for a shell
+    is judged on its own (_heredoc_program_sends), where it is decoded in turn. Revizor 5852 J2: `<<<` is a here-string,
+    `<<` inside (( )) / $(( )) is a shift, a comment inside backticks ends at the closing backtick, a backslash-newline
+    keeps the word state, and a `#` inside ${...} or arithmetic is no comment. Only is_send_invocation reads this, as
+    its third reading next to the text as written and _decode_ansi_c. Twin: decodeAnsiCSh."""
+    if "$'" not in cmd and '$"' not in cmd:
+        return cmd
+    out = []
+    q = None
+    i, n = 0, len(cmd)
+    # open constructs, innermost last: "s" $( , "p" plain ( , "a" arithmetic (( / $(( , "b" ${ , "t" a backtick
+    parens = []
+    subst_close_at = -1
+    word_start = True     # the next character starts a word (a `#` there opens a comment)
+    pending = []          # heredocs opened on this line: (delimiter, strip leading tabs)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        top = parens[-1] if parens else None
+        if ch == "\\" and i + 1 < n:
+            # a backslash-newline is removed by bash: the word state goes on as before it (Revizor 5852 J2 d)
+            out.append(cmd[i:i + 2]); i += 2
+            if cmd[i - 1] != "\n":
+                word_start = False
+            continue
+        if ch == "#" and word_start and top not in ("a", "b"):
+            # a comment ends at the newline, or inside backticks at the closing backtick (Revizor 5852 J2 c, e)
+            j = i
+            while j < n and cmd[j] != "\n" and not (cmd[j] == "`" and "t" in parens):
+                j += 1
+            i = j   # dropped, as bash drops it (the JS tokenizer knows no comment)
+            continue
+        if ch == "\n":
+            out.append(ch); i += 1; word_start = True
+            for delim, strip in pending:
+                while i < n:
+                    j = cmd.find("\n", i)
+                    j = n if j < 0 else j + 1
+                    line = cmd[i:j]
+                    out.append(line); i = j
+                    if (line.rstrip("\n").lstrip("\t") if strip else line.rstrip("\n")) == delim:
+                        break
+            pending = []
+            continue
+        if ch == "`":
+            if top == "t":
+                parens.pop(); word_start = False
+            else:
+                parens.append("t"); word_start = True
+            out.append(ch); i += 1; continue
+        if cmd.startswith("<<<", i):
+            out.append("<<<"); i += 3; word_start = False; continue   # a here-string (Revizor 5852 J2 a)
+        if cmd.startswith("<<", i) and "a" not in parens:   # in (( )) / $(( )) it is a shift (J2 b)
+            m = _HEREDOC_OP.match(cmd, i)
+            if m:
+                delim = re.sub(r"\\(.)", r"\1", re.sub(r"'([^']*)'|\"([^\"]*)\"", lambda x: x.group(1) or x.group(2) or "", m.group(2)))
+                pending.append((delim, m.group(1) == "-"))
+                out.append(m.group(0)); i = m.end(); word_start = False; continue
+        if ch == "$" and cmd.startswith("$$", i):
+            out.append("$$"); i += 2; word_start = False; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "'":
+            j = i + 2
+            while j < n and cmd[j] != "'":
+                j += 2 if cmd[j] == "\\" else 1
+            text = _ansi_c_body(cmd[i + 2:min(j, n)])
+            out.append("'" + text.replace("'", "'\\''") + "'")
+            i = j + 1; word_start = False
+            continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == '"':
+            i += 1   # a locale $"..." string is the "..." string
+            continue
+        if cmd.startswith("$((", i):
+            parens.append("a"); out.append("$(("); i += 3; word_start = False; continue
+        if cmd.startswith("((", i) and word_start:
+            parens.append("a"); out.append("(("); i += 2; word_start = False; continue
+        if top == "a" and cmd.startswith("))", i):
+            parens.pop(); out.append("))"); i += 2; word_start = False; continue
+        if cmd.startswith("${", i):
+            parens.append("b"); out.append("${"); i += 2; word_start = False; continue
+        if ch == "}" and top == "b":
+            parens.pop(); out.append(ch); i += 1; word_start = False; continue
+        if ch == "#" and top == "b" and i > 0 and cmd[i - 1] in " \t\n;&|(":
+            # Revizor 5852 J2 e: no comment inside ${...}; written escaped (the same word to bash) so that the
+            # tokenizer's comment rule does not drop the rest of the line either
+            out.append("\\#"); i += 1; continue
+        if ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            parens.append("s"); out.append("$("); i += 2; word_start = True; continue
+        if ch == "(":
+            parens.append("p")
+        elif ch == ")" and parens and parens[-1] in ("s", "p") and parens.pop() == "s":
+            subst_close_at = i
+        if ch in "'\"":
+            q = ch
+        out.append(ch); i += 1
+        word_start = top not in ("a", "b") and (ch in " \t;&|(" or (ch == ")" and subst_close_at != i - 1))
     return "".join(out)
 
 

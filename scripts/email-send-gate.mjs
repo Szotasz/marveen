@@ -432,6 +432,42 @@ const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const MAIL_PROG = /^(mail|mailx|s-nail)$/i
 const MAIL_SEND_OPT = /^-[A-Za-z]*[sbcrtaAq]/
 const CURL_SMTP = /^(?:smtps?:\/\/|--mail-(?:rcpt|from)(?:=|$))/i
+// KNOWNLIMITS1127 (card 2104b499): mail clients that passed in plain form; see _mua_head_sends in the python twin
+const MUA_PROG = /^(mutt|neomutt)$/i
+// Revizor 5939 P1, 5972 P1 and M-a, Marveen 5982: no send ONLY for exactly `mutt -f <literal mailbox>`, with no pipe,
+// `<`, xargs / exec / env / command word, parenthesis or brace anywhere in the command text; see _MUA_INPUT (python twin)
+const MUA_INPUT = /[|<(){}'"`#]|\b(?:xargs|exec|env|command)\b/i // a quote too: the words come dequoted; # (Revizor 5994 J2)
+const MUA_PLAIN = /^[^\s$`(){}[\]*?;&|<>\\'"]+$/
+// Marveen 6012 (Revizor 5994 M1, M2): every mutt / neomutt word must be a whole `mutt -f <mailbox>` command at a command
+// start; see _mua_first_word_ok in the python twin
+const MUA_WORD = /(?:neo)?mutt/gi
+const MUA_FIRST_TAIL = /^mutt[ \t]+-f[ \t]+(?!-)[^\s$`(){}[\]*?;&|<>\\'"#]+[ \t]*(?:$|;|\n|&&|\|\|)/
+function muaFirstWordOk(texts) {
+  for (const s of texts) {
+    for (const m of s.matchAll(MUA_WORD)) {
+      const before = s.slice(0, m.index).replace(/[ \t]+$/, '')
+      if (!(before === '' || before.endsWith(';') || before.endsWith('\n') || before.endsWith('&&') || before.endsWith('||'))) return false
+      if (!MUA_FIRST_TAIL.test(s.slice(m.index))) return false
+    }
+  }
+  return true
+}
+const OSA_WORDS = /\bMail\b[\s\S]*\bsend\b|\bsend\b[\s\S]*\bMail\b/i
+const OSA_BARE = /\bosascript\b(?=[\s\S]*\bMail\b)(?=[\s\S]*\bsend\b)/i // see _OSA_BARE
+function muaHeadSends(prog, rest) {
+  const p = prog.toLowerCase()
+  if (MUA_PROG.test(p)) {
+    // exactly `-f <literal mailbox>`; anything else, or a command text that could feed it, is a send
+    if (rest.length !== 2 || rest[0] !== '-f' || !MUA_PLAIN.test(rest[1]) || rest[1].startsWith('-')) return true
+    if (!muaFirstWordOk(lineCtx.texts)) return true // Marveen 6012: mutt must be the command's first word
+    return lineCtx.texts.some((s) => MUA_INPUT.test(s))
+  }
+  if (p === 'himalaya') return rest.includes('send')
+  if (p === 'gws' || p === 'gog') return rest.some((w) => w === 'send' || w === '+send')
+  if (p === 'osascript') return [rest.join(' '), ...lineCtx.texts].some((s) => OSA_WORDS.test(s)) // Mail + send anywhere
+  return false
+}
+
 function mailProgSends(rest) {
   let skip = false
   for (const t of rest) {
@@ -1043,10 +1079,13 @@ function xargsReplaceString(toks) {
 // EVALXARGSMAIL1126: past the depth bound of 3 an eval line or a shell -c program counts as a send when its text carries
 // a send marker (_deeper_sends / _DEPTH_SEND_MARK in the python twin)
 let depthSendMark = null // built on first use: MAIL_MARKER is defined further down
+function depthMark() {
+  depthSendMark ??= new RegExp(MAIL_MARKER.source + String.raw`|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?:\/\/`, 'i')
+  return depthSendMark
+}
 function deeperSends(text, depth) {
   if (depth < 3) return isSendInvocation(text, depth + 1)
-  depthSendMark ??= new RegExp(MAIL_MARKER.source + String.raw`|\bsend\.py\b|\bsendmail\b|\bmsmtp\b|\bswaks\b|\bsmtplib\b|\bsmtps?:\/\/`, 'i')
-  return depthSendMark.test(text)
+  return depthMark().test(text)
 }
 // the template as written, plus (HTTP client) the added word at the end, plus (a replace string) every template with it
 // replaced: these only ADD heads (_xargs_heads in the python twin)
@@ -1238,13 +1277,29 @@ function segmentIsSend(toksIn, depth) {
   return commandHeads(toksIn).some((h) => headIsSend(h, depth))
 }
 
+// Revizor 5972 I07: a redirection word before the program; see _strip_lead_redirects in the python twin
+const LEAD_REDIR_OP = /^\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])$/
+const LEAD_REDIR_ATTACHED = /^\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])\S/
+function stripLeadRedirects(toks) {
+  let i = 0
+  while (i < toks.length) {
+    if (LEAD_REDIR_OP.test(toks[i])) i += 2
+    else if (LEAD_REDIR_ATTACHED.test(toks[i])) i += 1
+    else break
+  }
+  return toks.slice(i)
+}
+
 function headIsSend(toks, depth) {
   if (toks === null) return true // the depth bound was hit on a wrapper: audit it
   if (!toks.length) return false
+  const lead = stripLeadRedirects(toks) // Revizor 5972 I07: an added reading; the original one below still decides too
+  if (lead.length < toks.length && headIsSend(lead, depth)) return true
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (SENDER_PROG.test(prog)) return true
   if (MAIL_PROG.test(prog) && mailProgSends(rest)) return true
+  if (muaHeadSends(prog, rest)) return true // KNOWNLIMITS1127
   // MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
   if (CURLISH.test(prog) && rest.some((t) => CURL_SMTP.test(t))) return true
   // EVALXARGSMAIL1126: eval runs its words, joined with blanks, as a command line (`builtin eval` too); past the depth
@@ -1257,6 +1312,7 @@ function headIsSend(toks, depth) {
     p = basename(r[0])
     r = r.slice(1)
   }
+  if (p !== prog && (muaHeadSends(p, r) || (MAIL_PROG.test(p) && mailProgSends(r)))) return true // Revizor 5994 M2
   let evalRest = p === 'eval' ? r : null
   if (evalRest !== null) {
     if (evalRest[0] === '--') evalRest = evalRest.slice(1)
@@ -1779,13 +1835,358 @@ function wordsMailHost(cmd) {
 }
 
 export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
+  // ANSICQUOTE1127 (card 41df3b8a, Revizor 5788 M1): the command is judged in three readings, as written and with every
+  // unquoted bash $'...' as the single-quoted text bash makes of it (decodeAnsiC, and decodeAnsiCSh, which skips comments
+  // and heredoc bodies as bash does; Revizor 5852 J2: both stay); a send when ANY reading sends, and the line state is the
+  // strictest of them. See the python twin (is_send_invocation) for the shapes it closes.
+  const plain = [...new Set([cmd, decodeAnsiC(cmd), decodeAnsiCSh(cmd)])]
+  const extras = [...new Set(plain.flatMap((p) => extraReadings(p)))]
+  const texts = [...new Set([...plain, ...extras])]
   // MAILURLFILE1118: cwd is where a relative URL file of an HTTP client is looked up (default: this process's)
   if (depth === 0) lineCtx = { cwd, texts: [] }
-  lineCtx.texts.push(cmd)
+  lineCtx.texts.push(...texts)
   // FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
   // A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
-  lineExemptOk = (depth === 0 || lineExemptOk) && lineClean(cmd)
-  lineMailHost = (depth > 0 && lineMailHost) || MAIL_API_HOST.test(cmd) || wordsMailHost(cmd) // MAILCURLSEND1118
+  lineExemptOk = (depth === 0 || lineExemptOk) && texts.every((t) => lineClean(t))
+  lineMailHost = (depth > 0 && lineMailHost) || texts.some((t) => MAIL_API_HOST.test(t) || wordsMailHost(t)) // MAILCURLSEND1118
+  if (ansiCSendMark(cmd)) return true // round 4: a $' and a send mark is a send outright
+  for (const bare of ansiCBares(cmd)) { // round 5 (J4 b): the bare texts judged by the existing recognition too
+    if (texts.includes(bare)) continue
+    lineCtx.texts.push(bare)
+    lineExemptOk = lineExemptOk && lineClean(bare)
+    texts.push(bare)
+  }
+  if (texts.some((t) => readingSends(t, depth, plain.includes(t) || !extras.includes(t)))) return true
+  // KNOWNLIMITS1127 (M1): a $( ) or `...` inside double quotes runs too; its body is judged like a -c program
+  if (depth < 3 && substBodies(plain).some((b) =>
+    [...new Set([b, undoDquoteEscapes(b)])].some((x) => isSendInvocation(x, depth + 1)))) return true
+  return dynamicHeadMark(texts)
+}
+
+// ANSICQUOTE1127 round 4 (Revizor 5858 J3, Marveen 5862): a command with a $' in it is a send when it also carries a send
+// mark anywhere: the depth mark (mail host, sender literal), an address flag or an e-mail address, the last two with the
+// quote and backslash characters taken out. See _ansi_c_send_mark in the python twin for why.
+const ANSI_C_ADDRESS_FLAG = /--(?:to?|cc?|b(?:cc?)?)(?![\w-])/
+const ANSI_C_EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/
+// ANSICQUOTE1127 round 5 (Revizor 5865 J4, Marveen 5870): null when there is no $'...' even with the backslash-newlines
+// removed; else that text with every $'...' decoded with no quote reading and every quote, backslash and `#` taken out.
+// See _ansi_c_bare in the python twin.
+function ansiCBare(cmd) {
+  const flat = cmd.replaceAll('\\\n', '')
+  if (!flat.includes("$'")) return null
+  let out = ''
+  for (let i = 0; i < flat.length;) {
+    if (flat.startsWith("$'", i)) {
+      let j = i + 2
+      while (j < flat.length && flat[j] !== "'") j += flat[j] === '\\' ? 2 : 1
+      out += ansiCBody(flat.slice(i + 2, Math.min(j, flat.length)))
+      i = j + 1
+      continue
+    }
+    out += flat[i]
+    i++
+  }
+  return out.replace(/["'\\#]/g, '')
+}
+// Revizor 5892 J5: the decoded bare text and the same text not decoded; see _ansi_c_bares in the python twin
+function ansiCBares(cmd) {
+  const decoded = ansiCBare(cmd)
+  if (decoded === null) return []
+  const plain = cmd.replaceAll('\\\n', '').replace(/["'\\#]/g, '')
+  return [...new Set([decoded, plain])]
+}
+// Revizor 5907 J6: every $' decoded on its own, up to its own closing quote; only for the mark search (see _ansi_c_each)
+function ansiCEach(cmd) {
+  const flat = cmd.replaceAll('\\\n', '')
+  const each = []
+  for (let i = flat.indexOf("$'"); i >= 0; i = flat.indexOf("$'", i + 2)) {
+    let j = i + 2
+    while (j < flat.length && flat[j] !== "'") j += flat[j] === '\\' ? 2 : 1
+    each.push(ansiCBody(flat.slice(i + 2, Math.min(j, flat.length))))
+  }
+  return each.join(' ').replace(/["'\\#]/g, '')
+}
+// KNOWNLIMITS1127 (Revizor 5919 M1): the $'...' words decoded in place, the pairing restarted at each $'; see _ansi_c_inplace
+function ansiCInplace(cmd) {
+  const flat = cmd.replaceAll('\\\n', '')
+  const starts = []
+  for (let i = flat.indexOf("$'"); i >= 0 && starts.length < 128; i = flat.indexOf("$'", i + 1)) starts.push(i)
+  const out = []
+  const n = flat.length
+  for (const k of starts) {
+    let res = flat.slice(0, k)
+    for (let i = k; i < n;) {
+      if (flat.startsWith("$'", i)) {
+        let j = i + 2
+        while (j < n && flat[j] !== "'") j += flat[j] === '\\' ? 2 : 1
+        res += ansiCBody(flat.slice(i + 2, Math.min(j, n)))
+        i = j + 1
+        continue
+      }
+      res += flat[i]
+      i++
+    }
+    out.push(res.replace(/["'\\#]/g, ''))
+  }
+  return out
+}
+function ansiCSendMark(cmd) {
+  const found = ansiCBares(cmd)
+  if (!found.length) return false
+  const bares = [...found, ansiCEach(cmd), ...ansiCInplace(cmd)]
+  // the union (Marveen 5902): raw, raw without quote and backslash characters (the round-4 input), after the
+  // backslash-newlines are removed, and the bare texts
+  const looked = [...new Set([cmd, cmd.replace(/["'\\]/g, ''), cmd.replaceAll('\\\n', ''), ...bares])]
+  return looked.some((s) => depthMark().test(s)) || looked.some((s) => ANSI_C_ADDRESS_FLAG.test(s) || ANSI_C_EMAIL.test(s) || OSA_BARE.test(s))
+}
+
+// KNOWNLIMITS1127 (card 2104b499): more readings, each only ADDED: backslash-newlines removed (K04), simple brace
+// words expanded (K03), comments dropped by the develop rule (M2), a `#` inside ${...} escaped (M4). See _extra_readings.
+const BRACE_WORD = /([^\s'"{}]*)\{([^\s'"{}]*(?:,[^\s'"{}]*)+)\}([^\s'"]*)/g
+function braceExpand(cmd) {
+  let out = cmd
+  for (let k = 0; k < 4; k++) {
+    const next = out.replace(BRACE_WORD, (_, pre, alts, post) => alts.split(',').map((a) => pre + a + post).join(' '))
+    if (next === out) break
+    out = next
+  }
+  return out
+}
+// a backslash-newline removed outside quotes and inside double quotes, not inside single quotes; see _remove_continuations
+function removeContinuations(cmd) {
+  let out = ''
+  let q = null
+  const n = cmd.length
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q === "'") { if (ch === "'") q = null; out += ch; i++; continue }
+    if (ch === '\\' && i + 1 < n) {
+      if (cmd[i + 1] === '\n') { i += 2; continue }
+      out += cmd.slice(i, i + 2)
+      i += 2
+      continue
+    }
+    if (ch === '"') q = q === '"' ? null : '"'
+    else if (ch === "'" && q === null) q = "'"
+    out += ch
+    i++
+  }
+  return out
+}
+// every backslash pair outside single quotes written as `__`; see _escape_neutral in the python twin
+function escapeNeutral(cmd) {
+  let out = ''
+  let q = null
+  const n = cmd.length
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q === "'") { if (ch === "'") q = null; out += ch; i++; continue }
+    if (ch === '\\' && i + 1 < n) { out += q === null ? '__' : cmd.slice(i, i + 2); i += 2; continue }
+    if (ch === '"') q = q === '"' ? null : '"'
+    else if (ch === "'" && q === null) q = "'"
+    out += ch
+    i++
+  }
+  return out
+}
+// the comments dropped by bash's own rule; see _strip_comments_bash in the python twin
+function stripCommentsBash(cmd, drop = true) {
+  let out = ''
+  let q = null
+  const n = cmd.length
+  const parens = []
+  let wordStart = true
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < n) { out += cmd.slice(i, i + 2); i += 2; continue }
+      if (ch === q) q = null
+      out += ch
+      i++
+      continue
+    }
+    if (ch === '\\' && i + 1 < n) { out += cmd.slice(i, i + 2); i += 2; wordStart = false; continue }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; i++; wordStart = false; continue }
+    const top = parens.length ? parens[parens.length - 1] : null
+    if (ch === '#' && wordStart && top !== 'b') {
+      let j = cmd.indexOf('\n', i)
+      if (j < 0) j = n
+      if (!drop) out += cmd.slice(i, j)
+      i = j
+      continue
+    }
+    if (ch === '#') { out += '_'; i++; wordStart = false; continue }
+    if (cmd.startsWith('${', i)) { parens.push('b'); out += '${'; i += 2; wordStart = false; continue }
+    if (top === 'b') {
+      if (ch === '}') parens.pop()
+      out += ch
+      i++
+      wordStart = false
+      continue
+    }
+    if (ch === '(') {
+      const prev = i ? cmd[i - 1] : ''
+      parens.push(prev === '$' ? 's' : '<>='.includes(prev) && prev !== '' ? 'x' : 'p')
+      out += ch
+      i++
+      wordStart = true
+      continue
+    }
+    if (ch === ')') {
+      const kind = parens.length ? parens.pop() : null
+      out += ch
+      i++
+      wordStart = kind === 'p'
+      continue
+    }
+    out += ch
+    i++
+    wordStart = ' \t\n;&|'.includes(ch)
+  }
+  return out
+}
+// Revizor 5927 L1-L3: heredoc bodies out and bash's comments dropped before any other added scanner; see _bash_pre
+const HEREDOC_TABS = /(<<-?\s*['"]?(\w+)['"]?[^\n]*)\n[\s\S]*?\n\t*\2(?=\s|$)/g // Revizor 5939 P2 b; see _HEREDOC_TABS
+function bashPre(cmd) {
+  const pre = cmd.includes('<<') ? cmd.replace(HEREDOC_TABS, '$1') : cmd
+  return pre.includes('#') ? stripCommentsBash(pre) : pre
+}
+function extraReadings(cmd) {
+  const out = []
+  for (const src of new Set([cmd, bashPre(cmd)])) {
+    let base = src.includes('\\') ? escapeNeutral(removeContinuations(src)) : src
+    if (base.includes('#')) base = stripCommentsBash(base, false)
+    out.push(base)
+    if (base.includes('{') && base.includes(',')) out.push(braceExpand(base))
+    if (base.includes('#')) out.push(stripCommentsBash(base))
+  }
+  for (const o of [cmd, ...out]) { // Revizor 5994 J1: the leading redirections dropped at every command start
+    if (o.includes('<') || o.includes('>')) out.push(o.replace(LEAD_REDIR_TEXT, (m, a, b) => a + b))
+  }
+  return [...new Set(out)].filter((o) => o !== cmd)
+}
+// Revizor 5994 J1: see _LEAD_REDIR_TEXT in the python twin
+const LEAD_REDIR_TEXT = /(^|[;&|\n({])([ \t]*)(?:\d*(?:<<<|<<-?|<>|<&|>&|&>>?|>>|>\||[<>])[ \t]*(?:\d+|-|[^\s;&|<>(){}]+)?[ \t]*)+/gm
+// KNOWNLIMITS1127: the substitution bodies bash runs that the tokenizer keeps as text; see _subst_bodies
+function substBodies(plain) {
+  const out = []
+  for (const p of plain) {
+    for (const src of new Set([p, bashPre(p)])) out.push(...dqSubstBodies(src))
+    out.push(...heredocSubstBodies(p))
+  }
+  return [...new Set(out)]
+}
+const HEREDOC_QUOTED = /<<-?\s*['"\\]/
+// Revizor 5927 M2 (J14): $( ) and `...` in an unquoted heredoc body; see _heredoc_subst_bodies
+function heredocSubstBodies(cmd) {
+  if (!cmd.includes('<<')) return []
+  const out = []
+  for (const m of cmd.matchAll(HEREDOC_RE)) {
+    if (HEREDOC_QUOTED.test(m[1])) continue
+    const body = m[0].slice(m[1].length + 1)
+    const n = body.length
+    for (let i = 0; i < n;) {
+      if (body[i] === '\\') { i += 2; continue }
+      if (body.startsWith('$(', i)) {
+        const j = dqCloseParen(body, i + 2)
+        out.push(body.slice(i + 2, j))
+        i = j + 1
+        continue
+      }
+      if (body[i] === '`') {
+        let j = i + 1
+        while (j < n && body[j] !== '`') j += body[j] === '\\' ? 2 : 1
+        out.push(body.slice(i + 1, j))
+        i = j + 1
+        continue
+      }
+      i++
+    }
+  }
+  return out
+}
+function dqCloseParen(cmd, i) {
+  let depth = 1
+  let q = null
+  const n = cmd.length
+  while (i < n) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"') { i += 2; continue }
+      if (ch === q) q = null
+      i++
+      continue
+    }
+    if (ch === '\\') { i += 2; continue }
+    if (ch === "'" || ch === '"') q = ch
+    else if (ch === '(') depth++
+    else if (ch === ')') {
+      depth--
+      if (depth === 0) return i
+    }
+    i++
+  }
+  return n
+}
+// KNOWNLIMITS1127 (M1): the $( ) and `...` bodies inside double quotes; see _dq_subst_bodies in the python twin
+function dqSubstBodies(cmd) {
+  if (!cmd.includes('"') || (!cmd.includes('$(') && !cmd.includes('`'))) return []
+  const out = []
+  let q = null
+  const n = cmd.length
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q === "'") { if (ch === "'") q = null; i++; continue }
+    if (ch === '\\') { i += 2; continue }
+    if (q === null) { if (ch === "'" || ch === '"') q = ch; i++; continue }
+    if (ch === '"') { q = null; i++; continue }
+    if (cmd.startsWith('$(', i)) { // `$((` too, see the python twin
+      const j = dqCloseParen(cmd, i + 2)
+      out.push(cmd.slice(i + 2, j))
+      i = j + 1
+      continue
+    }
+    if (ch === '`') {
+      let j = i + 1
+      while (j < n && cmd[j] !== '`') j += cmd[j] === '\\' ? 2 : 1
+      out.push(cmd.slice(i + 1, j))
+      i = j + 1
+      continue
+    }
+    i++
+  }
+  return out
+}
+const sendMarkText = (s) => depthMark().test(s) || ANSI_C_ADDRESS_FLAG.test(s) || ANSI_C_EMAIL.test(s) || OSA_BARE.test(s)
+// KNOWNLIMITS1127 (Marveen 5924): an eval or variable / substitution head plus a send mark in any reading is a send
+// an eval head whose words hold an expansion: any send mark; a variable / substitution head: only a mail host
+// (FLEETTOFLAG1025 decides a recipient flag, an address or a send.py word on an undecidable program)
+const DYNAMIC_HEAD = /^(?:\$[A-Za-z_][A-Za-z_0-9]*|\$\{[^{}]*\}|\$\(|`|\$__SUBST__)/ // see _DYNAMIC_HEAD
+function dynamicHeadMark(texts) {
+  const kinds = new Set()
+  for (const t of texts) {
+    let segs
+    try { segs = segmentsTokens(t) } catch { continue }
+    for (const toks of segs) {
+      for (const h of commandHeads(toks)) {
+        let w = [...(h || [])]
+        while (w.length && (w[0] === 'builtin' || w[0] === 'command')) w = w.slice(1)
+        if (w.length && w[0] === 'eval' && w.slice(1).some((x) => x.includes('$') || x.includes('`'))) kinds.add('eval') // a static eval line: EVALXARGSMAIL1126
+        else if (w.length && DYNAMIC_HEAD.test(w[0])) kinds.add('var')
+        else if (w.length && WRAPPER_SHELL.test(basename(w[0])) && w.some((x, k) => (x === '-c' || SHELL_C_FLAG.test(x)) &&
+          k + 1 < w.length && (w[k + 1].startsWith('$') || w[k + 1].startsWith('`')))) kinds.add('var') // Revizor 5927 M3 (J41)
+      }
+    }
+  }
+  if (!kinds.size) return false
+  const looked = texts.flatMap((t) => [t, t.replace(/["'\\]/g, '')])
+  if (kinds.has('eval') && looked.some((s) => sendMarkText(s))) return true
+  return looked.some((s) => MAIL_MARKER.test(s))
+}
+
+// isSendInvocation for ONE reading of the command (ANSICQUOTE1127); the line state is set by the caller. KNOWNLIMITS1127:
+// fallback=false for an added bash-faithful reading (see _reading_sends)
+function readingSends(cmd, depth, fallback = true) {
   if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {
@@ -1793,7 +2194,7 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   } catch {
     // Unparseable command: fall back to the LEGACY content patterns, so on
     // this path the gate is exactly as strict as before -- never weaker.
-    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd) // MAILURLFILE1118: a mail host too
+    return fallback && (SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd)) // MAILURLFILE1118: a mail host too
   }
   if (segments.some((toks) => segmentIsSend(toks, depth))) return true
   // The same command with every substitution as one undecidable word (see
@@ -1803,7 +2204,7 @@ export function isSendInvocation(cmd, depth = 0, cwd = undefined) {
   try {
     return segmentsTokens(flat).some((toks) => segmentIsSend(toks, depth))
   } catch {
-    return SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd)
+    return fallback && (SEND_PATTERNS.some((re) => re.test(cmd)) || MAIL_MARKER.test(cmd))
   }
 }
 
@@ -3251,6 +3652,8 @@ export function writtenScripts(cmd, cwd) {
 }
 
 export function scriptRunSends(cmdIn, cwd = process.cwd(), readScript = readScriptHead, depth = 0, cdWords = []) {
+  // ANSICQUOTE1127 round 5 (J4 b): a script run behind a $'...' form, on the bare texts too
+  for (const bare of ansiCBares(cmdIn)) if (bare !== cmdIn && scriptRunSends(bare, cwd, readScript, depth, cdWords)) return true
   const bound = bindLiteralVars(decodeAnsiC(cmdIn)) // Revizor 4123 L1, L3: `$'--to'`, `bash -c $'...'`
   const allWritten = writtenScripts(bound, cwd)
   // Dani (review of #2586): a P that exists now may survive the write: its body is judged next to the file on disk
@@ -3339,6 +3742,110 @@ function decodeAnsiC(cmd) {
     if (ch === "'" || ch === '"') q = ch
     out += ch
     i++
+  }
+  return out
+}
+
+const HEREDOC_OP = /<<(-?)[ \t]*((?:[^\s;&|()<>'"\\]|\\.|'[^']*'|"[^"]*")+)/y
+// ANSICQUOTE1127 (Revizor 5843 J1): decodeAnsiC as bash scans the line: a comment is dropped and a heredoc body is copied
+// as it is (their quotes open nothing), a $$ is the pid. Revizor 5852 J2: `<<<` is a here-string, `<<` in arithmetic a
+// shift, a comment in backticks ends at the backtick, a backslash-newline keeps the word state, `#` in ${...} is no comment. Only isSendInvocation reads it; see _decode_ansi_c_sh in the python twin.
+function decodeAnsiCSh(cmd) {
+  if (!cmd.includes("$'") && !cmd.includes('$"')) return cmd
+  let out = ''
+  let q = null
+  const n = cmd.length
+  // open constructs, innermost last: 's' $( , 'p' plain ( , 'a' arithmetic (( / $(( , 'b' ${ , 't' a backtick
+  const parens = []
+  let substCloseAt = -1
+  let wordStart = true
+  let pending = []
+  for (let i = 0; i < n;) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < n) { out += cmd.slice(i, i + 2); i += 2; continue }
+      if (ch === q) q = null
+      out += ch
+      i++
+      continue
+    }
+    const top = parens.length ? parens[parens.length - 1] : null
+    if (ch === '\\' && i + 1 < n) {
+      // a backslash-newline is removed by bash: the word state goes on as before it (Revizor 5852 J2 d)
+      out += cmd.slice(i, i + 2)
+      i += 2
+      if (cmd[i - 1] !== '\n') wordStart = false
+      continue
+    }
+    if (ch === '#' && wordStart && top !== 'a' && top !== 'b') {
+      // a comment ends at the newline, or inside backticks at the closing backtick (Revizor 5852 J2 c, e)
+      let j = i
+      while (j < n && cmd[j] !== '\n' && !(cmd[j] === '`' && parens.includes('t'))) j++
+      i = j // dropped, as bash drops it (the JS tokenizer knows no comment)
+      continue
+    }
+    if (ch === '\n') {
+      out += ch
+      i++
+      wordStart = true
+      for (const [delim, strip] of pending) {
+        while (i < n) {
+          let j = cmd.indexOf('\n', i)
+          j = j < 0 ? n : j + 1
+          const line = cmd.slice(i, j)
+          out += line
+          i = j
+          const bare = line.replace(/\n$/, '')
+          if ((strip ? bare.replace(/^\t+/, '') : bare) === delim) break
+        }
+      }
+      pending = []
+      continue
+    }
+    if (ch === '`') {
+      if (top === 't') { parens.pop(); wordStart = false } else { parens.push('t'); wordStart = true }
+      out += ch
+      i++
+      continue
+    }
+    if (cmd.startsWith('<<<', i)) { out += '<<<'; i += 3; wordStart = false; continue } // a here-string (Revizor 5852 J2 a)
+    if (cmd.startsWith('<<', i) && !parens.includes('a')) { // in (( )) / $(( )) it is a shift (J2 b)
+      HEREDOC_OP.lastIndex = i
+      const m = HEREDOC_OP.exec(cmd)
+      if (m) {
+        const delim = m[2].replace(/'([^']*)'|"([^"]*)"/g, (_, a, b) => a ?? b ?? '').replace(/\\(.)/g, '$1')
+        pending.push([delim, m[1] === '-'])
+        out += m[0]
+        i += m[0].length
+        wordStart = false
+        continue
+      }
+    }
+    if (ch === '$' && cmd.startsWith('$$', i)) { out += '$$'; i += 2; wordStart = false; continue }
+    if (ch === '$' && cmd[i + 1] === "'") {
+      let j = i + 2
+      while (j < n && cmd[j] !== "'") j += cmd[j] === '\\' ? 2 : 1
+      const text = ansiCBody(cmd.slice(i + 2, Math.min(j, n)))
+      out += "'" + text.replaceAll("'", "'\\''") + "'"
+      i = j + 1
+      wordStart = false
+      continue
+    }
+    if (ch === '$' && cmd[i + 1] === '"') { i++; continue } // a locale $"..." string is the "..." string
+    if (cmd.startsWith('$((', i)) { parens.push('a'); out += '$(('; i += 3; wordStart = false; continue }
+    if (cmd.startsWith('((', i) && wordStart) { parens.push('a'); out += '(('; i += 2; wordStart = false; continue }
+    if (top === 'a' && cmd.startsWith('))', i)) { parens.pop(); out += '))'; i += 2; wordStart = false; continue }
+    if (cmd.startsWith('${', i)) { parens.push('b'); out += '${'; i += 2; wordStart = false; continue }
+    if (ch === '}' && top === 'b') { parens.pop(); out += ch; i++; wordStart = false; continue }
+    // Revizor 5852 J2 e: no comment inside ${...}; written escaped (the same word to bash) for the tokenizer's comment rule
+    if (ch === '#' && top === 'b' && i > 0 && ' \t\n;&|('.includes(cmd[i - 1])) { out += '\\#'; i++; continue }
+    if (ch === '$' && cmd[i + 1] === '(') { parens.push('s'); out += '$('; i += 2; wordStart = true; continue }
+    if (ch === '(') parens.push('p')
+    else if (ch === ')' && (top === 's' || top === 'p') && parens.pop() === 's') substCloseAt = i
+    if (ch === "'" || ch === '"') q = ch
+    out += ch
+    i++
+    wordStart = top !== 'a' && top !== 'b' && (' \t;&|('.includes(ch) || (ch === ')' && substCloseAt !== i - 1))
   }
   return out
 }

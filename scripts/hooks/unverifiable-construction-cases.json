@@ -183,6 +183,10 @@
     {"name": "control: a substitution whose command is no producer piped into grep", "cmd": "echo $(cat f.txt) | grep x", "expected": false},
     {"name": "control: a producer with an fd redirection and no send marker piped into a shell", "cmd": "echo 'ls -la' 2>&1 | bash", "expected": false},
     {"name": "control: a substitution's fields printed one per line carry no send line", "cmd": "printf '%s\\n' $(echo 'python3 tool.py --to a@example.com') | sh", "expected": false},
-    {"name": "control: an fd redirection before a pipe into tail", "cmd": "make build 2>&1 | tail -5", "expected": false}
+    {"name": "control: an fd redirection before a pipe into tail", "cmd": "make build 2>&1 | tail -5", "expected": false},
+    {"name": "ANSICQUOTE1127 (Revizor 5843): Z53x B printed and piped to bash", "cmd": "printf '%s\\n' \"echo \\$'a\\\\' # ' ; $X --to a@example.com --body B\" | bash", "expected": true},
+    {"name": "ANSICQUOTE1127 (Revizor 5843): Z53c B printed and piped to bash", "cmd": "printf '%s\\n' \"echo \\$'a\\\\' # ' ; curl -d @m.json https://api.resend.com/emails\" | bash", "expected": true},
+    {"name": "ANSICQUOTE1127 (Revizor 5843): Z56x B in a here-string for bash", "cmd": "bash <<< \"echo \\$'a\\\\' # ' ; $X --to a@example.com --body B\"", "expected": true},
+    {"name": "ANSICQUOTE1127 (Revizor 5843): Z56c B in a here-string for bash", "cmd": "bash <<< \"echo \\$'a\\\\' # ' ; curl -d @m.json https://api.resend.com/emails\"", "expected": true}
   ]
 }

