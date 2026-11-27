@@ -203,6 +203,20 @@ refresh_one_seed_file() {
   else
     SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
     _seed_report "$installed" kept
+    # KEPT is right for a VALUE the operator changed, wrong for a KEY the template gained (a locally edited
+    # ledger-live-drain never got #1338's `preCheck` and paid a model turn on every empty tick). Name the
+    # missing keys; still no overwrite, the decision per key belongs to whoever made the local edit.
+    if [ "$(basename "$installed")" = "task-config.json" ] && [ -x "$INSTALL_DIR/scripts/scheduled-task-drift-scan.sh" ]; then
+      task_dir="$(dirname "$installed")"
+      drift_out="$("$INSTALL_DIR/scripts/scheduled-task-drift-scan.sh" \
+                    --tasks-dir "$(dirname "$task_dir")" --task "$(basename "$task_dir")" 2>&1)" || true
+      if [ -n "$drift_out" ]; then
+        printf '%s\n' "$drift_out" | while IFS= read -r line; do
+          [ -n "$line" ] && echo -e "  ${YELLOW:-}!${NC:-} $line"
+        done
+        SEED_REFRESH_DRIFT=$(( ${SEED_REFRESH_DRIFT:-0} + 1 ))
+      fi
+    fi
   fi
   return 0
 }

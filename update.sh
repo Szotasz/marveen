@@ -1474,6 +1474,9 @@ autonomy_config_merge
 # explicit --regen-claudemd flag, because that file is the operator's text).
 SEED_REFRESH_UPDATED=0
 SEED_REFRESH_KEPT=0
+# Kept copies whose template has a key they lack: reported by name above, and
+# counted here so the summary cannot stay silent about them.
+SEED_REFRESH_DRIFT=0
 
 # True (0) iff $1 (an installed file) is byte-identical to ANY historical version
 # of $2 (a repo-relative path), rendered by mode $3 (render_seed_stream).
@@ -1516,8 +1519,12 @@ run_seed_refresh() {
     WEB_PORT="${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
   fi
   seed_refresh_groups
-  if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
+  SEED_REFRESH_DRIFT="${SEED_REFRESH_DRIFT:-0}"
+  if [ "$SEED_REFRESH_UPDATED" -gt 0 ] || [ "$SEED_REFRESH_DRIFT" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
+  fi
+  if [ "$SEED_REFRESH_DRIFT" -gt 0 ]; then
+    echo -e "  ${YELLOW}!${NC} ${SEED_REFRESH_DRIFT} helyben modositott feladat-config lemaradt egy uj sablon-kulcsrol (lasd fentebb). Kulcsonkent dontsd el; ne masold at egyben."
   fi
   # Scheduled-task registry: one summary line at the end, so an unattended auto-update log
   # shows every refreshed-but-unregistered task in one place.

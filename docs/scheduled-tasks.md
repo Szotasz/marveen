@@ -281,6 +281,13 @@ Ki regisztrál:
   ISMERETLEN: ilyenkor a dashboard egyszeri backfillje fogja regisztrálni (és a runner futtatni), ezért ezt a
   feladatot MOST kell átnézni. A regisztráció az adott feladat frissítése után azonnal megtörténik, nem a
   futás végén;
+- ha a seed-frissítés egy helyben módosított `task-config.json`-t megtart, a `scripts/scheduled-task-drift-scan.sh`
+  megnézi, kapott-e a szállított sablon olyan kulcsot, ami a megtartott példányból hiányzik (vagy `null`), és
+  az `update.sh` ezeket NÉV SZERINT kiírja, a futás végén egy összesítő sorral. A megtartott értékeket (ütemezés,
+  ágens, saját mezők) nem írja felül és nem is jelzi: csak a hiányzó kulcs a lelet, mert egy új képesség ilyen
+  alakban érkezik, és egy mezőt nem viselő config pont úgy néz ki, mint egy, amelyiknek sosem kellett. A
+  döntés kulcsonként azé, aki a helyi módosítást csinálta. Kézzel is futtatható: `scripts/scheduled-task-drift-scan.sh
+  [-v] [--tasks-dir DIR] [--task NAME]` (kilépési kód 1 = van hiányzó kulcs);
 - a `scripts/migrate-main-agent-id.sh` az `agent` mező átírása után CSAK azt a feladatot regisztrálja újra,
   amelyik az átírás ELŐTT `ok` volt; a többit (regisztrálatlan vagy eltérő hash) kiírja átnézésre;
 - a szerver saját átírásai (`src/web/schedule-registry-rewrite.ts`): az egyszeri
