@@ -1,7 +1,8 @@
 // CLAUDEMD_COMPACT (opt-in, default off): ten generated sections carry a short rule in CLAUDE.md, and the
 // unchanged full body is kept, code-owned, in CLAUDE-details.md beside it (not auto-loaded by Claude Code).
 //
-// Pins: switch off = today's full block and no details file; switch on = compact block with a pointer, the full
+// Pins: switch off = today's full block and no details file, in both scaffold languages; a details file that cannot
+// be written = the full block stays in CLAUDE.md; switch on = compact block with a pointer, the full
 // body between the same markers in the details file, idempotent, a hand edit of the details block restored;
 // switch off again = full block back; the English variant; the agents that keep the full text (the main agent's
 // mcp-list-channel, a curl-recipe agent's helper-verb sections).
@@ -101,6 +102,33 @@ describe('CLAUDEMD_COMPACT off (the default)', () => {
     }
     expect(existsSync(detailsPath('off-sub'))).toBe(false)
     expect(existsSync(detailsPath(MAIN))).toBe(false)
+  })
+
+  it('the English scaffold too: every block is the English full body, no details file', () => {
+    setLang('en'); setting.compact = '0'
+    setup('off-en'); setup(MAIN)
+    runAll('off-en'); runAll(MAIN)
+    for (const s of SECTIONS) {
+      expect([s.id, blockOf(claudeMd('off-en'), s.id)]).toEqual([s.id, s.full('off-en')])
+      expect([s.id, blockOf(claudeMd(MAIN), s.id)]).toEqual([s.id, s.full(MAIN)])
+    }
+    expect(blockOf(claudeMd('off-en'), 'fleet-auth')).toBe(S.buildFleetAuthBody())
+    expect(/[áéíóöőúüű]/i.test(S.buildFleetAuthBody())).toBe(false)
+    expect(existsSync(detailsPath('off-en'))).toBe(false)
+    expect(existsSync(detailsPath(MAIN))).toBe(false)
+    setLang('hu')
+  })
+})
+
+describe('CLAUDEMD_COMPACT on, details file not writable', () => {
+  it('every section keeps its full body in CLAUDE.md (never a short rule without its full text)', () => {
+    setLang('hu'); setting.compact = '1'
+    const n = 'nowrite-sub'
+    setup(n)
+    mkdirSync(detailsPath(n)) // a directory at the details path: every read/write of it throws
+    runAll(n)
+    for (const s of SECTIONS) expect([s.id, blockOf(claudeMd(n), s.id)]).toEqual([s.id, s.full(n)])
+    rmSync(detailsPath(n), { recursive: true, force: true })
   })
 })
 
