@@ -198,6 +198,8 @@ class Env:
                   "HEAVY_JOB_LOG": self.log,
                   "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
                   "HEAVY_JOB_POLL_SEC": "0.1",
+                  # the side lane is on by default; a case that is about it sets the switch (None = unset)
+                  "HEAVY_JOB_SIDE_LANE": "0",
                   # never touch a real ollama from a test (the unload is opt-in;
                   # the cases that enable it point it at a local stand-in)
                   "HEAVY_JOB_OLLAMA_URL": "http://127.0.0.1:9"})
@@ -1212,14 +1214,14 @@ def main():
                   and u and u[-1].get("reason") == "not_in_scope", (tok, p.returncode, u[-1:]))
             check("LIVE: refusal names the live holder pid as alive",
                   ("holder pid %d (alive)" % outer.pid) in p.stderr, p.stderr)
-            # side lane switch unset (the default): a 200M call waits for the live holder as before
-            p = E.run(small + ["--wait-sec", "1", "--label", "side-off", "--", "true"])
-            check("LIVE: side lane off by default: a 200M call beside the live holder is refused 73, "
+            # side lane switched off: a 200M call waits for the live holder as before
+            p = E.run(small + ["--wait-sec", "1", "--label", "side-off", "--", "true"], HEAVY_JOB_SIDE_LANE="0")
+            check("LIVE: side lane off (HEAVY_JOB_SIDE_LANE=0): a 200M call beside the live holder is refused 73, "
                   "no side lock file", p.returncode == 73 and not os.path.exists(E.lock + ".side")
                   and outer.poll() is None, (p.returncode, outer.poll()))
-            # side lane against a REAL scope: memory.current/max/stat of the live holder are read
+            # side lane against a REAL scope, switch unset (on by default): memory.current/max/stat of the live holder are read
             p = E.run(small + ["--wait-sec", "2", "--label", "side-live", "--", "true"],
-                      HEAVY_JOB_SIDE_LANE="1")
+                      HEAVY_JOB_SIDE_LANE=None)
             st = [e for e in E.events() if e["event"] == "start" and e.get("label") == "side-live"]
             check("LIVE: a 200M call runs beside the live holder (side lane, real cgroup headroom read)",
                   p.returncode == 0 and st and st[-1].get("side_lane") is True
@@ -2264,11 +2266,11 @@ class SL(Q):
 SMALL = ["--max-mem", "1G", "--min-mb", "0"]
 
 
-def sl_admit(td, W):
+def sl_admit(td, W, switch="1"):
     """Holder headroom 2048 - (648 - 200) = 1600; K (1G) needs 1024 + 1600 + 1000 = 3624 <= 5000: K
     runs beside the holder; D (default flags, queued FIRST) still waits for the
     main lock and runs only after the release."""
-    q = SL(td, W, avail_mb=5000, cur_mb=648, file_mb=200)  # 200 MB of it page cache
+    q = SL(td, W, avail_mb=5000, cur_mb=648, file_mb=200, switch=switch)  # 200 MB of it page cache
     q.hold()
     d = q.go("D")
     q.wait_line("D")
@@ -2284,8 +2286,8 @@ def sl_admit(td, W):
     return ok, (q.runs(), t, st, [d.returncode, k.returncode])
 
 
-def sl_switch_off(td, W, switch=None):
-    """The switch unset (or not "1"), everything else as in sl_admit: a 200M call
+def sl_switch_off(td, W, switch="0"):
+    """The switch 0 (or any value but "1"), everything else as in sl_admit: a 200M call
     beside the live holder waits for the main lock exactly as on develop (a
     "lock" wait line, its ticket without "side", started only after the
     release, no side_lane in its start line), and no <lock>.side file is created."""
@@ -2311,10 +2313,10 @@ def sl_switch_off(td, W, switch=None):
 
 
 def sl_off_main_floor(td, W):
-    """Switch unset: the main floor does not read the side lock. The test holds
+    """Switch 0: the main floor does not read the side lock. The test holds
     <lock>.side with a record whose scope cannot be measured (on: +1024);
     D (2G, --min-mb 0) needs 2048 + 500 = 2548 <= 3000 and starts at once."""
-    q = SL(td, W, avail_mb=3000, switch=None)
+    q = SL(td, W, avail_mb=3000, switch="0")
     sfd = os.open(q.E.lock + ".side", os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(sfd, fcntl.LOCK_EX)
     os.write(sfd, b"token=t pid=1 unit=heavy-job-2-2 since=x label=side\n")
@@ -2438,10 +2440,11 @@ def side_lane():
         check("side lane: headroom = max - (current - file) = 2048 - 500 = 1548", hr == 1548, hr)
 
     checks = (
-        ("side lane: switch unset: a 200M call beside the live holder waits for the main lock "
+        ("side lane: HEAVY_JOB_SIDE_LANE=0: a 200M call beside the live holder waits for the main lock "
          "as before, no 'side' ticket field, no side lock file", sl_switch_off, ()),
         ("side lane: HEAVY_JOB_SIDE_LANE=yes is not 1: off as well", sl_switch_off, ("yes",)),
-        ("side lane: switch unset: the main floor does not read a held side lock", sl_off_main_floor, ()),
+        ("side lane: switch 0: the main floor does not read a held side lock", sl_off_main_floor, ()),
+        ("side lane: switch unset (on by default): a 1G job runs BESIDE the holder", sl_admit, (None,)),
         ("side lane: a 1G job runs BESIDE the holder (need 1024+1600+1000=3624 <= 5000); "
          "an older default job still waits for the main lock", sl_admit, ()),
         ("side lane: headroom short (3000 < 3624): not beside, runs in its main-lane turn", sl_short, ()),
@@ -2466,8 +2469,10 @@ def side_lane():
         ("sl-main-ignores-side", 'cap_mb + reserve + side_hr["mb"])', "cap_mb + reserve)",
          sl_main_counts_side, ()),
         ("sl-boundary", "cap_mb <= SIDE_MAX_MB", "cap_mb < SIDE_MAX_MB", sl_admit, ()),
-        ("sl-switch-ignored", 'return os.environ.get("HEAVY_JOB_SIDE_LANE") == "1"', "return True",
+        ("sl-switch-ignored", 'return os.environ.get("HEAVY_JOB_SIDE_LANE", "1") == "1"', "return True",
          sl_switch_off, ()),
+        ("sl-default-off", 'os.environ.get("HEAVY_JOB_SIDE_LANE", "1")', 'os.environ.get("HEAVY_JOB_SIDE_LANE")',
+         sl_admit, (None,)),
         ("sl-cache-as-usage", "max(0, mx - max(0, cur - file_b))", "max(0, mx - cur)", sl_admit, ()),
     )
     with tempfile.TemporaryDirectory() as mtd:

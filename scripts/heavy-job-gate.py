@@ -51,7 +51,7 @@ Configuration (environment; a command-line flag wins over its variable):
   HEAVY_JOB_AGENT       default --agent (fairness tag, see below)
   HEAVY_JOB_OLLAMA_UNLOAD=1  unload idle ollama models once when memory is
                         short at admission (off by default, see below)
-  HEAVY_JOB_SIDE_LANE=1 turn the side lane on (off by default, see below)
+  HEAVY_JOB_SIDE_LANE=0 turn the side lane off (on by default, see below)
 An invalid value is a usage error (64), like the same value as a flag.
 
 The lock fd is NOT inherited by the job: only the gate process holds the lock,
@@ -149,7 +149,7 @@ that passed long tickets carries "passed" (their labels) and "short_streak".
 The queue reads the lock record strictly: one that exists but cannot be read
 is a queue_io_error (74); a malformed counter closes the lane (plain order).
 
-Side lane (OFF unless HEAVY_JOB_SIDE_LANE=1; unset or any other value: no
+Side lane (ON when HEAVY_JOB_SIDE_LANE is unset or 1; any other value, e.g. 0: no
 candidate, no side lock opened, no "side" ticket field, and the main floor does
 not read the side lock): ONE extra job may run beside the main one, so it is
 NOT exclusive with it. Only a capped call with --max-mem <= SIDE_MAX_MB (1024)
@@ -332,8 +332,8 @@ def side_lock_path():
 
 
 def side_lane_on():
-    """The side lane is opt-in: HEAVY_JOB_SIDE_LANE=1, nothing else."""
-    return os.environ.get("HEAVY_JOB_SIDE_LANE") == "1"
+    """The side lane is on by default: unset or HEAVY_JOB_SIDE_LANE=1; any other value (0) is off."""
+    return os.environ.get("HEAVY_JOB_SIDE_LANE", "1") == "1"
 
 
 def log_path():
