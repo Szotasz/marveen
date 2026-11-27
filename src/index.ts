@@ -18,7 +18,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { parseStoreWatchExclude } from './config-registry.js'
 import { ownerAlertChatOverride, resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
-import { runDecaySweep, runDailyDigest } from './memory.js'
+import { runDecaySweep, runDailyDigest, armDailyDigest } from './memory.js'
 import { scheduleDecaySweep } from './decay-schedule.js'
 import { DECAY_SWEEP_INTERVAL_MS } from './db.js'
 import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
@@ -427,7 +427,6 @@ function releaseLock(): void {
 // digest timers and release the pidfile on the way out).
 let stopDecaySweep: (() => void) | null = null
 let digestTimer: NodeJS.Timeout | null = null
-let digestInterval: NodeJS.Timeout | null = null
 let logRotationInterval: NodeJS.Timeout | null = null
 let scheduledRunSnapshotSweepInterval: NodeJS.Timeout | null = null
 let heartbeatStarted = false
@@ -452,7 +451,6 @@ const shutdown = (): void => {
     try { stopStoreWatcher() } catch (err) { logger.warn({ err }, 'stopStoreWatcher threw during shutdown') }
     if (stopDecaySweep) stopDecaySweep()
     if (digestTimer) clearTimeout(digestTimer)
-    if (digestInterval) clearInterval(digestInterval)
     if (logRotationInterval) clearInterval(logRotationInterval)
     if (scheduledRunSnapshotSweepInterval) clearInterval(scheduledRunSnapshotSweepInterval)
 
@@ -591,13 +589,10 @@ async function main(): Promise<void> {
   sweepScheduledRunSnapshots()
   scheduledRunSnapshotSweepInterval = setInterval(() => sweepScheduledRunSnapshots(), LOG_ROTATION_SWEEP_MS)
 
-  // Daily digest at 23:00. Timer handles kept so shutdown can drop them.
+  // Daily digest at 23:00 local time, re-armed after every run (armDailyDigest)
+  // so a daylight-saving change does not shift it and a failing run does not stop
+  // it. The handle is kept so shutdown can drop it.
   function scheduleDailyDigest() {
-    const now = new Date()
-    const target = new Date(now)
-    target.setHours(23, 0, 0, 0)
-    if (target <= now) target.setDate(target.getDate() + 1)
-    const msUntil = target.getTime() - now.getTime()
     // Resolved per run, not captured once: a wizard install pairs AFTER boot,
     // so a value read at startup would stay the placeholder for the life of
     // the process and the first digest would go nowhere.
@@ -609,11 +604,10 @@ async function main(): Promise<void> {
       }
       runDailyDigest(chatId).catch((err) => logger.error({ err }, 'Napi naplo hiba'))
     }
-    digestTimer = setTimeout(() => {
-      runDigest()
-      digestInterval = setInterval(runDigest, 24 * 60 * 60 * 1000)
-    }, msUntil)
-    logger.info({ nextRun: target.toLocaleString('hu-HU') }, 'Napi naplo utemezve')
+    armDailyDigest(runDigest, (timer, msUntil) => {
+      digestTimer = timer
+      logger.info({ nextRun: new Date(Date.now() + msUntil).toLocaleString('hu-HU') }, 'Napi naplo utemezve')
+    })
   }
   scheduleDailyDigest()
 

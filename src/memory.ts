@@ -140,12 +140,60 @@ export function runDecaySweep(): void {
 
 // --- Daily digest ---
 
+// The digest is saved as an episodic memory and runs once a day, so the previous
+// night's digest sits exactly on the next window's lower edge. Counted as input it
+// lifted a quiet day over the threshold, and the model wrote yesterday's summary up
+// again as today's. Digests are never input.
+export const DAILY_DIGEST_PREFIX = '[Napi naplo '
+
+// Milliseconds from `now` to the next local 23:00, the digest's hour. Worked out
+// again for every run: a fixed 24 h interval keeps the first run's UTC offset and
+// drifts an hour at each daylight-saving change until the next restart.
+export function msUntilNextDigest(now: Date = new Date()): number {
+  const target = new Date(now)
+  target.setHours(23, 0, 0, 0)
+  if (target <= now) {
+    target.setDate(target.getDate() + 1)
+    target.setHours(23, 0, 0, 0)
+  }
+  return target.getTime() - now.getTime()
+}
+
+// Arms the digest timer for the next local 23:00 and re-arms it after every run.
+// The re-arm sits in a finally: if runDigest throws synchronously (resolving the
+// owner chat, for instance), the next night must still be scheduled -- otherwise
+// the digest stops until the next restart. The throw is logged, not rethrown: an
+// exception escaping a timer callback would take the whole process down.
+// onArm receives each new timer handle (so shutdown can clear it) and its delay.
+export function armDailyDigest(
+  runDigest: () => void,
+  onArm: (timer: NodeJS.Timeout, msUntil: number) => void,
+  afterRun = false,
+): void {
+  // After a run, look from a minute later: a timer that fires a hair early must
+  // not find "23:00 today" still ahead and run twice.
+  const slack = afterRun ? 60_000 : 0
+  const msUntil = msUntilNextDigest(new Date(Date.now() + slack)) + slack
+  const timer = setTimeout(() => {
+    try {
+      runDigest()
+    } catch (err) {
+      logger.error({ err }, 'Napi naplo hiba')
+    } finally {
+      armDailyDigest(runDigest, onArm, true)
+    }
+  }, msUntil)
+  onArm(timer, msUntil)
+}
+
 export async function runDailyDigest(chatId: string): Promise<string | null> {
   // Collect today's episodic memories (last 24h)
   const oneDayAgo = Math.floor(Date.now() / 1000) - 86400
   // MEMCHATID1123: the day's rows from the whole store; the chat id only names where the digest is saved.
   const allRecent = getMemoriesForChat(50)
-  const todayMemories = allRecent.filter((m) => m.created_at >= oneDayAgo)
+  const todayMemories = allRecent.filter(
+    (m) => m.created_at >= oneDayAgo && !m.content.startsWith(DAILY_DIGEST_PREFIX),
+  )
 
   if (todayMemories.length < 2) {
     logger.info({ chatId, count: todayMemories.length }, 'Napi naplo: tul keves emlek, kihagyjuk')
@@ -181,7 +229,7 @@ ${memoryLines}`
 
     const digest = text.trim()
     const today = new Date().toLocaleDateString('hu-HU')
-    saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic', undefined, MAIN_AGENT_ID)
+    saveMemory(chatId, `${DAILY_DIGEST_PREFIX}${today}] ${digest}`, 'episodic', undefined, MAIN_AGENT_ID)
     logger.info({ chatId, digestCwd, digestConfigDir }, `Napi naplo mentve: ${today}`)
     return digest
   } catch (err) {
