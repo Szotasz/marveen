@@ -421,6 +421,9 @@ const ALLOWLIST_READERS = new Set([
 ])
 // Output redirects: `>`, `>>`, `>|`, `&>`, `&>>`, `N>`. The target is the next word.
 const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
+// Words that stand before the real command word: `for ...; do cat FILE; done` splits into a
+// segment that starts with `do`, and `time jq . FILE` is still a jq read.
+const SEGMENT_KEYWORDS = new Set(['do', 'then', 'else', 'elif', 'time', '!', '{', '('])
 
 // `ctx` (optional): what protectedMention needs beyond the segment's own text, see
 // protectedContext. Without it only the spelling variants are read.
@@ -483,6 +486,7 @@ function readOnlyMentionAllowed(seg, mentions, rgConfigNamed = false, fragment =
   if (fragment) return false
   const words = s.split(/\s+/)
   let i = 0
+  while (i < words.length && SEGMENT_KEYWORDS.has(words[i])) i++
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
   const cmd = (words[i] ?? '').replace(/^.*\//, '')
   // `git grep` reads too (EGRESSFP1106 (c)), in the narrow form gitGrepReadOnly accepts; a leading VAR=x in front of

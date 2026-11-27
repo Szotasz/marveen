@@ -108,6 +108,32 @@ describe('gate: the allowlist name is folded before it is compared (review #2001
   })
 })
 
+// A shell keyword in front of the command word (a loop body, `time`, a group) is not the command:
+// these plain reads were denied because the check took `do` / `time` / `{` for the program.
+describe('gate: a shell keyword in front of a read is skipped', () => {
+  const reads = [
+    'for f in a b; do grep -c x store/egress-allowlist.json; done',
+    'time jq . store/egress-allowlist.json',
+    'if true; then cat store/egress-allowlist.json; fi',
+    '{ cat store/egress-allowlist.json; }',
+    '! grep -q evil store/egress-allowlist.json',
+  ]
+  it.each(reads)('allows: %s', (command) => {
+    expect(decide('Bash', { command }).deny).toBe(false)
+  })
+  // The keyword skip must not turn a write into a read.
+  const writes = [
+    'for f in a b; do cp /tmp/x store/egress-allowlist.json; done',
+    'time cp /tmp/x store/egress-allowlist.json',
+    '( cp /tmp/x store/egress-allowlist.json )',
+    '{ cat store/egress-allowlist.json; } > store/egress-allowlist.json',
+    'if true; then echo x > store/egress-allowlist.json; fi',
+  ]
+  it.each(writes)('still denies: %s', (command) => {
+    expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+})
+
 describe('gate: Bash is fail-closed on the allowlist', () => {
   const denied = [
     "echo '{}' > store/egress-allowlist.json",
