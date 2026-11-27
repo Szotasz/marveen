@@ -54,8 +54,9 @@ above works there too. The dashboard checks the outbox every minute (whether or 
 only exist where limit-monitor runs), delivers each file through `notifyOwner`, and deletes it only after a confirmed
 delivery; a failed delivery stays for the next minute. A file older than 24 hours is dropped with a log line. The
 content is delivered as plain text, control characters removed, capped at 1900 characters (under Discord's limit).
-With a Telegram token limit-monitor behaves as before. Its exit without an owner chat (`no ALLOWED_CHAT_ID`) is
-unchanged.
+With a Telegram token limit-monitor behaves as before, including its exit without an owner chat (`no ALLOWED_CHAT_ID`).
+Without a Telegram token it no longer exits there: `ALLOWED_CHAT_ID` is a Telegram setting and is empty on a
+Discord/Slack install, and the outbox needs no chat id.
 
 ## Per subscription (plan)
 

@@ -432,11 +432,13 @@ else
 fi
 
 # No access.json at all -> the monitor must stay silent, not send to "0".
-C="$(new_case chatid0_no_access)"
+# A Telegram install (bot token present): without the token the monitor would
+# use the dashboard outbox instead (QUOTANOTICE1126, case (g)).
+C="$(deliver_case chatid0_no_access ok)"
 set_placeholder_chat "$C"
 run_case "$C"
 if grep -q "no ALLOWED_CHAT_ID in .env" "$C/store/limit-monitor.log" 2>/dev/null; then
-  pass "ALLOWED_CHAT_ID=0, no access.json -> exits quietly (no owner chat)"
+  pass "ALLOWED_CHAT_ID=0, no access.json, Telegram bot -> exits quietly (no owner chat)"
 else
   fail "ALLOWED_CHAT_ID=0, no access.json -> expected the no-owner-chat log line: $(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
@@ -515,6 +517,21 @@ if [ -n "$OBF" ] && [ "$(wc -c < "$OBF" | tr -d ' ')" -le 4000 ]; then
   pass "a text-signal alert is queued too, capped at 4000 bytes"
 else
   fail "the text-signal outbox file is missing or over 4000 bytes: $(wc -c < "${OBF:-/dev/null}")"
+fi
+
+# A Discord/Slack install has no Telegram owner chat either (ALLOWED_CHAT_ID is a
+# Telegram setting): with no bot token the monitor must not exit early, the
+# alert still goes to the outbox.
+C="$(new_case outbox_no_chat)"
+set_placeholder_chat "$C"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+OBF="$(find "$C/store/owner-alert-outbox" -maxdepth 1 -type f -name '*.txt' 2>/dev/null | head -1)"
+if [ -n "$OBF" ] && grep -q "alerts go to the dashboard outbox" "$C/store/limit-monitor.log" 2>/dev/null \
+   && ! grep -q "cannot alert -- exiting" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "no owner chat + no bot token -> still queued for the dashboard"
+else
+  fail "no owner chat + no bot token -> expected an outbox file: log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
 
 # An outbox that cannot be written: the alert is NOT counted as handled.

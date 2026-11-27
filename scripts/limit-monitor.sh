@@ -48,11 +48,32 @@ BOT_NAME="${BOT_NAME:-$MAIN_AGENT_ID}"
 # CHATID0: resolve_owner_chat_id, not a raw ALLOWED_CHAT_ID read -- the old
 # read let the installer's "0" placeholder through unnoticed, and never fell
 # back to a paired channel's access.json.
+# The Telegram bot token, if this install has a Telegram channel (#915:
+# install-scoped state dir once migrated, legacy shared otherwise). Empty on a
+# Discord/Slack install.
+telegram_bot_token() {
+  local chan_dir="${TELEGRAM_STATE_DIR:-}"
+  if [ -z "$chan_dir" ]; then
+    chan_dir="$INSTALL_DIR/.claude/channels/telegram"
+    [ -f "$chan_dir/.env" ] || chan_dir="$HOME/.claude/channels/telegram"
+  fi
+  grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$chan_dir/.env" 2>/dev/null | head -1
+}
+
 if ! CHAT_ID="$(resolve_alert_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")"; then
-  # No owner chat configured: there is nobody to alert, and guessing one would
-  # send a quota warning to a stranger. Stay silent rather than misdeliver.
-  log "no ALLOWED_CHAT_ID in .env, monitor cannot alert -- exiting"
-  exit 0
+  if [ -n "$(telegram_bot_token)" ]; then
+    # A Telegram install with no owner chat configured: there is nobody to
+    # alert, and guessing one would send a quota warning to a stranger. Stay
+    # silent rather than misdeliver.
+    log "no ALLOWED_CHAT_ID in .env, monitor cannot alert -- exiting"
+    exit 0
+  fi
+  # QUOTANOTICE1126: no Telegram bot at all (a Discord/Slack install, where
+  # ALLOWED_CHAT_ID is a Telegram setting and stays empty). The alerts go to the
+  # dashboard's owner-alert outbox, which delivers them on the install's own
+  # owner route, so no chat id is needed here.
+  CHAT_ID=""
+  log "no Telegram owner chat and no bot token -- alerts go to the dashboard outbox"
 fi
 
 # ---------------------------------------------------------------------------
@@ -82,13 +103,7 @@ queue_owner_alert() {
 
 send_alert() {
   local msg="$1" tag="$2" token
-  # #915: install-scoped state dir once migrated, legacy shared otherwise.
-  local chan_dir="${TELEGRAM_STATE_DIR:-}"
-  if [ -z "$chan_dir" ]; then
-    chan_dir="$INSTALL_DIR/.claude/channels/telegram"
-    [ -f "$chan_dir/.env" ] || chan_dir="$HOME/.claude/channels/telegram"
-  fi
-  token="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$chan_dir/.env" 2>/dev/null | head -1)"
+  token="$(telegram_bot_token)"
   if [ -z "$token" ]; then
     # QUOTANOTICE1126: no Telegram bot token = a Discord/Slack/other install, where this used to log and drop the
     # alert. It goes into the dashboard's owner-alert outbox instead (src/web/quota-notice.ts delivers it through
