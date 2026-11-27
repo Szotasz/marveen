@@ -63,6 +63,42 @@ describe('self-pace-gate: a scheduler in interpreter code', () => {
     }
   })
 
+  it('DENIES it behind the narrowings: a path, an argv list, a wrapper, a sqlite dot command, git -c', () => {
+    for (const cmd of [
+      `python3 -c "import subprocess; subprocess.run(['/usr/bin/crontab','-r'])"`,
+      `perl -e "system('at', 'now')"`,
+      `python3 -c "import subprocess; subprocess.run(['batch'], input=b'x')"`,
+      'timeout 5 ssh box crontab -r',
+      `timeout -s KILL 5 python3 -c "import os; os.system('crontab -r')"`,
+      'sqlite3 x.db ".shell crontab -r"',
+      "sqlite3 -cmd '.system crontab -r' x.db",
+      "git -c alias.x='!crontab -r' x",
+      "node -e \"require('child_process').execSync('launchctl load x.plist')\"",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS the shapes measured on the fleet\'s own commands: (at), a key, a read, a lookup, a file path', () => {
+    for (const cmd of [
+      "sed 's/@/(AT)/g' notes.txt",
+      `python3 -c "import json; d=json.load(open('x.json')); print(d.get('at'), d['at'])"`,
+      `python3 -c "f=open('x'); at=0; print(f.read(at, 10))"`,
+      `sqlite3 x.db "SELECT replace(content,'@','(at)') FROM t WHERE title LIKE '%launchctl%'"`,
+      "kill $(launchctl print gui/501/com.x | awk '/pid = /{print $3}')",
+      'xcrun simctl spawn BD90 launchctl list | grep -i app',
+      'ls -l /bin/launchctl /etc/crontab',
+      'command -v systemd-run || echo none',
+      'journalctl -u ssh --no-pager -o cat | tail -6',
+      'timeout 20 ssh box "crontab -l"',
+      'ls /tmp/x/scratchpad/batch',
+      'git log --grep="crontab -r"',
+      "awk -F'\"at\":\"' '{print $2}' x.json",
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
   it('ALLOWS quoted text as the argument of a program that never runs it', () => {
     for (const cmd of [
       'grep "crontab -r" notes.txt',

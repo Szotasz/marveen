@@ -4070,21 +4070,51 @@ function sshRemoteCommand(words, i) {
 }
 
 // SELFPACEQUOTE1127: a scheduler call inside an ARGUMENT word: the code of `python3 -c`, `node -e`, `perl -e`,
-// `ruby -e` and any other program that may run its argument (os.system('crontab -r'), ['at', 'now']). The
-// anchored check above only sees a command position, and the masking blanks quoted text. crontab, launchctl and
-// systemd-run are not words of prose, so any occurrence counts; at and batch count where a string or a shell
-// command starts with them and a timespec, a flag, a redirect or the end of the string follows, the AT_INVOCATION
-// shape. Only the programs in ARGS_NEVER_RUN keep their arguments as data; shells, eval and ssh are decided
-// by the recursion instead, which keeps the read exemption (crontab -l) for them.
-const ARGS_NEVER_RUN = new Set(['grep', 'egrep', 'fgrep', 'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'jq'])
-const ARG_SCHED_NAME_RX = /(?<![\w-])(?:crontab|launchctl|systemd-run)(?![\w-])/i
-// A whole argument word (`^`) counts only as a command string, at/batch followed by something: a bare `batch`
-// word or a path ending in /batch is a file name (SELFPACEASSIGN1109). Inside code, after a quote or a shell
-// separator, the bare name and a path to it count too: ['at', 'now'], '/usr/bin/at now'.
+// `ruby -e` and any other program that may run its argument. The anchored check above only sees a command
+// position, and the masking blanks quoted text. Only the programs in ARGS_NEVER_RUN (and git, sqlite3 in the
+// forms below) keep their arguments as data; shells, eval and ssh are decided by the recursion instead.
+// The shapes were narrowed on the fleet's own Bash calls of 30 days (165k commands):
+//   - crontab, launchctl and systemd-run count anywhere, except a read (crontab -l; launchctl list, print, ...),
+//     a lookup (command -v, which, type, hash) and a path that names a file rather than runs it (/etc/crontab
+//     at the end of an argument; a path followed by an argument or a quote counts);
+//   - at and batch count only in the shape of a call: a command string that starts with them and goes on with a
+//     timespec, a flag or a redirect ('at now', '| batch'), a pipe into them that ends the string, or an argv
+//     list ['at'] / ['at', 'now'] / ('at', '-f', ...). A word, a dict key ('at'), "(at)" and .at(-1) do not.
+const ARGS_NEVER_RUN = new Set(['grep', 'egrep', 'fgrep', 'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'jq', 'for', 'select', 'case',
+  'which', 'type', 'hash', 'whereis'])
+// wrappers that run the command after their own options (and, for timeout, a duration): the check goes on with that
+// command, so `timeout 5 ssh host ...` is the recursion's and `timeout 5 python3 -c ...` is read as python3's.
+// The value-taking options of each; any other option word is skipped alone.
+const ARG_LEAD_WRAPPERS = {
+  timeout: { values: ['-s', '-k', '--signal', '--kill-after'], operand: true },
+  gtimeout: { values: ['-s', '-k', '--signal', '--kill-after'], operand: true },
+  sshpass: { values: ['-p', '-f', '-d', '-P'], operand: false },
+  caffeinate: { values: ['-w', '-t'], operand: false },
+}
+function unwrapLead(rest, base) {
+  for (let n = 0; n < 4 && ARG_LEAD_WRAPPERS[base]; n++) {
+    const w = ARG_LEAD_WRAPPERS[base]
+    let j = 0
+    while (j < rest.length && /^-./.test(rest[j])) j += w.values.includes(rest[j]) ? 2 : 1
+    if (w.operand) j++
+    if (j >= rest.length) return { rest: [], base: null }
+    base = baseName(rest[j])
+    rest = rest.slice(j + 1)
+  }
+  return { rest, base }
+}
+const ARG_SCHED_NAME = String.raw`(?:crontab(?!\s+-l\b)|launchctl(?!\s+(?:list|print|dumpstate|blame|examine)\b)|systemd-run)(?![\w.-])`
+const ARG_SCHED_NAME_RX = new RegExp(String.raw`(?<!\b(?:command\s+-[vVp]+|which|type|hash)\s+)(?<![\w/.%-])${ARG_SCHED_NAME}`, 'gi')
+const ARG_SCHED_PATH_RX = new RegExp(String.raw`/${ARG_SCHED_NAME}(?=\s+\S|['"\x60])`, 'i')
 const AT_SPEC = String.raw`(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))`
+const AT_NAME = String.raw`(?:[\w./-]*/)?(?:at|batch)`
 const ARG_AT_RX = new RegExp(
-  String.raw`^(?:at|batch)(?=\s+-|\s*<|\s+${AT_SPEC})` +
-    String.raw`|['"\x60|;&(]\s*(?:[\w./-]*/)?(?:at|batch)(?![\w-])(?=\s*(?:$|['"\x60,)\]|;&])|\s+-|\s*<|\s+${AT_SPEC})`,
+  // a command string: at the start of the word, of a quoted string, or after a pipe or separator
+  String.raw`(?:^|['"\x60]|[|;&]\s*|\$\(\s*)${AT_NAME}(?=\s+-|\s*<|\s+${AT_SPEC})` +
+    // a pipe or separator into it that ends the string: 'x | at'
+    String.raw`|(?:[|;&]\s*|\$\(\s*)${AT_NAME}(?=\s*(?:$|['"\x60)]))` +
+    // an argv list: ['at'], ['at', 'now'], ('at', '-f', ...)
+    String.raw`|(?<![\w\])])\[\s*['"]${AT_NAME}['"]\s*\]|[\[(]\s*['"]${AT_NAME}['"]\s*,\s*['"](?:-|${AT_SPEC})`,
   'i',
 )
 const ARG_CODE_DECIDED = new Set([...SHELL_NAMES, 'eval', 'trap', 'ssh'])
@@ -4110,20 +4140,40 @@ function gitArgsAreData(words) {
   if (words[k] === 'grep') return gitGrepReadOnly(words)
   return GIT_ARGS_DATA_SUBCOMMANDS.has(words[k])
 }
+// sqlite3 runs a program only through a dot command (.shell, .system, a pipe in .output/.once) or an option that
+// reads one (-cmd, -init); without those its arguments are a database path and SQL text.
+function sqliteArgsAreData(words) {
+  return !words.some((w) => /^-{1,2}(?:cmd|init)$/.test(w) || /(?:^|\n)\s*\./.test(w))
+}
+function argSchedulerCall(v, next) {
+  if (ARG_AT_RX.test(v) || ARG_SCHED_PATH_RX.test(v)) return true
+  // the next word joins in, so `launchctl` `list` as two words still reads as a read
+  const text = next == null ? v : `${v} ${next}`
+  ARG_SCHED_NAME_RX.lastIndex = 0
+  for (let m; (m = ARG_SCHED_NAME_RX.exec(text)); ) {
+    if (m.index < v.length) return true
+  }
+  return false
+}
 export function schedulerInArgument(command) {
-  for (const seg of codeSegments(command)) {
+  const segs = shellSegments(command) == null
+    ? splitSegments(String(command ?? '')).map((own) => ({ own: own.trim(), naive: true })).filter((s) => s.own)
+    : codeSegments(command)
+  for (const seg of segs) {
     const words = splitCodeWords(seg.own)
     if (words == null) continue
     const args = argWords(words)
     const cmdIndex = commandWordIndex(args)
     if (cmdIndex < 0) continue
-    const base = baseName(args[cmdIndex].value)
-    if (ARGS_NEVER_RUN.has(base) || ARG_CODE_DECIDED.has(base)) continue
+    // `command -v NAME` / `command -V NAME` looks the name up (command is a wrapper, so the option is the command word)
+    if (cmdIndex > 0 && args[cmdIndex - 1].value === 'command' && /^-[vVp]+$/.test(args[cmdIndex].value)) continue
+    const { rest, base } = unwrapLead(args.slice(cmdIndex + 1).map((w) => w.value), baseName(args[cmdIndex].value))
+    if (base == null || ARGS_NEVER_RUN.has(base) || ARG_CODE_DECIDED.has(base)) continue
     if (seg.naive && !CODE_RUNNER_RX.test(base)) continue
-    if (base === 'git' && gitArgsAreData(args.slice(cmdIndex + 1).map((w) => w.value))) continue
-    for (let i = cmdIndex + 1; i < args.length; i++) {
-      const v = args[i].value
-      if (ARG_SCHED_NAME_RX.test(v) || ARG_AT_RX.test(v)) return true
+    if (base === 'git' && gitArgsAreData(rest)) continue
+    if ((base === 'sqlite3' || base === 'sqlite') && sqliteArgsAreData(rest)) continue
+    for (let i = 0; i < rest.length; i++) {
+      if (argSchedulerCall(rest[i], rest[i + 1])) return true
     }
   }
   return false
@@ -4745,7 +4795,8 @@ function scanShellCode(command, strictStdin = false) {
       // SELFPACEQUOTE1127: ssh hands the words after the host to the remote shell, which parses them again
       if (base === 'ssh' && !(cmdWord && EVAL_QUOTING_COMMANDS.has(cmdWord.value))) {
         const remote = sshRemoteCommand(args, i)
-        if (remote === false) bad = true
+        // an unknown option fails closed where ssh is the command; elsewhere `ssh` may be an argument (journalctl -u ssh)
+        if (remote === false) { if (i === cmdIndex) bad = true }
         else if (remote) push(remote)
       }
       if (!SHELL_NAMES.has(base)) continue
