@@ -10,7 +10,7 @@
 // The agent reaches it through the Playwright MCP server attached over CDP (the marveen-browser entry this module
 // writes into the agent's .mcp.json); the vault-login filler attaches to the same browser in the dashboard process.
 import { spawn } from 'node:child_process'
-import { closeSync, constants as fsConstants, existsSync, fchmodSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
@@ -84,23 +84,28 @@ export function agentBrowserStderrPath(agent: string): string {
 }
 
 /**
- * Chrome's stderr file, opened for this start: never through a symlink (O_NOFOLLOW: a link planted at the path would
- * otherwise have the dashboard truncate and write its target with the dashboard's rights; Dani, #3194 review), and
- * 0600 also when the file already existed. Null when it cannot be opened that way: the start then goes on without it.
+ * Chrome's stderr file, created fresh for this start. The old name is removed first (that removes a symlink or a
+ * hard link planted there, never its target), then a NEW inode is created with O_EXCL|O_NOFOLLOW at 0600: a link
+ * planted at the path cannot make the dashboard truncate or write another file with its rights (Dani, #3194 review:
+ * O_NOFOLLOW alone stopped a symlink but not a hard link). Null when it cannot be created that way (something
+ * re-appeared at the path, or it is a directory): the start then goes on without the file.
  */
 export function openStderrLog(path: string): number | null {
   try {
-    const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 0o600)
-    try { fchmodSync(fd, 0o600) } catch { /* the open itself is what matters */ }
-    return fd
+    rmSync(path, { force: true })
+    return openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)
   } catch {
     return null
   }
 }
 
-/** A URL in a log line keeps its scheme and host only: no userinfo, path, query or fragment (a token or code rides there). */
+/** A URL in a log line keeps its scheme and host only: no userinfo, port, path, query or fragment (a token or code rides there). */
 export function redactUrls(line: string): string {
-  return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@]*@)?([^\s/?#'"<>]+)[^\s'"<>]*/gi, '$1$2/<redacted>')
+  return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#'"<>]*)[^\s'"<>]*/gi, (_m, scheme: string, authority: string) => {
+    const host = authority.slice(authority.lastIndexOf('@') + 1)
+    const bare = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.replace(/:.*$/, '')
+    return `${scheme}${bare}/<redacted>`
+  })
 }
 
 /**
