@@ -6381,13 +6381,16 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 // 'fired_busy' (AUDITBORITEKVESZ918) belongs here with the other two: it is a
 // DELIVERED run whose prompt went into a busy pane, so it is open until the
 // watchdog sweep closes it. Left out, appendTaskRun would stamp completed_at at
-// injection time and a run that has not even started would read as finished --
-// and the authentication path that proves a wrapper-less prompt really came from
-// the scheduler (see docs + the boritek-nelkuli skill) looks for an OPEN run.
-// A command task's run (command-task.ts) is also open, as 'fired', while its
-// command runs (SCHEDDONEA1127), but a command task never sends a prompt: an
-// open run vouches for a wrapper-less prompt only when the task is a prompt
-// task (its task-config type is not 'command').
+// injection time and a run that has not even started would read as finished.
+//
+// Checking that a wrapper-less prompt really came from the scheduler by finding
+// its OPEN run is a procedure-level rule: no code does it today (the only
+// readers of open rows are queue-view, the restart reconcile and
+// markTaskRunCompleted). Only an open run of a PROMPT task counts there (task
+// type not 'command'). A command task's row is open, as 'fired', while its
+// command runs (SCHEDDONEA1127), but a command task never sends a prompt, so
+// its open row proves nothing. If the check is ever automated, the
+// type != 'command' condition is part of it.
 export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late', 'fired_busy'])
 
 // HBFABRIC1003 gap guard: did a heartbeat digest (first line "## Heartbeat ")
