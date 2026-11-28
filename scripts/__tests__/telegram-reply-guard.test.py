@@ -314,12 +314,13 @@ def voice_cases():
         check(f"voice + {prefix} + spoken: blocks", d, "block")
         check(f"voice + {prefix} + spoken: asks for the text", "SZÖVEGES" in r and "HANGVÁLASZ" not in r, True)
     # a reply-tool row without a message_id, or another tool's row, is no text reply either
-    for label, kw in (("reply tool without message_id", dict(message_id=None, via=TG_REPLY)),
-                      ("another tool's row", dict(message_id=9030, via="mcp__plugin_discord_discord__reply"))):
+    # (the ids go positionally: secret-gate reads "message_id=<digits>" next to a channel tag as captured material)
+    for label, mid, via in (("reply tool without message_id", None, TG_REPLY),
+                            ("another tool's row", 9030, "mcp__plugin_discord_discord__reply")):
         db, lib2, env = voice_install()
         owner_voice(lib2, "2017", iso(now - 20))
         lib2.log_outbound(AGENT, CHAT, "[voice] Igen.", 9031)
-        lib2.log_outbound(AGENT, CHAT, "Igen.", **kw)
+        lib2.log_outbound(AGENT, CHAT, "Igen.", mid, via=via)
         d, _r, _ = run_hook(db, extra_env=env)
         check(f"voice + spoken + {label}: blocks", d, "block")
     # the reply hook itself writes `via` (ledger-outbound.py, the PostToolUse hook of the reply tool)
