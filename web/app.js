@@ -21913,6 +21913,9 @@ async function loadTokenUsage() {
   renderTuTimeline(timeline, agent)
   renderTuBudgetCards()
 
+  const qhRes = await fetch('/api/token-usage/rate-limit-history?' + params)
+  if (qhRes.ok) renderTuQuotaHistory(await qhRes.json())
+
   tuDetailSearch = ''
   const searchEl = document.getElementById('tuSearchInput')
   if (searchEl) searchEl.value = ''
@@ -22405,6 +22408,102 @@ function renderTuBudgetCards() {
   })
 }
 
+// Claude 5h/7d rate-limit usage-percentage trend, from
+// /api/token-usage/rate-limit-history (store/usage-history.jsonl). Unlike
+// renderTuTimeline's bars (raw token volume per bucket), these points are
+// already a percentage (0-100) and SPARSE on purpose: most collector runs
+// have no OAuth token and carry no reading at all, so a point is only drawn
+// where one was actually measured -- a gap breaks the line instead of
+// interpolating or dropping to zero, which would misread as "quota freed up".
+function renderTuQuotaHistory(points) {
+  const canvas = document.getElementById('tuQuotaHistoryCanvas')
+  if (!canvas) return
+  renderTuQuotaHistory.__lastData = points
+  const container = canvas.parentElement
+  const dpr = window.devicePixelRatio || 1
+  const cssW = container.offsetWidth
+  const cssH = 220
+  canvas.width = cssW * dpr
+  canvas.height = cssH * dpr
+  canvas.style.width = cssW + 'px'
+  canvas.style.height = cssH + 'px'
+  const ctx = canvas.getContext('2d')
+  ctx.scale(dpr, dpr)
+  ctx.clearRect(0, 0, cssW, cssH)
+
+  const textSecondary = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim() || '#64748b'
+  const textPrimary = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1e293b'
+  const borderColor = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#e2e8f0'
+
+  if (!points || !points.length) {
+    ctx.fillStyle = textSecondary
+    ctx.font = '13px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText(t('tokenUsage.quota_history_no_data'), cssW / 2, cssH / 2)
+    return
+  }
+
+  const pad = { top: 18, right: 16, bottom: 28, left: 44 }
+  const w = cssW - pad.left - pad.right
+  const h = cssH - pad.top - pad.bottom
+  const sorted = [...points].sort((a, b) => a.ts - b.ts)
+  const tMin = sorted[0].ts
+  const tMax = sorted[sorted.length - 1].ts
+  const tRange = Math.max(1, tMax - tMin)
+
+  ctx.strokeStyle = borderColor
+  ctx.lineWidth = 1
+  ctx.fillStyle = textSecondary
+  ctx.font = '11px sans-serif'
+  ctx.textAlign = 'right'
+  for (const pct of [0, 25, 50, 75, 100]) {
+    const y = pad.top + h - (pct / 100) * h
+    ctx.beginPath()
+    ctx.moveTo(pad.left, y)
+    ctx.lineTo(pad.left + w, y)
+    ctx.stroke()
+    ctx.fillText(pct + '%', pad.left - 6, y + 3)
+  }
+
+  const series = [
+    { key: 'fiveHourPct', color: '#06b6d4', label: t('tokenUsage.chart.window_5h') },
+    { key: 'sevenDayPct', color: '#8b5cf6', label: t('tokenUsage.chart.window_weekly') },
+  ]
+
+  for (const s of series) {
+    ctx.strokeStyle = s.color
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    let started = false
+    for (const p of sorted) {
+      const v = p[s.key]
+      const x = pad.left + ((p.ts - tMin) / tRange) * w
+      if (v === null || v === undefined) { started = false; continue }
+      const y = pad.top + h - (Math.max(0, Math.min(100, v)) / 100) * h
+      if (!started) { ctx.moveTo(x, y); started = true } else { ctx.lineTo(x, y) }
+    }
+    ctx.stroke()
+  }
+
+  ctx.fillStyle = textSecondary
+  ctx.font = '11px sans-serif'
+  ctx.textAlign = 'left'
+  ctx.fillText(tuFormatLocalShort(tMin), pad.left, cssH - 8)
+  ctx.textAlign = 'right'
+  ctx.fillText(tuFormatLocalShort(tMax), pad.left + w, cssH - 8)
+
+  ctx.textAlign = 'left'
+  ctx.font = '12px sans-serif'
+  let lx = pad.left
+  for (const s of series) {
+    ctx.fillStyle = s.color
+    ctx.fillRect(lx, pad.top - 12, 10, 3)
+    ctx.fillStyle = textPrimary
+    ctx.fillText(s.label, lx + 14, pad.top - 8)
+    lx += ctx.measureText(s.label).width + 34
+  }
+}
+
 let tuDetailData = []
 let tuDetailSort = { col: 'timestamp', dir: 'desc' }
 let tuDetailSearch = ''
@@ -22558,6 +22657,7 @@ window.addEventListener('resize', () => {
   if (!document.getElementById('tokenUsagePage')?.hidden) {
     if (tuChartState && renderTuTimeline.__lastData) renderTuTimeline(renderTuTimeline.__lastData, renderTuTimeline.__lastAgent)
     if (tuModelDistData) renderTuModelDist(tuModelDistData)
+    if (renderTuQuotaHistory.__lastData) renderTuQuotaHistory(renderTuQuotaHistory.__lastData)
   }
 })
 
