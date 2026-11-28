@@ -119,6 +119,15 @@ describe('(A) the baseline reaches EVERY profile, including ones added later', (
     }
   })
 
+  it('denies a .env above the cwd too (READDENYROOT1119)', () => {
+    // 'Read(**/.env)' matches only below the session's cwd; a sub-agent runs in agents/<name>, so the
+    // install root's .env needs the root-anchored form. Measured on Claude Code 2.1.326 (Geri).
+    expect(FLEET_BASELINE_DENY).toContain('Read(**/.env)')
+    expect(FLEET_BASELINE_DENY).toContain('Read(//**/.env)')
+    const ctx = { HOME: homedir(), AGENT_DIR: agentDir(NAME) }
+    expect(resolveProfilePlaceholders('Read(//**/.env)', ctx)).toBe('Read(//**/.env)')
+  })
+
   it('pairs the sudo name rule with its absolute-path form', () => {
     // DENYARGS925: a command-name deny holds against an inserted prefix word
     // (`command sudo ...`) but NOT against an absolute path -- `/usr/bin/sudo -n
