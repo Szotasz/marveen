@@ -3,7 +3,7 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import { type AddressInfo } from 'node:net'
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, linkSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -640,7 +640,12 @@ describe('relay request-file hardening', () => {
       // every file, and past the limit it answers 429 without forwarding.
       const N = 30
       const ids = Array.from({ length: N }, (_, i) => `two-${String(i).padStart(3, '0')}`)
-      ids.forEach(id => writeFileSync(join(requestsDir, `${id}.json`), JSON.stringify({ id, method: 'POST', path: '/api/daily-log', body: { agent_id: AGENT, content: id } })))
+      ids.forEach(id => {
+        const requestPath = join(requestsDir, `${id}.json`)
+        const tmpPath = `${requestPath}.tmp.${process.pid}`
+        writeFileSync(tmpPath, JSON.stringify({ id, method: 'POST', path: '/api/daily-log', body: { agent_id: AGENT, content: id } }), { flag: 'wx' })
+        renameSync(tmpPath, requestPath)
+      })
       await Promise.all(ids.map(id => waitFor(() => (existsSync(join(responsesDir, `${id}.json`)) ? id : null))))
       // One extra pass of the losing daemon's tick: a duplicate forward of an
       // already-answered request must land on the dashboard before we assert.
