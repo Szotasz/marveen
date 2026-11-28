@@ -4908,6 +4908,19 @@ export function getDoneEvidence(cardId: string): { since: number; comments: numb
   return { since, comments: row.n }
 }
 
+// Waiting reason (KANBANEVIDENCEWARN1120): a card entering waiting should say what it waits
+// for. The agent recipe posts that as a comment first and moves the card right after, so a
+// non-system comment written in the last `windowSec` seconds counts as the reason.
+export function countRecentNonSystemComments(cardId: string, windowSec: number, now: number = Math.floor(Date.now() / 1000)): number {
+  const row = db.prepare(
+    "SELECT COUNT(*) AS n FROM kanban_comments WHERE card_id = ? AND created_at >= ? AND author != 'system' AND automated = 0"
+  ).get(cardId, now - windowSec) as { n: number }
+  return row.n
+}
+
+// The same window the move gate uses (routes/kanban.ts KANBAN_WAITING_REASON_WINDOW_SEC).
+export const WAITING_REASON_WINDOW_SEC = 30 * 60
+
 // --- Heartbeat helpers ---
 
 // --- Board summary (card ed3c8caf, #569) ---
@@ -5167,11 +5180,23 @@ export interface OverdueWaitingCard {
   overdue_days: number
 }
 
+// KANBANEVIDENCEWARN1120: a waiting card that names nothing it waits for -- no open blocker
+// card, and no non-system, non-automated comment from WAITING_REASON_WINDOW_SEC before it
+// entered waiting onwards. "Waiting" without an external event is a parked card, not a wait.
+export interface UnexplainedWaitingCard {
+  id: string
+  seq?: number
+  title: string
+  assignee: string | null
+  waiting_since: number
+  waiting_days: number
+}
+
 export interface StuckKanbanCardsResult {
   examined: number
   stuck: StuckKanbanCard[]
   by_status: Record<string, { examined: number; stuck: number }>
-  waiting: { examined: number; overdue: OverdueWaitingCard[]; without_deadline: number }
+  waiting: { examined: number; overdue: OverdueWaitingCard[]; without_deadline: number; without_reason: UnexplainedWaitingCard[] }
 }
 
 // A comment row `m` of card `c` that is a work-trace (see above).
@@ -5222,12 +5247,35 @@ export function getStuckKanbanCards(opts: {
 
   const byStatus: Record<string, { examined: number; stuck: number }> = {}
   const stuck: StuckKanbanCard[] = []
-  const waiting: StuckKanbanCardsResult['waiting'] = { examined: 0, overdue: [], without_deadline: 0 }
+  const waiting: StuckKanbanCardsResult['waiting'] = { examined: 0, overdue: [], without_deadline: 0, without_reason: [] }
   let examined = 0
+  const waitingSinceStmt = db.prepare(
+    "SELECT MAX(created_at) AS t FROM kanban_card_events WHERE card_id = ? AND to_status = 'waiting'"
+  )
+  const openBlockerStmt = db.prepare(
+    `SELECT COUNT(*) AS n FROM kanban_card_blockers b JOIN kanban_cards k ON k.id = b.blocker_id
+      WHERE b.card_id = ? AND k.status != 'done' AND k.archived_at IS NULL`
+  )
+  const reasonCommentStmt = db.prepare(
+    "SELECT COUNT(*) AS n FROM kanban_comments WHERE card_id = ? AND created_at >= ? AND author != 'system' AND automated = 0"
+  )
 
   for (const r of rows) {
     if (r.status === 'waiting') {
       waiting.examined++
+      const since = (waitingSinceStmt.get(r.id) as { t: number | null }).t ?? r.created_at
+      const hasBlocker = (openBlockerStmt.get(r.id) as { n: number }).n > 0
+      const hasReason = (reasonCommentStmt.get(r.id, since - WAITING_REASON_WINDOW_SEC) as { n: number }).n > 0
+      if (!hasBlocker && !hasReason) {
+        waiting.without_reason.push({
+          id: r.id,
+          seq: r.seq,
+          title: r.title,
+          assignee: r.assignee,
+          waiting_since: since,
+          waiting_days: Math.floor((nowSec - since) / 86400),
+        })
+      }
       if (r.due_date == null) {
         waiting.without_deadline++
       } else if (r.due_date < nowSec) {

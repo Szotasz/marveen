@@ -469,6 +469,29 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- Kanban transition gates (KANBANEVIDENCEWARN1120): "done" only with evidence, "waiting" only with a reason ---
+  {
+    key: 'KANBAN_DONE_EVIDENCE_MODE',
+    type: 'string',
+    default: 'warn',
+    valueSet: ['warn', 'block'],
+    description: 'Mi történjen, ha egy kártya bizonyíték nélkül lesz done (a mozgatás nem hoz "evidence" mezőt, és a munka kezdete óta nincs rajta nem-rendszer komment). warn (alapértelmezés) = a mozgatás lefut, a válasz warning: "no_evidence" mezőt kap, és rendszer-komment kerül a kártyára; block = a mozgatás 409-cel elutasítva, a kártya nem változik. Az ügynök bizonyíték nélküli lezárása ettől függetlenül testing-be kerül.',
+    module: 'kanban',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() === 'block' && newValue.trim() !== 'block',
+  },
+  {
+    key: 'KANBAN_WAITING_REASON_MODE',
+    type: 'string',
+    default: 'warn',
+    valueSet: ['warn', 'block'],
+    description: 'Mi történjen, ha egy kártya indoklás nélkül kerül waiting-be (a mozgatás nem hoz "reason" mezőt, és az elmúlt 30 percben nincs rajta nem-rendszer komment). warn (alapértelmezés) = a mozgatás lefut, a válasz warning: "no_waiting_reason" mezőt kap, és rendszer-komment kerül a kártyára; block = a mozgatás 409-cel elutasítva, a kártya nem változik.',
+    module: 'kanban',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() === 'block' && newValue.trim() !== 'block',
+  },
   // --- Kanban aging thresholds and colours (hot-reload via settings-store) ---
   {
     key: 'KANBAN_AGING_WARN_H',

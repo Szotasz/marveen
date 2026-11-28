@@ -76,7 +76,7 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
                 (one card per row: id status assignee priority title; --json the whole board, description included)
   schedules-list
   kanban-create <assignee> <low|normal|high|urgent> <title-file>
-  kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--actor <name>]
+  kanban-move <card-id> <status> [--expected-status <s>] [--evidence-file <file>] [--reason-file <file>] [--actor <name>]
   kanban-claim <card-id> <agent> [--ttl <seconds>]
   kanban-release <card-id> <agent>
   kanban-comment <card-id> <author> <content-file> [--json]
@@ -544,6 +544,7 @@ def build_request(verb, args):
     if verb == 'kanban-move':
         expected = take_opt(args, '--expected-status')
         evidence_file = take_opt(args, '--evidence-file')
+        reason_file = take_opt(args, '--reason-file')
         actor = take_opt(args, '--actor')
         card, status = positional(args, 2, verb)
         check(card, CARD_ID_RE, 'card id')
@@ -554,6 +555,10 @@ def build_request(verb, args):
             body['evidence'] = read_text(evidence_file)
             if not body['evidence'].strip():
                 fail_usage('kanban-move: the evidence is empty')
+        if reason_file is not None:
+            body['reason'] = read_text(reason_file)
+            if not body['reason'].strip():
+                fail_usage('kanban-move: the reason is empty')
         if actor is not None:
             body['actor'] = check(actor, NAME_RE, 'agent name')
         return 'POST', f'/api/kanban/{card}/move', body, headers, {}
