@@ -21,6 +21,11 @@ import {
 } from '../model-profiles.js'
 import { expandAndValidateConfigDir, hasParentTraversal } from '../config-dir-path.js'
 import { readSenderRoleGates, senderRoleGatesPath, storedGateConfig, UNREADABLE_GATES_POLICY } from './sender-role-gate-store.js'
+import {
+  isValidPitchSemitones, isValidSpeed,
+  VOICE_PITCH_DEFAULT, VOICE_PITCH_MIN, VOICE_PITCH_MAX,
+  VOICE_SPEED_DEFAULT, VOICE_SPEED_MIN, VOICE_SPEED_MAX,
+} from './voice-style.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
@@ -872,6 +877,11 @@ export interface AgentVoiceConfig {
   // Undefined = follow the install-wide VOICE_TRANSCRIBE_INBOUND default (off
   // unless configured). Irrelevant for 'voice'/'auto', which always transcribe.
   transcribeInbound?: boolean
+  // Pitch shift in semitones (-6..+6) and tempo factor (0.8..1.25) applied to
+  // the Piper output at the ogg/opus conversion. Reads always fill them in
+  // (defaults 0 and 1.0); only non-default values are stored on disk.
+  pitchSemitones?: number
+  speed?: number
 }
 
 // Canonical set of bundled voice model identifiers (basename without .onnx).
@@ -886,6 +896,8 @@ const VALID_RESPONSE_MODES = new Set<VoiceResponseMode>(['text', 'voice', 'auto'
 export const DEFAULT_VOICE_CONFIG: AgentVoiceConfig = {
   responseMode: 'text',
   voiceModel: 'hu_HU-imre-medium',
+  pitchSemitones: VOICE_PITCH_DEFAULT,
+  speed: VOICE_SPEED_DEFAULT,
 }
 
 export function readAgentVoiceConfig(name: string): AgentVoiceConfig {
@@ -903,6 +915,9 @@ export function readAgentVoiceConfig(name: string): AgentVoiceConfig {
       // Only a real boolean counts; anything else (a string "true", a number)
       // is treated as unset rather than guessed at.
       ...(typeof vc.transcribeInbound === 'boolean' ? { transcribeInbound: vc.transcribeInbound } : {}),
+      // Out-of-range or non-numeric values fall back to neutral (no styling).
+      pitchSemitones: isValidPitchSemitones(vc.pitchSemitones) ? vc.pitchSemitones : VOICE_PITCH_DEFAULT,
+      speed: isValidSpeed(vc.speed) ? vc.speed : VOICE_SPEED_DEFAULT,
     }
   } catch {
     return { ...DEFAULT_VOICE_CONFIG }
@@ -919,15 +934,26 @@ export function writeAgentVoiceConfig(name: string, patch: Partial<AgentVoiceCon
   if (patch.transcribeInbound !== undefined && typeof patch.transcribeInbound !== 'boolean') {
     throw new Error(`Invalid transcribeInbound: ${String(patch.transcribeInbound)}`)
   }
+  if (patch.pitchSemitones !== undefined && !isValidPitchSemitones(patch.pitchSemitones)) {
+    throw new Error(`Invalid pitchSemitones: ${String(patch.pitchSemitones)} (expected a number ${VOICE_PITCH_MIN}..${VOICE_PITCH_MAX})`)
+  }
+  if (patch.speed !== undefined && !isValidSpeed(patch.speed)) {
+    throw new Error(`Invalid speed: ${String(patch.speed)} (expected a number ${VOICE_SPEED_MIN}..${VOICE_SPEED_MAX})`)
+  }
   const configPath = join(agentConfigRoot(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
   config = readJsonObjectForWrite(configPath)
   const current = readAgentVoiceConfig(name)
   const transcribeInbound = patch.transcribeInbound ?? current.transcribeInbound
+  const pitchSemitones = patch.pitchSemitones ?? current.pitchSemitones ?? VOICE_PITCH_DEFAULT
+  const speed = patch.speed ?? current.speed ?? VOICE_SPEED_DEFAULT
   config.voice = {
     responseMode: patch.responseMode ?? current.responseMode,
     voiceModel: patch.voiceModel ?? current.voiceModel,
     ...(transcribeInbound !== undefined ? { transcribeInbound } : {}),
+    // Neutral values are not persisted, so setting them back to the default clears them.
+    ...(pitchSemitones !== VOICE_PITCH_DEFAULT ? { pitchSemitones } : {}),
+    ...(speed !== VOICE_SPEED_DEFAULT ? { speed } : {}),
   }
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }

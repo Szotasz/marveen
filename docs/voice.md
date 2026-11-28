@@ -78,10 +78,12 @@ A mód és a hangmodell a dashboardon agensenkénti beállítható (ügynök ré
 
 ```
 GET  /api/agents/:id/voice-config
-PUT  /api/agents/:id/voice-config   { responseMode, voiceModel, transcribeInbound }
+PUT  /api/agents/:id/voice-config   { responseMode, voiceModel, transcribeInbound, pitchSemitones, speed }
 ```
 
 A beállítás az ügynök `agent-config.json`-jában perzisztál.
+
+Hangszín ügynökönként: `pitchSemitones` (hangmagasság félhangban, -6..+6, alap 0) és `speed` (tempó, 0.8..1.25, alap 1.0). Ugyanaz a Piper-modell így ügynökönként eltérően szólhat (pl. Imre +2 félhang, 1.05 tempó). A tolást az ffmpeg végzi az ogg/opus konverziónál (`asetrate` + `aresample` + `atempo`, a mintavételi frekvencia a modell `.onnx.json`-jából). Csak a `?agent=` paraméterrel hívott TTS-re hat (a hang-direktíva így hív). A telepített `_vtools.py` frissítése kell hozzá (`scripts/install-voice.sh` újrafuttatása).
 
 ---
 

@@ -78,8 +78,10 @@ Mode and voice model are configurable per agent from the dashboard (agent detail
 
 ```
 GET  /api/agents/:id/voice-config
-PUT  /api/agents/:id/voice-config   { responseMode, voiceModel, transcribeInbound }
+PUT  /api/agents/:id/voice-config   { responseMode, voiceModel, transcribeInbound, pitchSemitones, speed }
 ```
+
+Per-agent voice style: `pitchSemitones` (-6..+6, default 0) and `speed` (0.8..1.25, default 1.0) let one Piper model sound different per agent (e.g. Imre at +2 semitones, 1.05 tempo). ffmpeg applies it at the ogg/opus conversion (`asetrate` + `aresample` + `atempo`, sample rate from the model's `.onnx.json`). It applies to TTS calls that name the agent (`?agent=`, the directive's shape). The installed `_vtools.py` must be refreshed for it to take effect (re-run `scripts/install-voice.sh`).
 
 Settings persist in the agent's `agent-config.json`.
 

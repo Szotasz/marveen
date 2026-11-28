@@ -402,6 +402,34 @@ def _piper_prosody_args(environ=None):
     return args
 
 
+# Per-agent voice style (pitch/tempo): the dashboard builds the ffmpeg chain
+# from the agent's voice-config (src/web/voice-style.ts) and passes it in
+# MARVEEN_VOICE_STYLE_AF. Only the shapes that builder emits are accepted
+# (asetrate/aresample/atempo with plain numbers); anything else is ignored
+# with a warning, so a malformed value can never inject other filters.
+_ATEMPO = r"atempo=\d+(?:\.\d+)?"
+_STYLE_AF_RE = re.compile(
+    r"^(?:asetrate=\d+,aresample=\d+(?:,%s)*|%s(?:,%s)*)$" % (_ATEMPO, _ATEMPO, _ATEMPO))
+
+
+def _voice_style_filters(environ=None):
+    """ffmpeg filters for the voice style: the per-agent chain if given, else the legacy VOICE_PITCH."""
+    if environ is None:
+        environ = os.environ
+    style = (environ.get("MARVEEN_VOICE_STYLE_AF") or "").strip()
+    if style:
+        if _STYLE_AF_RE.fullmatch(style):
+            return [style]
+        try:
+            sys.stderr.write("voice: ignoring MARVEEN_VOICE_STYLE_AF=%r (unexpected filter shape)\n" % style)
+        except Exception:
+            pass
+    pitch = environ.get("VOICE_PITCH", "1.0")
+    if pitch and pitch != "1.0":
+        return ["asetrate=22050*%s,aresample=22050" % pitch]
+    return []
+
+
 def speak(voice_onnx, state_dir, chat_id, text):
     token = _token(state_dir)
     fd_wav, wav = tempfile.mkstemp(suffix=".wav")
@@ -411,15 +439,12 @@ def speak(voice_onnx, state_dir, chat_id, text):
     try:
         subprocess.run([VENV_PY, "-m", "piper", "-m", voice_onnx, "-f", wav, *_piper_prosody_args()],
                        input=apply_pronunciation(text, state_dir=state_dir).encode(), check=True)
-        # Optional voice style: deeper + slower (e.g. a melancholic android tone).
-        # asetrate lowers pitch AND slows playback; aresample restores the container
-        # rate (so the lower pitch sticks). Distribution-safe default = 1.0 (off,
-        # natural Piper voice); set VOICE_PITCH in the host env (e.g. dashboard
-        # plist) to style a specific deployment. TODO: per-agent voice-style config.
-        pitch = os.environ.get("VOICE_PITCH", "1.0")
-        filters = []
-        if pitch and pitch != "1.0":
-            filters.append("asetrate=22050*%s,aresample=22050" % pitch)
+        # Optional voice style. Per agent: MARVEEN_VOICE_STYLE_AF from the
+        # dashboard (pitch + tempo, see _voice_style_filters). Legacy,
+        # install-wide: VOICE_PITCH in the host env -- asetrate shifts pitch AND
+        # playback speed; aresample restores the container rate (so the pitch
+        # sticks). Default: no style filter (natural Piper voice).
+        filters = _voice_style_filters()
         # TAIL PAD: the last word or two of voice replies was regularly
         # reported cut off. Measured: the opus encode keeps the full length
         # (3.664s vs 3.657s WAV), but Piper
