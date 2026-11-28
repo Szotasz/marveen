@@ -177,6 +177,14 @@ def owner_voice(lib, mid, ts, transcript=True, role="owner"):
                         sender_id=CHAT, sender_name="Tulaj", sender_role=role)
 
 
+TG_REPLY = "mcp__plugin_telegram_telegram__reply"
+
+
+def text_reply(lib, text, mid):
+    """A reply-tool text send as ledger-outbound.py records it: via the reply tool, with its message_id."""
+    lib.log_outbound(AGENT, CHAT, text, mid, via=TG_REPLY)
+
+
 def voice_cases():
     now = int(time.time())
     iso = lambda e: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(e))
@@ -185,7 +193,7 @@ def voice_cases():
     for transcript in (True, False):
         db, lib, env = voice_install()
         owner_voice(lib, "2001", iso(now - 20), transcript=transcript)
-        lib.log_outbound(AGENT, CHAT, "Igen, jó a tíz óra.", 9001)
+        text_reply(lib, "Igen, jó a tíz óra.", 9001)
         d, r, _ = run_hook(db, extra_env=env)
         check(f"voice ({'transcript' if transcript else 'no transcript'}) + text only: blocks", d, "block")
         check(f"voice ({'transcript' if transcript else 'no transcript'}) + text only: asks for the spoken reply", "HANGVÁLASZ" in r and "SZÖVEGES" not in r, True)
@@ -194,7 +202,7 @@ def voice_cases():
     db, lib, env = voice_install()
     owner_voice(lib, "2002", iso(now - 20))
     lib.log_outbound(AGENT, CHAT, "[voice] Igen, jó a tíz óra.", 9002)
-    lib.log_outbound(AGENT, CHAT, "Hangban válaszoltam: jó a tíz óra.", 9003)
+    text_reply(lib, "Hangban válaszoltam: jó a tíz óra.", 9003)
     d, _r, _ = run_hook(db, extra_env=env)
     check("voice + spoken + text: allows", d, None)
 
@@ -210,7 +218,7 @@ def voice_cases():
     db, lib, env = voice_install()
     owner_voice(lib, "2004", iso(now - 20))
     lib.log_outbound(AGENT, CHAT, "[voice] Igen, jó a tíz óra.")
-    lib.log_outbound(AGENT, CHAT, "Hangban válaszoltam.", 9005)
+    text_reply(lib, "Hangban válaszoltam.", 9005)
     d, r, _ = run_hook(db, extra_env=env)
     check("voice + [voice] row without message_id: blocks", d, "block")
 
@@ -218,7 +226,7 @@ def voice_cases():
     db, lib, env = voice_install()
     owner_voice(lib, "2005", iso(now - 20))
     lib.log_outbound(AGENT, "111222333", "[voice] Igen.", 9006)
-    lib.log_outbound(AGENT, CHAT, "Hangban válaszoltam.", 9007)
+    text_reply(lib, "Hangban válaszoltam.", 9007)
     d, _r, _ = run_hook(db, extra_env=env)
     check("voice + spoken reply to another chat: blocks", d, "block")
 
@@ -229,21 +237,21 @@ def voice_cases():
     con.execute("UPDATE conversation_log SET created_at=? WHERE message_id='9008'", (now - 600,))
     con.commit(); con.close()
     owner_voice(lib, "2006", iso(now - 20))
-    lib.log_outbound(AGENT, CHAT, "Szövegben válaszoltam.", 9009)
+    text_reply(lib, "Szövegben válaszoltam.", 9009)
     d, _r, _ = run_hook(db, extra_env=env)
     check("voice + only an older spoken reply: blocks", d, "block")
 
     # V7. a TEXT message from the owner: the old behaviour (a text reply closes it)
     db, lib, env = voice_install()
     lib.log_inbound(AGENT, CHAT, "2007", "holnap tíz órakor jó?", iso(now - 20), sender_id=CHAT, sender_name="Tulaj", sender_role="owner")
-    lib.log_outbound(AGENT, CHAT, "Igen.", 9010)
+    text_reply(lib, "Igen.", 9010)
     d, _r, _ = run_hook(db, extra_env=env)
     check("owner text + text reply: allows (old behaviour)", d, None)
 
     # V8. a PAIRED user's voice message: the old behaviour
     db, lib, env = voice_install()
     owner_voice(lib, "2008", iso(now - 20), role="paired")
-    lib.log_outbound(AGENT, CHAT, "Igen.", 9011)
+    text_reply(lib, "Igen.", 9011)
     d, _r, _ = run_hook(db, extra_env=env)
     check("paired voice + text reply: allows (old behaviour)", d, None)
 
@@ -254,27 +262,27 @@ def voice_cases():
             with open(os.path.join(os.path.dirname(os.path.dirname(db)), ".env"), "w") as f:
                 f.write("VOICE_REPLY_GUARD=on\n")
         owner_voice(lib, "2009", iso(now - 20))
-        lib.log_outbound(AGENT, CHAT, "Igen.", 9012)
+        text_reply(lib, "Igen.", 9012)
         d, _r, _ = run_hook(db, extra_env=env)
         check(f"switch {label}: voice + text reply allows (old behaviour)", d, None)
     # on through the dashboard override (no .env line): blocks
     db, lib, env = voice_install(switch="on", via="override")
     owner_voice(lib, "2010", iso(now - 20))
-    lib.log_outbound(AGENT, CHAT, "Igen.", 9013)
+    text_reply(lib, "Igen.", 9013)
     d, _r, _ = run_hook(db, extra_env=env)
     check("switch on via the dashboard override: blocks", d, "block")
 
     # V10. no voice toolkit installed: nothing to speak with, so the old behaviour
     db, lib, env = voice_install(toolkit=False)
     owner_voice(lib, "2011", iso(now - 20))
-    lib.log_outbound(AGENT, CHAT, "Igen.", 9014)
+    text_reply(lib, "Igen.", 9014)
     d, _r, _ = run_hook(db, extra_env=env)
     check("no voice toolkit: allows (old behaviour)", d, None)
 
     # V11. a voice acknowledgement ("köszi") needs no reply at all
     db, lib, env = voice_install()
     lib.log_inbound(AGENT, CHAT, "2012", "[Hang átirat]: köszi", iso(now - 20), sender_id=CHAT, sender_name="Tulaj", sender_role="owner")
-    lib.log_outbound(AGENT, CHAT, "👍", 9015)
+    text_reply(lib, "👍", 9015)
     d, _r, _ = run_hook(db, extra_env=env)
     check("voice ack: allows", d, None)
 
@@ -284,19 +292,20 @@ def voice_cases():
     con = lib.connect()
     con.execute("UPDATE conversation_log SET created_at=? WHERE message_id='2013'", (now - 4000,))
     con.commit(); con.close()
-    lib.log_outbound(AGENT, CHAT, "Igen.", 9016)
+    text_reply(lib, "Igen.", 9016)
     d, _r, _ = run_hook(db, extra_env=env)
     check("stale voice + text reply: allows", d, None)
     db, lib, env = voice_install()
     owner_voice(lib, "2014", iso(now - 20))
-    lib.log_outbound(AGENT, CHAT, "Igen.", 9017)
+    text_reply(lib, "Igen.", 9017)
     env = dict(env, TG_GUARD_MAX_BLOCKS="2")
     got = [run_hook(db, extra_env=env)[0] for _ in range(3)]
     check("voice backstop: block, block, allow", got, ["block", "block", None])
 
-    # V14 (Revizor 6122 R1). the hooks' automatic rows are no text reply: voice + a progress nudge + a spoken reply,
-    # no reply-tool text -> block, asking for the text; the same with the progress-clear fallback row
-    for prefix in lib.AUTO_OUT_PREFIXES:
+    # V14 (Revizor 6122 R1, Marveen 6124). only a reply-tool send is the text reply: voice + a hook's own row + a
+    # spoken reply, no reply-tool text -> block, asking for the text (progress watchdog, progress-clear fallback, a chat
+    # command's answer)
+    for prefix in ("[telegram-progress-watchdog]", "[telegram-progress-clear, fallback]", "Állapot: minden fut."):
         db, lib2, env = voice_install()
         owner_voice(lib2, "2016", iso(now - 20))
         lib2.log_outbound(AGENT, CHAT, prefix + " Dolgozom rajta...", 9020)
@@ -304,12 +313,42 @@ def voice_cases():
         d, r, _ = run_hook(db, extra_env=env)
         check(f"voice + {prefix} + spoken: blocks", d, "block")
         check(f"voice + {prefix} + spoken: asks for the text", "SZÖVEGES" in r and "HANGVÁLASZ" not in r, True)
-    # the writers' own prefixes are exactly the ones excluded (a renamed prefix would reopen R1)
-    import re as _re
-    for name in ("telegram_progress_watchdog.py", "telegram_progress_clear.py"):
-        src = open(os.path.join(HOOKS, name), encoding="utf-8").read()
-        m = _re.search(r'^LEDGER_PREFIX = "([^"]+)"', src, _re.M)
-        check(f"{name} LEDGER_PREFIX is excluded from the text reply", bool(m) and m.group(1) in lib.AUTO_OUT_PREFIXES, True)
+    # a reply-tool row without a message_id, or another tool's row, is no text reply either
+    for label, kw in (("reply tool without message_id", dict(message_id=None, via=TG_REPLY)),
+                      ("another tool's row", dict(message_id=9030, via="mcp__plugin_discord_discord__reply"))):
+        db, lib2, env = voice_install()
+        owner_voice(lib2, "2017", iso(now - 20))
+        lib2.log_outbound(AGENT, CHAT, "[voice] Igen.", 9031)
+        lib2.log_outbound(AGENT, CHAT, "Igen.", **kw)
+        d, _r, _ = run_hook(db, extra_env=env)
+        check(f"voice + spoken + {label}: blocks", d, "block")
+    # the reply hook itself writes `via` (ledger-outbound.py, the PostToolUse hook of the reply tool)
+    db, lib2, env = voice_install()
+    owner_voice(lib2, "2018", iso(now - 20))
+    lib2.log_outbound(AGENT, CHAT, "[voice] Igen.", 9032)
+    ev = {"tool_name": TG_REPLY, "tool_input": {"chat_id": CHAT, "text": "Hangban válaszoltam."},
+          "tool_response": [{"type": "text", "text": "sent (id: 9033)"}], "cwd": os.path.dirname(db)}
+    env2 = dict(os.environ, MARVEEN_AGENT_ID=AGENT, **env)
+    env2.pop("LEDGER_DB_PATH", None)
+    subprocess.run([sys.executable, hook_of(db, "ledger-outbound.py")], input=json.dumps(ev), capture_output=True, text=True, env=env2, timeout=20)
+    con = lib2.connect()
+    row = con.execute("SELECT via, message_id FROM conversation_log WHERE direction='out' AND text='Hangban válaszoltam.'").fetchone()
+    con.close()
+    check("ledger-outbound writes the reply tool as via", row and row[0], TG_REPLY)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("ledger-outbound records the reply's message_id", row and row[1], "9033")
+    check("voice + spoken + a real reply-tool send (through ledger-outbound): allows", d, None)
+
+    # V15 (Marveen 6124). the OWNER's latest inbound is checked: owner voice, then a paired user's text in another chat
+    # and its reply -> the gate still asks for the spoken reply to the owner's voice
+    db, lib2, env = voice_install()
+    owner_voice(lib2, "2019", iso(now - 30))
+    text_reply(lib2, "Igen, jó a tíz óra.", 9040)
+    lib2.log_inbound(AGENT, "777888999", "2020", "szia, mikor érsz rá?", iso(now - 10), sender_id="777888999", sender_name="Kolléga", sender_role="paired")
+    lib2.log_outbound(AGENT, "777888999", "Holnap.", 9041, via=TG_REPLY)
+    d, r, _ = run_hook(db, extra_env=env)
+    check("owner voice, then a paired user's answered text: still blocks", d, "block")
+    check("owner voice, then a paired user's answered text: asks for the spoken reply", "HANGVÁLASZ" in r, True)
 
     # V13. no reply at all to the owner's voice: the old block first (reply), the voice gate after the text reply
     db, lib, env = voice_install()

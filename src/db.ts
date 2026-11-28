@@ -520,7 +520,8 @@ export function initDatabase(dbPathOverride?: string): void {
   // sender_id / sender_name / sender_role say who sent an inbound and in what
   // role (LEDGERROLELABEL1104). Mirrors _MIGRATION_COLUMNS in
   // scripts/hooks/ledger_lib.py, locked by conversation-ledger-schema.test.ts.
-  for (const col of ['attachment_kind', 'attachment_file_id', 'reply_to_message_id', 'source', 'sender_id', 'sender_name', 'sender_role']) {
+  // VOICEREPLYGATE1128: via names the reply tool an outbound row was sent with (NULL for the hooks' own rows).
+  for (const col of ['attachment_kind', 'attachment_file_id', 'reply_to_message_id', 'source', 'sender_id', 'sender_name', 'sender_role', 'via']) {
     const cols = db.prepare("PRAGMA table_info(conversation_log)").all() as { name: string }[]
     if (!cols.some(c => c.name === col)) {
       db.exec(`ALTER TABLE conversation_log ADD COLUMN ${col} TEXT`)

@@ -215,7 +215,8 @@ def main():
     message_id = _extract_message_id(payload)
     if chat_id and text is not None:
         try:
-            ledger_lib.log_outbound(agent_id, chat_id, str(text), message_id)
+            # VOICEREPLYGATE1128: the row names the reply tool that sent it (the voice gate counts only these)
+            ledger_lib.log_outbound(agent_id, chat_id, str(text), message_id, via=tool)
         except Exception as exc:
             # SILENTOLLAMA926: a reply that never reaches the conversation
             # ledger breaks the reply-guard's picture of the thread; say so.

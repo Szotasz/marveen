@@ -48,7 +48,8 @@ describe('conversation_log schema: db.ts migration == ledger_lib.py (no drift)',
     expect(block, '_MIGRATION_COLUMNS in ledger_lib.py').not.toBeNull()
     const pyCols = [...block![1].matchAll(/^\s*\("([a-z_]+)",\s*"TEXT"\)/gm)].map((m) => m[1])
     expect(tsCols).toEqual(pyCols)
-    expect(pyCols).toEqual(['attachment_kind', 'attachment_file_id', 'reply_to_message_id', 'source', 'sender_id', 'sender_name', 'sender_role'])
+    // VOICEREPLYGATE1128: + via (the reply tool an outbound row was sent with)
+    expect(pyCols).toEqual(['attachment_kind', 'attachment_file_id', 'reply_to_message_id', 'source', 'sender_id', 'sender_name', 'sender_role', 'via'])
   })
 
   it('both constrain direction to in/out', () => {
