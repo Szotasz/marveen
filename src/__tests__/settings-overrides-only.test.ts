@@ -445,6 +445,32 @@ describe('script parity with the store', () => {
   })
 
 
+  // VOICEREPLYGATE1128: telegram-reply-guard.py reads VOICE_REPLY_GUARD (overrides-only: it has a `loosens`); the hook's
+  // on/off must be what the store answers for every override and .env combination.
+  it('the telegram-reply-guard.py mirror (VOICE_REPLY_GUARD)', () => {
+    const hook = join(ROOT, 'scripts', 'hooks', 'telegram-reply-guard.py')
+    const py = [
+      'import importlib.util, json, sys',
+      'sys.path.insert(0, sys.argv[3])',
+      'spec = importlib.util.spec_from_file_location("trg", sys.argv[1])',
+      'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      'print(json.dumps(m._voice_gate_on(sys.argv[2])))',
+    ].join('\n')
+    const K = 'VOICE_REPLY_GUARD'
+    const vals = ['on', 'off', 'ON', ' on ', '', 'yes', '1']
+    const states: Array<Record<string, string> | 'unreadable' | null> = [null, 'unreadable', ...vals.map(v => ({ v }))]
+    const envs: Array<Record<string, string>> = [{}, ...['on', 'off', ' On ', 'yes', ''].map(v => ({ v }))]
+    for (const ov of states) {
+      for (const env of envs) {
+        const o = sub(ov, K)
+        const e = Object.fromEntries(Object.entries(env).map(([, v]) => [K, v]))
+        const want = String(storeView(K, o, e)).trim().toLowerCase() === 'on'
+        const got = JSON.parse(execFileSync('python3', ['-c', py, hook, install(o, e), join(ROOT, 'scripts', 'hooks')], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }))
+        expect(got, JSON.stringify([ov, env])).toBe(want)
+      }
+    }
+  })
+
   // DCEXT1111: patch-discord-plugin.py reads DISCORD_PLUGIN_EXT and DISCORD_OWNER_USER_ID (both overrides-only) and
   // the plain DISCORD_BACKFILL flag: each must be what the store answers, never a loosening .env line.
   it('the patch-discord-plugin.py mirror (DISCORD_PLUGIN_EXT / DISCORD_OWNER_USER_ID / DISCORD_BACKFILL)', () => {
@@ -531,6 +557,7 @@ describe('grep guard: script mentions of overrides-only keys', () => {
     'scripts/hooks/marveen-commands.py', // TELEGRAM_OWNER_USER_ID mirror, parity-tested above
     'scripts/patch-discord-plugin.py', // DISCORD_PLUGIN_EXT / DISCORD_OWNER_USER_ID mirror, parity-tested above
     'scripts/bash-sandbox-sync.mjs', // BASH_SANDBOX_AGENTS through dist/web/bash-sandbox.js (WDSANDBOXMARKER1119)
+    'scripts/hooks/telegram-reply-guard.py', // VOICE_REPLY_GUARD mirror, parity-tested above (VOICEREPLYGATE1128)
   ])
   // file -> pinned mention count (comments and messages only, measured 2026-11-04)
   const MENTION_ONLY: Record<string, number> = {

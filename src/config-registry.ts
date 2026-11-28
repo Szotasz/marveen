@@ -1274,6 +1274,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
+    // VOICEREPLYGATE1128: read by scripts/hooks/telegram-reply-guard.py (the override, then .env). It only tightens a
+    // turn (one more reply), so .env may switch it on; switching it OFF loosens and needs the owner's session.
+    key: 'VOICE_REPLY_GUARD',
+    type: 'string',
+    default: 'off',
+    description: 'Hangválasz-kapu (VOICEREPLYGATE1128): bekapcsolva (on) a tulajdonos Telegram-hangüzenetére az ügynök csak akkor zárhatja a fordulót, ha ugyanarra a chatre hangban (tts.sh) ÉS röviden szövegben (reply tool) is válaszolt. A hangválasz bizonyítéka a hangeszköz naplósora, amelyet a sendVoice válasza után ír, a Telegram üzenet-azonosítójával; az ügynök bemondása nem számít. Szöveges üzenetre, párosított (nem tulajdonos) felhasználó hangjára, nyugtázásra ("köszi") és régi üzenetre a régi szabály marad, és ha a hangeszköz nincs telepítve, a kapu nem kér hangot. Ugyanaz a háromszori blokkolási korlát érvényes, mint a válasz-őrnél. A Stop hook minden körben olvassa, újraindítás nem kell. Alapból KI; a kikapcsolás gazda-belépést kér.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() === 'on' && newValue.trim().toLowerCase() !== 'on',
+  },
+  {
     key: 'APPROVAL_SLACK_REACTIONS',
     type: 'string',
     default: 'off',

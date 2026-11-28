@@ -142,6 +142,166 @@ def check(name, got, want):
         FAILS.append(name)
 
 
+# VOICEREPLYGATE1128: the owner's voice message needs a spoken reply (proved by the toolkit's "[voice]" ledger row with
+# Telegram's message_id) AND a text reply. The switch and the toolkit are per tmp install / tmp HOME.
+CHAT = "8695313113"
+
+
+def voice_install(switch="on", via="env", toolkit=True):
+    """A tmp install with the switch set (in .env or the dashboard override) and a tmp HOME with or without the
+    installed voice toolkit. Returns (db, lib, extra_env)."""
+    db = fresh_db()
+    lib = load_lib(db)
+    root = os.path.dirname(os.path.dirname(db))
+    if switch is not None:
+        if via == "env":
+            with open(os.path.join(root, ".env"), "w") as f:
+                f.write(f"VOICE_REPLY_GUARD={switch}\n")
+        else:
+            with open(os.path.join(root, "store", "config-overrides.json"), "w") as f:
+                json.dump({"VOICE_REPLY_GUARD": switch}, f)
+    home = tempfile.TemporaryDirectory(prefix="tgguard-home-")
+    _TMPDIRS.append(home)
+    if toolkit:
+        os.makedirs(os.path.join(home.name, ".local", "share", "marveen-voice", "venv", "bin"))
+        open(os.path.join(home.name, ".local", "share", "marveen-voice", "venv", "bin", "python"), "w").close()
+    return db, lib, {"HOME": home.name}
+
+
+def owner_voice(lib, mid, ts, transcript=True, role="owner"):
+    if transcript:
+        lib.log_inbound(AGENT, CHAT, mid, "[Hang átirat]: holnap tíz órakor jó a megbeszélés?", ts,
+                        sender_id=CHAT, sender_name="Tulaj", sender_role=role)
+    else:
+        lib.log_inbound(AGENT, CHAT, mid, "", ts, attachment_kind="voice", attachment_file_id="AwACAgQ-file",
+                        sender_id=CHAT, sender_name="Tulaj", sender_role=role)
+
+
+def voice_cases():
+    now = int(time.time())
+    iso = lambda e: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(e))
+
+    # V1. voice + only a text reply -> BLOCK, naming the missing spoken reply (both voice shapes)
+    for transcript in (True, False):
+        db, lib, env = voice_install()
+        owner_voice(lib, "2001", iso(now - 20), transcript=transcript)
+        lib.log_outbound(AGENT, CHAT, "Igen, jó a tíz óra.", 9001)
+        d, r, _ = run_hook(db, extra_env=env)
+        check(f"voice ({'transcript' if transcript else 'no transcript'}) + text only: blocks", d, "block")
+        check(f"voice ({'transcript' if transcript else 'no transcript'}) + text only: asks for the spoken reply", "HANGVÁLASZ" in r and "SZÖVEGES" not in r, True)
+
+    # V2. voice + spoken reply + text reply -> ALLOW
+    db, lib, env = voice_install()
+    owner_voice(lib, "2002", iso(now - 20))
+    lib.log_outbound(AGENT, CHAT, "[voice] Igen, jó a tíz óra.", 9002)
+    lib.log_outbound(AGENT, CHAT, "Hangban válaszoltam: jó a tíz óra.", 9003)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("voice + spoken + text: allows", d, None)
+
+    # V3. voice + spoken reply only -> BLOCK, naming the missing text reply
+    db, lib, env = voice_install()
+    owner_voice(lib, "2003", iso(now - 20))
+    lib.log_outbound(AGENT, CHAT, "[voice] Igen, jó a tíz óra.", 9004)
+    d, r, _ = run_hook(db, extra_env=env)
+    check("voice + spoken only: blocks", d, "block")
+    check("voice + spoken only: asks for the text reply only", "SZÖVEGES" in r and "HANGVÁLASZ" not in r, True)
+
+    # V4. a "[voice]" row WITHOUT a Telegram message_id is no proof (written by hand, not after sendVoice)
+    db, lib, env = voice_install()
+    owner_voice(lib, "2004", iso(now - 20))
+    lib.log_outbound(AGENT, CHAT, "[voice] Igen, jó a tíz óra.")
+    lib.log_outbound(AGENT, CHAT, "Hangban válaszoltam.", 9005)
+    d, r, _ = run_hook(db, extra_env=env)
+    check("voice + [voice] row without message_id: blocks", d, "block")
+
+    # V5. the spoken reply went to ANOTHER chat -> no proof for this one
+    db, lib, env = voice_install()
+    owner_voice(lib, "2005", iso(now - 20))
+    lib.log_outbound(AGENT, "111222333", "[voice] Igen.", 9006)
+    lib.log_outbound(AGENT, CHAT, "Hangban válaszoltam.", 9007)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("voice + spoken reply to another chat: blocks", d, "block")
+
+    # V6. a spoken reply from BEFORE the voice message does not count
+    db, lib, env = voice_install()
+    lib.log_outbound(AGENT, CHAT, "[voice] egy régebbi hangválasz", 9008)
+    con = lib.connect()
+    con.execute("UPDATE conversation_log SET created_at=? WHERE message_id='9008'", (now - 600,))
+    con.commit(); con.close()
+    owner_voice(lib, "2006", iso(now - 20))
+    lib.log_outbound(AGENT, CHAT, "Szövegben válaszoltam.", 9009)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("voice + only an older spoken reply: blocks", d, "block")
+
+    # V7. a TEXT message from the owner: the old behaviour (a text reply closes it)
+    db, lib, env = voice_install()
+    lib.log_inbound(AGENT, CHAT, "2007", "holnap tíz órakor jó?", iso(now - 20), sender_id=CHAT, sender_name="Tulaj", sender_role="owner")
+    lib.log_outbound(AGENT, CHAT, "Igen.", 9010)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("owner text + text reply: allows (old behaviour)", d, None)
+
+    # V8. a PAIRED user's voice message: the old behaviour
+    db, lib, env = voice_install()
+    owner_voice(lib, "2008", iso(now - 20), role="paired")
+    lib.log_outbound(AGENT, CHAT, "Igen.", 9011)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("paired voice + text reply: allows (old behaviour)", d, None)
+
+    # V9. switch off (the default: unset), or "off" in the dashboard override over an "on" .env: the old behaviour
+    for label, setup in (("unset", dict(switch=None)), ("off", dict(switch="off")), ("override off", dict(switch="off", via="override"))):
+        db, lib, env = voice_install(**setup)
+        if label == "override off":
+            with open(os.path.join(os.path.dirname(os.path.dirname(db)), ".env"), "w") as f:
+                f.write("VOICE_REPLY_GUARD=on\n")
+        owner_voice(lib, "2009", iso(now - 20))
+        lib.log_outbound(AGENT, CHAT, "Igen.", 9012)
+        d, _r, _ = run_hook(db, extra_env=env)
+        check(f"switch {label}: voice + text reply allows (old behaviour)", d, None)
+    # on through the dashboard override (no .env line): blocks
+    db, lib, env = voice_install(switch="on", via="override")
+    owner_voice(lib, "2010", iso(now - 20))
+    lib.log_outbound(AGENT, CHAT, "Igen.", 9013)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("switch on via the dashboard override: blocks", d, "block")
+
+    # V10. no voice toolkit installed: nothing to speak with, so the old behaviour
+    db, lib, env = voice_install(toolkit=False)
+    owner_voice(lib, "2011", iso(now - 20))
+    lib.log_outbound(AGENT, CHAT, "Igen.", 9014)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("no voice toolkit: allows (old behaviour)", d, None)
+
+    # V11. a voice acknowledgement ("köszi") needs no reply at all
+    db, lib, env = voice_install()
+    lib.log_inbound(AGENT, CHAT, "2012", "[Hang átirat]: köszi", iso(now - 20), sender_id=CHAT, sender_name="Tulaj", sender_role="owner")
+    lib.log_outbound(AGENT, CHAT, "👍", 9015)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("voice ack: allows", d, None)
+
+    # V12. stale voice message: allows; the backstop: MAX_BLOCKS blocks on the same message, then allows
+    db, lib, env = voice_install()
+    owner_voice(lib, "2013", iso(now - 5000))
+    con = lib.connect()
+    con.execute("UPDATE conversation_log SET created_at=? WHERE message_id='2013'", (now - 4000,))
+    con.commit(); con.close()
+    lib.log_outbound(AGENT, CHAT, "Igen.", 9016)
+    d, _r, _ = run_hook(db, extra_env=env)
+    check("stale voice + text reply: allows", d, None)
+    db, lib, env = voice_install()
+    owner_voice(lib, "2014", iso(now - 20))
+    lib.log_outbound(AGENT, CHAT, "Igen.", 9017)
+    env = dict(env, TG_GUARD_MAX_BLOCKS="2")
+    got = [run_hook(db, extra_env=env)[0] for _ in range(3)]
+    check("voice backstop: block, block, allow", got, ["block", "block", None])
+
+    # V13. no reply at all to the owner's voice: the old block first (reply), the voice gate after the text reply
+    db, lib, env = voice_install()
+    owner_voice(lib, "2015", iso(now - 20))
+    d, r, _ = run_hook(db, extra_env=env)
+    check("voice + no reply: the old block", d, "block")
+    check("voice + no reply: the old wording", "VÁLASZOLATLAN" in r, True)
+
+
 def main():
     # 1. Unanswered real question -> BLOCK
     db = fresh_db()
@@ -515,6 +675,8 @@ def main():
     d, r, _ = run_hook(db)
     check("role NULL: blocks", d, "block")
     check("role NULL: neutral label, never the owner's", "korábbi sor, a feladó ismeretlen" in r, True)
+
+    voice_cases()
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

@@ -519,6 +519,51 @@ def open_question_with_age(agent_id):
         con.close()
 
 
+# VOICEREPLYGATE1128: how an owner's voice message shows in the ledger. Without a transcript the row keeps
+# attachment_kind="voice" (ledger-capture.py); with one, the router replaced the body with this prefix and dropped the
+# attachment attributes (message-router.ts injectTranscript).
+VOICE_TRANSCRIPT_PREFIX = "[Hang átirat]:"
+# A spoken reply's outbound row (scripts/voice/_vtools.py _log_spoken_reply): written after sendVoice answered, with
+# the message_id Telegram returned. The prefix alone is not proof: the row must carry that message_id.
+VOICE_OUT_PREFIX = "[voice] "
+
+
+def voice_reply_status(agent_id):
+    """The voice-reply state of the most recent inbound, or None when it is not the owner's voice message.
+
+    Returns (chat_id, message_id, text, created_at, has_voice, has_text): has_voice is a spoken reply to the SAME chat
+    after the inbound (a "[voice] " row with a Telegram message_id), has_text a reply-tool row to that chat after it
+    (any other outbound row). "After" is the open-question window: written after the inbound row, or sent after the
+    inbound arrived (its ts), since the inbound row is written when the model processes the message."""
+    con = connect()
+    try:
+        row = con.execute(
+            "SELECT chat_id, message_id, text, ts, created_at, id, attachment_kind, sender_role"
+            " FROM conversation_log"
+            " WHERE agent_id=? AND direction='in' ORDER BY created_at DESC, id DESC LIMIT 1",
+            (str(agent_id),),
+        ).fetchone()
+        if not row:
+            return None
+        chat_id, message_id, text, ts, created_at, rid, att_kind, role = row
+        if role != "owner":
+            return None
+        if att_kind != "voice" and not (text or "").lstrip().startswith(VOICE_TRANSCRIPT_PREFIX):
+            return None
+        arrived = _arrival_epoch(ts, created_at)
+        outs = con.execute(
+            "SELECT text, message_id FROM conversation_log"
+            " WHERE agent_id=? AND chat_id=? AND direction='out'"
+            "   AND (created_at > ? OR (created_at = ? AND id > ?) OR created_at > ?)",
+            (str(agent_id), str(chat_id), created_at, created_at, rid, arrived),
+        ).fetchall()
+        has_voice = any((t or "").startswith(VOICE_OUT_PREFIX) and mid for t, mid in outs)
+        has_text = any(not (t or "").startswith(VOICE_OUT_PREFIX) for t, _mid in outs)
+        return (chat_id, message_id, text, created_at, has_voice, has_text)
+    finally:
+        con.close()
+
+
 def open_question(agent_id):
     """The most recent inbound with NO later outbound (the unanswered question),
     or None. Returns (chat_id, message_id, text, ts, attachment_kind,
