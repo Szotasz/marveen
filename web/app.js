@@ -18730,15 +18730,16 @@ async function _resolveApproval(id, decision) {
     // AGENTCREATEPR2-1119: a new agent is approved on the WHOLE server-rendered spec (the table shows 80 characters),
     // and the click sends back the hash the owner was shown; the server decides with it.
     const row = _approvalsAll.find(a => a.id === id)
-    if (row && row.category === 'agent_create' && decision === 'approved') {
+    // SCHEDPROPOSAL1126: a schedule_change proposal the same way (its text is the server-rendered field diff).
+    if (row && (row.category === 'agent_create' || row.category === 'schedule_change') && decision === 'approved') {
       const pre = document.createElement('pre')
       pre.className = 'approval-spec-text'
       pre.style.whiteSpace = 'pre-wrap'
       pre.textContent = row.action_description
       const ok = await confirmDialog({
-        title: t('approvals.agent_create.confirm_title'),
-        message: t('approvals.agent_create.confirm_message', { code: String(row.content_hash || '').slice(0, 8) }),
-        okLabel: t('approvals.agent_create.confirm_ok'),
+        title: t(`approvals.${row.category}.confirm_title`),
+        message: t(`approvals.${row.category}.confirm_message`, { code: String(row.content_hash || '').slice(0, 8) }),
+        okLabel: t(`approvals.${row.category}.confirm_ok`),
         content: pre,
         wide: true,
       })

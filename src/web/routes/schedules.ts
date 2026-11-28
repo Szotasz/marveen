@@ -93,16 +93,22 @@ export function summarizeScheduledTasks(tasks: Array<{ enabled?: boolean }>): { 
 // content (a toggle carries no prompt, a PUT rarely carries every config field),
 // so the edit is refused until the operator reviews and re-registers the task
 // (schedule-registry-cli) or deletes and re-creates it.
-function refuseIfForeign(res: RouteContext['res'], name: string): boolean {
+function foreignTaskBody(name: string): Record<string, unknown> | null {
   const current = readScheduledTask(name)
-  if (!current) return false
+  if (!current) return null
   const v = verifyScheduledTask(current)
-  if (v.ok) return false
-  json(res, {
+  if (v.ok) return null
+  return {
     error: `Schedule files changed outside the dashboard API: ${describeVerdict(v)}. ` +
       `Review the files, then re-register (node dist/web/schedule-registry-cli.js register ${name}) or delete and re-create the task.`,
     registry: v.reason,
-  }, 409)
+  }
+}
+
+function refuseIfForeign(res: RouteContext['res'], name: string): boolean {
+  const body = foreignTaskBody(name)
+  if (!body) return false
+  json(res, body, 409)
   return true
 }
 
@@ -112,17 +118,50 @@ function refuseIfForeign(res: RouteContext['res'], name: string): boolean {
 // the runner will refuse (fail-closed), so the caller must hear about it.
 // A create writes only SKILL.md and task-config.json into a dir that did not
 // exist, so it also refuses any other file found there (noUnwrittenDirFiles).
-function registerAfterWrite(
-  res: RouteContext['res'], name: string, source: string, written: ScheduledTaskWritten | undefined,
-  opts: { noUnwrittenDirFiles?: boolean } = {},
-): boolean {
+const NOT_REGISTERED = { error: 'Schedule written but NOT registered; the runner will not fire it until it is re-saved or re-registered' }
+function registerWritten(name: string, source: string, written: ScheduledTaskWritten | undefined, opts: { noUnwrittenDirFiles?: boolean } = {}): boolean {
   try {
     if (registerScheduledTask(name, source, written, opts)) return true
   } catch (err) {
     logger.error({ err, name }, 'schedule-registry: registration after API write failed')
   }
-  json(res, { error: 'Schedule written but NOT registered; the runner will not fire it until it is re-saved or re-registered' }, 500)
   return false
+}
+
+function registerAfterWrite(
+  res: RouteContext['res'], name: string, source: string, written: ScheduledTaskWritten | undefined,
+  opts: { noUnwrittenDirFiles?: boolean } = {},
+): boolean {
+  if (registerWritten(name, source, written, opts)) return true
+  json(res, NOT_REGISTERED, 500)
+  return false
+}
+
+export type ScheduleUpdate = Parameters<typeof writeScheduledTask>[1]
+
+/** The PUT's value checks of an update body (the schedule_change proposal runs them too); null when it passes. */
+export function scheduleUpdateProblem(data: ScheduleUpdate): { status: number; error: string } | null {
+  if (data.once !== undefined && typeof data.once !== 'boolean') return { status: 400, error: 'once must be true or false' }
+  // The body goes to writeScheduledTask whole, so a preCheck of any JSON
+  // type used to be stored as is. The runner and the registry hash treat a
+  // non-string as no script (#2100), so storing one only leaves a config
+  // that says something the runner ignores. null stays allowed: it clears it.
+  if (data.preCheck != null && typeof data.preCheck !== 'string') return { status: 400, error: 'preCheck must be a string (a script path) or null' }
+  if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
+    return { status: 413, error: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})` }
+  }
+  if (data.schedule !== undefined && !isValidCronShape(data.schedule)) return { status: 400, error: 'Invalid cron expression' }
+  return null
+}
+
+/** The PUT's write of an existing task, after its owner gate and value checks: refused on foreign files (409), else
+ *  written and registered (500 when the registration failed). The schedule_change consumer applies through it too. */
+export function applyScheduleUpdate(name: string, data: ScheduleUpdate, source: string): { status: number; body: Record<string, unknown> } {
+  const foreign = foreignTaskBody(name)
+  if (foreign) return { status: 409, body: foreign }
+  const written = writeScheduledTask(name, data)
+  if (!registerWritten(name, source, written)) return { status: 500, body: NOT_REGISTERED }
+  return { status: 200, body: { ok: true } }
 }
 
 // The list form of a task: everything but the prompt, which is replaced by its length and
@@ -330,31 +369,10 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       refuseOwner(res, `Changing ${execChanges.join(', ')} of a scheduled task needs the dashboard login (an owner session).`, { fields: execChanges })
       return true
     }
-    if (data.once !== undefined && typeof data.once !== 'boolean') {
-      json(res, { error: 'once must be true or false' }, 400)
-      return true
-    }
-    // The body goes to writeScheduledTask whole, so a preCheck of any JSON
-    // type used to be stored as is. The runner and the registry hash treat a
-    // non-string as no script (#2100), so storing one only leaves a config
-    // that says something the runner ignores. null stays allowed: it clears it.
-    if (data.preCheck != null && typeof data.preCheck !== 'string') {
-      json(res, { error: 'preCheck must be a string (a script path) or null' }, 400)
-      return true
-    }
-    if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
-      json(res, {
-        error: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
-      }, 413)
-      return true
-    }
-    if (data.schedule !== undefined && !isValidCronShape(data.schedule)) {
-      json(res, { error: 'Invalid cron expression' }, 400)
-      return true
-    }
-    if (refuseIfForeign(res, name)) return true
-    const written = writeScheduledTask(name, data)
-    if (!registerAfterWrite(res, name, 'api:update', written)) return true
+    const problem = scheduleUpdateProblem(data)
+    if (problem) { json(res, { error: problem.error }, problem.status); return true }
+    const applied = applyScheduleUpdate(name, data, 'api:update')
+    if (applied.status !== 200) { json(res, applied.body, applied.status); return true }
     logger.info({ name }, 'Scheduled task updated')
     json(res, { ok: true })
     return true

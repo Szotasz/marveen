@@ -417,6 +417,7 @@ export const AGENT_TOKEN_ALLOWLIST: readonly AgentAllowEntry[] = [
   { methods: ['POST'], pattern: /^\/api\/daily-log$/, why: 'daily log append (PreCompact prompt)' },
   { methods: ['GET'], pattern: /^\/api\/approvals(?:\/[^/]+)?$/, why: 'approval status poll' },
   { methods: ['POST'], pattern: /^\/api\/approvals$/, why: 'request approval (autonomy level 2)' },
+  { methods: ['POST'], pattern: /^\/api\/schedule-proposals$/, why: 'propose a scheduled-task change; only the owner\'s approval applies it (SCHEDPROPOSAL1126)' },
   { methods: ['POST'], pattern: /^\/api\/approvals\/[^/]+\/consume$/, why: 'one-shot consume of an approved row (APPROVALCONSUME1022); bound to the caller below' },
   { methods: ['GET'], pattern: /^\/api\/agents$/, why: 'fleet roster' },
   // The listing returns id/label/timestamps only, never a value (routes/connectors.ts listSecrets()).

@@ -50,6 +50,7 @@ export const OWNER_TEXT = {
     // AGENTCREATEPR3-1119: an agent_create request too long for one Slack message: never split (a reply could not tell
     // which part it approves); the owner decides on the dashboard, and no reply to this message approves anything.
     agentCreateTooLong: (id: string, url: string) => `Új ügynök létrehozását kérték (${id}). A kérés túl hosszú a Slackhez, a dashboardon döntesz: ${url}`,
+    scheduleChangeTooLong: (id: string, url: string) => `Ütemezett feladat módosítását kérték (${id}). A kérés túl hosszú a Slackhez, a dashboardon döntesz: ${url}`,
     result: { approved: 'Jóváhagyva', rejected: 'Elutasítva' },
     editedNotice: 'A szerkesztett üzenetet nem veszem döntésnek. Ha döntöttél, írd be újra: mehet vagy nem.',
     refusedFeedback: (when: string, reason: string) => `Elutasítva (${when}): a döntés nem fogadható el (${reason}). Ha jóvá akartad hagyni, kérd újra.`,
@@ -87,6 +88,7 @@ export const OWNER_TEXT = {
     dashboardOnly: (reason: string) => `Slack approval is not available for this request (${reason}); decide on the dashboard.`,
     teamsCardOnly: (reason: string) => `Teams card approval is not available for this request (${reason}); decide on the dashboard.`,
     agentCreateTooLong: (id: string, url: string) => `A new agent was requested (${id}). The request is too long for Slack; decide on the dashboard: ${url}`,
+    scheduleChangeTooLong: (id: string, url: string) => `A scheduled task change was requested (${id}). The request is too long for Slack; decide on the dashboard: ${url}`,
     result: { approved: 'Approved', rejected: 'Rejected' },
     editedNotice: 'An edited message does not count as a decision. If you decided, write it again: approve or reject.',
     refusedFeedback: (when: string, reason: string) => `Rejected (${when}): the decision could not be accepted (${reason}). If you meant to approve, ask again.`,
