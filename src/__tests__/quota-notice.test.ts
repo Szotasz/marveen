@@ -1,16 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, utimesSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, utimesSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   readQuotaNoticeConfig, readUsageCollectSnapshot, fresherSnapshot, decideThresholdNotices, formatThresholdNotice,
   runQuotaNoticeTick, planStateSnapshot, loadQuotaNoticeState, saveQuotaNoticeState, DEFAULT_PLAN_ID,
   parseLimitMonitorStamp, readLimitMonitorSignal, limitMonitorActive, limitMonitorCovered, decideDefaultPlanNotice,
-  deliverOwnerAlertOutbox, outboxText, OUTBOX_MAX_CHARS, LIMIT_MONITOR_GRACE_SEC, LIMIT_MONITOR_ACTIVE_MAX_AGE_SEC,
+  deliverOwnerAlertOutbox, outboxText, OUTBOX_MAX_CHARS, OUTBOX_ENABLED_MARKER, syncOutboxMarker, runQuotaNoticeCycle, LIMIT_MONITOR_GRACE_SEC, LIMIT_MONITOR_ACTIVE_MAX_AGE_SEC,
   type PlanQuota, type LimitMonitorSignal,
   type QuotaNoticeDeps, type QuotaNoticeState,
 } from '../web/quota-notice.js'
 import type { QuotaSnapshot } from '../web/quota.js'
+import type { QuotaPlanProbeDeps } from '../web/quota-plan-probe.js'
 
 const NOW = 1_795_700_000 // unix seconds
 const snap = (five: number, seven: number, fiveReset = NOW + 3600, sevenReset = NOW + 86400 * 3): QuotaSnapshot => ({
@@ -60,7 +61,7 @@ describe('threshold notice', () => {
     const first = decideThresholdNotices(snap(91, 30), {}, 90)
     expect(decideThresholdNotices(snap(93, 30, NOW + 3600 + 120), first.next, 90).notices).toEqual([])
   })
-  it('raising the threshold within a window re-arms the notice, lowering it does not (live test 2026-11-27)', () => {
+  it('raising the threshold within a window re-arms the notice, lowering it does not', () => {
     const atFifty = decideThresholdNotices(snap(10, 51), {}, 50)
     expect(atFifty.notices.map((n) => n.kind)).toEqual(['seven_day'])
     // Back to 90: the same window reaching 90 % must be announced again.
@@ -340,5 +341,66 @@ describe('owner-alert outbox', () => {
   })
   it('a missing outbox dir is a no-op', async () => {
     expect(await deliverOwnerAlertOutbox(join(box(), 'nope'), NOW, async () => true)).toEqual({ delivered: 0, kept: 0, dropped: 0 })
+  })
+})
+
+describe('cycle: QUOTA_NOTICE gates the outbox and the per-plan probe', () => {
+  const box = () => mkdtempSync(join(tmpdir(), 'qn-cycle-'))
+  // A due named token plan with an active agent: with the probe round allowed to run, it WOULD be called.
+  const probeDeps = (probeAndRecord: QuotaPlanProbeDeps['probeAndRecord']) => async (enabled: () => boolean): Promise<QuotaPlanProbeDeps> => ({
+    enabled, intervalMs: () => 15 * 60_000, now: () => NOW * 1000,
+    plans: () => [{ id: 'p2', label: 'p2', planType: 'personal', channelsAllowed: true, tokenSecretId: 'claude-plan-token-p2' }],
+    readState: () => ({ activePlanByAgent: {}, plans: {} }),
+    lastActiveMs: () => NOW * 1000,
+    probeAndRecord,
+  })
+  const setup = (enabled: boolean) => {
+    const dir = box()
+    writeFileSync(join(dir, `${NOW - 10}-1-quota_five_hour.txt`), 'queued alert')
+    const probe = vi.fn(async () => ({ ok: true }))
+    const ownerAlert = vi.fn(async () => true)
+    const plans = vi.fn(() => [{ planId: DEFAULT_PLAN_ID, label: 'x', snap: snap(99, 10) }])
+    const { d } = deps({ plans })
+    const c = { notice: { ...d, config: { ...d.config, noticeEnabled: enabled } }, outboxDir: dir, ownerAlert, probeDeps: probeDeps(probe) }
+    return { dir, probe, ownerAlert, plans, d, c }
+  }
+
+  it('off: no per-plan probe (no API call), no outbox delivery, no notice, and the marker is removed', async () => {
+    const { dir, probe, ownerAlert, plans, d, c } = setup(false)
+    writeFileSync(join(dir, OUTBOX_ENABLED_MARKER), 'left over from when it was on')
+    await runQuotaNoticeCycle(c)
+    expect(probe).not.toHaveBeenCalled()
+    expect(ownerAlert).not.toHaveBeenCalled()
+    expect(plans).not.toHaveBeenCalled()
+    expect(d.notifyOwner).not.toHaveBeenCalled()
+    expect(existsSync(join(dir, OUTBOX_ENABLED_MARKER))).toBe(false)
+    // The queued file is not touched while off.
+    expect(readdirSync(dir)).toEqual([`${NOW - 10}-1-quota_five_hour.txt`])
+  })
+  it('on: marker written, outbox delivered, the probe runs, then the notice', async () => {
+    const { dir, probe, ownerAlert, d, c } = setup(true)
+    await runQuotaNoticeCycle(c)
+    expect(existsSync(join(dir, OUTBOX_ENABLED_MARKER))).toBe(true)
+    expect(ownerAlert).toHaveBeenCalledWith('queued alert')
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(d.notifyOwner).toHaveBeenCalledTimes(1)
+    // Only the marker is left: it is a dot-file, never delivered as an alert.
+    expect(readdirSync(dir)).toEqual([OUTBOX_ENABLED_MARKER])
+  })
+  it('marker: created with the dir when on (mode 600), idempotent, removed when off', () => {
+    const dir = join(box(), 'owner-alert-outbox')
+    expect(syncOutboxMarker(dir, true)).toBe(true)
+    expect(syncOutboxMarker(dir, true)).toBe(true)
+    expect(statSync(join(dir, OUTBOX_ENABLED_MARKER)).mode & 0o777).toBe(0o600)
+    expect(syncOutboxMarker(dir, false)).toBe(false)
+    expect(existsSync(join(dir, OUTBOX_ENABLED_MARKER))).toBe(false)
+    expect(syncOutboxMarker(dir, false)).toBe(false)
+  })
+  it('the delivery never reads the marker as an alert', async () => {
+    const dir = box()
+    syncOutboxMarker(dir, true)
+    const send = vi.fn(async () => true)
+    expect(await deliverOwnerAlertOutbox(dir, NOW, send)).toEqual({ delivered: 0, kept: 0, dropped: 0 })
+    expect(send).not.toHaveBeenCalled()
   })
 })

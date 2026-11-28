@@ -85,7 +85,7 @@ describe('freshness merge: what the probe records is what quota-notice reads', (
   })
 })
 
-describe('only active plans (owner decision 2026-11-26)', () => {
+describe('only active plans', () => {
   const old = st({ a: { observedAt: NOW - 3 * 60 * MIN, source: 'probe', windows: {}, lastProbe: { at: NOW - 3 * 60 * MIN, ok: true } } })
   it('a plan whose agents were idle since its last look is not probed, however stale its numbers', () => {
     expect(selectQuotaProbePlans({ plans: [plan('a')], state: old, nowMs: NOW, intervalMs: 15 * MIN, lastActiveMs: () => NOW - 4 * 60 * MIN })).toEqual([])

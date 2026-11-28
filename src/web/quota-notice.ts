@@ -12,8 +12,9 @@
 // scripts/limit-monitor.sh (an optional systemd --user timer) alerts the owner on the same event for the DEFAULT plan.
 // While it runs, the default plan's notice waits for its delivery stamp and is dropped when it delivered (one notice
 // per event, not two); see "limit-monitor dedupe" below. Named plans are always this module's: limit-monitor reads only
-// the default plan's numbers. limit-monitor itself sends through Telegram only; on any other install it queues its
-// alert into store/owner-alert-outbox/, and this module delivers that too ("Owner-alert outbox" below).
+// the default plan's numbers. limit-monitor itself sends through Telegram only; on any other install, and only while
+// QUOTA_NOTICE is on, it queues its alert into store/owner-alert-outbox/, and this module delivers that too
+// ("Owner-alert outbox" below).
 //
 // Sources: the same quota readers the dashboard strip uses (statusLine file, observer mod), plus the usage collector's
 // store/usage-latest.json (five_hour / seven_day), which is the one that works on a setup-token install. The fresher
@@ -21,7 +22,7 @@
 //
 // QUOTA_NOTICE_DRY_RUN=1 logs every notice instead of sending it: the safe way to try it.
 
-import { readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { STORE_DIR, PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
@@ -31,6 +32,7 @@ import {
   readQuotaSnapshot, readModQuotaSnapshot, chooseQuotaSnapshot, DEFAULT_MAX_AGE_SEC, DEFAULT_FABLE_MAX_AGE_SEC,
   type QuotaSnapshot, type QuotaWindow,
 } from './quota.js'
+import { runQuotaPlanProbes, type QuotaPlanProbeDeps } from './quota-plan-probe.js'
 
 export type WindowKind = 'five_hour' | 'seven_day'
 export type NoticeLang = 'hu' | 'en'
@@ -50,7 +52,7 @@ function pctFrom(raw: unknown, dflt: number): number {
 export const QUOTA_NOTICE_KEYS = ['QUOTA_NOTICE', 'QUOTA_NOTICE_PCT', 'QUOTA_PLAN_PROBE_MIN'] as const
 
 /**
- * The notice is OFF unless switched on (owner decision 2026-11-26). `read` resolves a key the settings way
+ * The notice is OFF unless switched on (opt-in). `read` resolves a key the settings way
  * (config-overrides.json > .env > registry default); the dry-run switch is an environment variable only, for testing.
  */
 export function readQuotaNoticeConfig(
@@ -337,9 +339,18 @@ export function decideDefaultPlanNotice(
 // notifyOwner, the install's own owner route, and deletes it only after a confirmed delivery; a failed one stays for
 // the next tick. A file older than OUTBOX_MAX_AGE_SEC is dropped with a log line (the alert is about a window that
 // is likely over). The content is plain text: control characters are removed and the length is capped.
-// It runs whatever QUOTA_NOTICE says: the files only exist when the operator installed limit-monitor.
+//
+// The outbox follows QUOTA_NOTICE, like the rest of this module. QUOTA_NOTICE is a dashboard setting
+// (config-overrides.json over .env), which limit-monitor.sh cannot resolve the same way, so the dashboard is the one
+// source of truth and hands the switch over as a marker file: while QUOTA_NOTICE is on, every cycle makes sure
+// store/owner-alert-outbox/.enabled exists; while it is off, the cycle removes it and delivers nothing.
+// limit-monitor.sh takes the outbox path only while the marker exists; without it, it behaves as before the outbox
+// (no owner chat: logs and exits; no bot token: logs the alert as undeliverable). The marker is a dot-file, so the
+// delivery below never reads it as an alert.
 
 export const OWNER_ALERT_OUTBOX = 'owner-alert-outbox'
+/** The file limit-monitor.sh checks (scripts/limit-monitor.sh outbox_enabled): present only while QUOTA_NOTICE is on. */
+export const OUTBOX_ENABLED_MARKER = '.enabled'
 export const OUTBOX_MAX_AGE_SEC = 24 * 60 * 60
 /** Under Discord's 2000-character message limit, the tightest of the owner routes. */
 export const OUTBOX_MAX_CHARS = 1900
@@ -353,6 +364,33 @@ export function outboxText(raw: string): string {
 }
 
 export interface OutboxResult { delivered: number; kept: number; dropped: number }
+
+/**
+ * Makes the marker match the switch: created (with the outbox dir, mode 700 / 600) when on, removed when off. Returns
+ * whether the marker exists afterwards. Never throws: a marker that cannot be written only means limit-monitor keeps
+ * its old behaviour, which is logged.
+ */
+export function syncOutboxMarker(dir: string, enabled: boolean): boolean {
+  const marker = join(dir, OUTBOX_ENABLED_MARKER)
+  try {
+    if (enabled) {
+      if (!existsSync(marker)) {
+        mkdirSync(dir, { recursive: true, mode: 0o700 })
+        writeFileSync(marker, 'Written by the dashboard while QUOTA_NOTICE is on. scripts/limit-monitor.sh queues owner alerts here only while this file exists.\n', { mode: 0o600 })
+        logger.info({ dir }, 'quota-notice: owner-alert outbox enabled for scripts/limit-monitor.sh')
+      }
+      return true
+    }
+    if (existsSync(marker)) {
+      unlinkSync(marker)
+      logger.info({ dir }, 'quota-notice: owner-alert outbox disabled (QUOTA_NOTICE is off)')
+    }
+    return false
+  } catch (err) {
+    logger.warn({ err: String(err).slice(0, 200), dir }, 'quota-notice: owner-alert outbox marker not synced')
+    return existsSync(marker)
+  }
+}
 
 export async function deliverOwnerAlertOutbox(
   dir: string, nowSec: number, send: (text: string) => Promise<boolean>,
@@ -533,16 +571,36 @@ export async function liveQuotaNoticeDeps(): Promise<QuotaNoticeDeps> {
 }
 
 const dryRunLogged = new Set<string>()
-async function runOutboxTick(deps: QuotaNoticeDeps): Promise<void> {
-  const dir = join(PROJECT_ROOT, 'store', OWNER_ALERT_OUTBOX)
-  const { notifyOwner } = await import('../notify.js')
-  const r = await deliverOwnerAlertOutbox(dir, Math.floor(deps.now() / 1000), async (text) => {
-    if (!deps.config.dryRun) return notifyOwner(text, { kind: 'limit-monitor' })
+
+/** Everything one dashboard cycle touches beyond the notice tick, injectable so the off state is testable. */
+export interface QuotaNoticeCycleDeps {
+  notice: QuotaNoticeDeps
+  /** store/owner-alert-outbox of this install. */
+  outboxDir: string
+  /** Delivers one limit-monitor alert on the owner route (notifyOwner with kind 'limit-monitor'). */
+  ownerAlert: (text: string) => Promise<boolean>
+  /** The per-plan probe wiring (quota-plan-probe.ts); `enabled` is the switch the probe round checks. */
+  probeDeps: (enabled: () => boolean) => Promise<QuotaPlanProbeDeps>
+}
+
+/**
+ * One cycle, in order: the outbox marker follows QUOTA_NOTICE; with the switch off nothing else happens (no outbox
+ * delivery, no per-plan probe, so no API call, and no notice). With it on: the limit-monitor outbox is delivered,
+ * fresh per-plan numbers are fetched (so this cycle already judges by them), then the notice tick runs.
+ */
+export async function runQuotaNoticeCycle(c: QuotaNoticeCycleDeps): Promise<void> {
+  const cfg = c.notice.config
+  syncOutboxMarker(c.outboxDir, cfg.noticeEnabled)
+  if (!cfg.noticeEnabled) return
+  const r = await deliverOwnerAlertOutbox(c.outboxDir, Math.floor(c.notice.now() / 1000), async (text) => {
+    if (!cfg.dryRun) return c.ownerAlert(text)
     // Dry-run: logged once per text, the file stays for a real run.
     if (!dryRunLogged.has(text)) { dryRunLogged.add(text); logger.info({ text }, 'quota-notice DRY-RUN: owner-alert outbox') }
     return false
   })
   if (r.delivered || r.dropped) logger.info(r, 'quota-notice: owner-alert outbox processed')
+  await runQuotaPlanProbes(await c.probeDeps(() => cfg.noticeEnabled))
+  await runQuotaNoticeTick(c.notice)
 }
 
 let started = false
@@ -555,20 +613,22 @@ export function startQuotaNotice(): void {
     running = true
     try {
       const deps = await liveQuotaNoticeDeps()
-      await runOutboxTick(deps)
-      if (!deps.config.noticeEnabled) return
-      // Fresh per-plan numbers first (quota-plan-probe.ts), so this tick already judges by them.
-      const [{ liveQuotaPlanProbeDeps, runQuotaPlanProbes }, settings, agentConfig, plansState] = await Promise.all([
-        import('./quota-plan-probe.js'), import('../settings-store.js'), import('./agent-config.js'), import('./claude-plans-state.js'),
+      const [{ notifyOwner }, { liveQuotaPlanProbeDeps }, settings, agentConfig, plansState] = await Promise.all([
+        import('../notify.js'), import('./quota-plan-probe.js'), import('../settings-store.js'), import('./agent-config.js'),
+        import('./claude-plans-state.js'),
       ])
       const planOf = (agent: string) =>
         plansState.readClaudePlansState().activePlanByAgent[agent] ?? agentConfig.readAgentClaudePlan(agent) ?? DEFAULT_PLAN_ID
-      const probeDeps = await liveQuotaPlanProbeDeps(
-        () => true, () => Number(settings.getEffectiveSettingValue('QUOTA_PLAN_PROBE_MIN')) || 15,
-        planOf, () => [MAIN_AGENT_ID, ...agentConfig.listAgentNames().filter((n) => n !== MAIN_AGENT_ID)],
-      )
-      await runQuotaPlanProbes(probeDeps)
-      await runQuotaNoticeTick(deps)
+      await runQuotaNoticeCycle({
+        notice: deps,
+        // The same store dir limit-monitor.sh writes ($INSTALL_DIR/store).
+        outboxDir: join(PROJECT_ROOT, 'store', OWNER_ALERT_OUTBOX),
+        ownerAlert: (text) => notifyOwner(text, { kind: 'limit-monitor' }),
+        probeDeps: (enabled) => liveQuotaPlanProbeDeps(
+          enabled, () => Number(settings.getEffectiveSettingValue('QUOTA_PLAN_PROBE_MIN')) || 15,
+          planOf, () => [MAIN_AGENT_ID, ...agentConfig.listAgentNames().filter((n) => n !== MAIN_AGENT_ID)],
+        ),
+      })
     } catch (err) {
       logger.warn({ err: String(err).slice(0, 300) }, 'quota-notice tick failed')
     } finally {

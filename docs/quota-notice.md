@@ -13,9 +13,9 @@ are read every minute, no restart.
 When a window reaches `QUOTA_NOTICE_PCT` (default 90), the owner gets one message on the install's owner channel (the
 same route as other owner alerts, `notifyOwner`) with the subscription, the percentage and the local reset time. One
 message per subscription and window: the window's reset instant is the key, so the next window re-arms it. The
-threshold the window was announced at is kept too (`notifiedPct`): raising the threshold within the same window (back
-to 90 after a test at 50) re-arms the notice, lowering it does not. A message that could not be delivered is tried
-again on the next tick.
+threshold the window was announced at is kept too (`notifiedPct`): raising the threshold within the same window (for
+example back to 90 after a test at 50) re-arms the notice, lowering it does not. A message that could not be delivered
+is tried again on the next tick.
 
 The notice only tells the owner. It sends nothing to the people who write to the agents, and it types nothing into
 any agent's session.
@@ -47,16 +47,27 @@ notices for one event, never none.
 
 ### limit-monitor on an install without Telegram
 
-limit-monitor can only send through the Telegram Bot API. When it finds no Telegram bot token (a Discord or Slack
-install), it no longer drops the alert: it writes it into `store/owner-alert-outbox/<epoch>-<pid>-<tag>.txt` (temp
-file + rename, mode 600, at most 4000 bytes) and counts it as handled, so its dedupe stamp is written and the rule
-above works there too. The dashboard checks the outbox every minute (whether or not `QUOTA_NOTICE` is on: the files
-only exist where limit-monitor runs), delivers each file through `notifyOwner`, and deletes it only after a confirmed
-delivery; a failed delivery stays for the next minute. A file older than 24 hours is dropped with a log line. The
-content is delivered as plain text, control characters removed, capped at 1900 characters (under Discord's limit).
-With a Telegram token limit-monitor behaves as before, including its exit without an owner chat (`no ALLOWED_CHAT_ID`).
-Without a Telegram token it no longer exits there: `ALLOWED_CHAT_ID` is a Telegram setting and is empty on a
-Discord/Slack install, and the outbox needs no chat id.
+limit-monitor can only send through the Telegram Bot API. The outbox below is part of the opt-in notice: it is used
+only while `QUOTA_NOTICE` is on.
+
+`QUOTA_NOTICE` is a dashboard setting (`store/config-overrides.json` over `.env`), which a shell script cannot resolve
+the same way, so the dashboard is the single source of truth and hands the switch over as a marker file: while
+`QUOTA_NOTICE` is on, every minute it makes sure `store/owner-alert-outbox/.enabled` exists; while it is off, it removes
+the marker and does nothing else with the outbox (no delivery). limit-monitor checks only for the marker.
+
+- **Marker present, no Telegram bot token** (a Discord or Slack install): limit-monitor writes the alert into
+  `store/owner-alert-outbox/<epoch>-<pid>-<tag>.txt` (temp file + rename, mode 600, at most 4000 bytes) and counts it
+  as handled, so its dedupe stamp is written and the rule above works there too. It does not exit for a missing owner
+  chat either: `ALLOWED_CHAT_ID` is a Telegram setting and is empty on a Discord/Slack install, and the outbox needs no
+  chat id. The dashboard delivers each file through `notifyOwner` and deletes it only after a confirmed delivery; a
+  failed delivery stays for the next minute. A file older than 24 hours is dropped with a log line. The content is
+  delivered as plain text, control characters removed, capped at 1900 characters (under Discord's limit). Dot-files
+  (the marker, a temp file being written) are never read as alerts.
+- **No marker** (`QUOTA_NOTICE` off, the default): limit-monitor behaves exactly as before the outbox. Without an owner
+  chat it logs `no ALLOWED_CHAT_ID in .env, monitor cannot alert -- exiting` and exits; without a bot token it logs
+  `ALERT wanted but no bot token found` and writes no stamp.
+- **With a Telegram token** limit-monitor sends through the Bot API as before, marker or not, including its exit
+  without an owner chat.
 
 ## Per subscription (plan)
 
@@ -83,7 +94,7 @@ rate-limit headers give the 5-hour and weekly used % and reset. The token is nev
 from that plan's own quota (with 2 named plans at 15 minutes: 192 calls a day).
 
 - Notice off (the default): no call.
-- **Only active plans** (owner decision 2026-11-26): a plan is probed only when at least one agent running on it was
+- **Only active plans**: a plan is probed only when at least one agent running on it was
   active since the plan's last look. Active = the agent's transcript was written (newest `.jsonl` mtime in its
   transcript dirs, the same files channel-intake-monitor and inbound-probe read): every turn, tool call and channel
   message lands there. An idle plan is not probed and its last numbers age out. An agent that turns active after a

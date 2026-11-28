@@ -432,8 +432,9 @@ else
 fi
 
 # No access.json at all -> the monitor must stay silent, not send to "0".
-# A Telegram install (bot token present): without the token the monitor would
-# use the dashboard outbox instead (QUOTANOTICE1126, case (g)).
+# A Telegram install (bot token present). Without the token and with the
+# dashboard outbox switched on, the monitor would queue instead (QUOTANOTICE1126,
+# case (g)).
 C="$(deliver_case chatid0_no_access ok)"
 set_placeholder_chat "$C"
 run_case "$C"
@@ -459,11 +460,43 @@ else
   fail "ALLOWED_CHAT_ID=0 + two DM entries -> expected no send + reason: curl=$(cat "$C/fakebin/curl.log" 2>/dev/null) log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
 
-echo "(g) QUOTANOTICE1126: no Telegram bot token -> the dashboard owner-alert outbox"
+echo "(g) QUOTANOTICE1126: no Telegram bot token -> the dashboard owner-alert outbox, only while QUOTA_NOTICE is on"
 # A Discord/Slack install has no Telegram bot token: the alert used to be logged
-# and dropped. It now goes into store/owner-alert-outbox/ for the dashboard to
-# deliver (src/web/quota-notice.ts), and counts as handled.
+# and dropped. While the dashboard's QUOTA_NOTICE is on it goes into
+# store/owner-alert-outbox/ for the dashboard to deliver (src/web/quota-notice.ts),
+# and counts as handled. The dashboard signals "on" with the .enabled marker
+# (syncOutboxMarker); these cases plant it the way the dashboard would.
+# HOME is the case's empty fakehome and TELEGRAM_STATE_DIR is unset at the top,
+# so no real bot token can leak in.
+enable_outbox() { mkdir -p "$1/store/owner-alert-outbox" && : > "$1/store/owner-alert-outbox/.enabled"; }
+
+# Off (no marker): the old behaviour, logged and dropped, nothing queued, no stamp.
+C="$(new_case outbox_off_quota)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if grep -q "ALERT wanted but no bot token found: quota:" "$C/store/limit-monitor.log" 2>/dev/null \
+   && ! grep -q "queued for the dashboard" "$C/store/limit-monitor.log" 2>/dev/null \
+   && [ ! -e "$C/store/owner-alert-outbox" ] && [ ! -s "$C/store/.limit-monitor-quota-state" ]; then
+  pass "QUOTA_NOTICE off (no marker): no outbox, the alert is logged as undeliverable as before, no stamp"
+else
+  fail "QUOTA_NOTICE off: expected the old no-token path: log=$(cat "$C/store/limit-monitor.log" 2>/dev/null) outbox=$(ls -A "$C/store/owner-alert-outbox" 2>&1)"
+fi
+
+# Off (no marker), no owner chat either: the old early exit.
+C="$(new_case outbox_off_no_chat)"
+set_placeholder_chat "$C"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+if grep -q "no ALLOWED_CHAT_ID in .env, monitor cannot alert -- exiting" "$C/store/limit-monitor.log" 2>/dev/null \
+   && ! grep -q "dashboard outbox" "$C/store/limit-monitor.log" 2>/dev/null && [ ! -e "$C/store/owner-alert-outbox" ]; then
+  pass "QUOTA_NOTICE off, no owner chat, no bot token -> the old early exit"
+else
+  fail "QUOTA_NOTICE off, no owner chat: expected the old exit: log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
+fi
+
 C="$(new_case outbox_quota)"
+enable_outbox "$C"
 printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
   > "$C/store/.claude-rate-limits.json"
 run_case "$C"
@@ -510,6 +543,7 @@ fi
 
 # Oversize text is capped at 4000 bytes in the file.
 C="$(new_case outbox_big)"
+enable_outbox "$C"
 python3 -c 'print("Claude usage limit reached. " + "x" * 9000)' > "$C/store/channels.log"
 run_case "$C"
 OBF="$(find "$C/store/owner-alert-outbox" -maxdepth 1 -type f -name '*.txt' 2>/dev/null | head -1)"
@@ -520,10 +554,11 @@ else
 fi
 
 # A Discord/Slack install has no Telegram owner chat either (ALLOWED_CHAT_ID is a
-# Telegram setting): with no bot token the monitor must not exit early, the
-# alert still goes to the outbox.
+# Telegram setting): with no bot token and the outbox on, the monitor must not
+# exit early, the alert still goes to the outbox.
 C="$(new_case outbox_no_chat)"
 set_placeholder_chat "$C"
+enable_outbox "$C"
 printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
 run_case "$C"
 OBF="$(find "$C/store/owner-alert-outbox" -maxdepth 1 -type f -name '*.txt' 2>/dev/null | head -1)"
@@ -534,25 +569,31 @@ else
   fail "no owner chat + no bot token -> expected an outbox file: log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
 
-# An outbox that cannot be written: the alert is NOT counted as handled.
+# An outbox that cannot be written: the alert is NOT counted as handled. The
+# final rename is made to fail with an mv stub (the directory itself has to
+# exist for the marker).
 C="$(new_case outbox_unwritable)"
+enable_outbox "$C"
 printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
   > "$C/store/.claude-rate-limits.json"
-: > "$C/store/owner-alert-outbox"   # a FILE where the directory should be
+mkdir -p "$C/fakebin"; printf '#!/bin/sh\nexit 1\n' > "$C/fakebin/mv"; chmod +x "$C/fakebin/mv"
 run_case "$C"
-if grep -q "outbox could not be written" "$C/store/limit-monitor.log" 2>/dev/null && [ ! -s "$C/store/.limit-monitor-quota-state" ]; then
-  pass "an unwritable outbox is logged and leaves no stamp (the next tick retries)"
+if grep -q "outbox could not be written" "$C/store/limit-monitor.log" 2>/dev/null && [ ! -s "$C/store/.limit-monitor-quota-state" ] \
+   && [ "$(ls -A "$C/store/owner-alert-outbox")" = ".enabled" ]; then
+  pass "an unwritable outbox is logged, leaves no stamp (the next tick retries) and no temp file"
 else
   fail "an unwritable outbox: log=$(cat "$C/store/limit-monitor.log" 2>/dev/null) stamp=$(cat "$C/store/.limit-monitor-quota-state" 2>/dev/null)"
 fi
 
-# With a Telegram token nothing changes: sent through the Bot API, no outbox.
+# With a Telegram token nothing changes, even with the outbox on: sent through
+# the Bot API, nothing queued.
 C="$(deliver_case outbox_not_with_token ok)"
+enable_outbox "$C"
 printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
   > "$C/store/.claude-rate-limits.json"
 run_case "$C"
-if grep -q "ALERT sent" "$C/store/limit-monitor.log" && [ ! -e "$C/store/owner-alert-outbox" ]; then
-  pass "with a Telegram token the alert is sent as before, no outbox"
+if grep -q "ALERT sent" "$C/store/limit-monitor.log" && [ "$(ls -A "$C/store/owner-alert-outbox")" = ".enabled" ]; then
+  pass "with a Telegram token the alert is sent as before, nothing queued"
 else
   fail "with a Telegram token: log=$(cat "$C/store/limit-monitor.log" 2>/dev/null) outbox=$(ls "$C/store/owner-alert-outbox" 2>&1)"
 fi

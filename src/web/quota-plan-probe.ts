@@ -3,7 +3,7 @@
 //
 // Why: a named plan's numbers live in store/claude-plans-state.json, and only the plan rotation refreshes them (the
 // active plan every heartbeat, idle plans only near a limit). Without rotation a named plan had no numbers at all, and
-// its agents could only be judged by their pane banner (owner decision 2026-11-26: "Legyen plan-enkénti lekérdezés is").
+// its agents could only be judged by their pane banner. This probe gives every named token plan its own numbers.
 //
 // How: the rotation's own live probe, unchanged (src/claude-plan-usage-probe.ts probePlanUsage: ONE minimal Messages
 // call with the plan's own token, read from the vault, never logged; the result is recorded with observationFromProbe
@@ -41,7 +41,7 @@ export function nextProbeAt(observed: ObservedPlanState | undefined, intervalMs:
 }
 
 /**
- * Pure: the named token-mode plans due for a probe now (owner decision 2026-11-26: "Csak aktív előfizetést kérdezzen").
+ * Pure: the named token-mode plans due for a probe now. Only plans in use are probed.
  *
  * A plan is probed only when at least one agent running on it was ACTIVE since the plan's last look (observation or
  * probe): an idle plan costs nothing, and its last numbers age out normally. "Active" is the agent's transcript being

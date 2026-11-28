@@ -1677,8 +1677,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
-  // QUOTANOTICE1126 (src/web/quota-notice.ts): plan usage notice to the owner. OFF by default (owner decision
-  // 2026-11-26); read every minute, no restart. Owner-gated: the owner's alert, and the API calls the per-plan probe
+  // QUOTANOTICE1126 (src/web/quota-notice.ts): plan usage notice to the owner. OFF by default (opt-in,
+  // see the review on PR #3198); read every minute, no restart. Owner-gated: the owner's alert, and the API calls the per-plan probe
   // makes from each plan's own quota, are the owner's call, not a fleet-token caller's.
   {
     key: 'QUOTA_NOTICE',
