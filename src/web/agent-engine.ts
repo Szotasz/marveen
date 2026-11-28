@@ -164,13 +164,26 @@ export function codexRelayFilesystemEntries(workspace: string, codexHome: string
     throw new Error('relay sandbox profile needs the absolute Codex home (codexConfigDir) to hide it from the sandbox')
   }
   const runDir = codexRelayMxdRunDir()
-  const denied = [...codexRelayDeniedReadRoots(), resolve(codexHome), codexPhysicalPath(codexHome),
-    runDir, codexPhysicalPath(runDir),
-    ...codexRelaySecretReadRoots().flatMap(p => [resolve(p), codexPhysicalPath(p)])]
+  const ownRoots = [...codexRelayDeniedReadRoots(), resolve(codexHome), codexPhysicalPath(codexHome),
+    runDir, codexPhysicalPath(runDir)]
+  const secretRoots = codexRelaySecretReadRoots()
+  const secretPaths = secretRoots.map(p => [resolve(p), codexPhysicalPath(p)])
+  const denied = [...ownRoots, ...secretPaths.flat()]
   const workspacePaths = [resolve(workspace), codexPhysicalPath(workspace)]
   const hidden = denied.find(path => workspacePaths.includes(path))
   if (hidden !== undefined) {
     throw new Error(`relay sandbox profile refuses workspace ${workspace}: it is ${hidden}, which the relay hides from the sandbox (store/, the Codex home, the mxd run dir, the install dotenv file, agents/, ~/.claude/channels or ~/.gmail-mcp); the workspace grant would replace that denial`)
+  }
+  // Agent workspaces live under agents/<name> by design, so the containment
+  // check skips the two entries the agents/ root contributes (lexical and
+  // physical). It skips them by origin, not by value: when agents/ resolves to
+  // another hidden root, that root's own entry still refuses the workspace.
+  const agents = join(PROJECT_ROOT, 'agents')
+  const containmentRoots = [...ownRoots, ...secretPaths.filter((_, i) => secretRoots[i] !== agents).flat()]
+  const root = containmentRoots.find(parent =>
+    workspacePaths.some(child => child !== parent && child.startsWith(parent.endsWith(sep) ? parent : parent + sep)))
+  if (root !== undefined) {
+    throw new Error(`relay sandbox profile refuses workspace ${workspace}: it is inside ${root}, which the relay hides from the sandbox (store/, the Codex home, the mxd run dir, ~/.claude/channels or ~/.gmail-mcp); the workspace grant would open part of that hidden root`)
   }
   const entries: Array<[string, 'read' | 'write' | 'none']> = [
     ['/', 'read'], [workspace, 'write'],
