@@ -1418,7 +1418,15 @@ EOF_MA
   # missing, not that isolation was declined. This is the shape issue #835 is
   # about, and trigger 2 is structurally blind to it.
   # MAINAUTH1107: neither trigger fires for a main agent on an API key: it does not ride the shared login at all.
-  if [ -z "$CFG_ENV" ] && [ "${MAIN_AUTH_EFFECTIVE:-}" != api ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+  # MAINLOGINAUTH1127: nor for a main agent that runs on the /login session by the owner's choice
+  # (MAIN_AGENT_LOGIN_AUTH=1): main-auth then withholds the token on purpose, and its post-file unsets it. The measured
+  # fact is that post-file, written by THIS launch (MAIN_AUTH_APPLIED=1), not the setting read a second time.
+  _ma_login=""
+  if [ "${MAIN_AUTH_APPLIED:-}" = 1 ] && [ "${MAIN_AUTH_EFFECTIVE:-}" = subscription ] && grep -q 'CLAUDE_CODE_OAUTH_TOKEN' "$INSTALL_DIR/store/.channels-pane-auth-post" 2>/dev/null; then
+    _ma_login=1
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent on SHARED ~/.claude with the /login session by choice (MAIN_AGENT_LOGIN_AUTH=1); the fleet setup-token stays for the sub-agents and workers" >> "$INSTALL_DIR/store/channels-failures.log"
+  fi
+  if [ -z "$CFG_ENV" ] && [ "${MAIN_AUTH_EFFECTIVE:-}" != api ] && [ -z "$_ma_login" ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although a fleet setup-token exists (store/.claude-oauth-token) -- MAIN_AGENT_ISOLATED_CONFIG is unset, so the main bot authenticates from the rotating shared credential and can 401 into a silent channel." >> "$INSTALL_DIR/store/channels-failures.log"
     # VOICETOKENLEAK1101 round 3: both guard alerts hand curl the token from a process substitution (printf is a
     # builtin: nothing on any argv, which ps shows to the same user; nothing on disk), never as -H "...Bearer <token>".

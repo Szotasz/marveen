@@ -21,6 +21,15 @@
 //   ledger removes exactly this approval again when the mode or the key changes (Samu 72304).
 //   A conflict resolves to the side that does not bill, with a reason: an own-login config dir (explicit/rotated),
 //   a token-mode rotated plan, a custom provider, or no key at all.
+//
+// MAINLOGINAUTH1127: MAIN_AGENT_LOGIN_AUTH=1 keeps the fleet setup-token for the sub-agents and the workers, but NOT
+// for a main agent on the shared root: there the pane runs on the owner's /login session. Why: claude.ai connectors
+// (Gmail, Calendar, ...) do not load on a setup-token (measured 2026-10-16 and again 2026-11-26), while the workers
+// need the token to stay out of the rotating shared ~/.claude/.credentials.json (measured 2026-11-27: a worker that
+// refreshed from the shared refresh token at boot left the main agent and the owner's VS Code "Not logged in").
+// Effective stays 'subscription' (it is the subscription, through the login); the token is unset after the config
+// branch so CFG_ENV and the tmux global env cannot add it back. Only the shared root: an isolated/plan-token main has
+// no login of its own to run on, an own-login main never gets the token anyway.
 
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
@@ -31,6 +40,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { envFileValue, authKeyModeFrom, type AuthKeyMode } from './auth-key-mode.js'
 import { readAgentAuthMode, readAgentCustomProvider, readJsonObjectForWrite } from './agent-config.js'
 import { getSecret } from './vault.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR } from '../config.js'
 
 export type MainCfgKind = 'own-login' | 'plan-token' | 'isolated' | 'shared'
@@ -52,6 +62,8 @@ export interface MainAuthInputs {
   /** The main config dir for isolated/plan-token/own-login; null on the shared root. */
   cfgDir: string | null
   customProvider: boolean
+  /** MAINLOGINAUTH1127: MAIN_AGENT_LOGIN_AUTH=1 (the main pane on the shared root runs on the /login session). */
+  useLogin?: boolean
   home?: string
 }
 
@@ -70,6 +82,8 @@ export interface MainAuthDecision {
   /** True for the switch's own approval (api mode): recorded in the ledger, removed when no longer wanted. */
   ledgered: boolean
   conflict: MainAuthConflict | null
+  /** MAINLOGINAUTH1127: true when a fleet token exists but is withheld from the main pane (MAIN_AGENT_LOGIN_AUTH=1). */
+  login?: boolean
 }
 
 /** The config-dir mode as scripts/main-agent-isolated-config.mjs prints it ('' = nothing printed: the shared root). */
@@ -113,6 +127,13 @@ export function decideMainAuth(i: MainAuthInputs): MainAuthDecision {
   }
   // shared, or api that fell back: the install mode decides (B's rule), never billing a key the owner did not choose.
   if (i.installMode === 'subscription') {
+    if (i.useLogin && i.cfgKind === 'shared') {
+      return {
+        configured, effective: 'subscription', keySource: null, key: '', token: '',
+        postUnset: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'], stampTarget: null, ledgered: false, conflict,
+        login: true,
+      }
+    }
     return {
       configured, effective: 'subscription', keySource: null, key: '', token: i.oauthToken,
       postUnset: ['ANTHROPIC_API_KEY'], stampTarget: null, ledgered: false, conflict,
@@ -269,7 +290,7 @@ export function applyMainAuth(d: MainAuthDecision, paths: MainAuthPaths, now: Da
   try {
     atomicWriteFileSync(paths.launched, JSON.stringify({
       configured: d.configured, effective: d.effective, keySource: d.keySource, stampTarget: d.stampTarget,
-      conflict: d.conflict, at: now.toISOString(),
+      conflict: d.conflict, ...(d.login ? { login: true } : {}), at: now.toISOString(),
     }, null, 2) + '\n', { mode: 0o600 })
   } catch { /* informational only */ }
   return { ok: failed.length === 0, failed }
@@ -321,7 +342,16 @@ export function gatherMainAuthInputs(cfgKind: MainCfgKind, cfgDir: string | null
     cfgKind,
     cfgDir,
     customProvider: !!readAgentCustomProvider(main),
+    useLogin: readMainLoginAuthSetting(),
   }
+}
+
+/** MAINLOGINAUTH1127: MAIN_AGENT_LOGIN_AUTH, resolved like every setting (config-overrides.json > .env > default).
+ *  Unreadable = off: the launch then keeps today's rule (the token), never a guess. */
+function readMainLoginAuthSetting(): boolean {
+  try {
+    return ['1', 'true', 'yes', 'on'].includes(String(getEffectiveSettingValue('MAIN_AGENT_LOGIN_AUTH') ?? '').trim().toLowerCase())
+  } catch { return false }
 }
 
 /** Gather, decide, apply: what every main launch path calls right before it starts the pane. */

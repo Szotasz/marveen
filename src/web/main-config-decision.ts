@@ -159,6 +159,11 @@ export function isolationLostAdvice(f: IsolationSettingFacts | null): string {
   return `${head} A MAIN_AGENT_ISOLATED_CONFIG ${where} "${f.value}": az izolaciot csak az 1 kapcsolja be, a szandek ebbol nem latszik. A guard nem javasol teendot.`
 }
 
+/** MAINLOGINAUTH1127: does main-auth withhold the fleet token from a shared-root main pane? Unreadable = no. */
+function mainRunsOnLogin(): boolean {
+  try { return decideMainAuth(gatherMainAuthInputs('shared', null)).login === true } catch { return false }
+}
+
 function line(text: string): void {
   const ts = new Date().toLocaleString('sv-SE').replace('T', ' ')
   appendFileSync(failuresLog(), `${ts} ${text}\n`)
@@ -190,6 +195,9 @@ function noteState(d: Omit<MainConfigDecision, typeof MAIN_CONFIG_DECISION>): vo
       const mode = d.ownCredentials ? 'own-credential' : d.tokenSecretId ? `rotated-token(${d.tokenSecretId})` : 'isolated'
       line(d.isolatedConfigDir
         ? `main-agent respawn: ${mode} CLAUDE_CONFIG_DIR=${d.isolatedConfigDir}`
+        : d.fleetToken && mainRunsOnLogin()
+          // MAINLOGINAUTH1127: the token is there, but main-auth withholds it from the main pane on purpose.
+          ? 'main-agent respawn: shared ~/.claude, fleet token present but withheld from the main pane (MAIN_AGENT_LOGIN_AUTH=1): it runs on the /login session -- nothing to warn about'
         : d.fleetToken
           // Issue #1805: the shared root WITH an exported fleet token is healthy, and a trace that called it
           // a stock install would name the wrong state -- the failure this module exists to end.
@@ -202,9 +210,20 @@ function noteState(d: Omit<MainConfigDecision, typeof MAIN_CONFIG_DECISION>): vo
     // test as channels.sh's triggers: the EFFECTIVE mode (a configured api that fell back still rides the login).
     // Both triggers fire on the shared root only, hence 'shared'.
     let onKey = false
-    try { onKey = decideMainAuth(gatherMainAuthInputs('shared', null)).effective === 'api' } catch { onKey = false }
+    let onLogin = false
+    try {
+      const dec = decideMainAuth(gatherMainAuthInputs('shared', null))
+      onKey = dec.effective === 'api'
+      onLogin = dec.login === true
+    } catch { onKey = false; onLogin = false }
     if (onKey) {
       line(`main-agent respawn: ${d.trigger} on the shared ~/.claude, but the main agent runs on an API key (authMode=api) -- no notice`)
+      return
+    }
+    // MAINLOGINAUTH1127: the owner chose the /login session for the main agent (MAIN_AGENT_LOGIN_AUTH=1); advising
+    // isolation would undo that choice (and lose the claude.ai connectors).
+    if (onLogin) {
+      line(`main-agent respawn: ${d.trigger} on the shared ~/.claude, but the main agent runs on the /login session by choice (MAIN_AGENT_LOGIN_AUTH=1) -- no notice`)
       return
     }
     const facts = d.trigger === 'isolation-lost' ? readIsolationSettingFacts() : null

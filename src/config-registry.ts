@@ -1091,6 +1091,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    // MAINLOGINAUTH1127
+    key: 'MAIN_AGENT_LOGIN_AUTH',
+    type: 'boolean',
+    default: '0',
+    description: 'A fő channels-agent a közös ~/.claude alatt a gazda saját /login bejelentkezésével induljon, akkor is, ha van flotta setup-token (store/.claude-oauth-token). A token ilyenkor csak a sub-agenteké és a háttér-workereké marad. Akkor kell, ha a fő agentnek claude.ai csatolók (Gmail, Naptár stb.) kellenek: setup-tokennel ezek nem töltődnek be (mérve 2026-10-16, 2026-11-26), a workereknek viszont a token kell, különben a közös, rotálódó ~/.claude/.credentials.json frissítő tokenét használják el, és a fő agent meg a gazda VS Code-ja kijelentkezik (mérve 2026-11-27). Izolált (MAIN_AGENT_ISOLATED_CONFIG) vagy saját config dirrel (MAIN_AGENT_CONFIG_DIR) futó fő agentre nem hat. A módosítás a channels session újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'BASH_EGRESS_HOST_ALLOW',
     type: 'boolean',
     default: '0',
