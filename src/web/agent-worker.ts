@@ -23,6 +23,7 @@ import {
 } from './agent-process.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
+import { keychainReadsDisabled } from '../keychain-policy.js'
 import { detectPaneState } from '../pane-state.js'
 import { notifyChannel } from '../notify.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
@@ -376,7 +377,8 @@ function clearWorkerKeychainEntry(ctx: WorkerCtx): void {
  * Returns true if a credential file was written.
  */
 function seedWorkerCredentials(ctx: WorkerCtx): boolean {
-  if (process.platform === 'darwin') clearWorkerKeychainEntry(ctx)
+  // delete-generic-password is a Keychain access too: skipped as well under MARVEEN_NO_KEYCHAIN_READS.
+  if (process.platform === 'darwin' && !keychainReadsDisabled()) clearWorkerKeychainEntry(ctx)
   // WORKERLOGOUTWARN1121: with a fleet setup-token the worker is launched with CLAUDE_CODE_OAUTH_TOKEN from it (see the
   // launch line), so a Keychain miss is not a logged-out worker: no warning then (seen on a standard user started
   // without a GUI session: the read failed and the warning fired although the worker had its token).

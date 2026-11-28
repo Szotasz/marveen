@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { userInfo } from 'node:os'
 import { logger } from '../logger.js'
+import { skipKeychainRead } from '../keychain-policy.js'
 
 // Read the host's Claude Code SUBSCRIPTION login JSON from the macOS Keychain,
 // to materialise as <CLAUDE_CONFIG_DIR>/.credentials.json for an isolated
@@ -13,6 +14,7 @@ import { logger } from '../logger.js'
 // CLAUDE_CODE_OAUTH_TOKEN at launch), so a Keychain miss does NOT mean "logged-out" and the warning would mislead.
 export function readClaudeCodeOauthJson(opts: { warnOnMiss?: boolean } = {}): string | null {
   if (process.platform !== 'darwin') return null
+  if (skipKeychainRead('worker credentials')) return null
   try {
     const out = execFileSync(
       '/usr/bin/security',
