@@ -1784,7 +1784,7 @@ const SCHEDULE_SQL_WRITE_RX = /\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into
 // voice the next time the owner runs that command. The dashboard's owner-gated CRUD is the only writer.
 // inbound_sig_log (HMACINBOUND1125): how many times each server-signed agent_messages row was delivered and how many
 // times the server allowed; an agent that could write it could re-arm a delivered owner-voiced row or an old STOP.
-export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands', 'inbound_sig_log']
+export const SECURITY_TABLES = ['approvals', 'approval_events', 'approval_slack_posts', 'approval_teams_cards', 'approval_gromzo_posts', 'approval_telegram_posts', 'approval_telegram_state', 'agent_create_specs', 'auth_sessions', 'colleague_sessions', 'dashboard_users', 'device_keys', 'vault_ssh_keys', 'support_consents', 'support_password_state', 'approver_scopes', 'custom_commands', 'inbound_sig_log']
 // An SQL write on one of them. The table name is read wherever the statement
 // names its target: after a schema prefix (`main.approvals`, an ATTACHed
 // `x.approvals`), in [brackets], with SQL comments or line breaks between the

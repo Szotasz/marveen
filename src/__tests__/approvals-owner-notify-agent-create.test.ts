@@ -1,6 +1,7 @@
 // AGENTCREATEPR3-1119 (Samu 81756, 2): an agent_create request too long for one Slack message is never split; the
 // owner's Slack DM is a short pointer to the dashboard, with no post row, so no reply to it approves anything. A short
-// request goes out whole. Slack, Telegram and the owner send are fakes; the DB is in memory.
+// request goes out whole. Slack, Telegram and the owner send are fakes; the DB is in memory. The default agent_create
+// notifier also posts with the separate Telegram approval bot (APPROVALTGBOT1128).
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { initDatabase, createApproval, getApprovalSlackPost } from '../db.js'
 
@@ -23,6 +24,13 @@ vi.mock('../web/agent-create-gromzo.js', () => ({
   postAgentCreateToGromzo: async (a: { id: string }, lang: string) => { gromzoPosts.push([a.id, lang]); return 'posted' },
 }))
 
+// APPROVALTGBOT1128: the separate Telegram approval bot's post (the rest of the module is real)
+const telegramBotPosts: Array<[string, string]> = []
+vi.mock('../web/approval-telegram-bot.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/approval-telegram-bot.js')>()
+  return { ...real, postAgentCreateToTelegramBot: async (a: { id: string }, lang: string) => { telegramBotPosts.push([a.id, lang]); return 'posted' } }
+})
+
 const { _notifyOwnerForTest, _runAgentCreateNotifierForTest, _setAgentCreateNotifierForTest, approvalsPageUrl } = await import('../web/routes/approvals.js')
 const { OWNER_TEXT } = await import('../web/approval-texts.js')
 
@@ -33,7 +41,7 @@ const agentCreate = (text: string) => createApproval({
 })
 const settle = () => new Promise((r) => setTimeout(r, 20))
 
-beforeEach(() => { initDatabase(':memory:'); slackTexts.length = 0; gromzoPosts.length = 0 })
+beforeEach(() => { initDatabase(':memory:'); slackTexts.length = 0; gromzoPosts.length = 0; telegramBotPosts.length = 0 })
 
 describe('an agent_create request in the owner\'s Slack DM', () => {
   it('too long for one message: the short dashboard pointer, never the text in parts; no post row', async () => {
@@ -61,12 +69,19 @@ describe('an agent_create request in the owner\'s Slack DM', () => {
 })
 
 describe('the default agent_create notifier', () => {
-  it('asks the owner\'s channels AND posts to the Gromzo app', async () => {
+  it('asks the owner\'s channels AND posts to the Gromzo app AND with the Telegram approval bot (APPROVALTGBOT1128)', async () => {
     _setAgentCreateNotifierForTest(null)
     const a = agentCreate('Új ügynök létrehozása, jóváhagyásra:\n- azonosító: kutato')
     _runAgentCreateNotifierForTest(a, 'hu')
     await settle()
     expect(slackTexts).toHaveLength(1)
     expect(gromzoPosts).toEqual([[a.id, 'hu']])
+    expect(telegramBotPosts).toEqual([[a.id, 'hu']])
+  })
+  it('a plain server-filed request (not the agent_create notifier) is never posted with the approval bot', async () => {
+    const a = agentCreate('Új ügynök létrehozása, jóváhagyásra:\n- azonosító: kutato')
+    _notifyOwnerForTest(a, 'hu')
+    await settle()
+    expect(telegramBotPosts).toEqual([])
   })
 })

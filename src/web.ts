@@ -118,7 +118,7 @@ import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
-import { tryHandleApprovals, startApprovalTimeoutSweeper, startApprovalReactionSweeper } from './web/routes/approvals.js'
+import { tryHandleApprovals, startApprovalTimeoutSweeper, startApprovalReactionSweeper, startApprovalTelegramPoller } from './web/routes/approvals.js'
 import { registerAgentCreateConsumer, sweepAgentCreateOnStart } from './web/agent-create-approval.js'
 import { startGromzoDecisionWatch } from './web/agent-create-gromzo.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
@@ -722,6 +722,8 @@ export function startWebServer(port = 3420): http.Server {
   void sweepAgentCreateOnStart().catch((err) => logger.error({ err }, 'agent_create start-up sweep failed'))
   // AGENTCREATEPR3-1119: the owner's Gromzo answers to agent_create rows, read from mxd every 15 s
   if (!servicesOff) startGromzoDecisionWatch()
+  // APPROVALTGBOT1128: the owner's clicks on the Telegram approval bot's agent_create posts, every 10 s while one waits
+  if (!servicesOff) startApprovalTelegramPoller()
 // Desktop-lock TTL sweeper. Independent of the schedule gate on purpose: an
 // abandoned lock must expire (and be reported) even on a day when no
 // desktop-driving round happens to be due.

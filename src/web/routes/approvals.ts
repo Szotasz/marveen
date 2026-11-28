@@ -1,4 +1,6 @@
 import { postAgentCreateToGromzo } from '../agent-create-gromzo.js'
+import { postAgentCreateToTelegramBot, startTelegramApprovalPoller, telegramBotApi, APPROVAL_TELEGRAM_BOT_VAULT_KEY, type TelegramApprovalDeps } from '../approval-telegram-bot.js'
+import { getSecret } from '../vault.js'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -239,6 +241,18 @@ export const reactionDeps: RouteDeps = {
   lang: () => approvalTextLang(),
 }
 
+// APPROVALTGBOT1128: what the Telegram approval bot reads, in one place (tests replace it). The token comes from the
+// vault; the main bot's token is read only to refuse it as the approval bot.
+export const telegramApprovalDeps: TelegramApprovalDeps = {
+  setting: (key) => String(getEffectiveSettingValue(key) ?? ''),
+  token: () => getSecret(APPROVAL_TELEGRAM_BOT_VAULT_KEY),
+  mainToken: () => TELEGRAM_BOT_TOKEN || (CHANNEL_PROVIDER === 'telegram' ? CHANNEL_TOKEN : '') || null,
+  api: telegramBotApi,
+}
+
+/** APPROVALTGBOT1128: the owner's clicks on the Telegram approval bot's posts, read by the server (idle while off). */
+export function startApprovalTelegramPoller(): void { startTelegramApprovalPoller(telegramApprovalDeps) }
+
 // TEAMSAPPROVECARD1118: what the Teams approval card reads, in one place (tests replace it).
 export const teamsCardDeps: TeamsCardDeps = {
   setting: (key) => String(getEffectiveSettingValue(key) ?? ''),
@@ -254,6 +268,8 @@ const notifyAgentCreateDefault = (approval: Approval, lang: ApprovalLang): void 
   notifyOwner(approval, null, true, lang)
   // AGENTCREATEPR3-1119: also on the owner's Gromzo app when mxd can take decisions (never blocks; logged when not)
   void postAgentCreateToGromzo(approval, lang)
+  // APPROVALTGBOT1128: also with the separate Telegram approval bot when it is switched on (never blocks; logged when not)
+  void postAgentCreateToTelegramBot(approval, lang, telegramApprovalDeps)
 }
 let agentCreateNotifier = notifyAgentCreateDefault
 function notifyAgentCreateOwner(approval: Approval, lang: ApprovalLang): void { agentCreateNotifier(approval, lang) }
