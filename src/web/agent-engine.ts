@@ -228,11 +228,12 @@ export function renderCodexConfig(workspace: string, servers: Record<string, unk
   // [notice] block is omitted entirely (and the sandbox is nailed to the
   // workspace with the network off). Hide store/, the Codex home, mxd run dir,
   // install .env, agents/, ~/.claude/channels and ~/.gmail-mcp;
-  // set web_search = "disabled" and features.apps = false.
+  // set web_search = "disabled" and features.apps = false; disable startup update checks.
   const lines = opts.profile === 'relay'
     ? ['sandbox_mode = "workspace-write"', 'approval_policy = "on-request"',
       `default_permissions = ${JSON.stringify(CODEX_RELAY_PERMISSION_PROFILE)}`,
       'web_search = "disabled"',
+      'check_for_update_on_startup = false',
       '', '[sandbox_workspace_write]', 'network_access = false',
       'exclude_slash_tmp = true', 'exclude_tmpdir_env_var = true', '',
       `[permissions.${CODEX_RELAY_PERMISSION_PROFILE}.filesystem]`,
@@ -240,6 +241,7 @@ export function renderCodexConfig(workspace: string, servers: Record<string, unk
       '[features]', 'apps = false', '',
       `[projects.${JSON.stringify(workspace)}]`, 'trust_level = "trusted"', '', '[mcp_servers]']
     : ['sandbox_mode = "danger-full-access"', 'approval_policy = "never"',
+      'check_for_update_on_startup = false',
       '', '[notice]', 'hide_full_access_warning = true', '',
       `[projects.${JSON.stringify(workspace)}]`, 'trust_level = "trusted"', '', '[mcp_servers]']
   for (const [name, raw] of Object.entries(rendered)) {
@@ -300,7 +302,7 @@ function withheldFromCodex(key: string): boolean {
  * seat's config.toml, expressed as `codex -c key=value` overrides (value side is
  * valid TOML, strings via JSON.stringify). Relay hides store/, the Codex home,
  * mxd run dir, install .env, agents/, ~/.claude/channels and ~/.gmail-mcp;
- * sets web_search = "disabled" and features.apps = false.
+ * sets web_search = "disabled" and features.apps = false; disables startup update checks.
  * Neither renderer expands `${VAR}`; here the result also lands on argv
  * (visible in `ps`), so only env_vars forwarding is allowed for secrets.
  */
@@ -321,6 +323,7 @@ export function renderCodexOverrides(workspace: string, servers: Record<string, 
       'approval_policy="on-request"',
       `default_permissions=${JSON.stringify(CODEX_RELAY_PERMISSION_PROFILE)}`,
       'web_search="disabled"',
+      'check_for_update_on_startup=false',
       'sandbox_workspace_write.network_access=false',
       'sandbox_workspace_write.exclude_slash_tmp=true',
       'sandbox_workspace_write.exclude_tmpdir_env_var=true',
@@ -331,6 +334,7 @@ export function renderCodexOverrides(workspace: string, servers: Record<string, 
     : [
       'sandbox_mode="danger-full-access"',
       'approval_policy="never"',
+      'check_for_update_on_startup=false',
       'notice.hide_full_access_warning=true',
       `projects.${workspace}.trust_level="trusted"`,
     ]
