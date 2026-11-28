@@ -12,8 +12,7 @@
   conflict was `create_thread`: the overlay's (DCEXT1111 F5) stays, and upstream's tool definition and case are
   dropped (a `MARVEEN-PATCH(dc006)` line marks the case). `marveen-ext.ts` is the 0.0.4 file unchanged. Tests:
   `src/__tests__/patch-discord-plugin-006.test.ts`. 0.0.4 stays vendored for installs whose cache still holds it.
-  - PR5 (DCEXT1111 A9, G2, D4, D5): the same diff as on 0.0.4 (`git diff` of `0.0.4/overlay/`, applied three-way); one
-    conflict, the `messageCreate` guard: A9's bot gate first, then 0.0.6's thread-starter skip, both kept.
+  - PR5 (DCEXT1111 G2, D4, D5): the same diff as on 0.0.4 (`git diff` of `0.0.4/overlay/`, applied three-way).
     `discord-plugin-ext.test.ts` runs on 0.0.6 too (`discord-plugin-ext-006.test.ts`).
 - **Ours**: `0.0.4/overlay/` -- the plugin as Marveen runs it. Changed lines in `server.ts` carry
   a `MARVEEN-PATCH(...)` / `MARVEEN-EXT` marker; the new logic lives in `marveen-ext.ts`.
@@ -73,10 +72,6 @@
     - A6: the bot's own threads (A1 list) get a recovery cursor too; at start at most 20 of them are looked into,
       with the same 10-minute lock and per-channel caps.
   - Hermes parity, PR5 (Zoli 2026-11-11):
-    - A9: another bot's message passes only when its TEXT names this bot (`<@id>`), in an allowed server channel that
-      lists that bot (allowFrom, or a `DISCORD_CHANNEL_POLICY` role; an empty allowFrom never lets a bot in), never in a
-      DM, never our own; marked `is_bot="1"`. Not @everyone/@here, a role, a pattern, or a reply to us. Loop guard per
-      channel (a thread counts with its parent): 30 s between two, at most 3 per 10 min, then one log line;
     - G2: `pin_message` / `unpin_message`, listed only with `DISCORD_ADMIN_ACTIONS=pin`, only in allowed channels.
       Deleting messages and changing roles are not built (an inventory test pins that);
     - D4: the answered message gets ✅ once the reply has gone out to that chat (never for a failed reply), with or

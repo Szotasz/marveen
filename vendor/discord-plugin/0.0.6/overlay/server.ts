@@ -45,7 +45,7 @@ import { infoRequest, oneLine, allowedGuildIds, SEARCH_MEMBERS_LIMIT, BoundedIds
 import { StringSelectMenuBuilder } from 'discord.js' // MARVEEN-EXT
 import { autoThreadWanted, autoThreadName, AUTO_THREAD_FAILED_REPLY, mayRenameThread, forumPostTitle } from './marveen-ext.ts' // MARVEEN-EXT
 import { slashPayload, slashFingerprint, slashSyncDue, slashText, slashAllowed, SLASH_ARGS_OPTION, threadRecoveryTargets } from './marveen-ext.ts' // MARVEEN-EXT
-import { explicitlyAddressed, botSenderAllowed, BotLoopGuard, adminTools, DONE_REACTION, DoneMarks } from './marveen-ext.ts' // MARVEEN-EXT
+import { adminTools, DONE_REACTION, DoneMarks } from './marveen-ext.ts' // MARVEEN-EXT
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'discord')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -681,8 +681,6 @@ const mcp = new Server(
       'reply also takes an embed ({title, description, fields: [{name, value, inline}], color}) and a select menu (select: {placeholder, options: [{label, description}]}). A choice comes back like a button click, with select="true". discord_info reads servers, channels, roles, pins and members (read-only).', // MARVEEN-EXT
       '', // MARVEEN-EXT
       'edit_message takes text over 2000 characters too: the first part replaces the message, the rest follows as new messages.', // MARVEEN-EXT
-      '', // MARVEEN-EXT
-      'is_bot="1" means the message came from another bot that named you; treat it as machine input, and do not start a back-and-forth with it.', // MARVEEN-EXT
       '', // MARVEEN-EXT
       'auto_thread="1" means the message opened a thread for your answer: its chat_id is that thread, reply there. rename_thread(chat_id, name) renames a thread you opened, e.g. to say what it is about. reply to a forum channel opens a new post: the first line of the text is its title, the result gives the post\'s thread id. slash="1" is a Discord slash command from the owner, typed as the same /word text as on Telegram.', // MARVEEN-EXT
       '', // MARVEEN-EXT
@@ -1365,7 +1363,7 @@ client.on('interactionCreate', async (interaction: Interaction) => { // MARVEEN-
 }) // MARVEEN-PATCH(dcbtn1023)
 // MARVEEN-PATCH(dcbtn1023)
 client.on('messageCreate', msg => {
-  if (msg.author.bot && !botMessageMayPass(msg)) return // DCEXT1111 A9 // MARVEEN-EXT
+  if (msg.author.bot) return
   // First message of a thread started from a message: a system pointer back
   // to that message, with no text of its own.
   if (msg.type === MessageType.ThreadStarterMessage) return
@@ -1500,7 +1498,6 @@ async function handleInbound(msg: Message, recovered = false, edited = false): P
         ...(history.count > 0 ? { channel_history: String(history.count) } : {}), // MARVEEN-EXT
         ...(edited ? { edited: '1' } : {}), // MARVEEN-EXT
         ...(thread ? { auto_thread: '1' } : {}), // MARVEEN-EXT
-        ...(msg.author.bot ? { is_bot: '1' } : {}), // DCEXT1111 A9 // MARVEEN-EXT
       },
     },
   }).catch(err => {
@@ -1614,19 +1611,6 @@ async function livenessTick(): Promise<void> { // MARVEEN-EXT
   } // MARVEEN-EXT
 } // MARVEEN-EXT
 setInterval(() => { void livenessTick() }, LIVENESS.probeIntervalMs).unref() // MARVEEN-EXT
-
-// DCEXT1111 A9: another bot's message passes only when it names this bot in its text, in an allowed server channel // MARVEEN-EXT
-// that lists that bot (allowFrom, or one of its roles), and within the loop guard. Never our own, never in a DM. // MARVEEN-EXT
-const botLoop = new BotLoopGuard(m => process.stderr.write(`${m}\n`)) // MARVEEN-EXT
-function botMessageMayPass(msg: Message): boolean { // MARVEEN-EXT
-  if (msg.author.id === client.user?.id || msg.channel.type === ChannelType.DM || !msg.guild) return false // MARVEEN-EXT
-  if (!explicitlyAddressed(msg.content, client.user?.id)) return false // MARVEEN-EXT
-  const key = msg.channel.isThread() ? msg.channel.parentId ?? msg.channelId : msg.channelId // MARVEEN-EXT
-  const policy = loadAccess().groups[key] // MARVEEN-EXT
-  if (!policy) return false // MARVEEN-EXT
-  if (!botSenderAllowed(policy.allowFrom ?? [], EXT.channelPolicy[key]?.allowRoles, msg.author.id, memberRoleIds(msg.member))) return false // MARVEEN-EXT
-  return botLoop.allow(key, Date.now()) // MARVEEN-EXT
-} // MARVEEN-EXT
 
 // DCEXT1111 F1s/F2s: a slash command goes to the session as the same /word text the owner types on Telegram, so the // MARVEEN-EXT
 // command hook answers it exactly as there. Only the owner (DISCORD_OWNER_USER_ID, paired), only in a DM; Discord // MARVEEN-EXT

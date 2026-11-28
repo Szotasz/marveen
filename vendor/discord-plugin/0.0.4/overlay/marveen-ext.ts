@@ -697,51 +697,8 @@ export function threadRecoveryTargets(threadIds: readonly string[], cursor: Read
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// PR5 (Zoli 2026-11-11 12:52): A9 bot-to-bot only on an explicit mention, G2 pin/unpin only
+// PR5 (Zoli 2026-11-11 12:52): G2 pin/unpin only
 // ---------------------------------------------------------------------------------------------------------------
-
-// A9: another bot's message passes only when it names OUR bot in its text (<@id> or <@!id>). Not @everyone/@here,
-// not a role, not a mention pattern, and not a reply to our message: Discord puts the replied-to user into the
-// message's mention list, so the list is not used, only the text.
-export function explicitlyAddressed(content: string, selfId: string | null | undefined): boolean {
-  return !!selfId && (content.includes(`<@${selfId}>`) || content.includes(`<@!${selfId}>`))
-}
-
-// A bot must be named for the channel: in its allowFrom, or holding one of its roles (B1). An empty allowFrom,
-// which lets anyone human speak, never lets a bot in.
-export function botSenderAllowed(groupAllowFrom: readonly string[], allowRoles: readonly string[] | undefined, botId: string, memberRoleIds: readonly string[]): boolean {
-  if (groupAllowFrom.includes(botId)) return true
-  return !!allowRoles && allowRoles.length > 0 && memberRoleIds.some(r => allowRoles.includes(r))
-}
-
-// The loop guard, per channel (a thread counts with its parent). Pinned by tests.
-export const BOT_LOOP = { cooldownMs: 30_000, maxPerWindow: 3, windowMs: 10 * 60_000 } as const
-
-export class BotLoopGuard {
-  private readonly accepted = new Map<string, number[]>()
-  private readonly reported = new Set<string>()
-
-  constructor(private readonly log: (msg: string) => void = () => {}) {}
-
-  // Whether a bot message may go on now; an accepted one is counted. Over the cap: dropped until the oldest
-  // accepted one leaves the window, one log line per stretch (nothing goes to Discord).
-  allow(channelId: string, now: number): boolean {
-    const recent = (this.accepted.get(channelId) ?? []).filter(t => t > now - BOT_LOOP.windowMs)
-    this.accepted.set(channelId, recent)
-    const last = recent[recent.length - 1]
-    if (last !== undefined && now - last < BOT_LOOP.cooldownMs) return false
-    if (recent.length >= BOT_LOOP.maxPerWindow) {
-      if (!this.reported.has(channelId)) {
-        this.reported.add(channelId)
-        this.log(`discord channel: bot messages in ${channelId} over ${BOT_LOOP.maxPerWindow} per ${BOT_LOOP.windowMs / 60_000} min: dropped until the window frees up`)
-      }
-      return false
-    }
-    this.reported.delete(channelId)
-    recent.push(now)
-    return true
-  }
-}
 
 // G2: the only writing admin actions, behind DISCORD_ADMIN_ACTIONS (empty by default). Deleting messages and
 // changing roles are not built (Zoli's decision).
