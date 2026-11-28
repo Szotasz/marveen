@@ -3192,7 +3192,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   // PUT /api/agents/:name/voice-config
-  // Body: { responseMode?: 'text'|'voice'|'auto', voiceModel?: string, transcribeInbound?: boolean }
+  // Body: { responseMode?: 'text'|'voice'|'auto', voiceModel?: string, transcribeInbound?: boolean,
+  //         pitchSemitones?: number (-6..+6), speed?: number (0.8..1.25) }
   if (voiceConfigMatch && method === 'PUT') {
     const name = decodeURIComponent(voiceConfigMatch[1])
     // OWNERGATE3-1104: writes the agent's voice config (reply as text or voice, which voice model, whether inbound
@@ -3203,13 +3204,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
-    let data: { responseMode?: string; voiceModel?: string; transcribeInbound?: unknown }
+    let data: { responseMode?: string; voiceModel?: string; transcribeInbound?: unknown; pitchSemitones?: unknown; speed?: unknown }
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
     try {
       writeAgentVoiceConfig(name, {
         responseMode: data.responseMode as 'text' | 'voice' | 'auto' | undefined,
         voiceModel: data.voiceModel,
         transcribeInbound: data.transcribeInbound as boolean | undefined,
+        // Type and range are validated in writeAgentVoiceConfig (a string "2" is refused, not coerced).
+        pitchSemitones: data.pitchSemitones as number | undefined,
+        speed: data.speed as number | undefined,
       })
     } catch (err: unknown) {
       json(res, { error: err instanceof Error ? err.message : 'invalid config' }, 400)

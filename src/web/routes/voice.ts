@@ -24,6 +24,7 @@ import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig, isKnownAgent
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, parseTtsRequest } from '../voice-directive.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, RESERVED_AGENT_IDS } from '../../config.js'
+import { buildVoiceStyleFilter, readVoiceSampleRate } from '../voice-style.js'
 import type { RouteContext } from './types.js'
 
 const VOICE_DIR = join(homedir(), '.local', 'share', 'marveen-voice')
@@ -103,6 +104,21 @@ function voiceOnnxPath(model: string): string | null {
   if (!KNOWN_VOICE_MODELS.has(model)) return null
   const p = join(VOICE_DIR, 'voices', `${model}.onnx`)
   return existsSync(p) ? p : null
+}
+
+/**
+ * ffmpeg filter chain for the agent's configured pitch/speed, or null when the
+ * config is neutral. The sample rate comes from the model's .onnx.json.
+ */
+export function ttsStyleFilter(agentId: string, onnxPath: string): string | null {
+  const cfg = readAgentVoiceConfig(agentId)
+  try {
+    return buildVoiceStyleFilter(cfg.pitchSemitones ?? 0, cfg.speed ?? 1, readVoiceSampleRate(onnxPath))
+  } catch (err) {
+    // readAgentVoiceConfig already validates; a throw here means a bug, not bad input. Speak unstyled.
+    logger.warn({ err, agentId }, '/api/voice/tts: voice style ignored')
+    return null
+  }
 }
 
 function isVoiceInstalled(): boolean {
@@ -577,12 +593,15 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Per-agent voice style (pitch/tempo), only when the caller names the agent (?agent=, the directive's shape).
+    // The legacy state_dir shape carries no agent id and stays unstyled.
+    const styleAf = agentId ? ttsStyleFilter(agentId, onnxPath) : null
     const result = await runProc(
       VENV_PY,
       [VTOOLS_PY, 'speak', onnxPath, stateDir, chatId, text],
       // The installed toolkit lives outside the install tree; tell it which
       // install it serves so it can find the conversation ledger.
-      { timeoutMs: 90_000, env: { ...process.env, MARVEEN_INSTALL_DIR: PROJECT_ROOT } },
+      { timeoutMs: 90_000, env: { ...process.env, MARVEEN_INSTALL_DIR: PROJECT_ROOT, ...(styleAf ? { MARVEEN_VOICE_STYLE_AF: styleAf } : {}) } },
     )
     if (result.code !== 0) {
       logger.warn({ voiceModel, chatId, stderr: result.stderr }, '/api/voice/tts: piper/sendVoice failed')
