@@ -4045,6 +4045,170 @@ function shellWordRuns(words, i, strictStdin = false) {
   return { codes, stdin: fish ? !mainGiven : !cGiven && (!strictStdin || !operand || sGiven) }
 }
 
+// SELFPACEQUOTE1127: the command line ssh runs on the remote host (and `ssh localhost` is this host): the words
+// after the host, joined by spaces, as the remote shell gets them. Option letters from OpenSSH ssh(1); a letter in
+// SSH_VALUE_OPTS takes a value, attached or as the next word. null: no remote command. false: an option this
+// parser does not know, so the host position is not certain (the caller fails closed).
+const SSH_FLAG_OPTS = '46AaCfGgKkMNnqsTtVvXxYy'
+const SSH_VALUE_OPTS = 'BbcDEeFIiJLlmOoPpQRSWw'
+// The -o options whose value is a command line: ProxyCommand, LocalCommand and KnownHostsCommand run on THIS host,
+// RemoteCommand on the remote one, and a Match exec runs its command here too. `Key=value` and `Key value`, any
+// case. A config file (-F) is not read: its content is not in the command.
+const SSH_OPTION_COMMAND_RX = /^\s*(?:proxycommand|localcommand|remotecommand|knownhostscommand)\s*(?:=\s*|\s+)([\s\S]*)$/i
+const SSH_MATCH_EXEC_RX = /^\s*match\b[\s\S]*?\bexec\s*(?:=\s*|\s+)([\s\S]*)$/i
+function sshOptionCommand(value, ansi) {
+  const m = SSH_OPTION_COMMAND_RX.exec(value) ?? SSH_MATCH_EXEC_RX.exec(value)
+  if (!m) return null
+  const code = m[1].trim().replace(/^(["'])([\s\S]*)\1$/, '$2')
+  return code ? { value: code, ansi } : null
+}
+// What ssh runs: { codes } the remote command (the words after the host, joined by spaces, as the remote shell gets
+// them) and the command-valued -o options. Options may also stand after the host, before the command (OpenSSH
+// parses them there too). false: an option this parser does not know, so the host position is not certain.
+function sshRemoteCommand(words, i) {
+  const codes = []
+  let host = -1
+  let j = i + 1
+  for (; j < words.length; j++) {
+    const v = words[j].value
+    if (v === '--') {
+      if (host >= 0) { j++; break }
+      continue
+    }
+    if (!/^-./.test(v)) {
+      if (host >= 0) break
+      host = j
+      continue
+    }
+    for (let k = 1; k < v.length; k++) {
+      if (SSH_FLAG_OPTS.includes(v[k])) continue
+      if (!SSH_VALUE_OPTS.includes(v[k])) return false
+      const attached = k < v.length - 1
+      const val = attached ? { value: v.slice(k + 1), ansi: words[j].ansi } : words[j + 1]
+      if (!attached) j++ // the value is the next word
+      if (v[k] === 'o' && val) {
+        const c = sshOptionCommand(val.value, val.ansi)
+        if (c) codes.push(c)
+      }
+      break
+    }
+  }
+  const rest = host >= 0 ? words.slice(j) : []
+  if (rest.length) codes.push({ value: rest.map((w) => w.value).join(' '), ansi: rest.some((w) => w.ansi) })
+  return { codes }
+}
+
+// SELFPACEQUOTE1127: a scheduler call inside an ARGUMENT word: the code of `python3 -c`, `node -e`, `perl -e`,
+// `ruby -e` and any other program that may run its argument. The anchored check above only sees a command
+// position, and the masking blanks quoted text. Only the programs in ARGS_NEVER_RUN (and git, sqlite3 in the
+// forms below) keep their arguments as data; shells, eval and ssh are decided by the recursion instead.
+// The shapes were narrowed on the fleet's own Bash calls of 30 days (165k commands):
+//   - crontab, launchctl and systemd-run count anywhere, except a read (crontab -l; launchctl list, print, ...),
+//     a lookup (command -v, which, type, hash) and a path that names a file rather than runs it (/etc/crontab
+//     at the end of an argument; a path followed by an argument or a quote counts);
+//   - at and batch count only in the shape of a call: a command string that starts with them and goes on with a
+//     timespec, a flag or a redirect ('at now', '| batch'), a pipe into them that ends the string, or an argv
+//     list ['at'] / ['at', 'now'] / ('at', '-f', ...). A word, a dict key ('at'), "(at)" and .at(-1) do not.
+const ARGS_NEVER_RUN = new Set(['grep', 'egrep', 'fgrep', 'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'jq', 'for', 'select', 'case',
+  'which', 'type', 'hash', 'whereis'])
+// wrappers that run the command after their own options (and, for timeout, a duration): the check goes on with that
+// command, so `timeout 5 ssh host ...` is the recursion's and `timeout 5 python3 -c ...` is read as python3's.
+// The value-taking options of each; any other option word is skipped alone.
+const ARG_LEAD_WRAPPERS = {
+  timeout: { values: ['-s', '-k', '--signal', '--kill-after'], operand: true },
+  gtimeout: { values: ['-s', '-k', '--signal', '--kill-after'], operand: true },
+  sshpass: { values: ['-p', '-f', '-d', '-P'], operand: false },
+  caffeinate: { values: ['-w', '-t'], operand: false },
+}
+function unwrapLead(rest, base) {
+  for (let n = 0; n < 4 && ARG_LEAD_WRAPPERS[base]; n++) {
+    const w = ARG_LEAD_WRAPPERS[base]
+    let j = 0
+    while (j < rest.length && /^-./.test(rest[j])) j += w.values.includes(rest[j]) ? 2 : 1
+    if (w.operand) j++
+    if (j >= rest.length) return { rest: [], base: null }
+    base = baseName(rest[j])
+    rest = rest.slice(j + 1)
+  }
+  return { rest, base }
+}
+const ARG_SCHED_NAME = String.raw`(?:crontab(?!\s+-l\b)|launchctl(?!\s+(?:list|print|dumpstate|blame|examine)\b)|systemd-run)(?![\w.-])`
+const ARG_SCHED_NAME_RX = new RegExp(String.raw`(?<!\b(?:command\s+-[vVp]+|which|type|hash)\s+)(?<![\w/.%-])${ARG_SCHED_NAME}`, 'gi')
+const ARG_SCHED_PATH_RX = new RegExp(String.raw`/${ARG_SCHED_NAME}(?=\s+\S|['"\x60])`, 'i')
+const AT_SPEC = String.raw`(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))`
+// a path to it starts at / or ./ or ../ (s/at 17:13/ in a sed script is not one)
+const AT_NAME = String.raw`(?:(?:\.{1,2})?/(?:[\w.-]+/)*)?(?:at|batch)`
+const ARG_AT_RX = new RegExp(
+  // a command string: at the start of the word, of a quoted string, or after a pipe or separator
+  String.raw`(?:^|['"\x60]|[|;&]\s*|\$\(\s*)${AT_NAME}(?=\s+-|\s*<|\s+${AT_SPEC})` +
+    // a pipe or separator into it that ends the string: 'x | at'
+    String.raw`|(?:[|;&]\s*|\$\(\s*)${AT_NAME}(?=\s*(?:$|['"\x60)]))` +
+    // an argv list: ['at'], ['at', 'now'], ('at', '-f', ...)
+    String.raw`|(?<![\w\])])\[\s*['"]${AT_NAME}['"]\s*\]|[\[(]\s*['"]${AT_NAME}['"]\s*,\s*['"](?:-|${AT_SPEC})`,
+  'i',
+)
+const ARG_CODE_DECIDED = new Set([...SHELL_NAMES, 'eval', 'trap', 'ssh'])
+// When the command cannot be cut into real segments (shellSegments null: an unquoted heredoc, an odd escape),
+// the naive pieces may be prose lines; there only a piece led by an interpreter is read.
+const CODE_RUNNER_RX = /^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|perl|ruby|php|lua|osascript|awk|gawk|mawk|nawk|Rscript|tclsh|swift)$/
+// git keeps its arguments as data only without a global -c/--config-env (core.pager, alias.* run programs) and in
+// a subcommand that takes no program from its arguments: not rebase (-x), bisect (run), submodule (foreach),
+// difftool (-x), fetch/pull/push/clone/ls-remote/archive (--upload-pack, --receive-pack, --exec), grep (-O; it
+// goes through gitGrepReadOnly) or anything not listed. The global options are gitGrepReadOnly's.
+const GIT_ARGS_DATA_SUBCOMMANDS = new Set(['log', 'show', 'diff', 'status', 'blame', 'shortlog', 'rev-parse', 'ls-files', 'ls-tree',
+  'describe', 'reflog', 'rev-list', 'show-ref', 'for-each-ref', 'merge-base', 'name-rev', 'branch', 'tag', 'add', 'commit', 'checkout',
+  'switch', 'restore', 'reset', 'stash', 'worktree', 'cherry-pick', 'revert', 'merge', 'mv', 'rm', 'init', 'notes', 'apply', 'cat-file'])
+function gitArgsAreData(words) {
+  let k = 0
+  for (; k < words.length; k++) {
+    const w = words[k]
+    if (w === '-C') { k++; continue }
+    if (w === '--no-pager' || w === '-P' || w === '--no-optional-locks') continue
+    if (/^--(?:git-dir|work-tree)=/.test(w)) continue
+    break
+  }
+  if (words[k] === 'grep') return gitGrepReadOnly(words)
+  return GIT_ARGS_DATA_SUBCOMMANDS.has(words[k])
+}
+// sqlite3 runs a program only through a dot command (.shell, .system, a pipe in .output/.once) or an option that
+// reads one (-cmd, -init); without those its arguments are a database path and SQL text.
+function sqliteArgsAreData(words) {
+  return !words.some((w) => /^-{1,2}(?:cmd|init)$/.test(w) || /(?:^|\n)\s*\./.test(w))
+}
+function argSchedulerCall(v, next) {
+  if (ARG_AT_RX.test(v) || ARG_SCHED_PATH_RX.test(v)) return true
+  // the next word joins in, so `launchctl` `list` as two words still reads as a read
+  const text = next == null ? v : `${v} ${next}`
+  ARG_SCHED_NAME_RX.lastIndex = 0
+  for (let m; (m = ARG_SCHED_NAME_RX.exec(text)); ) {
+    if (m.index < v.length) return true
+  }
+  return false
+}
+export function schedulerInArgument(command) {
+  const segs = shellSegments(command) == null
+    ? splitSegments(String(command ?? '')).map((own) => ({ own: own.trim(), naive: true })).filter((s) => s.own)
+    : codeSegments(command)
+  for (const seg of segs) {
+    const words = splitCodeWords(seg.own)
+    if (words == null) continue
+    const args = argWords(words)
+    const cmdIndex = commandWordIndex(args)
+    if (cmdIndex < 0) continue
+    // `command -v NAME` / `command -V NAME` looks the name up (command is a wrapper, so the option is the command word)
+    if (cmdIndex > 0 && args[cmdIndex - 1].value === 'command' && /^-[vVp]+$/.test(args[cmdIndex].value)) continue
+    const { rest, base } = unwrapLead(args.slice(cmdIndex + 1).map((w) => w.value), baseName(args[cmdIndex].value))
+    if (base == null || ARGS_NEVER_RUN.has(base) || ARG_CODE_DECIDED.has(base)) continue
+    if (seg.naive && !CODE_RUNNER_RX.test(base)) continue
+    if (base === 'git' && gitArgsAreData(rest)) continue
+    if ((base === 'sqlite3' || base === 'sqlite') && sqliteArgsAreData(rest)) continue
+    for (let i = 0; i < rest.length; i++) {
+      if (argSchedulerCall(rest[i], rest[i + 1])) return true
+    }
+  }
+  return false
+}
+
 // shellSegments cuts at an escaped `\;` (tmux's own command separator); glue
 // such pieces back together so `tmux a \; send-keys` stays one segment.
 function codeSegments(command) {
@@ -4602,7 +4766,10 @@ export function substitutionInCommandPosition(command, { heredoc: asHeredocBody 
   return found
 }
 
-function scanShellCode(command, strictStdin = false) {
+// ssh (SELFPACEQUOTE1127): also return what ssh runs (its remote command and command-valued -o options). Only the
+// self-pace decision asks for it; shellCodeStrings (the db-write-gate's reader) keeps its earlier reading, so an
+// ssh-run install on a customer machine stays outside the plugin-tree rule (its stated limit).
+function scanShellCode(command, strictStdin = false, ssh = false) {
   const segs = codeSegments(command)
   const codes = []
   const seen = new Set()
@@ -4658,6 +4825,13 @@ function scanShellCode(command, strictStdin = false) {
       }
       const base = baseName(v)
       if (base === 'tmux') for (const c of tmuxGlobalOptions(args, i + 1).codes) push(c)
+      // SELFPACEQUOTE1127: ssh hands the words after the host to the remote shell, which parses them again
+      if (ssh && base === 'ssh' && !(cmdWord && EVAL_QUOTING_COMMANDS.has(cmdWord.value))) {
+        const remote = sshRemoteCommand(args, i)
+        // an unknown option fails closed where ssh is the command; elsewhere `ssh` may be an argument (journalctl -u ssh)
+        if (remote === false) { if (i === cmdIndex) bad = true }
+        else for (const c of remote.codes) push(c)
+      }
       if (!SHELL_NAMES.has(base)) continue
       const runs = shellWordRuns(args, i, strictStdin)
       for (const c of runs.codes) push(c)
@@ -4912,7 +5086,7 @@ function decide(toolName, toolInput, opts = {}) {
       const inner = decide('Bash', { command: body }, { ...opts, depth: depth + 1, vars: dequoted.vars })
       if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
     }
-    const scan = scanShellCode(rawCommand)
+    const scan = scanShellCode(rawCommand, false, true)
     for (const code of scan.codes) {
       if (code.ansi) return { deny: true, reason: 'shell-code' }
       if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
@@ -4920,6 +5094,8 @@ function decide(toolName, toolInput, opts = {}) {
       if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
     }
     if (scan.bad) return { deny: true, reason: 'shell-code' }
+    // a scheduler call in the code a program runs from its argument (python3 -c, node -e, ...), SELFPACEQUOTE1127
+    if (schedulerInArgument(safeCommand)) return { deny: true }
     // tmux command shortcuts and `tmux a \; send-keys` chains
     for (const seg of codeSegments(rawCommand)) {
       const words = splitCodeWords(seg.own)
