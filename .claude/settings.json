@@ -6,6 +6,7 @@
       "Read(~/.gnupg/**)",
       "Read(~/.env)",
       "Read(**/.env)",
+      "Read(//**/.env)",
       "Bash(sudo:*)",
       "Bash(*/sudo *)",
       "Bash(rm -rf ~:*)",
