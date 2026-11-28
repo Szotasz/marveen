@@ -6,20 +6,23 @@
 // the Slack reply path do: no agent is in the chain.
 //
 // The post: the stored spec's own text (renderAgentSpec, only while the spec still hashes to the approval), two inline
-// buttons whose callback data carries a one-time nonce, into the private chat of the explicit owner
+// buttons, each with its own one-time nonce in its callback data, into the private chat of the explicit owner
 // (APPROVAL_TELEGRAM_OWNER_ID). A request too long for one Telegram message gets a short "decide on the dashboard"
 // pointer and no post row, so no click can approve it.
 //
 // A click decides only when ALL hold: the update is a callback_query from the owner (not a bot); its message is in the
-// owner's private chat, is the posted message of a row this bot recorded, was sent by this bot, was never edited and
-// still has the text Telegram returned at posting; the callback data is "a:" or "r:" with the row's nonce. The decision
+// owner's private chat, is the posted message of a row this bot recorded, was sent by this bot, was never edited, still
+// has the text AND the inline keyboard Telegram returned at posting (a swapped button is refused, edit_date or not);
+// the callback data is "a:" with the approve nonce or "r:" with the reject nonce (separate values, so a reject click
+// never carries what approves). The decision
 // then goes through the core against the content hash the post showed (decideApprovalFromTelegram): one click, one
 // decision, and the category's consumer runs after the commit. Anything else decides nothing.
 //
 // The token lives in the vault (APPROVAL_TELEGRAM_BOT_VAULT_KEY), never in a log or a setting. It must not be the main
-// bot's token. What a stolen token allows: posting or editing the bot's messages (an edited post is refused) and reading
-// or dropping its updates (an owner's click lost: nothing is decided). It cannot forge the owner's click: Telegram signs
-// nothing, but the server reads the update from Telegram itself, and from.id is Telegram's.
+// bot's token. What a stolen token allows: posting or editing the bot's messages (a post with a changed text or
+// changed buttons is refused) and reading or dropping its updates (an owner's click lost: nothing is decided, and the
+// values the thief saw approve nothing on an unchanged post the owner did not press). It cannot forge the owner's
+// click: Telegram signs nothing, but the server reads the update from Telegram itself, and from.id is Telegram's.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import {
   recordApprovalTelegramPost, getApprovalTelegramPostByMessage, countPendingApprovalTelegramPosts, getApprovalTelegramOffset,
@@ -47,6 +50,15 @@ export interface TelegramApprovalDeps {
 }
 
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
+
+/** JSON with sorted keys at every level: the same keyboard hashes the same however Telegram orders its fields. */
+export function canonicalJsonValue(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJsonValue).join(',')}]`
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v as Record<string, unknown>).sort().map((k) => `${JSON.stringify(k)}:${canonicalJsonValue((v as Record<string, unknown>)[k])}`).join(',')}}`
+  }
+  return JSON.stringify(v ?? null)
+}
 
 export function telegramApprovalsOn(setting: (key: string) => string): boolean {
   return setting('APPROVAL_TELEGRAM_BOT').trim().toLowerCase() === 'on'
@@ -110,7 +122,7 @@ const T = {
 export type TelegramPostOutcome = 'posted' | 'not_agent_create' | 'not_verifiable' | 'too_long' | 'send_failed' | 'record_failed'
   | 'switch_off' | 'no_explicit_owner' | 'no_token' | 'main_bot_token'
 
-interface SentMessage { message_id?: unknown; chat?: { id?: unknown }; from?: { id?: unknown }; text?: unknown }
+interface SentMessage { message_id?: unknown; chat?: { id?: unknown }; from?: { id?: unknown }; text?: unknown; reply_markup?: unknown }
 
 /** Posts an agent_create request with the approval bot. Never throws; the outcome says why it did not go out. */
 export async function postAgentCreateToTelegramBot(approval: Approval, lang: ApprovalLang, deps: TelegramApprovalDeps): Promise<TelegramPostOutcome> {
@@ -133,25 +145,28 @@ export async function postAgentCreateToTelegramBot(approval: Approval, lang: App
       return 'too_long'
     }
     const me = await botId(route.token, deps)
-    const nonce = randomBytes(16).toString('hex')
+    const approveNonce = randomBytes(16).toString('hex')
+    const rejectNonce = randomBytes(16).toString('hex')
     let sent: SentMessage
     try {
       sent = await deps.api(route.token, 'sendMessage', {
         chat_id: route.owner, text,
-        reply_markup: { inline_keyboard: [[{ text: t.approve, callback_data: `a:${nonce}` }, { text: t.reject, callback_data: `r:${nonce}` }]] },
+        reply_markup: { inline_keyboard: [[{ text: t.approve, callback_data: `a:${approveNonce}` }, { text: t.reject, callback_data: `r:${rejectNonce}` }]] },
       }) as SentMessage
     } catch (err) {
       logger.warn({ approvalId: approval.id, err: errText(err) }, 'agent_create: the Telegram approval post failed (the dashboard decides)')
       return 'send_failed'
     }
     // What Telegram stored is what a later click is checked against: its message id, its chat, its author and its text.
-    if (typeof sent?.message_id !== 'number' || String(sent.chat?.id) !== route.owner || String(sent.from?.id) !== me || typeof sent.text !== 'string') {
+    if (typeof sent?.message_id !== 'number' || String(sent.chat?.id) !== route.owner || String(sent.from?.id) !== me || typeof sent.text !== 'string'
+      || !sent.reply_markup || typeof sent.reply_markup !== 'object') {
       logger.warn({ approvalId: approval.id }, 'agent_create: Telegram answered the approval post without a usable message; no post row (the dashboard decides)')
       return 'record_failed'
     }
     const recorded = recordApprovalTelegramPost({
       approvalId: approval.id, chatId: route.owner, messageId: sent.message_id, botId: me, ownerUserId: route.owner,
-      textSha256: sha256(sent.text), contentHash: approval.content_hash, nonceSha256: sha256(nonce), lang,
+      textSha256: sha256(sent.text), contentHash: approval.content_hash, approveNonceSha256: sha256(approveNonce),
+      rejectNonceSha256: sha256(rejectNonce), markupSha256: sha256(canonicalJsonValue(sent.reply_markup)), lang,
     })
     if (!recorded) return 'record_failed'
     logger.info({ approvalId: approval.id }, 'agent_create approval posted with the Telegram approval bot')
@@ -180,12 +195,13 @@ interface CallbackQuery {
   id?: unknown
   from?: { id?: unknown; is_bot?: unknown }
   data?: unknown
-  message?: { message_id?: unknown; date?: unknown; edit_date?: unknown; text?: unknown; chat?: { id?: unknown; type?: unknown }; from?: { id?: unknown } }
+  message?: { message_id?: unknown; date?: unknown; edit_date?: unknown; text?: unknown; reply_markup?: unknown; chat?: { id?: unknown; type?: unknown }; from?: { id?: unknown } }
 }
 interface Update { update_id?: unknown; callback_query?: CallbackQuery }
 
 export type TelegramUpdateOutcome =
   | 'no_callback' | 'not_owner' | 'not_private' | 'not_a_post' | 'not_our_message' | 'post_edited' | 'post_text_changed'
+  | 'post_buttons_changed'
   | 'bad_data' | 'nonce_mismatch' | 'approved' | 'rejected' | `${'approved' | 'rejected'}:${string}` | 'post_already_used'
 
 /** The decision rules for one update (see the header). Exported for the tests. */
@@ -204,10 +220,13 @@ export async function handleTelegramUpdate(u: Update, ctx: { token: string; owne
   if (String(m.from?.id) !== ctx.botId) { answer(t.result.refused); return 'not_our_message' }
   if (m.edit_date != null) { answer(t.result.refused); return 'post_edited' }
   if (typeof m.text !== 'string' || sha256(m.text) !== post.text_sha256) { answer(t.result.refused); return 'post_text_changed' }
+  // Revizor 6111 R1: the buttons are bound too, so a button whose label and data were swapped never decides, whether
+  // or not Telegram sets edit_date for a keyboard-only edit.
+  if (!m.reply_markup || sha256(canonicalJsonValue(m.reply_markup)) !== post.markup_sha256) { answer(t.result.refused); return 'post_buttons_changed' }
   const match = typeof cq.data === 'string' ? /^([ar]):([0-9a-f]{32})$/.exec(cq.data) : null
   if (!match) { answer(t.result.refused); return 'bad_data' }
   const given = Buffer.from(sha256(match[2]), 'hex')
-  const want = Buffer.from(post.nonce_sha256, 'hex')
+  const want = Buffer.from(match[1] === 'a' ? post.approve_nonce_sha256 : post.reject_nonce_sha256, 'hex')
   if (given.length !== want.length || !timingSafeEqual(given, want)) { answer(t.result.refused); return 'nonce_mismatch' }
   const status = match[1] === 'a' ? 'approved' as const : 'rejected' as const
   const d = decideApprovalFromTelegram({ approvalId: post.approval_id, status, updateId: u.update_id, ownerUserId: ctx.owner })

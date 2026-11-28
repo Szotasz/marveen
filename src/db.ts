@@ -1960,7 +1960,9 @@ export function initDatabase(dbPathOverride?: string): void {
   // message_id name the posted message, so a click counts only on it; owner_user_id is a snapshot of
   // APPROVAL_TELEGRAM_OWNER_ID at posting; bot_id the bot that posted it; text_sha256 is over the text Telegram returned
   // for the posted message (a click on an edited message is refused); content_hash is the approval's anchor the post
-  // showed; nonce_sha256 the hash of the one-time value only the buttons carry. decided_at closes the row once;
+  // showed; approve_nonce_sha256 / reject_nonce_sha256 the hashes of the two buttons' one-time values (separate, so a
+  // reject click never yields an approve value); markup_sha256 the hash of the inline keyboard Telegram returned (a
+  // click on a message whose buttons were swapped is refused, edit_date or not). decided_at closes the row once;
   // decided_by_update is the Telegram update that decided (unique: one click, one decision). A security table.
   db.exec(`
     CREATE TABLE IF NOT EXISTS approval_telegram_posts (
@@ -1971,7 +1973,9 @@ export function initDatabase(dbPathOverride?: string): void {
       owner_user_id TEXT NOT NULL,
       text_sha256 TEXT NOT NULL,
       content_hash TEXT NOT NULL,
-      nonce_sha256 TEXT NOT NULL,
+      approve_nonce_sha256 TEXT NOT NULL,
+      reject_nonce_sha256 TEXT NOT NULL,
+      markup_sha256 TEXT NOT NULL,
       lang TEXT NOT NULL,
       posted_at INTEGER NOT NULL,
       decided_at INTEGER,
@@ -8738,7 +8742,9 @@ export interface ApprovalTelegramPost {
   owner_user_id: string
   text_sha256: string
   content_hash: string
-  nonce_sha256: string
+  approve_nonce_sha256: string
+  reject_nonce_sha256: string
+  markup_sha256: string
   lang: string
   posted_at: number
   decided_at: number | null
@@ -8748,13 +8754,13 @@ export interface ApprovalTelegramPost {
 
 export function recordApprovalTelegramPost(p: {
   approvalId: string; chatId: string; messageId: number; botId: string; ownerUserId: string; textSha256: string
-  contentHash: string; nonceSha256: string; lang: string
+  contentHash: string; approveNonceSha256: string; rejectNonceSha256: string; markupSha256: string; lang: string
 }): boolean {
   return db.prepare(`
-    INSERT OR IGNORE INTO approval_telegram_posts (approval_id, chat_id, message_id, bot_id, owner_user_id, text_sha256, content_hash, nonce_sha256, lang, posted_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(p.approvalId, p.chatId, p.messageId, p.botId, p.ownerUserId, p.textSha256, p.contentHash, p.nonceSha256, p.lang,
-    Math.floor(Date.now() / 1000)).changes > 0
+    INSERT OR IGNORE INTO approval_telegram_posts (approval_id, chat_id, message_id, bot_id, owner_user_id, text_sha256, content_hash, approve_nonce_sha256, reject_nonce_sha256, markup_sha256, lang, posted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(p.approvalId, p.chatId, p.messageId, p.botId, p.ownerUserId, p.textSha256, p.contentHash, p.approveNonceSha256,
+    p.rejectNonceSha256, p.markupSha256, p.lang, Math.floor(Date.now() / 1000)).changes > 0
 }
 
 export function getApprovalTelegramPost(approvalId: string): ApprovalTelegramPost | undefined {
@@ -8797,7 +8803,7 @@ export type TelegramPostDecisionOutcome = ApprovalDecideOutcome | 'post_already_
  * One owner click on the server-posted Telegram message, in ONE transaction: the post row closes once (with the update
  * that decided, unique per bot), and the request is resolved only while it is still pending, its content_hash still the
  * one the post showed, and (for an approval) its timeout not passed. The caller has already checked the owner, the
- * private chat, the posted message, its unchanged text and the nonce.
+ * private chat, the posted message, its unchanged text and buttons, and the pressed button's nonce.
  */
 export function decideApprovalFromTelegram(p: {
   approvalId: string; status: 'approved' | 'rejected'; updateId: number; ownerUserId: string

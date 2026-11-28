@@ -131,17 +131,19 @@ hash, and whoever decides must pass back exactly the hash the owner was shown. A
   - **Telegram approval bot** (`APPROVAL_TELEGRAM_BOT=on`, APPROVALTGBOT1128): a SEPARATE bot, never the main one (the
     main bot's updates belong to the channel plugin, and a decision relayed by the main agent would rest on the shared
     token). The server posts the stored spec's text with the approval bot into the private chat of the explicit owner
-    (`APPROVAL_TELEGRAM_OWNER_ID`), with two buttons whose callback data carries a one-time nonce (only its hash is
-    stored). The server reads the clicks itself (`getUpdates` with the approval bot's token, every 10 s while a post
+    (`APPROVAL_TELEGRAM_OWNER_ID`), with two buttons, each carrying its own one-time nonce in its callback data (only
+    their hashes are stored, so a reject click never carries what approves). The server reads the clicks itself (`getUpdates` with the approval bot's token, every 10 s while a post
     waits, the offset stored per bot). A click decides only when it comes from the owner (not a bot), in the owner's
     private chat, on the posted message of a recorded row, sent by this bot, never edited and still carrying the text
-    Telegram returned at posting, with the row's nonce. The core then decides against the hash the post showed; one
+    AND the inline keyboard Telegram returned at posting (a swapped button is refused whether or not Telegram marks a
+    keyboard-only edit), with the pressed button's own nonce. The core then decides against the hash the post showed; one
     update decides one post (`resolved_by = telegram_button:<owner id>:<update id>`). A request too long for one Telegram
     message gets a short dashboard pointer and no row. Setup: a new bot at BotFather, its token in the vault as
     `approval-telegram-bot-token` (the main bot's token is refused), the owner sends the bot `/start` once, then the two
     settings (both need the owner's session). What a stolen approval-bot token allows: posting or editing the bot's
-    messages (an edited post is refused) and reading or dropping its updates (a lost click decides nothing); it cannot
-    make the owner's click.
+    messages (a post with a changed text or changed buttons is refused) and reading or dropping its updates (a lost
+    click decides nothing, and the values it carried approve nothing on the unchanged post); it cannot make the
+    owner's click.
 
 On a channel a rejection is bound to the shown hash too (as the Teams card always was); on the dashboard it stays a plain
 status write.
