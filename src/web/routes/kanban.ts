@@ -33,6 +33,7 @@ import { nicknameFor } from '../team-nicknames.js'
 import { readBoardAccess, type BoardAccessConfig } from '../board-access.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch, parseDispatchSkipAgents } from '../../kanban-dispatch.js'
+import { planOwnerCommentNotices } from '../../kanban-owner-comment-notice.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { getCardTokenUsage } from '../token-usage.js'
 import { logger } from '../../logger.js'
@@ -426,6 +427,50 @@ export function notifyUnblockedCards(blockerId: string, actor?: string | null): 
     }
   }
   return result
+}
+
+// A comment typed by the owner on the dashboard tells the card's assignee and the main agent (once each),
+// through the inter-agent queue. The decision, the wording and the trust frames live in
+// kanban-owner-comment-notice.ts. Only a dashboard SESSION counts as the owner: the comment's own `author` is
+// free text and never decides. Best-effort and silent on failure: the comment is already stored, so a notice
+// that cannot be written is logged and never turns the request into an error.
+export function notifyOwnerKanbanComment(
+  card: { id: string; seq?: number | null; title: string; assignee: string | null },
+  content: string,
+  opts: { fromOwnerSession: boolean; automated?: boolean },
+): number {
+  if (!opts.fromOwnerSession) return 0
+  try {
+    const notices = planOwnerCommentNotices({
+      card,
+      content,
+      fromOwnerSession: true,
+      automated: opts.automated,
+      ownerName: OWNER_NAME,
+      mainAgentId: MAIN_AGENT_ID,
+      resolve: {
+        ownerName: OWNER_NAME,
+        botName: BOT_NAME,
+        mainAgentId: MAIN_AGENT_ID,
+        agentNames: listAgentNames(),
+        isRunning: isAgentRunning,
+        skipAgents: parseDispatchSkipAgents(getEffectiveSettingValue('KANBAN_DISPATCH_SKIP_AGENTS')),
+      },
+    })
+    let sent = 0
+    for (const notice of notices) {
+      try {
+        createAgentMessage(notice.from, notice.to, notice.content)
+        sent++
+      } catch (err) {
+        logger.warn({ err, id: card.id, to: notice.to }, 'Owner comment notice failed (comment still stored)')
+      }
+    }
+    return sent
+  } catch (err) {
+    logger.warn({ err, id: card.id }, 'Owner comment notice planning failed (comment still stored)')
+    return 0
+  }
 }
 
 // HBKANBANDRIFT819: the heartbeat-summary payload, shaped so that TRUNCATED
@@ -1537,6 +1582,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const comment = automated === true
       ? addKanbanComment(cardId, author, normalizedContent, { automated: true })
       : addKanbanComment(cardId, author, normalizedContent)
+    // The owner's own comment (a dashboard session, never the `author` text) reaches the assignee and the main agent.
+    notifyOwnerKanbanComment(card, normalizedContent, { fromOwnerSession: ctx.auth?.kind === 'session', automated: automated === true })
     // Warn-only, same contract as memories / daily-log / messages. The sqlite
     // trigger journals Cyrillic look-alikes on this table, but the caller of
     // THIS route never heard about them, and the trigger does not see
