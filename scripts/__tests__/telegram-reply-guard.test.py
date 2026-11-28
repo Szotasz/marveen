@@ -294,6 +294,23 @@ def voice_cases():
     got = [run_hook(db, extra_env=env)[0] for _ in range(3)]
     check("voice backstop: block, block, allow", got, ["block", "block", None])
 
+    # V14 (Revizor 6122 R1). the hooks' automatic rows are no text reply: voice + a progress nudge + a spoken reply,
+    # no reply-tool text -> block, asking for the text; the same with the progress-clear fallback row
+    for prefix in lib.AUTO_OUT_PREFIXES:
+        db, lib2, env = voice_install()
+        owner_voice(lib2, "2016", iso(now - 20))
+        lib2.log_outbound(AGENT, CHAT, prefix + " Dolgozom rajta...", 9020)
+        lib2.log_outbound(AGENT, CHAT, "[voice] Igen, jó a tíz óra.", 9021)
+        d, r, _ = run_hook(db, extra_env=env)
+        check(f"voice + {prefix} + spoken: blocks", d, "block")
+        check(f"voice + {prefix} + spoken: asks for the text", "SZÖVEGES" in r and "HANGVÁLASZ" not in r, True)
+    # the writers' own prefixes are exactly the ones excluded (a renamed prefix would reopen R1)
+    import re as _re
+    for name in ("telegram_progress_watchdog.py", "telegram_progress_clear.py"):
+        src = open(os.path.join(HOOKS, name), encoding="utf-8").read()
+        m = _re.search(r'^LEDGER_PREFIX = "([^"]+)"', src, _re.M)
+        check(f"{name} LEDGER_PREFIX is excluded from the text reply", bool(m) and m.group(1) in lib.AUTO_OUT_PREFIXES, True)
+
     # V13. no reply at all to the owner's voice: the old block first (reply), the voice gate after the text reply
     db, lib, env = voice_install()
     owner_voice(lib, "2015", iso(now - 20))

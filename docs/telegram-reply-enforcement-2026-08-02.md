@@ -75,6 +75,8 @@ replies before the turn may end: a spoken one and a short text one, to the same 
   (`scripts/voice/_vtools.py` `_log_spoken_reply`): text `[voice] ...` and Telegram's `message_id`. A `[voice]` row
   without a `message_id`, one to another chat, or one from before the voice message does not count.
 - The text reply is any other outbound row to that chat after the voice message (the reply tool's ledger row).
+  The hooks' own automatic rows do not count (`ledger_lib.AUTO_OUT_PREFIXES`: the progress watchdog's nudge and the
+  progress-clear fallback; a test pins them to the writers' `LEDGER_PREFIX`).
 - The block names what is missing: the spoken reply (`tts.sh`), the text reply (the reply tool), or both.
 - Unchanged: a text message, a paired user's voice message, a voice acknowledgement ("köszi"), a message older than
   `STALE_SECONDS`, an install without the voice toolkit (`~/.local/share/marveen-voice/venv/bin/python`). The block

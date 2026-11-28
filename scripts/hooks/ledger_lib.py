@@ -526,6 +526,10 @@ VOICE_TRANSCRIPT_PREFIX = "[Hang átirat]:"
 # A spoken reply's outbound row (scripts/voice/_vtools.py _log_spoken_reply): written after sendVoice answered, with
 # the message_id Telegram returned. The prefix alone is not proof: the row must carry that message_id.
 VOICE_OUT_PREFIX = "[voice] "
+# Outbound rows the hooks write on their own, never the agent's reply-tool answer (Revizor 6122 R1): the progress
+# watchdog's nudge and the progress-clear fallback. They do not count as the text reply. Each must equal the writer's
+# LEDGER_PREFIX (scripts/hooks/telegram_progress_watchdog.py, telegram_progress_clear.py); a test pins it.
+AUTO_OUT_PREFIXES = ("[telegram-progress-watchdog]", "[telegram-progress-clear, fallback]")
 
 
 def voice_reply_status(agent_id):
@@ -533,7 +537,7 @@ def voice_reply_status(agent_id):
 
     Returns (chat_id, message_id, text, created_at, has_voice, has_text): has_voice is a spoken reply to the SAME chat
     after the inbound (a "[voice] " row with a Telegram message_id), has_text a reply-tool row to that chat after it
-    (any other outbound row). "After" is the open-question window: written after the inbound row, or sent after the
+    (any other outbound row, except the hooks' own automatic rows, AUTO_OUT_PREFIXES). "After" is the open-question window: written after the inbound row, or sent after the
     inbound arrived (its ts), since the inbound row is written when the model processes the message."""
     con = connect()
     try:
@@ -558,7 +562,7 @@ def voice_reply_status(agent_id):
             (str(agent_id), str(chat_id), created_at, created_at, rid, arrived),
         ).fetchall()
         has_voice = any((t or "").startswith(VOICE_OUT_PREFIX) and mid for t, mid in outs)
-        has_text = any(not (t or "").startswith(VOICE_OUT_PREFIX) for t, _mid in outs)
+        has_text = any(not (t or "").startswith((VOICE_OUT_PREFIX,) + AUTO_OUT_PREFIXES) for t, _mid in outs)
         return (chat_id, message_id, text, created_at, has_voice, has_text)
     finally:
         con.close()
