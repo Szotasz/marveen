@@ -890,12 +890,58 @@ claude_install() {
     return 1
   fi
   echo "$(date '+%F %T') claude install START ($why): $CLAUDE_PKG" >&2
+  claude_npm_stale_cleanup "$why"
   if npm install -g "$CLAUDE_PKG" >/dev/null 2>&1; then
     : > "$CLAUDE_UPDATE_STAMP"
     echo "$(date '+%F %T') claude install OK ($why)" >&2
   else
     echo "$(date '+%F %T') claude install FAILED ($why)" >&2
   fi
+}
+
+# NPMSTALETMP1124: an interrupted `npm install -g` (host sleep, power-off, a kill
+# mid-reify) leaves npm's own rename target behind:
+#   <npm root -g>/@anthropic-ai/.claude-code-<random>
+# and every later install of the package then dies at once on
+#   ENOTEMPTY: directory not empty, rename '.../claude-code' -> '.../.claude-code-<random>'
+# Measured 2026-11-24 18:13-21:33: 25 restarts in a row, each daily check FAILED in
+# 1 s with that error, the main session down 3 h 20 min until a manual install.
+# The dot-dirs are npm's private scratch for this package, never a live install,
+# so removing them is safe -- but only when no other npm process is running, or we
+# could pull the scratch dir out from under a concurrent install.
+claude_npm_stale_cleanup() {
+  local why="$1" root d n=0
+  root="$(npm root -g 2>/dev/null)" || return 0
+  [ -n "$root" ] && [ -d "$root/@anthropic-ai" ] || return 0
+  if pgrep -f "npm (install|i|update|uninstall)( |$)" >/dev/null 2>&1; then
+    echo "$(date '+%F %T') claude install: another npm process is running, stale-scratch cleanup skipped ($why)" >&2
+    return 0
+  fi
+  for d in "$root"/@anthropic-ai/.claude-code-*; do
+    [ -d "$d" ] || continue
+    rm -rf "$d" && n=$((n + 1))
+  done
+  if [ "$n" -gt 0 ]; then
+    echo "$(date '+%F %T') claude install: removed $n stale npm scratch dir(s) under $root/@anthropic-ai ($why)" >&2
+    { echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: removed $n stale npm scratch dir(s) (.claude-code-*) before install ($why) -- an earlier install was interrupted" >> "$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null
+  fi
+  return 0
+}
+
+# BROKENBIN1124: "present" is not "runnable". The self-heal below used to fire
+# only when `command -v claude` found nothing; a half-replaced package leaves the
+# launcher in place but not executable, the pane dies with status 126 five
+# seconds after every launch, and the missing-binary branch never runs.
+# A version probe catches every flavour of that (126 not executable, 127 a
+# dangling interpreter, a truncated binary that crashes). Bounded by a perl
+# alarm because macOS ships no `timeout`, and a hung probe must not hang boot.
+claude_runnable() {
+  local b
+  b="$(command -v claude 2>/dev/null)" || return 1
+  [ -n "$b" ] || return 1
+  # `or exit 126`: a failed exec in perl otherwise falls off the end with rc 0,
+  # so a non-executable launcher would probe as healthy.
+  perl -e 'alarm shift; exec @ARGV or exit 126' 30 "$b" --version >/dev/null 2>&1
 }
 
 # NATIVE-INSTALL HOSTS: never touch npm.
@@ -1199,6 +1245,18 @@ elif ! command -v claude >/dev/null 2>&1; then
   if ! claude_relink_native; then
     claude_install "binary missing -- self-heal"
   fi
+elif ! claude_runnable; then
+  # BROKENBIN1124: present but does not start. Synchronous, like the missing
+  # case: there is nothing to launch otherwise.
+  echo "$(date '+%F %T') claude PRESENT BUT NOT RUNNABLE ($(command -v claude)) -- self-heal" >&2
+  { echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: claude present but not runnable ($(command -v claude)) -- self-heal reinstall" >> "$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null
+  if claude_is_native; then
+    claude_relink_native || claude_native_update "binary broken -- self-heal"
+  else
+    claude_install "binary broken -- self-heal"
+  fi
+  claude_runnable \
+    || echo "$(date '+%F %T') claude STILL NOT RUNNABLE after self-heal -- needs a manual look (npm install -g $CLAUDE_PKG)" >&2
 elif claude_is_native; then
   claude_native_behind_npm_note
   if [ "$AVX_LESS" = "0" ] && claude_native_autoupdate_on \

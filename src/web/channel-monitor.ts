@@ -68,6 +68,7 @@ import { recordChannelEvent } from './channel-event-log.js'
 import { notifyChannel, type AlertMeta } from '../notify.js'
 import type { PermPromptEscalationState } from './permission-prompt-escalation.js'
 import { sendRoutineAlert, sendOwnerActionAlert } from './routine-alert.js'
+import { parseRapidExits, decideMainDown, mainDownText, mainRecoveredText, type MainDownState } from './main-down-alert.js'
 import { runPermissionPromptPass, clearPermissionPromptAlert } from './permission-prompt-alert.js'
 import { getProvider, channelStateDir, channelStateDirEnvVar, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
@@ -2917,6 +2918,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
   let ticksSkippedSinceTrace = 0
   let menuPassesSinceTrace = 0
   let menuTraceLastAt: number | null = null
+  let mainDownState: MainDownState = { alerted: false, firstAt: null }
   async function check() {
     // Re-entrancy guard: check() now awaits the tmux-driving sends (async), and
     // setInterval fires on a fixed cadence regardless of whether the prior tick
@@ -2941,6 +2943,22 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     skipTrace = { consecutive: 0 }
     checkRunning = true
     try {
+    // MAINDOWNALERT1124: say "the main session is not coming up" when channels.sh's
+    // rapid-exit streak is live, and say it once more when it recovers. Read-only
+    // and first, so no later branch of this tick can skip it.
+    try {
+      const text = existsSync(CHANNELS_FAILURES_LOG_PATH) ? readFileSync(CHANNELS_FAILURES_LOG_PATH, 'utf8') : ''
+      const now = Date.now()
+      const d = decideMainDown(parseRapidExits(text), now, mainDownState)
+      mainDownState = d.next
+      if (d.action === 'down') {
+        sendOwnerActionAlert('main-session-down', mainDownText(MAIN_CHANNELS_SESSION, d.streak, d.firstAt, d.last, now))
+      } else if (d.action === 'recovered') {
+        sendOwnerActionAlert('main-session-recovered', mainRecoveredText(MAIN_CHANNELS_SESSION, d.downMinutes), { cooldownMs: 0 })
+      }
+    } catch (err) {
+      logger.warn({ err }, 'main-down-alert: could not evaluate channels-failures.log')
+    }
     // Restore persisted failure counts on first tick so a dashboard restart
     // does not reset the cap and restart agents that have already been given up on.
     ensureAgentRestartFailuresInitialized()
