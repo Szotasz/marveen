@@ -364,6 +364,14 @@ export const PROTECTED_INSTALL_PATHS = [
 //                                          usage-collect.py (a scheduler command task); none of them names the file in a
 //                                          tool call, and the skills and tasks only read it (measured 2026-11-25), so the
 //                                          main agent stays free, as with claude-plans.json
+//   store/.limit-monitor-quota-state    -- limit-monitor.sh's quota alerts for the dashboard to deliver to the owner
+//   store/owner-alert-outbox/              (QUOTAGATE1128, Geri's #3198 review): a .txt in the outbox reaches the owner
+//   store/.limit-monitor-heartbeat         as an alert, with no agent label; the quota-state stamp is the script's
+//                                          "delivered" mark, so a forged one silences the owner's quota notice for that
+//                                          window; the heartbeat tells the dashboard the script is alive. Only
+//                                          limit-monitor.sh writes them (a timer, no Claude involved); no skill or task
+//                                          names them (measured 2026-11-28), so the main agent stays free. The entries
+//                                          hold while the files do not exist yet (a missing target is a creation).
 export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: '.env' },
   { rel: 'store/provenance-gate-rules.json' },
@@ -376,6 +384,9 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: 'store/claude-plans-state.json' },
   { rel: 'store/usage-latest.json' },
   { rel: 'store/.claude-rate-limits.json' },
+  { rel: 'store/.limit-monitor-quota-state' },
+  { rel: 'store/.limit-monitor-heartbeat' },
+  { rel: 'store/owner-alert-outbox', dir: true },
   // The user's shared Claude settings (Dani 67840/67841): every agents/*/.claude-config/settings.local.json is a
   // SYMLINK to ~/.claude/settings.local.json, a real file the main agent loads too, so a sub-agent writing it (through
   // its symlink or straight) changes every session's settings. The main agent writes them legitimately: sub-agent only.
