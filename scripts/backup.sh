@@ -269,14 +269,36 @@ fi
 # every local branch that origin does not already have closes the gap for a few
 # hundred KB (the full history is 26 MB, but the shared part is recoverable by
 # cloning origin). Restore, after cloning origin:
-#   git fetch <restored>/repo/local-commits.bundle 'refs/heads/*:refs/heads/*'
+#   git fetch <restored>/repo/local-commits.bundle 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+#
+# Tags as well as branches: a rollback point is often a tag cut before a rebase
+# or a reset, and a commit that ONLY a tag points at is reached by neither
+# --branches nor origin's tracking refs. With a branch-only selection such a tag
+# lives on this disk and in no backup, and nothing says so.
+#
+# But only the tags whose commit origin does not have. `--not --remotes=origin`
+# excludes commits, not tag objects: a plain --tags would carry every annotated
+# release tag a clone comes with, and the bundle would never be absent. A tag
+# on a commit origin has is left out -- the commit comes back with the clone,
+# the tag name does not.
 if command -v git >/dev/null 2>&1 && [[ -d "${REPO_ROOT}/.git" ]]; then
   BUNDLE="$(mktemp -t claudeclaw-bundle.XXXXXX)"
+  LOCAL_TAGS=()
+  OFF_ORIGIN="$(git -C "${REPO_ROOT}" rev-list --tags --not --remotes=origin 2>/dev/null || true)"
+  if [[ -n "${OFF_ORIGIN}" ]]; then
+    while read -r tag_ref; do
+      tag_commit="$(git -C "${REPO_ROOT}" rev-parse -q --verify "${tag_ref}^{commit}" 2>/dev/null || true)"
+      if [[ -n "${tag_commit}" ]] && grep -qxF "${tag_commit}" <<<"${OFF_ORIGIN}"; then
+        LOCAL_TAGS+=("${tag_ref}")
+      fi
+    done < <(git -C "${REPO_ROOT}" for-each-ref --format='%(refname)' refs/tags)
+  fi
   # An empty ref set makes `git bundle` refuse with "empty bundle", which is
   # the GOOD case (everything is already pushed), not an error -- so a failure
   # here just drops the file instead of failing the backup.
+  # ${arr[@]+...}: an empty array under `set -u` is an error on bash 3.2 (macOS).
   if git -C "${REPO_ROOT}" bundle create "${BUNDLE}" \
-       --branches --not --remotes=origin >/dev/null 2>&1; then
+       --branches ${LOCAL_TAGS[@]+"${LOCAL_TAGS[@]}"} --not --remotes=origin >/dev/null 2>&1; then
     echo "backup: local-commits.bundle $(wc -c < "${BUNDLE}" | awk '{print $1}') bytes"
   else
     rm -f "${BUNDLE}"; BUNDLE=""
@@ -298,7 +320,7 @@ fi
   echo "See docs/MIGRATION.md for the full runbook (TCC, launchd paths, one-bot-one-poller, venv rebuild)."
   echo "--- repo/ ---"; sed 's,^,repo/,' "${REPOLIST}" 2>/dev/null || true
   if [[ -n "${BUNDLE}" ]]; then
-    echo "repo/local-commits.bundle   (git bundle: local branches absent from origin)"
+    echo "repo/local-commits.bundle   (git bundle: local branches absent from origin, and tags whose commit origin lacks)"
   fi
   echo "--- home/ ---"; sed 's,^,home/,' "${HOMELIST}" 2>/dev/null || true
 } > "${MANIFEST}"

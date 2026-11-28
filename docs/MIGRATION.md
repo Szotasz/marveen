@@ -28,11 +28,14 @@ the Docker volumes (3) are **separate** and must be moved on their own.
 - `agents/*/agent-config.json`, `.claude/settings.local.json`, `.claude/skills/` -- per-agent model/permission profile, deny rules and agent-private skills. Credential-like files inside a skill folder are left out unless `MARVEEN_BACKUP_AGENT_SECRETS=1` is set, but the filter is a deny-list by file name (`.env`, `.env.*`, `*.env`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `credentials*`, `*token*`, `*secret*`, `.netrc`, `.npmrc`): a credential file whose name is not on the list is still archived. Keep credentials under `agents/<name>/secrets/` (covered by the opt-in below), not inside a skill folder
 - `agents/*/secrets/` -- per-agent credentials kept outside the channel dirs (SSH keys, CLI logins, mailbox config). **Opt-in, off by default:** only taken when `MARVEEN_BACKUP_AGENT_SECRETS=1` is set. For a manual run, put it in the environment (`MARVEEN_BACKUP_AGENT_SECRETS=1 bash scripts/backup.sh`); for a systemd unit that runs the backup, add `Environment=MARVEEN_BACKUP_AGENT_SECRETS=1` to the `[Service]` section. Any other value (`0`, `yes`, `true`) leaves it out. Same trust level as the channel `.env` files above: the archive is created 0600, so keep it (and any second copy) off cloud-synced folders
 - `agents/*/.claude-config/projects/*/memory/` and `.channels-config/projects/*/memory/` -- file memory of agents (and of the main agent) that run with their own `CLAUDE_CONFIG_DIR`; transcripts next to it are not taken
-- `local-commits.bundle`: every local git branch that `origin` does not have
+- `local-commits.bundle`: every local git branch that `origin` does not have, and every tag whose commit `origin` does not have
   (the source itself is NOT in the archive; it is expected on the remote). Restore:
   clone the upstream repo, then
-  `git fetch <restored>/repo/local-commits.bundle 'refs/heads/*:refs/heads/*'`.
-  Absent when everything is already pushed.
+  `git fetch <restored>/repo/local-commits.bundle 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'`.
+  Absent when everything is already pushed. A tag on a commit `origin` has is not in it (the commit
+  comes back with the clone, the tag name does not). If the clone already has a tag of the same name
+  pointing elsewhere, the fetch rejects that tag ("would clobber existing tag") and exits 1; the other
+  refs are restored. Use `'+refs/tags/*:refs/tags/*'` to take the backed-up tag instead.
 
 **(2) Home-relative — under `$HOME` (`home/` group in the archive)**
 - `~/.claude/skills/**` — the self-built skill library
