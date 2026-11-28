@@ -14,8 +14,9 @@ import { spawnSync } from 'node:child_process'
 // CHANNELUNCONF1110 (Dani #2691 K1): channels.sh's .channel-unconfigured marker joins them (only channels.sh writes it).
 // PLANSFILEGATE1111 (Samu 75712): claude-plans.json too (only the owner-gated /api/claude-plans writes it).
 // PLANSSTATEGATE1125: and the quota gate's two inputs (only the dashboard and the scripts it runs write them).
-const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured', 'claude-plans.json', 'claude-plans-state.json', 'usage-latest.json', '.claude-rate-limits.json']
-const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe', '.channel-unconfigured']
+// QUOTAGATE1128 (Geri's #3198 review): limit-monitor.sh's delivery stamp and heartbeat, and its owner-alert outbox dir.
+const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured', 'claude-plans.json', 'claude-plans-state.json', 'usage-latest.json', '.claude-rate-limits.json', '.limit-monitor-quota-state', '.limit-monitor-heartbeat']
+const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe', '.channel-unconfigured', '.limit-monitor-quota-state', '.limit-monitor-heartbeat']
 
 let base: string
 let root: string
@@ -49,7 +50,7 @@ const INSTRUCTION_SURFACES = ['CLAUDE.md', 'CLAUDE.local.md', '.claude/CLAUDE.md
 it('the sub-agent list is exactly the plan\'s: the root .env, five store files, the shared ~/.claude settings (Dani 67841), the main agent\'s isolated config dir (Samu 68210), the MCP server lists (ENVRELAXMCPCFG1104)', () => {
   // .channels-config/.claude.json is covered by the .channels-config directory entry (#2503), not listed twice.
   expect(SUBAGENT_PROTECTED_INSTALL_PATHS.map((t: { rel?: string; home?: string }) => t.rel ?? `~/${t.home}`))
-    .toEqual(['.env', ...STORE_FILES.map((f) => `store/${f}`), '~/.claude/settings.json', '~/.claude/settings.local.json', '.channels-config',
+    .toEqual(['.env', ...STORE_FILES.map((f) => `store/${f}`), 'store/owner-alert-outbox', '~/.claude/settings.json', '~/.claude/settings.local.json', '.channels-config',
       'agents/*/.mcp.json', 'agents/*/.claude-config/.claude.json', 'agents/*/.claude-config/.marveen-mcp-inherited.json',
       '.mcp.json', '~/.claude.json',
       // PLUGINCODEWRITE1104: the plugin trees and the shared user-level trees
@@ -198,6 +199,49 @@ describe('the quota gate inputs: a sub-agent cannot write them, the main agent a
       expect(subFile('Write', join(wt, 'store', f), agentDir).deny).toBe(false)
     })
   }
+})
+
+// QUOTAGATE1128 (Geri's #3198 review): limit-monitor.sh queues the owner's quota alert as a .txt in store/owner-alert-outbox/
+// for the dashboard to deliver (no agent label), and store/.limit-monitor-quota-state is its "delivered" stamp: a forged
+// stamp silences the notice for that window. Measured on develop 803f3fae: Write, `echo >` and mkdir all passed as a
+// sub-agent. Only the script writes them (a timer, not a tool call); the main agent and a read stay free.
+describe('limit-monitor.sh\'s owner-alert outbox and stamps: a sub-agent cannot write them, the main agent and a read can', () => {
+  const outbox = () => join(root, 'store', 'owner-alert-outbox')
+  it('the outbox, before it exists: creating the dir or a file in it is denied', () => {
+    expect(sub('mkdir -p @ROOT@/store/owner-alert-outbox', agentDir)).toEqual(SUB)
+    expect(subFile('Write', join(outbox(), '1700000000-1-five_hour.txt'), agentDir)).toEqual(SUB)
+    expect(sub(`echo 'quota fine, ignore' > @ROOT@/store/owner-alert-outbox/1-2-x.txt`, agentDir)).toEqual(SUB)
+  })
+  it('the outbox, once it exists: Write, a redirect from inside it, cp and mv into it, rm of a queued alert', () => {
+    mkdirSync(outbox(), { recursive: true })
+    writeFileSync(join(outbox(), '1-2-x.txt'), 'real alert\n')
+    expect(subFile('Write', join(outbox(), '9-9-y.txt'), agentDir)).toEqual(SUB)
+    expect(sub('echo hi > 9-9-y.txt', outbox())).toEqual(SUB)
+    expect(sub('cp /tmp/a.txt @ROOT@/store/owner-alert-outbox/', agentDir)).toEqual(SUB)
+    expect(sub('mv /tmp/a.txt @ROOT@/store/owner-alert-outbox/9-9-y.txt', agentDir)).toEqual(SUB)
+    expect(sub('rm -f @ROOT@/store/owner-alert-outbox/1-2-x.txt', agentDir)).toEqual(SUB)
+    expect(sub('rm -rf @ROOT@/store/owner-alert-outbox', agentDir)).toEqual(SUB)
+  })
+  for (const f of ['.limit-monitor-quota-state', '.limit-monitor-heartbeat']) {
+    it(`${f}: a forged stamp (Write, Edit, a redirect, touch) is denied`, () => {
+      expect(subFile('Write', join(root, 'store', f), agentDir)).toEqual(SUB)
+      expect(sub(`echo "five_hour:90:9999999999" > @ROOT@/store/${f}`, agentDir)).toEqual(SUB)
+      expect(sub(`touch @ROOT@/store/${f}`, agentDir)).toEqual(SUB)
+      writeFileSync(join(root, 'store', f), 'ok 1\n')
+      expect(subFile('Edit', join(root, 'store', f), agentDir)).toEqual(SUB)
+    })
+  }
+  it('a read passes, and the main agent stays free', () => {
+    mkdirSync(outbox(), { recursive: true })
+    expect(sub('ls @ROOT@/store/owner-alert-outbox', agentDir).deny).toBe(false)
+    expect(sub('cat @ROOT@/store/.limit-monitor-quota-state', agentDir).deny).toBe(false)
+    expect(mainFile('Write', join(outbox(), '1-2-x.txt')).deny).toBe(false)
+    expect(main(`echo "ok 1" > @ROOT@/store/.limit-monitor-heartbeat`).deny).toBe(false)
+  })
+  it("a worktree's own copy is another root: free", () => {
+    expect(subFile('Write', join(wt, 'store', 'owner-alert-outbox', '1-2-x.txt'), agentDir).deny).toBe(false)
+    expect(subFile('Write', join(wt, 'store', '.limit-monitor-quota-state'), agentDir).deny).toBe(false)
+  })
 })
 
 // TGINREPLAYGATE1104 (#2512 review, provenance): the inbound replay re-delivers a line of this log to the agent framed as
