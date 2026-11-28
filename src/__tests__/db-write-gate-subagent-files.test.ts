@@ -15,8 +15,9 @@ import { spawnSync } from 'node:child_process'
 // PLANSFILEGATE1111 (Samu 75712): claude-plans.json too (only the owner-gated /api/claude-plans writes it).
 // PLANSSTATEGATE1125: and the quota gate's two inputs (only the dashboard and the scripts it runs write them).
 // QUOTAGATE1128 (Geri's #3198 review): limit-monitor.sh's delivery stamp and heartbeat, and its owner-alert outbox dir.
-const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured', 'claude-plans.json', 'claude-plans-state.json', 'usage-latest.json', '.claude-rate-limits.json', '.limit-monitor-quota-state', '.limit-monitor-heartbeat']
-const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe', '.channel-unconfigured', '.limit-monitor-quota-state', '.limit-monitor-heartbeat']
+// QUOTAGATE1128 follow-up (Samu's touch probe): its log, whose mtime #3198's dashboard counts as a run.
+const STORE_FILES = ['provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe', '.channel-unconfigured', 'claude-plans.json', 'claude-plans-state.json', 'usage-latest.json', '.claude-rate-limits.json', '.limit-monitor-quota-state', '.limit-monitor-heartbeat', 'limit-monitor.log']
+const MISSING_TODAY = ['provenance-gate-rules.json', 'credential-gate.json', '.fleet-memgate-observe', '.channel-unconfigured', '.limit-monitor-quota-state', '.limit-monitor-heartbeat', 'limit-monitor.log']
 
 let base: string
 let root: string
@@ -241,6 +242,22 @@ describe('limit-monitor.sh\'s owner-alert outbox and stamps: a sub-agent cannot 
   it("a worktree's own copy is another root: free", () => {
     expect(subFile('Write', join(wt, 'store', 'owner-alert-outbox', '1-2-x.txt'), agentDir).deny).toBe(false)
     expect(subFile('Write', join(wt, 'store', '.limit-monitor-quota-state'), agentDir).deny).toBe(false)
+  })
+  // The follow-up (Samu's touch probe on #3198, measured ALLOW on develop 1faba7fd): #3198's dashboard counts the log's
+  // mtime as a limit-monitor run, so a touch or an appended line shows a dead script as alive.
+  it('limit-monitor.log: an append, a truncation, tee -a, touch, Write and Edit are denied; a read, the main agent and a worktree copy are free', () => {
+    const log = join(root, 'store', 'limit-monitor.log')
+    expect(sub('touch @ROOT@/store/limit-monitor.log', agentDir)).toEqual(SUB)
+    expect(sub(`echo "2026-11-28 10:00:00 quota signal unchanged" >> @ROOT@/store/limit-monitor.log`, agentDir)).toEqual(SUB)
+    expect(subFile('Write', log, agentDir)).toEqual(SUB)
+    writeFileSync(log, '2026-11-28 09:00:00 real line\n')
+    expect(sub(': > @ROOT@/store/limit-monitor.log', agentDir)).toEqual(SUB)
+    expect(sub('echo x | tee -a @ROOT@/store/limit-monitor.log', agentDir)).toEqual(SUB)
+    expect(sub('touch @ROOT@/store/limit-monitor.log', agentDir)).toEqual(SUB)
+    expect(subFile('Edit', log, agentDir)).toEqual(SUB)
+    expect(sub('tail -n 50 @ROOT@/store/limit-monitor.log', agentDir).deny).toBe(false)
+    expect(main('echo x >> @ROOT@/store/limit-monitor.log').deny).toBe(false)
+    expect(subFile('Write', join(wt, 'store', 'limit-monitor.log'), agentDir).deny).toBe(false)
   })
 })
 
