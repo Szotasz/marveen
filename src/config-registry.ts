@@ -1365,6 +1365,34 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== newValue.trim().toLowerCase(),
   },
   {
+    // APPROVALTGBOT1128: one more way to approve (agent_create on Telegram, with a separate bot), so off by default and
+    // switching it on needs the owner's session.
+    key: 'APPROVAL_TELEGRAM_BOT',
+    type: 'string',
+    default: 'off',
+    description: 'Telegramos jóváhagyás külön bottal (APPROVALTGBOT1128): bekapcsolva (on) az ügynök-létrehozás (agent_create) jóváhagyás-kérése egy KÜLÖN jóváhagyó bottal megy a gazda privát Telegram-chatjébe, Jóváhagyom / Elutasítom gombbal. A szöveget a szerver állítja össze a tárolt specifikációból, és a gomb megnyomását a szerver maga olvassa ki a jóváhagyó bot tokenjével (a gazda azonosítója, a privát chat, a kiküldött és nem szerkesztett üzenet, egyszeri kód); az ügynök nincs az úton. Kell hozzá: egy új bot a BotFathernél (nem a fő bot: annak üzeneteit a csatorna-plugin olvassa), a tokenje a vaultban "approval-telegram-bot-token" néven, a gazda egyszer írjon a botnak (/start), és az APPROVAL_TELEGRAM_OWNER_ID. Minden más kérés a régi úton marad. Alapból KI.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (['on', 'off'].includes(v.trim().toLowerCase()) ? null : 'on vagy off'),
+    loosens: (oldValue: string, newValue: string) => oldValue.trim().toLowerCase() !== 'on' && newValue.trim().toLowerCase() === 'on',
+  },
+  {
+    // APPROVALTGBOT1128: whose click approves on the approval bot. Explicit (the channel allowlist's first entry is a
+    // delivery guess, never an approver), and ANY change needs the owner's session (as TEAMS_OWNER_AAD_OBJECT_ID).
+    key: 'APPROVAL_TELEGRAM_OWNER_ID',
+    type: 'string',
+    default: '',
+    description: 'A gazda Telegram-felhasználói azonosítója (pozitív szám, a saját chated száma) a telegramos jóváhagyáshoz (APPROVAL_TELEGRAM_BOT): a jóváhagyó bot csak neki küldi a kérést, és csak az ő gombnyomása dönt. Üresen a telegramos jóváhagyás nem működik (a döntés a dashboardon marad). Az ALLOWED_CHAT_ID és a fő bot párosítási listája ehhez nem elég: ott a címzett áll, nem a jóváhagyó.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (v.trim() === '' || /^[1-9][0-9]{0,19}$/.test(v.trim())
+      ? null
+      : 'Pozitív Telegram-felhasználói azonosító kell (a saját chated száma); csoport (negatív szám) nem lehet. / A positive Telegram user id is required (your own chat number); a group (a negative number) is not allowed.'),
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
     key: 'SCHEDULED_DELIVERY_CHANNEL',
     type: 'string',
     default: '',

@@ -1955,6 +1955,45 @@ export function initDatabase(dbPathOverride?: string): void {
       note TEXT
     )
   `)
+  // APPROVALTGBOT1128: an agent_create approval the server posted with the SEPARATE approval bot (not the main bot, whose
+  // updates belong to the channel plugin) into the owner's private Telegram chat, with two inline buttons. chat_id and
+  // message_id name the posted message, so a click counts only on it; owner_user_id is a snapshot of
+  // APPROVAL_TELEGRAM_OWNER_ID at posting; bot_id the bot that posted it; text_sha256 is over the text Telegram returned
+  // for the posted message (a click on an edited message is refused); content_hash is the approval's anchor the post
+  // showed; approve_nonce_sha256 / reject_nonce_sha256 the hashes of the two buttons' one-time values (separate, so a
+  // reject click never yields an approve value); markup_sha256 the hash of the inline keyboard Telegram returned (a
+  // click on a message whose buttons were swapped is refused, edit_date or not). decided_at closes the row once;
+  // decided_by_update is the Telegram update that decided (unique: one click, one decision). A security table.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_telegram_posts (
+      approval_id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      message_id INTEGER NOT NULL,
+      bot_id TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      text_sha256 TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      approve_nonce_sha256 TEXT NOT NULL,
+      reject_nonce_sha256 TEXT NOT NULL,
+      markup_sha256 TEXT NOT NULL,
+      lang TEXT NOT NULL,
+      posted_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      decision TEXT,
+      decided_by_update INTEGER
+    )
+  `)
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_telegram_posts_message ON approval_telegram_posts(bot_id, chat_id, message_id)')
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_telegram_posts_update ON approval_telegram_posts(bot_id, decided_by_update) WHERE decided_by_update IS NOT NULL')
+  // APPROVALTGBOT1128: the approval bot's getUpdates offset, per bot (a token for another bot starts from its own
+  // offset), so an update is read once across restarts. A security table with the posts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_telegram_state (
+      bot_id TEXT PRIMARY KEY,
+      next_offset INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -8692,6 +8731,107 @@ export function getApprovalGromzoPost(approvalId: string): ApprovalGromzoPost | 
 export function moveApprovalGromzoPost(approvalId: string, from: string, to: string, note: string | null = null): boolean {
   return db.prepare('UPDATE approval_gromzo_posts SET state = ?, updated_at = ?, note = COALESCE(?, note) WHERE approval_id = ? AND state = ?')
     .run(to, Math.floor(Date.now() / 1000), note, approvalId, from).changes > 0
+}
+
+// APPROVALTGBOT1128: the approval bot's posts and offset (see the tables' comments).
+export interface ApprovalTelegramPost {
+  approval_id: string
+  chat_id: string
+  message_id: number
+  bot_id: string
+  owner_user_id: string
+  text_sha256: string
+  content_hash: string
+  approve_nonce_sha256: string
+  reject_nonce_sha256: string
+  markup_sha256: string
+  lang: string
+  posted_at: number
+  decided_at: number | null
+  decision: string | null
+  decided_by_update: number | null
+}
+
+export function recordApprovalTelegramPost(p: {
+  approvalId: string; chatId: string; messageId: number; botId: string; ownerUserId: string; textSha256: string
+  contentHash: string; approveNonceSha256: string; rejectNonceSha256: string; markupSha256: string; lang: string
+}): boolean {
+  return db.prepare(`
+    INSERT OR IGNORE INTO approval_telegram_posts (approval_id, chat_id, message_id, bot_id, owner_user_id, text_sha256, content_hash, approve_nonce_sha256, reject_nonce_sha256, markup_sha256, lang, posted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(p.approvalId, p.chatId, p.messageId, p.botId, p.ownerUserId, p.textSha256, p.contentHash, p.approveNonceSha256,
+    p.rejectNonceSha256, p.markupSha256, p.lang, Math.floor(Date.now() / 1000)).changes > 0
+}
+
+export function getApprovalTelegramPost(approvalId: string): ApprovalTelegramPost | undefined {
+  return db.prepare('SELECT * FROM approval_telegram_posts WHERE approval_id = ?').get(approvalId) as ApprovalTelegramPost | undefined
+}
+
+/** The post a click names: the bot that posted it, the chat and the message. Decided rows too (the caller says why). */
+export function getApprovalTelegramPostByMessage(botId: string, chatId: string, messageId: number): ApprovalTelegramPost | undefined {
+  return db.prepare('SELECT * FROM approval_telegram_posts WHERE bot_id = ? AND chat_id = ? AND message_id = ?')
+    .get(botId, chatId, messageId) as ApprovalTelegramPost | undefined
+}
+
+/** How many posts still wait for the owner (undecided, the request pending and not timed out): the poller asks Telegram
+ *  only while this is above zero. */
+export function countPendingApprovalTelegramPosts(): number {
+  const now = Math.floor(Date.now() / 1000)
+  const r = db.prepare(`
+    SELECT COUNT(*) AS n FROM approval_telegram_posts p JOIN approvals a ON a.id = p.approval_id
+    WHERE p.decided_at IS NULL AND a.status = 'pending' AND (a.timeout_at IS NULL OR a.timeout_at > ?)
+  `).get(now) as { n: number }
+  return r.n
+}
+
+export function getApprovalTelegramOffset(botId: string): number {
+  const r = db.prepare('SELECT next_offset FROM approval_telegram_state WHERE bot_id = ?').get(botId) as { next_offset: number } | undefined
+  return r?.next_offset ?? 0
+}
+
+/** Moves the offset forward only (a lower value is ignored): an update once read is never read again. */
+export function advanceApprovalTelegramOffset(botId: string, nextOffset: number): void {
+  db.prepare(`
+    INSERT INTO approval_telegram_state (bot_id, next_offset, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(bot_id) DO UPDATE SET next_offset = MAX(next_offset, excluded.next_offset), updated_at = excluded.updated_at
+  `).run(botId, nextOffset, Math.floor(Date.now() / 1000))
+}
+
+export type TelegramPostDecisionOutcome = ApprovalDecideOutcome | 'post_already_used' | 'update_already_used'
+
+/**
+ * One owner click on the server-posted Telegram message, in ONE transaction: the post row closes once (with the update
+ * that decided, unique per bot), and the request is resolved only while it is still pending, its content_hash still the
+ * one the post showed, and (for an approval) its timeout not passed. The caller has already checked the owner, the
+ * private chat, the posted message, its unchanged text and buttons, and the pressed button's nonce.
+ */
+export function decideApprovalFromTelegram(p: {
+  approvalId: string; status: 'approved' | 'rejected'; updateId: number; ownerUserId: string
+}): { outcome: TelegramPostDecisionOutcome; approval: Approval | undefined } {
+  const now = Math.floor(Date.now() / 1000)
+  let res: { outcome: TelegramPostDecisionOutcome; approval: Approval | undefined }
+  try {
+    res = db.transaction(() => {
+      const post = db.prepare('SELECT content_hash FROM approval_telegram_posts WHERE approval_id = ? AND decided_at IS NULL')
+        .get(p.approvalId) as { content_hash: string } | undefined
+      if (!post) return { outcome: 'post_already_used' as const, approval: getApproval(p.approvalId) }
+      // The post showed the owner this content_hash: the core decides only while the request still carries it.
+      const outcome: TelegramPostDecisionOutcome = decideApprovalInTx({
+        approvalId: p.approvalId, status: p.status, now, expectedContentHash: post.content_hash,
+        resolvedBy: approvalResolvedBy({ channel: 'telegram', mode: 'button', trail: [p.ownerUserId, String(p.updateId)] }),
+      })
+      db.prepare(`
+        UPDATE approval_telegram_posts SET decided_at = ?, decision = ?, decided_by_update = ?
+        WHERE approval_id = ? AND decided_at IS NULL
+      `).run(now, outcome === 'decided' ? p.status : `${p.status}:${outcome}`, p.updateId, p.approvalId)
+      return { outcome, approval: getApproval(p.approvalId) }
+    })()
+  } catch (err) {
+    if (err instanceof Error && /UNIQUE constraint failed/.test(err.message)) return { outcome: 'update_already_used', approval: getApproval(p.approvalId) }
+    throw err
+  }
+  if (res.outcome === 'decided') runApprovalConsumer(p.approvalId)
+  return res
 }
 
 // TEAMSAPPROVECARD1118: the Teams approval card rows (see the table's comment).

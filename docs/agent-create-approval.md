@@ -114,7 +114,8 @@ hash, and whoever decides must pass back exactly the hash the owner was shown. A
   dashboard directly anyway.
 - **In a channel**, an adapter checks the owner's decision itself and passes the hash it showed.
   - A filed request asks the owner right away, as any server-filed request does: a Teams card, else the Slack reply path,
-    else the Slack DM, else Telegram. It goes to the Gromzo app too, when mxd can take decisions. A delivery that fails
+    else the Slack DM, else Telegram. It goes to the Gromzo app too, when mxd can take decisions, and to the separate
+    Telegram approval bot when that is switched on. A delivery that fails
     never undoes the filing: the request stays pending on the dashboard, and the failure is logged.
   - **Teams card**: rendered from the stored spec, only while its canonical JSON still hashes to the approval's hash.
     The card shows the server's whole text, and the click is decided against the hash the card showed.
@@ -127,7 +128,22 @@ hash, and whoever decides must pass back exactly the hash the owner was shown. A
     pending to consuming, then mxd's `decision_consume`, then the core decides against the hash the posted row showed.
     If mxd refuses, the row goes back to pending and nothing is decided. If mxd spent it but the core did not decide,
     the main agent is alerted and nothing is created.
-  - Telegram's button comes in a separate change.
+  - **Telegram approval bot** (`APPROVAL_TELEGRAM_BOT=on`, APPROVALTGBOT1128): a SEPARATE bot, never the main one (the
+    main bot's updates belong to the channel plugin, and a decision relayed by the main agent would rest on the shared
+    token). The server posts the stored spec's text with the approval bot into the private chat of the explicit owner
+    (`APPROVAL_TELEGRAM_OWNER_ID`), with two buttons, each carrying its own one-time nonce in its callback data (only
+    their hashes are stored, so a reject click never carries what approves). The server reads the clicks itself (`getUpdates` with the approval bot's token, every 10 s while a post
+    waits, the offset stored per bot). A click decides only when it comes from the owner (not a bot), in the owner's
+    private chat, on the posted message of a recorded row, sent by this bot, never edited and still carrying the text
+    AND the inline keyboard Telegram returned at posting (a swapped button is refused whether or not Telegram marks a
+    keyboard-only edit), with the pressed button's own nonce. The core then decides against the hash the post showed; one
+    update decides one post (`resolved_by = telegram_button:<owner id>:<update id>`). A request too long for one Telegram
+    message gets a short dashboard pointer and no row. Setup: a new bot at BotFather, its token in the vault as
+    `approval-telegram-bot-token` (the main bot's token and every agent's own bot token are refused: at the server's start, within one poll of the change and on every post, and the main agent is told once which bot it is), the owner sends the bot `/start` once, then the two
+    settings (both need the owner's session). What a stolen approval-bot token allows: posting or editing the bot's
+    messages (a post with a changed text or changed buttons is refused) and reading or dropping its updates (a lost
+    click decides nothing, and the values it carried approve nothing on the unchanged post); it cannot make the
+    owner's click.
 
 On a channel a rejection is bound to the shown hash too (as the Teams card always was); on the dashboard it stays a plain
 status write.
