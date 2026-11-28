@@ -66,6 +66,12 @@ describe('makeWorkerCtx', () => {
     expect(makeWorkerCtx('s', '/tmp/h').modelOverride).toBeNull()
   })
 
+  it('takes the own setup-token file setting from the fourth argument; absent = null (fleet token, as before)', () => {
+    // WORKEROAUTHFILE: the settings are opt-in per worker; the older three-argument calls keep working.
+    expect(makeWorkerCtx('s', '/tmp/h').oauthTokenFile).toBeNull()
+    expect(makeWorkerCtx('s', '/tmp/h', null, '/var/t/slow.token').oauthTokenFile).toBe('/var/t/slow.token')
+  })
+
   it('derives configDir and scratchDir from homeDir', () => {
     const ctx = makeWorkerCtx('test-session', '/tmp/test-home')
     expect(ctx.session).toBe('test-session')

@@ -54,6 +54,12 @@ export function resolveOauthTokenFileSetting(rawConfigJson: string): OauthTokenF
   if (!Object.prototype.hasOwnProperty.call(config, OAUTH_TOKEN_FILE_KEY)) return { state: 'unset' }
   const value = (config as Record<string, unknown>)[OAUTH_TOKEN_FILE_KEY]
   if (typeof value !== 'string') return { state: 'invalid', reason: 'not-a-string' }
+  return validateTokenFilePath(value)
+}
+
+// Pure: one raw path value -> set (trimmed) or invalid. Shared by the agent
+// field above and the worker settings below, so both take the same path shape.
+function validateTokenFilePath(value: string): Exclude<OauthTokenFileSetting, { state: 'unset' }> {
   const path = value.trim()
   if (!path) return { state: 'invalid', reason: 'blank' }
   if (!path.startsWith('/')) return { state: 'invalid', reason: 'not-absolute' }
@@ -184,6 +190,55 @@ export function decideOwnOauthToken(input: {
   const check = checkOauthTokenFile(setting.path, { uid: input.uid, fleetTokenPath: input.fleetTokenPath })
   if (!check.ok) return { kind: 'refused', path: check.path, reason: check.reason, detail: check.detail }
   return { kind: 'ok', path: check.path, fingerprint: check.fingerprint }
+}
+
+// --- Background workers (marveen-worker, marveen-worker-fast) ---------------
+//
+// A worker has no agent-config.json; its own setup-token file comes from an
+// install setting (WORKER_OAUTH_TOKEN_FILE for the slow worker,
+// WORKER_OAUTH_TOKEN_FILE_FAST for the fast one). Same fail-closed rules as the
+// per-agent field: the setting is "unset" only when it is absent or empty; a
+// setting that is present but unusable refuses the worker start and never
+// degrades to the fleet token. Unset leaves the launch exactly as it was.
+
+export type WorkerOauthTokenDecision =
+  | { kind: 'unset' }
+  | { kind: 'own'; path: string; fingerprint: string }
+  | { kind: 'refused'; path: string | null; reason: string; detail: string }
+
+export function decideWorkerOauthToken(input: {
+  /** The raw install setting: undefined or '' means not set. */
+  configured: string | null | undefined
+  /** True when this worker launch would carry the main agent's custom-provider env (ANTHROPIC_BASE_URL ...).
+   *  A function, evaluated ONLY for a non-empty, valid setting: resolving the provider reads the vault and
+   *  writes a launch-secret file, which an unset setting (= today's behaviour) must not cause. */
+  usesCustomProvider: () => boolean
+  fleetTokenPath: string
+  uid: number | null
+}): WorkerOauthTokenDecision {
+  if (input.configured === undefined || input.configured === null || input.configured === '') return { kind: 'unset' }
+  const setting = validateTokenFilePath(input.configured)
+  if (setting.state === 'invalid') return { kind: 'refused', path: null, reason: setting.reason, detail: '' }
+  // Same conflict the per-agent field refuses (oauthTokenFileConflict, 'custom-provider'): a setup-token is a
+  // Claude OAuth credential, and next to a custom-provider endpoint the CLI would send it to that third party.
+  if (input.usesCustomProvider()) return { kind: 'refused', path: setting.path, reason: 'custom-provider', detail: '' }
+  const check = checkOauthTokenFile(setting.path, { uid: input.uid, fleetTokenPath: input.fleetTokenPath })
+  if (!check.ok) return { kind: 'refused', path: check.path, reason: check.reason, detail: check.detail }
+  return { kind: 'own', path: check.path, fingerprint: check.fingerprint }
+}
+
+// The worker launch-line fragment (the worker launch chains with ';', not '&&').
+// The path passed the whitelist above, so the single quotes cannot be escaped.
+// The check above ran in JS a moment before this shell reads the file, so the shell re-checks what it
+// reads: an unreadable file, an empty one or one without the setup-token prefix ends the launch
+// (exit 1) instead of starting the worker with an empty or foreign token. The value never leaves the shell.
+export function workerOauthTokenExport(path: string): string {
+  // The tmux server's global env is inherited by every new session, and an inherited API key or auth token
+  // outranks the OAuth token: a worker meant to run on its own setup-token must not silently run on one of them
+  // (the same strip as the agent side, inherited-auth-unset.ts, 'own token file').
+  return `unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; ` +
+    `_wt="$(cat '${path}')" || exit 1; ` +
+    `case "$_wt" in ${SETUP_TOKEN_PREFIX}*) export CLAUDE_CODE_OAUTH_TOKEN="$_wt"; unset _wt ;; *) exit 1 ;; esac; `
 }
 
 // Pure: does the launch env actually carry the decided own token? The launcher

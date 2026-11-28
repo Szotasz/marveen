@@ -1657,6 +1657,24 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     valueSet: ['', ...AGENT_MODEL_CHOICES],
   },
+  {
+    key: 'WORKER_OAUTH_TOKEN_FILE',
+    type: 'string',
+    default: '',
+    description: 'A LASSÚ háttér-worker saját setup-token fájljának ABSZOLÚT útja (a fájlt a tulajdonosa hozza létre, 0600 módban, sk-ant-oat előtaggal; a token értéke SOHA nem ide kerül, csak az út). Üresen a worker a flotta-tokent használja, tehát a beállítás nélkül semmi nem változik. Ha meg van adva, de hibás (nem abszolút út, hiányzó fájl, idegen tulajdonos, 0600-nál szélesebb jog, rossz előtag, vagy a flotta-fájl vagy annak másolata), a worker NEM indul, és NEM esik vissza a flotta-tokenre. A módosítás a szolgáltatás újraindítása után, a worker következő indításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'WORKER_OAUTH_TOKEN_FILE_FAST',
+    type: 'string',
+    default: '',
+    description: 'A GYORS háttér-worker saját setup-token fájljának ABSZOLÚT útja. Ugyanazok a szabályok, mint a WORKER_OAUTH_TOKEN_FILE-nál: üresen a flotta-token marad, megadva és hibásan a worker nem indul, és nem esik vissza a flotta-tokenre. A módosítás a szolgáltatás újraindítása után, a worker következő indításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
+  },
   // --- Claude plans module (PR2b/PR2c) ---
   // Gates BOTH POST /api/claude-plans/rotate (returns 409 while off) and the
   // heartbeat script's decision to call it (scripts/claude-plan-rotate-check.ts)

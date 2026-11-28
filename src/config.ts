@@ -161,6 +161,14 @@ export const DEFAULT_AGENT_MODEL_IS_DISTRIBUTION = !cfg('DEFAULT_AGENT_MODEL')
 // analysis keyword -- classifyPriority), for which the strongest model is overkill.
 export const WORKER_MODEL_FAST = cfg('MARVEEN_WORKER_MODEL_FAST') || ''
 
+// WORKEROAUTHFILE: an optional setup-token file of its OWN per background worker
+// (slow / fast), so the workers can run on another plan than the fleet token.
+// Empty or absent = the worker keeps the fleet token exactly as before. A value
+// that is set but unusable refuses the worker start (fail-closed, see
+// agent-oauth-token-file.ts); it never falls back to the fleet token.
+export const WORKER_OAUTH_TOKEN_FILE = cfg('WORKER_OAUTH_TOKEN_FILE') || ''
+export const WORKER_OAUTH_TOKEN_FILE_FAST = cfg('WORKER_OAUTH_TOKEN_FILE_FAST') || ''
+
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 
