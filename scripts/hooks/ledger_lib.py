@@ -62,6 +62,10 @@ _MIGRATION_COLUMNS = (
     ("sender_id", "TEXT"),
     ("sender_name", "TEXT"),
     ("sender_role", "TEXT"),
+    # VOICEREPLYGATE1128 (Marveen 6124): the tool an outbound row was sent with, when a reply tool sent it
+    # (ledger-outbound.py); NULL for the hooks' own rows (voice toolkit, progress watchdog/clear, chat commands) and for
+    # every row written before this column existed.
+    ("via", "TEXT"),
 )
 
 RECENT_LIMIT = 20
@@ -324,7 +328,7 @@ def log_inbound(agent_id, chat_id, message_id, text, ts,
         con.close()
 
 
-def log_outbound(agent_id, chat_id, text, message_id=None):
+def log_outbound(agent_id, chat_id, text, message_id=None, via=None):
     """Record an outbound reply.
 
     message_id: the Telegram message_id returned by the reply tool, or None.
@@ -332,6 +336,7 @@ def log_outbound(agent_id, chat_id, text, message_id=None):
     a double-fire of the hook does not produce a duplicate row. When None the
     constraint does not trigger (NULL != NULL in SQL), preserving the existing
     behaviour for callers that do not supply a message_id.
+    via: the reply tool's name when a reply tool sent it (ledger-outbound.py), else None.
     Note: INSERT OR IGNORE silently swallows ALL constraint violations, not
     only UNIQUE conflicts. This is intentional: a duplicate outbound row is
     harmless, and we never want the ledger write to raise an exception.
@@ -342,10 +347,10 @@ def log_outbound(agent_id, chat_id, text, message_id=None):
         mid = str(message_id) if message_id is not None else None
         con.execute(
             "INSERT OR IGNORE INTO conversation_log"
-            " (agent_id, chat_id, direction, message_id, text, ts, created_at)"
-            " VALUES (?, ?, 'out', ?, ?, ?, ?)",
+            " (agent_id, chat_id, direction, message_id, text, ts, created_at, via)"
+            " VALUES (?, ?, 'out', ?, ?, ?, ?, ?)",
             (str(agent_id), str(chat_id), mid, text,
-             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), now),
+             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), now, via),
         )
         con.commit()
     finally:
@@ -515,6 +520,54 @@ def open_question_with_age(agent_id):
         if later_out:
             return None  # the last inbound has already been answered
         return (chat_id, message_id, text, ts, created_at, att_kind, att_file_id)
+    finally:
+        con.close()
+
+
+# VOICEREPLYGATE1128: how an owner's voice message shows in the ledger. Without a transcript the row keeps
+# attachment_kind="voice" (ledger-capture.py); with one, the router replaced the body with this prefix and dropped the
+# attachment attributes (message-router.ts injectTranscript).
+VOICE_TRANSCRIPT_PREFIX = "[Hang átirat]:"
+# A spoken reply's outbound row (scripts/voice/_vtools.py _log_spoken_reply): written after sendVoice answered, with
+# the message_id Telegram returned. The prefix alone is not proof: the row must carry that message_id.
+VOICE_OUT_PREFIX = "[voice] "
+# The text reply is the Telegram reply tool's send ONLY (Revizor 6122 R1, Marveen 6124): an outbound row whose `via`
+# is this tool, with the message_id its result gave. The hooks' own rows (progress watchdog, progress-clear fallback,
+# chat commands, the voice toolkit) carry no `via`, so they never count.
+TELEGRAM_REPLY_TOOL = "mcp__plugin_telegram_telegram__reply"
+
+
+def voice_reply_status(agent_id):
+    """The voice-reply state of the owner's most recent inbound, or None when that is not a voice message.
+
+    Returns (chat_id, message_id, text, created_at, has_voice, has_text): has_voice is a spoken reply to the SAME chat
+    after the inbound (a "[voice] " row with a Telegram message_id), has_text a reply-tool row to that chat after it
+    (a row sent with the Telegram reply tool, `via`, with its message_id). The OWNER's most recent inbound is
+    checked (Marveen 6124), so a paired user's later message does not hide an unanswered voice message. "After" is the open-question window: written after the inbound row, or sent after the
+    inbound arrived (its ts), since the inbound row is written when the model processes the message."""
+    con = connect()
+    try:
+        row = con.execute(
+            "SELECT chat_id, message_id, text, ts, created_at, id, attachment_kind, sender_role"
+            " FROM conversation_log"
+            " WHERE agent_id=? AND direction='in' AND sender_role='owner' ORDER BY created_at DESC, id DESC LIMIT 1",
+            (str(agent_id),),
+        ).fetchone()
+        if not row:
+            return None
+        chat_id, message_id, text, ts, created_at, rid, att_kind, _role = row  # the query takes owner rows only
+        if att_kind != "voice" and not (text or "").lstrip().startswith(VOICE_TRANSCRIPT_PREFIX):
+            return None
+        arrived = _arrival_epoch(ts, created_at)
+        outs = con.execute(
+            "SELECT text, message_id, via FROM conversation_log"
+            " WHERE agent_id=? AND chat_id=? AND direction='out'"
+            "   AND (created_at > ? OR (created_at = ? AND id > ?) OR created_at > ?)",
+            (str(agent_id), str(chat_id), created_at, created_at, rid, arrived),
+        ).fetchall()
+        has_voice = any((t or "").startswith(VOICE_OUT_PREFIX) and mid for t, mid, _via in outs)
+        has_text = any(via == TELEGRAM_REPLY_TOOL and mid for _t, mid, via in outs)
+        return (chat_id, message_id, text, created_at, has_voice, has_text)
     finally:
         con.close()
 

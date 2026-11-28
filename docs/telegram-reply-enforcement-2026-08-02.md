@@ -64,6 +64,28 @@ unanswered question → block; answered (outbound logged) → allow; acknowledge
 allow; stale → allow; max-block backstop → allow; no-inbound (heartbeat-only turn)
 → allow. All pass.
 
+## Voice reply (VOICEREPLYGATE1128, opt-in)
+
+With `VOICE_REPLY_GUARD=on` (the dashboard setting, or the install's `.env`), the owner's voice message needs two
+replies before the turn may end: a spoken one and a short text one, to the same chat.
+
+- A voice message is the owner's most recent inbound row (`sender_role = 'owner'`; a paired user's later message does
+  not hide it) with either `attachment_kind = "voice"`
+  (no transcript) or a body starting `[Hang átirat]:` (the router's transcript).
+- The spoken reply's proof is the outbound row the voice toolkit writes after `sendVoice` answered
+  (`scripts/voice/_vtools.py` `_log_spoken_reply`): text `[voice] ...` and Telegram's `message_id`. A `[voice]` row
+  without a `message_id`, one to another chat, or one from before the voice message does not count.
+- The text reply is a Telegram reply-tool send to that chat after the voice message: an outbound row whose `via`
+  column names `mcp__plugin_telegram_telegram__reply`, with its `message_id` (`ledger-outbound.py` writes `via`). The
+  hooks' own rows (progress watchdog, progress-clear fallback, chat-command answers, the voice toolkit) have no `via`
+  and never count.
+- The block names what is missing: the spoken reply (`tts.sh`), the text reply (the reply tool), or both.
+- Unchanged: a text message, a paired user's voice message, a voice acknowledgement ("köszi"), a message older than
+  `STALE_SECONDS`, an install without the voice toolkit (`~/.local/share/marveen-voice/venv/bin/python`). The block
+  counter per message and `MAX_BLOCKS` are shared with the reply guard.
+- When the voice message has no reply at all, the guard's usual block comes first; the voice check runs once a reply
+  exists.
+
 ## Re-sync regression check (upstream)
 
 This fix is being submitted upstream (Szotasz/marveen). When a later update

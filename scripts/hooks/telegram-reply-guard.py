@@ -41,6 +41,13 @@ tool either does it use provider-agnostic wording. A source that names a DIFFERE
 provider than the configured one never borrows the configured tool: that would be
 the wrong tool, which is exactly the failure being fixed (_directive_target).
 
+VOICE REPLY (VOICEREPLYGATE1128, opt-in VOICE_REPLY_GUARD=on): when the most recent inbound is the OWNER's voice
+message (attachment_kind="voice", or the router's "[Hang átirat]:" transcript), a text reply alone does not close the
+turn: a spoken reply to the same chat must have gone out too, and a short text with the reply tool. The spoken reply's
+proof is the ledger row the voice toolkit writes after sendVoice answered ("[voice] ...", with Telegram's message_id),
+never the model's word. Off, a paired user's voice, a text message, a missing voice toolkit, an acknowledgement, a
+stale message: the old behaviour. The same per-message block counter and MAX_BLOCKS backstop apply.
+
 Safety: any error -> allow the stop (exit 0). A guard hook must never wedge the
 session. agent_id is derived from the session cwd, so it is generic across all
 channel agents and never cross-contaminates.
@@ -245,6 +252,92 @@ def _record_block(path, message_id, count):
         pass
 
 
+# VOICEREPLYGATE1128: the switch is read as settings-store resolves it (the dashboard override, then the install's
+# .env). It only TIGHTENS (a turn needs one more reply), so a .env line may switch it on; switching it off from the
+# dashboard needs the owner's session (the registry's `loosens`).
+OVERRIDES_NAME = "config-overrides.json"
+
+
+def _setting(key, install=None):
+    install = install or ledger_lib._install_dir()
+    try:
+        with open(os.path.join(install, "store", OVERRIDES_NAME), encoding="utf-8") as fh:
+            ov = json.load(fh)
+        v = ov.get(key) if isinstance(ov, dict) else None
+        # a blank override is a value (the store answers it, so the switch is off), never a fall-through to .env
+        if isinstance(v, str):
+            return v.strip()
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(os.path.join(install, ".env"), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith(key + "="):
+                    v = line.split("=", 1)[1].strip().strip("\"'")
+                    return v or None
+    except OSError:
+        pass
+    return None
+
+
+def _voice_gate_on(install=None):
+    """The settings store's answer for VOICE_REPLY_GUARD (parity-tested in src/__tests__/settings-overrides-only.test.ts)."""
+    return (_setting("VOICE_REPLY_GUARD", install) or "off").lower() == "on"
+
+
+def _voice_toolkit_installed():
+    """The installed toolkit tts.sh runs from (scripts/install-voice.sh DEST). Without it no spoken reply can go out,
+    so the gate never asks for one (it would only block until the backstop)."""
+    return os.path.exists(os.path.join(os.path.expanduser("~"), ".local", "share", "marveen-voice", "venv", "bin", "python"))
+
+
+def _voice_gate(agent_id):
+    """Blocks the stop (prints the decision and exits) when the owner's voice message lacks the spoken or the text
+    reply. Returns when there is nothing to ask for. Never raises."""
+    try:
+        if not _voice_gate_on() or not _voice_toolkit_installed():
+            return
+        st = ledger_lib.voice_reply_status(agent_id)
+        if not st:
+            return
+        chat_id, message_id, text, created_at, has_voice, has_text = st
+        if has_voice and has_text:
+            return
+        body = (text or "").strip()
+        if body.startswith(ledger_lib.VOICE_TRANSCRIPT_PREFIX):
+            body = body[len(ledger_lib.VOICE_TRANSCRIPT_PREFIX):].strip()
+            if _is_ack(body):
+                return
+        if created_at is not None and (int(time.time()) - int(created_at)) > STALE_SECONDS:
+            return
+        path = _statefile(agent_id)
+        count = _block_count(path, message_id)
+        if count >= MAX_BLOCKS:
+            return
+        _record_block(path, message_id, count + 1)
+        print(json.dumps({"decision": "block", "reason": _voice_reason(chat_id, has_voice, has_text)}))
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        return
+
+
+def _voice_reason(chat_id, has_voice, has_text):
+    missing = []
+    if not has_voice:
+        missing.append(
+            f"HANGVÁLASZ a tts.sh-val ugyanarra a chatre (chat_id={chat_id}); a bizonyíték a küldés után a naplóba "
+            f"kerülő [voice] sor a Telegram message_id-jével, a kijelentés nem elég")
+    if not has_text:
+        tool = _REPLY_TOOLS.get("telegram")
+        missing.append(f"rövid SZÖVEGES válasz a {tool} toollal (chat_id={chat_id}): mit mondtál hangban, egy-két mondat")
+    return (
+        f"🎙️ A TULAJ HANGÜZENETÉRE (chat_id={chat_id}) hangban ÉS szövegben is válaszolni kell. Hiányzik: "
+        + "; ".join(missing) + ". Küldd el MOST, utána zárhatod a fordulót."
+    )
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -258,6 +351,8 @@ def main():
     except Exception:
         sys.exit(0)  # ledger unavailable -> never wedge the stop
     if not oq:
+        # Answered: by text, by voice, or both. VOICEREPLYGATE1128 asks for both on the owner's voice message.
+        _voice_gate(agent_id)
         sys.exit(0)  # nothing open, or already answered by a reply-tool call
 
     # open_question_with_age() also returns the inbound's attachment columns.
