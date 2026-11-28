@@ -253,6 +253,7 @@ export const PROTECTED_INSTALL_PATHS = [
   // store/extra-hooks.json and local-hooks/ are EXTRA_HOOKS_PAIR below (MAINEXTRAHOOKS1123): on the sub-agent list
   // always, and on the main agent's list unless the owner's EXTRA_HOOKS_MAIN_AGENT_WRITE switch is on.
   { rel: 'store/autonomy-config.json' },
+  { rel: 'store/mode-presets.json' }, // MODEPRESETS1109: only the owner API grants mode authority.
   // The sub-agents' sender-role gates (GROMZOGATECONF1030 (c), Samu 59516): only the dashboard writes them, so no
   // agent can widen its own gate for its next restart.
   { rel: 'store/agent-sender-role-gates.json' },
@@ -696,7 +697,7 @@ export function installTargets(root = INSTALL_ROOT, subAgent = false, projectDir
 // protected directory every relative word is a candidate.
 const PATH_LIKE_RX = /\/|\.\w|^~/
 export const TARGET_SEGMENT_NAMES = new Set(['settings.json', 'settings.local.json', 'hooks', 'self-pace-gate.mjs',
-  'extra-hooks.json', 'autonomy-config.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.net-target-hosts.json', '.extra-hooks-digest.json', 'custom-providers.json', 'context-guard.json', '.claude', 'scripts', 'store', '.', '..', '~',
+  'extra-hooks.json', 'autonomy-config.json', 'mode-presets.json', 'agent-sender-role-gates.json', 'config-overrides.json', '.owner-slack-target', '.net-target-hosts.json', '.extra-hooks-digest.json', 'custom-providers.json', 'context-guard.json', '.claude', 'scripts', 'store', '.', '..', '~',
   '.env', 'provenance-gate-rules.json', 'outgoing-copy-gate-rules.json', 'credential-gate.json', 'egress-measure-hosts.json', '.fleet-memgate-observe',
   // GATEFILES1110: an agent's agent-config.json, from its parent (`cd agents/samu && sed -i ... agent-config.json`)
   'agent-config.json',
