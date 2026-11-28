@@ -372,6 +372,11 @@ export const PROTECTED_INSTALL_PATHS = [
 //                                          limit-monitor.sh writes them (a timer, no Claude involved); no skill or task
 //                                          names them (measured 2026-11-28), so the main agent stays free. The entries
 //                                          hold while the files do not exist yet (a missing target is a creation).
+//   store/limit-monitor.log                (QUOTAGATE1128 follow-up, Samu's touch probe on #3198): #3198's dashboard
+//                                          counts the log's mtime as a limit-monitor run, so a touch shows a dead script
+//                                          as alive. Only limit-monitor.sh appends to it; the dashboard only stats it; no
+//                                          skill or task names it (measured 2026-11-28 on develop and on #3198 head
+//                                          6553f8cb), so the main agent stays free.
 export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: '.env' },
   { rel: 'store/provenance-gate-rules.json' },
@@ -386,6 +391,7 @@ export const SUBAGENT_PROTECTED_INSTALL_PATHS = [
   { rel: 'store/.claude-rate-limits.json' },
   { rel: 'store/.limit-monitor-quota-state' },
   { rel: 'store/.limit-monitor-heartbeat' },
+  { rel: 'store/limit-monitor.log' },
   { rel: 'store/owner-alert-outbox', dir: true },
   // The user's shared Claude settings (Dani 67840/67841): every agents/*/.claude-config/settings.local.json is a
   // SYMLINK to ~/.claude/settings.local.json, a real file the main agent loads too, so a sub-agent writing it (through
