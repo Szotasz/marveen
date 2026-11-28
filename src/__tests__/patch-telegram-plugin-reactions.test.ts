@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import ts from 'typescript'
 import { telegramPluginPatchStatus } from '../web/system-status.js'
-import { scratchPatcher, REPO_PATCHER } from './helpers/scratch-patcher.js'
+import { scratchPatcher, REPO_PATCHER, copyPatcher } from './helpers/scratch-patcher.js'
 
 const ROOT = join(__dirname, '..', '..')
 // A copy in an empty scratch install (helpers/scratch-patcher.ts): the checkout's own .env never decides a test
@@ -148,7 +148,7 @@ describe('patch-telegram-plugin.py --reactions', () => {
     try {
       mkdirSync(join(install, 'scripts'))
       mkdirSync(join(install, 'store'))
-      copyFileSync(SCRIPT, join(install, 'scripts', 'patch-telegram-plugin.py'))
+      copyPatcher(join(install, 'scripts', 'patch-telegram-plugin.py'))
       const bare = (env: string, overrides: Record<string, string> | null) => {
         writeFileSync(join(install, '.env'), env)
         if (overrides) writeFileSync(join(install, 'store', 'config-overrides.json'), JSON.stringify(overrides))

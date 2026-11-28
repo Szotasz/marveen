@@ -48,7 +48,7 @@ function patchedWithoutSilent(text: string, topics = false): string {
     "spec = importlib.util.spec_from_file_location('ptp', sys.argv[1])",
     'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
     "m.PATCHES = [p for p in m.PATCHES if p['name'] != 'silent']",
-    `sys.stdout.write(m.patch_text(sys.stdin.read(), topics=${topics ? 'True' : 'False'})[0])`,
+    `sys.stdout.write(m.patch_text(sys.stdin.read(), topics=${topics ? 'True' : 'False'}, modules_ok={'marveen-business.ts': True})[0])`,
   ].join('\n')
   const r = spawnSync('python3', ['-c', code, SCRIPT], { input: text, encoding: 'utf-8' })
   expect(r.status).toBe(0)
@@ -233,7 +233,7 @@ describe('silent: reply without a notification sound', () => {
     expect(r.stderr).toMatch(/LOUD: reply file branch not found exactly once.*the reply tool has no silent option/)
     expect(readFileSync(server, 'utf-8')).not.toContain(SIL)
     expect(readState(state).files[0].patches).toEqual({
-      d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'patched',
+      d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'anchor-missing:reply file branch', kbd: 'patched', invis: 'patched', biz: 'patched', pairtext: 'patched', invitetext: 'patched',
     })
   })
 })

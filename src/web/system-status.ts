@@ -256,6 +256,7 @@ const PLUGIN_PATCHES = [
   { name: 'pairtext', marker: 'MARVEEN-PATCH(pairtext)', label: ' (párosítás-szöveg)', fallback: 'a párosításnál a bot Claude Code-ot mond, a jóváhagyás viszont a dashboardon van' },
   { name: 'invitetext', marker: 'MARVEEN-PATCH(invitetext)', label: ' (meghívó-szöveg)', fallback: 'a meghívó link senkit nem enged be (a monitor csak a saját tokennel érkezőt hagyja jóvá), marad a dashboardos párosító kód' },
   { name: 'invis', marker: 'MARVEEN-PATCH(invis1024)', label: ' (láthatatlan karakterek)', fallback: 'a bejövő szövegben maradnak a láthatatlan karakterek, a modell látja őket' },
+  { name: 'biz', marker: 'MARVEEN-PATCH(biz)', label: ' (Telegram Business)', fallback: 'a Business-üzenetek nem jutnak el az ügynökhöz, és vázlat sem küldhető' },
 ]
 // Switchable (TELEGRAM_TOPICS_ENABLED): expected only when the last channel
 // start ran with the switch on, which the state file records.

@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { tmpdir } from 'node:os'
-import { scratchPatcher, REPO_PATCHER } from './helpers/scratch-patcher.js'
+import { scratchPatcher, REPO_PATCHER, copyPatcher } from './helpers/scratch-patcher.js'
 import ts from 'typescript'
 
 // A copy in an empty scratch install (helpers/scratch-patcher.ts): the checkout's own .env never decides a test.
@@ -64,14 +64,14 @@ describe('patch-telegram-plugin.py --topics', () => {
     expect(readFileSync(server, 'utf-8')).not.toContain('tgtopics')
     const s = JSON.parse(readFileSync(state, 'utf-8'))
     expect(s.topics).toBe('off')
-    expect(s.files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', pairtext: 'patched', invitetext: 'patched' })
+    expect(s.files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', quote: 'patched', silent: 'patched', kbd: 'patched', invis: 'patched', biz: 'patched', pairtext: 'patched', invitetext: 'patched' })
   })
 
   it('on: every step applied once, the file still parses, a second run is a byte-identical no-op', () => {
     const state = join(cache, 'state.json')
     const r = run(['--state', state, '--topics', 'on'])
     expect(r.status).toBe(0)
-    expect(r.stderr).toMatch(/patched .*\(d4, fwd, evid, quote, silent, kbd, invis, pairtext, invitetext, topics\)/)
+    expect(r.stderr).toMatch(/patched .*\(d4, fwd, evid, quote, silent, kbd, invis, biz, pairtext, invitetext, topics\)/)
     const once = readFileSync(server, 'utf-8')
     expect(syntaxErrors(once)).toEqual([])
     expect(JSON.parse(readFileSync(state, 'utf-8'))).toMatchObject({ topics: 'on', files: [{ patches: { topics: 'patched' } }] })
@@ -90,7 +90,7 @@ describe('patch-telegram-plugin.py --topics', () => {
     const r = run(['--state', state, '--topics', 'off'])
     expect(r.stderr).toMatch(/patched .*\(topics removed\)/)
     expect(readFileSync(server, 'utf-8')).toBe(neverSwitched)
-    expect(JSON.parse(readFileSync(state, 'utf-8')).files[0].patches).toEqual({ d4: 'already', fwd: 'already', evid: 'already', quote: 'already', silent: 'already', kbd: 'already', invis: 'already', pairtext: 'already', invitetext: 'already', topics: 'removed' })
+    expect(JSON.parse(readFileSync(state, 'utf-8')).files[0].patches).toEqual({ d4: 'already', fwd: 'already', evid: 'already', quote: 'already', silent: 'already', kbd: 'already', invis: 'already', biz: 'already', pairtext: 'already', invitetext: 'already', topics: 'removed' })
   })
 
   it.each(['yes', 'true', '1', 'On', ''])('--topics %j: refused with exit 2, the plugin file and the state left alone', (value) => {
@@ -122,7 +122,7 @@ describe('patch-telegram-plugin.py --topics', () => {
       mkdirSync(join(install, 'scripts'))
       mkdirSync(join(install, 'store'))
       script = join(install, 'scripts', 'patch-telegram-plugin.py')
-      copyFileSync(SCRIPT, script)
+      copyPatcher(script)
     })
     afterEach(() => rmSync(install, { recursive: true, force: true }))
     const topicsOn = () => { copyFileSync(FIXTURE, server); run([], script); return readFileSync(server, 'utf-8').includes(TAG) }
@@ -172,7 +172,11 @@ interface Plugin {
 // Executes the excerpt with stand-ins for everything it does not define itself.
 // Only the Bot API calls and the MCP notifications are observed.
 function load(source: string): Plugin {
-  const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  // The import lines (the path import and the biz patch's module import) and the
+  // top-level `await mcp.connect` cannot run in a plain function body: dropped,
+  // and registerBusiness is a stand-in that adds no tool.
+  const body = source.split('\n').filter(l => !/^import /.test(l) && !/^await mcp\.connect\(/.test(l)).join('\n')
+  const js = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
   const calls: Call[] = []
   const notes: Plugin['notes'] = []
   const handlers = new Map<unknown, (req: unknown) => Promise<unknown>>()
@@ -213,6 +217,7 @@ function load(source: string): Plugin {
     loadAccess: () => ({ allowFrom: ['42'] }),
     PHOTO_EXTS: new Set(['.png', '.jpg']),
     writeFileSync: () => {}, renameSync: () => {}, join, STATE_DIR: '/nonexistent',
+    registerBusiness: () => ({ tools: [], callTool: async () => ({ content: [] }) }),
   }
   const names = Object.keys(stubs)
   const factory = new Function(...names, `${js}\nreturn { handleInbound }`)

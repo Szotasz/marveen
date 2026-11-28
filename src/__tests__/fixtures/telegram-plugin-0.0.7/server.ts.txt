@@ -9,12 +9,15 @@
 // patch (c67f5f34) and the topics patch); the declarations and the loop's
 // closing lines only make the excerpt parse on its own. The approval poller
 // checkApprovals (server.ts lines 339-359, the invitetext patch hooks in
-// there) follows the declarations.
+// there) follows the declarations. Two more verbatim lines for the Telegram
+// Business patch (biz): the path import (line 25, which also gives the poller
+// its `join`) and `await mcp.connect` (line 652, placed right after the server
+// instructions here so the excerpt still ends with the tool-call handler).
+import { join, extname, sep } from 'path'
 declare const bot: any
 declare function dmCommandGate(ctx: any): any
 declare function readdirSync(p: string): string[]
 declare function rmSync(p: string, o: any): void
-declare function join(...p: string[]): string
 declare const APPROVED_DIR: string
 let botUsername = ''
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
@@ -283,6 +286,8 @@ const mcp = new Server(
     ].join('\n'),
   },
 )
+
+await mcp.connect(new StdioServerTransport())
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
