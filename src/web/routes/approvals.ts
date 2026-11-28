@@ -22,7 +22,8 @@ import { mainBotToken, ownerDmVerdict, SLACK_CHUNK } from '../../slack-notify.js
 import { reactionRoute, reactionsOn, repliesOn, dashboardOnlyLine, postReactionPrompt, startApprovalSlackSweeper, type RouteDeps } from '../approval-slack-route.js'
 import { OWNER_TEXT, formatExpiry, type ApprovalLang } from '../approval-texts.js'
 import { approvalTextLang } from '../agent-text-lang.js'
-import { sendTelegramMessage } from '../telegram.js'
+import { sendTelegramMessage, parseTelegramToken } from '../telegram.js'
+import { listAllAgentNames } from '../agent-config.js'
 import { teamsCardRoute, teamsCardsOn, postApprovalCard, handleTeamsCardAction, type TeamsCardDeps } from '../approval-teams-card.js'
 import { sendTeamsMessage } from '../../teams-send.js'
 import { readTeamsCreds, channelStateDir } from '../../channel-provider.js'
@@ -247,6 +248,9 @@ export const telegramApprovalDeps: TelegramApprovalDeps = {
   setting: (key) => String(getEffectiveSettingValue(key) ?? ''),
   token: () => getSecret(APPROVAL_TELEGRAM_BOT_VAULT_KEY),
   mainToken: () => TELEGRAM_BOT_TOKEN || (CHANNEL_PROVIDER === 'telegram' ? CHANNEL_TOKEN : '') || null,
+  // Marveen 6117: every agent's own Telegram bot, the hidden workers too
+  agentTokens: () => listAllAgentNames().flatMap((agent) => { const token = parseTelegramToken(agent); return token ? [{ agent, token }] : [] }),
+  alert: (text) => { try { createAgentMessage('system', MAIN_AGENT_ID, text) } catch (err) { logger.error({ err }, 'approval bot setup alert failed') } },
   api: telegramBotApi,
 }
 

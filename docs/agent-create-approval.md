@@ -139,7 +139,7 @@ hash, and whoever decides must pass back exactly the hash the owner was shown. A
     keyboard-only edit), with the pressed button's own nonce. The core then decides against the hash the post showed; one
     update decides one post (`resolved_by = telegram_button:<owner id>:<update id>`). A request too long for one Telegram
     message gets a short dashboard pointer and no row. Setup: a new bot at BotFather, its token in the vault as
-    `approval-telegram-bot-token` (the main bot's token is refused), the owner sends the bot `/start` once, then the two
+    `approval-telegram-bot-token` (the main bot's token and every agent's own bot token are refused: at the server's start, within one poll of the change and on every post, and the main agent is told once which bot it is), the owner sends the bot `/start` once, then the two
     settings (both need the owner's session). What a stolen approval-bot token allows: posting or editing the bot's
     messages (a post with a changed text or changed buttons is refused) and reading or dropping its updates (a lost
     click decides nothing, and the values it carried approve nothing on the unchanged post); it cannot make the

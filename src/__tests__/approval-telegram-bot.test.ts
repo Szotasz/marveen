@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto'
 import { initDatabase, createApproval, getApproval, getDb, getApprovalTelegramPost, getApprovalTelegramOffset, registerApprovalConsumer, type Approval } from '../db.js'
 import {
   postAgentCreateToTelegramBot, telegramApprovalTick, handleTelegramUpdate, telegramApprovalRoute, _clearBotIdCacheForTest, canonicalJsonValue,
+  _clearSetupAlertsForTest, startTelegramApprovalPoller, stopTelegramApprovalPollerForTest,
   type TelegramApprovalDeps,
 } from '../web/approval-telegram-bot.js'
 import { canonicalJson, renderAgentSpec, type AgentSpecV1 } from '../web/agent-create-spec.js'
@@ -18,6 +19,7 @@ const OWNER = '1268077055'
 const BOT = 7000001
 const TOKEN = '7000001:APPROVAL-bot-token-not-real'
 const MAIN = '6000001:MAIN-bot-token-not-real'
+const VIZIT = '6000002:VIZIT-agent-bot-token-not-real'
 const SPEC: AgentSpecV1 = {
   spec_version: 1, name: 'kutato', display_name: 'Kutató', description: 'Piackutatás', model: 'claude-sonnet-5', profile: 'default',
   custom_provider: null, channel: null,
@@ -33,8 +35,9 @@ function request(spec: AgentSpecV1 = SPEC, category = 'agent_create'): Approval 
 }
 
 type Call = { token: string; method: string; params: Record<string, unknown> }
-function fake(opts: { settings?: Record<string, string>; token?: string | null; mainToken?: string | null; sendFails?: boolean } = {}) {
+function fake(opts: { settings?: Record<string, string>; token?: string | null; mainToken?: string | null; sendFails?: boolean; agentTokens?: Array<{ agent: string; token: string }> } = {}) {
   const calls: Call[] = []
+  const alerts: string[] = []
   const updates: Record<string, unknown>[] = []
   let nextMessageId = 500
   const settings: Record<string, string> = { APPROVAL_TELEGRAM_BOT: 'on', APPROVAL_TELEGRAM_OWNER_ID: OWNER, ...opts.settings }
@@ -42,6 +45,8 @@ function fake(opts: { settings?: Record<string, string>; token?: string | null; 
     setting: (k) => settings[k] ?? '',
     token: () => (opts.token === undefined ? TOKEN : opts.token),
     mainToken: () => (opts.mainToken === undefined ? MAIN : opts.mainToken),
+    agentTokens: () => opts.agentTokens ?? [{ agent: 'vizit', token: VIZIT }],
+    alert: (text) => { alerts.push(text) },
     api: async (token, method, params) => {
       calls.push({ token, method, params })
       if (method === 'getMe') return { id: BOT, is_bot: true, username: 'approval_bot' }
@@ -53,7 +58,7 @@ function fake(opts: { settings?: Record<string, string>; token?: string | null; 
       return true
     },
   }
-  return { deps, calls, updates, settings }
+  return { deps, calls, updates, settings, alerts }
 }
 
 async function posted(f = fake()) {
@@ -92,7 +97,7 @@ const ctx = (f: ReturnType<typeof fake>) => ({ token: TOKEN, owner: OWNER, botId
 
 const consumed: string[] = []
 beforeAll(() => { registerApprovalConsumer('agent_create', (a) => { consumed.push(a.id) }) })
-beforeEach(() => { initDatabase(':memory:'); _clearBotIdCacheForTest(); consumed.length = 0 })
+beforeEach(() => { initDatabase(':memory:'); _clearBotIdCacheForTest(); _clearSetupAlertsForTest(); consumed.length = 0 })
 
 describe('the route: switch, explicit owner, vault token, never the main bot', () => {
   it('off (the default): nothing is posted, the poller never calls Telegram', async () => {
@@ -111,10 +116,39 @@ describe('the route: switch, explicit owner, vault token, never the main bot', (
     expect(await postAgentCreateToTelegramBot(request(), 'hu', f.deps)).toBe('no_token')
     expect(f.calls).toEqual([])
   })
-  it('the main bot\'s token as the approval bot is refused (its updates belong to the channel plugin)', async () => {
+  it('the main bot\'s token as the approval bot is refused (its updates belong to the channel plugin); the main agent hears it once', async () => {
     const f = fake({ token: MAIN })
     expect(await postAgentCreateToTelegramBot(request(), 'hu', f.deps)).toBe('main_bot_token')
+    expect(await postAgentCreateToTelegramBot(request(), 'hu', f.deps)).toBe('main_bot_token')
     expect(f.calls).toEqual([])
+    expect(f.alerts).toHaveLength(1)
+    expect(f.alerts[0]).toContain('a FŐ bot tokenje')
+    expect(f.alerts[0]).not.toContain(MAIN)
+  })
+  it('Marveen 6117: ANY agent\'s own bot token is refused too, naming the agent; at start, at the poll and at the post, said once', async () => {
+    const f = fake({ token: VIZIT })
+    expect(telegramApprovalRoute(f.deps)).toEqual({ ok: false, reason: 'agent_bot_token', agent: 'vizit' })
+    startTelegramApprovalPoller(f.deps)
+    stopTelegramApprovalPollerForTest()
+    expect(f.alerts).toHaveLength(1)
+    expect(f.alerts[0]).toContain('a(z) vizit ügynök saját Telegram-botjáé')
+    expect(f.alerts[0]).toContain('approval-telegram-bot-token')
+    expect(f.alerts[0]).not.toContain(VIZIT)
+    request()
+    expect(await telegramApprovalTick(f.deps)).toEqual([])
+    expect(await postAgentCreateToTelegramBot(request(), 'hu', f.deps)).toBe('agent_bot_token')
+    expect(f.calls).toEqual([])
+    expect(f.alerts).toHaveLength(1)
+  })
+  it('a poll reports the setup error even while nothing waits (within one poll of the change)', async () => {
+    const f = fake({ token: VIZIT })
+    expect(await telegramApprovalTick(f.deps)).toEqual([])
+    expect(f.alerts).toHaveLength(1)
+  })
+  it('a separate bot\'s token with agents that have their own bots: posted as usual, no alert', async () => {
+    const f = fake({ agentTokens: [{ agent: 'vizit', token: VIZIT }, { agent: 'roka', token: '6000003:ROKA-not-real' }] })
+    expect(await postAgentCreateToTelegramBot(request(), 'hu', f.deps)).toBe('posted')
+    expect(f.alerts).toEqual([])
   })
   it('only agent_create is posted; a request whose stored spec no longer hashes to it is not', async () => {
     const f = fake()

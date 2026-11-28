@@ -46,6 +46,10 @@ export interface TelegramApprovalDeps {
   token: () => string | null
   /** The main bot's token (refused as the approval bot: its updates belong to the channel plugin), or null. */
   mainToken: () => string | null
+  /** Every agent's own Telegram bot token (refused too: that agent's plugin would swallow the owner's clicks). */
+  agentTokens: () => Array<{ agent: string; token: string }>
+  /** A message to the main agent (a setup error the owner must fix). */
+  alert: (text: string) => void
   api: TelegramBotApi
 }
 
@@ -73,9 +77,12 @@ export function telegramApprovalOwner(setting: (key: string) => string): string 
 export type TelegramRoute =
   | { ok: true; token: string; owner: string }
   | { ok: false; reason: 'switch_off' | 'no_explicit_owner' | 'no_token' | 'main_bot_token' }
+  | { ok: false; reason: 'agent_bot_token'; agent: string }
 
-/** Is the approval bot usable now? The switch, the explicit owner, a vault token that is not the main bot's. */
-export function telegramApprovalRoute(deps: Pick<TelegramApprovalDeps, 'setting' | 'token' | 'mainToken'>): TelegramRoute {
+/** Is the approval bot usable now? The switch, the explicit owner, a vault token that is no other bot's of this
+ *  install (the main bot's or any agent's: its updates belong to that bot's channel plugin, which would swallow the
+ *  owner's clicks; it could never approve, but nothing would decide). */
+export function telegramApprovalRoute(deps: Pick<TelegramApprovalDeps, 'setting' | 'token' | 'mainToken' | 'agentTokens'>): TelegramRoute {
   if (!telegramApprovalsOn(deps.setting)) return { ok: false, reason: 'switch_off' }
   const owner = telegramApprovalOwner(deps.setting)
   if (!owner) return { ok: false, reason: 'no_explicit_owner' }
@@ -85,7 +92,36 @@ export function telegramApprovalRoute(deps: Pick<TelegramApprovalDeps, 'setting'
   let main: string | null = null
   try { main = deps.mainToken()?.trim() || null } catch { main = null }
   if (main && main === token) return { ok: false, reason: 'main_bot_token' }
+  let agents: Array<{ agent: string; token: string }> = []
+  try { agents = deps.agentTokens() } catch { agents = [] }
+  const same = agents.find((a) => (a.token ?? '').trim() === token)
+  if (same) return { ok: false, reason: 'agent_bot_token', agent: same.agent }
   return { ok: true, token, owner }
+}
+
+/** The owner-facing text of a setup error (another bot's token as the approval bot), or null. */
+export function telegramApprovalSetupError(route: TelegramRoute): string | null {
+  if (route.ok) return null
+  const fix = 'Hozz létre egy KÜLÖN botot a BotFathernél, és annak a tokenjét tedd a vaultba "approval-telegram-bot-token" néven. Addig a telegramos jóváhagyás nem működik, a kérések a dashboardon dönthetők el.'
+  if (route.reason === 'main_bot_token') return `[agent_create] A jóváhagyó bot tokenje (vault: approval-telegram-bot-token) a FŐ bot tokenje. Ezt nem lehet használni, mert a fő bot üzeneteit a csatorna-plugin olvassa, és elnyelné Tom kattintását. ${fix}`
+  if (route.reason === 'agent_bot_token') return `[agent_create] A jóváhagyó bot tokenje (vault: approval-telegram-bot-token) a(z) ${route.agent} ügynök saját Telegram-botjáé. Ezt nem lehet használni, mert annak az ügynöknek a pluginja olvassa a bot üzeneteit, és elnyelné Tom kattintását. ${fix}`
+  return null
+}
+
+// One alert per (problem, token): the poll repeats every 10 s, the main agent hears it once.
+const alerted = new Set<string>()
+function reportSetupError(route: TelegramRoute, token: string | null, deps: Pick<TelegramApprovalDeps, 'alert'>): void {
+  const text = telegramApprovalSetupError(route)
+  if (!text || route.ok) return
+  const key = `${route.reason}:${'agent' in route ? route.agent : ''}:${token ? sha256(token) : ''}`
+  logger.error({ reason: route.reason, ...('agent' in route ? { agent: route.agent } : {}) }, 'agent_create: the approval bot token is another bot\'s token of this install; the Telegram approval is OFF (use a separate bot)')
+  if (alerted.has(key)) return
+  alerted.add(key)
+  try { deps.alert(text) } catch { /* the log line stands */ }
+}
+export function _clearSetupAlertsForTest(): void { alerted.clear() }
+function currentToken(deps: Pick<TelegramApprovalDeps, 'token'>): string | null {
+  try { return deps.token()?.trim() || null } catch { return null }
 }
 
 const T = {
@@ -120,7 +156,7 @@ const T = {
 } as const
 
 export type TelegramPostOutcome = 'posted' | 'not_agent_create' | 'not_verifiable' | 'too_long' | 'send_failed' | 'record_failed'
-  | 'switch_off' | 'no_explicit_owner' | 'no_token' | 'main_bot_token'
+  | 'switch_off' | 'no_explicit_owner' | 'no_token' | 'main_bot_token' | 'agent_bot_token'
 
 interface SentMessage { message_id?: unknown; chat?: { id?: unknown }; from?: { id?: unknown }; text?: unknown; reply_markup?: unknown }
 
@@ -130,7 +166,7 @@ export async function postAgentCreateToTelegramBot(approval: Approval, lang: App
     if (approval.category !== 'agent_create') return 'not_agent_create'
     const route = telegramApprovalRoute(deps)
     if (!route.ok) {
-      if (route.reason === 'main_bot_token') logger.error({ approvalId: approval.id }, 'agent_create: the approval bot token is the main bot\'s token; the Telegram approval is OFF (use a separate bot)')
+      reportSetupError(route, currentToken(deps), deps)
       return route.reason
     }
     const spec = verifiedAgentSpec(approval)
@@ -252,7 +288,8 @@ export type TelegramTickResult = { updateId: number; outcome: TelegramUpdateOutc
  */
 export async function telegramApprovalTick(deps: TelegramApprovalDeps): Promise<TelegramTickResult[]> {
   const route = telegramApprovalRoute(deps)
-  if (!route.ok) return []
+  // a setup error is reported within one poll of the change (before the pending check), once per token
+  if (!route.ok) { reportSetupError(route, currentToken(deps), deps); return [] }
   if (countPendingApprovalTelegramPosts() === 0) return []
   const me = await botId(route.token, deps)
   const offset = getApprovalTelegramOffset(me)
@@ -297,6 +334,8 @@ let timer: ReturnType<typeof setTimeout> | null = null
 /** Starts the poller (server start): one round every 10 s; idle while the switch is off or nothing waits. */
 export function startTelegramApprovalPoller(deps: TelegramApprovalDeps): void {
   if (timer) return
+  // at start: another bot's token is said right away, not at the first request
+  try { const r = telegramApprovalRoute(deps); if (!r.ok) reportSetupError(r, currentToken(deps), deps) } catch { /* the poll reports it */ }
   const loop = () => {
     timer = setTimeout(async () => {
       try { await telegramApprovalTick(deps) } catch (err) { logger.warn({ err: errText(err) }, 'agent_create Telegram approval poll failed') }
