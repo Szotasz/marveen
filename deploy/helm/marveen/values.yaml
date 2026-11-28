@@ -1,0 +1,37 @@
+image:
+  # -- Image repository. The official image. Until it is published and public, build the root Dockerfile, `kind load docker-image` it, and override `image.repository`/`image.tag` (add `--reset-values` when switching back).
+  repository: ghcr.io/szotasz/marveen
+  # -- Image tag.
+  tag: latest
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Name of an existing Secret. All its keys are injected as env vars (optional, mounted read-only as env only).
+existingSecret: ""
+
+# -- First-start settings of the official image, plain environment values (see `docs/docker.md`): `MARVEEN_CHANNEL`
+# (telegram|discord|slack, fixed for the install), `MARVEEN_AGENT_ID`, `MARVEEN_LANG` (en|hu), `TZ`,
+# `MARVEEN_OLLAMA_URL`.
+env: {}
+# env:
+#   MARVEEN_CHANNEL: telegram
+#   MARVEEN_LANG: en
+#   TZ: Europe/Budapest
+
+# -- Container resource requests/limits (unset by default).
+resources: {}
+# resources:
+#   requests: { cpu: 250m, memory: 512Mi }
+#   limits: { memory: 2Gi }
+
+persistence:
+  install:
+    # -- Size of the PVC mounted at `/opt/marveen` (the code copy, `.env`, `store/` with the database, agents, workspace).
+    size: 2Gi
+  home:
+    # -- Size of the PVC mounted at `/home/marveen` (`~/.claude`: Claude login, plugins, skills).
+    size: 1Gi
+
+service:
+  # -- NodePort of the dashboard service. The kind config maps it to host port 3420.
+  nodePort: 30420
