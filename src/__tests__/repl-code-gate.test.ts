@@ -71,6 +71,10 @@ describe('repl-code-gate.py: the version canary', () => {
     expect(runRaw(replAt(transcript(sessionStart()))).rc).toBe(0)
   })
 
+  it('allows REPL on the re-measured 2.1.332 too', () => {
+    expect(runRaw(replAt(transcript(sessionStart('2.1.332')))).rc).toBe(0)
+  })
+
   it("allows a fresh session's first REPL call: the prompt row is written before the first tool call", () => {
     const p = transcript([row.mode(), row.permissionMode(), row.replMode(), row.atisLatch(), row.snapshot(), row.user('2.1.326')])
     expect(runRaw(replAt(p)).rc).toBe(0)
