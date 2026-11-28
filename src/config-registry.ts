@@ -1589,6 +1589,22 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
   },
   {
+    // DCEXT1111 G2 (Zoli 2026-11-11): the only writing Discord admin tools. Delete and role changes are not built.
+    // Switching it on lets the agent act on the server: owner only.
+    key: 'DISCORD_ADMIN_ACTIONS',
+    type: 'string',
+    default: '',
+    description: 'Írási jogú Discord-eszközök (csak DISCORD_PLUGIN_EXT mellett). Egyetlen érték van: "pin" -- ekkor az ágens kitűzhet és levehet egy üzenetet (pin_message, unpin_message), csak az engedélyezett csatornákban. Üresen ezek az eszközök nem is látszanak az ágens számára. Üzenet törlése és szerep-módosítás nincs, és nem is kapcsolható be. A csatorna következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+    validate: (v: string) => {
+      const words = v.trim().toLowerCase().split(/[\s,]+/).filter(Boolean)
+      return words.every(w => w === 'pin') ? null : 'Csak "pin" adható meg (vagy üres). / Only "pin" is allowed (or empty).'
+    },
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim(),
+  },
+  {
     key: 'TELEGRAM_INBOUND_REPLAY_ENABLED',
     type: 'boolean',
     default: '0',

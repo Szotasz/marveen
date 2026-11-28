@@ -5,18 +5,18 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
 
-export type ExtConfig = { ownerUserId: string; backfill: boolean; channelPolicy: ChannelPolicy; slashCommands: SlashCommand[] | null }
+export type ExtConfig = { ownerUserId: string; backfill: boolean; channelPolicy: ChannelPolicy; slashCommands: SlashCommand[] | null; adminActions: AdminAction[] }
 
 const SNOWFLAKE = /^[1-9][0-9]{16,19}$/
 
-// A missing or unreadable file means the safe side: nobody named, no backfill, no slash commands.
+// A missing or unreadable file means the safe side: nobody named, no backfill, no slash commands, no admin tools.
 export function loadExtConfig(dir: string): ExtConfig {
   try {
     const raw = JSON.parse(readFileSync(join(dir, 'marveen-ext.json'), 'utf8')) as Record<string, unknown>
     const owner = typeof raw?.ownerUserId === 'string' && SNOWFLAKE.test(raw.ownerUserId) ? raw.ownerUserId : ''
-    return { ownerUserId: owner, backfill: raw?.backfill === true, channelPolicy: parseChannelPolicy(raw?.channelPolicy), slashCommands: parseSlashCommands(raw?.slashCommands) }
+    return { ownerUserId: owner, backfill: raw?.backfill === true, channelPolicy: parseChannelPolicy(raw?.channelPolicy), slashCommands: parseSlashCommands(raw?.slashCommands), adminActions: parseAdminActions(raw?.adminActions) }
   } catch {
-    return { ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null }
+    return { ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null, adminActions: [] }
   }
 }
 
@@ -694,4 +694,57 @@ export function threadRecoveryTargets(threadIds: readonly string[], cursor: Read
     .filter(t => SNOWFLAKE_ID.test(t) && cursor[t] !== undefined)
     .sort((a, b) => (BigInt(cursor[a]!) > BigInt(cursor[b]!) ? -1 : 1))
     .slice(0, max)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR5 (Zoli 2026-11-11 12:52): G2 pin/unpin only
+// ---------------------------------------------------------------------------------------------------------------
+
+// G2: the only writing admin actions, behind DISCORD_ADMIN_ACTIONS (empty by default). Deleting messages and
+// changing roles are not built (Zoli's decision).
+export const ADMIN_ACTIONS = ['pin'] as const
+export type AdminAction = (typeof ADMIN_ACTIONS)[number]
+
+export function parseAdminActions(raw: unknown): AdminAction[] {
+  if (!Array.isArray(raw)) return []
+  return ADMIN_ACTIONS.filter(a => raw.includes(a))
+}
+
+// The tools exist (are listed) only when switched on: off, the model does not even see them.
+export function adminTools(actions: readonly AdminAction[]): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
+  if (!actions.includes('pin')) return []
+  const schema = {
+    type: 'object',
+    properties: { chat_id: { type: 'string' }, message_id: { type: 'string' } },
+    required: ['chat_id', 'message_id'],
+  }
+  return [
+    { name: 'pin_message', description: 'Pin a message in an allowed Discord channel.', inputSchema: schema },
+    { name: 'unpin_message', description: 'Unpin a message in an allowed Discord channel.', inputSchema: schema },
+  ]
+}
+
+// D4: the "done" mark (Zoli 2026-11-15: with or without an ack reaction). The message the session answers gets it
+// once the reply has gone out to that chat; never after a failed reply. Per chat the last delivered message;
+// bounded, oldest dropped first.
+export const DONE_REACTION = '✅'
+export const DONE_MARKS_MAX = 500
+
+export class DoneMarks<T> {
+  private readonly pending = new Map<string, T>()
+
+  constructor(private readonly max: number = DONE_MARKS_MAX) {}
+
+  note(chatId: string, message: T): void {
+    this.pending.delete(chatId)
+    this.pending.set(chatId, message)
+    while (this.pending.size > this.max) this.pending.delete(this.pending.keys().next().value!)
+  }
+
+  // The message to mark after a reply to this chat, once.
+  take(chatId: string): T | undefined {
+    const m = this.pending.get(chatId)
+    this.pending.delete(chatId)
+    return m
+  }
 }

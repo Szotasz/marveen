@@ -58,6 +58,7 @@ VENDOR = os.path.join(INSTALL_DIR, "vendor", "discord-plugin")
 DCBTN_TAG = "// MARVEEN-PATCH(dcbtn1023)"
 MANIFEST = ".marveen-overlay.json"
 EXT_CONFIG = "marveen-ext.json"
+ADMIN_ACTIONS = ("pin",)
 SNOWFLAKE = re.compile(r"^[1-9][0-9]{16,19}$")
 # The overlay's id shape for channels and roles (marveen-ext.ts SNOWFLAKE_ID).
 SNOWFLAKE_ID = re.compile(r"^[0-9]{15,20}\Z")
@@ -147,8 +148,16 @@ def settings(install_dir):
             log("LOUD: DISCORD_CHANNEL_POLICY is set but is not a JSON object -- NOT used (no channel extras)")
         for line in channel_policy_drops(policy):
             log(f"LOUD: DISCORD_CHANNEL_POLICY {line} -- dropped, that channel keeps the plain allowFrom rule")
+    # DISCORD_ADMIN_ACTIONS (overrides-only, DCEXT1111 G2): the writing admin tools, comma-separated. Only "pin"
+    # exists; anything else is named once and dropped (never widened).
+    admin = []
+    for word in (override_value(install_dir, "DISCORD_ADMIN_ACTIONS") or "").strip(tg.JS_TRIM).replace(",", " ").split():
+        if word.lower() in ADMIN_ACTIONS and word.lower() not in admin:
+            admin.append(word.lower())
+        else:
+            log(f"LOUD: DISCORD_ADMIN_ACTIONS has an unknown or repeated action -- NOT used: {word[:40]}")
     return ext_on, {"ownerUserId": owner, "backfill": bool(backfill), "channelPolicy": policy,
-                    "slashCommands": slash_commands(install_dir) if ext_on else None}
+                    "slashCommands": slash_commands(install_dir) if ext_on else None, "adminActions": admin}
 
 
 def slash_commands(install_dir):

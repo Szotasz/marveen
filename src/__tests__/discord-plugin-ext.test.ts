@@ -7,7 +7,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 
-const VENDOR = join(__dirname, '..', '..', 'vendor', 'discord-plugin', '0.0.4')
+// The same tests run on every vendored version: 0.0.4 here, 0.0.6 through discord-plugin-ext-006.test.ts (#2787 review).
+const VERSION = process.env.DISCORD_EXT_TEST_VERSION ?? '0.0.4'
+const VENDOR = join(__dirname, '..', '..', 'vendor', 'discord-plugin', VERSION)
 const SERVER = readFileSync(join(VENDOR, 'overlay', 'server.ts'), 'utf-8')
 const UPSTREAM = readFileSync(join(VENDOR, 'upstream', 'server.ts'), 'utf-8')
 
@@ -32,11 +34,11 @@ describe('loadExtConfig', () => {
       if (body !== null) writeFileSync(join(dir, 'marveen-ext.json'), body)
       return ext.loadExtConfig(dir)
     }
-    expect(at(JSON.stringify({ ownerUserId: OWNER, backfill: true }))).toEqual({ ownerUserId: OWNER, backfill: true, channelPolicy: {}, slashCommands: null })
-    expect(at(null)).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null })
-    expect(at('{ bad')).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null })
-    expect(at(JSON.stringify({ ownerUserId: 'zoli', backfill: 'yes' }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null })
-    expect(at(JSON.stringify({ ownerUserId: 290903699524550656, backfill: 1 }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null })
+    expect(at(JSON.stringify({ ownerUserId: OWNER, backfill: true }))).toEqual({ ownerUserId: OWNER, backfill: true, channelPolicy: {}, slashCommands: null, adminActions: [] })
+    expect(at(null)).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null, adminActions: [] })
+    expect(at('{ bad')).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null, adminActions: [] })
+    expect(at(JSON.stringify({ ownerUserId: 'zoli', backfill: 'yes' }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null, adminActions: [] })
+    expect(at(JSON.stringify({ ownerUserId: 290903699524550656, backfill: 1 }))).toEqual({ ownerUserId: '', backfill: false, channelPolicy: {}, slashCommands: null, adminActions: [] })
   })
 })
 
@@ -262,7 +264,7 @@ function slice(from: string, to: string): string {
 const PERMISSION_REPLY_RE = new RegExp(SERVER.match(/const PERMISSION_REPLY_RE = \/(.*)\/i\n/)![1]!, 'i')
 
 type AutoThreadFn = (msg: unknown, access: unknown, recovered: boolean, edited: boolean) => Promise<{ id: string; sendTyping(): Promise<void> } | null | false>
-function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | null = OWNER, o: { history?: { text: string; count: number }; openAutoThread?: AutoThreadFn; inBotThread?: (m: unknown) => boolean } = {}) {
+function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | null = OWNER, o: { history?: { text: string; count: number }; openAutoThread?: AutoThreadFn; inBotThread?: (m: unknown) => boolean; doneMarks?: unknown } = {}) {
   const historyCalls: string[] = []
   const typingStarts: string[] = []
   const deliveredIds = new ext.BoundedIds()
@@ -275,7 +277,7 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
     'gate', 'ChannelType', 'dmChannelUsers', 'liveDelivered', 'recoveryOpen', 'backfillCursor', 'PERMISSION_REPLY_RE',
     'mayDecidePermission', 'currentOwner', 'decidedPermissions', 'mcp', 'pendingPermissions', 'permissionMessages',
     'safeAttName', 'voiceMeta', 'inboundAttachments', 'forwardedParts', 'replyContextMeta',
-    'typingKeeper', 'deliveredIds', 'channelHistory', 'openAutoThread', 'inBotThread',
+    'typingKeeper', 'deliveredIds', 'channelHistory', 'openAutoThread', 'inBotThread', 'doneMarks',
     `${slice('async function handleInbound(', '// DCEXT1111 F4: deliver, once')}\nreturn handleInbound`,
   )(
     async () => gateResult, { DM: 1, GuildText: 0 }, new Map(), new Set(), true,
@@ -288,7 +290,7 @@ function inboundHarness(gateResult: Record<string, unknown>, ownerId: string | n
     ext.forwardedParts, ext.replyContextMeta,
     { start: (c: string, send: () => Promise<unknown>) => { typingStarts.push(c); void send() } }, deliveredIds,
     async (m: { id: string }) => { historyCalls.push(m.id); return o.history ?? { text: '', count: 0 } },
-    o.openAutoThread ?? (async () => null), o.inBotThread ?? (() => false),
+    o.openAutoThread ?? (async () => null), o.inBotThread ?? (() => false), o.doneMarks ?? new ext.DoneMarks(),
   ) as (msg: unknown, recovered?: boolean, edited?: boolean) => Promise<boolean>
   type Snap = { content: string; attachments: Map<string, { name: string; size: number; contentType: string }> }
   const msg = (content: string, o: { dm?: boolean; author?: string; snapshots?: Snap[]; reference?: { id: string; username: string; content: string; attachments?: string[] } | 'gone' } = {}) => ({
@@ -448,7 +450,8 @@ const OUTBOUND_SITES = [
   'await interaction.reply({ content: `↪ ${text}`, ephemeral: true })',
   '.startThread({ name })',
   'await ch.threads.create({ name })',
-  'const edited = await msg.edit(args.text as string)',
+  'const edited = await msg.edit(parts[0]!)',
+  'const sent = await (ch as unknown as { send(p: unknown): Promise<{ id: string }> }).send({ content: part })',
   "await interaction.reply({ content: 'Not authorized.', ephemeral: true })",
   "await interaction.reply({ content: 'Already answered.', ephemeral: true })",
   "await interaction.reply({ content: 'Details no longer available.', ephemeral: true })",
@@ -1401,6 +1404,9 @@ describe('C2: rename_thread, only the bot\'s own thread', () => {
   })
 })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const replyHarnessRef: { fn: any } = { fn: null }
+
 describe('C4: a reply to a forum channel opens a post', () => {
   it('forumPostTitle: the first non-empty line, markdown heading marks dropped, at most 100', () => {
     expect(ext.forumPostTitle('\n# Heti jelentés\n\nrészletek')).toBe('Heti jelentés')
@@ -1425,12 +1431,12 @@ describe('C4: a reply to a forum channel opens a post', () => {
   })
 
   // The reply case itself, run with fakes: what goes to Discord, in which order.
-  function replyHarness(o: { forum: boolean; text: string; files?: string[]; reply_to?: string }) {
+  function replyHarness(o: { forum: boolean; text: string; files?: string[]; reply_to?: string; doneMarks?: unknown; failSend?: boolean; threadParent?: string; groups?: Record<string, unknown> }) {
     const calls: Array<{ op: string; arg: Record<string, unknown> }> = []
     const added: string[] = []
     const post = { id: id(50), send: async (p: Record<string, unknown>) => { calls.push({ op: 'post.send', arg: p }); return { id: id(51 + calls.length) } } }
     const forum = o.forum ? { threads: { create: async (a: Record<string, unknown>) => { calls.push({ op: 'threads.create', arg: a }); return post } } } : null
-    const ch = { isThread: () => false, parentId: null, send: async (p: Record<string, unknown>) => { calls.push({ op: 'ch.send', arg: p }); return { id: id(60 + calls.length) } } }
+    const ch = { id: '1438000000000000800', isThread: () => o.threadParent !== undefined, parentId: o.threadParent ?? null, send: async (p: Record<string, unknown>) => { if (o.failSend) throw new Error('Missing Access'); calls.push({ op: 'ch.send', arg: p }); return { id: id(60 + calls.length) } } }
     const chunk = new Function(`${slice('function chunk(', 'async function fetchTextChannel(')}\nreturn chunk`)()
     const raw = SERVER.slice(SERVER.indexOf("case 'reply': {"), SERVER.indexOf("case 'fetch_messages': {"))
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1439,12 +1445,12 @@ describe('C4: a reply to a forum channel opens a post', () => {
     const run = new Function(
       'buildButtonRows', 'embedSpec', 'selectSpec', 'MAX_COMPONENT_ROWS', 'StringSelectMenuBuilder', 'ActionRowBuilder', 'allowedForum',
       'fetchAllowedChannel', 'assertSendable', 'statSync', 'MAX_ATTACHMENT_BYTES', 'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'MAX_REPLY_CHUNKS',
-      'typingKeeper', 'forumPostTitle', 'noteSent', 'botThreads',
+      'typingKeeper', 'forumPostTitle', 'noteSent', 'botThreads', 'doneMarks', 'DONE_REACTION',
       `${wrapped}\nreturn replyCase`,
     )(
       () => [], ext.embedSpec, ext.selectSpec, 5, class {}, class {}, async () => forum,
-      async () => ch, () => {}, () => ({ size: 1 }), 25 * 1024 * 1024, () => ({ groups: {} }), 2000, chunk, 8,
-      { stop: () => {} }, ext.forumPostTitle, () => {}, { add: (t: string) => added.push(t) },
+      async () => ch, () => {}, () => ({ size: 1 }), 25 * 1024 * 1024, () => ({ groups: o.groups ?? {} }), 2000, chunk, 8,
+      { stop: () => {} }, ext.forumPostTitle, () => {}, { add: (t: string) => added.push(t) }, o.doneMarks ?? new ext.DoneMarks(), ext.DONE_REACTION,
     ) as (a: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>
     return { go: () => run({ chat_id: '1438000000000000800', text: o.text, files: o.files, reply_to: o.reply_to }), calls, added }
   }
@@ -1460,6 +1466,29 @@ describe('C4: a reply to a forum channel opens a post', () => {
     expect(h.calls[1]!.arg.files).toBeUndefined()
     expect(h.added).toEqual([id(50)])
     expect(r.content[0]!.text).toContain(`the post is thread ${id(50)}`)
+  })
+
+  replyHarnessRef.fn = replyHarness
+
+  it('reply, run: into a thread under an opted-in channel with a pending done mark -> the thread is followed AND the mark is set (#2787 review B1)', async () => {
+    const reacted: string[] = []
+    const marks = new ext.DoneMarks()
+    marks.note('1438000000000000800', { react: async (e: string) => { reacted.push(e) } })
+    const h = replyHarness({ forum: false, text: 'kész', threadParent: '1438000000000000700', groups: { '1438000000000000700': {} }, doneMarks: marks })
+    await h.go()
+    expect(h.added).toEqual(['1438000000000000800'])
+    expect(reacted).toEqual([ext.DONE_REACTION])
+    expect(marks.take('1438000000000000800')).toBeUndefined() // taken once
+  })
+
+  it('reply, run: a thread whose parent is not opted in is not followed; the done mark is still set', async () => {
+    const reacted: string[] = []
+    const marks = new ext.DoneMarks()
+    marks.note('1438000000000000800', { react: async (e: string) => { reacted.push(e) } })
+    const h = replyHarness({ forum: false, text: 'kész', threadParent: '1438000000000000900', groups: { '1438000000000000700': {} }, doneMarks: marks })
+    await h.go()
+    expect(h.added).toEqual([])
+    expect(reacted).toEqual([ext.DONE_REACTION])
   })
 
   it('reply, run: not a forum -> the channel path exactly as before (quote on the first part, no post)', async () => {
@@ -1656,5 +1685,162 @@ describe('A6: the bot\'s threads are recovered too, with the same time-lock and 
       await h.handleInbound(m)
       expect(h.cursorNotes, String(ours)).toHaveLength(want)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// PR5 (DCEXT1111, terv.md 5. PR, Zoli 2026-11-11 12:52): G2 pin/unpin
+// ---------------------------------------------------------------------------------------------------------------
+
+describe('G2: pin_message / unpin_message, only with DISCORD_ADMIN_ACTIONS=pin', () => {
+  it('parseAdminActions: only "pin"; anything else is dropped', () => {
+    expect(ext.parseAdminActions(['pin'])).toEqual(['pin'])
+    expect(ext.parseAdminActions(['pin', 'delete', 'roles'])).toEqual(['pin'])
+    expect(ext.parseAdminActions('pin')).toEqual([])
+    expect(ext.parseAdminActions(undefined)).toEqual([])
+    expect(ext.ADMIN_ACTIONS).toEqual(['pin'])
+  })
+
+  it('without the key the tools are not listed at all; with it, exactly pin and unpin', () => {
+    expect(ext.adminTools([])).toEqual([])
+    expect(ext.adminTools(['pin']).map((t: { name: string }) => t.name)).toEqual(['pin_message', 'unpin_message'])
+    expect(SERVER).toContain('...adminTools(EXT.adminActions),')
+  })
+
+  function pinCase(adminActions: string[], allowed = true) {
+    const calls: string[] = []
+    const raw = SERVER.slice(SERVER.indexOf("      case 'pin_message': // MARVEEN-EXT"), SERVER.indexOf("      case 'discord_info': { // MARVEEN-EXT"))
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const tsc = require('typescript')
+    const js = tsc.transpileModule(`async function call(req: any, args: any) { switch (req.params.name) { ${raw} } }`, { compilerOptions: { target: tsc.ScriptTarget.ES2022 } }).outputText
+    const call = new Function('EXT', 'fetchAllowedChannel', `${js}\nreturn call`)(
+      { adminActions },
+      async (cid: string) => {
+        if (!allowed) throw new Error(`channel ${cid} is not allowlisted`)
+        return { messages: { fetch: async (mid: string) => ({ id: mid, pin: async () => { calls.push(`pin ${mid}`) }, unpin: async () => { calls.push(`unpin ${mid}`) } }) } }
+      },
+    ) as (req: unknown, args: unknown) => Promise<{ content: Array<{ text: string }> }>
+    return { run: (name: string) => call({ params: { name } }, { chat_id: '1438000000000000700', message_id: id(5) }), calls }
+  }
+
+  it('the tool cases, run: switched on -> pin/unpin through the outbound allowlist; off or a not allowed channel -> refused, nothing done', async () => {
+    const on = pinCase(['pin'])
+    expect((await on.run('pin_message')).content[0]!.text).toBe(`pinned (id: ${id(5)})`)
+    expect((await on.run('unpin_message')).content[0]!.text).toBe(`unpinned (id: ${id(5)})`)
+    expect(on.calls).toEqual([`pin ${id(5)}`, `unpin ${id(5)}`])
+    const off = pinCase([])
+    await expect(off.run('pin_message')).rejects.toThrow(/not switched on/)
+    expect(off.calls).toEqual([])
+    const closed = pinCase(['pin'], false)
+    await expect(closed.run('pin_message')).rejects.toThrow(/not allowlisted/)
+    expect(closed.calls).toEqual([])
+  })
+
+  it('inventory: the overlay makes no deleting and no role-changing Discord call', () => {
+    expect(SERVER).not.toMatch(/\broles\.(add|remove|set)\(/)
+    expect(SERVER).not.toMatch(/\bbulkDelete\(|\.setPermissions\(|\.kick\(|\.ban\(/)
+    // every .delete( in the file is on one of our own Maps/Sets, never on a message, channel or thread
+    const receivers = [...SERVER.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\.delete\(/g)].map(m => m[1])
+    const OURS = new Set(['recentSentIds', 'pendingPermissions', 'permissionMessages', 'liveDelivered', 'answeredChoices', 'decidedPermissions', 'pending', 'running', 'seen', 'reported', 'ids', 'dmChannelUsers'])
+    expect(receivers.filter(r => !OURS.has(r!))).toEqual([])
+    expect(SERVER).not.toMatch(/delete_message|add_role|remove_role/)
+  })
+})
+
+describe('D4: the "done" mark after the reply, with or without an ack', () => {
+  it('DoneMarks: per chat the last acked message, taken once; bounded', () => {
+    const d = new ext.DoneMarks(2)
+    d.note('a', 'm1'); d.note('a', 'm2'); d.note('b', 'm3')
+    expect(d.take('a')).toBe('m2')
+    expect(d.take('a')).toBeUndefined()
+    d.note('c', 'm4'); d.note('d', 'm5') // b dropped as the oldest
+    expect(d.take('b')).toBeUndefined()
+    expect(ext.DONE_REACTION).toBe('✅')
+  })
+
+  it('handleInbound, run: the message is noted for its chat with an ack reaction AND without one (Zoli 2026-11-15)', async () => {
+    const marks = new ext.DoneMarks()
+    const h = inboundHarness({ action: 'deliver', access: { ackReaction: '👀' } }, OWNER, { doneMarks: marks })
+    const m = h.msg('szia')
+    await h.handleInbound(m)
+    expect(marks.take('1438000000000000500')).toBe(m)
+    const none = new ext.DoneMarks()
+    const q = inboundHarness({ action: 'deliver', access: {} }, OWNER, { doneMarks: none })
+    const plain = q.msg('szia')
+    await q.handleInbound(plain)
+    expect(none.take('1438000000000000500')).toBe(plain)
+    const dropped = new ext.DoneMarks()
+    const d = inboundHarness({ action: 'drop' }, OWNER, { doneMarks: dropped })
+    await d.handleInbound(d.msg('szia'))
+    expect(dropped.take('1438000000000000500')).toBeUndefined() // nothing delivered, nothing to mark
+  })
+
+  it('reply, run: after the reply went out the noted message gets ✅, once; a failed reply marks nothing', async () => {
+    const reacted: string[] = []
+    const marks = new ext.DoneMarks()
+    marks.note('1438000000000000800', { react: async (e: string) => { reacted.push(e) } })
+    const h = replyHarnessRef.fn({ forum: false, text: 'kész', doneMarks: marks })
+    await h.go()
+    expect(reacted).toEqual(['✅'])
+    await replyHarnessRef.fn({ forum: false, text: 'még egy', doneMarks: marks }).go()
+    expect(reacted).toEqual(['✅'])
+    const failed = new ext.DoneMarks()
+    failed.note('1438000000000000800', { react: async (e: string) => { reacted.push(`fail-${e}`) } })
+    await expect(replyHarnessRef.fn({ forum: false, text: 'x', doneMarks: failed, failSend: true }).go()).rejects.toThrow()
+    expect(reacted).toEqual(['✅'])
+  })
+})
+
+describe('D5: edit_message over 2000 characters', () => {
+  function editHarness(o: { textChunkLimit?: number; noSend?: boolean; failSendAfter?: number } = {}) {
+    const calls: Array<{ op: string; arg: unknown }> = []
+    let sends = 0
+    const raw = SERVER.slice(SERVER.indexOf("      case 'edit_message': {"), SERVER.indexOf("      case 'download_attachment': {"))
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const tsc = require('typescript')
+    const js = tsc.transpileModule(`async function call(args: any) { switch ('edit_message') { ${raw} } }`, { compilerOptions: { target: tsc.ScriptTarget.ES2022 } }).outputText
+    const chunk = new Function(`${slice('function chunk(', 'async function fetchTextChannel(')}\nreturn chunk`)()
+    const messages = { fetch: async (mid: string) => ({ id: mid, edit: async (t: string) => { calls.push({ op: 'edit', arg: t.length }); return { id: mid } } }) }
+    const ch = o.noSend ? { messages } : {
+      send: async (p: { content: string }) => {
+        if (o.failSendAfter !== undefined && sends++ >= o.failSendAfter) throw new Error('Missing Permissions')
+        calls.push({ op: 'send', arg: p.content.length }); return { id: id(90 + calls.length) }
+      },
+      messages,
+    }
+    const call = new Function('fetchAllowedChannel', 'loadAccess', 'MAX_CHUNK_LIMIT', 'chunk', 'MAX_REPLY_CHUNKS', 'noteSent', `${js}\nreturn call`)(
+      async () => ch, () => ({ textChunkLimit: o.textChunkLimit }), 2000, chunk, 8, () => {},
+    ) as (a: unknown) => Promise<{ content: Array<{ text: string }> }>
+    return { run: (text: string) => call({ chat_id: '1438000000000000500', message_id: id(5), text }), calls }
+  }
+
+  it('the case, run: 2500 characters -> the edit takes the first 2000, the rest is one new message after it', async () => {
+    const h = editHarness()
+    const r = await h.run('x'.repeat(2500))
+    expect(h.calls).toEqual([{ op: 'edit', arg: 2000 }, { op: 'send', arg: 500 }])
+    expect(r.content[0]!.text).toMatch(/^edited \(id: \d+\), the rest in 1 new message\(s\)/)
+  })
+
+  it('the case, run: a short edit is one edit, as before; more than 8 parts is refused before anything changes', async () => {
+    const short = editHarness()
+    expect((await short.run('rövid')).content[0]!.text).toBe(`edited (id: ${id(5)})`)
+    expect(short.calls).toEqual([{ op: 'edit', arg: 5 }])
+    const long = editHarness()
+    await expect(long.run('y'.repeat(2000 * 8 + 1))).rejects.toThrow(/9 messages \(max 8\): nothing changed/)
+    expect(long.calls).toEqual([])
+  })
+
+  it('the case, run: a channel that takes no new message refuses a long edit BEFORE editing; a short one still edits (#2787 review)', async () => {
+    const h = editHarness({ noSend: true })
+    await expect(h.run('x'.repeat(2500))).rejects.toThrow(/1 new message\(s\) and this channel takes none: nothing changed/)
+    expect(h.calls).toEqual([])
+    const s = editHarness({ noSend: true })
+    expect((await s.run('rövid')).content[0]!.text).toBe(`edited (id: ${id(5)})`)
+  })
+
+  it('the case, run: a failed follow-up says the edit happened and how many new messages went out (#2787 review)', async () => {
+    const h = editHarness({ failSendAfter: 1 })
+    await expect(h.run('x'.repeat(5000))).rejects.toThrow(new RegExp(`^edited \\(id: ${id(5)}\\), then failed after 1 of 2 new message\\(s\\) sent: Missing Permissions`))
+    expect(h.calls).toEqual([{ op: 'edit', arg: 2000 }, { op: 'send', arg: 2000 }])
   })
 })
