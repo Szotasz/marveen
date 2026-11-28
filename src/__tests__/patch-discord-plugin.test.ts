@@ -90,7 +90,7 @@ describe('patch-discord-plugin.py', () => {
     expect(r.status).toBe(0)
     expect(r.stderr).toMatch(/overlaid .*server\.ts \(Marveen's Discord plugin 0\.0\.4, from upstream\)/)
     for (const n of overlayFiles()) expect(readFileSync(join(dir, n), 'utf-8')).toBe(readFileSync(join(OVERLAY, n), 'utf-8'))
-    expect(ext()).toEqual({ backfill: true, ownerUserId: '', channelPolicy: {}, slashCommands: null })
+    expect(ext()).toEqual({ backfill: true, ownerUserId: '', channelPolicy: {}, slashCommands: null, adminActions: [] })
     const manifest = JSON.parse(readFileSync(join(dir, '.marveen-overlay.json'), 'utf-8'))
     expect(manifest.upstream).toBe(UPSTREAM_SHA)
     expect(manifest.files['server.ts']).toBe(sha(readFileSync(server)))
@@ -140,7 +140,7 @@ describe('patch-discord-plugin.py', () => {
     setOverrides({ DISCORD_OWNER_USER_ID: '290903699524550656', DISCORD_BACKFILL: '0' })
     const state = join(cache, 'state.json')
     expect(run(['--state', state]).stderr).toMatch(/upgraded/)
-    expect(ext()).toEqual({ backfill: false, ownerUserId: '290903699524550656', channelPolicy: {}, slashCommands: null })
+    expect(ext()).toEqual({ backfill: false, ownerUserId: '290903699524550656', channelPolicy: {}, slashCommands: null, adminActions: [] })
     expect(readState(state)).toMatchObject({ owner_set: true, backfill: false })
   })
 
@@ -178,6 +178,24 @@ describe('patch-discord-plugin.py', () => {
     } finally {
       srv.close()
     }
+  })
+
+  // DCEXT1111 G2: DISCORD_ADMIN_ACTIONS, overrides-only; only "pin" exists, anything else is named and dropped.
+  it('adminActions: "pin" from the override only; an unknown word is dropped loudly; a .env line does nothing', () => {
+    setEnvFile('DISCORD_ADMIN_ACTIONS=pin\n')
+    run()
+    expect(ext().adminActions).toEqual([])
+    setOverrides({ DISCORD_ADMIN_ACTIONS: ' PIN ' })
+    run()
+    expect(ext().adminActions).toEqual(['pin'])
+    setOverrides({ DISCORD_ADMIN_ACTIONS: 'pin, delete, roles' })
+    const r = run()
+    expect(ext().adminActions).toEqual(['pin'])
+    expect(r.stderr).toContain('DISCORD_ADMIN_ACTIONS has an unknown or repeated action -- NOT used: delete')
+    expect(r.stderr).toContain('NOT used: roles')
+    setOverrides({ DISCORD_ADMIN_ACTIONS: 'delete' })
+    run()
+    expect(ext().adminActions).toEqual([])
   })
 
   it('the owner and the switch are overrides-only: a .env line never names an owner or turns the overlay off', () => {

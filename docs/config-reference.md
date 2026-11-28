@@ -415,6 +415,18 @@ szóló üzenet szálat nyit magán, és a válasz abba megy (csak olyan csatorn
 Ha a szál nem nyitható meg, egy sor megy a csatornába, és az üzenet nem jut el a sessionig. Alapból ki van kapcsolva.
 A `history`-hoz hasonlóan csak idézőjel nélküli `true` vagy `false` lehet.
 
+**Másik bot üzenete.** Egy másik bot üzenete csak akkor jut el az ágenshez, ha a szövegében név szerint
+megszólítja a botot (`<@bot-ID>`), egy engedélyezett szerver-csatornában, és az a bot név szerint szerepel a csatorna
+engedélyezett felhasználói között, vagy megvan neki a csatornához a `DISCORD_CHANNEL_POLICY`-ben megadott szerep (üres
+lista mellett bot nem írhat). DM-ben soha. Hurokvédelem csatornánként: két bot-üzenet között legalább 30 mp,
+10 percenként legfeljebb 3; ami fölötte jön, eldobódik, egy naplósorral.
+
+**Kitűzés.** `DISCORD_ADMIN_ACTIONS=pin` (csak a gazda, felülírás-kulcs): az ágens kitűzhet és levehet egy üzenetet
+az engedélyezett csatornákban. Üresen ezek az eszközök nem is látszanak. Üzenet törlése és szerep-módosítás nincs.
+
+**Kész-jel.** A megválaszolt üzenet a válasz kimenetele után ✅-t kap (sikertelen válasz után nem). Ha az
+`access.json`-ban érkezés-jelző reakció is be van állítva (`/discord:access set ackReaction 👀`), az ugyanúgy megmarad.
+
 **Slash-parancsok.** Ha a `DISCORD_OWNER_USER_ID` be van állítva, a dashboard parancslistája (ugyanaz, amiből a
 Telegram-menü készül) Discord slash-parancsként is megjelenik, de csak a bottal folytatott DM-ben, és csak a
 gazdának fut. A válasz ugyanaz, mint Telegramon (a parancs-hook adja, modell-kör nélkül). Discordról csak az
