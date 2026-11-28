@@ -112,6 +112,12 @@ export interface SettingDefinition {
    * .env form is documented and used by remote installs.
    */
   ownerGated?: boolean
+  /**
+   * Optional (QUOTANOTICE1126): the key is a NETWORK TARGET (NETTARGETENV1104): its origin is recorded and a change is
+   * told to the owner (src/net-target-notice.ts). Before this flag the notice took every `ownerGated` key as a target;
+   * an owner-gated switch or number (QUOTA_NOTICE ...) is no target, so the two are named apart.
+   */
+  netTarget?: boolean
 }
 
 // ENVRELAXGATE1104 step 2: the keys whose `.env` value may only tighten. A `loosens` function marks a security
@@ -562,6 +568,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     validate: validAbsoluteHttpUrlOrEmpty,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'AGENT_API_ORIGIN',
@@ -574,6 +581,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     validate: validAbsoluteHttpUrlOrEmpty,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'FLEET_PYTHON_VENV',
@@ -639,6 +647,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'EMBED_URL',
@@ -650,6 +659,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'EMBED_MODEL',
@@ -681,6 +691,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
     // NETTARGETENV1104: a network target (where the token, a prompt or memory text goes): owner-gated on the route.
     ownerGated: true,
+    netTarget: true,
   },
   {
     key: 'MEMORY_VECTOR_MIN_MARGIN',
@@ -1713,6 +1724,43 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,
+  },
+  // QUOTANOTICE1126 (src/web/quota-notice.ts): plan usage notice to the owner. OFF by default (opt-in,
+  // see the review on PR #3198); read every minute, no restart. Owner-gated: the owner's alert, and the API calls the per-plan probe
+  // makes from each plan's own quota, are the owner's call, not a fleet-token caller's.
+  {
+    key: 'QUOTA_NOTICE',
+    type: 'boolean',
+    default: '0',
+    description: 'Kvóta-értesítés a tulajdonosnak: ha egy előfizetés 5 órás vagy heti ablaka eléri a QUOTA_NOTICE_PCT küszöböt, egy üzenet megy a tulajdonosi csatornára (melyik előfizetés, hány százalék, mikor töltődik újra). Ablakonként és előfizetésenként egyszer. A számokat a usage-collect ütemezett feladat (alap előfizetés) és a plan-rotáció (megnevezett planek) adja; szám nélküli előfizetésre nem jön értesítés.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+    ownerGated: true,
+  },
+  {
+    key: 'QUOTA_NOTICE_PCT',
+    type: 'int',
+    default: 90,
+    min: 50,
+    max: 100,
+    description: 'A kvóta-értesítés küszöbe százalékban (QUOTA_NOTICE).',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+    ownerGated: true,
+  },
+  {
+    key: 'QUOTA_PLAN_PROBE_MIN',
+    type: 'int',
+    default: 15,
+    min: 5,
+    max: 1440,
+    description: 'Planenkénti keret-lekérdezés gyakorisága percben: amíg a QUOTA_NOTICE be van kapcsolva, a dashboard a megnevezett, token-módú előfizetések 5 órás és heti keretét ennyi percenként lekérdezi (egy minimális API-hívás az adott előfizetés saját keretéből, kb. 10 token). A plan-rotáció által nemrég mért plant kihagyja; hibánál ritkít (429: négyszeres idő, elutasított token: egy nap). Kikapcsolt értesítésnél egyetlen hívás sincs.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+    ownerGated: true,
   },
 ]
 

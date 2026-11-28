@@ -4,7 +4,10 @@
 # WHY bash and not a Claude scheduled-task: a Claude agent invocation itself
 # consumes the very quota we're guarding. This runs as a plain shell script,
 # greps for limit signals, and alerts the owner via the Telegram Bot API.
-# Zero Claude tokens.
+# Zero Claude tokens. Without a Telegram bot token (a Discord/Slack install), and
+# only while the dashboard's QUOTA_NOTICE setting is on, the alert goes to
+# store/owner-alert-outbox/ and the dashboard delivers it through the install's
+# own owner route (QUOTANOTICE1126, see outbox_enabled / queue_owner_alert below).
 #
 # Signals: rate-limit / usage-limit / 429 / "resets at" in the channels+dashboard
 # logs AND in the live tmux panes of the WHOLE fleet (where Claude Code prints
@@ -46,11 +49,40 @@ BOT_NAME="${BOT_NAME:-$MAIN_AGENT_ID}"
 # CHATID0: resolve_owner_chat_id, not a raw ALLOWED_CHAT_ID read -- the old
 # read let the installer's "0" placeholder through unnoticed, and never fell
 # back to a paired channel's access.json.
+# The Telegram bot token, if this install has a Telegram channel (#915:
+# install-scoped state dir once migrated, legacy shared otherwise). Empty on a
+# Discord/Slack install.
+telegram_bot_token() {
+  local chan_dir="${TELEGRAM_STATE_DIR:-}"
+  if [ -z "$chan_dir" ]; then
+    chan_dir="$INSTALL_DIR/.claude/channels/telegram"
+    [ -f "$chan_dir/.env" ] || chan_dir="$HOME/.claude/channels/telegram"
+  fi
+  grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$chan_dir/.env" 2>/dev/null | head -1
+}
+
+# QUOTANOTICE1126: the dashboard owner-alert outbox is opt-in. Its switch is the
+# dashboard setting QUOTA_NOTICE (config-overrides.json over .env), which this
+# script cannot resolve the same way, so the dashboard hands it over as a
+# marker: store/owner-alert-outbox/.enabled exists only while QUOTA_NOTICE is on
+# (src/web/quota-notice.ts syncOutboxMarker). Without the marker everything
+# below behaves as it did before the outbox existed.
+OUTBOX_DIR="$STORE/owner-alert-outbox"
+outbox_enabled() { [ -f "$OUTBOX_DIR/.enabled" ]; }
+
 if ! CHAT_ID="$(resolve_alert_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")"; then
-  # No owner chat configured: there is nobody to alert, and guessing one would
-  # send a quota warning to a stranger. Stay silent rather than misdeliver.
-  log "no ALLOWED_CHAT_ID in .env, monitor cannot alert -- exiting"
-  exit 0
+  if [ -n "$(telegram_bot_token)" ] || ! outbox_enabled; then
+    # No owner chat configured: there is nobody to alert, and guessing one would
+    # send a quota warning to a stranger. Stay silent rather than misdeliver.
+    log "no ALLOWED_CHAT_ID in .env, monitor cannot alert -- exiting"
+    exit 0
+  fi
+  # QUOTANOTICE1126: no Telegram bot at all (a Discord/Slack install, where
+  # ALLOWED_CHAT_ID is a Telegram setting and stays empty) and the dashboard's
+  # outbox is switched on. The alerts go to that outbox, which delivers them on
+  # the install's own owner route, so no chat id is needed here.
+  CHAT_ID=""
+  log "no Telegram owner chat and no bot token -- alerts go to the dashboard outbox"
 fi
 
 # ---------------------------------------------------------------------------
@@ -66,17 +98,37 @@ fi
 # Callers MUST stamp their dedupe state only when this returns 0.
 . "$INSTALL_DIR/scripts/lib/send-telegram.sh"
 
+# The outbox file: plain text, at most 4000 bytes, mode 600, written to a temp name and renamed so the dashboard never
+# reads a half-written file (it skips dot-files). The name carries the epoch (the dashboard drops a file older than
+# 24 hours) and the tag, reduced to [A-Za-z0-9_-].
+queue_owner_alert() {
+  local msg="$1" tag="$2" dir="$OUTBOX_DIR" safe tmp
+  safe="$(printf '%s' "$tag" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-60)"
+  mkdir -p "$dir" 2>>"$LOG" && chmod 700 "$dir" 2>>"$LOG" || return 1
+  tmp="$dir/.tmp.$$"
+  ( umask 077; printf '%s' "$msg" | head -c 4000 > "$tmp" ) 2>>"$LOG" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dir/$(date +%s)-$$-${safe:-alert}.txt" 2>>"$LOG" || { rm -f "$tmp"; return 1; }
+}
+
 send_alert() {
   local msg="$1" tag="$2" token
-  # #915: install-scoped state dir once migrated, legacy shared otherwise.
-  local chan_dir="${TELEGRAM_STATE_DIR:-}"
-  if [ -z "$chan_dir" ]; then
-    chan_dir="$INSTALL_DIR/.claude/channels/telegram"
-    [ -f "$chan_dir/.env" ] || chan_dir="$HOME/.claude/channels/telegram"
-  fi
-  token="$(grep -oE '[0-9]+:[A-Za-z0-9_-]+' "$chan_dir/.env" 2>/dev/null | head -1)"
+  token="$(telegram_bot_token)"
   if [ -z "$token" ]; then
-    log "ALERT wanted but no bot token found: $tag"
+    # No Telegram bot token = a Discord/Slack/other install. Without the outbox marker the alert is logged and
+    # dropped, as it always was here.
+    if ! outbox_enabled; then
+      log "ALERT wanted but no bot token found: $tag"
+      return 1
+    fi
+    # QUOTANOTICE1126: with the marker (QUOTA_NOTICE on) it goes into the dashboard's owner-alert outbox instead
+    # (src/web/quota-notice.ts delivers it through notifyOwner, the install's own owner route, and deletes it only
+    # after a confirmed delivery). A queued alert counts as handled, so the caller stamps its dedupe state and the
+    # dashboard's own quota notice for the default plan sees the stamp and stays quiet (docs/quota-notice.md).
+    if queue_owner_alert "$msg" "$tag"; then
+      log "ALERT wanted but no bot token found: $tag -- queued for the dashboard (store/owner-alert-outbox)"
+      return 0
+    fi
+    log "ALERT wanted but no bot token found: $tag -- and the dashboard outbox could not be written"
     return 1
   fi
   if send_telegram_message "$token" "$CHAT_ID" "$msg" \

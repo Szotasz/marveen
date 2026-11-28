@@ -22,9 +22,9 @@ export function netTargetRecordPath(storeDir: string = STORE_DIR): string {
   return join(storeDir, '.net-target-hosts.json')
 }
 
-/** The owner-gated keys, in registry order. */
+/** The network-target keys (netTarget), in registry order. */
 export function netTargetKeys(): string[] {
-  return SETTINGS_REGISTRY.filter((d) => d.ownerGated === true).map((d) => d.key)
+  return SETTINGS_REGISTRY.filter((d) => d.netTarget === true).map((d) => d.key)
 }
 
 /**
@@ -59,7 +59,7 @@ function defaultCurrent(): Record<string, string> {
 /** Each target key's registry default, as an origin: what a first sight is compared against. */
 export function defaultOrigins(): Record<string, string> {
   const out: Record<string, string> = {}
-  for (const d of SETTINGS_REGISTRY) if (d.ownerGated === true) out[d.key] = originOf(String(d.default ?? ''))
+  for (const d of SETTINGS_REGISTRY) if (d.netTarget === true) out[d.key] = originOf(String(d.default ?? ''))
   return out
 }
 
